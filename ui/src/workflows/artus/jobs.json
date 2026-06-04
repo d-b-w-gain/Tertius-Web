@@ -1,0 +1,14 @@
+[
+  {
+    "id": "artus-init",
+    "title": "Initialize Artus Feature Tree",
+    "status": "pending",
+    "description": "Implement the AST parser to read design.py and the React UI for the Feature List."
+  },
+  {
+    "id": "artus-llm",
+    "title": "Integrate LLM API",
+    "status": "pending",
+    "description": "Set up the LLM integration to take user edits and rewrite the Python script."
+  }
+]

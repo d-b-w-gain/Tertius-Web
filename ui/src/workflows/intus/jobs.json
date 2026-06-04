@@ -1,0 +1,20 @@
+[
+  {
+    "id": "intus-pm",
+    "title": "Project Management API",
+    "status": "pending",
+    "description": "Create endpoints to list, load, create, and save projects. Implement logic to load the 'last used' project on startup, and seed a default CAD script if the cache is completely empty."
+  },
+  {
+    "id": "intus-compiler",
+    "title": "Build CAD Compiler Engine",
+    "status": "pending",
+    "description": "Implement the core execution engine that runs design.py using build123d. Add support for multiple export formats (STL, STEP, GLB) based on user selection."
+  },
+  {
+    "id": "intus-ui",
+    "title": "Generic Compiler UI",
+    "status": "pending",
+    "description": "Build a React UI to manage projects (New/Load) and select the target export format. Ensure all UI text remains completely generic and agnostic to the actual CAD content being generated."
+  }
+]

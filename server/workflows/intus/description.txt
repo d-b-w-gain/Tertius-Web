@@ -1,0 +1,14 @@
+Workflow: Intus (The CAD Compiler & Project Manager)
+
+Role: The core engine for compiling CAD scripts and managing projects.
+Purpose:
+1. Project Management: Handles creating, loading, and switching between different parametric projects. It remembers the last opened project.
+2. Generic Environment: The UI and server are completely generic. All specific logic (like Lysaght Cee Purlins) lives entirely inside the individual `design.py` CAD scripts.
+3. Default State: If no project exists in the cache, it initializes a default project (e.g., a basic purlin script) to ensure the user always has a starting point.
+4. Compilation Engine: Executes the active `build123d` python script natively.
+5. Flexible Export: Allows the user to select the compilation output format (e.g., STL, STEP, GLB) and exports the generated 3D geometry accordingly.
+6. Error Reporting: Outputs tracebacks and compilation errors if the script fails to run, ensuring the LLM (in Artus) or the user can debug.
+
+Shared Project Data: C:\Users\ben\ContextUI\default\cache\tertius\[project_name]
+- Watches: The active project's `design.py`
+- Modifies: The active project's `output.[format]` (e.g., `output.stl`)

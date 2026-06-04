@@ -1,0 +1,8 @@
+[
+  {
+    "id": "extus-viewer",
+    "title": "Build STL Viewer UI",
+    "status": "pending",
+    "description": "Implement a React component with Three.js STLLoader to watch and render output.stl from the shared cache."
+  }
+]

@@ -1,0 +1,11 @@
+Workflow: Extus (The STL Viewer)
+
+Role: The 3D viewport.
+Purpose:
+1. Provides a beautiful, decoupled 3D viewport using Three.js and STLLoader.
+2. Watches `output.stl` in the shared cache folder.
+3. Hot-reloads and re-renders the 3D model immediately when the STL file changes on disk.
+
+Shared Project Data: C:\Users\ben\ContextUI\default\cache\tertius
+- Watches: `output.stl`
+- Modifies: Nothing (Read-only UI)
