@@ -1,35 +1,93 @@
-# Tertius
+<div align="center">
+  <img src="assets/hero.png" alt="Tertius Hero Banner" width="100%" style="border-radius: 8px;" />
 
-Tertius is an open-source suite of CAD (Computer-Aided Design) workflows and tools. It provides a web-based feature tree, parametric project manager, and 3D viewport, all powered by a robust Python backend executing Build123D scripts.
+  # Tertius CAD
 
-## Architecture
+  **An open-source suite of next-generation CAD workflows and engineering tools.**
 
-This project is built using a **Core App + Independent Libraries** pattern:
-- **`ui/`**: A React/Vite frontend containing the CAD viewers and semantic feature tree interfaces.
-- **`server/`**: A Python-based backend (containerized via Docker) that wraps Build123D to compile parametric geometry scripts and generate STLs/STEPs.
+  <p>
+    <a href="#architecture">Architecture</a> •
+    <a href="#the-workflows">Workflows</a> •
+    <a href="#getting-started">Getting Started</a> •
+    <a href="#development">Development</a>
+  </p>
 
-## The Workflows
-Tertius currently includes several specialized tools:
-- **Artus (The Feature Tree)**: Semantic editor and AI agent interface parsing ASTs.
-- **Extus (The STL Viewer)**: A decoupled 3D viewport built on Three.js for hot-reloading geometry.
-- **Intus (The Compiler)**: The core engine for compiling CAD scripts and managing projects.
-- **Timus**: 2D SVG drafting viewer.
+</div>
 
-## Getting Started
+---
+
+Tertius is a robust, modular ecosystem for computational design and CAD engineering. It provides a web-based feature tree, a parametric project manager, and a fast 3D viewport—all backed by a powerful Python backend executing `Build123D` scripts. 
+
+## 📸 Screenshots
+
+*(Replace the placeholders below with actual screenshots of the UI once you are happy with it!)*
+
+| The Semantic Feature Tree (Artus) | The Realtime Viewport (Extus) |
+| :---: | :---: |
+| <img src="https://placehold.co/600x400/1e293b/38bdf8?text=Add+Artus+Screenshot+Here" width="400" /> | <img src="https://placehold.co/600x400/1e293b/34d399?text=Add+Extus+Screenshot+Here" width="400" /> |
+
+| The Project Compiler (Intus) | 2D Drafting (Timus) |
+| :---: | :---: |
+| <img src="https://placehold.co/600x400/1e293b/a78bfa?text=Add+Intus+Screenshot+Here" width="400" /> | <img src="https://placehold.co/600x400/1e293b/fb923c?text=Add+Timus+Screenshot+Here" width="400" /> |
+
+---
+
+## 🏗 Architecture
+
+This project strictly adheres to a **Modular Monolith** pattern:
+- **`ui/`**: A blazing fast React + Vite frontend leveraging Tailwind CSS v4. Contains the CAD viewers, node trees, and semantic interfaces.
+- **`server/`**: A containerized Python backend (FastAPI) that dynamically wraps `Build123D` to compile parametric geometry scripts, calculate bounding boxes, and stream STLs/STEPs to the frontend.
+
+## 🛠 The Workflows
+
+Tertius currently bundles four specialized, highly decoupled workflows:
+
+- 🌳 **Artus (The Feature Tree)**: Semantic code-editor interface that generates ASTs and links directly to AI agents.
+- 👁 **Extus (The Viewport)**: A lightweight, performant 3D canvas built on Three.js, capable of hot-reloading geometry streams.
+- ⚙️ **Intus (The Compiler)**: The core build engine. Parses projects, executes isolated Python sandboxes, and exports mesh data.
+- 📐 **Timus (The Draftsman)**: A 2D SVG drafting and layout engine. *(Note: Timus is currently in beta)*
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
-- Docker (for running the backend)
-- Node.js (for running the frontend locally during development)
+- **Docker** (for hosting the CAD backend cleanly)
+- **Node.js 20+** (for frontend development)
 
-### Running the Backend
-*(Instructions for Docker will be added here once containerization is finalized)*
+### 1. Launching the Backend (Docker)
 
-### Running the Frontend
+The server relies on several internal X11 dependencies (like `libxrender1`) to render geometry headlessly in `OCP`. To prevent cluttering your local machine, run it in Docker:
+
+```bash
+docker build -t tertius-server .
+docker run -p 8000:8000 tertius-server
+```
+*The API will be available at `http://localhost:8000/docs`.*
+
+### 2. Launching the Frontend
+
+The UI uses Vite for lightning-fast Hot Module Replacement.
+
 ```bash
 cd ui
 npm install
 npm run dev
 ```
+*The UI will be accessible at `http://localhost:5173`.*
 
-## Contributing
-Tertius workflows are developed in isolation. The components you see in `ui/src/workflows` and `server/workflows` are built as modular packages.
+---
+
+## 🤝 Development & Contribution
+
+Because Tertius workflows are heavily integrated into other tools (like `ContextUI`), this repository operates as a **bundle target**. 
+
+If you are a core contributor modifying the upstream source files, use the included build script to synchronize and patch the codebase for web distribution:
+
+```bash
+python scripts/bundle.py
+```
+> **Note:** The bundle script automatically injects the web-safe `mockServerLauncher.ts` into the workflows, preventing local desktop dependencies from leaking into the React application. 
+
+## License
+MIT License.
