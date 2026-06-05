@@ -4,14 +4,14 @@ We are now planning the Extus workflow. This is the isolated, decoupled 3D viewp
 
 ## User Review Required
 > [!IMPORTANT]
-> - **Cross-talk via Files:** To keep Extus completely ignorant of Intus's project management, I propose that Intus always writes its compiled STL to a generic, shared file: `C:\Users\ben\ContextUI\default\cache\tertius\active_output.stl`. This means Extus only ever has to watch one file, regardless of what project you are working on in Intus. Does this shared "active output" file approach sound good to you?
+> - **Cross-talk via Files:** To keep Extus completely ignorant of Intus's project management, I propose that Intus always writes its compiled STL to a generic, shared file: `../../cache/tertius/active_output.stl`. This means Extus only ever has to watch one file, regardless of what project you are working on in Intus. Does this shared "active output" file approach sound good to you?
 > - **The Server:** Because web browsers cannot arbitrarily read files from your C:\ drive, Extus will need a tiny, lightweight Python server (`extus_server.py`) whose only job is to serve that STL file and tell the React app when it has been updated. 
 
 ## Proposed Architecture
 
 ### 1. The Lightweight File Server (`extus_server.py`)
 A minimal FastAPI server purely for watching and serving the STL file to the browser.
-- **Shared Target:** Watches `C:\Users\ben\ContextUI\default\cache\tertius\active_output.stl`
+- **Shared Target:** Watches `../../cache/tertius/active_output.stl`
 - **Endpoints:**
   - `GET /status`: Returns the `Last-Modified` timestamp of `active_output.stl`. 
   - `GET /model`: Returns the raw binary/text STL data.

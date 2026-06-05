@@ -51,10 +51,18 @@ function App() {
 
       {/* Main Workflow Viewport */}
       <div className="flex-1 flex flex-col min-w-0 relative">
-        {activeWorkflow === 'intus' && <IntusWindow />}
-        {activeWorkflow === 'extus' && <ExtusWindow />}
-        {activeWorkflow === 'artus' && <ArtusWindow />}
-        {activeWorkflow === 'timus' && <TimusWindow />}
+        <div className={activeWorkflow === 'intus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
+          <IntusWindow />
+        </div>
+        <div className={activeWorkflow === 'extus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
+          <ExtusWindow />
+        </div>
+        <div className={activeWorkflow === 'artus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
+          <ArtusWindow />
+        </div>
+        <div className={activeWorkflow === 'timus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
+          <TimusWindow />
+        </div>
       </div>
     </div>
   )

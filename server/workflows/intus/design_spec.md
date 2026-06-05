@@ -11,7 +11,7 @@ We are now kicking off the implementation of the Intus workflow. This is the cor
 
 ### 1. The FastAPI Server (`intus_server.py`)
 This server acts as the file manager and compilation engine.
-- **Project Directory:** `C:\Users\ben\ContextUI\default\cache\tertius\intus\[project_name]\`
+- **Project Directory:** `../../cache/tertius/intus/[project_name]\`
 - **Default Seeding:** On startup, if no projects exist, it creates `default_purlin` and writes a robust Lysaght Cee Purlin `design.py` into it.
 - **Endpoints:**
   - `GET /projects`: Lists all projects.

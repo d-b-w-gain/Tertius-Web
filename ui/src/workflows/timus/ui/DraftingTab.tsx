@@ -125,6 +125,36 @@ export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
     return () => { isMounted = false; };
   }, [activeProject, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey]);
 
+  const handleAutoFit = async () => {
+    if (!activeProject) return;
+    try {
+      const res = await fetch(`${serverUrl}/projects/${activeProject}/bounds`);
+      if (res.ok) {
+        const data = await res.json();
+        const max_dim = data.max_dim;
+        if (max_dim) {
+          const formats: Record<string, [number, number]> = {
+            "A4": [297, 210],
+            "A3": [420, 297],
+            "A2": [594, 420],
+            "A1": [841, 594],
+            "A0": [1189, 841],
+          };
+          const [w, h] = formats[sheetSize] || [297, 210];
+          const view_w = (w - 60) / 2;
+          const view_h = (h - 60) / 2;
+          const target_dim = Math.min(view_w, view_h) * 0.9;
+          
+          let newScale = target_dim / max_dim;
+          newScale = Math.max(0.001, Math.min(5.0, newScale));
+          setScale(newScale);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to auto-fit scale", e);
+    }
+  };
+
   if (!activeProject) {
     return (
       <div className="flex-1 flex justify-center items-center bg-slate-900 text-slate-500 font-mono text-sm">
@@ -169,9 +199,27 @@ export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400 flex justify-between">
+            <label className="text-xs font-mono uppercase tracking-wider text-slate-400 flex justify-between items-center">
               <span>Projection Scale</span>
-              <span className="text-orange-400 font-bold">{scale.toFixed(3)}:1</span>
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={handleAutoFit}
+                  className="px-2 py-0.5 mr-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] border border-slate-700 transition-colors tracking-wide font-bold cursor-pointer"
+                  title="Calculate best fit scale for the current sheet"
+                >
+                  AUTO FIT
+                </button>
+                <input
+                  type="number"
+                  min="0.001"
+                  max="5.0"
+                  step="0.001"
+                  value={scale.toFixed(3)}
+                  onChange={(e) => setScale(parseFloat(e.target.value) || 0.001)}
+                  className="w-16 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-orange-400 font-bold text-right outline-none focus:border-orange-400"
+                />
+                <span className="text-orange-400 font-bold">:1</span>
+              </div>
             </label>
             <input
               type="range"
@@ -194,7 +242,7 @@ export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
               placeholder="e.g. APPROVED"
             />
             <div className="flex gap-1.5 flex-wrap">
-              {['APPROVED', 'REJECTED', 'GAIN ENG', 'QTD OK'].map(preset => (
+              {['APPROVED', 'REJECTED', 'ACME ENG', 'QTD OK'].map(preset => (
                 <button
                   key={preset}
                   onClick={() => setStampText(preset)}

@@ -3,8 +3,8 @@ import shutil
 from pathlib import Path
 
 # Paths
-SOURCE_DIR = Path(r"C:\Users\ben\ContextUI\default\workflows\tertius")
-DEST_DIR = Path(r"C:\Users\ben\Documents\Projects\Tertius-Web")
+SOURCE_DIR = Path(__file__).parent.parent.parent.parent / "tertius"
+DEST_DIR = Path(__file__).parent.parent
 UI_DEST = DEST_DIR / "ui" / "src" / "workflows"
 SERVER_DEST = DEST_DIR / "server" / "workflows"
 

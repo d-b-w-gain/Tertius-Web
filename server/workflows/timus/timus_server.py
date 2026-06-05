@@ -98,9 +98,10 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     tb_y = h - 10 - tb_h
     
     pdf.set_line_width(0.38)
-    pdf.rect(tb_x, tb_y, tb_w, tb_h)
-    pdf.line(tb_x, tb_y + 8, tb_x + tb_w, tb_y + 8)
-    pdf.line(tb_x, tb_y + 16, tb_x + tb_w, tb_y + 16)
+    pdf.set_xy(tb_x, tb_y + 12)
+    pdf.text(tb_x + 2, tb_y + 15, "TERTIUS SYSTEMS ENG")
+    
+    pdf.line(tb_x, tb_y + 18, tb_x + 40, tb_y + 18)
     pdf.line(tb_x + 50, tb_y, tb_x + 50, tb_y + 16)
     pdf.line(tb_x + 80, tb_y, tb_x + 80, tb_y + 16)
     pdf.line(tb_x + 35, tb_y + 16, tb_x + 35, tb_y + tb_h)
@@ -126,7 +127,7 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 2, tb_y + 11, "CHECKED BY")
     pdf.set_font("Helvetica", "B", 7)
-    pdf.text(tb_x + 2, tb_y + 15, "GAIN SYSTEMS ENG")
+    pdf.text(tb_x + 2, tb_y + 15, "TERTIUS SYSTEMS ENG")
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 52, tb_y + 11, "REVISION STATUS")
@@ -142,7 +143,7 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 2, tb_y + 19, "APPLICANT NAME")
     pdf.set_font("Helvetica", "B", 7.5)
-    pdf.text(tb_x + 2, tb_y + 23, "DANIEL GAIN")
+    pdf.text(tb_x + 2, tb_y + 23, "PLACEHOLDER NAME")
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 37, tb_y + 19, "SYSTEM")
@@ -348,6 +349,23 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
 def health_check():
     return {"status": "ok"}
 
+@app.get("/projects/{name}/bounds")
+def get_project_bounds(name: str):
+    script_file = PROJECTS_DIR / name / "design.py"
+    if not script_file.exists():
+        return Response("Project not found", status_code=404)
+        
+    try:
+        code = script_file.read_text(encoding="utf-8")
+        compound = get_compound_from_code(code)
+        bbox = compound.bounding_box()
+        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
+        if max_dim == 0:
+            max_dim = 100
+        return {"max_dim": max_dim}
+    except Exception as e:
+        return Response(f"Internal Server Error: {str(e)}", status_code=500)
+
 @app.get("/projects/{name}/drafting.pdf")
 def get_drafting_pdf(
     name: str, 
@@ -390,9 +408,10 @@ def get_drafting_pdf(
         
         # Draw Background and Title Block
         _draw_drafting_sheet_background(pdf, title=title, stamp_text=stamp, show_redline=redline, w=w, h=h)
-        _draw_gorton_text(pdf, "GAIN ENGINEERING", 15, 15, size=20)
+        _draw_gorton_text(pdf, "TERTIUS ENGINEERING", 15, 15, size=20)
         
         # View Layout Grid
+        pdf.set_font("Helvetica", "B", 10)
         view_w = (w - 60) / 2
         view_h = (h - 60) / 2
         top_ox = 20

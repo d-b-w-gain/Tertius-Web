@@ -4,7 +4,7 @@ We are now planning the Artus workflow. This is the intelligent editor that unde
 
 ## User Review Required
 > [!IMPORTANT]
-> - **Cross-talk via Files:** Just like Extus, Artus needs to know what you are currently working on. I propose Intus writes the path of the current project to a file: `C:\Users\ben\ContextUI\default\cache\tertius\active_project.txt`. Artus will simply read this file, find the real `design.py`, and edit it directly. This guarantees Artus is always editing whatever project you have open in Intus.
+> - **Cross-talk via Files:** Just like Extus, Artus needs to know what you are currently working on. I propose Intus writes the path of the current project to a file: `../../cache/tertius/active_project.txt`. Artus will simply read this file, find the real `design.py`, and edit it directly. This guarantees Artus is always editing whatever project you have open in Intus.
 > - **LLM API Selection:** The core of Artus is the `/ai_modify` endpoint. We need to decide which LLM API (e.g., OpenAI, Gemini, or a local model like Ollama) the server should call to perform the code rewrites. What is your preference?
 
 ## Proposed Architecture

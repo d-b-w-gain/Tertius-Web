@@ -54,11 +54,16 @@ def auto_commit(proj_dir: Path, message: str):
         if not (proj_dir / ".git").exists():
             subprocess.run(["git", "init"], cwd=proj_dir, capture_output=True)
             
+        subprocess.run(["git", "config", "user.name", "Intus Compiler"], cwd=proj_dir, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "intus@tertius.local"], cwd=proj_dir, capture_output=True)
+            
         subprocess.run(["git", "add", "design.py"], cwd=proj_dir, capture_output=True)
         
         status = subprocess.run(["git", "status", "--porcelain"], cwd=proj_dir, capture_output=True, text=True)
         if status.stdout.strip():
-            subprocess.run(["git", "commit", "-m", message], cwd=proj_dir, capture_output=True)
+            res = subprocess.run(["git", "commit", "-m", message], cwd=proj_dir, capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"Commit failed: {res.stderr}")
     except Exception as e:
         print(f"Git auto-commit failed: {e}")
 

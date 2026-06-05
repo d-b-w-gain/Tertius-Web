@@ -254,6 +254,22 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
             camera.lookAt(0, 0, 0);
             camera.updateProjectionMatrix();
           }
+          
+          if (sphere && sceneRef.current) {
+            const size = Math.max(500, Math.ceil(sphere.radius * 4));
+            
+            const grid = sceneRef.current.getObjectByName("GridHelper");
+            if (grid) {
+              const scale = size / 500;
+              grid.scale.set(scale, scale, scale);
+            }
+            
+            const axes = sceneRef.current.getObjectByName("AxesHelper");
+            if (axes) {
+              const scale = size / 200;
+              axes.scale.set(scale, scale, scale);
+            }
+          }
 
           const material = new THREE.MeshStandardMaterial({
             color: 0x8b9bb4, // Steel blueish
