@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import Editor from '@monaco-editor/react';
+
 
 export const CompilerTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
   const [projects, setProjects] = useState<string[]>([]);
@@ -265,12 +267,24 @@ export const CompilerTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
           <div className="bg-slate-950 px-3 py-1.5 border-b border-slate-800 text-xs font-mono text-slate-500">
             design.py
           </div>
-          <textarea
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            className="flex-1 w-full bg-[#0d1117] text-[#c9d1d9] p-4 font-mono text-sm resize-none focus:outline-none"
-            spellCheck={false}
-          />
+          <div className="flex-1 w-full relative">
+            <Editor
+              height="100%"
+              defaultLanguage="python"
+              theme="vs-dark"
+              value={code}
+              onChange={(val) => setCode(val || '')}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 14,
+                wordWrap: 'on',
+                folding: true,
+                lineNumbersMinChars: 3,
+                scrollBeyondLastLine: false,
+                padding: { top: 16 }
+              }}
+            />
+          </div>
         </div>
         <div className="w-1/3 flex flex-col bg-slate-950">
           <div className="px-3 py-1.5 border-b border-slate-800 text-xs font-mono text-slate-500 flex justify-between items-center bg-slate-900/50">
