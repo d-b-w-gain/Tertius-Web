@@ -74,6 +74,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
+  const [showGrid, setShowGrid] = useState<boolean>(true);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -96,6 +97,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100000);
+    camera.up.set(0, 0, 1);
     camera.position.set(200, 200, 200);
     cameraRef.current = camera;
 
@@ -104,6 +106,8 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
@@ -113,15 +117,25 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
     controls.autoRotateSpeed = 1.5;
     
     // Lighting setup
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-    sun.position.set(100, 200, 100);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    hemiLight.position.set(0, 0, 200);
+    scene.add(hemiLight);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+    sun.position.set(100, 100, 200);
     sun.castShadow = true;
     scene.add(sun);
     
-    const fill = new THREE.PointLight(0x6699ff, 0.4);
-    fill.position.set(-100, 50, -50);
-    scene.add(fill);
+    // Grid and Axes Helpers
+    const gridHelper = new THREE.GridHelper(500, 50, 0x888888, 0x444444);
+    gridHelper.rotation.x = Math.PI / 2; // Z-up orientation
+    gridHelper.name = "GridHelper";
+    scene.add(gridHelper);
+
+    const axesHelper = new THREE.AxesHelper(100);
+    axesHelper.name = "AxesHelper";
+    scene.add(axesHelper);
 
     const onResize = () => {
       if (!container || !renderer || !camera) return;
@@ -146,6 +160,14 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
       renderer.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    if (!sceneRef.current) return;
+    const grid = sceneRef.current.getObjectByName("GridHelper");
+    const axes = sceneRef.current.getObjectByName("AxesHelper");
+    if (grid) grid.visible = showGrid;
+    if (axes) axes.visible = showGrid;
+  }, [showGrid]);
 
   // 2. Poll for file changes
   useEffect(() => {
@@ -211,9 +233,27 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
           
           // Center the geometry
           geometry.computeBoundingBox();
+          geometry.computeBoundingSphere();
+          const sphere = geometry.boundingSphere;
+
           const center = new THREE.Vector3();
           geometry.boundingBox?.getCenter(center);
           geometry.translate(-center.x, -center.y, -center.z);
+          if (sphere) sphere.center.set(0, 0, 0);
+
+          if (cameraRef.current && sphere) {
+            const camera = cameraRef.current;
+            const fov = camera.fov * (Math.PI / 180);
+            let distance = Math.abs(sphere.radius / Math.sin(fov / 2));
+            distance *= 1.5; // Padding
+            
+            const currentDir = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0,0,0)).normalize();
+            if (currentDir.lengthSq() === 0) currentDir.set(1, 1, 1).normalize();
+            
+            camera.position.copy(currentDir.multiplyScalar(distance));
+            camera.lookAt(0, 0, 0);
+            camera.updateProjectionMatrix();
+          }
 
           const material = new THREE.MeshStandardMaterial({
             color: 0x8b9bb4, // Steel blueish
@@ -261,6 +301,12 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
               {projectName}
             </div>
           )}
+          <button 
+            onClick={() => setShowGrid(!showGrid)}
+            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${showGrid ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
+          >
+            Grid: {showGrid ? 'ON' : 'OFF'}
+          </button>
         </div>
         <div className="text-xs text-slate-400">
           {statusText}
