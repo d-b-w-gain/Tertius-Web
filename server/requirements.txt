@@ -2,3 +2,6 @@ fastapi
 uvicorn[standard]
 pydantic
 build123d
+fpdf2
+fonttools
+

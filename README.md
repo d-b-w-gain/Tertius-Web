@@ -24,11 +24,11 @@ Tertius is a robust, modular ecosystem for computational design and CAD engineer
 
 | The Semantic Feature Tree (Artus) | The Realtime Viewport (Extus) |
 | :---: | :---: |
-| <img src="https://placehold.co/600x400/1e293b/38bdf8?text=Add+Artus+Screenshot+Here" width="400" /> | <img src="https://placehold.co/600x400/1e293b/34d399?text=Add+Extus+Screenshot+Here" width="400" /> |
+| <img src="assets/Artus.png" width="400" /> | <img src="assets/Extus.png" width="400" /> |
 
 | The Project Compiler (Intus) | 2D Drafting (Timus) |
 | :---: | :---: |
-| <img src="https://placehold.co/600x400/1e293b/a78bfa?text=Add+Intus+Screenshot+Here" width="400" /> | <img src="https://placehold.co/600x400/1e293b/fb923c?text=Add+Timus+Screenshot+Here" width="400" /> |
+| <img src="assets/Intus.png" width="400" /> | <img src="assets/Timus.png" width="400" /> |
 
 ---
 
@@ -45,7 +45,7 @@ Tertius currently bundles four specialized, highly decoupled workflows:
 - 🌳 **Artus (The Feature Tree)**: Semantic code-editor interface that generates ASTs and links directly to AI agents.
 - 👁 **Extus (The Viewport)**: A lightweight, performant 3D canvas built on Three.js, capable of hot-reloading geometry streams.
 - ⚙️ **Intus (The Compiler)**: The core build engine. Parses projects, executes isolated Python sandboxes, and exports mesh data.
-- 📐 **Timus (The Draftsman)**: A 2D SVG drafting and layout engine. *(Note: Timus is currently in beta)*
+- 📐 **Timus (The Draftsman)**: A robust OpenCASCADE to PDF 2D drafting layout engine.
 
 ---
 
