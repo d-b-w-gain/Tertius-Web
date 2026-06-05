@@ -20,8 +20,6 @@ Tertius is a robust, modular ecosystem for computational design and CAD engineer
 
 ## 📸 Screenshots
 
-*(Replace the placeholders below with actual screenshots of the UI once you are happy with it!)*
-
 | The Semantic Feature Tree (Artus) | The Realtime Viewport (Extus) |
 | :---: | :---: |
 | <img src="assets/Artus.png" width="400" /> | <img src="assets/Extus.png" width="400" /> |
