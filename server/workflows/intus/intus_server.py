@@ -57,7 +57,9 @@ def auto_commit(proj_dir: Path, message: str):
         subprocess.run(["git", "config", "user.name", "Intus Compiler"], cwd=proj_dir, capture_output=True)
         subprocess.run(["git", "config", "user.email", "intus@tertius.local"], cwd=proj_dir, capture_output=True)
             
-        subprocess.run(["git", "add", "design.py"], cwd=proj_dir, capture_output=True)
+        py_files = [p.name for p in proj_dir.glob("*.py")]
+        if py_files:
+            subprocess.run(["git", "add"] + py_files, cwd=proj_dir, capture_output=True)
         
         status = subprocess.run(["git", "status", "--porcelain"], cwd=proj_dir, capture_output=True, text=True)
         if status.stdout.strip():
@@ -70,10 +72,12 @@ def auto_commit(proj_dir: Path, message: str):
 # ── Models ─────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
+    file: Optional[str] = "design.py"
 
 class CompileRequest(BaseModel):
     code: str
     export_format: str = "stl"
+    file: Optional[str] = "design.py"
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
@@ -100,18 +104,36 @@ def new_project(name: str):
     auto_commit(proj_dir, "Initial project creation")
     return {"success": True, "project": name}
 
+@app.get("/projects/{name}/files")
+def list_files(name: str):
+    proj_dir = PROJECTS_DIR / name
+    if not proj_dir.exists():
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    files = [p.name for p in proj_dir.glob("*.py") if p.is_file()]
+    # Ensure design.py is always first if it exists
+    if "design.py" in files:
+        files.remove("design.py")
+        files.insert(0, "design.py")
+    return {"files": files}
+
 @app.get("/projects/{name}/code")
-def get_code(name: str):
-    script_file = PROJECTS_DIR / name / "design.py"
+def get_code(name: str, file: str = "design.py"):
+    # Security: prevent directory traversal
+    if "/" in file or "\\" in file or not file.endswith(".py"):
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
+        
+    script_file = PROJECTS_DIR / name / file
     if script_file.exists():
-        # Update active project pointer for Artus/Extus to instantly sync on selection
-        ACTIVE_PROJECT.write_text(str(script_file), encoding="utf-8")
+        if file == "design.py":
+            ACTIVE_PROJECT.write_text(str(script_file), encoding="utf-8")
         return {"code": script_file.read_text(encoding="utf-8")}
-    return JSONResponse(status_code=404, content={"error": "Project not found"})
+    return JSONResponse(status_code=404, content={"error": "File not found"})
 
 @app.get("/projects/{name}/status")
-def get_status(name: str):
-    script_file = PROJECTS_DIR / name / "design.py"
+def get_status(name: str, file: str = "design.py"):
+    if "/" in file or "\\" in file or not file.endswith(".py"):
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
+    script_file = PROJECTS_DIR / name / file
     if script_file.exists():
         return {"mtime": script_file.stat().st_mtime}
     return JSONResponse(status_code=404, content={"error": "Project not found"})
@@ -142,35 +164,90 @@ def get_git_status(name: str):
 
 @app.post("/projects/{name}/save")
 def save_code(name: str, req: CodeRequest):
-    script_file = PROJECTS_DIR / name / "design.py"
-    if script_file.exists():
+    file = req.file or "design.py"
+    if "/" in file or "\\" in file or not file.endswith(".py"):
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
+        
+    script_file = PROJECTS_DIR / name / file
+    if script_file.parent.exists():
         script_file.write_text(req.code, encoding="utf-8")
-        auto_commit(PROJECTS_DIR / name, "Manual save via Intus")
+        auto_commit(PROJECTS_DIR / name, f"Manual save {file} via Intus")
         return {"success": True}
     return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+@app.delete("/projects/{name}/file")
+def delete_file(name: str, file: str):
+    if "/" in file or "\\" in file or not file.endswith(".py"):
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
+    if file == "design.py":
+        return JSONResponse(status_code=400, content={"error": "Cannot delete design.py"})
+        
+    script_file = PROJECTS_DIR / name / file
+    if script_file.exists():
+        script_file.unlink()
+        
+        proj_dir = PROJECTS_DIR / name
+        import subprocess
+        subprocess.run(["git", "rm", file], cwd=proj_dir, capture_output=True)
+        auto_commit(proj_dir, f"Deleted {file} via Intus")
+        
+        return {"success": True}
+    return JSONResponse(status_code=404, content={"error": "File not found"})
 
 @app.post("/projects/{name}/compile")
 def compile_project(name: str, req: CompileRequest):
     proj_dir = PROJECTS_DIR / name
-    script_file = proj_dir / "design.py"
+    file = req.file or "design.py"
     
-    if not script_file.exists():
+    if "/" in file or "\\" in file or not file.endswith(".py"):
+        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
+        
+    script_file = proj_dir / file
+    design_file = proj_dir / "design.py"
+    
+    if not proj_dir.exists():
         return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-    # Save code first
+    # Save code first for the file being edited
     script_file.write_text(req.code, encoding="utf-8")
     
     # Auto-commit the compiled changes
-    auto_commit(proj_dir, "Compile update via Intus")
+    auto_commit(proj_dir, f"Compile update ({file}) via Intus")
     
-    # Update active project pointer for Artus
-    ACTIVE_PROJECT.write_text(str(script_file), encoding="utf-8")
+    # Update active project pointer for Artus (always points to design.py for parsing)
+    if design_file.exists():
+        ACTIVE_PROJECT.write_text(str(design_file), encoding="utf-8")
 
     try:
         import build123d as bd
         env = {"bd": bd, "build123d": bd}
         
-        exec(req.code, env)
+        proj_dir_str = str(proj_dir.absolute())
+        
+        # Cache busting for local imports
+        for mod_name in list(sys.modules.keys()):
+            mod = sys.modules[mod_name]
+            if hasattr(mod, '__file__') and mod.__file__:
+                # Use os.path.abspath to safely match paths on Windows
+                import os
+                mod_file = os.path.abspath(mod.__file__)
+                if mod_file.startswith(proj_dir_str):
+                    del sys.modules[mod_name]
+
+        added_to_path = False
+        if proj_dir_str not in sys.path:
+            sys.path.insert(0, proj_dir_str)
+            added_to_path = True
+            
+        try:
+            if design_file.exists():
+                design_code = design_file.read_text(encoding="utf-8")
+                exec(design_code, env)
+            else:
+                return {"success": False, "error": "design.py not found in project. Cannot compile."}
+        finally:
+            if added_to_path:
+                sys.path.remove(proj_dir_str)
 
         # Extract shapes
         shapes = []

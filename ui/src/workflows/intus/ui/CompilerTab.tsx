@@ -12,6 +12,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   
+  const [files, setFiles] = useState<string[]>(['design.py']);
+  const [activeFile, setActiveFile] = useState<string>('design.py');
+  const [isCreatingFile, setIsCreatingFile] = useState(false);
+  const [newFileName, setNewFileName] = useState('');
+  
   // Git UI State
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[] }>({ is_git: false });
   const [activePane, setActivePane] = useState<'output' | 'history'>('output');
@@ -34,7 +39,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     const checkSync = async () => {
       if (isCompilingRef.current) return;
       try {
-        const res = await fetch(`${serverUrl}/projects/${activeProject}/status`);
+        const res = await fetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`);
         if (!res.ok) return;
         const data = await res.json();
         
@@ -45,7 +50,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // File changed on disk! Sync it.
              mtimeRef.current = data.mtime;
              
-             const codeRes = await fetch(`${serverUrl}/projects/${activeProject}/code`);
+             const codeRes = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`);
              if (!codeRes.ok) return;
              const codeData = await codeRes.json();
              const newCode = codeData.code || '';
@@ -58,7 +63,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                const compRes = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ code: newCode, export_format: format })
+                 body: JSON.stringify({ code: newCode, export_format: format, file: activeFile })
                });
                const compData = await compRes.json();
                if (compData.success) {
@@ -86,7 +91,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, isActive]);
+  }, [activeProject, serverUrl, format, isActive, activeFile]);
 
   const fetchGitStatus = async (name: string) => {
     try {
@@ -129,13 +134,90 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     localStorage.setItem('intus_last_project', name);
     mtimeRef.current = 0; // Reset baseline for new project
     try {
-      const res = await fetch(`${serverUrl}/projects/${name}/code`);
+      const filesRes = await fetch(`${serverUrl}/projects/${name}/files`);
+      const filesData = await filesRes.json();
+      const fileList = filesData.files || ['design.py'];
+      setFiles(fileList);
+      
+      const fileToLoad = fileList.includes('design.py') ? 'design.py' : fileList[0];
+      setActiveFile(fileToLoad);
+      
+      const res = await fetch(`${serverUrl}/projects/${name}/code?file=${fileToLoad}`);
       const data = await res.json();
       setCode(data.code || '');
       setLog(`Loaded project: ${name}`);
       fetchGitStatus(name);
     } catch (e) {
       setLog(`Failed to load project: ${name}`);
+    }
+  };
+
+  const switchFile = async (fileName: string) => {
+    if (fileName === activeFile) return;
+    
+    // Auto-save current before switching
+    try {
+      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, file: activeFile })
+      });
+    } catch(e) {}
+
+    setActiveFile(fileName);
+    mtimeRef.current = 0; // Prevent false-positive sync when switching files
+    try {
+      const res = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`);
+      const data = await res.json();
+      setCode(data.code || '');
+    } catch (e) {
+      setLog(`Failed to load file: ${fileName}`);
+    }
+  };
+
+  const handleNewFileSubmit = async () => {
+    let name = newFileName.trim();
+    if (!name) return;
+    if (!name.endsWith('.py')) name += '.py';
+    
+    if (files.includes(name)) {
+      alert("File already exists");
+      return;
+    }
+    
+    try {
+      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: "", file: name })
+      });
+      
+      setFiles([...files, name]);
+      setIsCreatingFile(false);
+      setNewFileName('');
+      switchFile(name);
+    } catch (e) {
+      alert("Network error creating file");
+    }
+  };
+
+  const handleDeleteFile = async (fileName: string) => {
+    if (fileName === 'design.py') return;
+    if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
+    
+    try {
+      await fetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, {
+        method: 'DELETE'
+      });
+      
+      const newFiles = files.filter(f => f !== fileName);
+      setFiles(newFiles);
+      
+      if (activeFile === fileName) {
+        switchFile('design.py');
+      }
+    } catch (e) {
+      alert("Network error deleting file");
     }
   };
 
@@ -166,7 +248,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       const res = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, export_format: format })
+        body: JSON.stringify({ code, export_format: format, file: activeFile })
       });
       const data = await res.json();
       if (data.success) {
@@ -264,8 +346,52 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       {/* Editor & Console */}
       <div className="flex-1 flex min-h-0">
         <div className="w-2/3 border-r border-slate-800 flex flex-col">
-          <div className="bg-slate-950 px-3 py-1.5 border-b border-slate-800 text-xs font-mono text-slate-500">
-            design.py
+          <div className="bg-slate-950 flex border-b border-slate-800 overflow-x-auto scrollbar-hide">
+            {files.map(f => (
+              <div 
+                key={f}
+                className={`flex items-center border-r border-slate-800 transition-colors ${
+                  f === activeFile ? 'bg-slate-900 border-b-2 border-b-indigo-500' : 'hover:bg-slate-900'
+                }`}
+              >
+                <button 
+                  onClick={() => switchFile(f)}
+                  className={`px-4 py-2 text-xs font-mono ${f === activeFile ? 'text-indigo-300 font-bold' : 'text-slate-500 hover:text-slate-300'}`}
+                >
+                  {f}
+                </button>
+                {f !== 'design.py' && f === activeFile && (
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); handleDeleteFile(f); }}
+                    className="pr-2 pl-1 text-xs text-slate-600 hover:text-red-400"
+                    title="Delete file"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            
+            {isCreatingFile ? (
+              <form onSubmit={(e) => { e.preventDefault(); handleNewFileSubmit(); }} className="flex items-center px-2 py-1">
+                <input 
+                  autoFocus
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-xs focus:outline-none focus:border-indigo-500 w-32"
+                  value={newFileName}
+                  onChange={e => setNewFileName(e.target.value)}
+                  placeholder="filename.py"
+                  onBlur={() => setIsCreatingFile(false)}
+                />
+              </form>
+            ) : (
+              <button 
+                onClick={() => setIsCreatingFile(true)}
+                className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors"
+                title="New File"
+              >
+                +
+              </button>
+            )}
           </div>
           <div className="flex-1 w-full relative">
             <Editor
