@@ -68,9 +68,10 @@ const parseSTL = (buffer: ArrayBuffer): { positions: number[]; normals: number[]
 
 interface ViewerProps {
   serverUrl: string;
+  isActive?: boolean;
 }
 
-export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
+export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
@@ -171,6 +172,8 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
 
   // 2. Poll for file changes
   useEffect(() => {
+    if (!isActive) return;
+    
     let mounted = true;
     let mtime = 0;
     
@@ -203,13 +206,13 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl }) => {
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 1000);
+    const interval = setInterval(checkStatus, 3000);
     
     return () => {
       mounted = false;
       clearInterval(interval);
     };
-  }, [serverUrl]);
+  }, [serverUrl, isActive]);
 
   // 3. Load STL when URL changes
   useEffect(() => {

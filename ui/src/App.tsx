@@ -5,63 +5,87 @@ import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 
 function App() {
-  const [activeWorkflow, setActiveWorkflow] = useState('intus')
+  const [activeTab, setActiveTab] = useState('extus')
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
 
   return (
     <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
-      {/* Sidebar Navigation */}
-      <div className="w-64 border-r border-slate-800 bg-slate-900/50 flex flex-col">
-        <div className="p-6 border-b border-slate-800">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
-            Tertius
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">Open Source CAD Toolkit</p>
+      {/* Mobile Backdrop */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-10 md:hidden transition-opacity"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* Permanent Artus Feature Tree (Sidebar) */}
+      <div 
+        className={`absolute z-20 h-full md:relative md:h-auto border-r border-slate-800 bg-slate-900/95 md:bg-slate-900/50 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${
+          isSidebarOpen ? 'w-96 translate-x-0' : 'w-96 -translate-x-full md:w-0 md:translate-x-0 md:border-r-0'
+        }`}
+      >
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between min-w-[20rem]">
+          <div>
+            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
+              Tertius
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">Open Source CAD Toolkit</p>
+          </div>
+          <button 
+            className="md:hidden text-slate-400 hover:text-white"
+            onClick={() => setIsSidebarOpen(false)}
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
         </div>
         
-        <div className="flex-1 p-4 flex flex-col gap-2">
+        <div className="flex-1 flex flex-col min-h-0 min-w-[20rem]">
+          <ArtusWindow />
+        </div>
+      </div>
+
+      {/* Main Workflow Viewport (Tabbed) */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Tab Header */}
+        <div className="flex bg-slate-900 border-b border-slate-800 px-4 pt-4 gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
           <button 
-            onClick={() => setActiveWorkflow('intus')}
-            className={`text-left px-4 py-3 rounded-lg transition-all ${activeWorkflow === 'intus' ? 'bg-indigo-500/20 text-indigo-300 font-medium border border-indigo-500/30' : 'hover:bg-slate-800 text-slate-400 border border-transparent'}`}
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 mb-2 mr-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0 flex items-center justify-center"
+            title="Toggle Sidebar"
           >
-            ⚙️ Intus Compiler
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
           
           <button 
-            onClick={() => setActiveWorkflow('extus')}
-            className={`text-left px-4 py-3 rounded-lg transition-all ${activeWorkflow === 'extus' ? 'bg-cyan-500/20 text-cyan-300 font-medium border border-cyan-500/30' : 'hover:bg-slate-800 text-slate-400 border border-transparent'}`}
+            onClick={() => setActiveTab('extus')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'extus' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
           >
-            👁️ Extus Viewer
+            👁️ Extus Viewport
           </button>
-
           <button 
-            onClick={() => setActiveWorkflow('artus')}
-            className={`text-left px-4 py-3 rounded-lg transition-all ${activeWorkflow === 'artus' ? 'bg-purple-500/20 text-purple-300 font-medium border border-purple-500/30' : 'hover:bg-slate-800 text-slate-400 border border-transparent'}`}
+            onClick={() => setActiveTab('intus')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'intus' ? 'bg-slate-950 text-indigo-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
           >
-            🌳 Artus Feature Tree
+            ⚙️ Intus Compiler
           </button>
-
           <button 
-            onClick={() => setActiveWorkflow('timus')}
-            className={`text-left px-4 py-3 rounded-lg transition-all ${activeWorkflow === 'timus' ? 'bg-emerald-500/20 text-emerald-300 font-medium border border-emerald-500/30' : 'hover:bg-slate-800 text-slate-400 border border-transparent'}`}
+            onClick={() => setActiveTab('timus')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'timus' ? 'bg-slate-950 text-emerald-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
           >
             📐 Timus Drafting
           </button>
         </div>
-      </div>
 
-      {/* Main Workflow Viewport */}
-      <div className="flex-1 flex flex-col min-w-0 relative">
-        <div className={activeWorkflow === 'intus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
-          <IntusWindow />
-        </div>
-        <div className={activeWorkflow === 'extus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
-          <ExtusWindow />
-        </div>
-        <div className={activeWorkflow === 'artus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
-          <ArtusWindow />
-        </div>
-        <div className={activeWorkflow === 'timus' ? 'flex-1 flex flex-col min-w-0' : 'hidden'}>
-          <TimusWindow />
+        <div className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
+          <div className={activeTab === 'extus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <ExtusWindow isActive={activeTab === 'extus'} />
+          </div>
+          <div className={activeTab === 'intus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <IntusWindow isActive={activeTab === 'intus'} />
+          </div>
+          <div className={activeTab === 'timus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <TimusWindow isActive={activeTab === 'timus'} />
+          </div>
         </div>
       </div>
     </div>

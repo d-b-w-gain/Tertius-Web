@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 
 
-export const CompilerTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const [projects, setProjects] = useState<string[]>([]);
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
@@ -29,7 +29,7 @@ export const CompilerTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
 
   // Poll for external file changes (e.g. from Artus)
   useEffect(() => {
-    if (!activeProject) return;
+    if (!activeProject || !isActive) return;
     
     const checkSync = async () => {
       if (isCompilingRef.current) return;
@@ -86,7 +86,7 @@ export const CompilerTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format]);
+  }, [activeProject, serverUrl, format, isActive]);
 
   const fetchGitStatus = async (name: string) => {
     try {

@@ -98,14 +98,21 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     tb_y = h - 10 - tb_h
     
     pdf.set_line_width(0.38)
-    pdf.set_xy(tb_x, tb_y + 12)
-    pdf.text(tb_x + 2, tb_y + 15, "TERTIUS SYSTEMS ENG")
     
-    pdf.line(tb_x, tb_y + 18, tb_x + 40, tb_y + 18)
-    pdf.line(tb_x + 50, tb_y, tb_x + 50, tb_y + 16)
-    pdf.line(tb_x + 80, tb_y, tb_x + 80, tb_y + 16)
-    pdf.line(tb_x + 35, tb_y + 16, tb_x + 35, tb_y + tb_h)
-    pdf.line(tb_x + 70, tb_y + 16, tb_x + 70, tb_y + tb_h)
+    # Outer boundaries of title block (Top and Left)
+    pdf.line(tb_x, tb_y, tb_x + tb_w, tb_y)
+    pdf.line(tb_x, tb_y, tb_x, tb_y + tb_h)
+    
+    # Horizontal separators
+    pdf.line(tb_x, tb_y + 9, tb_x + tb_w, tb_y + 9)
+    pdf.line(tb_x, tb_y + 18, tb_x + tb_w, tb_y + 18)
+    
+    # Vertical separators for Rows 1 & 2
+    pdf.line(tb_x + 50, tb_y, tb_x + 50, tb_y + 18)
+    pdf.line(tb_x + 80, tb_y, tb_x + 80, tb_y + 18)
+    
+    # Vertical separator for Row 3
+    pdf.line(tb_x + 35, tb_y + 18, tb_x + 35, tb_y + tb_h)
     
     # Row 1: Drawing Title
     pdf.set_font("Courier", "B", 5.2)

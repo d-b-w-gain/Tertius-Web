@@ -119,6 +119,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   
   // Local variable edits
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [activePanel, setActivePanel] = useState<'variables' | 'operations'>('variables');
 
   const fetchFeatures = async () => {
     try {
@@ -142,7 +143,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
 
   useEffect(() => {
     fetchFeatures();
-    const interval = setInterval(fetchFeatures, 2000);
+    const interval = setInterval(fetchFeatures, 4000);
     return () => clearInterval(interval);
   }, [serverUrl]);
 
@@ -207,8 +208,8 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-900 p-6 overflow-hidden">
-      <div className="max-w-4xl w-full mx-auto h-full flex flex-col gap-6 min-h-0">
+    <div className="flex flex-col h-full bg-slate-900 p-4 overflow-hidden">
+      <div className="max-w-4xl w-full mx-auto h-full flex flex-col gap-4 min-h-0">
         
         {error && (
           <div className="p-4 bg-red-950/30 border border-red-900/50 rounded-lg text-red-400 text-sm shrink-0">
@@ -218,17 +219,23 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
 
         <div className="flex-1 flex flex-col gap-6 min-h-0">
           {/* Top: Feature Tree */}
-          <div className="flex-1 flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden min-h-0 shadow-lg">
-            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/50 shrink-0">
-              <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                <span className="text-emerald-500">🌲</span> Parametric Variables
+          <div className={`flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all ${activePanel === 'variables' ? 'flex-1 min-h-0' : 'shrink-0'}`}>
+            <div 
+              className="flex flex-wrap items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 gap-2 cursor-pointer hover:bg-slate-800/80 transition-colors"
+              onClick={() => setActivePanel('variables')}
+            >
+              <h2 className="text-lg font-bold text-slate-100 flex flex-wrap items-center gap-2">
+                <span className="text-emerald-500 shrink-0">🌲</span> Parametric Variables
                 {projectName && (
-                  <span className="text-sm font-normal text-slate-500 ml-2 bg-slate-900 px-2 py-0.5 rounded-full border border-slate-800">
+                  <span className="text-xs font-normal text-slate-500 bg-slate-900 px-2 py-0.5 rounded-full border border-slate-800 shrink-0 truncate max-w-[140px]" title={projectName}>
                     {projectName}
                   </span>
                 )}
               </h2>
-              <div className="flex items-center gap-2">
+              <div 
+                className="flex items-center gap-2 shrink-0 ml-auto"
+                onClick={e => e.stopPropagation()}
+              >
                 <button 
                   onClick={() => setEdits({})}
                   disabled={Object.keys(edits).length === 0}
@@ -246,21 +253,20 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
               </div>
             </div>
             
-            <div className="flex-1 overflow-y-auto p-4">
-              {features.length === 0 ? (
-                <div className="text-slate-500 text-center py-8 text-sm">
-                  No variables found in the current project.
-                </div>
-              ) : (
-                <div className="flex flex-col font-mono text-sm">
-                  <div className="flex items-center text-slate-500 mb-1 py-1 px-2">
-                    <span className="w-6"></span>
-                    <span className="w-32 uppercase text-xs tracking-wider">Name</span>
-                    <span className="w-4"></span>
-                    <span className="w-24 uppercase text-xs tracking-wider">Value</span>
-                    <span className="w-16 uppercase text-xs tracking-wider">Type</span>
-                    <span className="ml-2 uppercase text-xs tracking-wider hidden md:block">Description</span>
+            {activePanel === 'variables' && (
+              <div className="flex-1 overflow-y-auto p-4">
+                {features.length === 0 ? (
+                  <div className="text-slate-500 text-center py-8 text-sm">
+                    No variables found in the current project.
                   </div>
+                ) : (
+                  <div className="flex flex-col font-mono text-sm">
+                    <div className="flex items-center text-slate-500 mb-1 py-1 px-2">
+                      <span className="w-6 shrink-0"></span>
+                      <span className="flex-1 uppercase text-xs tracking-wider min-w-0 pr-2">Name</span>
+                      <span className="w-4 shrink-0"></span>
+                      <span className="w-20 uppercase text-xs tracking-wider shrink-0">Value</span>
+                    </div>
                   {features.map((f, i) => {
                     const isLast = i === features.length - 1;
                     const currentVal = edits[f.name] !== undefined ? edits[f.name] : String(f.value);
@@ -271,11 +277,11 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
                         <div className="w-6 text-slate-600 flex-shrink-0 select-none">
                           {isLast ? '└─' : '├─'}
                         </div>
-                        <div className="w-32 text-emerald-400 font-bold truncate shrink-0" title={f.name}>
+                        <div className="flex-1 text-emerald-400 font-bold truncate pr-2 min-w-0 cursor-help" title={`Type: ${f.type}${f.description ? `\nDescription: ${f.description}` : ''}`}>
                           {f.name}
                         </div>
-                        <div className="w-4 text-slate-500 select-none">=</div>
-                        <div className="w-24 shrink-0">
+                        <div className="w-4 text-slate-500 select-none shrink-0">=</div>
+                        <div className="w-20 shrink-0">
                           <input
                             className={`w-full bg-transparent border-b outline-none ${
                               isEdited ? 'border-emerald-500 text-emerald-300 font-bold' : 'border-slate-700 text-slate-300 hover:border-slate-500'
@@ -284,46 +290,45 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
                             onChange={e => setEdits({ ...edits, [f.name]: e.target.value })}
                           />
                         </div>
-                        <div className="text-slate-600 text-xs w-16 truncate shrink-0 pl-2">
-                          {f.type}
-                        </div>
-                        {f.description && (
-                          <div className="text-slate-500 text-xs truncate ml-2 italic hidden md:block" title={f.description}>
-                            // {f.description}
-                          </div>
-                        )}
                       </div>
                     );
                   })}
-                </div>
-              )}
-            </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Middle: Geometric Operations */}
-          <div className="flex-1 flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden min-h-0 shadow-lg">
-            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/50 shrink-0">
+          <div className={`flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all ${activePanel === 'operations' ? 'flex-1 min-h-0' : 'shrink-0'}`}>
+            <div 
+              className="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 cursor-pointer hover:bg-slate-800/80 transition-colors"
+              onClick={() => setActivePanel('operations')}
+            >
               <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
                 <span className="text-indigo-500">⚙️</span> Geometric Operations
               </h2>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {operations.length === 0 ? (
-                <div className="text-slate-500 text-center py-8 text-sm">
-                  No geometric operations found.
-                </div>
-              ) : (
-                <div className="flex flex-col ml-2">
-                  {operations.map((op, i) => (
-                    <RenderOperation 
-                      key={i} 
-                      node={op} 
-                      depth={0} 
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+            
+            {activePanel === 'operations' && (
+              <div className="flex-1 overflow-y-auto p-4">
+                {operations.length === 0 ? (
+                  <div className="text-slate-500 text-center py-8 text-sm">
+                    No geometric operations found.
+                  </div>
+                ) : (
+                  <div className="flex flex-col ml-2">
+                    {operations.map((op, i) => (
+                      <RenderOperation 
+                        key={i} 
+                        node={op} 
+                        depth={0} 
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

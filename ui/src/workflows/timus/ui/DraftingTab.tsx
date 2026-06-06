@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const intusUrl = serverUrl.replace('/timus', '/intus');
   const [activeProject, setActiveProject] = useState<string>('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -81,7 +81,7 @@ export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
   }, [activeProject, title, stampText, showRedline, showHiddenLines, scale, sheetSize]);
 
   useEffect(() => {
-    if (!activeProject) return;
+    if (!activeProject || !isActive) return;
     let mtime = 0;
     const interval = setInterval(async () => {
       try {
@@ -96,14 +96,14 @@ export const DraftingTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
       } catch (e) {}
     }, 1000);
     return () => clearInterval(interval);
-  }, [activeProject]);
+  }, [activeProject, isActive]);
 
   const getPreviewUrl = () => {
     return `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}&t=${refreshKey}`;
   };
 
   useEffect(() => {
-    if (!activeProject) return;
+    if (!activeProject || !isActive) return;
     let isMounted = true;
     
     const loadPdf = async () => {
