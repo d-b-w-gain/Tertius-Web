@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import core.config as config
 from core.config import Settings
 
 
@@ -22,3 +25,37 @@ def test_settings_parse_allowed_origins():
     )
 
     assert settings.allowed_origin_list == ["http://localhost:5173", "https://app.example.com"]
+
+
+def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
+    server_env_file = Path(config.__file__).resolve().parents[1] / ".env"
+    existing_env = server_env_file.read_bytes() if server_env_file.exists() else None
+
+    server_env_file.write_text(
+        "\n".join(
+            [
+                "DATABASE_URL=postgresql+psycopg://env:env@localhost:5432/envdb",
+                "KEYCLOAK_ISSUER=http://keycloak.example.test/realms/env",
+                "KEYCLOAK_AUDIENCE=env-audience",
+                "ARTIFACT_ROOT=/tmp/env-artifacts",
+                "ALLOWED_ORIGINS=https://env.example.test",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        monkeypatch.chdir(tmp_path)
+
+        settings = Settings()
+
+        assert settings.database_url == "postgresql+psycopg://env:env@localhost:5432/envdb"
+        assert settings.keycloak_issuer == "http://keycloak.example.test/realms/env"
+        assert settings.keycloak_audience == "env-audience"
+        assert settings.artifact_root == "/tmp/env-artifacts"
+        assert settings.allowed_origin_list == ["https://env.example.test"]
+    finally:
+        if existing_env is None:
+            server_env_file.unlink(missing_ok=True)
+        else:
+            server_env_file.write_bytes(existing_env)
