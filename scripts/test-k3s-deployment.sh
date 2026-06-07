@@ -21,6 +21,7 @@ KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
 TIMEOUT="${TIMEOUT:-10m}"
 DOCKER="${DOCKER:-}"
 K3S_CONTAINER="${K3S_CONTAINER:-}"
+BUILD_TAG="${BUILD_TAG:-$(date +%Y%m%d%H%M%S)}"
 
 CLEANUP=false
 DELETE_DATA=false
@@ -37,8 +38,8 @@ Environment:
   KUBECONFIG                    Optional; kubectl uses the current context by default.
   NAMESPACE                     Default: tertius
   RELEASE_NAME                  Default: tertius
-  API_IMAGE                     Default: tertius-api:local
-  UI_IMAGE                      Default: tertius-ui:local
+  API_IMAGE                     Default: tertius-api:local (auto-suffixed with :local-<timestamp> for fresh rollout)
+  UI_IMAGE                      Default: tertius-ui:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   ENABLE_TUNNEL                 Default: false
   TUNNEL_TOKEN_SECRET_NAME      Required when ENABLE_TUNNEL=true
   TUNNEL_HOSTNAME               Optional external hostname to smoke test when tunnel is enabled.
@@ -171,10 +172,52 @@ values_image_for() {
   printf '%s\n' "$image"
 }
 
+refresh_local_image_tag() {
+  local image image_without_digest tag repo
+
+  image=${1:-}
+  [ -n "$image" ] || {
+    printf '%s\n' "$image"
+    return
+  }
+
+  image_without_digest=${image%%@*}
+  tag=${image_without_digest##*/}
+  if [ "${tag#*:}" = "$tag" ]; then
+    printf '%s\n' "$image"
+    return
+  fi
+
+  repo=${image_without_digest%:*}
+  tag=${tag##*:}
+  if [ "$tag" != "local" ]; then
+    printf '%s\n' "$image"
+    return
+  fi
+
+  printf '%s:%s-%s\n' "$repo" "$tag" "$BUILD_TAG"
+}
+
 apply_image_defaults() {
-  [ -n "$API_IMAGE" ] || API_IMAGE=$(values_image_for api tertius-api:local)
-  [ -n "$UI_IMAGE" ] || UI_IMAGE=$(values_image_for ui tertius-ui:local)
+  api_from_default=0
+  ui_from_default=0
+
+  if [ -z "$API_IMAGE" ]; then
+    API_IMAGE=$(values_image_for api tertius-api:local)
+    api_from_default=1
+  fi
+  if [ -z "$UI_IMAGE" ]; then
+    UI_IMAGE=$(values_image_for ui tertius-ui:local)
+    ui_from_default=1
+  fi
   [ -n "$VALKEY_CHECK_IMAGE" ] || VALKEY_CHECK_IMAGE=$(values_image_for valkey valkey/valkey:9.0.0)
+
+  if [ "$api_from_default" -eq 1 ]; then
+    API_IMAGE=$(refresh_local_image_tag "$API_IMAGE")
+  fi
+  if [ "$ui_from_default" -eq 1 ]; then
+    UI_IMAGE=$(refresh_local_image_tag "$UI_IMAGE")
+  fi
 }
 
 detect_container_tool() {

@@ -1,3 +1,5 @@
+import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
+
 type LauncherConfig = {
   serverName: string;
   [key: string]: unknown;
@@ -49,10 +51,8 @@ export interface ServerHandle {
 
 export function useServerLauncher(config: LauncherConfig): ServerHandle {
   const workflowBase = config.serverName.split('-')[0];
-  const baseUrl = import.meta.env?.VITE_API_URL || 'http://localhost:8000';
-  const apiBaseUrl = baseUrl.replace(/\/$/, '');
-  const apiPrefix = apiBaseUrl.endsWith('/api') ? apiBaseUrl : `${apiBaseUrl}/api`;
-  const serverUrl = `${apiPrefix}/${workflowBase}`;
+  const baseUrl = import.meta.env?.VITE_API_URL;
+  const serverUrl = resolveWorkflowServerUrl(workflowBase, baseUrl);
   
   return {
     pythonInstalled: true, installingPython: false, availableVenvs: ['docker'], selectedVenv: 'docker', port: 8000, portFree: false,
