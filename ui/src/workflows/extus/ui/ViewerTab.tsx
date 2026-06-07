@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 // Custom STL Parser to avoid missing STLLoader imports
 const parseBinarySTL = (buffer: ArrayBuffer): { positions: number[]; normals: number[] } => {
@@ -72,6 +74,7 @@ interface ViewerProps {
 }
 
 export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+  const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
@@ -179,7 +182,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     
     const checkStatus = async () => {
       try {
-        const projRes = await fetch(`${serverUrl}/project_name`);
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
         if (projRes.ok && mounted) {
           const pData = await projRes.json();
           if (pData.project_name) {
@@ -187,7 +190,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
           }
         }
         
-        const res = await fetch(`${serverUrl}/status`);
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && data.mtime !== mtime) {
@@ -212,7 +215,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       mounted = false;
       clearInterval(interval);
     };
-  }, [serverUrl, isActive]);
+  }, [serverUrl, isActive, getAccessToken]);
 
   // 3. Load STL when URL changes
   useEffect(() => {
@@ -220,7 +223,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     
     let isCancelled = false;
 
-    fetch(url)
+    apiFetch(url, getAccessToken)
       .then(res => res.arrayBuffer())
       .then(buffer => {
         if (isCancelled) return;
@@ -304,7 +307,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     return () => {
       isCancelled = true;
     };
-  }, [url]);
+  }, [url, getAccessToken]);
 
   return (
     <div className="flex-1 relative bg-slate-900" ref={containerRef}>

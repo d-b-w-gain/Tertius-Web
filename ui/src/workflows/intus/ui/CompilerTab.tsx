@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
+  const { getAccessToken } = useAuth();
   const [projects, setProjects] = useState<string[]>([]);
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
@@ -30,7 +33,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
   useEffect(() => {
     fetchProjects();
-  }, []);
+  }, [getAccessToken, serverUrl]);
 
   // Poll for external file changes (e.g. from Artus)
   useEffect(() => {
@@ -39,7 +42,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     const checkSync = async () => {
       if (isCompilingRef.current) return;
       try {
-        const res = await fetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`);
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`, getAccessToken);
         if (!res.ok) return;
         const data = await res.json();
         
@@ -50,7 +53,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // File changed on disk! Sync it.
              mtimeRef.current = data.mtime;
              
-             const codeRes = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`);
+             const codeRes = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`, getAccessToken);
              if (!codeRes.ok) return;
              const codeData = await codeRes.json();
              const newCode = codeData.code || '';
@@ -60,7 +63,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // Trigger auto-compile silently
              setIsCompiling(true);
              try {
-               const compRes = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
+               const compRes = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
                  body: JSON.stringify({ code: newCode, export_format: format, file: activeFile })
@@ -69,7 +72,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                if (compData.success) {
                  setLog(prev => prev + `\n[SUCCESS] Auto-compiled to ${compData.file}`);
                  // Update mtime to prevent loop
-                 const postStatusRes = await fetch(`${serverUrl}/projects/${activeProject}/status`);
+                 const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
                  if (postStatusRes.ok) {
                    const postStatus = await postStatusRes.json();
                    if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
@@ -91,11 +94,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, isActive, activeFile]);
+  }, [activeProject, serverUrl, format, isActive, activeFile, getAccessToken]);
 
   const fetchGitStatus = async (name: string) => {
     try {
-      const res = await fetch(`${serverUrl}/projects/${name}/git_status`);
+      const res = await apiFetch(`${serverUrl}/projects/${name}/git_status`, getAccessToken);
       if (res.ok) {
         const data = await res.json();
         setGitStatus(data);
@@ -109,15 +112,14 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
   const fetchProjects = async (selectName?: string) => {
     try {
-      const res = await fetch(`${serverUrl}/projects`);
+      const res = await apiFetch(`${serverUrl}/projects`, getAccessToken);
       const data = await res.json();
       const list = data.projects || [];
       setProjects(list);
       
       let target = selectName;
       if (!target) {
-        const last = localStorage.getItem('intus_last_project');
-        if (last && list.includes(last)) target = last;
+        if (activeProject && list.includes(activeProject)) target = activeProject;
         else if (list.length > 0) target = list[0];
       }
       
@@ -131,10 +133,9 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
   const selectProject = async (name: string) => {
     setActiveProject(name);
-    localStorage.setItem('intus_last_project', name);
     mtimeRef.current = 0; // Reset baseline for new project
     try {
-      const filesRes = await fetch(`${serverUrl}/projects/${name}/files`);
+      const filesRes = await apiFetch(`${serverUrl}/projects/${name}/files`, getAccessToken);
       const filesData = await filesRes.json();
       const fileList = filesData.files || ['design.py'];
       setFiles(fileList);
@@ -142,7 +143,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       const fileToLoad = fileList.includes('design.py') ? 'design.py' : fileList[0];
       setActiveFile(fileToLoad);
       
-      const res = await fetch(`${serverUrl}/projects/${name}/code?file=${fileToLoad}`);
+      const res = await apiFetch(`${serverUrl}/projects/${name}/code?file=${fileToLoad}`, getAccessToken);
       const data = await res.json();
       setCode(data.code || '');
       setLog(`Loaded project: ${name}`);
@@ -157,7 +158,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     // Auto-save current before switching
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, file: activeFile })
@@ -167,7 +168,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     setActiveFile(fileName);
     mtimeRef.current = 0; // Prevent false-positive sync when switching files
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`);
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`, getAccessToken);
       const data = await res.json();
       setCode(data.code || '');
     } catch (e) {
@@ -186,7 +187,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
     
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: "", file: name })
@@ -206,7 +207,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
     
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, getAccessToken, {
         method: 'DELETE'
       });
       
@@ -226,7 +227,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!name) return;
     
     try {
-      const res = await fetch(`${serverUrl}/projects/${name}/new`, { method: 'POST' });
+      const res = await apiFetch(`${serverUrl}/projects/${name}/new`, getAccessToken, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         fetchProjects(name);
@@ -245,7 +246,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     setIsCompiling(true);
     setLog(`Compiling ${activeProject}...`);
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, export_format: format, file: activeFile })
@@ -254,7 +255,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       if (data.success) {
         setLog(`[SUCCESS] Compiled and exported to ${data.file}`);
         // Prevent sync loop by updating baseline
-        const postStatusRes = await fetch(`${serverUrl}/projects/${activeProject}/status`);
+        const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
         if (postStatusRes.ok) {
           const postStatus = await postStatusRes.json();
           if (postStatus.mtime) mtimeRef.current = postStatus.mtime;

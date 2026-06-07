@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 interface Feature {
   name: string;
@@ -107,6 +109,7 @@ const RenderOperation: React.FC<{ node: OperationNode; depth: number }> = ({ nod
 };
 
 export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+  const { getAccessToken } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);
   const [projectName, setProjectName] = useState<string>('');
@@ -123,7 +126,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
 
   const fetchFeatures = async () => {
     try {
-      const res = await fetch(`${serverUrl}/features`);
+      const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
       const data = await res.json();
       if (res.ok) {
         setFeatures(data.features || []);
@@ -145,7 +148,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     fetchFeatures();
     const interval = setInterval(fetchFeatures, 4000);
     return () => clearInterval(interval);
-  }, [serverUrl]);
+  }, [serverUrl, getAccessToken]);
 
   // Auto-generate AI prompt whenever edits change
   useEffect(() => {
@@ -165,7 +168,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     setIsProcessing(true);
     setAiMessage(null);
     try {
-      const res = await fetch(`${serverUrl}/ai_modify`, {
+      const res = await apiFetch(`${serverUrl}/ai_modify`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt })
@@ -189,7 +192,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     if (Object.keys(edits).length === 0) return;
     
     try {
-      const res = await fetch(`${serverUrl}/update_features`, {
+      const res = await apiFetch(`${serverUrl}/update_features`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: edits })

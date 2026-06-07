@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
+  const { getAccessToken } = useAuth();
   const intusUrl = serverUrl.replace('/timus', '/intus');
   const [activeProject, setActiveProject] = useState<string>('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -19,6 +22,24 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const pdfUrlRef = useRef<string | null>(null);
+
+  const replacePdfUrl = (objectUrl: string) => {
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current);
+    }
+    pdfUrlRef.current = objectUrl;
+    setPdfUrl(objectUrl);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (pdfUrlRef.current) {
+        URL.revokeObjectURL(pdfUrlRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -33,59 +54,79 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   useEffect(() => {
     const fetchActive = async () => {
       try {
-        const res = await fetch(`${intusUrl}/projects`);
+        const res = await apiFetch(`${intusUrl}/projects`, getAccessToken);
         if (res.ok) {
            const data = await res.json();
            const projects = data.projects || [];
-           const last = localStorage.getItem('intus_last_project');
-           if (last && projects.includes(last)) setActiveProject(last);
-           else if (projects.length > 0) setActiveProject(projects[0]);
+           if (projects.length > 0) setActiveProject(projects[0]);
         }
       } catch (e) {
         console.error("Failed to fetch projects");
       }
     };
     fetchActive();
-  }, []);
+  }, [intusUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject) return;
-    setTitle(activeProject.toUpperCase());
-    
-    // Load settings from local storage
-    const saved = localStorage.getItem(`timus_settings_${activeProject}`);
-    if (saved) {
+    let isMounted = true;
+
+    const loadSettings = async () => {
+      setSettingsLoaded(false);
+      setTitle(activeProject.toUpperCase());
+      setStampText('APPROVED');
+      setShowRedline(true);
+      setShowHiddenLines(true);
+      setScale(1.0);
+      setSheetSize('A4');
+
       try {
-        const parsed = JSON.parse(saved);
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken);
+        if (!res.ok || !isMounted) return;
+        const parsed = await res.json();
         if (parsed.title) setTitle(parsed.title);
-        if (parsed.stampText) setStampText(parsed.stampText);
-        if (parsed.showRedline !== undefined) setShowRedline(parsed.showRedline);
-        if (parsed.showHiddenLines !== undefined) setShowHiddenLines(parsed.showHiddenLines);
+        if (parsed.stamp_text) setStampText(parsed.stamp_text);
+        if (parsed.show_redline !== undefined) setShowRedline(parsed.show_redline);
+        if (parsed.show_hidden_lines !== undefined) setShowHiddenLines(parsed.show_hidden_lines);
         if (parsed.scale) setScale(parsed.scale);
-        if (parsed.sheetSize) setSheetSize(parsed.sheetSize);
-      } catch (e) {}
-    }
-  }, [activeProject]);
+        if (parsed.sheet_size) setSheetSize(parsed.sheet_size);
+      } catch (e) {
+        console.error("Failed to load Timus settings");
+      } finally {
+        if (isMounted) setSettingsLoaded(true);
+      }
+    };
+
+    loadSettings();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeProject, serverUrl, getAccessToken]);
 
   useEffect(() => {
-    if (!activeProject) return;
+    if (!activeProject || !settingsLoaded) return;
     const settings = {
       title,
-      stampText,
-      showRedline,
-      showHiddenLines,
+      stamp_text: stampText,
+      show_redline: showRedline,
+      show_hidden_lines: showHiddenLines,
       scale,
-      sheetSize
+      sheet_size: sheetSize
     };
-    localStorage.setItem(`timus_settings_${activeProject}`, JSON.stringify(settings));
-  }, [activeProject, title, stampText, showRedline, showHiddenLines, scale, sheetSize]);
+    apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }).catch(() => {
+      console.error("Failed to save Timus settings");
+    });
+  }, [activeProject, settingsLoaded, title, stampText, showRedline, showHiddenLines, scale, sheetSize, serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject || !isActive) return;
     let mtime = 0;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${intusUrl}/projects/${activeProject}/status`);
+        const res = await apiFetch(`${intusUrl}/projects/${activeProject}/status`, getAccessToken);
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && mtime !== 0 && data.mtime > mtime) {
@@ -96,7 +137,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       } catch (e) {}
     }, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, isActive]);
+  }, [activeProject, isActive, intusUrl, getAccessToken]);
 
   const getPreviewUrl = () => {
     return `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}&t=${refreshKey}`;
@@ -109,10 +150,10 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     const loadPdf = async () => {
       setIsGenerating(true);
       try {
-        const res = await fetch(getPreviewUrl());
+        const res = await apiFetch(getPreviewUrl(), getAccessToken);
         if (res.ok && isMounted) {
           const blob = await res.blob();
-          setPdfUrl(URL.createObjectURL(blob));
+          replacePdfUrl(URL.createObjectURL(blob));
         }
       } catch (e) {
         console.error("Failed to load PDF preview:", e);
@@ -123,12 +164,12 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     loadPdf();
     
     return () => { isMounted = false; };
-  }, [activeProject, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey]);
+  }, [activeProject, isActive, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey, getAccessToken]);
 
   const handleAutoFit = async () => {
     if (!activeProject) return;
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/bounds`);
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/bounds`, getAccessToken);
       if (res.ok) {
         const data = await res.json();
         const max_dim = data.max_dim;
@@ -152,6 +193,20 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       }
     } catch (e) {
       console.error("Failed to auto-fit scale", e);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!activeProject) return;
+    try {
+      const res = await apiFetch(getPreviewUrl(), getAccessToken);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (e) {
+      console.error("Failed to download PDF:", e);
     }
   };
 
@@ -294,14 +349,13 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           >
             🔄 Refresh Compiler
           </button>
-          <a
-            href={getPreviewUrl()}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
             className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-2.5 px-4 rounded transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer shadow-lg shadow-orange-500/20"
           >
             📥 Download PDF
-          </a>
+          </button>
         </div>
       </div>
 
