@@ -159,19 +159,18 @@ valkey:
   image:
     repository: valkey/valkey
     tag: 9.0.0
-  architecture: standalone
   auth:
     enabled: false
-  primary:
-    persistence:
-      enabled: true
-      size: 8Gi
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
+  dataStorage:
+    enabled: true
+    requestedSize: 8Gi
+    className: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
   metrics:
     enabled: false

@@ -50,7 +50,9 @@ export interface ServerHandle {
 export function useServerLauncher(config: LauncherConfig): ServerHandle {
   const workflowBase = config.serverName.split('-')[0];
   const baseUrl = import.meta.env?.VITE_API_URL || 'http://localhost:8000';
-  const serverUrl = `${baseUrl}/api/${workflowBase}`;
+  const apiBaseUrl = baseUrl.replace(/\/$/, '');
+  const apiPrefix = apiBaseUrl.endsWith('/api') ? apiBaseUrl : `${apiBaseUrl}/api`;
+  const serverUrl = `${apiPrefix}/${workflowBase}`;
   
   return {
     pythonInstalled: true, installingPython: false, availableVenvs: ['docker'], selectedVenv: 'docker', port: 8000, portFree: false,

@@ -67,16 +67,14 @@ cloudflared:
   replicaCount: 1
 
 valkey:
-  architecture: standalone
-  primary:
-    persistence:
-      enabled: true
-      size: 1Gi
-      storageClass: local-path
-    resources:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 250m
-        memory: 256Mi
+  dataStorage:
+    enabled: true
+    requestedSize: 1Gi
+    className: local-path
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
