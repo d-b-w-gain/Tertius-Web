@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 // Custom STL Parser to avoid missing STLLoader imports
 const parseBinarySTL = (buffer: ArrayBuffer): { positions: number[]; normals: number[] } => {
