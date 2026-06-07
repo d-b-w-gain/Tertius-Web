@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from core.models import Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
@@ -181,3 +181,48 @@ class ProjectRepository:
 
         for file in files:
             self.db.add(SourceSnapshotFile(snapshot_id=snapshot.id, filename=file.filename, content=file.content))
+
+
+class CompileRepository:
+    def __init__(self, db: Session, tenant_id: UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+
+    def start_job(self, project_id: UUID, user_id: UUID, export_format: str) -> CompileJob:
+        job = CompileJob(
+            tenant_id=self.tenant_id,
+            project_id=project_id,
+            requested_by=user_id,
+            status="running",
+            export_format=export_format,
+        )
+        self.db.add(job)
+        self.db.flush()
+        return job
+
+    def finish_job(self, job: CompileJob, status: str, error: str | None = None) -> None:
+        job.status = status
+        job.error = error
+        job.finished_at = now_utc()
+
+    def record_artifact(
+        self,
+        project_id: UUID,
+        job_id: UUID | None,
+        kind: str,
+        storage_key: str,
+        content_type: str,
+        byte_size: int,
+    ) -> Artifact:
+        artifact = Artifact(
+            tenant_id=self.tenant_id,
+            project_id=project_id,
+            compile_job_id=job_id,
+            kind=kind.lower(),
+            storage_key=storage_key,
+            content_type=content_type,
+            byte_size=byte_size,
+        )
+        self.db.add(artifact)
+        self.db.flush()
+        return artifact

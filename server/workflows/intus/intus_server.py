@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import sys
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -10,11 +9,15 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from core.artifacts import ArtifactStore
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.compile_runtime import hydrate_project_files
+from core.compile_sandbox import run_compile_sandbox
+from core.config import get_settings
 from core.db import get_db
-from core.models import ProjectFile
-from core.repositories import ProjectRepository, require_valid_python_filename
+from core.models import CompileJob, ProjectFile
+from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
 
 app = FastAPI(title="Intus Compiler Server")
 
@@ -203,110 +206,88 @@ def delete_file(name: str, file: str, ctx: AuthContext = Depends(get_auth_contex
     return {"success": True}
 
 @app.post("/projects/{name}/compile")
-def compile_project(name: str, req: CompileRequest):
-    proj_dir = PROJECTS_DIR / name
+def compile_project(
+    name: str,
+    req: CompileRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     file = req.file or "design.py"
-    
-    if "/" in file or "\\" in file or not file.endswith(".py"):
-        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
-        
-    script_file = proj_dir / file
-    design_file = proj_dir / "design.py"
-    
-    if not proj_dir.exists():
+    ext = req.export_format.lower()
+    if ext not in ["stl", "step", "gltf"]:
+        ext = "stl"
+
+    repo = ProjectRepository(db, ctx.tenant_id)
+    compile_repo = CompileRepository(db, ctx.tenant_id)
+    try:
+        filename = require_valid_python_filename(file)
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if project is None:
         return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-    # Save code first for the file being edited
-    script_file.write_text(req.code, encoding="utf-8")
-    
-    # Auto-commit the compiled changes
-    auto_commit(proj_dir, f"Compile update ({file}) via Intus")
-    
-    # Update active project pointer for Artus (always points to design.py for parsing)
-    if design_file.exists():
-        ACTIVE_PROJECT.write_text(str(design_file), encoding="utf-8")
-
+    project_id = project.id
+    job_id = None
+    job = None
     try:
-        import build123d as bd
-        env = {"bd": bd, "build123d": bd}
-        
-        proj_dir_str = str(proj_dir.absolute())
-        
-        # Cache busting for local imports
-        for mod_name in list(sys.modules.keys()):
-            mod = sys.modules[mod_name]
-            if hasattr(mod, '__file__') and mod.__file__:
-                # Use os.path.abspath to safely match paths on Windows
-                import os
-                mod_file = os.path.abspath(mod.__file__)
-                if mod_file.startswith(proj_dir_str):
-                    del sys.modules[mod_name]
+        saved = repo.save_code(
+            name,
+            filename,
+            req.code,
+            ctx.user_id,
+            f"Compile update ({filename}) via Intus",
+        )
+        if not saved:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-        added_to_path = False
-        if proj_dir_str not in sys.path:
-            sys.path.insert(0, proj_dir_str)
-            added_to_path = True
-            
-        try:
-            if design_file.exists():
-                design_code = design_file.read_text(encoding="utf-8")
-                exec(design_code, env)
-            else:
-                return {"success": False, "error": "design.py not found in project. Cannot compile."}
-        finally:
-            if added_to_path:
-                sys.path.remove(proj_dir_str)
+        files = repo.files_for_runtime(name)
+        if files is None:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-        # Extract shapes
-        shapes = []
-        for val in env.values():
-            if isinstance(val, bd.Shape) and hasattr(val, "volume"):
-                # Avoid catching simple 2D profiles unless necessary, prefer solids
-                g_type = val.geom_type() if callable(val.geom_type) else val.geom_type
-                geom_name = getattr(g_type, "name", str(g_type)).upper()
-                if geom_name in ("SOLID", "COMPOUND", "OTHER"):
-                    shapes.append(val)
-            elif hasattr(val, "part") and isinstance(getattr(val, "part"), bd.Shape):
-                shapes.append(val.part)
+        job = compile_repo.start_job(project_id, ctx.user_id, ext)
+        job_id = job.id
+        db.commit()
 
-        if not shapes:
-             # Try grabbing active builders
-             if hasattr(bd.BuildPart, "_get_context") and bd.BuildPart._get_context():
-                 shapes.append(bd.BuildPart._get_context().part)
+        with hydrate_project_files(files) as project_dir:
+            result = run_compile_sandbox(project_dir, ext)
+            if not result.success:
+                error = result.error or result.stderr or "Compile failed"
+                persisted_job = db.get(CompileJob, job_id)
+                compile_repo.finish_job(persisted_job, "failed", error=error)
+                db.commit()
+                return JSONResponse(status_code=200, content={"success": False, "error": error, "short": error})
 
-        if not shapes:
-             return {"success": False, "error": "No 3D shapes (Solid/Part) were generated by the script."}
+            if result.output_path is None:
+                raise RuntimeError("Compile succeeded without an output artifact")
+            output_bytes = result.output_path.read_bytes()
 
-        # Deduplicate and combine
-        final_shapes = []
-        seen = set()
-        for s in shapes:
-            if id(s) not in seen:
-                seen.add(id(s))
-                final_shapes.append(s)
+        artifact_store = ArtifactStore(get_settings().artifact_root)
+        stored = artifact_store.write_bytes(ctx.tenant_id, project_id, ext, output_bytes)
+        if not artifact_store.path_for(stored.storage_key).exists():
+            raise RuntimeError("Artifact write failed")
 
-        if len(final_shapes) > 1:
-            compound = bd.Compound(final_shapes)
-        else:
-            compound = final_shapes[0]
-
-        # Export
-        ext = req.export_format.lower()
-        if ext not in ["stl", "step", "gltf"]:
-            ext = "stl"
-            
-        output_file = proj_dir / f"output.{ext}"
-        if ext == "stl":
-            bd.export_stl(compound, str(output_file))
-            # Also write to shared active output for Extus
-            bd.export_stl(compound, str(ACTIVE_STL))
-        elif ext == "step":
-            bd.export_step(compound, str(output_file))
-
-        return {"success": True, "format": ext, "file": str(output_file)}
+        artifact = compile_repo.record_artifact(
+            project_id,
+            job_id,
+            ext,
+            stored.storage_key,
+            stored.content_type,
+            stored.byte_size,
+        )
+        persisted_job = db.get(CompileJob, job_id)
+        compile_repo.finish_job(persisted_job, "succeeded")
+        db.commit()
+        return {"success": True, "format": ext, "artifact_id": str(artifact.id)}
 
     except Exception as e:
         tb = traceback.format_exc()
+        db.rollback()
+        if job_id is not None:
+            persisted_job = db.get(CompileJob, job_id)
+            if persisted_job is not None:
+                compile_repo.finish_job(persisted_job, "failed", error=tb)
+                db.commit()
         return JSONResponse(status_code=200, content={
             "success": False,
             "error": tb,
