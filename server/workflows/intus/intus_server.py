@@ -22,7 +22,7 @@ app.add_middleware(
 # ── Paths ──────────────────────────────────────────────────────────────────────
 CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
 PROJECTS_DIR = CACHE_ROOT / 'intus'
-ACTIVE_STL = CACHE_ROOT / 'active_output.stl'
+ACTIVE_GLTF = CACHE_ROOT / 'active_output.glb'
 ACTIVE_PROJECT = CACHE_ROOT / 'active_project.txt'
 
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -76,8 +76,9 @@ class CodeRequest(BaseModel):
 
 class CompileRequest(BaseModel):
     code: str
-    export_format: str = "stl"
+    export_format: str = "gltf"
     file: Optional[str] = "design.py"
+    quality: Optional[str] = "high"
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
@@ -285,15 +286,27 @@ def compile_project(name: str, req: CompileRequest):
         # Export
         ext = req.export_format.lower()
         if ext not in ["stl", "step", "gltf"]:
-            ext = "stl"
+            ext = "gltf"
             
         output_file = proj_dir / f"output.{ext}"
         if ext == "stl":
             bd.export_stl(compound, str(output_file))
-            # Also write to shared active output for Extus
-            bd.export_stl(compound, str(ACTIVE_STL))
         elif ext == "step":
             bd.export_step(compound, str(output_file))
+        elif ext == "gltf":
+            output_file = proj_dir / "output.glb"
+            
+            if req.quality == "low":
+                l_def, a_def = 0.1, 0.5
+            elif req.quality == "medium":
+                l_def, a_def = 0.01, 0.3
+            else: # high
+                l_def, a_def = 0.001, 0.1
+                
+            bd.export_gltf(compound, str(output_file), binary=True, linear_deflection=l_def, angular_deflection=a_def)
+            # Also write to shared active output for Extus
+            bd.export_gltf(compound, str(ACTIVE_GLTF), binary=True, linear_deflection=l_def, angular_deflection=a_def)
+            ext = "glb"
 
         return {"success": True, "format": ext, "file": str(output_file)}
 

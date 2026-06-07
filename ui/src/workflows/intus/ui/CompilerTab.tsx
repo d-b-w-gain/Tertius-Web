@@ -6,7 +6,8 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [projects, setProjects] = useState<string[]>([]);
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
-  const [format, setFormat] = useState<string>('stl');
+  const [format, setFormat] = useState<string>('gltf');
+  const [quality, setQuality] = useState<string>('high');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -63,7 +64,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                const compRes = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ code: newCode, export_format: format, file: activeFile })
+                 body: JSON.stringify({ code: newCode, export_format: format, quality, file: activeFile })
                });
                const compData = await compRes.json();
                if (compData.success) {
@@ -248,7 +249,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       const res = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, export_format: format, file: activeFile })
+        body: JSON.stringify({ code, export_format: format, quality, file: activeFile })
       });
       const data = await res.json();
       if (data.success) {
@@ -317,17 +318,31 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
         <div className="flex-1" />
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">Export:</span>
-          <select 
-            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500"
-            value={format}
-            onChange={(e) => setFormat(e.target.value)}
-          >
-            <option value="stl">STL</option>
-            <option value="step">STEP</option>
-            <option value="gltf">GLTF</option>
-          </select>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Quality:</span>
+            <select 
+              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500"
+              value={quality}
+              onChange={(e) => setQuality(e.target.value)}
+            >
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Export:</span>
+            <select 
+              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500"
+              value={format}
+              onChange={(e) => setFormat(e.target.value)}
+            >
+              <option value="stl">STL</option>
+              <option value="step">STEP</option>
+              <option value="gltf">GLTF</option>
+            </select>
+          </div>
         </div>
 
         <button 
