@@ -84,7 +84,10 @@ jobs:
             --timeout 10m
       - name: Install Keycloak operator CRDs and controller
         run: |
-          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/main/kubernetes/kubernetes.yml
+          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+          kubectl create namespace keycloak
+          kubectl -n keycloak apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/kubernetes.yml
           kubectl -n keycloak wait deploy keycloak-operator --for=condition=Available --timeout=120s
       - name: Make scripts executable
         run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh

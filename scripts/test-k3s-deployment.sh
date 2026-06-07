@@ -612,6 +612,31 @@ curl_expect() {
   fi
 }
 
+curl_capture() {
+  url=$1
+  body_file=$(mktemp "${TMPDIR:-/tmp}/tertius-curl.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${body_file}"
+  run curl --fail --silent --show-error --max-time 20 "$url" -o "$body_file"
+  printf '%s\n' "$body_file"
+}
+
+curl_expect_same_body() {
+  proxied_url=$1
+  direct_url=$2
+  description=$3
+  proxied_body=$(curl_capture "$proxied_url")
+  direct_body=$(curl_capture "$direct_url")
+  if ! cmp -s "$proxied_body" "$direct_body"; then
+    echo "${description} did not return the same response through the frontend service and direct API service." >&2
+    echo "Frontend proxied response:" >&2
+    cat "$proxied_body" >&2
+    echo >&2
+    echo "Direct API response:" >&2
+    cat "$direct_body" >&2
+    exit 1
+  fi
+}
+
 check_pvc_bound_and_mounted() {
   pvc_names=$(capture kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' || true)
   [ -n "$pvc_names" ] || {
@@ -746,9 +771,8 @@ smoke_test_http() {
   API_LOCAL_PORT=$(start_port_forward "$api_svc" "$API_LOCAL_PORT" "$api_remote_port")
 
   curl_expect "http://127.0.0.1:${UI_LOCAL_PORT}/" '<html|<!doctype html'
-  curl_expect "http://127.0.0.1:${UI_LOCAL_PORT}/api/" 'status|tertius|ok|healthy'
-  curl_expect "http://127.0.0.1:${UI_LOCAL_PORT}/api/intus/health" 'healthy|ok|status'
-  curl_expect "http://127.0.0.1:${API_LOCAL_PORT}/" 'status|tertius|ok|healthy'
+  curl_expect_same_body "http://127.0.0.1:${UI_LOCAL_PORT}/api/" "http://127.0.0.1:${API_LOCAL_PORT}/" "Frontend /api/ proxy"
+  curl_expect_same_body "http://127.0.0.1:${UI_LOCAL_PORT}/api/intus/health" "http://127.0.0.1:${API_LOCAL_PORT}/api/intus/health" "Frontend /api/intus/health proxy"
 }
 
 check_tunnel() {
