@@ -15,7 +15,7 @@ if ($isRunning) {
     docker start $containerName
 } else {
     Write-Host "Starting Backend on port 8000..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "docker build -t tertius-server .; docker run --name $containerName -p 8000:8000 tertius-server" -WindowStyle Normal
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "docker build -t tertius-server .; docker run --name $containerName -p 8000:8000 -v `"$(Get-Location)\cache:/app/cache`" tertius-server" -WindowStyle Normal
 }
 
 # 2. Start Frontend (Vite)
