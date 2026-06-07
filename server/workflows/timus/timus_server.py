@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
@@ -15,7 +17,7 @@ import build123d as bd
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
-from core.models import TimusSettings
+from core.models import ProjectFile, TimusSettings
 from core.repositories import ProjectRepository
 
 app = FastAPI(title="Timus Drafting Server")
@@ -30,6 +32,24 @@ app.add_middleware(
 WORKFLOW_DIR = Path(__file__).parent
 CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
 PROJECTS_DIR = CACHE_ROOT / 'intus'
+
+
+def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> ProjectFile | None:
+    try:
+        project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    except ValueError:
+        return None
+    if project is None:
+        return None
+
+    return db.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == ctx.tenant_id,
+            ProjectFile.project_id == project.id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+
 
 def get_compound_from_code(code: str) -> bd.Compound:
     env = {"bd": bd, "build123d": bd}
@@ -460,13 +480,17 @@ def put_timus_settings(
 
 
 @app.get("/projects/{name}/bounds")
-def get_project_bounds(name: str):
-    script_file = PROJECTS_DIR / name / "design.py"
-    if not script_file.exists():
+def get_project_bounds(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
         return Response("Project not found", status_code=404)
         
     try:
-        code = script_file.read_text(encoding="utf-8")
+        code = design_file.content
         compound = get_compound_from_code(code)
         bbox = compound.bounding_box()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
@@ -484,15 +508,17 @@ def get_drafting_pdf(
     redline: bool = Query(True),
     hidden_lines: bool = Query(True),
     scale: float = Query(1.0),
-    size: str = Query("A4")
+    size: str = Query("A4"),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
 ):
-    script_file = PROJECTS_DIR / name / "design.py"
-    if not script_file.exists():
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
         return Response("Project not found", status_code=404)
         
     try:
-        mtime = script_file.stat().st_mtime
-        code = script_file.read_text(encoding="utf-8")
+        mtime = design_file.updated_at.timestamp()
+        code = design_file.content
         compound = get_compound_from_code(code)
         
         # Get cached views

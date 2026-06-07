@@ -4,8 +4,19 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from core.artifacts import ArtifactStore
-from core.models import Artifact, AppUser, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership, TimusSettings
+from core.models import (
+    Artifact,
+    AppUser,
+    Project,
+    ProjectFile,
+    SourceSnapshot,
+    Tenant,
+    TenantMembership,
+    TimusSettings,
+    UserWorkspaceState,
+)
 from workflows.extus import extus_server
+from workflows.timus import timus_server
 
 
 def test_artus_features_and_updates_use_authenticated_workspace(
@@ -194,3 +205,108 @@ def test_timus_settings_validate_sheet_size(authenticated_timus_client):
     )
 
     assert response.status_code == 422
+
+
+def test_timus_bounds_use_authenticated_tenant_db_design(
+    authenticated_timus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    tmp_path,
+):
+    tenant_code = "TENANT_DESIGN = True"
+    global_code = "GLOBAL_DESIGN = True"
+    db_design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    db_design.content = tenant_code
+    db_session.commit()
+    global_project = tmp_path / "default_purlin"
+    global_project.mkdir()
+    (global_project / "design.py").write_text(global_code, encoding="utf-8")
+
+    captured = {}
+
+    class FakeBox:
+        min = type("Point", (), {"X": 0, "Y": 0, "Z": 0})()
+        max = type("Point", (), {"X": 12, "Y": 6, "Z": 3})()
+
+    class FakeCompound:
+        def bounding_box(self):
+            return FakeBox()
+
+    def fake_compound_from_code(code):
+        captured["code"] = code
+        return FakeCompound()
+
+    monkeypatch.setattr(timus_server, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr(timus_server, "get_compound_from_code", fake_compound_from_code)
+
+    response = authenticated_timus_client.get("/projects/default_purlin/bounds")
+
+    assert response.status_code == 200
+    assert response.json() == {"max_dim": 12}
+    assert captured["code"] == tenant_code
+
+
+def test_timus_drafting_pdf_does_not_read_other_or_global_design(
+    authenticated_timus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    tmp_path,
+):
+    db_design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    workspace = db_session.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == seeded_tenant.user_id,
+            UserWorkspaceState.tenant_id == seeded_tenant.tenant_id,
+        )
+    )
+    workspace.active_file_id = None
+    db_session.flush()
+    db_session.delete(db_design)
+
+    other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
+    other_tenant = Tenant(id=uuid4(), name="Other Tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    other_project = Project(tenant_id=other_tenant.id, name="default_purlin", created_by=other_user.id)
+    db_session.add(other_project)
+    db_session.flush()
+    db_session.add(
+        ProjectFile(
+            tenant_id=other_tenant.id,
+            project_id=other_project.id,
+            filename="design.py",
+            content="OTHER_TENANT_DESIGN = True",
+        )
+    )
+    db_session.commit()
+    global_project = tmp_path / "default_purlin"
+    global_project.mkdir()
+    (global_project / "design.py").write_text("GLOBAL_DESIGN = True", encoding="utf-8")
+
+    monkeypatch.setattr(timus_server, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code: object())
+    monkeypatch.setattr(
+        timus_server,
+        "get_projected_views",
+        lambda name, compound, mtime: {"top": object(), "front": object(), "side": object(), "iso": object()},
+    )
+    monkeypatch.setattr(timus_server, "_draw_compound_view", lambda *args, **kwargs: None)
+
+    response = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
+
+    assert response.status_code == 404
