@@ -13,6 +13,7 @@
 ## File Structure
 
 - Create `server/core/config.py`: environment-backed app, database, artifact, and Keycloak settings.
+- Create `pytest.ini`: root test import-path configuration so `server/` modules import consistently.
 - Create `server/core/db.py`: SQLAlchemy engine, session factory, and FastAPI DB dependency.
 - Create `server/core/models.py`: SQLAlchemy ORM models for app users, tenants, memberships, projects, files, snapshots, workspace state, compile jobs, artifacts, and Timus settings.
 - Create `server/core/auth_types.py`: shared `Principal` and `AuthContext` dataclasses used by auth and provisioning without circular imports.
@@ -27,8 +28,9 @@
 - Create `server/tests/test_auth.py`: JWT validation and missing-token tests.
 - Create `server/tests/test_repositories.py`: tenant isolation and default provisioning tests.
 - Create `server/tests/test_workflow_isolation.py`: endpoint-level cross-tenant denial tests.
+- Create `server/.env.example`: backend local development environment template.
 - Modify `server/requirements.txt`: add database, migration, auth, and test dependencies.
-- Modify `server/main.py`: add authenticated `/api/me`, wire DB lifecycle, and keep workflow mounts.
+- Modify `server/main.py`: add CORS, authenticated `/api/me`, wire DB lifecycle, and keep workflow mounts.
 - Modify `server/workflows/intus/intus_server.py`: replace filesystem project persistence with repositories.
 - Modify `server/workflows/artus/artus_server.py`: replace `active_project.txt` with authenticated workspace state.
 - Modify `server/workflows/extus/extus_server.py`: replace global `active_output.stl` with latest active-project artifact lookup.
@@ -38,6 +40,7 @@
 - Create `ui/src/auth/keycloak.ts`: OIDC client configuration and login/logout helpers.
 - Create `ui/src/auth/AuthProvider.tsx`: React auth state provider.
 - Create `ui/src/api/client.ts`: authenticated fetch wrapper.
+- Create `ui/.env.example`: frontend local development environment template.
 - Modify `ui/src/main.tsx`: wrap app in `AuthProvider`.
 - Modify `ui/src/App.tsx`: render login redirect state and authenticated workflows.
 - Modify workflow UI files under `ui/src/workflows/**`: route calls through `apiFetch`, remove `intus_last_project` and `timus_settings_*` localStorage usage.
@@ -48,6 +51,8 @@
 **Files:**
 - Modify: `server/requirements.txt`
 - Create: `server/core/config.py`
+- Create: `server/.env.example`
+- Create: `pytest.ini`
 - Test: `server/tests/test_config.py`
 
 - [ ] **Step 1: Write the failing config test**
@@ -67,6 +72,18 @@ def test_settings_build_keycloak_jwks_url():
     )
 
     assert settings.keycloak_jwks_url == "http://localhost:8080/realms/tertius/protocol/openid-connect/certs"
+
+
+def test_settings_parse_allowed_origins():
+    settings = Settings(
+        database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
+        keycloak_issuer="http://localhost:8080/realms/tertius",
+        keycloak_audience="tertius-web",
+        artifact_root="/tmp/tertius-artifacts",
+        allowed_origins="http://localhost:5173,https://app.example.com",
+    )
+
+    assert settings.allowed_origin_list == ["http://localhost:5173", "https://app.example.com"]
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -119,10 +136,15 @@ class Settings(BaseSettings):
     keycloak_issuer: str = Field(default="http://localhost:8080/realms/tertius")
     keycloak_audience: str = Field(default="tertius-web")
     artifact_root: str = Field(default="/tmp/tertius-artifacts")
+    allowed_origins: str = Field(default="http://localhost:5173")
 
     @property
     def keycloak_jwks_url(self) -> str:
         return f"{self.keycloak_issuer.rstrip('/')}/protocol/openid-connect/certs"
+
+    @property
+    def allowed_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
 
 @lru_cache
@@ -130,7 +152,26 @@ def get_settings() -> Settings:
     return Settings()
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Add environment and pytest templates**
+
+Create `pytest.ini`:
+
+```ini
+[pytest]
+pythonpath = server
+```
+
+Create `server/.env.example`:
+
+```env
+DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
+KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
+KEYCLOAK_AUDIENCE=tertius-web
+ARTIFACT_ROOT=/tmp/tertius-artifacts
+ALLOWED_ORIGINS=http://localhost:5173
+```
+
+- [ ] **Step 6: Run the test to verify it passes**
 
 Run:
 
@@ -138,12 +179,12 @@ Run:
 rtk pytest server/tests/test_config.py -q
 ```
 
-Expected: `1 passed`.
+Expected: artifact write, hydration, and path traversal tests pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add server/requirements.txt server/core/config.py server/tests/test_config.py
+git add server/requirements.txt server/core/config.py server/.env.example pytest.ini server/tests/test_config.py
 git commit -m "chore: add server configuration for postgres and keycloak"
 ```
 
@@ -222,7 +263,7 @@ Create `server/core/models.py`:
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.db import Base
@@ -264,7 +305,10 @@ class TenantMembership(Base):
 
 class Project(Base):
     __tablename__ = "projects"
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_project_name_per_tenant"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_project_name_per_tenant"),
+        UniqueConstraint("id", "tenant_id", name="uq_projects_id_tenant"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -277,11 +321,14 @@ class Project(Base):
 
 class ProjectFile(Base):
     __tablename__ = "project_files"
-    __table_args__ = (UniqueConstraint("project_id", "filename", name="uq_project_file_name"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "filename", name="uq_project_file_name"),
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
@@ -290,10 +337,13 @@ class ProjectFile(Base):
 
 class SourceSnapshot(Base):
     __tablename__ = "source_snapshots"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     message: Mapped[str] = mapped_column(String(500), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
@@ -322,10 +372,13 @@ class UserWorkspaceState(Base):
 
 class CompileJob(Base):
     __tablename__ = "compile_jobs"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     export_format: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -336,10 +389,13 @@ class CompileJob(Base):
 
 class Artifact(Base):
     __tablename__ = "artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     compile_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("compile_jobs.id", ondelete="SET NULL"))
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -350,12 +406,15 @@ class Artifact(Base):
 
 class TimusSettings(Base):
     __tablename__ = "timus_settings"
-    __table_args__ = (UniqueConstraint("user_id", "project_id", name="uq_timus_settings_user_project"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id", "project_id", name="uq_timus_settings_user_tenant_project"),
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     stamp_text: Mapped[str] = mapped_column(String(32), nullable=False)
     show_redline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -513,16 +572,18 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("tenant_id", "name", name="uq_project_name_per_tenant"),
+        sa.UniqueConstraint("id", "tenant_id", name="uq_projects_id_tenant"),
     )
     op.create_index("ix_projects_tenant_id", "projects", ["tenant_id"])
     op.create_table(
         "project_files",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
         sa.Column("filename", sa.String(length=255), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
         sa.UniqueConstraint("project_id", "filename", name="uq_project_file_name"),
     )
     op.create_index("ix_project_files_tenant_id", "project_files", ["tenant_id"])
@@ -531,11 +592,12 @@ def upgrade() -> None:
         "source_snapshots",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
         sa.Column("message", sa.String(length=500), nullable=False),
         sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("created_by", sa.Uuid(), sa.ForeignKey("app_users.id"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
     )
     op.create_index("ix_source_snapshots_tenant_id", "source_snapshots", ["tenant_id"])
     op.create_index("ix_source_snapshots_project_id", "source_snapshots", ["project_id"])
@@ -562,13 +624,14 @@ def upgrade() -> None:
         "compile_jobs",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
         sa.Column("requested_by", sa.Uuid(), sa.ForeignKey("app_users.id"), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("export_format", sa.String(length=16), nullable=False),
         sa.Column("error", sa.Text()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
+        sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
     )
     op.create_index("ix_compile_jobs_tenant_id", "compile_jobs", ["tenant_id"])
     op.create_index("ix_compile_jobs_project_id", "compile_jobs", ["project_id"])
@@ -576,13 +639,14 @@ def upgrade() -> None:
         "artifacts",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
         sa.Column("compile_job_id", sa.Uuid(), sa.ForeignKey("compile_jobs.id", ondelete="SET NULL")),
         sa.Column("kind", sa.String(length=16), nullable=False),
         sa.Column("storage_key", sa.String(length=500), nullable=False),
         sa.Column("content_type", sa.String(length=100), nullable=False),
         sa.Column("byte_size", sa.Integer()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
     )
     op.create_index("ix_artifacts_tenant_id", "artifacts", ["tenant_id"])
     op.create_index("ix_artifacts_project_id", "artifacts", ["project_id"])
@@ -591,14 +655,15 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.Uuid(), sa.ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
         sa.Column("title", sa.String(length=255), nullable=False),
         sa.Column("stamp_text", sa.String(length=32), nullable=False),
         sa.Column("show_redline", sa.Boolean(), nullable=False),
         sa.Column("show_hidden_lines", sa.Boolean(), nullable=False),
         sa.Column("scale", sa.Numeric(12, 6), nullable=False),
         sa.Column("sheet_size", sa.String(length=8), nullable=False),
-        sa.UniqueConstraint("user_id", "project_id", name="uq_timus_settings_user_project"),
+        sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        sa.UniqueConstraint("user_id", "tenant_id", "project_id", name="uq_timus_settings_user_tenant_project"),
     )
     op.create_index("ix_timus_settings_user_id", "timus_settings", ["user_id"])
     op.create_index("ix_timus_settings_tenant_id", "timus_settings", ["tenant_id"])
@@ -723,10 +788,65 @@ git commit -m "feat: add multitenant postgres schema"
 Create `server/tests/test_auth.py`:
 
 ```python
+from datetime import datetime, timedelta, timezone
+
+import jwt
 import pytest
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-from core.auth import claims_to_principal
+import core.auth as auth
+from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context
+from core.config import Settings
+
+
+def _private_key():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _token(private_key, **overrides):
+    payload = {
+        "sub": "kc-user-1",
+        "iss": "http://issuer.example/realms/tertius",
+        "aud": "tertius-web",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+    }
+    payload.update(overrides)
+    return jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+
+
+class _SigningKey:
+    def __init__(self, key):
+        self.key = key
+
+
+class _JwkClient:
+    public_key = None
+
+    def __init__(self, url: str):
+        self.url = url
+
+    def get_signing_key_from_jwt(self, token: str):
+        return _SigningKey(self.public_key)
+
+
+class _FailingJwkClient:
+    def __init__(self, url: str):
+        self.url = url
+
+    def get_signing_key_from_jwt(self, token: str):
+        raise Exception("unknown kid")
+
+
+def _patch_settings(monkeypatch):
+    settings = Settings(
+        database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
+        keycloak_issuer="http://issuer.example/realms/tertius",
+        keycloak_audience="tertius-web",
+        artifact_root="/tmp/tertius-artifacts",
+    )
+    monkeypatch.setattr(auth, "get_settings", lambda: settings)
 
 
 def test_claims_to_principal_requires_subject():
@@ -750,6 +870,70 @@ def test_claims_to_principal_maps_keycloak_claims():
     assert principal.email == "a@example.com"
     assert principal.username == "alice"
     assert principal.display_name == "Alice Example"
+
+
+def test_decode_keycloak_token_accepts_valid_rs256_token(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    claims = decode_keycloak_token(_token(key))
+
+    assert claims["sub"] == "kc-user-1"
+
+
+def test_decode_keycloak_token_rejects_wrong_issuer(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidIssuerError):
+        decode_keycloak_token(_token(key, iss="http://wrong-issuer"))
+
+
+def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidAudienceError):
+        decode_keycloak_token(_token(key, aud="wrong-audience"))
+
+
+def test_decode_keycloak_token_rejects_expired_token(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.ExpiredSignatureError):
+        decode_keycloak_token(_token(key, exp=datetime.now(timezone.utc) - timedelta(minutes=1)))
+
+
+def test_decode_keycloak_token_rejects_unknown_kid(monkeypatch):
+    key = _private_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _FailingJwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(Exception, match="unknown kid"):
+        decode_keycloak_token(_token(key))
+
+
+def test_get_auth_context_rejects_missing_bearer_token():
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(credentials=None, db=None)
+
+    assert exc.value.status_code == 401
+
+
+def test_get_auth_context_rejects_malformed_token():
+    with pytest.raises(HTTPException) as exc:
+        get_auth_context(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"), db=None)
+
+    assert exc.value.status_code == 401
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -801,7 +985,6 @@ from sqlalchemy.orm import Session
 from core.auth_types import AuthContext, Principal
 from core.config import get_settings
 from core.db import get_db
-from core.provisioning import provision_user_context
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -843,15 +1026,32 @@ def get_auth_context(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token") from exc
     principal = claims_to_principal(claims)
+    from core.provisioning import provision_user_context
+
     return provision_user_context(db, principal)
 ```
 
-- [ ] **Step 5: Add authenticated `/api/me` in `server/main.py`**
+- [ ] **Step 5: Add CORS and authenticated `/api/me` in `server/main.py`**
 
 Modify `server/main.py` imports:
 
 ```python
 from core.auth import AuthContext, get_auth_context
+from core.config import get_settings
+```
+
+Update CORS configuration to use configured origins:
+
+```python
+settings = get_settings()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 ```
 
 Add this route above workflow mounts:
@@ -880,7 +1080,7 @@ Run:
 rtk pytest server/tests/test_auth.py -q
 ```
 
-Expected: `2 passed`.
+Expected: JWT mapping, token validation, and dependency rejection tests pass.
 
 - [ ] **Step 7: Commit**
 
@@ -1020,6 +1220,8 @@ Create `server/tests/test_repositories.py`:
 
 ```python
 import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.models import AppUser, Project, ProjectFile, Tenant, TenantMembership
@@ -1063,6 +1265,22 @@ def test_project_repository_rejects_invalid_filename(db_session):
     repo = ProjectRepository(db_session, tenant_a)
     with pytest.raises(ValueError):
         repo.get_code("same_name", "../design.py")
+
+
+def test_project_repository_rejects_invalid_project_name(db_session):
+    tenant_a, _ = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, tenant_a)
+    with pytest.raises(ValueError):
+        repo.get_project("../same_name")
+
+
+def test_project_file_cannot_cross_tenant_project_boundary(db_session):
+    tenant_a, tenant_b = seed_two_tenants(db_session)
+    project_b = db_session.scalar(select(Project).where(Project.tenant_id == tenant_b))
+    db_session.add(ProjectFile(tenant_id=tenant_a, project_id=project_b.id, filename="illegal.py", content="x = 1"))
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1091,12 +1309,19 @@ from core.models import Project, ProjectFile, SourceSnapshot, SourceSnapshotFile
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
+PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 
 def require_valid_python_filename(filename: str) -> str:
     if not FILENAME_RE.fullmatch(filename):
         raise ValueError("Invalid filename")
     return filename
+
+
+def require_valid_project_name(name: str) -> str:
+    if not PROJECT_NAME_RE.fullmatch(name):
+        raise ValueError("Invalid project name")
+    return name
 
 
 class ProjectRepository:
@@ -1109,9 +1334,11 @@ class ProjectRepository:
         return [row.name for row in rows]
 
     def get_project(self, name: str) -> Project | None:
+        name = require_valid_project_name(name)
         return self.db.scalar(select(Project).where(Project.tenant_id == self.tenant_id, Project.name == name))
 
     def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+        name = require_valid_project_name(name)
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)
         self.db.add(project)
         self.db.flush()
@@ -1167,6 +1394,7 @@ class ProjectRepository:
             file_row.content = content
             file_row.updated_at = now_utc()
         project.updated_at = now_utc()
+        self.db.flush()
         self._snapshot(project, user_id, message)
         self.db.commit()
         return True
@@ -1218,7 +1446,7 @@ Run:
 rtk pytest server/tests/test_repositories.py -q
 ```
 
-Expected: `2 passed`.
+Expected: repository validation and tenant-consistency tests pass against Testcontainers Postgres.
 
 - [ ] **Step 5: Commit**
 
@@ -1242,6 +1470,8 @@ Create `server/tests/test_artifacts.py`:
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from core.artifacts import ArtifactStore
 from core.compile_runtime import hydrate_project_files
 
@@ -1262,6 +1492,20 @@ def test_hydrate_project_files_creates_python_files(tmp_path: Path):
     with hydrate_project_files({"design.py": "x = 1", "helpers.py": "y = 2"}) as project_dir:
         assert (project_dir / "design.py").read_text(encoding="utf-8") == "x = 1"
         assert (project_dir / "helpers.py").read_text(encoding="utf-8") == "y = 2"
+
+
+def test_artifact_store_rejects_path_traversal(tmp_path: Path):
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError):
+        store.path_for("../outside.stl")
+
+
+def test_artifact_store_rejects_absolute_storage_key(tmp_path: Path):
+    store = ArtifactStore(tmp_path)
+
+    with pytest.raises(ValueError):
+        store.path_for("/tmp/outside.stl")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1311,7 +1555,13 @@ class ArtifactStore:
         return StoredArtifact(storage_key=storage_key, content_type=CONTENT_TYPES.get(ext, "application/octet-stream"), byte_size=len(content))
 
     def path_for(self, storage_key: str) -> Path:
-        return self.root / storage_key
+        if Path(storage_key).is_absolute() or ".." in Path(storage_key).parts:
+            raise ValueError("Invalid artifact storage key")
+        root = self.root.resolve()
+        path = (root / storage_key).resolve()
+        if path != root and root not in path.parents:
+            raise ValueError("Artifact path escapes artifact root")
+        return path
 ```
 
 - [ ] **Step 4: Add `server/core/compile_runtime.py`**
@@ -1357,37 +1607,114 @@ git commit -m "feat: add tenant scoped artifact storage"
 ## Task 7: Intus Repository-Backed Endpoints
 
 **Files:**
+- Modify: `server/tests/conftest.py`
 - Modify: `server/workflows/intus/intus_server.py`
 - Test: `server/tests/test_intus_endpoints.py`
 
-- [ ] **Step 1: Write endpoint tests using auth and DB overrides**
+- [ ] **Step 1: Add authenticated workflow test fixtures**
 
-Create `server/tests/test_intus_endpoints.py`:
+Append to `server/tests/conftest.py`:
 
 ```python
+from dataclasses import dataclass
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
-from core.auth import AuthContext, get_auth_context
+from core.auth import get_auth_context
+from core.auth_types import AuthContext
 from core.db import get_db
-from core.models import AppUser, Project, ProjectFile, Tenant, TenantMembership
-from workflows.intus.intus_server import app
+from core.models import AppUser, Project, ProjectFile, Tenant, TenantMembership, UserWorkspaceState
+from workflows.artus.artus_server import app as artus_app
+from workflows.extus.extus_server import app as extus_app
+from workflows.intus.intus_server import app as intus_app
+from workflows.timus.timus_server import app as timus_app
 
 
-def make_test_client(db_session, tenant_id, user_id):
+@dataclass(frozen=True)
+class SeededTenant:
+    user_id: object
+    tenant_id: object
+    project_id: object
+
+
+@pytest.fixture()
+def seeded_tenant(db_session) -> SeededTenant:
+    user = AppUser(id=uuid4(), keycloak_subject="kc-test", email="test@example.com")
+    tenant = Tenant(id=uuid4(), name="Test Tenant")
+    db_session.add_all([user, tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=tenant.id, user_id=user.id, role="owner"))
+    project = Project(id=uuid4(), tenant_id=tenant.id, name="default_purlin", created_by=user.id)
+    db_session.add(project)
+    db_session.flush()
+    design = ProjectFile(tenant_id=tenant.id, project_id=project.id, filename="design.py", content="import build123d as bd\nlength = 100\n")
+    db_session.add(design)
+    db_session.flush()
+    db_session.add(UserWorkspaceState(user_id=user.id, tenant_id=tenant.id, active_project_id=project.id, active_file_id=design.id))
+    db_session.commit()
+    return SeededTenant(user_id=user.id, tenant_id=tenant.id, project_id=project.id)
+
+
+def configure_authenticated_client(app, db_session, seeded_tenant: SeededTenant) -> TestClient:
     def override_db():
         yield db_session
 
     def override_auth():
-        return AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject="kc-test", email="test@example.com")
+        return AuthContext(
+            user_id=seeded_tenant.user_id,
+            tenant_id=seeded_tenant.tenant_id,
+            keycloak_subject="kc-test",
+            email="test@example.com",
+        )
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_auth_context] = override_auth
     return TestClient(app)
 
 
-def test_projects_are_scoped_to_authenticated_tenant(db_session):
+@pytest.fixture()
+def authenticated_intus_client(db_session, seeded_tenant):
+    client = configure_authenticated_client(intus_app, db_session, seeded_tenant)
+    yield client
+    intus_app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def authenticated_artus_client(db_session, seeded_tenant):
+    client = configure_authenticated_client(artus_app, db_session, seeded_tenant)
+    yield client
+    artus_app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def authenticated_extus_client(db_session, seeded_tenant):
+    client = configure_authenticated_client(extus_app, db_session, seeded_tenant)
+    yield client
+    extus_app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def authenticated_timus_client(db_session, seeded_tenant):
+    client = configure_authenticated_client(timus_app, db_session, seeded_tenant)
+    yield client
+    timus_app.dependency_overrides.clear()
+```
+
+- [ ] **Step 2: Write endpoint tests using shared auth and DB fixtures**
+
+Create `server/tests/test_intus_endpoints.py`:
+
+```python
+from uuid import uuid4
+
+import pytest
+
+from core.models import AppUser, Project, Tenant, TenantMembership
+
+
+def test_projects_are_scoped_to_authenticated_tenant(db_session, authenticated_intus_client, seeded_tenant):
     user_a = AppUser(id=uuid4(), keycloak_subject="a")
     user_b = AppUser(id=uuid4(), keycloak_subject="b")
     tenant_a = Tenant(id=uuid4(), name="A")
@@ -1402,15 +1729,19 @@ def test_projects_are_scoped_to_authenticated_tenant(db_session):
     db_session.add(Project(tenant_id=tenant_b.id, name="b_project", created_by=user_b.id))
     db_session.commit()
 
-    client = make_test_client(db_session, tenant_a.id, user_a.id)
-
-    response = client.get("/projects")
+    response = authenticated_intus_client.get("/projects")
 
     assert response.status_code == 200
-    assert response.json() == {"projects": ["a_project"]}
+    assert response.json() == {"projects": ["default_purlin"]}
+
+
+def test_invalid_project_name_is_rejected(authenticated_intus_client):
+    response = authenticated_intus_client.post("/projects/bad%20name/new")
+
+    assert response.status_code == 400
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run:
 
@@ -1420,7 +1751,7 @@ rtk pytest server/tests/test_intus_endpoints.py -q
 
 Expected: failure because current Intus reads filesystem projects and does not use auth context.
 
-- [ ] **Step 3: Refactor Intus endpoint dependencies**
+- [ ] **Step 4: Refactor Intus endpoint dependencies**
 
 In `server/workflows/intus/intus_server.py`, import:
 
@@ -1435,7 +1766,7 @@ from core.repositories import ProjectRepository
 
 Remove `CACHE_ROOT`, `PROJECTS_DIR`, `ACTIVE_STL`, `ACTIVE_PROJECT`, `auto_commit`, and `init_defaults_if_needed`. Keep `DEFAULT_PURLIN`.
 
-- [ ] **Step 4: Replace project list/create/code/file endpoints**
+- [ ] **Step 5: Replace project list/create/code/file endpoints**
 
 Use this pattern in each Intus endpoint:
 
@@ -1451,7 +1782,11 @@ For create:
 @app.post("/projects/{name}/new")
 def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     repo = ProjectRepository(db, ctx.tenant_id)
-    if repo.get_project(name):
+    try:
+        existing = repo.get_project(name)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid project name"})
+    if existing:
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
     repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
     return {"success": True, "project": name}
@@ -1560,6 +1895,7 @@ git commit -m "feat: scope intus projects by authenticated tenant"
 
 **Files:**
 - Modify: `server/workflows/intus/intus_server.py`
+- Create: `server/core/compile_sandbox.py`
 - Modify: `server/core/repositories.py`
 - Test: `server/tests/test_compile_flow.py`
 
@@ -1583,6 +1919,15 @@ def test_compile_records_failed_job_for_invalid_code(authenticated_intus_client,
     assert response.json()["success"] is False
     assert db_session.scalar(select(CompileJob)).status == "failed"
     assert db_session.scalar(select(Artifact)) is None
+
+
+def test_compile_rejects_invalid_filename(authenticated_intus_client):
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={"code": "x = 1", "export_format": "stl", "file": "../design.py"},
+    )
+
+    assert response.status_code == 400
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1642,15 +1987,50 @@ class CompileRepository:
 
 - [ ] **Step 4: Refactor Intus compile endpoint**
 
-In `server/workflows/intus/intus_server.py`, use `ProjectRepository.files_for_runtime()`, `hydrate_project_files()`, `ArtifactStore`, and `CompileRepository`. Save the edited file in DB before hydrating runtime files. On success, export into memory or a temp file, write bytes through `ArtifactStore`, record an `Artifact`, finish the job as `succeeded`, and return:
+In `server/workflows/intus/intus_server.py`, use `ProjectRepository.files_for_runtime()`, `hydrate_project_files()`, `ArtifactStore`, and `CompileRepository`. Save the edited file in DB before hydrating runtime files. Validate the requested filename before saving. Create the compile job, flush it, and commit immediately so observers can see `status="running"` before long execution begins:
 
 ```python
+job = compile_repo.start_job(project.id, ctx.user_id, ext)
+db.commit()
+```
+
+The compile execution must run through a dedicated sandbox function, not direct `exec()` in the API process. The first implementation should create `server/core/compile_sandbox.py` with a function boundary like this:
+
+```python
+@dataclass(frozen=True)
+class CompileSandboxResult:
+    success: bool
+    output_path: Path | None
+    stdout: str
+    stderr: str
+    error: str | None
+
+
+def run_compile_sandbox(project_dir: Path, export_format: str, timeout_seconds: int = 30) -> CompileSandboxResult:
+    """Run CAD code in a constrained worker/container with timeout, no network, and project-dir-only writes."""
+```
+
+For local development, the sandbox may start as a subprocess with `cwd=project_dir`, captured stdout/stderr, and `subprocess.run(..., timeout=timeout_seconds)`. Before production multi-user deployment, replace that subprocess implementation with a worker/container that enforces CPU, memory, wall-clock timeout, no network, and read/write access only to the hydrated project and output directories.
+
+On success, write artifact bytes through `ArtifactStore` first, verify the file exists via `store.path_for(stored.storage_key).exists()`, then insert the `Artifact` DB row, mark the job as `succeeded`, commit, and return:
+
+```python
+stored = artifact_store.write_bytes(ctx.tenant_id, project.id, ext, output_bytes)
+if not artifact_store.path_for(stored.storage_key).exists():
+    raise RuntimeError("Artifact write failed")
+artifact = compile_repo.record_artifact(project.id, job.id, ext, stored.storage_key, stored.content_type, stored.byte_size)
+compile_repo.finish_job(job, "succeeded")
+db.commit()
 return {"success": True, "format": ext, "artifact_id": str(artifact.id)}
 ```
 
-On exception, finish the job as `failed`, commit, and return the existing error shape:
+On exception, roll back any failed transaction state, re-load the job if needed, finish it as `failed`, commit, and return the existing error shape:
 
 ```python
+db.rollback()
+job = db.get(CompileJob, job.id)
+compile_repo.finish_job(job, "failed", error=tb)
+db.commit()
 return JSONResponse(status_code=200, content={"success": False, "error": tb, "short": str(e)})
 ```
 
@@ -1735,17 +2115,37 @@ def get_active_design_code(db: Session, ctx: AuthContext) -> tuple[str, str] | N
     if state is None or state.active_project_id is None:
         return None
     project = db.scalar(select(Project).where(Project.tenant_id == ctx.tenant_id, Project.id == state.active_project_id))
+    if project is None:
+        return None
     file_row = db.scalar(select(ProjectFile).where(ProjectFile.tenant_id == ctx.tenant_id, ProjectFile.project_id == project.id, ProjectFile.filename == "design.py"))
-    if project is None or file_row is None:
+    if file_row is None:
         return None
     return project.name, file_row.content
 ```
 
-Update `/features` and `/update_features` to use `AuthContext` and write changed content back to `ProjectFile.content`.
+Update `/features` and `/update_features` to use `AuthContext`. When `/update_features` has produced the changed `design.py` content, save through the repository so snapshots and `updated_at` stay consistent:
+
+```python
+saved = ProjectRepository(db, ctx.tenant_id).save_code(project_name, "design.py", "\n".join(lines) + "\n", ctx.user_id, "Updated features via Artus")
+if not saved:
+    return JSONResponse(status_code=404, content={"error": "Project not found"})
+return {"success": True}
+```
 
 - [ ] **Step 4: Refactor Extus latest artifact lookup**
 
-In `server/workflows/extus/extus_server.py`, replace `ACTIVE_STL` and `ACTIVE_PROJECT` with DB lookups. `/project_name` reads `UserWorkspaceState` and `Project`. `/status` reads the latest `Artifact` for active project and kind `stl`. `/model` returns `FileResponse(ArtifactStore.path_for(artifact.storage_key))`.
+In `server/workflows/extus/extus_server.py`, replace `ACTIVE_STL` and `ACTIVE_PROJECT` with DB lookups. `/project_name` reads `UserWorkspaceState` and `Project`, scoped by `ctx.user_id` and `ctx.tenant_id`. `/status` and `/model` read the latest STL artifact for the active project with explicit ordering:
+
+```python
+artifact = db.scalar(
+    select(Artifact)
+    .where(Artifact.tenant_id == ctx.tenant_id, Artifact.project_id == project.id, Artifact.kind == "stl")
+    .order_by(Artifact.created_at.desc())
+    .limit(1)
+)
+```
+
+`/model` must resolve the artifact with `ArtifactStore.path_for(artifact.storage_key)`, return `404` if the row is missing, and return `404` if the artifact row exists but the file is missing on disk.
 
 - [ ] **Step 5: Add Timus settings endpoints**
 
@@ -1753,12 +2153,19 @@ In `server/workflows/timus/timus_server.py`, add Pydantic model:
 
 ```python
 class TimusSettingsRequest(BaseModel):
-    title: str
-    stamp_text: str
+    title: constr(min_length=1, max_length=255)
+    stamp_text: constr(min_length=1, max_length=32)
     show_redline: bool
     show_hidden_lines: bool
-    scale: float
-    sheet_size: str
+    scale: confloat(gt=0, le=1000)
+    sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
+```
+
+Import the validation types:
+
+```python
+from typing import Literal
+from pydantic import BaseModel, confloat, constr
 ```
 
 Add:
@@ -1846,6 +2253,7 @@ git commit -m "feat: isolate artus extus and timus by tenant"
 - Create: `ui/src/auth/keycloak.ts`
 - Create: `ui/src/auth/AuthProvider.tsx`
 - Create: `ui/src/api/client.ts`
+- Create: `ui/.env.example`
 - Modify: `ui/src/main.tsx`
 - Modify: `ui/src/App.tsx`
 
@@ -1862,6 +2270,14 @@ Expected: `package.json` and `package-lock.json` include `oidc-client-ts`.
 
 - [ ] **Step 2: Create Keycloak OIDC client**
 
+Create `ui/.env.example`:
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+VITE_KEYCLOAK_AUTHORITY=http://localhost:8080/realms/tertius
+VITE_KEYCLOAK_CLIENT_ID=tertius-web
+```
+
 Create `ui/src/auth/keycloak.ts`:
 
 ```typescript
@@ -1874,6 +2290,7 @@ export const userManager = new UserManager({
   post_logout_redirect_uri: `${window.location.origin}/`,
   response_type: 'code',
   scope: 'openid profile email',
+  automaticSilentRenew: true,
   userStore: new WebStorageStateStore({ store: window.sessionStorage }),
 });
 ```
@@ -1891,6 +2308,7 @@ interface AuthState {
   user: User | null;
   token: string | null;
   isLoading: boolean;
+  getAccessToken: () => Promise<string>;
   login: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -1918,10 +2336,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     load();
   }, []);
 
+  const getAccessToken = async () => {
+    const current = await userManager.getUser();
+    if (current && !current.expired) {
+      setUser(current);
+      return current.access_token;
+    }
+    try {
+      const renewed = await userManager.signinSilent();
+      setUser(renewed);
+      return renewed.access_token;
+    } catch {
+      await userManager.signinRedirect();
+      throw new Error('Redirecting to login');
+    }
+  };
+
   const value: AuthState = {
     user,
     token: user?.access_token ?? null,
     isLoading,
+    getAccessToken,
     login: () => userManager.signinRedirect(),
     logout: () => userManager.signoutRedirect(),
   };
@@ -1941,13 +2376,26 @@ export const useAuth = () => {
 Create `ui/src/api/client.ts`:
 
 ```typescript
-export const apiFetch = async (url: string, token: string, init: RequestInit = {}) => {
+import { userManager } from '../auth/keycloak';
+
+export const apiFetch = async (url: string, getAccessToken: () => Promise<string>, init: RequestInit = {}) => {
+  const token = await getAccessToken();
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  return fetch(url, { ...init, headers });
+  const response = await fetch(url, { ...init, headers });
+  if (response.status !== 401) return response;
+
+  try {
+    const renewed = await userManager.signinSilent();
+    headers.set('Authorization', `Bearer ${renewed.access_token}`);
+    return fetch(url, { ...init, headers });
+  } catch {
+    await userManager.signinRedirect();
+    return response;
+  }
 };
 ```
 
@@ -2010,7 +2458,7 @@ Expected: TypeScript compile and Vite build complete successfully.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add ui/package.json ui/package-lock.json ui/src/auth ui/src/api ui/src/main.tsx ui/src/App.tsx
+git add ui/package.json ui/package-lock.json ui/.env.example ui/src/auth ui/src/api ui/src/main.tsx ui/src/App.tsx
 git commit -m "feat: add keycloak frontend authentication"
 ```
 
@@ -2034,8 +2482,7 @@ import { useAuth } from '../../../auth/AuthProvider';
 Use the correct relative path for nested workflow UI folders. Inside the component:
 
 ```typescript
-const { token } = useAuth();
-if (!token) return null;
+const { getAccessToken } = useAuth();
 ```
 
 Replace:
@@ -2047,7 +2494,7 @@ fetch(`${serverUrl}/projects`)
 with:
 
 ```typescript
-apiFetch(`${serverUrl}/projects`, token)
+apiFetch(`${serverUrl}/projects`, getAccessToken)
 ```
 
 Apply this to every API call in the four workflow UI files.
@@ -2074,8 +2521,8 @@ localStorage.getItem('intus_last_project')
 Load and save Timus settings with:
 
 ```typescript
-apiFetch(`${serverUrl}/projects/${activeProject}/settings`, token)
-apiFetch(`${serverUrl}/projects/${activeProject}/settings`, token, {
+apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken)
+apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken, {
   method: 'PUT',
   body: JSON.stringify(settings),
 })
@@ -2103,10 +2550,63 @@ git commit -m "feat: send keycloak tokens from workflow api calls"
 
 **Files:**
 - Create: `docker-compose.yml`
+- Create: `infra/keycloak/tertius-realm.json`
 - Modify: `Dockerfile`
 - Modify: `README.md`
 
 - [ ] **Step 1: Create local Postgres and Keycloak compose stack**
+
+Create `infra/keycloak/tertius-realm.json`:
+
+```json
+{
+  "realm": "tertius",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "tertius-web",
+      "name": "Tertius Web",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "tertius-web-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "tertius-web",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "email": "demo@example.com",
+      "firstName": "Demo",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}
+```
 
 Create `docker-compose.yml`:
 
@@ -2125,12 +2625,14 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
-    command: start-dev
+    command: start-dev --import-realm
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
       - "8080:8080"
+    volumes:
+      - ./infra/keycloak/tertius-realm.json:/opt/keycloak/data/import/tertius-realm.json:ro
 
 volumes:
   postgres-data:
@@ -2158,7 +2660,7 @@ Start Postgres and Keycloak:
 docker compose up -d postgres keycloak
 ```
 
-Create a Keycloak realm named `tertius` and a public OIDC client named `tertius-web` with redirect URI `http://localhost:5173/*`.
+The compose stack imports realm `tertius`, public client `tertius-web`, redirect URI `http://localhost:5173/*`, web origin `http://localhost:5173`, and an audience mapper so access tokens validate with `KEYCLOAK_AUDIENCE=tertius-web`.
 
 Server environment:
 
@@ -2167,6 +2669,7 @@ export DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
 export KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
 export KEYCLOAK_AUDIENCE=tertius-web
 export ARTIFACT_ROOT=/tmp/tertius-artifacts
+export ALLOWED_ORIGINS=http://localhost:5173
 ```
 
 Frontend environment:
@@ -2180,7 +2683,7 @@ VITE_KEYCLOAK_CLIENT_ID=tertius-web
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docker-compose.yml Dockerfile README.md
+git add docker-compose.yml infra/keycloak/tertius-realm.json Dockerfile README.md
 git commit -m "docs: add keycloak postgres local development stack"
 ```
 
@@ -2254,6 +2757,7 @@ git commit -m "test: verify postgres keycloak multitenancy"
 
 ## Self-Review
 
-- Spec coverage: The plan covers Keycloak login redirect, JWT validation, clean-slate first-login provisioning, tenant-scoped Postgres schema, source persistence, active workspace state, artifact metadata, Intus/Artus/Extus/Timus changes, frontend API token threading, local development stack, and tenant isolation tests.
+- Spec coverage: The plan covers Keycloak login redirect, robust JWT validation, clean-slate first-login provisioning, tenant-scoped Postgres schema with DB-level tenant/project constraints, source persistence, active workspace state, artifact metadata, compile sandboxing, Intus/Artus/Extus/Timus changes, frontend token renewal and API token threading, CORS, automated Keycloak realm import, local development stack, and tenant isolation tests.
+- Review coverage: The plan now addresses the review notes for auth/provisioning import order, pytest import path setup, Testcontainers-only Postgres tests, authenticated workflow fixtures with dependency override cleanup, tenant consistency constraints, project-name validation, snapshot flushes, artifact path hardening, compile transaction semantics, Artus null-check ordering, Extus latest-artifact behavior, Timus validation, CORS, Keycloak automation, frontend 401 handling, and environment templates.
 - Placeholder scan: The plan intentionally omits migration/import work because the requested direction is clean slate.
 - Type consistency: `AuthContext`, `ProjectRepository`, `CompileRepository`, `ArtifactStore`, `TimusSettings`, and `ProjectFile` names are used consistently across tasks.
