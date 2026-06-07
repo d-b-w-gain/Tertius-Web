@@ -617,7 +617,8 @@ curl_capture() {
   url=$1
   body_file=$(mktemp "${TMPDIR:-/tmp}/tertius-curl.XXXXXX")
   TEMP_FILES="${TEMP_FILES} ${body_file}"
-  run curl --fail --silent --show-error --max-time 20 "$url" -o "$body_file"
+  quote_cmd curl --fail --silent --show-error --max-time 20 "$url" -o "$body_file" >&2
+  curl --fail --silent --show-error --max-time 20 "$url" -o "$body_file"
   printf '%s\n' "$body_file"
 }
 
