@@ -179,7 +179,7 @@ Run:
 rtk pytest server/tests/test_config.py -q
 ```
 
-Expected: artifact write, hydration, and path traversal tests pass.
+Expected: `2 passed`.
 
 - [ ] **Step 7: Commit**
 
