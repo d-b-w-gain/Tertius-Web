@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 // ============================================================
 // ServerLauncher.tsx — Canonical v3.0.0
 // Drop-in UI for Python server management.

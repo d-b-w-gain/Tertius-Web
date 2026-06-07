@@ -1,5 +1,3 @@
-import { useState, useEffect } from 'react';
-
 export function useServerLauncher(config: any) {
   const workflowBase = config.serverName.split('-')[0];
   const baseUrl = import.meta.env?.VITE_API_URL || 'http://localhost:8000';
