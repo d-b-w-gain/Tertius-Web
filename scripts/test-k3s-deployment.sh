@@ -386,8 +386,9 @@ build_images() {
 
 k3s_ctr() {
   if command -v k3s >/dev/null 2>&1; then
-    k3s ctr "$@"
-    return
+    if k3s ctr "$@"; then
+      return
+    fi
   fi
   if [ -n "$K3S_CONTAINER" ] && command -v podman >/dev/null 2>&1 && podman container exists "$K3S_CONTAINER" >/dev/null 2>&1; then
     if podman exec "$K3S_CONTAINER" k3s ctr "$@" 2>/dev/null; then
