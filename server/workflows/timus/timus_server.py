@@ -3,9 +3,20 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
-from fastapi import FastAPI, Response, Query
+from typing import Literal
+
+from fastapi import Depends, FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, confloat, constr
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 import build123d as bd
+
+from core.auth import get_auth_context
+from core.auth_types import AuthContext
+from core.db import get_db
+from core.models import TimusSettings
+from core.repositories import ProjectRepository
 
 app = FastAPI(title="Timus Drafting Server")
 app.add_middleware(
@@ -263,6 +274,26 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
 
 PROJECTION_CACHE = {}
 
+
+class TimusSettingsRequest(BaseModel):
+    title: constr(min_length=1, max_length=255)
+    stamp_text: constr(min_length=1, max_length=32)
+    show_redline: bool
+    show_hidden_lines: bool
+    scale: confloat(gt=0, le=1000)
+    sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
+
+
+def serialize_timus_settings(settings: TimusSettings):
+    return {
+        "title": settings.title,
+        "stamp_text": settings.stamp_text,
+        "show_redline": settings.show_redline,
+        "show_hidden_lines": settings.show_hidden_lines,
+        "scale": float(settings.scale),
+        "sheet_size": settings.sheet_size,
+    }
+
 def get_projected_views(name: str, compound: bd.Compound, mtime: float):
     global PROJECTION_CACHE
     if name in PROJECTION_CACHE:
@@ -355,6 +386,78 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/projects/{name}/settings")
+def get_timus_settings(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
+        return Response("Project not found", status_code=404)
+
+    settings = db.scalar(
+        select(TimusSettings).where(
+            TimusSettings.user_id == ctx.user_id,
+            TimusSettings.tenant_id == ctx.tenant_id,
+            TimusSettings.project_id == project.id,
+        )
+    )
+    if settings is None:
+        return {
+            "title": name.upper(),
+            "stamp_text": "APPROVED",
+            "show_redline": True,
+            "show_hidden_lines": True,
+            "scale": 1.0,
+            "sheet_size": "A4",
+        }
+    return serialize_timus_settings(settings)
+
+
+@app.put("/projects/{name}/settings")
+def put_timus_settings(
+    name: str,
+    req: TimusSettingsRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
+        return Response("Project not found", status_code=404)
+
+    settings = db.scalar(
+        select(TimusSettings).where(
+            TimusSettings.user_id == ctx.user_id,
+            TimusSettings.tenant_id == ctx.tenant_id,
+            TimusSettings.project_id == project.id,
+        )
+    )
+    if settings is None:
+        settings = TimusSettings(
+            user_id=ctx.user_id,
+            tenant_id=ctx.tenant_id,
+            project_id=project.id,
+            title=req.title,
+            stamp_text=req.stamp_text,
+            show_redline=req.show_redline,
+            show_hidden_lines=req.show_hidden_lines,
+            scale=req.scale,
+            sheet_size=req.sheet_size,
+        )
+        db.add(settings)
+    else:
+        settings.title = req.title
+        settings.stamp_text = req.stamp_text
+        settings.show_redline = req.show_redline
+        settings.show_hidden_lines = req.show_hidden_lines
+        settings.scale = req.scale
+        settings.sheet_size = req.sheet_size
+    db.commit()
+    return {"success": True}
+
 
 @app.get("/projects/{name}/bounds")
 def get_project_bounds(name: str):
