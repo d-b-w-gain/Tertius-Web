@@ -74,6 +74,7 @@ class ProjectFile(Base):
     __tablename__ = "project_files"
     __table_args__ = (
         UniqueConstraint("project_id", "filename", name="uq_project_file_name"),
+        UniqueConstraint("id", "tenant_id", name="uq_project_files_id_tenant"),
         ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
     )
 
@@ -112,18 +113,31 @@ class SourceSnapshotFile(Base):
 
 class UserWorkspaceState(Base):
     __tablename__ = "user_workspace_state"
-    __table_args__ = (UniqueConstraint("user_id", "tenant_id", name="uq_workspace_user_tenant"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id", name="uq_workspace_user_tenant"),
+        ForeignKeyConstraint(
+            ["active_project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            name="fk_workspace_active_project_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["active_file_id", "tenant_id"],
+            ["project_files.id", "project_files.tenant_id"],
+            name="fk_workspace_active_file_tenant",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
-    active_project_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, ForeignKey("projects.id", ondelete="SET NULL"))
-    active_file_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, ForeignKey("project_files.id", ondelete="SET NULL"))
+    active_project_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    active_file_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
 
 
 class CompileJob(Base):
     __tablename__ = "compile_jobs"
     __table_args__ = (
+        UniqueConstraint("id", "project_id", "tenant_id", name="uq_compile_jobs_id_project_tenant"),
         ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
     )
 
@@ -142,12 +156,17 @@ class Artifact(Base):
     __tablename__ = "artifacts"
     __table_args__ = (
         ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_artifacts_compile_job_project_tenant",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
-    compile_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, ForeignKey("compile_jobs.id", ondelete="SET NULL"))
+    compile_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)

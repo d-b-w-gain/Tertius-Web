@@ -58,6 +58,7 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        sa.UniqueConstraint("id", "tenant_id", name="uq_project_files_id_tenant"),
         sa.UniqueConstraint("project_id", "filename", name="uq_project_file_name"),
     )
     op.create_index("ix_project_files_tenant_id", "project_files", ["tenant_id"])
@@ -88,8 +89,18 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("user_id", sa.Uuid(), sa.ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("active_project_id", sa.Uuid(), sa.ForeignKey("projects.id", ondelete="SET NULL")),
-        sa.Column("active_file_id", sa.Uuid(), sa.ForeignKey("project_files.id", ondelete="SET NULL")),
+        sa.Column("active_project_id", sa.Uuid()),
+        sa.Column("active_file_id", sa.Uuid()),
+        sa.ForeignKeyConstraint(
+            ["active_project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            name="fk_workspace_active_project_tenant",
+        ),
+        sa.ForeignKeyConstraint(
+            ["active_file_id", "tenant_id"],
+            ["project_files.id", "project_files.tenant_id"],
+            name="fk_workspace_active_file_tenant",
+        ),
         sa.UniqueConstraint("user_id", "tenant_id", name="uq_workspace_user_tenant"),
     )
     op.create_index("ix_user_workspace_state_user_id", "user_workspace_state", ["user_id"])
@@ -106,6 +117,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        sa.UniqueConstraint("id", "project_id", "tenant_id", name="uq_compile_jobs_id_project_tenant"),
     )
     op.create_index("ix_compile_jobs_tenant_id", "compile_jobs", ["tenant_id"])
     op.create_index("ix_compile_jobs_project_id", "compile_jobs", ["project_id"])
@@ -114,13 +126,18 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
         sa.Column("project_id", sa.Uuid(), nullable=False),
-        sa.Column("compile_job_id", sa.Uuid(), sa.ForeignKey("compile_jobs.id", ondelete="SET NULL")),
+        sa.Column("compile_job_id", sa.Uuid()),
         sa.Column("kind", sa.String(length=16), nullable=False),
         sa.Column("storage_key", sa.String(length=500), nullable=False),
         sa.Column("content_type", sa.String(length=100), nullable=False),
         sa.Column("byte_size", sa.Integer()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_artifacts_compile_job_project_tenant",
+        ),
     )
     op.create_index("ix_artifacts_tenant_id", "artifacts", ["tenant_id"])
     op.create_index("ix_artifacts_project_id", "artifacts", ["project_id"])
