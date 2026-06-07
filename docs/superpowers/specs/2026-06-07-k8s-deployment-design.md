@@ -4,7 +4,7 @@
 
 Plan a Kubernetes deployment for Tertius that can be tested on a local k3s cluster and later promoted to a production cluster with minimal structural change.
 
-This design covers container packaging, one merged local Helm chart, and a README for cluster prerequisites. It does not include backend implementation work to persist application data in Postgres or use Valkey yet.
+This design covers container packaging, one merged local Helm chart, and a README for cluster prerequisites. It does not include backend implementation work to persist application data in Postgres, use Valkey, or enforce Keycloak authentication yet.
 
 ## Current Project Context
 
@@ -15,7 +15,7 @@ Tertius is a modular monolith with:
 - `Dockerfile`: current API-only Python image based on Python 3.11.
 - `cache/tertius`: runtime file state expected by the backend for projects, active project pointers, STL/STEP outputs, and related workflow files.
 
-The backend currently writes project and output state to the local filesystem. Postgres and Valkey will be provisioned and wired through environment variables, but application-level integration is intentionally deferred.
+The backend currently writes project and output state to the local filesystem. Postgres, Valkey, and Keycloak will be provisioned and wired through environment variables, but application-level integration is intentionally deferred.
 
 ## Decisions
 
@@ -27,6 +27,7 @@ The backend currently writes project and output state to the local filesystem. P
 - Use nginx as the UI runtime image.
 - Use CloudNativePG for Postgres, with the operator installed as a prerequisite.
 - Use Valkey as the Redis-compatible cache service, preferably via the official Valkey Helm chart as a chart dependency.
+- Use Keycloak for future authentication, with the Keycloak Operator installed as a prerequisite and the Keycloak instance rendered by the local chart.
 - Use Cloudflare Tunnel through a `cloudflared` Deployment in the chart, consuming a tunnel token from a Kubernetes Secret.
 - Test locally with k3s before production deployment.
 
@@ -145,6 +146,44 @@ The API Deployment will receive `VALKEY_URL`, but the app will not use it until 
 
 Valkey Helm reference: https://valkey.io/valkey-helm/
 
+### Keycloak
+
+The chart will render Keycloak resources for future authentication, but the UI and API will not enforce login until a later integration task.
+
+The chart will render:
+
+- a CloudNativePG `Cluster` for the Keycloak database, separate from the Tertius application database
+- a Keycloak database Secret or Secret reference
+- a Keycloak `Keycloak` custom resource using `apiVersion: k8s.keycloak.org/v2beta1`
+- optional `KeycloakRealmImport` resources for a Tertius realm, public UI client, and API audience/client configuration
+- optional Secret references for future OIDC client credentials consumed by the app
+
+The Keycloak Operator itself is not installed by this chart. It must be installed before the chart is applied.
+
+The Keycloak Operator does not manage its own database, so the chart will use CloudNativePG to provision a dedicated Postgres database for Keycloak. This keeps Keycloak operationally isolated from the future Tertius application database while still using the same Postgres operator stack.
+
+The chart will define values for:
+
+- Keycloak CR name
+- Keycloak image tag pinned in values
+- hostname and admin hostname
+- instance count
+- resources
+- TLS Secret reference
+- proxy header mode, defaulting to `xforwarded` for operation behind Cloudflare Tunnel or nginx-style reverse proxies
+- Keycloak database cluster name
+- Keycloak database storage size and storage class
+- optional realm import toggle
+- future UI/API OIDC client IDs and Secret references
+
+The UI and API Deployments will receive future-facing OIDC environment variables such as `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, and `OIDC_AUDIENCE`, but the app will not use them until a later integration task.
+
+Keycloak Operator references:
+
+- Basic deployment: https://www.keycloak.org/operator/basic-deployment
+- Operator installation: https://www.keycloak.org/operator/installation
+- CloudNativePG-backed Keycloak deployment: https://www.keycloak.org/high-availability/single-cluster/deploy-keycloak
+
 ### Cloudflare Tunnel
 
 The chart will render:
@@ -183,16 +222,17 @@ The README will document:
 
 1. Ensure a local k3s cluster is running.
 2. Install the CloudNativePG operator.
-3. Add and update the Valkey Helm repository if dependency updates are needed.
-4. Build the API and UI images locally.
-5. Make the images available to k3s through a local registry or image import.
-6. Create the Cloudflare tunnel token Secret if tunnel testing is enabled.
-7. Run `helm dependency update charts/tertius`.
-8. Run `helm lint charts/tertius`.
-9. Run `helm template charts/tertius --values charts/tertius/values-local.yaml`.
-10. Install with `helm upgrade --install tertius charts/tertius --namespace tertius --create-namespace --values charts/tertius/values-local.yaml`.
-11. Wait for Deployments, the CloudNativePG Cluster, and Valkey to become ready.
-12. Port-forward the UI and API services for smoke testing.
+3. Install the Keycloak Operator.
+4. Add and update the Valkey Helm repository if dependency updates are needed.
+5. Build the API and UI images locally.
+6. Make the images available to k3s through a local registry or image import.
+7. Create the Cloudflare tunnel token Secret if tunnel testing is enabled.
+8. Run `helm dependency update charts/tertius`.
+9. Run `helm lint charts/tertius`.
+10. Run `helm template charts/tertius --values charts/tertius/values-local.yaml`.
+11. Install with `helm upgrade --install tertius charts/tertius --namespace tertius --create-namespace --values charts/tertius/values-local.yaml`.
+12. Wait for Deployments, CloudNativePG Clusters, Valkey, and Keycloak to become ready.
+13. Port-forward the UI, API, and Keycloak services for smoke testing.
 
 ## Health Checks
 
@@ -215,6 +255,8 @@ Postgres readiness is owned by CloudNativePG.
 
 Valkey readiness is owned by the Valkey chart.
 
+Keycloak readiness is owned by the Keycloak Operator and should be checked through the `Keycloak` CR `Ready` condition.
+
 ## Values Files
 
 The chart should include:
@@ -230,6 +272,7 @@ The chart should:
 
 - Avoid embedding real Cloudflare tunnel tokens in Git.
 - Avoid embedding real database or Valkey passwords in Git.
+- Avoid embedding real Keycloak admin credentials, realm secrets, or OIDC client secrets in Git.
 - Use Secret references for sensitive values.
 - Run containers as non-root where the base images and filesystem permissions allow it. For the API, set a pod `securityContext.fsGroup` so the non-root user can write to the PVC mounted at `/app/cache/tertius` (including git-backed project history); without `fsGroup` the mounted volume will not be writable by a non-root user.
 - Set resource requests and limits.
@@ -244,6 +287,7 @@ This design does not:
 
 - Implement application usage of Postgres.
 - Implement application usage of Valkey.
+- Implement Keycloak login, token validation, route protection, or user/session handling in the UI or API.
 - Migrate existing filesystem project state to Postgres.
 - Add object storage backups.
 - Install cluster-wide operators from the app chart.
@@ -262,9 +306,10 @@ The implementation plan should include these verification commands:
 - Run `helm lint charts/tertius`.
 - Run `helm template` against default and local values.
 - Install into local k3s with `values-local.yaml`.
-- Verify pods, services, PVCs, CloudNativePG Cluster, and Valkey are ready.
+- Verify pods, services, PVCs, CloudNativePG Clusters, Valkey, and Keycloak are ready.
 - Port-forward and load the UI.
 - Exercise a minimal API request.
+- Port-forward Keycloak or route it locally and confirm the admin console responds.
 
 ## Implementation Defaults
 
@@ -274,5 +319,8 @@ The implementation plan should include these verification commands:
 - PostgreSQL default major version: 18.
 - Valkey default image: latest stable Valkey image available when implementation begins, pinned to an exact tag in values.
 - Valkey chart dependency: latest official chart version available when implementation begins, pinned in `Chart.yaml` and `Chart.lock`.
+- Keycloak deployment method: official Keycloak Operator, installed as a prerequisite; the chart renders `Keycloak` and optional `KeycloakRealmImport` resources.
+- Keycloak database: separate CloudNativePG-managed Postgres cluster/database from the future Tertius application database.
+- Keycloak app wiring: expose OIDC env values for future use, but do not modify UI/API authentication behavior in this deployment pass.
 - Local k3s image loading: document both a local registry and `k3s ctr images import`; prefer a local registry when available. When importing images directly, set `imagePullPolicy: IfNotPresent` (or `Never`) in `values-local.yaml` so k3s does not attempt to pull and fail.
 - Local k3s tunnel behavior: disabled by default in `values-local.yaml`; enable only after the `TUNNEL_TOKEN` Secret exists.
