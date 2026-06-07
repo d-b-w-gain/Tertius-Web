@@ -310,3 +310,57 @@ def test_timus_drafting_pdf_does_not_read_other_or_global_design(
     response = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
 
     assert response.status_code == 404
+
+
+def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
+    authenticated_timus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+):
+    db_design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    timus_server.PROJECTION_CACHE.clear()
+    poisoned_views = {"top": ["poison"], "front": ["poison"], "side": ["poison"], "iso": ["poison"]}
+    timus_server.PROJECTION_CACHE["default_purlin"] = (db_design.updated_at.timestamp(), poisoned_views)
+
+    class FakePoint:
+        X = 0
+        Y = 0
+        Z = 0
+
+    class FakeBox:
+        min = FakePoint()
+        max = type("Point", (), {"X": 10, "Y": 10, "Z": 10})()
+
+        def center(self):
+            return FakePoint()
+
+    class FakeCompound:
+        def bounding_box(self):
+            return FakeBox()
+
+        def project_to_viewport(self, **kwargs):
+            return [], []
+
+    drawn_segments = []
+
+    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code: FakeCompound())
+    monkeypatch.setattr(timus_server, "_draw_drafting_sheet_background", lambda *args, **kwargs: None)
+    monkeypatch.setattr(timus_server, "_draw_gorton_text", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        timus_server,
+        "_draw_compound_view",
+        lambda pdf, segments, *args, **kwargs: drawn_segments.append(segments),
+    )
+
+    response = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
+
+    assert response.status_code == 200
+    assert ["poison"] not in drawn_segments
+    assert f"{seeded_tenant.tenant_id}:{seeded_tenant.project_id}:default_purlin" in timus_server.PROJECTION_CACHE

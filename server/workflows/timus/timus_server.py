@@ -314,10 +314,10 @@ def serialize_timus_settings(settings: TimusSettings):
         "sheet_size": settings.sheet_size,
     }
 
-def get_projected_views(name: str, compound: bd.Compound, mtime: float):
+def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
     global PROJECTION_CACHE
-    if name in PROJECTION_CACHE:
-        cache_mtime, cached_views = PROJECTION_CACHE[name]
+    if cache_key in PROJECTION_CACHE:
+        cache_mtime, cached_views = PROJECTION_CACHE[cache_key]
         if cache_mtime == mtime:
             return cached_views
             
@@ -374,7 +374,7 @@ def get_projected_views(name: str, compound: bd.Compound, mtime: float):
                 
         views[view_name] = segments
         
-    PROJECTION_CACHE[name] = (mtime, views)
+    PROJECTION_CACHE[cache_key] = (mtime, views)
     return views
 
 def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float, scale: float, show_hidden: bool = True):
@@ -522,7 +522,8 @@ def get_drafting_pdf(
         compound = get_compound_from_code(code)
         
         # Get cached views
-        views = get_projected_views(name, compound, mtime)
+        cache_key = f"{ctx.tenant_id}:{design_file.project_id}:{name}"
+        views = get_projected_views(cache_key, compound, mtime)
         
         # Calculate Dimensions
         size = size.upper()
