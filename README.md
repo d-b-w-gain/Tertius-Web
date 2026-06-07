@@ -53,7 +53,48 @@ Tertius currently bundles four specialized, highly decoupled workflows:
 - **Docker** (for hosting the CAD backend cleanly)
 - **Node.js 20+** (for frontend development)
 
-### 1. Launching the Backend (Docker)
+### 1. Launching Postgres and Keycloak
+
+Local development uses Postgres for app data and Keycloak for login. Start both services from the repository root:
+
+```bash
+docker compose up -d postgres keycloak
+```
+
+Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-web`, and the demo login is:
+
+```text
+demo / demo
+```
+
+Copy the server environment template and run the database migration before starting the API locally:
+
+```bash
+cp server/.env.example server/.env
+cd server
+alembic upgrade head
+python main.py
+```
+
+The important server values are:
+
+```bash
+DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
+KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
+KEYCLOAK_AUDIENCE=tertius-web
+ARTIFACT_ROOT=/tmp/tertius-artifacts
+ALLOWED_ORIGINS=http://localhost:5173
+```
+
+For the frontend, copy `ui/.env.example` or set:
+
+```bash
+VITE_API_BASE_URL=http://localhost:8000
+VITE_KEYCLOAK_AUTHORITY=http://localhost:8080/realms/tertius
+VITE_KEYCLOAK_CLIENT_ID=tertius-web
+```
+
+### 2. Launching the Backend (Docker)
 
 The server relies on several internal X11 dependencies (like `libxrender1`) to render geometry headlessly in `OCP`. To prevent cluttering your local machine, run it in Docker:
 
@@ -63,7 +104,7 @@ docker run -p 8000:8000 tertius-server
 ```
 *The API will be available at `http://localhost:8000/docs`.*
 
-### 2. Launching the Frontend
+### 3. Launching the Frontend
 
 The UI uses Vite for lightning-fast Hot Module Replacement.
 

@@ -1,0 +1,59 @@
+{
+  "realm": "tertius",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "clients": [
+    {
+      "clientId": "tertius-web",
+      "name": "Tertius Web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "rootUrl": "http://localhost:5173",
+      "baseUrl": "http://localhost:5173",
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "tertius-web audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "tertius-web",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Demo",
+      "lastName": "User",
+      "email": "demo@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

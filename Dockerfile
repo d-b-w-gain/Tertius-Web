@@ -24,6 +24,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the server directory
 COPY server/ /app/server/
 
+RUN mkdir -p /app/artifacts
+ENV ARTIFACT_ROOT=/app/artifacts
+
 # Expose the API port
 EXPOSE 8000
 
