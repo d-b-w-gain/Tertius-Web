@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
-ACTIVE_STL = CACHE_ROOT / 'active_output.stl'
+ACTIVE_GLTF = CACHE_ROOT / 'active_output.glb'
 ACTIVE_PROJECT = CACHE_ROOT / 'active_project.txt'
 
 @app.get("/health")
@@ -33,16 +33,16 @@ def get_project_name():
 
 @app.get("/status")
 def get_status():
-    if not ACTIVE_STL.exists():
+    if not ACTIVE_GLTF.exists():
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    mtime = os.path.getmtime(ACTIVE_STL)
+    mtime = os.path.getmtime(ACTIVE_GLTF)
     return {"mtime": mtime}
 
 @app.get("/model")
 def get_model():
-    if not ACTIVE_STL.exists():
+    if not ACTIVE_GLTF.exists():
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    return FileResponse(ACTIVE_STL, media_type="application/octet-stream")
+    return FileResponse(ACTIVE_GLTF, media_type="model/gltf-binary")
 
 if __name__ == "__main__":
     import uvicorn

@@ -22,7 +22,7 @@ app.add_middleware(
 # ── Paths ──────────────────────────────────────────────────────────────────────
 CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
 PROJECTS_DIR = CACHE_ROOT / 'intus'
-ACTIVE_STL = CACHE_ROOT / 'active_output.stl'
+ACTIVE_GLTF = CACHE_ROOT / 'active_output.glb'
 ACTIVE_PROJECT = CACHE_ROOT / 'active_project.txt'
 
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
@@ -76,8 +76,9 @@ class CodeRequest(BaseModel):
 
 class CompileRequest(BaseModel):
     code: str
-    export_format: str = "stl"
+    export_format: str = "gltf"
     file: Optional[str] = "design.py"
+    quality: Optional[str] = "high"
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/health")
@@ -278,22 +279,110 @@ def compile_project(name: str, req: CompileRequest):
                 final_shapes.append(s)
 
         if len(final_shapes) > 1:
-            compound = bd.Compound(final_shapes)
+            compound = bd.Compound(children=final_shapes)
+            # Re-apply labels to children since bd.Compound wipes them
+            for i, child in enumerate(compound.children):
+                if hasattr(final_shapes[i], "label"):
+                    child.label = final_shapes[i].label
+                if hasattr(final_shapes[i], "color"):
+                    child.color = final_shapes[i].color
         else:
             compound = final_shapes[0]
 
         # Export
         ext = req.export_format.lower()
         if ext not in ["stl", "step", "gltf"]:
-            ext = "stl"
+            ext = "gltf"
             
         output_file = proj_dir / f"output.{ext}"
         if ext == "stl":
             bd.export_stl(compound, str(output_file))
-            # Also write to shared active output for Extus
-            bd.export_stl(compound, str(ACTIVE_STL))
         elif ext == "step":
             bd.export_step(compound, str(output_file))
+        elif ext == "gltf":
+            output_file = proj_dir / "output.glb"
+            
+            if req.quality == "low":
+                l_def, a_def = 0.1, 0.5
+            elif req.quality == "medium":
+                l_def, a_def = 0.01, 0.3
+            else: # high
+                l_def, a_def = 0.001, 0.1
+                
+            bd.export_gltf(compound, str(output_file), binary=True, linear_deflection=l_def, angular_deflection=a_def)
+            # Also write to shared active output for Extus
+            bd.export_gltf(compound, str(ACTIVE_GLTF), binary=True, linear_deflection=l_def, angular_deflection=a_def)
+            ext = "glb"
+
+            # ---- GLB Post-Processing to Fix Names ----
+            # build123d exports OpenCascade tags (e.g. =>[0:1:1:2]) instead of labels
+            try:
+                from build123d.exporters3d import _create_xde
+                from OCP.XCAFDoc import XCAFDoc_DocumentTool
+                from OCP.TCollection import TCollection_AsciiString
+                from OCP.TDF import TDF_Tool
+                import json
+                import struct
+
+                # 1. Map tags to labels
+                doc = _create_xde(compound, env.get("bd").Unit.MM)
+                shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+                tag_to_name = {}
+                
+                for node in bd.PreOrderIter(compound):
+                    if node.label:
+                        inst_label = shape_tool.FindShape(node.wrapped, findInstance=True)
+                        if inst_label.IsNull():
+                            inst_label = shape_tool.FindShape(node.wrapped, findInstance=False)
+                            
+                        if not inst_label.IsNull():
+                            entry = TCollection_AsciiString()
+                            TDF_Tool.Entry_s(inst_label, entry)
+                            tag_to_name[f"=>[{entry.ToCString()}]"] = node.label
+
+                # 2. Patch the .glb files
+                def patch_glb_names(glb_path, mapping):
+                    if not mapping: return
+                    with open(glb_path, "rb") as f:
+                        data = f.read()
+                    
+                    magic, version, length = struct.unpack("<4sII", data[:12])
+                    if magic != b"glTF": return
+                    
+                    chunk_len, chunk_type = struct.unpack("<II", data[12:20])
+                    if chunk_type != b"JSON": return
+                    
+                    json_data = data[20:20+chunk_len].decode("utf-8")
+                    gltf_json = json.loads(json_data)
+                    
+                    changed = False
+                    for node in gltf_json.get("nodes", []):
+                        if node.get("name") in mapping:
+                            node["name"] = mapping[node["name"]]
+                            changed = True
+                    
+                    if not changed: return
+                    
+                    new_json_data = json.dumps(gltf_json, separators=(',', ':')).encode("utf-8")
+                    padding = (4 - len(new_json_data) % 4) % 4
+                    new_json_data += b' ' * padding
+                    
+                    new_chunk_len = len(new_json_data)
+                    new_length = length - chunk_len + new_chunk_len
+                    
+                    new_data = bytearray()
+                    new_data.extend(struct.pack("<4sII", magic, version, new_length))
+                    new_data.extend(struct.pack("<II", new_chunk_len, chunk_type))
+                    new_data.extend(new_json_data)
+                    new_data.extend(data[20+chunk_len:])
+                    
+                    with open(glb_path, "wb") as f:
+                        f.write(new_data)
+
+                patch_glb_names(str(output_file), tag_to_name)
+                patch_glb_names(str(ACTIVE_GLTF), tag_to_name)
+            except Exception as patch_e:
+                print("Failed to patch GLB names:", patch_e)
 
         return {"success": True, "format": ext, "file": str(output_file)}
 

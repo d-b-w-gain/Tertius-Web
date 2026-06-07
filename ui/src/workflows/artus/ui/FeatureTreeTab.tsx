@@ -1,4 +1,51 @@
 import React, { useState, useEffect } from 'react';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+
+// Helper component for the recursive assembly tree
+const TreeNode: React.FC<{
+  node: THREE.Object3D;
+  depth: number;
+  selectedId: string | null;
+  onSelect: (node: THREE.Object3D, isDouble: boolean) => void;
+}> = ({ node, depth, selectedId, onSelect }) => {
+  const [expanded, setExpanded] = useState(true);
+  
+  const isMesh = (node as THREE.Mesh).isMesh;
+  const isGroup = node.type === 'Group' || node.type === 'Object3D';
+  const hasChildren = node.children && node.children.length > 0;
+  
+  if (!isMesh && !isGroup) return null;
+  
+  const displayName = node.name || (isMesh ? 'Mesh' : 'Component');
+
+  return (
+    <div className="flex flex-col font-mono text-xs">
+       <div 
+         className={`flex items-center py-0.5 px-2 cursor-pointer transition-colors ${selectedId === node.uuid || selectedId === node.name ? 'bg-indigo-900/40 border border-indigo-500/50 rounded shadow-[inset_0_0_10px_rgba(99,102,241,0.2)]' : 'hover:bg-slate-800/50'}`}
+         style={{ paddingLeft: `${depth * 16 + 8}px` }}
+         onClick={() => onSelect(node, false)}
+         onDoubleClick={() => onSelect(node, true)}
+       >
+          {hasChildren ? (
+            <span onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }} className="w-4 mr-1 text-[10px] text-slate-500 hover:text-slate-300 focus:outline-none flex-shrink-0 flex items-center justify-center opacity-70">
+              {expanded ? '▼' : '▶'}
+            </span>
+          ) : <span className="w-4 mr-1 inline-block" />}
+          <span className="text-xs font-medium truncate select-none text-slate-300">{displayName}</span>
+       </div>
+       {expanded && hasChildren && node.children.map(c => (
+         <div key={c.uuid} className="flex flex-col relative">
+           <div 
+             className="absolute left-0 top-0 bottom-0 w-px bg-slate-800/50" 
+             style={{ marginLeft: `${depth * 16 + 14}px` }}
+           />
+           <TreeNode node={c} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} />
+         </div>
+       ))}
+    </div>
+  );
+};
 
 interface Feature {
   name: string;
@@ -29,18 +76,19 @@ const getIcon = (name: string) => {
   return '⚡';
 };
 
-const RenderOperation: React.FC<{ node: OperationNode; depth: number }> = ({ node, depth }) => {
+const RenderOperation: React.FC<{ node: OperationNode; depth: number; highlightedNode?: string | null }> = ({ node, depth, highlightedNode }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const isContext = node.type === 'Context';
   const hasChildren = node.children && node.children.length > 0;
   
   const displayName = node.as_name || node.name;
   const tooltip = node.as_name ? `Alias for ${node.name}` : node.name;
+  const isHighlighted = highlightedNode && displayName === highlightedNode;
   
   return (
     <div className="flex flex-col font-mono text-xs">
       <div 
-        className="flex items-center py-0.5 px-2 hover:bg-slate-800/50 cursor-default transition-colors group"
+        className={`flex items-center py-0.5 px-2 cursor-default transition-colors group ${isHighlighted ? 'bg-indigo-900/40 border border-indigo-500/50 rounded shadow-[inset_0_0_10px_rgba(99,102,241,0.2)]' : 'hover:bg-slate-800/50'}`}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
       >
         {isContext && hasChildren ? (
@@ -98,6 +146,7 @@ const RenderOperation: React.FC<{ node: OperationNode; depth: number }> = ({ nod
               key={i} 
               node={child} 
               depth={depth + 1}
+              highlightedNode={highlightedNode}
             />
           ))}
         </div>
@@ -119,7 +168,88 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   
   // Local variable edits
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [activePanel, setActivePanel] = useState<'variables' | 'operations'>('variables');
+  const [activePanel, setActivePanel] = useState<'variables' | 'operations' | 'assembly'>('variables');
+  
+  const [extusUrl, setExtusUrl] = useState<string>('');
+  const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
+  
+  const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
+
+  const handleSelectNode = (node: THREE.Object3D, isDouble: boolean) => {
+     const nodeName = node.name || '';
+     
+     if (isDouble) {
+        if (highlightedNode === nodeName) {
+           setHighlightedNode(null);
+           localStorage.removeItem('tertius_selected_node');
+        } else {
+           setHighlightedNode(nodeName);
+           localStorage.setItem('tertius_selected_node', nodeName);
+        }
+     } else {
+        setHighlightedNode(nodeName);
+        localStorage.setItem('tertius_selected_node', nodeName);
+     }
+     window.dispatchEvent(new Event('storage'));
+  };
+
+  // Listen to Extus selections via LocalStorage
+  useEffect(() => {
+    const handleStorage = () => {
+      const selected = localStorage.getItem('tertius_selected_node');
+      setHighlightedNode(selected || null);
+      if (selected) {
+         setActivePanel('assembly');
+      }
+    };
+    
+    // Check initial
+    handleStorage();
+    
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
+  useEffect(() => {
+    const extusServerUrl = serverUrl.replace('artus', 'extus');
+    let mounted = true;
+    let mtime = 0;
+    
+    const checkStatus = async () => {
+      try {
+        const res = await fetch(`${extusServerUrl}/status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.mtime && data.mtime !== mtime) {
+            if (mounted) {
+              mtime = data.mtime;
+              setExtusUrl(`${extusServerUrl}/model?t=${data.mtime}`);
+            }
+          }
+        }
+      } catch (e) {
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [serverUrl]);
+
+  useEffect(() => {
+    if (!extusUrl) return;
+    let isCancelled = false;
+    const loader = new GLTFLoader();
+    loader.load(extusUrl, (gltf) => {
+      if (!isCancelled) setSceneGraph(gltf.scene);
+    });
+    return () => {
+      isCancelled = true;
+    };
+  }, [extusUrl]);
 
   const fetchFeatures = async () => {
     try {
@@ -299,7 +429,41 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
             )}
           </div>
 
-          {/* Middle: Geometric Operations */}
+          {/* Middle: Assembly Tree */}
+          <div className={`flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all ${activePanel === 'assembly' ? 'flex-1 min-h-0' : 'shrink-0'}`}>
+            <div 
+              className="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 cursor-pointer hover:bg-slate-800/80 transition-colors"
+              onClick={() => setActivePanel('assembly')}
+            >
+              <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                <span className="text-sky-500">🧊</span> Assembly Tree
+              </h2>
+            </div>
+            
+            {activePanel === 'assembly' && (
+              <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                {!sceneGraph ? (
+                  <div className="text-slate-500 text-center py-8 text-sm">
+                    Waiting for 3D model...
+                  </div>
+                ) : (
+                  <div className="flex flex-col ml-2">
+                    {sceneGraph.children.map(child => (
+                      <TreeNode 
+                        key={child.uuid} 
+                        node={child} 
+                        depth={0} 
+                        selectedId={highlightedNode} 
+                        onSelect={handleSelectNode} 
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Bottom: Geometric Operations */}
           <div className={`flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all ${activePanel === 'operations' ? 'flex-1 min-h-0' : 'shrink-0'}`}>
             <div 
               className="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 cursor-pointer hover:bg-slate-800/80 transition-colors"
@@ -323,6 +487,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
                         key={i} 
                         node={op} 
                         depth={0} 
+                        highlightedNode={highlightedNode}
                       />
                     ))}
                   </div>
