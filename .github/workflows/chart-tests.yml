@@ -1,0 +1,101 @@
+name: Deployment Chart Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chart-tests.yml'
+      - 'charts/**'
+      - 'scripts/test-deployment-config.sh'
+      - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/bundle.py'
+      - 'Dockerfile.api'
+      - 'Dockerfile.ui'
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/chart-tests.yml'
+      - 'charts/**'
+      - 'scripts/test-deployment-config.sh'
+      - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/bundle.py'
+      - 'Dockerfile.api'
+      - 'Dockerfile.ui'
+  workflow_dispatch:
+    inputs:
+      run_k3s:
+        description: Run the full k3s deployment test
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  deployment-config-check:
+    name: Chart render/config checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Make scripts executable
+        run: chmod +x scripts/test-deployment-config.sh scripts/test-k3s-deployment.sh
+      - name: Run config test script
+        run: ./scripts/test-deployment-config.sh
+
+  k3s-deployment-smoke:
+    name: k3s deployment smoke
+    runs-on: ubuntu-latest
+    needs:
+      - deployment-config-check
+    timeout-minutes: 90
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_k3s == true)
+    env:
+      KUBECONFIG: /tmp/kubeconfig
+      NAMESPACE: tertius-ci
+      RELEASE_NAME: tertius-ci
+      TIMEOUT: 6m
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install tooling
+        uses: azure/setup-helm@v4
+      - name: Prepare k3s cluster
+        run: |
+          curl -sfL https://get.k3s.io | sudo sh -s - --write-kubeconfig /tmp/kubeconfig --write-kubeconfig-mode 0644
+          kubectl wait --for=condition=Ready node --all --timeout=90s
+      - name: Install CloudNativePG operator
+        run: |
+          helm repo add cloudnativepg https://cloudnative-pg.github.io/charts
+          helm repo update
+          helm install cloudnativepg cloudnativepg/cloudnative-pg \
+            --namespace cnpg-system \
+            --create-namespace \
+            --wait \
+            --timeout 5m
+      - name: Install Keycloak operator CRDs and controller
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "${NAMESPACE}" apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/kubernetes.yml
+          kubectl patch clusterrolebinding keycloak-operator-clusterrole-binding --type='json' -p="[{\"op\":\"replace\",\"path\":\"/subjects/0/namespace\",\"value\":\"${NAMESPACE}\"}]"
+          kubectl -n "${NAMESPACE}" wait deploy keycloak-operator --for=condition=Available --timeout=90s
+      - name: Make scripts executable
+        run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh
+      - name: Run k3s chart test with cleanup
+        run: |
+          set +e
+          ./scripts/test-k3s-deployment.sh
+          result=$?
+          ./scripts/test-k3s-deployment.sh --cleanup --delete-data || true
+          exit $result

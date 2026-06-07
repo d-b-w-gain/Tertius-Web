@@ -128,5 +128,21 @@ python scripts/bundle.py
 ```
 > **Note:** The bundle script automatically injects the web-safe `mockServerLauncher.ts` into the workflows, preventing local desktop dependencies from leaking into the React application. 
 
+## Kubernetes Deployment Test
+
+The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the `charts/tertius` Helm release, waits for app, Postgres, Valkey, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks.
+
+```bash
+scripts/test-k3s-deployment.sh
+```
+
+Tunnel-enabled run:
+
+```bash
+ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-deployment.sh
+```
+
+Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, and `KEYCLOAK_REALM`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving PVCs and CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed.
+
 ## License
 MIT License.

@@ -42,7 +42,7 @@ def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
     )
 
 
-def get_latest_stl_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
+def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
     project = get_active_project(db, ctx)
     if project is None:
         return None
@@ -51,7 +51,7 @@ def get_latest_stl_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
         .where(
             Artifact.tenant_id == ctx.tenant_id,
             Artifact.project_id == project.id,
-            Artifact.kind == "stl",
+            Artifact.kind.in_(["gltf", "glb", "stl"]),
         )
         .order_by(Artifact.created_at.desc())
         .limit(1)
@@ -77,7 +77,7 @@ def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session =
 
 @app.get("/status")
 def get_status(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
-    artifact = get_latest_stl_artifact(db, ctx)
+    artifact = get_latest_model_artifact(db, ctx)
     if artifact is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     path = get_artifact_path(artifact)
@@ -87,7 +87,7 @@ def get_status(ctx: AuthContext = Depends(get_auth_context), db: Session = Depen
 
 @app.get("/model")
 def get_model(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
-    artifact = get_latest_stl_artifact(db, ctx)
+    artifact = get_latest_model_artifact(db, ctx)
     if artifact is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     path = get_artifact_path(artifact)

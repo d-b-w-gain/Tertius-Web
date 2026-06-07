@@ -1,0 +1,64 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: {{ include "tertius.keycloakName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  instances: {{ .Values.keycloak.instances }}
+  image: {{ .Values.keycloak.image | quote }}
+  startOptimized: {{ .Values.keycloak.startOptimized }}
+  http:
+    httpEnabled: {{ .Values.keycloak.http.httpEnabled }}
+    {{- if .Values.keycloak.tlsSecret }}
+    tlsSecret: {{ .Values.keycloak.tlsSecret | quote }}
+    {{- end }}
+  db:
+    vendor: postgres
+    host: {{ printf "%s-rw" (include "tertius.keycloakDbName" .) | quote }}
+    port: 5432
+    database: {{ .Values.keycloak.database.database | quote }}
+    usernameSecret:
+      name: {{ .Values.keycloak.database.appUserSecretName | quote }}
+      key: username
+    passwordSecret:
+      name: {{ .Values.keycloak.database.appUserSecretName | quote }}
+      key: password
+  hostname:
+    hostname: {{ .Values.keycloak.hostname | quote }}
+    admin: {{ .Values.keycloak.adminHostname | quote }}
+  proxy:
+    headers: {{ .Values.keycloak.proxyHeaders | quote }}
+  resources:
+    {{- toYaml .Values.keycloak.resources | nindent 4 }}
+{{- if .Values.keycloak.realmImport.enabled }}
+---
+apiVersion: k8s.keycloak.org/v2beta1
+kind: KeycloakRealmImport
+metadata:
+  name: {{ include "tertius.keycloakName" . }}-realm
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak
+spec:
+  keycloakCRName: {{ include "tertius.keycloakName" . | quote }}
+  realm:
+    realm: {{ .Values.keycloak.realmImport.realm | quote }}
+    enabled: true
+    clients:
+      - clientId: {{ .Values.keycloak.realmImport.uiClientId | quote }}
+        name: Tertius UI
+        publicClient: true
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        redirectUris:
+          - "*"
+        webOrigins:
+          - "*"
+      - clientId: {{ .Values.keycloak.realmImport.apiClientId | quote }}
+        name: Tertius API
+        bearerOnly: true
+{{- end }}
+{{- end }}

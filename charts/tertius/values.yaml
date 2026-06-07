@@ -1,0 +1,176 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+app:
+  environment: production
+  config:
+    apiBasePath: /api
+    oidcIssuerUrl: https://keycloak.example.com/realms/tertius
+    oidcClientId: tertius-ui
+    oidcAudience: tertius-api
+  secretName: ""
+  secret:
+    create: false
+    databaseUrl: ""
+    valkeyUrl: redis://tertius-valkey:6379/0
+    oidcClientSecret: ""
+
+api:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/example/tertius-api
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  port: 8000
+  service:
+    type: ClusterIP
+    port: 8000
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  probes:
+    startup:
+      failureThreshold: 60
+      periodSeconds: 5
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
+
+ui:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/example/tertius-ui
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  port: 80
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+postgres:
+  enabled: true
+  name: ""
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.0
+  database: tertius
+  owner: tertius
+  appUserSecretName: tertius-app-db
+  appUserSecret:
+    create: false
+    username: tertius
+    password: ""
+  storage:
+    size: 20Gi
+    storageClass: ""
+  backup:
+    enabled: false
+
+keycloak:
+  enabled: true
+  name: ""
+  instances: 2
+  image: quay.io/keycloak/keycloak:26.6.3
+  startOptimized: false
+  http:
+    httpEnabled: true
+  hostname: https://keycloak.example.com
+  adminHostname: https://keycloak-admin.example.com
+  proxyHeaders: xforwarded
+  tlsSecret: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  database:
+    name: ""
+    instances: 1
+    imageName: ghcr.io/cloudnative-pg/postgresql:18.0
+    database: keycloak
+    owner: keycloak
+    appUserSecretName: tertius-keycloak-db
+    appUserSecret:
+      create: false
+      username: keycloak
+      password: ""
+    storage:
+      size: 10Gi
+      storageClass: ""
+  realmImport:
+    enabled: false
+    realm: tertius
+    uiClientId: tertius-ui
+    apiClientId: tertius-api
+
+cloudflared:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: cloudflare/cloudflared
+    tag: "2026.5.0"
+    pullPolicy: IfNotPresent
+  tunnelTokenSecretName: cloudflared-token
+  tunnelTokenSecretKey: TUNNEL_TOKEN
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+networkPolicy:
+  enabled: false
+
+valkey:
+  enabled: true
+  image:
+    repository: valkey/valkey
+    tag: 9.0.0
+  auth:
+    enabled: false
+  dataStorage:
+    enabled: true
+    requestedSize: 8Gi
+    className: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  metrics:
+    enabled: false

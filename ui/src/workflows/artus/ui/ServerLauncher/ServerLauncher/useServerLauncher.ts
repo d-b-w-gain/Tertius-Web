@@ -1,3 +1,16 @@
+import { resolveWorkflowServerUrl } from '../../../../shared/apiConfig'
+
+type LauncherConfig = {
+  serverName: string;
+  [key: string]: unknown;
+};
+
+type DependencyStatus = {
+  installed?: boolean;
+  importValid?: boolean;
+  importError?: string;
+};
+
 export interface ServerHandle {
   pythonInstalled: boolean | null;
   installingPython: boolean;
@@ -6,7 +19,7 @@ export interface ServerHandle {
   port: number;
   portFree: boolean | null;
   packages: string[];
-  depsStatus: Record<string, { installed?: boolean; importValid?: boolean; importError?: string }>;
+  depsStatus: Record<string, DependencyStatus>;
   checkingDeps: boolean;
   installingDeps: boolean;
   allDepsInstalled: boolean;
@@ -24,9 +37,9 @@ export interface ServerHandle {
   needsFfmpeg: boolean;
   ffmpegInstalled: boolean;
   installingFfmpeg: boolean;
-  setSelectedVenv: (venv: string) => void;
-  setPort: (port: number) => void;
-  setAutoStart: (autoStart: boolean) => void;
+  setSelectedVenv: (value: string) => void;
+  setPort: (value: number) => void;
+  setAutoStart: (value: boolean) => void;
   installPython: () => Promise<void>;
   installDeps: () => Promise<void>;
   installFfmpeg: () => Promise<void>;
@@ -36,10 +49,10 @@ export interface ServerHandle {
   addLog: (message: string) => void;
 }
 
-export function useServerLauncher(config: { serverName: string; [key: string]: unknown }): ServerHandle {
+export function useServerLauncher(config: LauncherConfig): ServerHandle {
+  const baseUrl = import.meta.env?.VITE_API_URL;
   const workflowBase = config.serverName.split('-')[0];
-  const baseUrl = import.meta.env?.VITE_API_URL || 'http://localhost:8000';
-  const serverUrl = `${baseUrl}/api/${workflowBase}`;
+  const serverUrl = resolveWorkflowServerUrl(workflowBase, baseUrl);
   
   return {
     pythonInstalled: true, installingPython: false, availableVenvs: ['docker'], selectedVenv: 'docker', port: 8000, portFree: false,
