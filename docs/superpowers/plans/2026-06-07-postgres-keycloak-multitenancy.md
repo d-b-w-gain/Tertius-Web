@@ -6,7 +6,7 @@
 
 **Architecture:** Keycloak owns authentication and issues JWTs. FastAPI validates Keycloak tokens, upserts app users by Keycloak `sub`, resolves the user's active tenant, and passes an `AuthContext` into every persistence operation. Postgres stores users, tenants, projects, project files, source snapshots, workspace state, Timus settings, compile job metadata, and artifact metadata; generated STL/STEP/PDF bytes live in tenant-scoped artifact storage referenced by Postgres.
 
-**Tech Stack:** FastAPI, PyJWT with JWKS validation, SQLAlchemy 2.0, Alembic, Postgres, pytest, React, TypeScript, `oidc-client-ts`, Vite.
+**Tech Stack:** FastAPI, PyJWT with JWKS validation, SQLAlchemy 2.0, Alembic, Postgres, Testcontainers, pytest, React, TypeScript, `oidc-client-ts`, Vite.
 
 ---
 
@@ -23,6 +23,7 @@
 - Create `server/core/compile_runtime.py`: hydrate project files into a temporary directory for `build123d` execution.
 - Create `server/alembic.ini`, `server/migrations/env.py`, and `server/migrations/versions/0001_initial_multitenant_schema.py`: schema migrations.
 - Create `server/tests/conftest.py`: isolated test app settings, DB override, and auth override helpers.
+- Create `server/tests/test_migrations.py`: Testcontainers-backed Alembic migration test against real Postgres.
 - Create `server/tests/test_auth.py`: JWT validation and missing-token tests.
 - Create `server/tests/test_repositories.py`: tenant isolation and default provisioning tests.
 - Create `server/tests/test_workflow_isolation.py`: endpoint-level cross-tenant denial tests.
@@ -97,6 +98,7 @@ PyJWT[crypto]
 httpx
 pytest
 pytest-asyncio
+testcontainers[postgres]
 ```
 
 - [ ] **Step 4: Add `server/core/config.py`**
@@ -150,9 +152,11 @@ git commit -m "chore: add server configuration for postgres and keycloak"
 **Files:**
 - Create: `server/core/db.py`
 - Create: `server/core/models.py`
+- Create: `server/tests/conftest.py`
 - Create: `server/alembic.ini`
 - Create: `server/migrations/env.py`
 - Create: `server/migrations/versions/0001_initial_multitenant_schema.py`
+- Test: `server/tests/test_migrations.py`
 - Test: `server/tests/test_models.py`
 
 - [ ] **Step 1: Write the failing model test**
@@ -615,20 +619,94 @@ def downgrade() -> None:
     op.drop_table("app_users")
 ```
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 6: Add Testcontainers Postgres fixtures**
+
+Create `server/tests/conftest.py`:
+
+```python
+from collections.abc import Generator
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from testcontainers.postgres import PostgresContainer
+
+from core.db import Base
+
+
+@pytest.fixture(scope="session")
+def postgres_url() -> Generator[str, None, None]:
+    with PostgresContainer("postgres:16") as postgres:
+        host = postgres.get_container_host_ip()
+        port = postgres.get_exposed_port(5432)
+        username = postgres.username
+        password = postgres.password
+        database = postgres.dbname
+        yield f"postgresql+psycopg://{username}:{password}@{host}:{port}/{database}"
+
+
+@pytest.fixture()
+def db_session(postgres_url: str) -> Generator[Session, None, None]:
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    with TestingSessionLocal() as session:
+        yield session
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+```
+
+- [ ] **Step 7: Run tests**
+
+Create `server/tests/test_migrations.py`:
+
+```python
+from pathlib import Path
+
+from alembic.command import upgrade
+from alembic.config import Config
+from sqlalchemy import create_engine, inspect
+
+from core.config import get_settings
+
+
+def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypatch):
+    server_dir = Path(__file__).parents[1]
+    monkeypatch.setenv("DATABASE_URL", postgres_url)
+    get_settings.cache_clear()
+
+    config = Config(str(server_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(server_dir / "migrations"))
+    config.set_main_option("sqlalchemy.url", postgres_url)
+
+    upgrade(config, "head")
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    inspector = inspect(engine)
+    table_names = set(inspector.get_table_names())
+    engine.dispose()
+    get_settings.cache_clear()
+
+    assert "app_users" in table_names
+    assert "tenants" in table_names
+    assert "projects" in table_names
+    assert "project_files" in table_names
+    assert "artifacts" in table_names
+```
 
 Run:
 
 ```bash
-rtk pytest server/tests/test_models.py -q
+rtk pytest server/tests/test_models.py server/tests/test_migrations.py -q
 ```
 
-Expected: `1 passed`.
+Expected: both tests pass against a Testcontainers-managed Postgres instance.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add server/core/db.py server/core/models.py server/alembic.ini server/migrations server/tests/test_models.py
+git add server/core/db.py server/core/models.py server/tests/conftest.py server/alembic.ini server/migrations server/tests/test_models.py server/tests/test_migrations.py
 git commit -m "feat: add multitenant postgres schema"
 ```
 
@@ -822,19 +900,14 @@ git commit -m "feat: add keycloak jwt auth context"
 Create `server/tests/test_provisioning.py`:
 
 ```python
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from core.auth_types import Principal
-from core.db import Base
 from core.models import Project, ProjectFile, TenantMembership
 from core.provisioning import provision_user_context
 
 
-def test_first_login_creates_tenant_membership_and_default_project():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-
+def test_first_login_creates_tenant_membership_and_default_project(db_session):
     principal = Principal(
         keycloak_subject="kc-123",
         email="alice@example.com",
@@ -842,11 +915,10 @@ def test_first_login_creates_tenant_membership_and_default_project():
         display_name="Alice Example",
     )
 
-    with Session(engine) as db:
-        ctx = provision_user_context(db, principal)
-        project = db.scalar(select(Project).where(Project.tenant_id == ctx.tenant_id))
-        membership = db.scalar(select(TenantMembership).where(TenantMembership.user_id == ctx.user_id))
-        design_file = db.scalar(select(ProjectFile).where(ProjectFile.project_id == project.id, ProjectFile.filename == "design.py"))
+    ctx = provision_user_context(db_session, principal)
+    project = db_session.scalar(select(Project).where(Project.tenant_id == ctx.tenant_id))
+    membership = db_session.scalar(select(TenantMembership).where(TenantMembership.user_id == ctx.user_id))
+    design_file = db_session.scalar(select(ProjectFile).where(ProjectFile.project_id == project.id, ProjectFile.filename == "design.py"))
 
     assert membership.role == "owner"
     assert project.name == "default_purlin"
@@ -948,10 +1020,8 @@ Create `server/tests/test_repositories.py`:
 
 ```python
 import pytest
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from core.db import Base
 from core.models import AppUser, Project, ProjectFile, Tenant, TenantMembership
 from core.repositories import ProjectRepository
 
@@ -979,26 +1049,20 @@ def seed_two_tenants(db: Session):
     return tenant_a.id, tenant_b.id
 
 
-def test_project_repository_only_reads_current_tenant():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine) as db:
-        tenant_a, tenant_b = seed_two_tenants(db)
-        repo_a = ProjectRepository(db, tenant_a)
-        repo_b = ProjectRepository(db, tenant_b)
+def test_project_repository_only_reads_current_tenant(db_session):
+    tenant_a, tenant_b = seed_two_tenants(db_session)
+    repo_a = ProjectRepository(db_session, tenant_a)
+    repo_b = ProjectRepository(db_session, tenant_b)
 
-        assert repo_a.get_code("same_name", "design.py") == "a = 1"
-        assert repo_b.get_code("same_name", "design.py") == "b = 2"
+    assert repo_a.get_code("same_name", "design.py") == "a = 1"
+    assert repo_b.get_code("same_name", "design.py") == "b = 2"
 
 
-def test_project_repository_rejects_invalid_filename():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine) as db:
-        tenant_a, _ = seed_two_tenants(db)
-        repo = ProjectRepository(db, tenant_a)
-        with pytest.raises(ValueError):
-            repo.get_code("same_name", "../design.py")
+def test_project_repository_rejects_invalid_filename(db_session):
+    tenant_a, _ = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, tenant_a)
+    with pytest.raises(ValueError):
+        repo.get_code("same_name", "../design.py")
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -2133,7 +2197,7 @@ Run:
 rtk pytest server/tests -q
 ```
 
-Expected: all server tests pass.
+Expected: all server tests pass against Testcontainers-managed Postgres. Docker must be running before this command.
 
 - [ ] **Step 2: Run frontend build**
 
