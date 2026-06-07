@@ -4,4 +4,12 @@ pydantic
 build123d
 fpdf2
 fonttools
-
+pydantic-settings
+SQLAlchemy>=2.0
+psycopg[binary]
+alembic
+PyJWT[crypto]
+httpx
+pytest
+pytest-asyncio
+testcontainers[postgres]
