@@ -32,7 +32,7 @@ The backend currently writes project and output state to the local filesystem. P
 
 ## Runtime Compatibility
 
-Python 3.14 is the latest stable Python line, but Tertius should not target it yet because `build123d` declares `Requires-Python: >=3.10,<3.14` on PyPI. Python 3.12 is the conservative target for the API container.
+Python 3.14 is the latest stable Python line, but Tertius should not target it yet because `build123d` declares an upper bound of `<3.14` on PyPI (current releases support 3.10 through 3.13). Python 3.12 is the conservative target for the API container; 3.13 is also supported by build123d if a newer runtime is wanted later.
 
 Node 24 is the current LTS line and is suitable for the Vite build stage.
 
@@ -72,9 +72,12 @@ Responsibilities:
 - Use nginx as a small runtime image.
 - Serve the Vite `dist` output.
 - Support SPA fallback to `index.html`.
+- Reverse-proxy `/api/*` to the API Service (`proxy_pass`) so same-origin requests resolve to the backend in-cluster.
 - Allow the API URL to be configured through the build-time `VITE_API_URL` value.
 
 For local k3s and production tunnel routing, the recommended `VITE_API_URL` value is same-origin `/api`, so browser traffic can go through one public hostname.
+
+Because nginx proxies `/api/*` to the API Service, same-origin routing works identically in both local `kubectl port-forward` testing (where only the UI Service is forwarded) and production tunnel routing, without depending on Cloudflare-side path rules or permissive CORS. The upstream API Service name/port should be configurable so the same image works across namespaces.
 
 ## Helm Chart
 
@@ -163,7 +166,9 @@ The intended external route is a single public hostname through Cloudflare Tunne
 Routing behavior:
 
 - `/` and frontend assets route to the UI Service.
-- `/api/*` routes to the API Service.
+- `/api/*` is received by the UI Service (nginx) and reverse-proxied to the API Service in-cluster.
+
+Routing `/api/*` through nginx rather than splitting it at the edge keeps a single public hostname and a single ingress target (the UI Service), and makes same-origin behavior identical between local port-forward testing and production.
 
 If using a remotely managed tunnel, the route definitions may live in Cloudflare rather than in the Helm chart. The chart README must document the Cloudflare-side routes needed for local testing and production.
 
@@ -193,8 +198,11 @@ The README will document:
 
 API probes:
 
+- Startup: `GET /` with a generous failure threshold, so a slow first boot is not killed by the liveness probe.
 - Readiness: `GET /`
 - Liveness: `GET /`
+
+The API image imports OpenCASCADE/Build123D, which can make first start slow. The `startupProbe` gates liveness until the process is up; liveness and readiness then take over once the startup probe succeeds.
 
 Workflow-level health endpoints exist under mounted apps such as `/api/intus/health` and can be used for deeper smoke tests.
 
@@ -212,7 +220,7 @@ Valkey readiness is owned by the Valkey chart.
 The chart should include:
 
 - `values.yaml`: production-shaped defaults with conservative resources and disabled development shortcuts.
-- `values-local.yaml`: local k3s defaults with single replicas, smaller storage, local image tags, and optional tunnel disabled by default.
+- `values-local.yaml`: local k3s defaults with single replicas, smaller storage, local image tags, `imagePullPolicy: IfNotPresent` (or `Never`) so locally imported images are not re-pulled from a registry, and optional tunnel disabled by default.
 
 Production-specific values should be supplied outside the repository or in a later environment-specific overlay.
 
@@ -223,7 +231,7 @@ The chart should:
 - Avoid embedding real Cloudflare tunnel tokens in Git.
 - Avoid embedding real database or Valkey passwords in Git.
 - Use Secret references for sensitive values.
-- Run containers as non-root where the base images and filesystem permissions allow it.
+- Run containers as non-root where the base images and filesystem permissions allow it. For the API, set a pod `securityContext.fsGroup` so the non-root user can write to the PVC mounted at `/app/cache/tertius` (including git-backed project history); without `fsGroup` the mounted volume will not be writable by a non-root user.
 - Set resource requests and limits.
 - Keep CloudNativePG operator installation outside the app chart.
 - Prefer same-origin API routing to avoid permissive CORS in production.
@@ -266,5 +274,5 @@ The implementation plan should include these verification commands:
 - PostgreSQL default major version: 18.
 - Valkey default image: latest stable Valkey image available when implementation begins, pinned to an exact tag in values.
 - Valkey chart dependency: latest official chart version available when implementation begins, pinned in `Chart.yaml` and `Chart.lock`.
-- Local k3s image loading: document both a local registry and `k3s ctr images import`; prefer a local registry when available.
+- Local k3s image loading: document both a local registry and `k3s ctr images import`; prefer a local registry when available. When importing images directly, set `imagePullPolicy: IfNotPresent` (or `Never`) in `values-local.yaml` so k3s does not attempt to pull and fail.
 - Local k3s tunnel behavior: disabled by default in `values-local.yaml`; enable only after the `TUNNEL_TOKEN` Secret exists.
