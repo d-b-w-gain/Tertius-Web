@@ -8,8 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 SERVER_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
+def settings_config() -> SettingsConfigDict:
+    return SettingsConfigDict(env_file=SERVER_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=SERVER_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+    model_config = settings_config()
 
     database_url: str = Field(default="postgresql+psycopg://tertius:tertius@localhost:5432/tertius")
     keycloak_issuer: str = Field(default="http://localhost:8080/realms/tertius")

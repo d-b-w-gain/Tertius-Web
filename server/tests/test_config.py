@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import core.config as config
 from core.config import Settings
 
@@ -28,10 +26,11 @@ def test_settings_parse_allowed_origins():
 
 
 def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
-    server_env_file = Path(config.__file__).resolve().parents[1] / ".env"
-    existing_env = server_env_file.read_bytes() if server_env_file.exists() else None
+    env_dir = tmp_path / "server"
+    env_dir.mkdir()
+    env_file = env_dir / ".env"
 
-    server_env_file.write_text(
+    env_file.write_text(
         "\n".join(
             [
                 "DATABASE_URL=postgresql+psycopg://env:env@localhost:5432/envdb",
@@ -44,18 +43,27 @@ def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    try:
-        monkeypatch.chdir(tmp_path)
+    for env_var in (
+        "DATABASE_URL",
+        "KEYCLOAK_ISSUER",
+        "KEYCLOAK_AUDIENCE",
+        "ARTIFACT_ROOT",
+        "ALLOWED_ORIGINS",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
 
-        settings = Settings()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(config, "SERVER_ENV_FILE", env_file)
 
-        assert settings.database_url == "postgresql+psycopg://env:env@localhost:5432/envdb"
-        assert settings.keycloak_issuer == "http://keycloak.example.test/realms/env"
-        assert settings.keycloak_audience == "env-audience"
-        assert settings.artifact_root == "/tmp/env-artifacts"
-        assert settings.allowed_origin_list == ["https://env.example.test"]
-    finally:
-        if existing_env is None:
-            server_env_file.unlink(missing_ok=True)
-        else:
-            server_env_file.write_bytes(existing_env)
+    class PatchedSettings(Settings):
+        model_config = config.settings_config()
+
+    settings = PatchedSettings()
+
+    assert settings.database_url == "postgresql+psycopg://env:env@localhost:5432/envdb"
+    assert settings.keycloak_issuer == "http://keycloak.example.test/realms/env"
+    assert settings.keycloak_audience == "env-audience"
+    assert settings.artifact_root == "/tmp/env-artifacts"
+    assert settings.allowed_origin_list == ["https://env.example.test"]
