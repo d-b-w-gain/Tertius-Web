@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -40,7 +42,7 @@ def decode_keycloak_token(token: str) -> dict:
 
 
 def get_auth_context(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> AuthContext:
     if credentials is None or credentials.scheme.lower() != "bearer":

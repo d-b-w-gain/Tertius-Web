@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 import sys
-import json
 import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from pydantic import BaseModel
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from core.auth import get_auth_context
+from core.auth_types import AuthContext
+from core.db import get_db
+from core.models import ProjectFile
+from core.repositories import ProjectRepository, require_valid_python_filename
 
 app = FastAPI(title="Intus Compiler Server")
 
@@ -90,109 +97,110 @@ def health():
     return {"status": "ok", "build123d_installed": has_b3d}
 
 @app.get("/projects")
-def list_projects():
-    projects = [p.name for p in PROJECTS_DIR.iterdir() if p.is_dir()]
-    return {"projects": projects}
+def list_projects(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    return {"projects": ProjectRepository(db, ctx.tenant_id).list_projects()}
 
 @app.post("/projects/{name}/new")
-def new_project(name: str):
-    proj_dir = PROJECTS_DIR / name
-    if proj_dir.exists():
+def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        existing = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if existing:
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
-    proj_dir.mkdir(parents=True, exist_ok=True)
-    (proj_dir / "design.py").write_text(DEFAULT_PURLIN, encoding="utf-8")
-    auto_commit(proj_dir, "Initial project creation")
+    repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
     return {"success": True, "project": name}
 
 @app.get("/projects/{name}/files")
-def list_files(name: str):
-    proj_dir = PROJECTS_DIR / name
-    if not proj_dir.exists():
-        return JSONResponse(status_code=404, content={"error": "Project not found"})
-    files = [p.name for p in proj_dir.glob("*.py") if p.is_file()]
-    # Ensure design.py is always first if it exists
-    if "design.py" in files:
-        files.remove("design.py")
-        files.insert(0, "design.py")
+def list_files(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        if repo.get_project(name) is None:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        files = repo.list_files(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
     return {"files": files}
 
 @app.get("/projects/{name}/code")
-def get_code(name: str, file: str = "design.py"):
-    # Security: prevent directory traversal
-    if "/" in file or "\\" in file or not file.endswith(".py"):
-        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
-        
-    script_file = PROJECTS_DIR / name / file
-    if script_file.exists():
-        if file == "design.py":
-            ACTIVE_PROJECT.write_text(str(script_file), encoding="utf-8")
-        return {"code": script_file.read_text(encoding="utf-8")}
-    return JSONResponse(status_code=404, content={"error": "File not found"})
+def get_code(
+    name: str,
+    file: str = "design.py",
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    try:
+        code = ProjectRepository(db, ctx.tenant_id).get_code(name, file)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if code is None:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    return {"code": code}
 
 @app.get("/projects/{name}/status")
-def get_status(name: str, file: str = "design.py"):
-    if "/" in file or "\\" in file or not file.endswith(".py"):
-        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
-    script_file = PROJECTS_DIR / name / file
-    if script_file.exists():
-        return {"mtime": script_file.stat().st_mtime}
-    return JSONResponse(status_code=404, content={"error": "Project not found"})
+def get_status(
+    name: str,
+    file: str = "design.py",
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        filename = require_valid_python_filename(file)
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    project_file = db.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == ctx.tenant_id,
+            ProjectFile.project_id == project.id,
+            ProjectFile.filename == filename,
+        )
+    )
+    if project_file is None:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    return {"mtime": project_file.updated_at.timestamp()}
 
 @app.get("/projects/{name}/git_status")
-def get_git_status(name: str):
-    proj_dir = PROJECTS_DIR / name
-    if not proj_dir.exists():
-        return JSONResponse(status_code=404, content={"error": "Project not found"})
-        
-    if not (proj_dir / ".git").exists():
-        return {"is_git": False}
-        
+def get_git_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     try:
-        commit_res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=proj_dir, capture_output=True, text=True)
-        commit_hash = commit_res.stdout.strip()
-        
-        log_res = subprocess.run(["git", "log", "--oneline", "-n", "50"], cwd=proj_dir, capture_output=True, text=True)
-        history = log_res.stdout.strip().splitlines()
-        
-        return {
-            "is_git": True,
-            "commit": commit_hash,
-            "history": history
-        }
-    except Exception as e:
-        return {"is_git": False, "error": str(e)}
+        history = ProjectRepository(db, ctx.tenant_id).snapshot_history(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if history is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    commit = history[0].split(" ", 1)[0] if history else ""
+    return {"is_git": True, "commit": commit, "history": history}
 
 @app.post("/projects/{name}/save")
-def save_code(name: str, req: CodeRequest):
+def save_code(name: str, req: CodeRequest, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     file = req.file or "design.py"
-    if "/" in file or "\\" in file or not file.endswith(".py"):
-        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
-        
-    script_file = PROJECTS_DIR / name / file
-    if script_file.parent.exists():
-        script_file.write_text(req.code, encoding="utf-8")
-        auto_commit(PROJECTS_DIR / name, f"Manual save {file} via Intus")
-        return {"success": True}
-    return JSONResponse(status_code=404, content={"error": "Project not found"})
+    try:
+        saved = ProjectRepository(db, ctx.tenant_id).save_code(
+            name,
+            file,
+            req.code,
+            ctx.user_id,
+            f"Manual save {file} via Intus",
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if not saved:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    return {"success": True}
 
 @app.delete("/projects/{name}/file")
-def delete_file(name: str, file: str):
-    if "/" in file or "\\" in file or not file.endswith(".py"):
-        return JSONResponse(status_code=400, content={"error": "Invalid filename"})
-    if file == "design.py":
-        return JSONResponse(status_code=400, content={"error": "Cannot delete design.py"})
-        
-    script_file = PROJECTS_DIR / name / file
-    if script_file.exists():
-        script_file.unlink()
-        
-        proj_dir = PROJECTS_DIR / name
-        import subprocess
-        subprocess.run(["git", "rm", file], cwd=proj_dir, capture_output=True)
-        auto_commit(proj_dir, f"Deleted {file} via Intus")
-        
-        return {"success": True}
-    return JSONResponse(status_code=404, content={"error": "File not found"})
+def delete_file(name: str, file: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    try:
+        deleted = ProjectRepository(db, ctx.tenant_id).delete_file(name, file)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if not deleted:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    return {"success": True}
 
 @app.post("/projects/{name}/compile")
 def compile_project(name: str, req: CompileRequest):

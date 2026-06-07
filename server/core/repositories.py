@@ -149,6 +149,19 @@ class ProjectRepository:
         ).all()
         return {file.filename: file.content for file in files}
 
+    def snapshot_history(self, project_name: str) -> list[str] | None:
+        project = self.get_project(project_name)
+        if project is None:
+            return None
+
+        rows = self.db.scalars(
+            select(SourceSnapshot)
+            .where(SourceSnapshot.tenant_id == self.tenant_id, SourceSnapshot.project_id == project.id)
+            .order_by(SourceSnapshot.created_at.desc())
+            .limit(50)
+        ).all()
+        return [f"{row.content_hash[:7]} {row.message}" for row in rows]
+
     def _snapshot(self, project: Project, user_id: UUID, message: str) -> None:
         files = self.db.scalars(
             select(ProjectFile)
