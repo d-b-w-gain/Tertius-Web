@@ -1,0 +1,47 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "tertius.appDbName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  instances: {{ .Values.postgres.instances }}
+  imageName: {{ .Values.postgres.imageName | quote }}
+  storage:
+    size: {{ .Values.postgres.storage.size | quote }}
+    {{- if .Values.postgres.storage.storageClass }}
+    storageClass: {{ .Values.postgres.storage.storageClass | quote }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.postgres.database | quote }}
+      owner: {{ .Values.postgres.owner | quote }}
+      secret:
+        name: {{ .Values.postgres.appUserSecretName | quote }}
+{{- end }}
+{{- if .Values.keycloak.enabled }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "tertius.keycloakDbName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keycloak-postgres
+spec:
+  instances: {{ .Values.keycloak.database.instances }}
+  imageName: {{ .Values.keycloak.database.imageName | quote }}
+  storage:
+    size: {{ .Values.keycloak.database.storage.size | quote }}
+    {{- if .Values.keycloak.database.storage.storageClass }}
+    storageClass: {{ .Values.keycloak.database.storage.storageClass | quote }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: {{ .Values.keycloak.database.database | quote }}
+      owner: {{ .Values.keycloak.database.owner | quote }}
+      secret:
+        name: {{ .Values.keycloak.database.appUserSecretName | quote }}
+{{- end }}

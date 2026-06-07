@@ -1,0 +1,80 @@
+app:
+  environment: local
+  config:
+    oidcIssuerUrl: http://localhost:8081/realms/tertius
+  secret:
+    create: true
+    databaseUrl: postgresql://tertius:tertius-local-password@tertius-postgres-rw:5432/tertius
+    valkeyUrl: redis://tertius-valkey:6379/0
+
+api:
+  replicaCount: 1
+  image:
+    repository: localhost/tertius-api
+    tag: local
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 2Gi
+    storageClassName: local-path
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+ui:
+  replicaCount: 1
+  image:
+    repository: localhost/tertius-ui
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+postgres:
+  instances: 1
+  appUserSecret:
+    create: true
+    password: tertius-local-password
+  storage:
+    size: 2Gi
+    storageClass: local-path
+
+keycloak:
+  instances: 1
+  hostname: http://keycloak.localhost
+  adminHostname: http://keycloak.localhost
+  database:
+    instances: 1
+    appUserSecret:
+      create: true
+      password: keycloak-local-password
+    storage:
+      size: 2Gi
+      storageClass: local-path
+  realmImport:
+    enabled: true
+
+cloudflared:
+  enabled: false
+  replicaCount: 1
+
+valkey:
+  dataStorage:
+    enabled: true
+    requestedSize: 1Gi
+    className: local-path
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi

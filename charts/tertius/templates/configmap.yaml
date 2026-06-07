@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tertius.configName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.app.environment | quote }}
+  API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
+  OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
+  OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
+  OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}
+  APP_DB_HOST: {{ printf "%s-rw" (include "tertius.appDbName" .) | quote }}
+  APP_DB_NAME: {{ .Values.postgres.database | quote }}
+  APP_DB_OWNER: {{ .Values.postgres.owner | quote }}
+  KEYCLOAK_DB_HOST: {{ printf "%s-rw" (include "tertius.keycloakDbName" .) | quote }}
+  KEYCLOAK_HOSTNAME: {{ .Values.keycloak.hostname | quote }}
+  VALKEY_SERVICE_NAME: {{ printf "%s-valkey" .Release.Name | quote }}

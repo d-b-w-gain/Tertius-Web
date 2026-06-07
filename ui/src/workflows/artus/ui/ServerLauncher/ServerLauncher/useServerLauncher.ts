@@ -1,9 +1,58 @@
-import { useState, useEffect } from 'react';
+import { resolveWorkflowServerUrl } from '../../../../shared/apiConfig'
 
-export function useServerLauncher(config: any) {
+type LauncherConfig = {
+  serverName: string;
+  [key: string]: unknown;
+};
+
+type DependencyStatus = {
+  installed?: boolean;
+  importValid?: boolean;
+  importError?: string;
+};
+
+export interface ServerHandle {
+  pythonInstalled: boolean | null;
+  installingPython: boolean;
+  availableVenvs: string[];
+  selectedVenv: string;
+  port: number;
+  portFree: boolean | null;
+  packages: string[];
+  depsStatus: Record<string, DependencyStatus>;
+  checkingDeps: boolean;
+  installingDeps: boolean;
+  allDepsInstalled: boolean;
+  serverRunning: boolean;
+  connected: boolean;
+  connecting: boolean;
+  connectionError: string | null;
+  serverUrl: string;
+  autoStart: boolean;
+  logs: string[];
+  creatingVenv: boolean;
+  gpuInfo: { type: 'cuda' | 'mps' | 'cpu'; name?: string; cudaVersion?: string } | null;
+  modelsPath: string | null;
+  downloadProgress: { sizeFormatted: string } | null;
+  needsFfmpeg: boolean;
+  ffmpegInstalled: boolean;
+  installingFfmpeg: boolean;
+  setSelectedVenv: (value: string) => void;
+  setPort: (value: number) => void;
+  setAutoStart: (value: boolean) => void;
+  installPython: () => Promise<void>;
+  installDeps: () => Promise<void>;
+  installFfmpeg: () => Promise<void>;
+  startServer: () => Promise<void>;
+  stopServer: () => Promise<void>;
+  createVenv: (name: string) => Promise<void>;
+  addLog: (message: string) => void;
+}
+
+export function useServerLauncher(config: LauncherConfig): ServerHandle {
+  const baseUrl = import.meta.env?.VITE_API_URL;
   const workflowBase = config.serverName.split('-')[0];
-  const baseUrl = import.meta.env?.VITE_API_URL || 'http://localhost:8000';
-  const serverUrl = `${baseUrl}/api/${workflowBase}`;
+  const serverUrl = resolveWorkflowServerUrl(workflowBase, baseUrl);
   
   return {
     pythonInstalled: true, installingPython: false, availableVenvs: ['docker'], selectedVenv: 'docker', port: 8000, portFree: false,
