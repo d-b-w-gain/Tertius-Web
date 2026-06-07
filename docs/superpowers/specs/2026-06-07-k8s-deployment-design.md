@@ -234,6 +234,76 @@ The README will document:
 12. Wait for Deployments, CloudNativePG Clusters, Valkey, and Keycloak to become ready.
 13. Port-forward the UI, API, and Keycloak services for smoke testing.
 
+### k3s End-to-End Test Harness
+
+The implementation should add a repeatable test path for an already-running k3s cluster. Prefer a script at `scripts/test-k3s-deployment.sh` plus README instructions, so the full deployment can be validated without remembering a long command sequence.
+
+The script should be safe to run repeatedly. It should fail fast, print the command being executed, and include enough context on failure for the next debugging step.
+
+Required inputs:
+
+- `KUBECONFIG`, defaulting to the user's active Kubernetes context.
+- `NAMESPACE`, defaulting to `tertius`.
+- `RELEASE_NAME`, defaulting to `tertius`.
+- `API_IMAGE`, defaulting to the local k3s image tag from `values-local.yaml`.
+- `UI_IMAGE`, defaulting to the local k3s image tag from `values-local.yaml`.
+- `ENABLE_TUNNEL`, defaulting to `false`.
+- optional `TUNNEL_TOKEN_SECRET_NAME` when tunnel testing is enabled.
+
+Required checks before install:
+
+- `kubectl cluster-info` succeeds against the selected context.
+- The selected cluster reports k3s-compatible nodes through `kubectl get nodes`.
+- `helm version` succeeds.
+- CloudNativePG CRDs are installed, including `clusters.postgresql.cnpg.io`.
+- Keycloak Operator CRDs are installed, including `keycloaks.k8s.keycloak.org`.
+- Valkey chart dependencies can be resolved through `helm dependency update charts/tertius`.
+- Local API and UI images exist in k3s or can be imported before install.
+
+Required install/upgrade flow:
+
+1. Build the API image from `Dockerfile.api`.
+2. Build the UI image from `Dockerfile.ui`.
+3. Load both images into k3s, using either a local registry or `k3s ctr images import`.
+4. Run `helm lint charts/tertius`.
+5. Run `helm template charts/tertius --values charts/tertius/values-local.yaml`.
+6. Install or upgrade with `helm upgrade --install`.
+7. Wait for API and UI Deployments to become available.
+8. Wait for CloudNativePG application and Keycloak database clusters to report readiness.
+9. Wait for Valkey to become ready.
+10. Wait for the Keycloak CR to report readiness.
+11. If `ENABLE_TUNNEL=true`, verify the `cloudflared` Deployment becomes available.
+
+Required smoke tests:
+
+- Port-forward the UI Service to a local port and verify `GET /` returns HTML.
+- Through the UI port-forward, verify `GET /api/` reaches the FastAPI root through nginx reverse proxying.
+- Through the UI port-forward, verify `GET /api/intus/health` returns healthy JSON.
+- Port-forward the API Service directly and verify `GET /` returns the backend status JSON.
+- Verify the API PVC is bound and mounted by the API pod.
+- Run a short in-cluster Postgres check using a temporary pod or operator-provided connection secret. This should confirm connection to both the future Tertius app database and the Keycloak database.
+- Run a short in-cluster Valkey check using `valkey-cli PING` from a temporary pod or the Valkey chart's test pod if available.
+- Port-forward Keycloak and verify the well-known OIDC configuration endpoint responds for the configured realm when realm import is enabled. If realm import is disabled, verify the Keycloak root or health endpoint responds instead.
+- If `ENABLE_TUNNEL=true`, verify the configured Cloudflare hostname returns the UI and that `/api/intus/health` works through the tunnel.
+
+Required cleanup behavior:
+
+- The script should not delete the namespace by default.
+- Add an explicit `--cleanup` option that uninstalls the Helm release and deletes only resources created by this deployment test.
+- Preserve PVCs by default; require an explicit `--delete-data` option before deleting PVCs or CloudNativePG clusters.
+
+The README should include a compact example:
+
+```bash
+scripts/test-k3s-deployment.sh
+```
+
+and a tunnel-enabled example:
+
+```bash
+ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-deployment.sh
+```
+
 ## Health Checks
 
 API probes:
