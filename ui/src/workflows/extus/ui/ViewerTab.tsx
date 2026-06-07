@@ -201,7 +201,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
             }
           }
         } else {
-          if (mounted) setStatusText('No active_output.stl found yet. Compile a project in Intus!');
+          if (mounted) setStatusText('No active STL artifact found yet. Compile a project in Intus!');
         }
       } catch (e) {
         if (mounted) setStatusText('Lost connection to file server.');

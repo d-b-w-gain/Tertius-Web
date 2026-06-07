@@ -30,8 +30,6 @@ app.add_middleware(
 )
 
 WORKFLOW_DIR = Path(__file__).parent
-CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
-PROJECTS_DIR = CACHE_ROOT / 'intus'
 
 
 def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> ProjectFile | None:

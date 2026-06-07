@@ -30,15 +30,6 @@ app.add_middleware(
 )
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
-PROJECTS_DIR = CACHE_ROOT / 'intus'
-ACTIVE_STL = CACHE_ROOT / 'active_output.stl'
-ACTIVE_PROJECT = CACHE_ROOT / 'active_project.txt'
-
-CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-
-# ── Default Script ─────────────────────────────────────────────────────────────
 TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
 
 def get_default_purlin():
@@ -47,37 +38,6 @@ def get_default_purlin():
     return ""
 
 DEFAULT_PURLIN = get_default_purlin()
-
-def init_defaults_if_needed():
-    if not list(PROJECTS_DIR.iterdir()):
-        default_proj = PROJECTS_DIR / "default_purlin"
-        default_proj.mkdir(parents=True, exist_ok=True)
-        (default_proj / "design.py").write_text(DEFAULT_PURLIN, encoding="utf-8")
-
-init_defaults_if_needed()
-
-import subprocess
-
-def auto_commit(proj_dir: Path, message: str):
-    """Initializes git (if needed) and commits design.py if there are changes."""
-    try:
-        if not (proj_dir / ".git").exists():
-            subprocess.run(["git", "init"], cwd=proj_dir, capture_output=True)
-            
-        subprocess.run(["git", "config", "user.name", "Intus Compiler"], cwd=proj_dir, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "intus@tertius.local"], cwd=proj_dir, capture_output=True)
-            
-        py_files = [p.name for p in proj_dir.glob("*.py")]
-        if py_files:
-            subprocess.run(["git", "add"] + py_files, cwd=proj_dir, capture_output=True)
-        
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=proj_dir, capture_output=True, text=True)
-        if status.stdout.strip():
-            res = subprocess.run(["git", "commit", "-m", message], cwd=proj_dir, capture_output=True, text=True)
-            if res.returncode != 0:
-                print(f"Commit failed: {res.stderr}")
-    except Exception as e:
-        print(f"Git auto-commit failed: {e}")
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):

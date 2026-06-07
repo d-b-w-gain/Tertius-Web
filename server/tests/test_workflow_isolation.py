@@ -212,10 +212,8 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
     db_session,
     seeded_tenant,
     monkeypatch,
-    tmp_path,
 ):
     tenant_code = "TENANT_DESIGN = True"
-    global_code = "GLOBAL_DESIGN = True"
     db_design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -225,9 +223,6 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
     )
     db_design.content = tenant_code
     db_session.commit()
-    global_project = tmp_path / "default_purlin"
-    global_project.mkdir()
-    (global_project / "design.py").write_text(global_code, encoding="utf-8")
 
     captured = {}
 
@@ -243,7 +238,6 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
         captured["code"] = code
         return FakeCompound()
 
-    monkeypatch.setattr(timus_server, "PROJECTS_DIR", tmp_path)
     monkeypatch.setattr(timus_server, "get_compound_from_code", fake_compound_from_code)
 
     response = authenticated_timus_client.get("/projects/default_purlin/bounds")
@@ -258,7 +252,6 @@ def test_timus_drafting_pdf_does_not_read_other_or_global_design(
     db_session,
     seeded_tenant,
     monkeypatch,
-    tmp_path,
 ):
     db_design = db_session.scalar(
         select(ProjectFile).where(
@@ -294,11 +287,7 @@ def test_timus_drafting_pdf_does_not_read_other_or_global_design(
         )
     )
     db_session.commit()
-    global_project = tmp_path / "default_purlin"
-    global_project.mkdir()
-    (global_project / "design.py").write_text("GLOBAL_DESIGN = True", encoding="utf-8")
 
-    monkeypatch.setattr(timus_server, "PROJECTS_DIR", tmp_path)
     monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code: object())
     monkeypatch.setattr(
         timus_server,
