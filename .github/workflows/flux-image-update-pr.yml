@@ -17,7 +17,7 @@ jobs:
     steps:
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLUX_IMAGE_UPDATE_PAT }}
           HEAD_BRANCH: flux-image-updates
           BASE_BRANCH: master
         run: |
