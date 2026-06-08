@@ -4,9 +4,20 @@ metadata:
   name: {{ include "tertius.configName" . }}
   labels:
     {{- include "tertius.labels" . | nindent 4 }}
+{{- $keycloakHost := default (printf "%s-service" (include "tertius.keycloakName" .)) .Values.ui.keycloakServiceHost }}
+{{- $keycloakPort := default "8080" .Values.ui.keycloakServicePort }}
+{{- $keycloakIssuerFromValues := .Values.app.config.keycloakIssuerUrl | trim | default "" }}
+{{- $realmName := default "tertius" .Values.keycloak.realmImport.realm }}
+{{- $keycloakAudience := default .Values.app.config.oidcAudience .Values.app.config.keycloakAudience }}
+{{- $keycloakIssuer := $keycloakIssuerFromValues }}
+{{- if not $keycloakIssuer }}
+{{- $keycloakIssuer = printf "http://%s:%s/realms/%s" $keycloakHost $keycloakPort $realmName }}
+{{- end }}
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
   API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
+  KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
+  KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}

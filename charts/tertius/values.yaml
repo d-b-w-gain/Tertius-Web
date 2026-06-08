@@ -11,6 +11,8 @@ app:
   environment: production
   config:
     apiBasePath: /api
+    keycloakAudience: tertius-web
+    keycloakIssuerUrl: ""
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api

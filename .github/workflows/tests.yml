@@ -48,6 +48,8 @@ jobs:
       UV_CACHE_DIR: .uv-cache
       POSTGRES_TEST_IMAGE: postgres:16
       TESTCONTAINERS_RYUK_DISABLED: "true"
+      TESTCONTAINERS_DOCKER_CLIENT_TIMEOUT: "300"
+      TESTCONTAINERS_DOCKER_CONTAINER_CREATE_TIMEOUT: "300"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
