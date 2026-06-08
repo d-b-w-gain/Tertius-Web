@@ -1,16 +1,12 @@
 nameOverride: ""
 fullnameOverride: ""
-
 imagePullSecrets: []
-
 serviceAccount:
   create: false
   name: ""
   annotations: {}
-
 podSecurityContext:
   fsGroup: 1000
-
 app:
   environment: production
   config:
@@ -24,12 +20,11 @@ app:
     databaseUrl: ""
     valkeyUrl: redis://tertius-valkey:6379/0
     oidcClientSecret: ""
-
 api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-0-initial # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-4-de8efd5 # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -58,12 +53,11 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
-
 ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-0-initial # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    tag: master-4-de8efd5 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:
@@ -76,7 +70,6 @@ ui:
     limits:
       cpu: 250m
       memory: 256Mi
-
 postgres:
   enabled: true
   name: ""
@@ -94,7 +87,6 @@ postgres:
     storageClass: local-path
   backup:
     enabled: false
-
 keycloak:
   enabled: true
   name: ""
@@ -133,7 +125,6 @@ keycloak:
     realm: tertius
     uiClientId: tertius-ui
     apiClientId: tertius-api
-
 cloudflared:
   enabled: false
   replicaCount: 1
@@ -150,10 +141,8 @@ cloudflared:
     limits:
       cpu: 250m
       memory: 256Mi
-
 networkPolicy:
   enabled: false
-
 valkey:
   enabled: true
   image:
