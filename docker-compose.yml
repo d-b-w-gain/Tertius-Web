@@ -5,6 +5,7 @@ services:
       - "8000:8000"
     volumes:
       - ./server:/app/server
+      - ./artifacts:/tmp/tertius-artifacts
 
   frontend:
     image: node:20
@@ -38,6 +39,7 @@ services:
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_PROXY_HEADERS: xforwarded
     volumes:
       - ./infra/keycloak/tertius-realm.json:/opt/keycloak/data/import/tertius-realm.json:ro
 

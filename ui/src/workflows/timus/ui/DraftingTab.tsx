@@ -21,6 +21,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [debouncedTitle, setDebouncedTitle] = useState('UNTITLED PART');
   
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const pdfUrlRef = useRef<string | null>(null);
@@ -52,20 +53,26 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [title]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchActive = async () => {
       try {
-        const res = await apiFetch(`${intusUrl}/projects`, getAccessToken);
-        if (res.ok) {
+        const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (res.ok && isMounted) {
            const data = await res.json();
-           const projects = data.projects || [];
-           if (projects.length > 0) setActiveProject(projects[0]);
+           if (data.project_name) setActiveProject(data.project_name);
         }
       } catch (e) {
-        console.error("Failed to fetch projects");
+        console.error("Failed to fetch active project");
       }
     };
+    
     fetchActive();
-  }, [intusUrl, getAccessToken]);
+    const interval = setInterval(fetchActive, 2000);
+    return () => {
+        isMounted = false;
+        clearInterval(interval);
+    };
+  }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -153,9 +160,18 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         const res = await apiFetch(getPreviewUrl(), getAccessToken);
         if (res.ok && isMounted) {
           const blob = await res.blob();
+          setError(null);
           replacePdfUrl(URL.createObjectURL(blob));
+        } else if (!res.ok && isMounted) {
+          const text = await res.text();
+          setError(text || "Failed to generate PDF");
+          setPdfUrl(null);
         }
       } catch (e) {
+        if (isMounted) {
+          setError(e instanceof Error ? e.message : "Unknown error");
+          setPdfUrl(null);
+        }
         console.error("Failed to load PDF preview:", e);
       }
       if (isMounted) setIsGenerating(false);
@@ -376,13 +392,23 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               <div className="font-bold tracking-widest text-sm animate-pulse">COMPILING VECTOR VIEWS...</div>
             </div>
           )}
-          {pdfUrl && (
+          {error ? (
+            <div className="w-full h-full flex items-center justify-center bg-slate-900 rounded-lg border-2 border-red-900/50 p-8 text-center">
+              <div>
+                <svg className="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <h3 className="text-xl font-bold text-red-400 mb-2">Drafting Generation Failed</h3>
+                <p className="text-slate-400 font-mono text-sm max-w-lg mx-auto bg-slate-950 p-4 rounded whitespace-pre-wrap">{error}</p>
+              </div>
+            </div>
+          ) : pdfUrl ? (
             <iframe
               src={`${pdfUrl}#toolbar=0&navpanes=0`}
-              className="w-full h-full border-0 bg-white relative z-0"
-              title="Timus Drafting Sheet Preview"
+              className="w-full h-full border-none bg-white rounded-lg shadow-inner"
+              title="PDF Preview"
             />
-          )}
+          ) : null}
         </div>
       </div>
     </div>

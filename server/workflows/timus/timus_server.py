@@ -17,8 +17,9 @@ import build123d as bd
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
-from core.models import ProjectFile, TimusSettings
+from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project
 from core.repositories import ProjectRepository
+from core.compile_runtime import hydrate_project_files
 
 app = FastAPI(title="Timus Drafting Server")
 app.add_middleware(
@@ -31,6 +32,22 @@ app.add_middleware(
 
 WORKFLOW_DIR = Path(__file__).parent
 
+
+def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
+    state = db.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == ctx.user_id,
+            UserWorkspaceState.tenant_id == ctx.tenant_id,
+        )
+    )
+    if state is None or state.active_project_id is None:
+        return None
+    return db.scalar(
+        select(Project).where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.id == state.active_project_id,
+        )
+    )
 
 def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> ProjectFile | None:
     try:
@@ -49,9 +66,19 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
     )
 
 
-def get_compound_from_code(code: str) -> bd.Compound:
+def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
     env = {"bd": bd, "build123d": bd}
-    exec(code, env)
+    
+    if project_dir is not None:
+        import sys
+        if project_dir not in sys.path:
+            sys.path.insert(0, project_dir)
+            
+    try:
+        exec(code, env)
+    finally:
+        if project_dir is not None and project_dir in sys.path:
+            sys.path.remove(project_dir)
     shapes = []
     for val in env.values():
         if isinstance(val, bd.Shape) and hasattr(val, "volume"):
@@ -405,6 +432,15 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
 def health_check():
     return {"status": "ok"}
 
+@app.get("/project_name")
+def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    project = get_active_project(db, ctx)
+    if project is None:
+        print("TIMUS PROJECT NAME IS NONE")
+        return {"project_name": ""}
+    print(f"TIMUS PROJECT NAME IS {project.name}")
+    return {"project_name": project.name}
+
 
 @app.get("/projects/{name}/settings")
 def get_timus_settings(
@@ -496,6 +532,8 @@ def get_project_bounds(
             max_dim = 100
         return {"max_dim": max_dim}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
 
 @app.get("/projects/{name}/drafting.pdf")
@@ -517,7 +555,11 @@ def get_drafting_pdf(
     try:
         mtime = design_file.updated_at.timestamp()
         code = design_file.content
-        compound = get_compound_from_code(code)
+        
+        repo = ProjectRepository(db, ctx.tenant_id)
+        files = repo.files_for_runtime(name)
+        with hydrate_project_files(files) as project_dir:
+            compound = get_compound_from_code(code, str(project_dir))
         
         # Get cached views
         cache_key = f"{ctx.tenant_id}:{design_file.project_id}:{name}"
@@ -574,15 +616,14 @@ def get_drafting_pdf(
             
         pdf_bytes = bytes(pdf.output())
         
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "inline"}
-        )
+        headers = {
+            "Content-Disposition": f"inline; filename=\"{name}_drafting.pdf\""
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
         
     except Exception as e:
-        err = traceback.format_exc()
-        print(f"Error generating PDF:\n{err}")
+        import traceback
+        traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
 
 if __name__ == "__main__":

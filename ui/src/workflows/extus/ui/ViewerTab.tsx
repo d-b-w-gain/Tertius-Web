@@ -54,7 +54,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
     rendererRef.current = renderer;
@@ -80,8 +80,12 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     canvas.addEventListener('wheel', handleInteraction);
     
     // Lighting setup
-    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    ambientLight.name = 'Ambient';
+    scene.add(ambientLight);
+    
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    hemiLight.name = 'Hemi';
     hemiLight.position.set(0, 0, 200);
     scene.add(hemiLight);
 

@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -371,12 +372,10 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
             >
               <h2 className="text-lg font-bold text-slate-100 flex flex-wrap items-center gap-2">
                 <span className="text-emerald-500 shrink-0">🌲</span> Parametric Variables
-                {projectName && (
-                  <span className="text-xs font-normal text-slate-500 bg-slate-900 px-2 py-0.5 rounded-full border border-slate-800 shrink-0 truncate max-w-[140px]" title={projectName}>
-                    {projectName}
-                  </span>
-                )}
               </h2>
+              <div onClick={e => e.stopPropagation()}>
+                  <ProjectSelector />
+              </div>
               <div 
                 className="flex items-center gap-2 shrink-0 ml-auto"
                 onClick={e => e.stopPropagation()}

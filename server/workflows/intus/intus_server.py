@@ -16,7 +16,7 @@ from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
 from core.db import get_db
-from core.models import CompileJob, ProjectFile
+from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
 from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
 
 app = FastAPI(title="Intus Compiler Server")
@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
 
 def get_default_purlin():
@@ -39,7 +39,7 @@ def get_default_purlin():
 
 DEFAULT_PURLIN = get_default_purlin()
 
-# ── Models ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class CodeRequest(BaseModel):
     code: str
     file: Optional[str] = "design.py"
@@ -49,7 +49,7 @@ class CompileRequest(BaseModel):
     export_format: str = "stl"
     file: Optional[str] = "design.py"
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/health")
 def health():
     try:
@@ -58,6 +58,26 @@ def health():
     except ImportError:
         has_b3d = False
     return {"status": "ok", "build123d_installed": has_b3d}
+
+@app.get("/project_name")
+def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    state = db.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == ctx.user_id,
+            UserWorkspaceState.tenant_id == ctx.tenant_id,
+        )
+    )
+    if state is None or state.active_project_id is None:
+        return {"project_name": ""}
+    project = db.scalar(
+        select(Project).where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.id == state.active_project_id,
+        )
+    )
+    if project is None:
+        return {"project_name": ""}
+    return {"project_name": project.name}
 
 @app.get("/projects")
 def list_projects(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -74,6 +94,17 @@ def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Ses
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
     repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
     return {"success": True, "project": name}
+
+@app.post("/projects/{name}/activate")
+def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        success = repo.activate_project(name, ctx.user_id)
+        if not success:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        return {"success": True}
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
 @app.get("/projects/{name}/files")
 def list_files(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -174,7 +205,7 @@ def compile_project(
 ):
     file = req.file or "design.py"
     ext = req.export_format.lower()
-    if ext not in ["stl", "step", "gltf"]:
+    if ext not in ["stl", "step", "gltf", "glb"]:
         ext = "stl"
 
     repo = ProjectRepository(db, ctx.tenant_id)

@@ -18,11 +18,14 @@ class Settings(BaseSettings):
     database_url: str = Field(default="postgresql+psycopg://tertius:tertius@localhost:5432/tertius")
     keycloak_issuer: str = Field(default="http://localhost:8080/realms/tertius")
     keycloak_audience: str = Field(default="tertius-web")
+    keycloak_jwks_url_override: str | None = Field(default=None)
     artifact_root: str = Field(default="/tmp/tertius-artifacts")
     allowed_origins: str = Field(default="http://localhost:5173")
 
     @property
     def keycloak_jwks_url(self) -> str:
+        if self.keycloak_jwks_url_override:
+            return self.keycloak_jwks_url_override
         return f"{self.keycloak_issuer.rstrip('/')}/protocol/openid-connect/certs"
 
     @property

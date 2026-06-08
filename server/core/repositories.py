@@ -41,6 +41,26 @@ class ProjectRepository:
         name = require_valid_project_name(name)
         return self.db.scalar(select(Project).where(Project.tenant_id == self.tenant_id, Project.name == name))
 
+    def activate_project(self, project_name: str, user_id: UUID) -> bool:
+        from core.models import UserWorkspaceState
+        project = self.get_project(project_name)
+        if project is None:
+            return False
+
+        state = self.db.scalar(
+            select(UserWorkspaceState).where(
+                UserWorkspaceState.user_id == user_id,
+                UserWorkspaceState.tenant_id == self.tenant_id,
+            )
+        )
+        if state is None:
+            state = UserWorkspaceState(user_id=user_id, tenant_id=self.tenant_id, active_project_id=project.id)
+            self.db.add(state)
+        else:
+            state.active_project_id = project.id
+        self.db.commit()
+        return True
+
     def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
         name = require_valid_project_name(name)
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)

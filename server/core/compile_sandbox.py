@@ -58,8 +58,8 @@ try:
         bd.export_stl(compound, str(output_path))
     elif export_format == "step":
         bd.export_step(compound, str(output_path))
-    elif export_format == "gltf" and hasattr(bd, "export_gltf"):
-        bd.export_gltf(compound, str(output_path))
+    elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
+        bd.export_gltf(compound, str(output_path), binary=(export_format=="glb"))
     else:
         raise RuntimeError(f"Unsupported export format: {export_format}")
 except Exception:
