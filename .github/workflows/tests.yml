@@ -32,6 +32,10 @@ jobs:
         working-directory: ui
         run: npm run lint
 
+      - name: Typecheck UI
+        working-directory: ui
+        run: npx tsc --noEmit
+
       - name: Build UI
         working-directory: ui
         run: npm run build
