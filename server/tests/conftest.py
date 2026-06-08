@@ -23,9 +23,13 @@ from workflows.timus.timus_server import app as timus_app
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 
+def postgres_test_image() -> str:
+    return os.environ.get("POSTGRES_TEST_IMAGE", "postgres:16")
+
+
 @pytest.fixture(scope="session")
 def postgres_url() -> Generator[str, None, None]:
-    with PostgresContainer("postgres:16") as postgres:
+    with PostgresContainer(postgres_test_image()) as postgres:
         host = postgres.get_container_host_ip()
         port = postgres.get_exposed_port(5432)
         username = postgres.username
