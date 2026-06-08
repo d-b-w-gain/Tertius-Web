@@ -1,0 +1,18 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: tertius-web
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/d-b-w-gain/Tertius-Web.git
+  ref:
+    branch: master
+  ignore: |
+    /*
+    !/clusters/
+    !/clusters/production/
+    !/clusters/production/**
+    !/charts/
+    !/charts/tertius/
+    !/charts/tertius/**
