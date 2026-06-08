@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chart-tests.yml'
+      - '.github/workflows/flux-image-update-pr.yml'
       - '.github/workflows/images.yml'
       - 'charts/**'
       - 'clusters/production/kustomization.yaml'
@@ -21,6 +22,7 @@ on:
       - master
     paths:
       - '.github/workflows/chart-tests.yml'
+      - '.github/workflows/flux-image-update-pr.yml'
       - '.github/workflows/images.yml'
       - 'charts/**'
       - 'clusters/production/kustomization.yaml'

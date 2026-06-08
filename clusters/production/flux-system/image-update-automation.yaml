@@ -17,11 +17,11 @@ spec:
         name: fluxcdbot
         email: fluxcdbot@users.noreply.github.com
       messageTemplate: |
-        chore: update deployed image tags [skip ci]
+        chore: update deployed image tags
 
         {{range .Changed.Objects}}{{println .}}{{end}}
     push:
-      branch: master
+      branch: flux-image-updates
   update:
     path: ./charts/tertius
     strategy: Setters

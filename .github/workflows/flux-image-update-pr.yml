@@ -1,0 +1,47 @@
+name: Flux Image Update PR
+
+on:
+  push:
+    branches:
+      - flux-image-updates
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  image-update-pr:
+    name: Create image update PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: flux-image-updates
+          BASE_BRANCH: master
+        run: |
+          set -euo pipefail
+
+          pr_number="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${HEAD_BRANCH}" \
+            --base "${BASE_BRANCH}" \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""')"
+
+          if [ -z "${pr_number}" ]; then
+            pr_url="$(gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --head "${HEAD_BRANCH}" \
+              --base "${BASE_BRANCH}" \
+              --title "chore: update deployed image tags" \
+              --body "Flux image automation updated the deployed API/UI image tags.")"
+            pr_number="${pr_url##*/}"
+          fi
+
+          gh pr merge "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --auto \
+            --merge
