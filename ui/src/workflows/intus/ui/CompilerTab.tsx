@@ -1,17 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
-  const [projects, setProjects] = useState<string[]>([]);
+  const { getAccessToken } = useAuth();
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
-  const [format, setFormat] = useState<string>('gltf');
+  const [format, setFormat] = useState<string>('glb');
   const [quality, setQuality] = useState<string>('high');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
-  const [isCreating, setIsCreating] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
   
   const [files, setFiles] = useState<string[]>(['design.py']);
   const [activeFile, setActiveFile] = useState<string>('design.py');
@@ -30,8 +30,49 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [isCompiling]);
 
   useEffect(() => {
-    fetchProjects();
-  }, []);
+    let isMounted = true;
+    const fetchActiveProject = async () => {
+      try {
+        const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (res.ok && isMounted) {
+          const data = await res.json();
+          if (data.project_name && data.project_name !== activeProject) {
+            setActiveProject(data.project_name);
+            fetchGitStatus(data.project_name);
+            mtimeRef.current = 0; // Reset baseline for new project
+            // Fetch files for the new active project
+            try {
+              const filesRes = await apiFetch(`${serverUrl}/projects/${data.project_name}/files`, getAccessToken);
+              if (filesRes.ok) {
+                const filesData = await filesRes.json();
+                setFiles(filesData.files || ['design.py']);
+                if (filesData.files && filesData.files.length > 0) {
+                  const newFile = filesData.files[0];
+                  setActiveFile(newFile);
+                  
+                  // Fetch the initial code for this file
+                  try {
+                    const codeRes = await apiFetch(`${serverUrl}/projects/${data.project_name}/code?file=${newFile}`, getAccessToken);
+                    if (codeRes.ok) {
+                      const codeData = await codeRes.json();
+                      setCode(codeData.code || '');
+                    }
+                  } catch (e) {}
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    };
+    
+    fetchActiveProject();
+    const interval = setInterval(fetchActiveProject, 2000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [serverUrl, getAccessToken, activeProject]);
 
   // Poll for external file changes (e.g. from Artus)
   useEffect(() => {
@@ -40,7 +81,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     const checkSync = async () => {
       if (isCompilingRef.current) return;
       try {
-        const res = await fetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`);
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`, getAccessToken);
         if (!res.ok) return;
         const data = await res.json();
         
@@ -51,7 +92,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // File changed on disk! Sync it.
              mtimeRef.current = data.mtime;
              
-             const codeRes = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`);
+             const codeRes = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`, getAccessToken);
              if (!codeRes.ok) return;
              const codeData = await codeRes.json();
              const newCode = codeData.code || '';
@@ -61,7 +102,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // Trigger auto-compile silently
              setIsCompiling(true);
              try {
-               const compRes = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
+               const compRes = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
                  body: JSON.stringify({ code: newCode, export_format: format, quality, file: activeFile })
@@ -70,7 +111,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                if (compData.success) {
                  setLog(prev => prev + `\n[SUCCESS] Auto-compiled to ${compData.file}`);
                  // Update mtime to prevent loop
-                 const postStatusRes = await fetch(`${serverUrl}/projects/${activeProject}/status`);
+                 const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
                  if (postStatusRes.ok) {
                    const postStatus = await postStatusRes.json();
                    if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
@@ -92,11 +133,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, isActive, activeFile]);
+  }, [activeProject, serverUrl, format, isActive, activeFile, getAccessToken]);
 
   const fetchGitStatus = async (name: string) => {
     try {
-      const res = await fetch(`${serverUrl}/projects/${name}/git_status`);
+      const res = await apiFetch(`${serverUrl}/projects/${name}/git_status`, getAccessToken);
       if (res.ok) {
         const data = await res.json();
         setGitStatus(data);
@@ -108,57 +149,12 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
   };
 
-  const fetchProjects = async (selectName?: string) => {
-    try {
-      const res = await fetch(`${serverUrl}/projects`);
-      const data = await res.json();
-      const list = data.projects || [];
-      setProjects(list);
-      
-      let target = selectName;
-      if (!target) {
-        const last = localStorage.getItem('intus_last_project');
-        if (last && list.includes(last)) target = last;
-        else if (list.length > 0) target = list[0];
-      }
-      
-      if (target) {
-        selectProject(target);
-      }
-    } catch (e) {
-      console.error("Failed to fetch projects");
-    }
-  };
-
-  const selectProject = async (name: string) => {
-    setActiveProject(name);
-    localStorage.setItem('intus_last_project', name);
-    mtimeRef.current = 0; // Reset baseline for new project
-    try {
-      const filesRes = await fetch(`${serverUrl}/projects/${name}/files`);
-      const filesData = await filesRes.json();
-      const fileList = filesData.files || ['design.py'];
-      setFiles(fileList);
-      
-      const fileToLoad = fileList.includes('design.py') ? 'design.py' : fileList[0];
-      setActiveFile(fileToLoad);
-      
-      const res = await fetch(`${serverUrl}/projects/${name}/code?file=${fileToLoad}`);
-      const data = await res.json();
-      setCode(data.code || '');
-      setLog(`Loaded project: ${name}`);
-      fetchGitStatus(name);
-    } catch (e) {
-      setLog(`Failed to load project: ${name}`);
-    }
-  };
-
   const switchFile = async (fileName: string) => {
     if (fileName === activeFile) return;
     
     // Auto-save current before switching
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, file: activeFile })
@@ -168,7 +164,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     setActiveFile(fileName);
     mtimeRef.current = 0; // Prevent false-positive sync when switching files
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`);
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`, getAccessToken);
       const data = await res.json();
       setCode(data.code || '');
     } catch (e) {
@@ -187,7 +183,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
     
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/save`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: "", file: name })
@@ -207,7 +203,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
     
     try {
-      await fetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, {
+      await apiFetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, getAccessToken, {
         method: 'DELETE'
       });
       
@@ -222,31 +218,12 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
   };
 
-  const handleNewProjectSubmit = async () => {
-    const name = newProjectName.trim();
-    if (!name) return;
-    
-    try {
-      const res = await fetch(`${serverUrl}/projects/${name}/new`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        fetchProjects(name);
-        setIsCreating(false);
-        setNewProjectName('');
-      } else {
-        alert(data.error || "Failed to create project");
-      }
-    } catch (e) {
-      alert("Network error creating project");
-    }
-  };
-
   const handleCompile = async () => {
     if (!activeProject) return;
     setIsCompiling(true);
     setLog(`Compiling ${activeProject}...`);
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/compile`, {
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, export_format: format, quality, file: activeFile })
@@ -255,7 +232,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       if (data.success) {
         setLog(`[SUCCESS] Compiled and exported to ${data.file}`);
         // Prevent sync loop by updating baseline
-        const postStatusRes = await fetch(`${serverUrl}/projects/${activeProject}/status`);
+        const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
         if (postStatusRes.ok) {
           const postStatus = await postStatusRes.json();
           if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
@@ -274,47 +251,14 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     <div className="flex flex-col h-full bg-slate-900 text-slate-200">
       {/* Toolbar */}
       <div className="flex items-center gap-4 p-3 border-b border-slate-800 bg-slate-950">
-        <select 
-          className="bg-slate-800 border border-slate-700 rounded px-3 py-1.5 text-sm font-medium focus:outline-none focus:border-indigo-500"
-          value={activeProject}
-          onChange={(e) => selectProject(e.target.value)}
-        >
-          {projects.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-
-        {/* Git LED Badge */}
-        {gitStatus.is_git ? (
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-slate-800/50 border border-slate-700">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
-            <span className="text-xs font-mono text-slate-300">Git: {gitStatus.commit}</span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-slate-800/50 border border-slate-700 opacity-50">
-            <span className="w-2 h-2 rounded-full bg-slate-600"></span>
-            <span className="text-xs font-mono text-slate-400">No Git</span>
-          </div>
-        )}
         
-        {isCreating ? (
-          <form onSubmit={(e) => { e.preventDefault(); handleNewProjectSubmit(); }} className="flex items-center gap-2">
-            <input 
-              autoFocus
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500"
-              value={newProjectName}
-              onChange={e => setNewProjectName(e.target.value)}
-              placeholder="Project name..."
-            />
-            <button type="submit" className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded text-sm transition-colors text-white font-medium">Create</button>
-            <button type="button" onClick={() => setIsCreating(false)} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-sm">Cancel</button>
-          </form>
-        ) : (
-          <button 
-            onClick={() => setIsCreating(true)}
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-sm transition-colors"
-          >
-            ➕ New Project
-          </button>
-        )}
+        {/* Project Name Display (Selector moved to Artus) */}
+        <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-indigo-300">Project:</span>
+            <span className="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 font-mono">
+                {activeProject || 'Loading...'}
+            </span>
+        </div>
 
         <div className="flex-1" />
 
@@ -340,7 +284,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             >
               <option value="stl">STL</option>
               <option value="step">STEP</option>
-              <option value="gltf">GLTF</option>
+              <option value="glb">GLB (Binary GLTF)</option>
             </select>
           </div>
         </div>

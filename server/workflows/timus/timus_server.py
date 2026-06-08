@@ -1,11 +1,25 @@
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
 import traceback
 from pathlib import Path
-from fastapi import FastAPI, Response, Query
+from typing import Literal
+
+from fastapi import Depends, FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, confloat, constr
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 import build123d as bd
+
+from core.auth import get_auth_context
+from core.auth_types import AuthContext
+from core.db import get_db
+from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project
+from core.repositories import ProjectRepository
+from core.compile_runtime import hydrate_project_files
 
 app = FastAPI(title="Timus Drafting Server")
 app.add_middleware(
@@ -17,12 +31,54 @@ app.add_middleware(
 )
 
 WORKFLOW_DIR = Path(__file__).parent
-CACHE_ROOT = Path(__file__).parent.parent.parent.parent / 'cache' / 'tertius'
-PROJECTS_DIR = CACHE_ROOT / 'intus'
 
-def get_compound_from_code(code: str) -> bd.Compound:
+
+def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
+    state = db.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == ctx.user_id,
+            UserWorkspaceState.tenant_id == ctx.tenant_id,
+        )
+    )
+    if state is None or state.active_project_id is None:
+        return None
+    return db.scalar(
+        select(Project).where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.id == state.active_project_id,
+        )
+    )
+
+def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> ProjectFile | None:
+    try:
+        project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    except ValueError:
+        return None
+    if project is None:
+        return None
+
+    return db.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == ctx.tenant_id,
+            ProjectFile.project_id == project.id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+
+
+def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
     env = {"bd": bd, "build123d": bd}
-    exec(code, env)
+    
+    if project_dir is not None:
+        import sys
+        if project_dir not in sys.path:
+            sys.path.insert(0, project_dir)
+            
+    try:
+        exec(code, env)
+    finally:
+        if project_dir is not None and project_dir in sys.path:
+            sys.path.remove(project_dir)
     shapes = []
     for val in env.values():
         if isinstance(val, bd.Shape) and hasattr(val, "volume"):
@@ -263,10 +319,30 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
 
 PROJECTION_CACHE = {}
 
-def get_projected_views(name: str, compound: bd.Compound, mtime: float):
+
+class TimusSettingsRequest(BaseModel):
+    title: constr(min_length=1, max_length=255)
+    stamp_text: constr(min_length=1, max_length=32)
+    show_redline: bool
+    show_hidden_lines: bool
+    scale: confloat(gt=0, le=1000)
+    sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
+
+
+def serialize_timus_settings(settings: TimusSettings):
+    return {
+        "title": settings.title,
+        "stamp_text": settings.stamp_text,
+        "show_redline": settings.show_redline,
+        "show_hidden_lines": settings.show_hidden_lines,
+        "scale": float(settings.scale),
+        "sheet_size": settings.sheet_size,
+    }
+
+def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
     global PROJECTION_CACHE
-    if name in PROJECTION_CACHE:
-        cache_mtime, cached_views = PROJECTION_CACHE[name]
+    if cache_key in PROJECTION_CACHE:
+        cache_mtime, cached_views = PROJECTION_CACHE[cache_key]
         if cache_mtime == mtime:
             return cached_views
             
@@ -323,7 +399,7 @@ def get_projected_views(name: str, compound: bd.Compound, mtime: float):
                 
         views[view_name] = segments
         
-    PROJECTION_CACHE[name] = (mtime, views)
+    PROJECTION_CACHE[cache_key] = (mtime, views)
     return views
 
 def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float, scale: float, show_hidden: bool = True):
@@ -356,14 +432,99 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
 def health_check():
     return {"status": "ok"}
 
+@app.get("/project_name")
+def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    project = get_active_project(db, ctx)
+    if project is None:
+        print("TIMUS PROJECT NAME IS NONE")
+        return {"project_name": ""}
+    print(f"TIMUS PROJECT NAME IS {project.name}")
+    return {"project_name": project.name}
+
+
+@app.get("/projects/{name}/settings")
+def get_timus_settings(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
+        return Response("Project not found", status_code=404)
+
+    settings = db.scalar(
+        select(TimusSettings).where(
+            TimusSettings.user_id == ctx.user_id,
+            TimusSettings.tenant_id == ctx.tenant_id,
+            TimusSettings.project_id == project.id,
+        )
+    )
+    if settings is None:
+        return {
+            "title": name.upper(),
+            "stamp_text": "APPROVED",
+            "show_redline": True,
+            "show_hidden_lines": True,
+            "scale": 1.0,
+            "sheet_size": "A4",
+        }
+    return serialize_timus_settings(settings)
+
+
+@app.put("/projects/{name}/settings")
+def put_timus_settings(
+    name: str,
+    req: TimusSettingsRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
+        return Response("Project not found", status_code=404)
+
+    settings = db.scalar(
+        select(TimusSettings).where(
+            TimusSettings.user_id == ctx.user_id,
+            TimusSettings.tenant_id == ctx.tenant_id,
+            TimusSettings.project_id == project.id,
+        )
+    )
+    if settings is None:
+        settings = TimusSettings(
+            user_id=ctx.user_id,
+            tenant_id=ctx.tenant_id,
+            project_id=project.id,
+            title=req.title,
+            stamp_text=req.stamp_text,
+            show_redline=req.show_redline,
+            show_hidden_lines=req.show_hidden_lines,
+            scale=req.scale,
+            sheet_size=req.sheet_size,
+        )
+        db.add(settings)
+    else:
+        settings.title = req.title
+        settings.stamp_text = req.stamp_text
+        settings.show_redline = req.show_redline
+        settings.show_hidden_lines = req.show_hidden_lines
+        settings.scale = req.scale
+        settings.sheet_size = req.sheet_size
+    db.commit()
+    return {"success": True}
+
+
 @app.get("/projects/{name}/bounds")
-def get_project_bounds(name: str):
-    script_file = PROJECTS_DIR / name / "design.py"
-    if not script_file.exists():
+def get_project_bounds(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
         return Response("Project not found", status_code=404)
         
     try:
-        code = script_file.read_text(encoding="utf-8")
+        code = design_file.content
         compound = get_compound_from_code(code)
         bbox = compound.bounding_box()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
@@ -371,6 +532,8 @@ def get_project_bounds(name: str):
             max_dim = 100
         return {"max_dim": max_dim}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
 
 @app.get("/projects/{name}/drafting.pdf")
@@ -381,19 +544,26 @@ def get_drafting_pdf(
     redline: bool = Query(True),
     hidden_lines: bool = Query(True),
     scale: float = Query(1.0),
-    size: str = Query("A4")
+    size: str = Query("A4"),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
 ):
-    script_file = PROJECTS_DIR / name / "design.py"
-    if not script_file.exists():
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
         return Response("Project not found", status_code=404)
         
     try:
-        mtime = script_file.stat().st_mtime
-        code = script_file.read_text(encoding="utf-8")
-        compound = get_compound_from_code(code)
+        mtime = design_file.updated_at.timestamp()
+        code = design_file.content
+        
+        repo = ProjectRepository(db, ctx.tenant_id)
+        files = repo.files_for_runtime(name)
+        with hydrate_project_files(files) as project_dir:
+            compound = get_compound_from_code(code, str(project_dir))
         
         # Get cached views
-        views = get_projected_views(name, compound, mtime)
+        cache_key = f"{ctx.tenant_id}:{design_file.project_id}:{name}"
+        views = get_projected_views(cache_key, compound, mtime)
         
         # Calculate Dimensions
         size = size.upper()
@@ -446,15 +616,14 @@ def get_drafting_pdf(
             
         pdf_bytes = bytes(pdf.output())
         
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": "inline"}
-        )
+        headers = {
+            "Content-Disposition": f"inline; filename=\"{name}_drafting.pdf\""
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
         
     except Exception as e:
-        err = traceback.format_exc()
-        print(f"Error generating PDF:\n{err}")
+        import traceback
+        traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
 
 if __name__ == "__main__":

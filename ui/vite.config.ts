@@ -8,10 +8,18 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       '/proxy': {
-        target: 'http://localhost:8000',
+        target: process.env.BACKEND_URL || 'http://backend:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/proxy/, ''),
         ws: true,
+      },
+      '/realms': {
+        target: 'http://keycloak:8080',
+        changeOrigin: false,
+      },
+      '/resources': {
+        target: 'http://keycloak:8080',
+        changeOrigin: false,
       },
     },
   },

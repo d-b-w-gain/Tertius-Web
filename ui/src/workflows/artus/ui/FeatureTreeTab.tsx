@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
+import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -156,9 +159,9 @@ const RenderOperation: React.FC<{ node: OperationNode; depth: number; highlighte
 };
 
 export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+  const { getAccessToken } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);
-  const [projectName, setProjectName] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   
   // AI State
@@ -217,7 +220,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     
     const checkStatus = async () => {
       try {
-        const res = await fetch(`${extusServerUrl}/status`);
+        const res = await apiFetch(`${extusServerUrl}/status`, getAccessToken);
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && data.mtime !== mtime) {
@@ -237,34 +240,44 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
       mounted = false;
       clearInterval(interval);
     };
-  }, [serverUrl]);
+  }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!extusUrl) return;
     let isCancelled = false;
     const loader = new GLTFLoader();
-    loader.load(extusUrl, (gltf) => {
-      if (!isCancelled) setSceneGraph(gltf.scene);
-    });
+
+    apiFetch(extusUrl, getAccessToken)
+      .then(res => res.arrayBuffer())
+      .then(buffer => {
+        if (isCancelled) return;
+        loader.parse(buffer, '', (gltf) => {
+          if (!isCancelled) setSceneGraph(gltf.scene);
+        }, (err) => {
+          if (!isCancelled) console.error("Error parsing assembly GLTF:", err);
+        });
+      })
+      .catch(err => {
+        if (!isCancelled) console.error("Error fetching assembly GLTF:", err);
+      });
+
     return () => {
       isCancelled = true;
     };
-  }, [extusUrl]);
+  }, [extusUrl, getAccessToken]);
 
   const fetchFeatures = async () => {
     try {
-      const res = await fetch(`${serverUrl}/features`);
+      const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
       const data = await res.json();
       if (res.ok) {
         setFeatures(data.features || []);
         setOperations(data.operations || []);
-        setProjectName(data.project_name || '');
         setError(null);
       } else {
         setError(data.error);
         setFeatures([]);
         setOperations([]);
-        setProjectName('');
       }
     } catch (e) {
       setError("Failed to connect to Artus server.");
@@ -275,7 +288,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     fetchFeatures();
     const interval = setInterval(fetchFeatures, 4000);
     return () => clearInterval(interval);
-  }, [serverUrl]);
+  }, [serverUrl, getAccessToken]);
 
   // Auto-generate AI prompt whenever edits change
   useEffect(() => {
@@ -295,7 +308,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     setIsProcessing(true);
     setAiMessage(null);
     try {
-      const res = await fetch(`${serverUrl}/ai_modify`, {
+      const res = await apiFetch(`${serverUrl}/ai_modify`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt })
@@ -319,7 +332,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     if (Object.keys(edits).length === 0) return;
     
     try {
-      const res = await fetch(`${serverUrl}/update_features`, {
+      const res = await apiFetch(`${serverUrl}/update_features`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates: edits })
@@ -356,12 +369,10 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
             >
               <h2 className="text-lg font-bold text-slate-100 flex flex-wrap items-center gap-2">
                 <span className="text-emerald-500 shrink-0">🌲</span> Parametric Variables
-                {projectName && (
-                  <span className="text-xs font-normal text-slate-500 bg-slate-900 px-2 py-0.5 rounded-full border border-slate-800 shrink-0 truncate max-w-[140px]" title={projectName}>
-                    {projectName}
-                  </span>
-                )}
               </h2>
+              <div onClick={e => e.stopPropagation()}>
+                  <ProjectSelector />
+              </div>
               <div 
                 className="flex items-center gap-2 shrink-0 ml-auto"
                 onClick={e => e.stopPropagation()}

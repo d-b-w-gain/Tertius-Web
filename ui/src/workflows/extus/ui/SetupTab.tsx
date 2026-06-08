@@ -8,7 +8,7 @@ export const SetupTab: React.FC<{ server: any }> = ({ server }) => {
         <div>
           <h2 className="text-xl font-bold mb-2 text-sky-400">Extus Viewer Setup</h2>
           <p className="text-slate-400 text-sm">
-            Extus is a lightweight, decoupled 3D viewer. It serves the `active_output.stl` from the cache folder, so you get instant visual feedback anytime Intus compiles a new CAD model.
+            Extus is a lightweight, decoupled 3D viewer. It streams the latest authenticated STL artifact for your active project, so you get instant visual feedback anytime Intus compiles a new CAD model.
           </p>
         </div>
         

@@ -1,0 +1,51 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ "master", "multi-tenancy" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-smoke-test:
+    name: Docker-Compose Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Multi-Tenant Stack
+        run: docker compose up -d
+
+      - name: Wait for services to boot
+        run: sleep 30
+
+      - name: Verify Backend (Intus) API
+        run: |
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/intus/status || exit 1
+
+      - name: Verify Backend (Timus) API
+        run: |
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/timus/status || exit 1
+
+      - name: Verify Backend (Extus) API
+        run: |
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/extus/status || exit 1
+
+      - name: Verify Keycloak Server
+        run: |
+          curl --fail --retry 10 --retry-delay 5 http://localhost:8080/realms/tertius/.well-known/openid-configuration || exit 1
+
+      - name: Verify React Frontend (Vite)
+        run: |
+          # The frontend runs `npm install` and `npm run dev` on boot, so we need to wait a bit longer for it.
+          curl --fail --retry 15 --retry-delay 5 http://localhost:5173/ || exit 1
+
+      - name: Check Container Logs on Failure
+        if: failure()
+        run: docker compose logs

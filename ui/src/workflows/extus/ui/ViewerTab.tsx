@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 interface ViewerProps {
   serverUrl: string;
@@ -9,6 +11,7 @@ interface ViewerProps {
 }
 
 export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+  const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
@@ -51,7 +54,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
     rendererRef.current = renderer;
@@ -63,7 +66,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     controls.autoRotate = autoRotateRef.current;
     controls.autoRotateSpeed = 1.5;
     
-    let resumeTimeout: NodeJS.Timeout | null = null;
+    let resumeTimeout: ReturnType<typeof setTimeout> | null = null;
     const handleInteraction = () => {
       controls.autoRotate = false;
       if (resumeTimeout) clearTimeout(resumeTimeout);
@@ -77,8 +80,12 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     canvas.addEventListener('wheel', handleInteraction);
     
     // Lighting setup
-    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    ambientLight.name = 'Ambient';
+    scene.add(ambientLight);
+    
     const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    hemiLight.name = 'Hemi';
     hemiLight.position.set(0, 0, 200);
     scene.add(hemiLight);
 
@@ -173,7 +180,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     
     const checkStatus = async () => {
       try {
-        const projRes = await fetch(`${serverUrl}/project_name`);
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
         if (projRes.ok && mounted) {
           const pData = await projRes.json();
           if (pData.project_name) {
@@ -181,7 +188,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
           }
         }
         
-        const res = await fetch(`${serverUrl}/status`);
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && data.mtime !== mtime) {
@@ -192,7 +199,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
             }
           }
         } else {
-          if (mounted) setStatusText('No active_output.glb found yet. Compile a project in Intus!');
+          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
         }
       } catch (e) {
         if (mounted) setStatusText('Lost connection to file server.');
@@ -206,7 +213,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       mounted = false;
       clearInterval(interval);
     };
-  }, [serverUrl, isActive]);
+  }, [serverUrl, isActive, getAccessToken]);
 
   // 3. Load GLTF when URL changes
   useEffect(() => {
@@ -215,10 +222,14 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     let isCancelled = false;
     const loader = new GLTFLoader();
     
-    loader.load(url, (gltf) => {
-      if (isCancelled) return;
+    apiFetch(url, getAccessToken)
+      .then(res => res.arrayBuffer())
+      .then(buffer => {
+        if (isCancelled) return;
+        loader.parse(buffer, '', (gltf) => {
+          if (isCancelled) return;
       
-      const model = gltf.scene;
+          const model = gltf.scene;
       
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
@@ -287,22 +298,25 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       setSceneGraph(model);
       setSelectedNodeId(null);
       setIsolatedNodeId(null);
-      
-    }, undefined, (err) => {
-      if (!isCancelled) console.error("Error loading GLTF:", err);
-    });
+        }, (err) => {
+          if (!isCancelled) console.error("Error parsing GLTF:", err);
+        });
+      })
+      .catch(err => {
+        if (!isCancelled) console.error("Error fetching GLTF:", err);
+      });
       
     return () => {
       isCancelled = true;
     };
-  }, [url]);
+  }, [url, getAccessToken, renderQuality]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
     if (!canvasRef.current || !sceneRef.current || !cameraRef.current) return;
     const canvas = canvasRef.current;
     
-    let clickTimeout: NodeJS.Timeout | null = null;
+    let clickTimeout: ReturnType<typeof setTimeout> | null = null;
     let clickCount = 0;
     
     const onMouseClick = (e: MouseEvent) => {

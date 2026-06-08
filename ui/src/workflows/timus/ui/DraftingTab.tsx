@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../../../api/client';
+import { useAuth } from '../../../auth/AuthProvider';
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
+  const { getAccessToken } = useAuth();
   const intusUrl = serverUrl.replace('/timus', '/intus');
   const [activeProject, setActiveProject] = useState<string>('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -18,7 +21,26 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [debouncedTitle, setDebouncedTitle] = useState('UNTITLED PART');
   
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const pdfUrlRef = useRef<string | null>(null);
+
+  const replacePdfUrl = (objectUrl: string) => {
+    if (pdfUrlRef.current) {
+      URL.revokeObjectURL(pdfUrlRef.current);
+    }
+    pdfUrlRef.current = objectUrl;
+    setPdfUrl(objectUrl);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (pdfUrlRef.current) {
+        URL.revokeObjectURL(pdfUrlRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -31,61 +53,87 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [title]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchActive = async () => {
       try {
-        const res = await fetch(`${intusUrl}/projects`);
-        if (res.ok) {
+        const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (res.ok && isMounted) {
            const data = await res.json();
-           const projects = data.projects || [];
-           const last = localStorage.getItem('intus_last_project');
-           if (last && projects.includes(last)) setActiveProject(last);
-           else if (projects.length > 0) setActiveProject(projects[0]);
+           if (data.project_name) setActiveProject(data.project_name);
         }
       } catch (e) {
-        console.error("Failed to fetch projects");
+        console.error("Failed to fetch active project");
       }
     };
-    fetchActive();
-  }, []);
-
-  useEffect(() => {
-    if (!activeProject) return;
-    setTitle(activeProject.toUpperCase());
     
-    // Load settings from local storage
-    const saved = localStorage.getItem(`timus_settings_${activeProject}`);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.title) setTitle(parsed.title);
-        if (parsed.stampText) setStampText(parsed.stampText);
-        if (parsed.showRedline !== undefined) setShowRedline(parsed.showRedline);
-        if (parsed.showHiddenLines !== undefined) setShowHiddenLines(parsed.showHiddenLines);
-        if (parsed.scale) setScale(parsed.scale);
-        if (parsed.sheetSize) setSheetSize(parsed.sheetSize);
-      } catch (e) {}
-    }
-  }, [activeProject]);
+    fetchActive();
+    const interval = setInterval(fetchActive, 2000);
+    return () => {
+        isMounted = false;
+        clearInterval(interval);
+    };
+  }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject) return;
+    let isMounted = true;
+
+    const loadSettings = async () => {
+      setSettingsLoaded(false);
+      setTitle(activeProject.toUpperCase());
+      setStampText('APPROVED');
+      setShowRedline(true);
+      setShowHiddenLines(true);
+      setScale(1.0);
+      setSheetSize('A4');
+
+      try {
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken);
+        if (!res.ok || !isMounted) return;
+        const parsed = await res.json();
+        if (parsed.title) setTitle(parsed.title);
+        if (parsed.stamp_text) setStampText(parsed.stamp_text);
+        if (parsed.show_redline !== undefined) setShowRedline(parsed.show_redline);
+        if (parsed.show_hidden_lines !== undefined) setShowHiddenLines(parsed.show_hidden_lines);
+        if (parsed.scale) setScale(parsed.scale);
+        if (parsed.sheet_size) setSheetSize(parsed.sheet_size);
+      } catch (e) {
+        console.error("Failed to load Timus settings");
+      } finally {
+        if (isMounted) setSettingsLoaded(true);
+      }
+    };
+
+    loadSettings();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeProject, serverUrl, getAccessToken]);
+
+  useEffect(() => {
+    if (!activeProject || !settingsLoaded) return;
     const settings = {
       title,
-      stampText,
-      showRedline,
-      showHiddenLines,
+      stamp_text: stampText,
+      show_redline: showRedline,
+      show_hidden_lines: showHiddenLines,
       scale,
-      sheetSize
+      sheet_size: sheetSize
     };
-    localStorage.setItem(`timus_settings_${activeProject}`, JSON.stringify(settings));
-  }, [activeProject, title, stampText, showRedline, showHiddenLines, scale, sheetSize]);
+    apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken, {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }).catch(() => {
+      console.error("Failed to save Timus settings");
+    });
+  }, [activeProject, settingsLoaded, title, stampText, showRedline, showHiddenLines, scale, sheetSize, serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject || !isActive) return;
     let mtime = 0;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${intusUrl}/projects/${activeProject}/status`);
+        const res = await apiFetch(`${intusUrl}/projects/${activeProject}/status`, getAccessToken);
         if (res.ok) {
           const data = await res.json();
           if (data.mtime && mtime !== 0 && data.mtime > mtime) {
@@ -96,7 +144,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       } catch (e) {}
     }, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, isActive]);
+  }, [activeProject, isActive, intusUrl, getAccessToken]);
 
   const getPreviewUrl = () => {
     return `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}&t=${refreshKey}`;
@@ -109,12 +157,21 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     const loadPdf = async () => {
       setIsGenerating(true);
       try {
-        const res = await fetch(getPreviewUrl());
+        const res = await apiFetch(getPreviewUrl(), getAccessToken);
         if (res.ok && isMounted) {
           const blob = await res.blob();
-          setPdfUrl(URL.createObjectURL(blob));
+          setError(null);
+          replacePdfUrl(URL.createObjectURL(blob));
+        } else if (!res.ok && isMounted) {
+          const text = await res.text();
+          setError(text || "Failed to generate PDF");
+          setPdfUrl(null);
         }
       } catch (e) {
+        if (isMounted) {
+          setError(e instanceof Error ? e.message : "Unknown error");
+          setPdfUrl(null);
+        }
         console.error("Failed to load PDF preview:", e);
       }
       if (isMounted) setIsGenerating(false);
@@ -123,12 +180,12 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     loadPdf();
     
     return () => { isMounted = false; };
-  }, [activeProject, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey]);
+  }, [activeProject, isActive, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey, getAccessToken]);
 
   const handleAutoFit = async () => {
     if (!activeProject) return;
     try {
-      const res = await fetch(`${serverUrl}/projects/${activeProject}/bounds`);
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/bounds`, getAccessToken);
       if (res.ok) {
         const data = await res.json();
         const max_dim = data.max_dim;
@@ -152,6 +209,20 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       }
     } catch (e) {
       console.error("Failed to auto-fit scale", e);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!activeProject) return;
+    try {
+      const res = await apiFetch(getPreviewUrl(), getAccessToken);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (e) {
+      console.error("Failed to download PDF:", e);
     }
   };
 
@@ -294,14 +365,13 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           >
             🔄 Refresh Compiler
           </button>
-          <a
-            href={getPreviewUrl()}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
             className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-2.5 px-4 rounded transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer shadow-lg shadow-orange-500/20"
           >
             📥 Download PDF
-          </a>
+          </button>
         </div>
       </div>
 
@@ -322,13 +392,23 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               <div className="font-bold tracking-widest text-sm animate-pulse">COMPILING VECTOR VIEWS...</div>
             </div>
           )}
-          {pdfUrl && (
+          {error ? (
+            <div className="w-full h-full flex items-center justify-center bg-slate-900 rounded-lg border-2 border-red-900/50 p-8 text-center">
+              <div>
+                <svg className="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <h3 className="text-xl font-bold text-red-400 mb-2">Drafting Generation Failed</h3>
+                <p className="text-slate-400 font-mono text-sm max-w-lg mx-auto bg-slate-950 p-4 rounded whitespace-pre-wrap">{error}</p>
+              </div>
+            </div>
+          ) : pdfUrl ? (
             <iframe
               src={`${pdfUrl}#toolbar=0&navpanes=0`}
-              className="w-full h-full border-0 bg-white relative z-0"
-              title="Timus Drafting Sheet Preview"
+              className="w-full h-full border-none bg-white rounded-lg shadow-inner"
+              title="PDF Preview"
             />
-          )}
+          ) : null}
         </div>
       </div>
     </div>

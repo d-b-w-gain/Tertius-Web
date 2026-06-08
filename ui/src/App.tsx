@@ -1,12 +1,36 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
+import { useAuth } from './auth/AuthProvider'
 
 function App() {
+  const { user, isLoading, login, logout } = useAuth()
   const [activeTab, setActiveTab] = useState('extus')
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      void login()
+    }
+  }, [isLoading, login, user])
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
+        Loading...
+      </div>
+    )
+  }
+
+  if (!user) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
+        Redirecting to login...
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -73,6 +97,12 @@ function App() {
             className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'timus' ? 'bg-slate-950 text-emerald-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
           >
             📐 Timus Drafting
+          </button>
+          <button
+            onClick={logout}
+            className="ml-auto px-3 py-2 mb-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0"
+          >
+            Sign out
           </button>
         </div>
 
