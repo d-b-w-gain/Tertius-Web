@@ -63,6 +63,8 @@ ui:
   service:
     type: ClusterIP
     port: 80
+  keycloakServiceHost: ""
+  keycloakServicePort: ""
   resources:
     requests:
       cpu: 50m

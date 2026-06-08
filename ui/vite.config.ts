@@ -33,6 +33,11 @@ export default defineConfig({
         target: 'http://keycloak:8080',
         changeOrigin: false,
       },
+      '/auth': {
+        target: 'http://keycloak:8080',
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/auth/, ''),
+      },
       '/resources': {
         target: 'http://keycloak:8080',
         changeOrigin: false,
