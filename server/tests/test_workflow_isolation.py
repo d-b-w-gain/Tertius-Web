@@ -234,7 +234,7 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
         def bounding_box(self):
             return FakeBox()
 
-    def fake_compound_from_code(code):
+    def fake_compound_from_code(code, project_dir=None):
         captured["code"] = code
         return FakeCompound()
 
@@ -288,7 +288,7 @@ def test_timus_drafting_pdf_does_not_read_other_or_global_design(
     )
     db_session.commit()
 
-    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code: object())
+    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code, project_dir=None: object())
     monkeypatch.setattr(
         timus_server,
         "get_projected_views",
@@ -339,7 +339,7 @@ def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
 
     drawn_segments = []
 
-    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code: FakeCompound())
+    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code, project_dir=None: FakeCompound())
     monkeypatch.setattr(timus_server, "_draw_drafting_sheet_background", lambda *args, **kwargs: None)
     monkeypatch.setattr(timus_server, "_draw_gorton_text", lambda *args, **kwargs: None)
     monkeypatch.setattr(
