@@ -137,7 +137,7 @@ if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-u
   exit 1
 fi
 
-if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
+if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'secrets\.FLUX_IMAGE_UPDATE_PAT' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
   echo ".github/workflows/flux-image-update-pr.yml must open and auto-merge PRs for Flux image update branches." >&2
   exit 1
 fi
