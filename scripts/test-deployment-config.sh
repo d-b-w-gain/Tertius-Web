@@ -132,7 +132,7 @@ if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/clu
   exit 1
 fi
 
-if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q '\[skip ci\]' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
+if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q '\[skip ci\]' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
   echo "Flux ImageUpdateAutomation must commit setter updates for charts/tertius to master with [skip ci]." >&2
   exit 1
 fi
