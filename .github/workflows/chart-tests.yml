@@ -4,7 +4,13 @@ on:
   pull_request:
     paths:
       - '.github/workflows/chart-tests.yml'
+      - '.github/workflows/images.yml'
       - 'charts/**'
+      - 'clusters/production/kustomization.yaml'
+      - 'clusters/production/flux-system/image-repositories.yaml'
+      - 'clusters/production/flux-system/image-policies.yaml'
+      - 'clusters/production/flux-system/image-update-automation.yaml'
+      - 'clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
       - 'scripts/bundle.py'
@@ -15,7 +21,13 @@ on:
       - master
     paths:
       - '.github/workflows/chart-tests.yml'
+      - '.github/workflows/images.yml'
       - 'charts/**'
+      - 'clusters/production/kustomization.yaml'
+      - 'clusters/production/flux-system/image-repositories.yaml'
+      - 'clusters/production/flux-system/image-policies.yaml'
+      - 'clusters/production/flux-system/image-update-automation.yaml'
+      - 'clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
       - 'scripts/bundle.py'

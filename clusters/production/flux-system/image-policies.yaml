@@ -1,0 +1,29 @@
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: tertius-api
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: tertius-api
+  filterTags:
+    pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'
+    extract: '$run'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: tertius-ui
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: tertius-ui
+  filterTags:
+    pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'
+    extract: '$run'
+  policy:
+    numerical:
+      order: asc
