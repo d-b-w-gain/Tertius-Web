@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from dataclasses import dataclass
+import os
 from uuid import uuid4
 
 import pytest
@@ -17,6 +18,9 @@ from workflows.artus.artus_server import app as artus_app
 from workflows.extus.extus_server import app as extus_app
 from workflows.intus.intus_server import app as intus_app
 from workflows.timus.timus_server import app as timus_app
+
+
+os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 
 @pytest.fixture(scope="session")
