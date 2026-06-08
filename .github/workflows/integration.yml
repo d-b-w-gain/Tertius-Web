@@ -27,15 +27,15 @@ jobs:
 
       - name: Verify Backend (Intus) API
         run: |
-          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/intus/status || exit 1
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/intus/health || exit 1
 
       - name: Verify Backend (Timus) API
         run: |
-          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/timus/status || exit 1
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/timus/health || exit 1
 
       - name: Verify Backend (Extus) API
         run: |
-          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/extus/status || exit 1
+          curl --fail --retry 5 --retry-delay 5 http://localhost:8000/api/extus/health || exit 1
 
       - name: Verify Keycloak Server
         run: |

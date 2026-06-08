@@ -15,7 +15,7 @@ app:
   environment: production
   config:
     apiBasePath: /api
-    oidcIssuerUrl: https://keycloak.example.com/realms/tertius
+    oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
   secretName: ""
@@ -26,10 +26,10 @@ app:
     oidcClientSecret: ""
 
 api:
-  replicaCount: 2
+  replicaCount: 1
   image:
-    repository: ghcr.io/example/tertius-api
-    tag: "0.1.0"
+    repository: localhost:5000/tertius-api
+    tag: local
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -39,15 +39,15 @@ api:
     enabled: true
     accessModes:
       - ReadWriteOnce
-    size: 20Gi
-    storageClassName: ""
+    size: 2Gi
+    storageClassName: local-path
   resources:
     requests:
-      cpu: 250m
-      memory: 512Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       cpu: "1"
-      memory: 2Gi
+      memory: 1Gi
   probes:
     startup:
       failureThreshold: 60
@@ -60,10 +60,10 @@ api:
       periodSeconds: 20
 
 ui:
-  replicaCount: 2
+  replicaCount: 1
   image:
-    repository: ghcr.io/example/tertius-ui
-    tag: "0.1.0"
+    repository: localhost:5000/tertius-ui
+    tag: local
     pullPolicy: IfNotPresent
   port: 80
   service:
@@ -71,16 +71,16 @@ ui:
     port: 80
   resources:
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 250m
+      memory: 256Mi
 
 postgres:
   enabled: true
   name: ""
-  instances: 2
+  instances: 1
   imageName: ghcr.io/cloudnative-pg/postgresql:18.0
   database: tertius
   owner: tertius
@@ -90,21 +90,21 @@ postgres:
     username: tertius
     password: ""
   storage:
-    size: 20Gi
-    storageClass: ""
+    size: 2Gi
+    storageClass: local-path
   backup:
     enabled: false
 
 keycloak:
   enabled: true
   name: ""
-  instances: 2
+  instances: 1
   image: quay.io/keycloak/keycloak:26.6.3
   startOptimized: false
   http:
     httpEnabled: true
-  hostname: https://keycloak.example.com
-  adminHostname: https://keycloak-admin.example.com
+  hostname: http://keycloak.localhost
+  adminHostname: http://keycloak.localhost
   proxyHeaders: xforwarded
   tlsSecret: ""
   resources:
@@ -126,17 +126,17 @@ keycloak:
       username: keycloak
       password: ""
     storage:
-      size: 10Gi
-      storageClass: ""
+      size: 2Gi
+      storageClass: local-path
   realmImport:
-    enabled: false
+    enabled: true
     realm: tertius
     uiClientId: tertius-ui
     apiClientId: tertius-api
 
 cloudflared:
   enabled: false
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: cloudflare/cloudflared
     tag: "2026.5.0"
@@ -163,14 +163,14 @@ valkey:
     enabled: false
   dataStorage:
     enabled: true
-    requestedSize: 8Gi
-    className: ""
+    requestedSize: 1Gi
+    className: local-path
   resources:
     requests:
-      cpu: 100m
-      memory: 128Mi
+      cpu: 50m
+      memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 250m
+      memory: 256Mi
   metrics:
     enabled: false

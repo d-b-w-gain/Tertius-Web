@@ -71,7 +71,16 @@ jobs:
         uses: azure/setup-helm@v4
       - name: Prepare k3s cluster
         run: |
-          curl -sfL https://get.k3s.io | sudo sh -s - --write-kubeconfig /tmp/kubeconfig --write-kubeconfig-mode 0644
+          curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors https://get.k3s.io -o /tmp/install-k3s.sh
+          for attempt in 1 2 3; do
+            if sudo sh /tmp/install-k3s.sh --write-kubeconfig /tmp/kubeconfig --write-kubeconfig-mode 0644; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 15))
+          done
           kubectl wait --for=condition=Ready node --all --timeout=90s
       - name: Install CloudNativePG operator
         run: |
