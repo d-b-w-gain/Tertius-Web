@@ -146,3 +146,8 @@ if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/clusters/production/flux-system/gitrepo
   echo "GitRepository tertius-web is missing the write-capable PAT secretRef." >&2
   exit 1
 fi
+
+if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/clusters/production/tertius/helmrelease.yaml"; then
+  echo "HelmRelease tertius must reconcile chart content by Git revision so Flux image tag commits are deployed." >&2
+  exit 1
+fi
