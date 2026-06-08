@@ -18,6 +18,7 @@ spec:
         kind: GitRepository
         name: tertius-web
         namespace: flux-system
+      reconcileStrategy: Revision
       interval: 5m
   install:
     createNamespace: true
