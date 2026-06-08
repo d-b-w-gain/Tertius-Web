@@ -64,7 +64,13 @@ helm upgrade --install tertius charts/tertius \
 
 ## Routing
 
-The intended production route is one public hostname through Cloudflare Tunnel. Route `/` and frontend assets to the UI Service. The UI runtime should reverse-proxy `/api/*` to the API Service so the browser uses same-origin requests.
+The intended production route is one public hostname through Cloudflare Tunnel. Route `/` and frontend assets to the UI Service. The UI runtime should reverse-proxy:
+
+- `/api/*` to the API Service
+- `/realms/*` and `/resources/*` to Keycloak so OIDC discovery and authorization flows use same-origin
+- `/auth/*` as a compatibility alias that rewrites to Keycloak paths
+
+With this in place the browser can keep one origin and still reach authentication endpoints through the UI service.
 
 ## Notes
 

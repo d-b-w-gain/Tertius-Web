@@ -46,7 +46,7 @@ jobs:
     timeout-minutes: 20
     env:
       UV_CACHE_DIR: .uv-cache
-      POSTGRES_TEST_IMAGE: public.ecr.aws/docker/library/postgres:16
+      POSTGRES_TEST_IMAGE: postgres:16
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - name: Checkout
