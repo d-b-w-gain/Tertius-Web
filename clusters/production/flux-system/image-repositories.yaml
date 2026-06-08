@@ -1,0 +1,17 @@
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: tertius-api
+  namespace: flux-system
+spec:
+  image: ghcr.io/d-b-w-gain/tertius-api
+  interval: 1m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: tertius-ui
+  namespace: flux-system
+spec:
+  image: ghcr.io/d-b-w-gain/tertius-ui
+  interval: 1m

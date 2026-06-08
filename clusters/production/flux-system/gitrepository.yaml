@@ -6,6 +6,8 @@ metadata:
 spec:
   interval: 1m
   url: https://github.com/d-b-w-gain/Tertius-Web.git
+  secretRef:
+    name: tertius-web-write
   ref:
     branch: master
   ignore: |

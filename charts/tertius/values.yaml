@@ -28,8 +28,8 @@ app:
 api:
   replicaCount: 1
   image:
-    repository: localhost:5000/tertius-api
-    tag: local
+    repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
+    tag: master-0-initial # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -62,8 +62,8 @@ api:
 ui:
   replicaCount: 1
   image:
-    repository: localhost:5000/tertius-ui
-    tag: local
+    repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
+    tag: master-0-initial # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:

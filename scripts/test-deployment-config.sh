@@ -42,3 +42,102 @@ if ! rg -q '^USER 1000:1000$' "${ROOT_DIR}/Dockerfile.api"; then
   echo "Dockerfile.api does not switch the API runtime to the non-root UID/GID 1000." >&2
   exit 1
 fi
+
+production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
+
+if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-0-initial"'; then
+  echo "Production Helm defaults do not render the expected GHCR API image." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:master-0-initial"'; then
+  echo "Production Helm defaults do not render the expected GHCR UI image." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-api.*"\$imagepolicy": "flux-system:tertius-api:name"' "${CHART_DIR}/values.yaml"; then
+  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the API repository." >&2
+  exit 1
+fi
+
+if ! rg -q 'master-0-initial.*"\$imagepolicy": "flux-system:tertius-api:tag"' "${CHART_DIR}/values.yaml"; then
+  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the API tag." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui.*"\$imagepolicy": "flux-system:tertius-ui:name"' "${CHART_DIR}/values.yaml"; then
+  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the UI repository." >&2
+  exit 1
+fi
+
+if ! rg -q 'master-0-initial.*"\$imagepolicy": "flux-system:tertius-ui:tag"' "${CHART_DIR}/values.yaml"; then
+  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the UI tag." >&2
+  exit 1
+fi
+
+if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q -- '- master' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'workflow_dispatch:' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'packages: write' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml is missing the master-only trigger or GHCR package write permission." >&2
+  exit 1
+fi
+
+if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.ui' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml must build both Dockerfile.api and Dockerfile.ui." >&2
+  exit 1
+fi
+
+if ! rg -q "github\.event_name != 'push' \|\| !contains\(github\.event\.head_commit\.message, '\[skip ci\]'\)" "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml skip-ci guard must allow workflow_dispatch events without reading head_commit." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-api:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-api:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not push the expected API image tags." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not push the expected UI image tags." >&2
+  exit 1
+fi
+
+if ! rg -q 'VITE_API_URL=/api' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not pass the expected UI API base path build argument." >&2
+  exit 1
+fi
+
+for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
+  if [ ! -f "${ROOT_DIR}/clusters/production/flux-system/${flux_file}" ]; then
+    echo "Missing Flux image automation manifest: ${flux_file}." >&2
+    exit 1
+  fi
+
+  if ! rg -q "flux-system/${flux_file}" "${ROOT_DIR}/clusters/production/kustomization.yaml"; then
+    echo "clusters/production/kustomization.yaml does not include ${flux_file}." >&2
+    exit 1
+  fi
+done
+
+if rg -q '^apiVersion: image\.toolkit\.fluxcd\.io/v1beta' "${ROOT_DIR}/clusters/production/flux-system"/image-*.yaml; then
+  echo "Flux image automation manifests must use image.toolkit.fluxcd.io/v1, not v1beta*." >&2
+  exit 1
+fi
+
+if ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-api' "${ROOT_DIR}/clusters/production/flux-system/image-repositories.yaml" || ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-ui' "${ROOT_DIR}/clusters/production/flux-system/image-repositories.yaml"; then
+  echo "Flux ImageRepository resources must scan the expected GHCR API and UI packages." >&2
+  exit 1
+fi
+
+if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml" || ! rg -F -q "extract: '\$run'" "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml" || ! rg -q 'order: asc' "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml"; then
+  echo "Flux ImagePolicy resources must select the newest master run tag numerically." >&2
+  exit 1
+fi
+
+if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q '\[skip ci\]' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
+  echo "Flux ImageUpdateAutomation must commit setter updates for charts/tertius to master with [skip ci]." >&2
+  exit 1
+fi
+
+if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/clusters/production/flux-system/gitrepository.yaml" || ! rg -q 'name: tertius-web-write' "${ROOT_DIR}/clusters/production/flux-system/gitrepository.yaml"; then
+  echo "GitRepository tertius-web is missing the write-capable PAT secretRef." >&2
+  exit 1
+fi
