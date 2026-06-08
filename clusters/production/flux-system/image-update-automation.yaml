@@ -19,7 +19,7 @@ spec:
       messageTemplate: |
         chore: update deployed image tags [skip ci]
 
-        {{range .Updated.Images}}{{println .}}{{end}}
+        {{range .Changed.Objects}}{{println .}}{{end}}
     push:
       branch: master
   update:
