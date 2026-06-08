@@ -162,7 +162,6 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   const { getAccessToken } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);
-  const [projectName, setProjectName] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   
   // AI State
@@ -274,13 +273,11 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
       if (res.ok) {
         setFeatures(data.features || []);
         setOperations(data.operations || []);
-        setProjectName(data.project_name || '');
         setError(null);
       } else {
         setError(data.error);
         setFeatures([]);
         setOperations([]);
-        setProjectName('');
       }
     } catch (e) {
       setError("Failed to connect to Artus server.");
