@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 
@@ -66,7 +66,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     controls.autoRotate = autoRotateRef.current;
     controls.autoRotateSpeed = 1.5;
     
-    let resumeTimeout: NodeJS.Timeout | null = null;
+    let resumeTimeout: ReturnType<typeof setTimeout> | null = null;
     const handleInteraction = () => {
       controls.autoRotate = false;
       if (resumeTimeout) clearTimeout(resumeTimeout);
@@ -312,7 +312,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     if (!canvasRef.current || !sceneRef.current || !cameraRef.current) return;
     const canvas = canvasRef.current;
     
-    let clickTimeout: NodeJS.Timeout | null = null;
+    let clickTimeout: ReturnType<typeof setTimeout> | null = null;
     let clickCount = 0;
     
     const onMouseClick = (e: MouseEvent) => {
