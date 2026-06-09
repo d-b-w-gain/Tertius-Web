@@ -99,8 +99,8 @@ keycloak:
   startOptimized: false
   http:
     httpEnabled: true
-  hostname: http://keycloak.localhost
-  adminHostname: http://keycloak.localhost
+  hostname: https://tertius.johnsonyuen.com
+  adminHostname: https://tertius.johnsonyuen.com
   proxyHeaders: xforwarded
   tlsSecret: ""
   resources:

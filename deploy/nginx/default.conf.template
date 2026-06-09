@@ -3,9 +3,22 @@ map $http_upgrade $connection_upgrade {
     '' close;
 }
 
-map $http_x_forwarded_proto $forwarded_proto {
-    default $http_x_forwarded_proto;
+map $http_cf_visitor $cloudflare_proto {
+    default '';
+    ~*"scheme":"https" https;
+    ~*"scheme":"http" http;
+}
+
+map "$cloudflare_proto:$http_x_forwarded_proto" $forwarded_proto {
+    ~^([^:]+): $1;
+    ~^:(.+)$ $1;
     '' $scheme;
+}
+
+map $forwarded_proto $forwarded_port {
+    https 443;
+    http 80;
+    default $server_port;
 }
 
 server {
@@ -21,7 +34,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
     }
 
     location /api/ {
@@ -30,7 +45,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 300s;
@@ -43,7 +60,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
     }
 
     location /resources {
@@ -52,7 +71,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
     }
 
     location ^~ /auth/ {
@@ -62,7 +83,9 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Proto $forwarded_proto;
+        proxy_set_header X-Forwarded-Port $forwarded_port;
     }
 
     location / {

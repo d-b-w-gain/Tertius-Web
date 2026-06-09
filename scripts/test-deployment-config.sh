@@ -21,8 +21,8 @@ if ! rg -q "VITE_KEYCLOAK_CLIENT_ID \|\| 'tertius-ui'" "${ROOT_DIR}/ui/src/auth/
   exit 1
 fi
 
-if ! rg -q 'map \$http_x_forwarded_proto \$forwarded_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template"; then
-  echo "Frontend nginx must preserve incoming X-Forwarded-Proto for proxied API and Keycloak requests." >&2
+if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Host \$host' "${ROOT_DIR}/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Port \$forwarded_port' "${ROOT_DIR}/deploy/nginx/default.conf.template"; then
+  echo "Frontend nginx must preserve Cloudflare/original forwarded scheme, host, and port for proxied API and Keycloak requests." >&2
   exit 1
 fi
 
@@ -54,6 +54,11 @@ if ! rg -q '^USER 1000:1000$' "${ROOT_DIR}/Dockerfile.api"; then
 fi
 
 production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
+
+if ! printf '%s\n' "$production_rendered" | rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' || ! printf '%s\n' "$production_rendered" | rg -q 'admin: "https://tertius\.johnsonyuen\.com"'; then
+  echo "Production Keycloak hostname must use the public HTTPS Tertius origin." >&2
+  exit 1
+fi
 
 if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-[0-9]+-[a-f0-9]{7}"'; then
   echo "Production Helm defaults do not render the expected GHCR API image." >&2
