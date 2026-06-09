@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHART_DIR="${ROOT_DIR}/charts/tertius"
+CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 
@@ -76,26 +76,26 @@ if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/t
 fi
 
 if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-api.*"\$imagepolicy": "flux-system:tertius-api:name"' "${CHART_DIR}/values.yaml"; then
-  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the API repository." >&2
+  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the API repository." >&2
   exit 1
 fi
 
 if ! rg -q 'master-[0-9]+-[a-f0-9]{7}.*"\$imagepolicy": "flux-system:tertius-api:tag"' "${CHART_DIR}/values.yaml"; then
-  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the API tag." >&2
+  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the API tag." >&2
   exit 1
 fi
 
 if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui.*"\$imagepolicy": "flux-system:tertius-ui:name"' "${CHART_DIR}/values.yaml"; then
-  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the UI repository." >&2
+  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the UI repository." >&2
   exit 1
 fi
 
 if ! rg -q 'master-[0-9]+-[a-f0-9]{7}.*"\$imagepolicy": "flux-system:tertius-ui:tag"' "${CHART_DIR}/values.yaml"; then
-  echo "charts/tertius/values.yaml is missing the Flux image policy marker for the UI tag." >&2
+  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the UI tag." >&2
   exit 1
 fi
 
-if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q -- '- master' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'workflow_dispatch:' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'paths-ignore:' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q "'charts/\\*\\*'" "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'packages: write' "${ROOT_DIR}/.github/workflows/images.yml"; then
+if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q -- '- master' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'workflow_dispatch:' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'paths-ignore:' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q "'infra/charts/\\*\\*'" "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'packages: write' "${ROOT_DIR}/.github/workflows/images.yml"; then
   echo ".github/workflows/images.yml is missing the master-only trigger or GHCR package write permission." >&2
   exit 1
 fi
@@ -157,8 +157,8 @@ if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/clu
   exit 1
 fi
 
-if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'branch: flux-image-updates' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
-  echo "Flux ImageUpdateAutomation must commit setter updates for charts/tertius to the image update branch." >&2
+if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'branch: flux-image-updates' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./infra/charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
+  echo "Flux ImageUpdateAutomation must commit setter updates for infra/charts/tertius to the image update branch." >&2
   exit 1
 fi
 

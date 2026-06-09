@@ -5,7 +5,7 @@ on:
     branches:
       - master
     paths-ignore:
-      - 'charts/**'
+      - 'infra/charts/**'
   workflow_dispatch:
 
 permissions:

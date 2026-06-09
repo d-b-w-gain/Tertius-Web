@@ -15,6 +15,7 @@ spec:
     !/clusters/
     !/clusters/production/
     !/clusters/production/**
-    !/charts/
-    !/charts/tertius/
-    !/charts/tertius/**
+    !/infra/
+    !/infra/charts/
+    !/infra/charts/tertius/
+    !/infra/charts/tertius/**

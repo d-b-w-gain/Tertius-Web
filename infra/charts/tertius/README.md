@@ -8,19 +8,19 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 - Helm 3.
 - CloudNativePG operator with `clusters.postgresql.cnpg.io` installed.
 - Keycloak Operator with `keycloaks.k8s.keycloak.org` installed.
-- Valkey Helm dependency resolved with `helm dependency update charts/tertius`.
+- Valkey Helm dependency resolved with `helm dependency update infra/charts/tertius`.
 - API and UI images already available to the cluster.
 
 ## Local k3s Flow
 
 ```bash
-helm dependency update charts/tertius
-helm lint charts/tertius
-helm template tertius charts/tertius --values charts/tertius/values-local.yaml
-helm upgrade --install tertius charts/tertius \
+helm dependency update infra/charts/tertius
+helm lint infra/charts/tertius
+helm template tertius infra/charts/tertius --values infra/charts/tertius/values-local.yaml
+helm upgrade --install tertius infra/charts/tertius \
   --namespace tertius \
   --create-namespace \
-  --values charts/tertius/values-local.yaml
+  --values infra/charts/tertius/values-local.yaml
 ```
 
 For local image testing, build images as `tertius-api:local` and `tertius-ui:local`, then make them available to k3s through a local registry or `k3s ctr images import`. The local values use `IfNotPresent` so k3s can use locally loaded images.
@@ -55,10 +55,10 @@ kubectl -n tertius create secret generic cloudflared-token \
 Then install with:
 
 ```bash
-helm upgrade --install tertius charts/tertius \
+helm upgrade --install tertius infra/charts/tertius \
   --namespace tertius \
   --create-namespace \
-  --values charts/tertius/values-local.yaml \
+  --values infra/charts/tertius/values-local.yaml \
   --set cloudflared.enabled=true
 ```
 

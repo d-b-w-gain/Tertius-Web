@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHART_DIR="${ROOT_DIR}/charts/tertius"
+CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 VALUES_FILE="${CHART_DIR}/values-local.yaml"
 
 NAMESPACE="${NAMESPACE:-tertius}"

@@ -13,7 +13,7 @@ spec:
       valuesKey: values.yaml
   chart:
     spec:
-      chart: ./charts/tertius
+      chart: ./infra/charts/tertius
       sourceRef:
         kind: GitRepository
         name: tertius-web

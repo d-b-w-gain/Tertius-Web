@@ -29,8 +29,8 @@
 ### Task 2: Align Artifact Root With API PVC
 
 **Files:**
-- Modify: `charts/tertius/values.yaml`
-- Modify: `charts/tertius/templates/configmap.yaml`
+- Modify: `infra/charts/tertius/values.yaml`
+- Modify: `infra/charts/tertius/templates/configmap.yaml`
 - Modify: `scripts/test-deployment-config.sh`
 
 - [ ] Add a deployment-config assertion that rendered Helm output includes `ARTIFACT_ROOT: "/app/cache/tertius/artifacts"`.
