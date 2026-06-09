@@ -17,11 +17,32 @@ jobs:
     steps:
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.FLUX_IMAGE_UPDATE_PAT }}
           HEAD_BRANCH: flux-image-updates
           BASE_BRANCH: master
         run: |
           set -euo pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::FLUX_IMAGE_UPDATE_PAT is required so this workflow can create and auto-merge image update PRs."
+            exit 1
+          fi
+
+          compare_json="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${HEAD_BRANCH}")"
+          ahead_by="$(printf '%s\n' "${compare_json}" | jq -r '.ahead_by')"
+          if [ "${ahead_by}" = "0" ]; then
+            echo "No image update commits to promote from ${HEAD_BRANCH}."
+            exit 0
+          fi
+
+          non_chart_changes="$(printf '%s\n' "${compare_json}" \
+            | jq -r '.files[].filename' \
+            | grep -v '^charts/tertius/values.yaml$' || true)"
+          if [ -n "${non_chart_changes}" ]; then
+            echo "${non_chart_changes}" >&2
+            echo "::error::Flux image update branch contains changes outside charts/tertius/values.yaml; reset ${HEAD_BRANCH} before auto-merging."
+            exit 1
+          fi
 
           pr_number="$(gh pr list \
             --repo "${GITHUB_REPOSITORY}" \
