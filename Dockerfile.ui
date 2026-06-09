@@ -21,7 +21,7 @@ FROM nginx:1.29-alpine
 ENV API_SERVICE_HOST=tertius-api \
     API_SERVICE_PORT=8000
 
-COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY infra/deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/ui/dist/ /usr/share/nginx/html/
 
 EXPOSE 80
