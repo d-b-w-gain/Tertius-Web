@@ -319,6 +319,27 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
         db.commit()
         
         with hydrate_project_files(files) as project_dir:
+            settings_path = project_dir / "settings.json"
+            import json
+            
+            settings = db.scalar(
+                select(TimusSettings).where(
+                    TimusSettings.user_id == user_id,
+                    TimusSettings.tenant_id == tenant_id,
+                    TimusSettings.project_id == project_id,
+                )
+            )
+            settings_dict = serialize_timus_settings(settings) if settings else {
+                "title": name.upper(),
+                "stamp_text": "APPROVED",
+                "show_redline": True,
+                "show_hidden_lines": True,
+                "scale": 1.0,
+                "sheet_size": "A4",
+            }
+                
+            settings_path.write_text(json.dumps(settings_dict))
+            
             result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=300)
             if not result.success:
                 error = result.error or result.stderr or "Compile failed"
@@ -407,7 +428,21 @@ def get_drafting_status(
         )
     )
     if running_job:
-        return {"status": "building"}
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        job_time = running_job.created_at
+        if job_time.tzinfo is None:
+            job_time = job_time.replace(tzinfo=timezone.utc)
+            
+        if (now - job_time).total_seconds() > 600:
+            try:
+                compile_repo = CompileRepository(db, ctx.tenant_id)
+                compile_repo.finish_job(running_job, "failed", error="Job timed out or was abandoned by server restart")
+                db.commit()
+            except Exception:
+                db.rollback()
+        else:
+            return {"status": "building"}
         
     # Check latest successful artifact
     latest_artifact = db.scalar(

@@ -12,23 +12,5 @@ export async function apiFetch(
   }
 
   const response = await fetch(url, { ...init, headers })
-  if (response.status !== 401) {
-    return response
-  }
-
-  try {
-    const renewed = await userManager.signinSilent()
-    if (!renewed) {
-      throw new Error('Silent sign-in did not return a user')
-    }
-    headers.set('Authorization', `Bearer ${renewed.access_token}`)
-    const retryResponse = await fetch(url, { ...init, headers })
-    if (retryResponse.status === 401) {
-      await userManager.signinRedirect()
-    }
-    return retryResponse
-  } catch {
-    await userManager.signinRedirect()
-    return response
-  }
+  return response
 }

@@ -423,6 +423,7 @@ const DraftingCanvas: React.FC<{
           });
           
           scene.add(model);
+          draw(); // Force a redraw now that the model is loaded!
         });
       });
 
@@ -458,8 +459,7 @@ const DraftingCanvas: React.FC<{
     };
 
     const draw = () => {
-      animId = requestAnimationFrame(draw);
-      
+      if (isCancelled) return;
       const rect = svg.getBoundingClientRect();
       if (rect.width === 0) return;
       
@@ -495,11 +495,32 @@ const DraftingCanvas: React.FC<{
       if (s.selectedView === 'combined' || s.selectedView === 'iso') renderView(isoCam, 40 + s.view_w, 30, s.view_w, s.view_h);
     };
     
+    // Draw once immediately
     draw();
+    
+    // Draw again whenever scale/settings change (via stateRef)
+    // We only want to draw if something ACTUALLY changed to save CPU.
+    let lastStateStr = JSON.stringify(stateRef.current);
+    const redrawInterval = setInterval(() => {
+        const currentStateStr = JSON.stringify(stateRef.current);
+        if (currentStateStr !== lastStateStr) {
+            lastStateStr = currentStateStr;
+            draw();
+        }
+    }, 200);
+    
+    let resizeTimeout: any;
+    const ro = new ResizeObserver(() => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(draw, 50);
+    });
+    ro.observe(svg);
     
     return () => {
         isCancelled = true;
-        cancelAnimationFrame(animId);
+        clearInterval(redrawInterval);
+        clearTimeout(resizeTimeout);
+        ro.disconnect();
         scene.traverse((child) => {
           if ((child as THREE.Mesh).isMesh) {
             const m = child as THREE.Mesh;
