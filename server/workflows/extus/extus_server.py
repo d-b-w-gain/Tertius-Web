@@ -51,7 +51,7 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
         .where(
             Artifact.tenant_id == ctx.tenant_id,
             Artifact.project_id == project.id,
-            Artifact.kind.in_(["gltf", "glb"]),
+            Artifact.kind.in_(["gltf", "glb", "stl"]),
         )
         .order_by(Artifact.created_at.desc())
         .limit(1)

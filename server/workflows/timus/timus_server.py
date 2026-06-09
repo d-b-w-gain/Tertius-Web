@@ -13,6 +13,7 @@ from pydantic import BaseModel, confloat, constr
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 import json
+import build123d as bd
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
@@ -67,6 +68,47 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
             ProjectFile.filename == "design.py",
         )
     )
+
+
+def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
+    env = {"bd": bd, "build123d": bd}
+
+    if project_dir is not None and project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
+        remove_project_dir = True
+    else:
+        remove_project_dir = False
+
+    try:
+        exec(code, env)
+    finally:
+        if remove_project_dir:
+            sys.path.remove(project_dir)
+
+    shapes = []
+    for val in env.values():
+        if isinstance(val, bd.Shape) and hasattr(val, "volume"):
+            g_type = val.geom_type() if callable(val.geom_type) else val.geom_type
+            geom_name = getattr(g_type, "name", str(g_type)).upper()
+            if geom_name in ("SOLID", "COMPOUND", "OTHER"):
+                shapes.append(val)
+        elif hasattr(val, "part") and isinstance(getattr(val, "part"), bd.Shape):
+            shapes.append(val.part)
+
+    if not shapes and hasattr(bd.BuildPart, "_get_context") and bd.BuildPart._get_context():
+        shapes.append(bd.BuildPart._get_context().part)
+    if not shapes:
+        raise ValueError("No 3D shapes found in script.")
+
+    final_shapes = []
+    seen = set()
+    for shape in shapes:
+        if id(shape) not in seen:
+            seen.add(id(shape))
+            final_shapes.append(shape)
+    if len(final_shapes) > 1:
+        return bd.Compound(final_shapes)
+    return final_shapes[0]
 
 
 
@@ -303,6 +345,72 @@ def serialize_timus_settings(settings: TimusSettings):
         "scale": float(settings.scale),
         "sheet_size": settings.sheet_size,
     }
+
+
+PROJECTION_CACHE = {}
+
+
+def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
+    if cache_key in PROJECTION_CACHE:
+        cache_mtime, cached_views = PROJECTION_CACHE[cache_key]
+        if cache_mtime == mtime:
+            return cached_views
+
+    views = {}
+    bbox = compound.bounding_box()
+    look_at = bbox.center()
+    max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
+    if max_dim == 0:
+        max_dim = 100
+
+    for view_name in ["top", "front", "side", "iso"]:
+        if view_name == "top":
+            origin = (look_at.X, look_at.Y, bbox.max.Z + max_dim)
+            up = (0, 1, 0)
+        elif view_name == "front":
+            origin = (look_at.X, bbox.min.Y - max_dim, look_at.Z)
+            up = (0, 0, 1)
+        elif view_name == "side":
+            origin = (bbox.max.X + max_dim, look_at.Y, look_at.Z)
+            up = (0, 0, 1)
+        else:
+            origin = (look_at.X + max_dim, look_at.Y - max_dim, look_at.Z + max_dim)
+            up = (0, 0, 1)
+
+        visible, hidden = compound.project_to_viewport(
+            viewport_origin=origin,
+            viewport_up=up,
+            look_at=look_at,
+        )
+
+        segments = []
+        if visible:
+            proj_comp = bd.Compound(visible)
+            v_bbox = proj_comp.bounding_box()
+            cx = v_bbox.center().X
+            cy = v_bbox.center().Y
+
+            def tessellate(edges, is_hidden):
+                for edge in edges:
+                    gt = edge.geom_type() if callable(edge.geom_type) else edge.geom_type
+                    g_type = getattr(gt, "name", str(gt))
+                    n_samples = 2 if g_type == "LINE" else 30
+                    pts = [edge.position_at(t / (n_samples - 1)) for t in range(n_samples)]
+                    for i in range(len(pts) - 1):
+                        dx1 = pts[i].X - cx
+                        dy1 = pts[i].Y - cy
+                        dx2 = pts[i + 1].X - cx
+                        dy2 = pts[i + 1].Y - cy
+                        segments.append(((dx1, dy1), (dx2, dy2), is_hidden))
+
+            tessellate(visible, False)
+            if hidden:
+                tessellate(hidden, True)
+
+        views[view_name] = segments
+
+    PROJECTION_CACHE[cache_key] = (mtime, views)
+    return views
 
 
 def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str, name: str):
@@ -617,6 +725,28 @@ def put_timus_settings(
     return {"success": True}
 
 
+@app.get("/projects/{name}/bounds")
+def get_project_bounds(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
+        return Response("Project not found", status_code=404)
+
+    try:
+        compound = get_compound_from_code(design_file.content)
+        bbox = compound.bounding_box()
+        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
+        if max_dim == 0:
+            max_dim = 100
+        return {"max_dim": max_dim}
+    except Exception as e:
+        traceback.print_exc()
+        return Response(f"Internal Server Error: {str(e)}", status_code=500)
+
+
 @app.get("/projects/{name}/drafting.pdf")
 def get_drafting_pdf(
     name: str, 
@@ -632,6 +762,10 @@ def get_drafting_pdf(
     project = ProjectRepository(db, ctx.tenant_id).get_project(name)
     if project is None:
         return Response("Project not found", status_code=404)
+
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file is None:
+        return Response("Project not found", status_code=404)
         
     try:
         latest_artifact = db.scalar(
@@ -641,14 +775,20 @@ def get_drafting_pdf(
                 Artifact.kind == "timus_views"
             ).order_by(desc(Artifact.created_at))
         )
-        if not latest_artifact:
-            return Response("Drafting views not generated yet", status_code=400)
-            
-        artifact_store = ArtifactStore(get_settings().artifact_root)
-        artifact_path = artifact_store.path_for(latest_artifact.storage_key)
-        
-        with open(artifact_path, "r") as f:
-            views = json.load(f)
+        if latest_artifact:
+            artifact_store = ArtifactStore(get_settings().artifact_root)
+            artifact_path = artifact_store.path_for(latest_artifact.storage_key)
+
+            with open(artifact_path, "r") as f:
+                views = json.load(f)
+        else:
+            repo = ProjectRepository(db, ctx.tenant_id)
+            files = repo.files_for_runtime(name)
+            with hydrate_project_files(files) as project_dir:
+                compound = get_compound_from_code(design_file.content, str(project_dir))
+
+            cache_key = f"{ctx.tenant_id}:{project.id}:{name}"
+            views = get_projected_views(cache_key, compound, design_file.updated_at.timestamp())
         
         # Calculate Dimensions
         size = size.upper()
