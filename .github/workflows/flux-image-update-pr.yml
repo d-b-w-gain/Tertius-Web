@@ -37,10 +37,10 @@ jobs:
 
           non_chart_changes="$(printf '%s\n' "${compare_json}" \
             | jq -r '.files[].filename' \
-            | grep -v '^charts/tertius/values.yaml$' || true)"
+            | grep -v '^infra/charts/tertius/values.yaml$' || true)"
           if [ -n "${non_chart_changes}" ]; then
             echo "${non_chart_changes}" >&2
-            echo "::error::Flux image update branch contains changes outside charts/tertius/values.yaml; reset ${HEAD_BRANCH} before auto-merging."
+            echo "::error::Flux image update branch contains changes outside infra/charts/tertius/values.yaml; reset ${HEAD_BRANCH} before auto-merging."
             exit 1
           fi
 

@@ -10,8 +10,8 @@ function readGitValue(command: string, fallback: string) {
   }
 }
 
-const gitCommit = readGitValue('git rev-parse --short HEAD', 'unknown')
-const gitCommitDate = readGitValue('git log -1 --format=%cI', 'unknown')
+const gitCommit = process.env.GIT_COMMIT || readGitValue('git rev-parse --short HEAD', 'unknown')
+const gitCommitDate = process.env.GIT_COMMIT_DATE || readGitValue('git log -1 --format=%cI', 'unknown')
 
 // https://vite.dev/config/
 export default defineConfig({
