@@ -370,6 +370,8 @@ const DraftingCanvas: React.FC<{
 
   const svgRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawRef = useRef<(() => void) | null>(null);
+  const pendingDrawRef = useRef<number | null>(null);
   
   const [modelUrl, setModelUrl] = useState<string>('');
   
@@ -399,6 +401,17 @@ const DraftingCanvas: React.FC<{
   useEffect(() => {
     stateRef.current = { w, h, view_w, view_h, scale, selectedView };
   }, [w, h, view_w, view_h, scale, selectedView]);
+
+  const requestDraw = () => {
+    if (pendingDrawRef.current !== null) {
+      window.cancelAnimationFrame(pendingDrawRef.current);
+      pendingDrawRef.current = null;
+    }
+    pendingDrawRef.current = window.requestAnimationFrame(() => {
+      pendingDrawRef.current = null;
+      drawRef.current?.();
+    });
+  };
 
   // Three.js renderer (Only initialize ONCE per model)
   useEffect(() => {
@@ -547,31 +560,24 @@ const DraftingCanvas: React.FC<{
       if (s.selectedView === 'combined' || s.selectedView === 'side') renderView(sideCam, 40 + s.view_w, 30 + s.view_h, s.view_w, s.view_h);
       if (s.selectedView === 'combined' || s.selectedView === 'iso') renderView(isoCam, 40 + s.view_w, 30, s.view_w, s.view_h);
     };
+
+    drawRef.current = draw;
     
-    // Draw once immediately
-    draw();
-    
-    // Draw again whenever scale/settings change (via stateRef)
-    // We only want to draw if something ACTUALLY changed to save CPU.
-    let lastStateStr = JSON.stringify(stateRef.current);
-    const redrawInterval = setInterval(() => {
-        const currentStateStr = JSON.stringify(stateRef.current);
-        if (currentStateStr !== lastStateStr) {
-            lastStateStr = currentStateStr;
-            draw();
-        }
-    }, 200);
+    requestDraw();
     
     let resizeTimeout: any;
     const ro = new ResizeObserver(() => {
         clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(draw, 50);
+        resizeTimeout = setTimeout(requestDraw, 50);
     });
     ro.observe(svg);
     
     return () => {
         isCancelled = true;
-        clearInterval(redrawInterval);
+        if (pendingDrawRef.current !== null) {
+          window.cancelAnimationFrame(pendingDrawRef.current);
+          pendingDrawRef.current = null;
+        }
         clearTimeout(resizeTimeout);
         ro.disconnect();
         scene.traverse((child) => {
@@ -594,6 +600,17 @@ const DraftingCanvas: React.FC<{
         renderer.dispose();
     };
   }, [modelUrl, getAccessToken]);
+
+  useEffect(() => {
+    if (!modelUrl) return;
+    requestDraw();
+    return () => {
+      if (pendingDrawRef.current !== null) {
+        window.cancelAnimationFrame(pendingDrawRef.current);
+        pendingDrawRef.current = null;
+      }
+    };
+  }, [modelUrl, w, h, view_w, view_h, scale, selectedView]);
 
   return (
     <div className="relative w-full h-full flex items-center justify-center">
