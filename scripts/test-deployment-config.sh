@@ -131,33 +131,33 @@ if ! rg -q 'VITE_KEYCLOAK_AUTHORITY=/realms/tertius' "${ROOT_DIR}/.github/workfl
 fi
 
 for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
-  if [ ! -f "${ROOT_DIR}/clusters/production/flux-system/${flux_file}" ]; then
+  if [ ! -f "${ROOT_DIR}/infra/clusters/production/flux-system/${flux_file}" ]; then
     echo "Missing Flux image automation manifest: ${flux_file}." >&2
     exit 1
   fi
 
-  if ! rg -q "flux-system/${flux_file}" "${ROOT_DIR}/clusters/production/kustomization.yaml"; then
-    echo "clusters/production/kustomization.yaml does not include ${flux_file}." >&2
+  if ! rg -q "flux-system/${flux_file}" "${ROOT_DIR}/infra/clusters/production/kustomization.yaml"; then
+    echo "infra/clusters/production/kustomization.yaml does not include ${flux_file}." >&2
     exit 1
   fi
 done
 
-if rg -q '^apiVersion: image\.toolkit\.fluxcd\.io/v1beta' "${ROOT_DIR}/clusters/production/flux-system"/image-*.yaml; then
+if rg -q '^apiVersion: image\.toolkit\.fluxcd\.io/v1beta' "${ROOT_DIR}/infra/clusters/production/flux-system"/image-*.yaml; then
   echo "Flux image automation manifests must use image.toolkit.fluxcd.io/v1, not v1beta*." >&2
   exit 1
 fi
 
-if ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-api' "${ROOT_DIR}/clusters/production/flux-system/image-repositories.yaml" || ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-ui' "${ROOT_DIR}/clusters/production/flux-system/image-repositories.yaml"; then
+if ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-api' "${ROOT_DIR}/infra/clusters/production/flux-system/image-repositories.yaml" || ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-ui' "${ROOT_DIR}/infra/clusters/production/flux-system/image-repositories.yaml"; then
   echo "Flux ImageRepository resources must scan the expected GHCR API and UI packages." >&2
   exit 1
 fi
 
-if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml" || ! rg -F -q "extract: '\$run'" "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml" || ! rg -q 'order: asc' "${ROOT_DIR}/clusters/production/flux-system/image-policies.yaml"; then
+if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml" || ! rg -F -q "extract: '\$run'" "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml" || ! rg -q 'order: asc' "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml"; then
   echo "Flux ImagePolicy resources must select the newest master run tag numerically." >&2
   exit 1
 fi
 
-if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'branch: flux-image-updates' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./infra/charts/tertius' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/clusters/production/flux-system/image-update-automation.yaml"; then
+if ! rg -q 'branch: master' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'branch: flux-image-updates' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./infra/charts/tertius' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml"; then
   echo "Flux ImageUpdateAutomation must commit setter updates for infra/charts/tertius to the image update branch." >&2
   exit 1
 fi
@@ -167,12 +167,12 @@ if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.y
   exit 1
 fi
 
-if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/clusters/production/flux-system/gitrepository.yaml" || ! rg -q 'name: tertius-web-write' "${ROOT_DIR}/clusters/production/flux-system/gitrepository.yaml"; then
+if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" || ! rg -q 'name: tertius-web-write' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml"; then
   echo "GitRepository tertius-web is missing the write-capable PAT secretRef." >&2
   exit 1
 fi
 
-if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/clusters/production/tertius/helmrelease.yaml"; then
+if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml"; then
   echo "HelmRelease tertius must reconcile chart content by Git revision so Flux image tag commits are deployed." >&2
   exit 1
 fi

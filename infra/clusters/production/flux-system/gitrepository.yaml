@@ -12,9 +12,9 @@ spec:
     branch: master
   ignore: |
     /*
-    !/clusters/
-    !/clusters/production/
-    !/clusters/production/**
+    !/infra/clusters/
+    !/infra/clusters/production/
+    !/infra/clusters/production/**
     !/infra/
     !/infra/charts/
     !/infra/charts/tertius/
