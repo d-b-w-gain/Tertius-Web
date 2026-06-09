@@ -149,3 +149,62 @@ def test_compile_prunes_old_artifact_rows_and_files_after_successful_compile(
     ]
     assert not store.path_for(old_stored.storage_key).exists()
     assert store.path_for(other_stored.storage_key).exists()
+
+
+def test_compile_keeps_old_artifact_row_when_pruned_file_delete_fails(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    tmp_path,
+):
+    artifact_root = tmp_path / "artifacts"
+    store = ArtifactStore(artifact_root)
+    old_stored = store.write_bytes(seeded_tenant.tenant_id, seeded_tenant.project_id, "stl", b"solid old")
+    old_artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="stl",
+        storage_key=old_stored.storage_key,
+        content_type=old_stored.content_type,
+        byte_size=old_stored.byte_size,
+    )
+    db_session.add(old_artifact)
+    db_session.commit()
+
+    output_path = tmp_path / "output.stl"
+    output_path.write_bytes(b"solid new")
+
+    def fake_run_compile_sandbox(project_dir: Path, export_format: str, timeout_seconds: int = 30):
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            stdout="compiled",
+            stderr="",
+            error=None,
+        )
+
+    def fail_delete(self, storage_key: str):
+        if storage_key == old_stored.storage_key:
+            raise OSError("delete failed")
+        return original_delete(self, storage_key)
+
+    original_delete = ArtifactStore.delete
+    monkeypatch.setattr(intus_server, "run_compile_sandbox", fake_run_compile_sandbox, raising=False)
+    monkeypatch.setattr(ArtifactStore, "delete", fail_delete)
+    monkeypatch.setattr(
+        intus_server,
+        "get_settings",
+        lambda: SimpleNamespace(artifact_root=str(artifact_root), artifact_retention_limit=1),
+        raising=False,
+    )
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={"code": "shape = 'new'\n", "export_format": "stl", "file": "design.py"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is False
+    assert db_session.get(Artifact, old_artifact.id) is not None
+    assert store.path_for(old_stored.storage_key).exists()

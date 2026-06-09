@@ -269,10 +269,11 @@ def compile_project(
         )
         persisted_job = db.get(CompileJob, job_id)
         compile_repo.finish_job(persisted_job, "succeeded")
-        pruned_storage_keys = compile_repo.prune_artifacts(project_id, ext, max(1, settings.artifact_retention_limit))
+        pruned_artifacts = compile_repo.prunable_artifacts(project_id, ext, max(1, settings.artifact_retention_limit))
+        for pruned_artifact in pruned_artifacts:
+            artifact_store.delete(pruned_artifact.storage_key)
+        compile_repo.delete_artifacts(pruned_artifacts)
         db.commit()
-        for storage_key in pruned_storage_keys:
-            artifact_store.delete(storage_key)
         return {"success": True, "format": ext, "artifact_id": str(artifact.id)}
 
     except Exception as e:

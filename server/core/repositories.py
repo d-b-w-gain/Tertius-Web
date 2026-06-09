@@ -276,7 +276,7 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
-    def prune_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[str]:
+    def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)
         query = (
             select(Artifact)
@@ -288,9 +288,9 @@ class CompileRepository:
             .order_by(Artifact.created_at.desc(), Artifact.id.desc())
             .offset(keep_latest)
         )
-        artifacts = self.db.scalars(query).all()
-        storage_keys = [artifact.storage_key for artifact in artifacts]
+        return list(self.db.scalars(query).all())
+
+    def delete_artifacts(self, artifacts: list[Artifact]) -> None:
         for artifact in artifacts:
             self.db.delete(artifact)
         self.db.flush()
-        return storage_keys
