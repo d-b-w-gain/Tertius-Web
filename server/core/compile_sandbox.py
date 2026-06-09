@@ -136,6 +136,64 @@ try:
                 patch_glb_names(str(output_path), tag_to_name)
             except Exception as patch_e:
                 print("Failed to patch GLB names:", patch_e)
+    elif export_format == "timus_views":
+        import json
+        bbox = compound.bounding_box()
+        look_at = bbox.center()
+        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
+        if max_dim == 0:
+            max_dim = 100
+            
+        views = {}
+        for view_name in ["top", "front", "side", "iso"]:
+            if view_name == "top":
+                origin = (look_at.X, look_at.Y, bbox.max.Z + max_dim)
+                up = (0, 1, 0)
+            elif view_name == "front":
+                origin = (look_at.X, bbox.min.Y - max_dim, look_at.Z)
+                up = (0, 0, 1)
+            elif view_name == "side":
+                origin = (bbox.max.X + max_dim, look_at.Y, look_at.Z)
+                up = (0, 0, 1)
+            else:
+                origin = (look_at.X + max_dim, look_at.Y - max_dim, look_at.Z + max_dim)
+                up = (0, 0, 1)
+                
+            visible, hidden = compound.project_to_viewport(
+                viewport_origin=origin,
+                viewport_up=up,
+                look_at=look_at
+            )
+            
+            segments = []
+            if visible:
+                proj_comp = bd.Compound(visible)
+                v_bbox = proj_comp.bounding_box()
+                cx = v_bbox.center().X
+                cy = v_bbox.center().Y
+                
+                def tessellate(edges, is_hidden):
+                    for edge in edges:
+                        gt = edge.geom_type() if callable(edge.geom_type) else edge.geom_type
+                        g_type = getattr(gt, "name", str(gt))
+                        n_samples = 2 if g_type == "LINE" else 30
+                        try:
+                            pts = [edge.position_at(t/(n_samples-1)) for t in range(n_samples)]
+                            for i in range(len(pts)-1):
+                                dx1 = pts[i].X - cx
+                                dy1 = pts[i].Y - cy
+                                dx2 = pts[i+1].X - cx
+                                dy2 = pts[i+1].Y - cy
+                                segments.append(((dx1, dy1), (dx2, dy2), is_hidden))
+                        except Exception:
+                            continue
+                
+                tessellate(visible, False)
+                if hidden:
+                    tessellate(hidden, True)
+            views[view_name] = segments
+        with open(str(output_path), "w") as f:
+            json.dump(views, f)
     else:
         raise RuntimeError(f"Unsupported export format: {export_format}")
 except Exception:
