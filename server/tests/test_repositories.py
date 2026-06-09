@@ -5,7 +5,16 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from core.models import AppUser, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, Tenant, TenantMembership
+from core.models import (
+    AppUser,
+    Project,
+    ProjectFile,
+    SourceSnapshot,
+    SourceSnapshotFile,
+    Tenant,
+    TenantMembership,
+    UserWorkspaceState,
+)
 from core.repositories import ProjectRepository, require_valid_project_name, require_valid_python_filename
 
 
@@ -71,6 +80,39 @@ def test_project_repository_create_project_stays_tenant_scoped(db_session):
     assert repo_b.list_projects() == ["same_name"]
     assert repo_a.get_code("new_project", "design.py") == "from build123d import *"
     assert repo_b.get_project("new_project") is None
+
+
+def test_project_repository_set_active_project_updates_workspace_state_and_active_file(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+
+    project = repo.create_project("active_project", seeded["user_a"], "from build123d import *")
+    project_file = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded["tenant_a"],
+            ProjectFile.project_id == project.id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+
+    assert repo.set_active_project(seeded["user_a"], project.id) is True
+
+    state = db_session.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == seeded["user_a"],
+            UserWorkspaceState.tenant_id == seeded["tenant_a"],
+        )
+    )
+    assert state.active_project_id == project.id
+    assert state.active_file_id == project_file.id
+
+
+def test_project_repository_set_active_project_rejects_cross_tenant_project(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+
+    assert repo.set_active_project(seeded["user_a"], seeded["project_b"]) is False
+    assert db_session.scalar(select(UserWorkspaceState)) is None
 
 
 def test_project_repository_save_code_updates_project_and_snapshots_all_files(db_session):

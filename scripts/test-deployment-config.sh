@@ -33,6 +33,11 @@ if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'ARTIFACT_ROOT: "/app/cache/tertius/artifacts"'; then
+  echo "Local Helm render must set ARTIFACT_ROOT to the API PVC-backed artifact path." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$rendered" | rg -q 'name: tertius-valkey'; then
   echo "Local Helm render did not include the Valkey data PVC." >&2
   exit 1

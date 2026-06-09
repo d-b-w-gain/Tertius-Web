@@ -52,6 +52,19 @@ def test_artifact_store_rejects_paths_that_escape_root(tmp_path: Path):
         store.path_for("tenant/../../outside.stl")
 
 
+def test_artifact_store_delete_removes_tenant_scoped_file_and_ignores_missing_file(tmp_path: Path):
+    store = ArtifactStore(tmp_path)
+    result = store.write_bytes(uuid4(), uuid4(), "stl", b"solid test")
+    path = store.path_for(result.storage_key)
+
+    assert path.exists()
+
+    store.delete(result.storage_key)
+    store.delete(result.storage_key)
+
+    assert not path.exists()
+
+
 def test_hydrate_project_files_creates_python_files_and_cleans_up():
     with hydrate_project_files({"design.py": "x = 1", "helpers.py": "y = 2"}) as project_dir:
         assert (project_dir / "design.py").read_text(encoding="utf-8") == "x = 1"

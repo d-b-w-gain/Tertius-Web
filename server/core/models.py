@@ -26,9 +26,10 @@ def now_utc() -> datetime:
 
 class AppUser(Base):
     __tablename__ = "app_users"
+    __table_args__ = (UniqueConstraint("keycloak_subject", name="uq_app_users_keycloak_subject"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    keycloak_subject: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    keycloak_subject: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(320))
     username: Mapped[Optional[str]] = mapped_column(String(255))
     display_name: Mapped[Optional[str]] = mapped_column(String(255))

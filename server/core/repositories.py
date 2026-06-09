@@ -42,11 +42,34 @@ class ProjectRepository:
         return self.db.scalar(select(Project).where(Project.tenant_id == self.tenant_id, Project.name == name))
 
     def activate_project(self, project_name: str, user_id: UUID) -> bool:
-        from core.models import UserWorkspaceState
         project = self.get_project(project_name)
         if project is None:
             return False
 
+        if not self.set_active_project(user_id, project.id):
+            return False
+        self.db.commit()
+        return True
+
+    def set_active_project(self, user_id: UUID, project_id: UUID) -> bool:
+        from core.models import UserWorkspaceState
+
+        project = self.db.scalar(
+            select(Project).where(
+                Project.tenant_id == self.tenant_id,
+                Project.id == project_id,
+            )
+        )
+        if project is None:
+            return False
+
+        active_file = self.db.scalar(
+            select(ProjectFile).where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+                ProjectFile.filename == "design.py",
+            )
+        )
         state = self.db.scalar(
             select(UserWorkspaceState).where(
                 UserWorkspaceState.user_id == user_id,
@@ -54,11 +77,17 @@ class ProjectRepository:
             )
         )
         if state is None:
-            state = UserWorkspaceState(user_id=user_id, tenant_id=self.tenant_id, active_project_id=project.id)
+            state = UserWorkspaceState(
+                user_id=user_id,
+                tenant_id=self.tenant_id,
+                active_project_id=project.id,
+                active_file_id=active_file.id if active_file else None,
+            )
             self.db.add(state)
         else:
             state.active_project_id = project.id
-        self.db.commit()
+            state.active_file_id = active_file.id if active_file else None
+        self.db.flush()
         return True
 
     def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
@@ -246,3 +275,22 @@ class CompileRepository:
         self.db.add(artifact)
         self.db.flush()
         return artifact
+
+    def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
+        keep_latest = max(0, keep_latest)
+        query = (
+            select(Artifact)
+            .where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.project_id == project_id,
+                Artifact.kind == kind.lower(),
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            .offset(keep_latest)
+        )
+        return list(self.db.scalars(query).all())
+
+    def delete_artifacts(self, artifacts: list[Artifact]) -> None:
+        for artifact in artifacts:
+            self.db.delete(artifact)
+        self.db.flush()

@@ -19,6 +19,74 @@ from workflows.extus import extus_server
 from workflows.timus import timus_server
 
 
+def create_named_project(db_session, seeded_tenant, name: str) -> Project:
+    project = Project(tenant_id=seeded_tenant.tenant_id, name=name, created_by=seeded_tenant.user_id)
+    db_session.add(project)
+    db_session.flush()
+    db_session.add(
+        ProjectFile(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=project.id,
+            filename="design.py",
+            content="import build123d as bd\nlength = 200\n",
+        )
+    )
+    db_session.commit()
+    return project
+
+
+def assert_active_project(db_session, seeded_tenant, project: Project):
+    state = db_session.scalar(
+        select(UserWorkspaceState).where(
+            UserWorkspaceState.user_id == seeded_tenant.user_id,
+            UserWorkspaceState.tenant_id == seeded_tenant.tenant_id,
+        )
+    )
+    assert state.active_project_id == project.id
+
+
+def test_artus_activate_project_uses_repository_workspace_state(
+    authenticated_artus_client,
+    db_session,
+    seeded_tenant,
+):
+    project = create_named_project(db_session, seeded_tenant, "artus_project")
+
+    response = authenticated_artus_client.post("/projects/artus_project/activate")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert_active_project(db_session, seeded_tenant, project)
+
+
+def test_extus_activate_project_uses_repository_workspace_state(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    project = create_named_project(db_session, seeded_tenant, "extus_project")
+
+    response = authenticated_extus_client.post("/projects/extus_project/activate")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert_active_project(db_session, seeded_tenant, project)
+
+
+def test_timus_activate_project_uses_repository_workspace_state(
+    authenticated_timus_client,
+    db_session,
+    seeded_tenant,
+):
+    project = create_named_project(db_session, seeded_tenant, "timus_project")
+
+    response = authenticated_timus_client.post("/projects/timus_project/activate")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert_active_project(db_session, seeded_tenant, project)
+
+
 def test_artus_features_and_updates_use_authenticated_workspace(
     authenticated_artus_client,
     db_session,
