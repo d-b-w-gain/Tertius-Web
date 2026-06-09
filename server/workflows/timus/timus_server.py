@@ -7,19 +7,22 @@ import traceback
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Query, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, confloat, constr
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
-import build123d as bd
+import json
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.db import get_db
-from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project
-from core.repositories import ProjectRepository
+from core.db import get_db, SessionLocal
+from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project, CompileJob, Artifact
+from core.repositories import ProjectRepository, CompileRepository
 from core.compile_runtime import hydrate_project_files
+from core.compile_sandbox import run_compile_sandbox
+from core.artifacts import ArtifactStore
+from core.config import get_settings
 
 app = FastAPI(title="Timus Drafting Server")
 app.add_middleware(
@@ -66,42 +69,7 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
     )
 
 
-def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
-    env = {"bd": bd, "build123d": bd}
-    
-    if project_dir is not None:
-        import sys
-        if project_dir not in sys.path:
-            sys.path.insert(0, project_dir)
-            
-    try:
-        exec(code, env)
-    finally:
-        if project_dir is not None and project_dir in sys.path:
-            sys.path.remove(project_dir)
-    shapes = []
-    for val in env.values():
-        if isinstance(val, bd.Shape) and hasattr(val, "volume"):
-            g_type = val.geom_type() if callable(val.geom_type) else val.geom_type
-            geom_name = getattr(g_type, "name", str(g_type)).upper()
-            if geom_name in ("SOLID", "COMPOUND", "OTHER"):
-                shapes.append(val)
-        elif hasattr(val, "part") and isinstance(getattr(val, "part"), bd.Shape):
-            shapes.append(val.part)
-    if not shapes:
-        if hasattr(bd.BuildPart, "_get_context") and bd.BuildPart._get_context():
-            shapes.append(bd.BuildPart._get_context().part)
-    if not shapes:
-        raise ValueError("No 3D shapes found in script.")
-    final_shapes = []
-    seen = set()
-    for s in shapes:
-        if id(s) not in seen:
-            seen.add(id(s))
-            final_shapes.append(s)
-    if len(final_shapes) > 1:
-        return bd.Compound(final_shapes)
-    return final_shapes[0]
+
 
 def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redline: bool, w: float, h: float):
     # 1. Main outer border frame
@@ -317,9 +285,6 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
         pdf.set_font("Helvetica", "B", size)
         pdf.cell(w=110, h=7, text=text, ln=0)
 
-PROJECTION_CACHE = {}
-
-
 class TimusSettingsRequest(BaseModel):
     title: constr(min_length=1, max_length=255)
     stamp_text: constr(min_length=1, max_length=32)
@@ -339,68 +304,128 @@ def serialize_timus_settings(settings: TimusSettings):
         "sheet_size": settings.sheet_size,
     }
 
-def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
-    global PROJECTION_CACHE
-    if cache_key in PROJECTION_CACHE:
-        cache_mtime, cached_views = PROJECTION_CACHE[cache_key]
-        if cache_mtime == mtime:
-            return cached_views
+
+def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str, name: str):
+    db = SessionLocal()
+    try:
+        repo = ProjectRepository(db, tenant_id)
+        compile_repo = CompileRepository(db, tenant_id)
+        files = repo.files_for_runtime(name)
+        if not files:
+            return
             
-    views = {}
-    bbox = compound.bounding_box()
-    look_at = bbox.center()
-    max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
-    if max_dim == 0:
-        max_dim = 100
+        job = compile_repo.start_job(project_id, user_id, "timus_views")
+        job_id = job.id
+        db.commit()
         
-    for view_name in ["top", "front", "side", "iso"]:
-        if view_name == "top":
-            origin = (look_at.X, look_at.Y, bbox.max.Z + max_dim)
-            up = (0, 1, 0)
-        elif view_name == "front":
-            origin = (look_at.X, bbox.min.Y - max_dim, look_at.Z)
-            up = (0, 0, 1)
-        elif view_name == "side":
-            origin = (bbox.max.X + max_dim, look_at.Y, look_at.Z)
-            up = (0, 0, 1)
-        else:
-            origin = (look_at.X + max_dim, look_at.Y - max_dim, look_at.Z + max_dim)
-            up = (0, 0, 1)
-            
-        visible, hidden = compound.project_to_viewport(
-            viewport_origin=origin,
-            viewport_up=up,
-            look_at=look_at
+        with hydrate_project_files(files) as project_dir:
+            result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=300)
+            if not result.success:
+                error = result.error or result.stderr or "Compile failed"
+                persisted_job = db.get(CompileJob, job_id)
+                if persisted_job:
+                    compile_repo.finish_job(persisted_job, "failed", error=error)
+                    db.commit()
+                return
+
+            if result.output_path is None:
+                return
+            output_bytes = result.output_path.read_bytes()
+
+        artifact_store = ArtifactStore(get_settings().artifact_root)
+        stored = artifact_store.write_bytes(tenant_id, project_id, "timus_views", output_bytes)
+        
+        compile_repo.record_artifact(
+            project_id,
+            job_id,
+            "timus_views",
+            stored.storage_key,
+            stored.content_type,
+            stored.byte_size,
         )
+        persisted_job = db.get(CompileJob, job_id)
+        if persisted_job:
+            compile_repo.finish_job(persisted_job, "succeeded")
+            db.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+    finally:
+        db.close()
+
+
+@app.post("/projects/{name}/drafting/build")
+def trigger_drafting_build(
+    name: str,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if not project:
+        return Response("Not found", 404)
         
-        segments = []
-        if visible:
-            proj_comp = bd.Compound(visible)
-            v_bbox = proj_comp.bounding_box()
-            cx = v_bbox.center().X
-            cy = v_bbox.center().Y
-            
-            def tessellate(edges, is_hidden):
-                for edge in edges:
-                    gt = edge.geom_type() if callable(edge.geom_type) else edge.geom_type
-                    g_type = getattr(gt, "name", str(gt))
-                    n_samples = 2 if g_type == "LINE" else 30
-                    pts = [edge.position_at(t/(n_samples-1)) for t in range(n_samples)]
-                    for i in range(len(pts)-1):
-                        dx1 = pts[i].X - cx
-                        dy1 = pts[i].Y - cy
-                        dx2 = pts[i+1].X - cx
-                        dy2 = pts[i+1].Y - cy
-                        segments.append(((dx1, dy1), (dx2, dy2), is_hidden))
-            
-            tessellate(visible, False)
-            if hidden:
-                tessellate(hidden, True)
-                
-        views[view_name] = segments
+    compile_repo = CompileRepository(db, ctx.tenant_id)
+    # Check if a build is already running
+    running_job = db.scalar(
+        select(CompileJob).where(
+            CompileJob.tenant_id == ctx.tenant_id,
+            CompileJob.project_id == project.id,
+            CompileJob.export_format == "timus_views",
+            CompileJob.status == "running"
+        )
+    )
+    if running_job:
+        return {"status": "building"}
         
-    PROJECTION_CACHE[cache_key] = (mtime, views)
-    return views
+    background_tasks.add_task(
+        _background_build_timus_views,
+        ctx.tenant_id,
+        ctx.user_id,
+        project.id,
+        name
+    )
+    return {"status": "started"}
+
+@app.get("/projects/{name}/drafting/status")
+def get_drafting_status(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db)
+):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if not project:
+        return Response("Not found", 404)
+        
+    running_job = db.scalar(
+        select(CompileJob).where(
+            CompileJob.tenant_id == ctx.tenant_id,
+            CompileJob.project_id == project.id,
+            CompileJob.export_format == "timus_views",
+            CompileJob.status == "running"
+        )
+    )
+    if running_job:
+        return {"status": "building"}
+        
+    # Check latest successful artifact
+    latest_artifact = db.scalar(
+        select(Artifact).where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == project.id,
+            Artifact.kind == "timus_views"
+        ).order_by(desc(Artifact.created_at))
+    )
+    
+    if not latest_artifact:
+        return {"status": "none"}
+        
+    design_file = _get_project_design_file(name, ctx, db)
+    if design_file and design_file.updated_at > latest_artifact.created_at:
+        return {"status": "stale"}
+        
+    return {"status": "ready"}
 
 def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float, scale: float, show_hidden: bool = True):
     if not segments:
@@ -431,6 +456,50 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/projects/{name}/model")
+def get_gltf_model(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if not project: return Response("Not found", 404)
+    
+    latest_artifact = db.scalar(
+        select(Artifact).where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == project.id,
+            Artifact.kind.in_(["gltf", "glb"])
+        ).order_by(desc(Artifact.created_at))
+    )
+    if not latest_artifact: return Response("No 3D model found", 404)
+    
+    artifact_store = ArtifactStore(get_settings().artifact_root)
+    artifact_path = artifact_store.path_for(latest_artifact.storage_key)
+    with open(artifact_path, "rb") as f:
+        data = f.read()
+    return Response(content=data, media_type=latest_artifact.content_type)
+
+@app.get("/projects/{name}/model_status")
+def get_model_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if not project: return Response("Not found", 404)
+    latest_artifact = db.scalar(
+        select(Artifact).where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == project.id,
+            Artifact.kind.in_(["gltf", "glb"])
+        ).order_by(desc(Artifact.created_at))
+    )
+    if not latest_artifact: return {"mtime": 0}
+    return {"mtime": latest_artifact.created_at.timestamp()}
+
+@app.post("/projects/{name}/activate")
+def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    project = repo.get_project(name)
+    if not project:
+        return Response(status_code=404, content="Not found")
+    repo.set_active_project(ctx.user_id, project.id)
+    db.commit()
+    return {"success": True}
 
 @app.get("/project_name")
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -513,29 +582,6 @@ def put_timus_settings(
     return {"success": True}
 
 
-@app.get("/projects/{name}/bounds")
-def get_project_bounds(
-    name: str,
-    ctx: AuthContext = Depends(get_auth_context),
-    db: Session = Depends(get_db),
-):
-    design_file = _get_project_design_file(name, ctx, db)
-    if design_file is None:
-        return Response("Project not found", status_code=404)
-        
-    try:
-        code = design_file.content
-        compound = get_compound_from_code(code)
-        bbox = compound.bounding_box()
-        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
-        if max_dim == 0:
-            max_dim = 100
-        return {"max_dim": max_dim}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return Response(f"Internal Server Error: {str(e)}", status_code=500)
-
 @app.get("/projects/{name}/drafting.pdf")
 def get_drafting_pdf(
     name: str, 
@@ -548,22 +594,26 @@ def get_drafting_pdf(
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
-    design_file = _get_project_design_file(name, ctx, db)
-    if design_file is None:
+    project = ProjectRepository(db, ctx.tenant_id).get_project(name)
+    if project is None:
         return Response("Project not found", status_code=404)
         
     try:
-        mtime = design_file.updated_at.timestamp()
-        code = design_file.content
+        latest_artifact = db.scalar(
+            select(Artifact).where(
+                Artifact.tenant_id == ctx.tenant_id,
+                Artifact.project_id == project.id,
+                Artifact.kind == "timus_views"
+            ).order_by(desc(Artifact.created_at))
+        )
+        if not latest_artifact:
+            return Response("Drafting views not generated yet", status_code=400)
+            
+        artifact_store = ArtifactStore(get_settings().artifact_root)
+        artifact_path = artifact_store.path_for(latest_artifact.storage_key)
         
-        repo = ProjectRepository(db, ctx.tenant_id)
-        files = repo.files_for_runtime(name)
-        with hydrate_project_files(files) as project_dir:
-            compound = get_compound_from_code(code, str(project_dir))
-        
-        # Get cached views
-        cache_key = f"{ctx.tenant_id}:{design_file.project_id}:{name}"
-        views = get_projected_views(cache_key, compound, mtime)
+        with open(artifact_path, "r") as f:
+            views = json.load(f)
         
         # Calculate Dimensions
         size = size.upper()
@@ -601,10 +651,10 @@ def get_drafting_pdf(
         side_oy = 30 + view_h
         
         # Draw Direct OCCT Edges to PDF
-        _draw_compound_view(pdf, views["top"], ox=top_ox, oy=top_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views["front"], ox=front_ox, oy=front_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views["side"], ox=side_ox, oy=side_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views["iso"], ox=iso_ox, oy=iso_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
+        _draw_compound_view(pdf, views.get("top", []), ox=top_ox, oy=top_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
+        _draw_compound_view(pdf, views.get("front", []), ox=front_ox, oy=front_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
+        _draw_compound_view(pdf, views.get("side", []), ox=side_ox, oy=side_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
+        _draw_compound_view(pdf, views.get("iso", []), ox=iso_ox, oy=iso_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
         
         # Labels
         pdf.set_font("Helvetica", "B", 6)

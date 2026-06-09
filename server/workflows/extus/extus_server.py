@@ -51,7 +51,7 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
         .where(
             Artifact.tenant_id == ctx.tenant_id,
             Artifact.project_id == project.id,
-            Artifact.kind.in_(["gltf", "glb", "stl"]),
+            Artifact.kind.in_(["gltf", "glb"]),
         )
         .order_by(Artifact.created_at.desc())
         .limit(1)
@@ -67,6 +67,18 @@ def get_artifact_path(artifact: Artifact):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.post("/projects/{name}/activate")
+def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    from core.repositories import ProjectRepository
+    from fastapi.responses import JSONResponse
+    repo = ProjectRepository(db, ctx.tenant_id)
+    project = repo.get_project(name)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    repo.set_active_project(ctx.user_id, project.id)
+    db.commit()
+    return {"success": True}
 
 @app.get("/project_name")
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):

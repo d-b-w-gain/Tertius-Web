@@ -1,46 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
-  const intusUrl = serverUrl.replace('/timus', '/intus');
   const [activeProject, setActiveProject] = useState<string>('');
-  const [refreshKey, setRefreshKey] = useState(0);
   
   // Customizer State
   const [title, setTitle] = useState('UNTITLED PART');
   const [stampText, setStampText] = useState('APPROVED');
   const [showRedline, setShowRedline] = useState(true);
-  const [showHiddenLines, setShowHiddenLines] = useState(true);
+  const [showHiddenLines, setShowHiddenLines] = useState(false);
   const [scale, setScale] = useState(1.0);
   const [sheetSize, setSheetSize] = useState('A4');
+  const [selectedView, setSelectedView] = useState('combined');
   
-  // Debounced values for URL generation
   const [debouncedScale, setDebouncedScale] = useState(1.0);
   const [debouncedTitle, setDebouncedTitle] = useState('UNTITLED PART');
   
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const pdfUrlRef = useRef<string | null>(null);
-
-  const replacePdfUrl = (objectUrl: string) => {
-    if (pdfUrlRef.current) {
-      URL.revokeObjectURL(pdfUrlRef.current);
-    }
-    pdfUrlRef.current = objectUrl;
-    setPdfUrl(objectUrl);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (pdfUrlRef.current) {
-        URL.revokeObjectURL(pdfUrlRef.current);
-      }
-    };
-  }, []);
+  const [buildStatus, setBuildStatus] = useState<string>('none');
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -83,7 +64,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       setTitle(activeProject.toUpperCase());
       setStampText('APPROVED');
       setShowRedline(true);
-      setShowHiddenLines(true);
+      setShowHiddenLines(false);
       setScale(1.0);
       setSheetSize('A4');
 
@@ -130,92 +111,36 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
   useEffect(() => {
     if (!activeProject || !isActive) return;
-    let mtime = 0;
-    const interval = setInterval(async () => {
+    let mounted = true;
+    const checkStatus = async () => {
       try {
-        const res = await apiFetch(`${intusUrl}/projects/${activeProject}/status`, getAccessToken);
-        if (res.ok) {
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/status`, getAccessToken);
+        if (res.ok && mounted) {
           const data = await res.json();
-          if (data.mtime && mtime !== 0 && data.mtime > mtime) {
-            setRefreshKey(k => k + 1);
-          }
-          if (data.mtime) mtime = data.mtime;
+          setBuildStatus(data.status);
         }
       } catch (e) {}
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [activeProject, isActive, intusUrl, getAccessToken]);
-
-  const getPreviewUrl = () => {
-    return `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}&t=${refreshKey}`;
-  };
-
-  useEffect(() => {
-    if (!activeProject || !isActive) return;
-    let isMounted = true;
-    
-    const loadPdf = async () => {
-      setIsGenerating(true);
-      try {
-        const res = await apiFetch(getPreviewUrl(), getAccessToken);
-        if (res.ok && isMounted) {
-          const blob = await res.blob();
-          setError(null);
-          replacePdfUrl(URL.createObjectURL(blob));
-        } else if (!res.ok && isMounted) {
-          const text = await res.text();
-          setError(text || "Failed to generate PDF");
-          setPdfUrl(null);
-        }
-      } catch (e) {
-        if (isMounted) {
-          setError(e instanceof Error ? e.message : "Unknown error");
-          setPdfUrl(null);
-        }
-        console.error("Failed to load PDF preview:", e);
-      }
-      if (isMounted) setIsGenerating(false);
     };
-    
-    loadPdf();
-    
-    return () => { isMounted = false; };
-  }, [activeProject, isActive, debouncedTitle, stampText, showRedline, showHiddenLines, debouncedScale, sheetSize, refreshKey, getAccessToken]);
+    checkStatus();
+    const interval = setInterval(checkStatus, 3000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [activeProject, isActive, serverUrl, getAccessToken]);
 
-  const handleAutoFit = async () => {
+  const triggerBuild = async () => {
     if (!activeProject) return;
+    setBuildStatus('building');
     try {
-      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/bounds`, getAccessToken);
-      if (res.ok) {
-        const data = await res.json();
-        const max_dim = data.max_dim;
-        if (max_dim) {
-          const formats: Record<string, [number, number]> = {
-            "A4": [297, 210],
-            "A3": [420, 297],
-            "A2": [594, 420],
-            "A1": [841, 594],
-            "A0": [1189, 841],
-          };
-          const [w, h] = formats[sheetSize] || [297, 210];
-          const view_w = (w - 60) / 2;
-          const view_h = (h - 60) / 2;
-          const target_dim = Math.min(view_w, view_h) * 0.9;
-          
-          let newScale = target_dim / max_dim;
-          newScale = Math.max(0.001, Math.min(5.0, newScale));
-          setScale(newScale);
-        }
-      }
+      await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
     } catch (e) {
-      console.error("Failed to auto-fit scale", e);
+      console.error(e);
     }
   };
 
   const handleDownloadPdf = async () => {
-    if (!activeProject) return;
+    if (!activeProject || buildStatus !== 'ready') return;
     try {
-      const res = await apiFetch(getPreviewUrl(), getAccessToken);
+      const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
+      const res = await apiFetch(url, getAccessToken);
       if (!res.ok) return;
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
@@ -236,7 +161,6 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden bg-slate-900 selection:bg-cyan-500/30">
-      {/* Customizer Controls Panel (Sidebar) */}
       <div className="w-80 border-r border-slate-800 bg-slate-950 p-6 flex flex-col justify-between overflow-y-auto">
         <div className="space-y-6">
           <div>
@@ -260,6 +184,21 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           </div>
 
           <div className="space-y-2">
+            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Layout</label>
+            <select
+              value={selectedView}
+              onChange={(e) => setSelectedView(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
+            >
+              <option value="combined">Combined (4 Views)</option>
+              <option value="top">Top View Only</option>
+              <option value="front">Front Elevation Only</option>
+              <option value="side">Side Elevation Only</option>
+              <option value="iso">Isometric View Only</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
             <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Drawing Title</label>
             <input
               type="text"
@@ -270,37 +209,26 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400 flex justify-between items-center">
-              <span>Projection Scale</span>
-              <div className="flex items-center gap-1">
-                <button 
-                  onClick={handleAutoFit}
-                  className="px-2 py-0.5 mr-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] border border-slate-700 transition-colors tracking-wide font-bold cursor-pointer"
-                  title="Calculate best fit scale for the current sheet"
-                >
-                  AUTO FIT
-                </button>
-                <input
-                  type="number"
-                  min="0.001"
-                  max="5.0"
-                  step="0.001"
-                  value={scale.toFixed(3)}
-                  onChange={(e) => setScale(parseFloat(e.target.value) || 0.001)}
-                  className="w-16 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-orange-400 font-bold text-right outline-none focus:border-orange-400"
-                />
-                <span className="text-orange-400 font-bold">:1</span>
-              </div>
-            </label>
-            <input
-              type="range"
-              min="-3"
-              max="0.69897"
-              step="0.01"
-              value={Math.log10(scale)}
-              onChange={(e) => setScale(Math.pow(10, parseFloat(e.target.value)))}
-              className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-orange-400"
-            />
+            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Projection Scale</label>
+            <select
+              value={scale.toString()}
+              onChange={(e) => setScale(parseFloat(e.target.value))}
+              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
+            >
+              <option value="10">10:1 (Enlarged 10x)</option>
+              <option value="5">5:1 (Enlarged 5x)</option>
+              <option value="2">2:1 (Enlarged 2x)</option>
+              <option value="1">1:1 (Full Size)</option>
+              <option value="0.5">1:2 (Half Size)</option>
+              <option value="0.2">1:5</option>
+              <option value="0.1">1:10</option>
+              <option value="0.05">1:20</option>
+              <option value="0.02">1:50</option>
+              <option value="0.01">1:100</option>
+              <option value="0.005">1:200</option>
+              <option value="0.002">1:500</option>
+              <option value="0.001">1:1000</option>
+            </select>
           </div>
 
           <div className="space-y-2">
@@ -312,32 +240,15 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
               placeholder="e.g. APPROVED"
             />
-            <div className="flex gap-1.5 flex-wrap">
-              {['APPROVED', 'REJECTED', 'ACME ENG', 'QTD OK'].map(preset => (
-                <button
-                  key={preset}
-                  onClick={() => setStampText(preset)}
-                  className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-900 hover:bg-slate-850 text-slate-500 hover:text-slate-300 border border-slate-800"
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
           </div>
 
           <div className="flex items-center justify-between border-t border-slate-900 pt-4">
             <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Show Redline Markups</span>
             <button
               onClick={() => setShowRedline(!showRedline)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${
-                showRedline ? 'bg-orange-500' : 'bg-slate-800'
-              }`}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${showRedline ? 'bg-orange-500' : 'bg-slate-800'}`}
             >
-              <span
-                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                  showRedline ? 'translate-x-5.5' : 'translate-x-1'
-                }`}
-              />
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${showRedline ? 'translate-x-5.5' : 'translate-x-1'}`} />
             </button>
           </div>
 
@@ -345,72 +256,406 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Show Hidden Lines</span>
             <button
               onClick={() => setShowHiddenLines(!showHiddenLines)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${
-                showHiddenLines ? 'bg-orange-500' : 'bg-slate-800'
-              }`}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${showHiddenLines ? 'bg-orange-500' : 'bg-slate-800'}`}
             >
-              <span
-                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                  showHiddenLines ? 'translate-x-5.5' : 'translate-x-1'
-                }`}
-              />
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${showHiddenLines ? 'translate-x-5.5' : 'translate-x-1'}`} />
             </button>
           </div>
         </div>
 
         <div className="space-y-2 pt-6 border-t border-slate-900">
           <button
-            onClick={() => setRefreshKey(k => k + 1)}
-            className="w-full bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-slate-100 font-semibold py-2 px-4 rounded border border-slate-800 transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer"
+            onClick={triggerBuild}
+            disabled={buildStatus === 'building'}
+            className={`w-full font-semibold py-2 px-4 rounded border transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer ${
+              buildStatus === 'building' 
+                ? 'bg-orange-900/50 border-orange-800 text-orange-400 opacity-70 cursor-not-allowed' 
+                : 'bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-slate-100 border-slate-800'
+            }`}
           >
-            🔄 Refresh Compiler
+            {buildStatus === 'building' ? '⚙️ Calculating PDF Lines...' : '🔄 Generate PDF Data'}
           </button>
           <button
             type="button"
             onClick={handleDownloadPdf}
-            className="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-2.5 px-4 rounded transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer shadow-lg shadow-orange-500/20"
+            disabled={buildStatus !== 'ready'}
+            className={`w-full font-bold py-2.5 px-4 rounded transition-all text-xs flex justify-center items-center gap-1.5 shadow-lg ${
+              buildStatus === 'ready'
+                ? 'bg-orange-600 hover:bg-orange-500 text-white shadow-orange-500/20 cursor-pointer'
+                : 'bg-slate-800 text-slate-500 shadow-none cursor-not-allowed'
+            }`}
           >
             📥 Download PDF
           </button>
-        </div>
-      </div>
-
-      {/* Dynamic PDF Previews Area (Main Panel) */}
-      <div className="flex-1 p-6 overflow-hidden flex flex-col items-center space-y-4 select-none bg-slate-800">
-        <div className="text-center space-y-1">
-          <h2 className="text-xl font-bold text-white tracking-wide">Timus PDF Compiler Preview</h2>
-          <p className="text-xs text-slate-400">Live vector-sharp drafting sheet compiled by the backend.</p>
-        </div>
-
-        <div className="flex-1 w-full max-w-5xl bg-slate-950 border border-slate-800 shadow-2xl overflow-hidden rounded relative">
-          {isGenerating && (
-            <div className="absolute inset-0 z-10 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center text-orange-400">
-              <svg className="animate-spin h-10 w-10 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <div className="font-bold tracking-widest text-sm animate-pulse">COMPILING VECTOR VIEWS...</div>
-            </div>
+          {buildStatus === 'stale' && (
+             <div className="text-[10px] text-orange-400 text-center font-mono uppercase mt-1">
+               Project modified. Regenerate PDF Data.
+             </div>
           )}
-          {error ? (
-            <div className="w-full h-full flex items-center justify-center bg-slate-900 rounded-lg border-2 border-red-900/50 p-8 text-center">
-              <div>
-                <svg className="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <h3 className="text-xl font-bold text-red-400 mb-2">Drafting Generation Failed</h3>
-                <p className="text-slate-400 font-mono text-sm max-w-lg mx-auto bg-slate-950 p-4 rounded whitespace-pre-wrap">{error}</p>
-              </div>
-            </div>
-          ) : pdfUrl ? (
-            <iframe
-              src={`${pdfUrl}#toolbar=0&navpanes=0`}
-              className="w-full h-full border-none bg-white rounded-lg shadow-inner"
-              title="PDF Preview"
-            />
-          ) : null}
         </div>
       </div>
+
+      <div className="flex-1 p-6 overflow-hidden flex flex-col items-center space-y-4 select-none bg-slate-800">
+        <div className="text-center space-y-1 z-20">
+          <h2 className="text-xl font-bold text-white tracking-wide">Timus Interactive Preview</h2>
+          <p className="text-xs text-slate-400">Instant WebGL approximation. Export for perfect vectors.</p>
+        </div>
+
+        <div className="flex-1 w-full max-w-5xl bg-slate-950 shadow-2xl overflow-hidden rounded relative flex items-center justify-center p-4">
+          <DraftingCanvas 
+            sheetSize={sheetSize} 
+            title={debouncedTitle} 
+            stampText={stampText} 
+            showRedline={showRedline} 
+            showHiddenLines={showHiddenLines} 
+            scale={debouncedScale} 
+            serverUrl={serverUrl}
+            activeProject={activeProject}
+            getAccessToken={getAccessToken}
+            isActive={isActive}
+            selectedView={selectedView}
+          />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DraftingCanvas: React.FC<{
+  sheetSize: string;
+  title: string;
+  stampText: string;
+  showRedline: boolean;
+  showHiddenLines: boolean;
+  scale: number;
+  serverUrl: string;
+  activeProject: string;
+  getAccessToken: () => Promise<string>;
+  isActive: boolean;
+  selectedView: string;
+}> = ({ sheetSize, title, stampText, showRedline, showHiddenLines, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView }) => {
+  const formats: Record<string, [number, number]> = {
+    "A4": [297, 210], "A3": [420, 297], "A2": [594, 420], "A1": [841, 594], "A0": [1189, 841]
+  };
+  const [w, h] = formats[sheetSize] || [297, 210];
+  const view_w = (w - 60) / 2;
+  const view_h = (h - 60) / 2;
+
+  const svgRef = useRef<SVGSVGElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  const [modelUrl, setModelUrl] = useState<string>('');
+  
+  // Model Polling
+  useEffect(() => {
+    if (!activeProject || !isActive) return;
+    let mounted = true;
+    let mtime = 0;
+    const checkModel = async () => {
+      try {
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, getAccessToken);
+        if (res.ok && mounted) {
+          const data = await res.json();
+          if (data.mtime && data.mtime !== mtime) {
+            mtime = data.mtime;
+            setModelUrl(`${serverUrl}/projects/${activeProject}/model?t=${mtime}`);
+          }
+        }
+      } catch (e) {}
+    };
+    checkModel();
+    const interval = setInterval(checkModel, 3000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, [serverUrl, activeProject, isActive, getAccessToken]);
+
+  const stateRef = useRef({ w, h, view_w, view_h, scale, selectedView });
+  useEffect(() => {
+    stateRef.current = { w, h, view_w, view_h, scale, selectedView };
+  }, [w, h, view_w, view_h, scale, selectedView]);
+
+  // Three.js renderer (Only initialize ONCE per model)
+  useEffect(() => {
+    if (!modelUrl) return;
+    const canvas = canvasRef.current;
+    const svg = svgRef.current;
+    if (!canvas || !svg) return;
+
+    let animId = 0;
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setClearColor(0xffffff, 0);
+
+    const scene = new THREE.Scene();
+    
+    let isCancelled = false;
+    const loader = new GLTFLoader();
+    
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => res.arrayBuffer())
+      .then(buffer => {
+        if (isCancelled) return;
+        loader.parse(buffer, '', (gltf) => {
+          if (isCancelled) return;
+          const model = gltf.scene;
+          
+          const box = new THREE.Box3().setFromObject(model);
+          const center = new THREE.Vector3();
+          box.getCenter(center);
+          model.position.sub(center);
+          model.rotation.x = Math.PI / 2;
+
+          const solidMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffffff, 
+            polygonOffset: true, 
+            polygonOffsetFactor: 1, 
+            polygonOffsetUnits: 1 
+          });
+          const lineMat = new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.7 });
+
+          model.traverse((child) => {
+            if ((child as THREE.Mesh).isMesh) {
+               const mesh = child as THREE.Mesh;
+               mesh.material = solidMat;
+               const edges = new THREE.EdgesGeometry(mesh.geometry, 30);
+               const line = new THREE.LineSegments(edges, lineMat);
+               mesh.add(line);
+            }
+          });
+          
+          scene.add(model);
+        });
+      });
+
+    const dpr = window.devicePixelRatio;
+    
+    const topCam = new THREE.OrthographicCamera();
+    const frontCam = new THREE.OrthographicCamera();
+    const sideCam = new THREE.OrthographicCamera();
+    const isoCam = new THREE.OrthographicCamera();
+    
+    topCam.position.set(0, 0, 500); topCam.lookAt(0, 0, 0);
+    frontCam.position.set(0, -500, 0); frontCam.up.set(0, 0, 1); frontCam.lookAt(0, 0, 0);
+    sideCam.position.set(500, 0, 0); sideCam.up.set(0, 0, 1); sideCam.lookAt(0, 0, 0);
+    isoCam.position.set(500, -500, 500); isoCam.up.set(0, 0, 1); isoCam.lookAt(0, 0, 0);
+    
+    const updateCameras = (w_px: number, h_px: number, projW: number, projH: number) => {
+        const s = stateRef.current;
+        const factor = Math.min(w_px / projW, h_px / projH);
+        const camW = (w_px / factor / s.scale) / 1000;
+        const camH = (h_px / factor / s.scale) / 1000;
+        
+        [topCam, frontCam, sideCam, isoCam].forEach(cam => {
+            const newLeft = -camW / 2;
+            const newTop = camH / 2;
+            if (cam.left !== newLeft || cam.top !== newTop) {
+                cam.left = newLeft;
+                cam.right = camW / 2;
+                cam.top = newTop;
+                cam.bottom = -camH / 2;
+                cam.updateProjectionMatrix();
+            }
+        });
+    };
+
+    const draw = () => {
+      animId = requestAnimationFrame(draw);
+      
+      const rect = svg.getBoundingClientRect();
+      if (rect.width === 0) return;
+      
+      const width = rect.width * dpr;
+      const height = rect.height * dpr;
+      if (canvas.width !== width || canvas.height !== height) {
+          renderer.setSize(rect.width, rect.height, false);
+          canvas.style.width = `${rect.width}px`;
+          canvas.style.height = `${rect.height}px`;
+      }
+      
+      renderer.clear();
+      
+      const s = stateRef.current;
+      const pxPerMm = rect.width / s.w;
+      
+      const renderView = (cam: THREE.Camera, oxMm: number, oyMm: number, wMm: number, hMm: number) => {
+          const vX = oxMm * pxPerMm;
+          const vY = rect.height - (oyMm + hMm) * pxPerMm;
+          const vW = wMm * pxPerMm;
+          const vH = hMm * pxPerMm;
+          
+          renderer.setViewport(vX, vY, vW, vH);
+          renderer.setScissor(vX, vY, vW, vH);
+          renderer.setScissorTest(true);
+          updateCameras(vW * dpr, vH * dpr, wMm, hMm);
+          renderer.render(scene, cam);
+      };
+      
+      if (s.selectedView === 'combined' || s.selectedView === 'top') renderView(topCam, 20, 30, s.view_w, s.view_h);
+      if (s.selectedView === 'combined' || s.selectedView === 'front') renderView(frontCam, 20, 30 + s.view_h, s.view_w, s.view_h);
+      if (s.selectedView === 'combined' || s.selectedView === 'side') renderView(sideCam, 40 + s.view_w, 30 + s.view_h, s.view_w, s.view_h);
+      if (s.selectedView === 'combined' || s.selectedView === 'iso') renderView(isoCam, 40 + s.view_w, 30, s.view_w, s.view_h);
+    };
+    
+    draw();
+    
+    return () => {
+        isCancelled = true;
+        cancelAnimationFrame(animId);
+        scene.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const m = child as THREE.Mesh;
+            m.geometry.dispose();
+            if (m.material) {
+              if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
+              else m.material.dispose();
+            }
+          } else if ((child as THREE.LineSegments).isLineSegments) {
+            const l = child as THREE.LineSegments;
+            l.geometry.dispose();
+            if (l.material) {
+              if (Array.isArray(l.material)) l.material.forEach(mat => mat.dispose());
+              else l.material.dispose();
+            }
+          }
+        });
+        renderer.dispose();
+    };
+  }, [modelUrl, getAccessToken]);
+
+  return (
+    <div className="relative w-full h-full flex items-center justify-center">
+      <svg ref={svgRef} viewBox={`0 0 ${w} ${h}`} className="max-w-full max-h-full drop-shadow-2xl bg-white border border-slate-700 z-10" style={{ position: 'relative' }}>
+        {/* Background Grid - Faint Grid Paper effect */}
+        <defs>
+          <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse" x="10" y="10">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#f1f5f9" strokeWidth="0.1"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+        
+        {/* Borders */}
+        <rect x="10" y="10" width={w - 20} height={h - 20} fill="none" stroke="#0f172a" strokeWidth="0.55" />
+        
+        {/* Border coordinate ticks */}
+        <g stroke="#0f172a" strokeWidth="0.18">
+          {[1, 2, 3].map(i => {
+            const x = 10 + i * ((w - 20) / 4);
+            return (
+              <g key={`x-${i}`}>
+                <line x1={x} y1="10" x2={x} y2="7" />
+                <line x1={x} y1={h - 10} x2={x} y2={h - 7} />
+              </g>
+            );
+          })}
+          {[1, 2, 3].map(i => {
+            const y = 10 + i * ((h - 20) / 4);
+            return (
+              <g key={`y-${i}`}>
+                <line x1="10" y1={y} x2="7" y2={y} />
+                <line x1={w - 10} y1={y} x2={w - 7} y2={y} />
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Coordinate Labels */}
+        <g fontFamily="monospace" fontWeight="bold" fontSize="3" fill="#4b5563">
+          {["4", "3", "2", "1"].map((col, i) => {
+            const x = 10 + (i + 0.5) * ((w - 20) / 4);
+            return (
+              <g key={`col-${i}`}>
+                <text x={x - 0.8} y="8.5">{col}</text>
+                <text x={x - 0.8} y={h - 3.5}>{col}</text>
+              </g>
+            );
+          })}
+          {["D", "C", "B", "A"].map((row, i) => {
+            const y = 10 + (i + 0.5) * ((h - 20) / 4);
+            return (
+              <g key={`row-${i}`}>
+                <text x="5.5" y={y + 1.2}>{row}</text>
+                <text x={w - 5.5} y={y + 1.2}>{row}</text>
+              </g>
+            );
+          })}
+        </g>
+        
+        {/* Title Block */}
+        <g transform={`translate(${w - 110}, ${h - 35})`}>
+          {/* Borders */}
+          <g stroke="#0f172a" strokeWidth="0.38">
+            <rect x="0" y="0" width="100" height="25" fill="none" />
+            <line x1="0" y1="9" x2="100" y2="9" />
+            <line x1="0" y1="18" x2="100" y2="18" />
+            <line x1="50" y1="0" x2="50" y2="18" />
+            <line x1="80" y1="0" x2="80" y2="18" />
+            <line x1="35" y1="18" x2="35" y2="25" />
+          </g>
+
+          {/* Row 1 */}
+          <text x="2" y="3" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">DRAWING TITLE</text>
+          <text x="2" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">{title}</text>
+          
+          <text x="52" y="3" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">DOCUMENT NO.</text>
+          <text x="52" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS-DWG-001</text>
+          
+          <text x="82" y="3" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SHEET NO.</text>
+          <text x="82" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">1 OF 1</text>
+
+          {/* Row 2 */}
+          <text x="2" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">CHECKED BY</text>
+          <text x="2" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS SYSTEMS ENG</text>
+          
+          <text x="52" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">REVISION STATUS</text>
+          <text x="52" y="15" fontSize="3.5" fontFamily="sans-serif" fill="#0f172a">REV 1.0</text>
+          
+          <text x="82" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SCALE</text>
+          <text x="82" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">NTS</text>
+
+          {/* Row 3 */}
+          <text x="2" y="19" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">APPLICANT NAME</text>
+          <text x="2" y="23" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">PLACEHOLDER NAME</text>
+          
+          <text x="37" y="19" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SYSTEM</text>
+          <text x="37" y="23" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS CAD COMPILER</text>
+
+          {/* Stamp */}
+          {showRedline && stampText && (
+            <g>
+              <line x1="52" y1="14.0" x2="63" y2="14.0" stroke="#ef4444" strokeWidth="0.3" />
+              <text x="64" y="15" fontSize="4" fontFamily="sans-serif" fontWeight="bold" fill="#ef4444">{stampText}</text>
+              <g transform="translate(40, 14) rotate(-3)">
+                <rect x="-2" y="-5" width="10" height="4" fill="none" stroke="#ef4444" strokeWidth="0.3" />
+                <text x="-1" y="-2" fontSize="2.5" fontFamily="sans-serif" fontWeight="bold" fill="#ef4444">QTD OK</text>
+              </g>
+            </g>
+          )}
+        </g>
+        
+        {/* Company Name */}
+        <text x="15" y="25" fontSize="8" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS ENGINEERING</text>
+
+        {/* View Grid Lines */}
+        {/* View Labels */}
+        <g fontSize="3" fontFamily="sans-serif" fontWeight="bold" fill="#9ca3af">
+          <text x={20} y={30 + view_h - 2}>PLAN VIEW</text>
+          <text x={20} y={h - 20}>FRONT ELEVATION</text>
+          <text x={40 + view_w} y={h - 20}>SIDE ELEVATION</text>
+          <text x={40 + view_w} y={30 + view_h - 2}>ISOMETRIC VIEW</text>
+        </g>
+      </svg>
+      
+      <canvas 
+        ref={canvasRef} 
+        style={{
+          position: 'absolute',
+          top: svgRef.current ? svgRef.current.offsetTop : 0,
+          left: svgRef.current ? svgRef.current.offsetLeft : 0,
+          width: svgRef.current ? svgRef.current.clientWidth : 0,
+          height: svgRef.current ? svgRef.current.clientHeight : 0,
+          pointerEvents: 'none',
+          zIndex: 20
+        }} 
+      />
     </div>
   );
 };

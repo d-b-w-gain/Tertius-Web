@@ -124,6 +124,18 @@ def parse_tree(node):
                 })
     return nodes
 
+@app.post("/projects/{name}/activate")
+def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    from core.repositories import ProjectRepository
+    from fastapi.responses import JSONResponse
+    repo = ProjectRepository(db, ctx.tenant_id)
+    project = repo.get_project(name)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "Not found"})
+    repo.set_active_project(ctx.user_id, project.id)
+    db.commit()
+    return {"success": True}
+
 @app.get("/features")
 def get_features(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     active_design = get_active_design_code(db, ctx)

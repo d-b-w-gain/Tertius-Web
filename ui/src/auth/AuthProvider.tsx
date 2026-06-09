@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from 'react'
 import type { User } from 'oidc-client-ts'
@@ -33,6 +34,7 @@ const clearSigninCallbackParams = () => {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const hasAttemptedSignin = useRef(false)
 
   useEffect(() => {
     let isMounted = true
@@ -40,11 +42,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const loadUser = async () => {
       try {
         if (hasSigninCallbackParams()) {
-          const callbackUser = await userManager.signinRedirectCallback()
-          if (isMounted) {
-            setUser(callbackUser)
+          try {
+            const callbackUser = await userManager.signinRedirectCallback()
+            if (isMounted) {
+              setUser(callbackUser)
+            }
+          } catch (e) {
+            console.warn("Signin callback error (likely StrictMode double-fire):", e)
+            // StrictMode first mount already consumed the code and put the user in storage
+            const storedUser = await userManager.getUser()
+            if (storedUser && !storedUser.expired && isMounted) {
+               setUser(storedUser)
+            }
+          } finally {
+            clearSigninCallbackParams()
           }
-          clearSigninCallbackParams()
           return
         }
 
@@ -81,7 +93,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const getAccessToken = useCallback(async () => {
     const current = await userManager.getUser()
     if (current && !current.expired) {
-      setUser(current)
       return current.access_token
     }
 

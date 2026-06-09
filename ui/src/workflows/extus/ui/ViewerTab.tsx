@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 
@@ -131,6 +132,16 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       canvas.removeEventListener('wheel', handleInteraction);
       if (resumeTimeout) clearTimeout(resumeTimeout);
       cancelAnimationFrame(animIdRef.current);
+      scene.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const m = child as THREE.Mesh;
+          m.geometry.dispose();
+          if (m.material) {
+            if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
+            else m.material.dispose();
+          }
+        }
+      });
       renderer.dispose();
     };
   }, []);
@@ -274,20 +285,82 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
         color: 0x8b9bb4, // Steel blueish
         metalness: 0.6,
         roughness: 0.4,
-        side: THREE.DoubleSide
+        side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
       
+      const highlightMaterial = sharedMaterial.clone();
+      highlightMaterial.emissive.setHex(0x3b82f6);
+      highlightMaterial.emissiveIntensity = 0.5;
+      highlightMaterial.polygonOffset = true;
+      highlightMaterial.polygonOffsetFactor = -1;
+      highlightMaterial.polygonOffsetUnits = -1;
+
+      model.userData.sharedMat = sharedMaterial;
+      model.userData.highlightMat = highlightMaterial;
+      
       const isHigh = renderQuality === 'high';
+      
+      model.updateMatrixWorld(true);
+      const inverseModelMatrix = model.matrixWorld.clone().invert();
+      const geometries: THREE.BufferGeometry[] = [];
+      
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
-           mesh.castShadow = isHigh;
-           mesh.receiveShadow = isHigh;
-           mesh.material = sharedMaterial.clone(); // clone so we can set emissive independently
+           const geom = mesh.geometry.clone();
+           const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
+           geom.applyMatrix4(relativeMatrix);
+           geometries.push(geom);
+           
+           mesh.visible = false; // Hidden by default, batched mesh handles rendering
+           mesh.castShadow = false;
+           mesh.receiveShadow = false;
+           mesh.material = highlightMaterial; 
         }
       });
       
+      if (geometries.length > 0) {
+        try {
+          // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
+          const CHUNK_SIZE = 1000;
+          const chunks: THREE.BufferGeometry[] = [];
+          
+          for (let i = 0; i < geometries.length; i += CHUNK_SIZE) {
+             const chunk = geometries.slice(i, i + CHUNK_SIZE);
+             const mergedChunk = BufferGeometryUtils.mergeGeometries(chunk, false);
+             if (mergedChunk) chunks.push(mergedChunk);
+             
+             // Free individual geometries immediately to keep heap size small
+             chunk.forEach(g => g.dispose());
+          }
+          
+          const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
+          chunks.forEach(g => g.dispose()); // Free intermediate chunks
+          
+          if (finalMergedGeom) {
+             const batchedMesh = new THREE.Mesh(finalMergedGeom, sharedMaterial);
+             batchedMesh.name = "TertiusBatchedMesh";
+             batchedMesh.castShadow = isHigh;
+             batchedMesh.receiveShadow = isHigh;
+             model.add(batchedMesh);
+             model.userData.batchedMesh = batchedMesh;
+          }
+        } catch (e) {
+          console.error("BufferGeometryUtils.mergeGeometries chunking failed:", e);
+        }
+      }
+      
       if (meshRef.current) {
+        meshRef.current.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const m = child as THREE.Mesh;
+            m.geometry.dispose();
+            if (m.material) {
+              if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
+              else m.material.dispose();
+            }
+          }
+        });
         sceneRef.current!.remove(meshRef.current);
       }
       
@@ -330,7 +403,17 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
        raycaster.setFromCamera(mouse, cameraRef.current!);
        
        if (meshRef.current) {
+          // Temporarily unhide individual meshes for raycasting checks
+          meshRef.current.traverse(c => {
+            if (c.name !== "TertiusBatchedMesh" && (c as THREE.Mesh).isMesh) c.visible = true;
+          });
+          
           const intersects = raycaster.intersectObject(meshRef.current, true);
+          
+          // Re-hide them (they'll be unhidden by the selection effect if needed)
+          meshRef.current.traverse(c => {
+            if (c.name !== "TertiusBatchedMesh" && (c as THREE.Mesh).isMesh) c.visible = false;
+          });
           if (intersects.length > 0) {
              let node: THREE.Object3D | null = intersects[0].object;
              const rootScene = meshRef.current.children[0]; // gltf.scene
@@ -415,58 +498,36 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
   // 5. Apply visibility and highlights
   useEffect(() => {
      if (!meshRef.current) return;
+     const model = meshRef.current;
+     const batchedMesh = model.userData.batchedMesh;
      
-     // First, reset all visibility
-     meshRef.current.traverse((child) => {
-        child.visible = true;
-     });
+     // Reset batched mesh
+     if (batchedMesh) batchedMesh.visible = true;
      
-     // Apply Isolation
-     if (isolatedNodeId) {
-        meshRef.current.traverse((child) => {
-           if (child !== meshRef.current) child.visible = false;
-        });
+     // Evaluate visibility for individual meshes based on selection or isolation
+     model.traverse((child) => {
+        if (child.name === "TertiusBatchedMesh") return;
         
-        const isolated = meshRef.current.getObjectByProperty('uuid', isolatedNodeId);
-        if (isolated) {
-           // Make all parents visible so the path exists
-           let p: THREE.Object3D | null = isolated;
-           while (p && p !== meshRef.current) {
-              p.visible = true;
-              p = p.parent;
-           }
-           // Make all children visible
-           isolated.traverse((c) => {
-              c.visible = true;
-           });
-        }
-     }
-     
-     // Apply Highlights
-     meshRef.current.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
-           if (mesh.material && (mesh.material as THREE.MeshStandardMaterial).color) {
-              const mat = mesh.material as THREE.MeshStandardMaterial;
-              
-              // Check if this mesh is under the selected node
-              let p: THREE.Object3D | null = child;
-              let isSelected = false;
-              while (p && p !== meshRef.current) {
-                 if (p.uuid === selectedNodeId) {
-                    isSelected = true;
-                    break;
-                 }
-                 p = p.parent;
-              }
-              
-              if (isSelected) {
-                 mat.emissive.setHex(0x3b82f6); // blue-500
-                 mat.emissiveIntensity = 0.5;
-              } else {
-                 mat.emissive.setHex(0x000000);
-                 mat.emissiveIntensity = 0;
-              }
+           
+           let isSelected = false;
+           let isIsolated = false;
+           let p: THREE.Object3D | null = child;
+           
+           while (p && p !== model) {
+              if (p.uuid === selectedNodeId) isSelected = true;
+              if (p.uuid === isolatedNodeId) isIsolated = true;
+              p = p.parent;
+           }
+           
+           if (isolatedNodeId) {
+              if (batchedMesh) batchedMesh.visible = false;
+              // If we are in isolation mode, only isolated parts are visible
+              mesh.visible = isIsolated;
+           } else {
+              // In normal mode, only the selected parts are visible (as an overlay on the batched mesh)
+              mesh.visible = isSelected;
            }
         }
      });
