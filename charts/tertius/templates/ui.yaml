@@ -40,6 +40,10 @@ spec:
               value: {{ include "tertius.apiName" . | quote }}
             - name: API_SERVICE_PORT
               value: {{ .Values.api.service.port | quote }}
+            - name: KEYCLOAK_SERVICE_HOST
+              value: {{ (default (printf "%s-service" (include "tertius.keycloakName" .)) .Values.ui.keycloakServiceHost) | quote }}
+            - name: KEYCLOAK_SERVICE_PORT
+              value: {{ (default "8080" .Values.ui.keycloakServicePort) | quote }}
           readinessProbe:
             httpGet:
               path: /

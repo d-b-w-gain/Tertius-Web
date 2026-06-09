@@ -1,19 +1,25 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { execSync } from 'child_process'
+import { execSync } from 'node:child_process'
 
-let commitHash = 'unknown';
-try {
-  commitHash = execSync('git rev-parse --short HEAD').toString().trim();
-} catch (e) {
-  console.warn('Could not read git commit hash');
+function readGitValue(command: string, fallback: string) {
+  try {
+    return execSync(command, { encoding: 'utf8' }).trim() || fallback
+  } catch {
+    return fallback
+  }
 }
+
+const gitCommit = readGitValue('git rev-parse --short HEAD', 'unknown')
+const gitCommitDate = readGitValue('git log -1 --format=%cI', 'unknown')
+
 // https://vite.dev/config/
 export default defineConfig({
-  define: {
-    __COMMIT_HASH__: JSON.stringify(commitHash),
-  },
   plugins: [react()],
+  define: {
+    __GIT_COMMIT__: JSON.stringify(gitCommit),
+    __GIT_COMMIT_DATE__: JSON.stringify(gitCommitDate),
+  },
   server: {
     allowedHosts: true,
     proxy: {
@@ -26,6 +32,11 @@ export default defineConfig({
       '/realms': {
         target: 'http://keycloak:8080',
         changeOrigin: false,
+      },
+      '/auth': {
+        target: 'http://keycloak:8080',
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/auth/, ''),
       },
       '/resources': {
         target: 'http://keycloak:8080',

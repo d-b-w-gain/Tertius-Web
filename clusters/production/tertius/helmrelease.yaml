@@ -1,0 +1,29 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tertius
+  namespace: tertius
+spec:
+  interval: 5m
+  releaseName: tertius
+  targetNamespace: tertius
+  valuesFrom:
+    - kind: Secret
+      name: tertius-production-values
+      valuesKey: values.yaml
+  chart:
+    spec:
+      chart: ./charts/tertius
+      sourceRef:
+        kind: GitRepository
+        name: tertius-web
+        namespace: flux-system
+      reconcileStrategy: Revision
+      interval: 5m
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3

@@ -1,10 +1,12 @@
 app:
   environment: local
   config:
+    keycloakAudience: tertius-web
+    keycloakIssuerUrl: ""
     oidcIssuerUrl: http://localhost:8081/realms/tertius
   secret:
     create: true
-    databaseUrl: postgresql://tertius:tertius-local-password@tertius-postgres-rw:5432/tertius
+    databaseUrl: postgresql+psycopg://tertius:tertius-local-password@tertius-postgres-rw:5432/tertius
     valkeyUrl: redis://tertius-valkey:6379/0
 
 api:

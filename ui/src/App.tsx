@@ -5,10 +5,14 @@ import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { useAuth } from './auth/AuthProvider'
 
+declare const __GIT_COMMIT__: string
+declare const __GIT_COMMIT_DATE__: string
+
 function App() {
   const { user, isLoading, login, logout } = useAuth()
   const [activeTab, setActiveTab] = useState('extus')
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
+  const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -50,7 +54,10 @@ function App() {
       >
         <div className="p-4 border-b border-slate-800 flex items-center justify-between min-w-[20rem]">
           <div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">
+            <h1
+              className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent"
+              title={buildInfoTooltip}
+            >
               Tertius
             </h1>
             <p className="text-xs text-slate-500 mt-1">Open Source CAD Toolkit</p>

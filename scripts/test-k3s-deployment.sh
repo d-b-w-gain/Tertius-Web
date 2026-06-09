@@ -376,7 +376,11 @@ check_preflight() {
     run kubectl get secret "$TUNNEL_TOKEN_SECRET_NAME" -n "$NAMESPACE"
   fi
 
-  run helm dependency update "$CHART_DIR"
+  if [ -d "${CHART_DIR}/charts" ] && find "${CHART_DIR}/charts" -name 'valkey-*.tgz' -print -quit | grep -q .; then
+    echo "Using vendored Helm chart dependencies from ${CHART_DIR}/charts."
+  else
+    run helm dependency update "$CHART_DIR"
+  fi
 }
 
 build_images() {

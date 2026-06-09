@@ -333,7 +333,7 @@ const DraftingCanvas: React.FC<{
   getAccessToken: () => Promise<string>;
   isActive: boolean;
   selectedView: string;
-}> = ({ sheetSize, title, stampText, showRedline, showHiddenLines, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView }) => {
+}> = ({ sheetSize, title, stampText, showRedline, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView }) => {
   const formats: Record<string, [number, number]> = {
     "A4": [297, 210], "A3": [420, 297], "A2": [594, 420], "A1": [841, 594], "A0": [1189, 841]
   };
@@ -380,7 +380,6 @@ const DraftingCanvas: React.FC<{
     const svg = svgRef.current;
     if (!canvas || !svg) return;
 
-    let animId = 0;
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setClearColor(0xffffff, 0);
@@ -542,6 +541,8 @@ const DraftingCanvas: React.FC<{
     };
   }, [modelUrl, getAccessToken]);
 
+  const svgElement = svgRef.current as unknown as HTMLElement | null;
+
   return (
     <div className="relative w-full h-full flex items-center justify-center">
       <svg ref={svgRef} viewBox={`0 0 ${w} ${h}`} className="max-w-full max-h-full drop-shadow-2xl bg-white border border-slate-700 z-10" style={{ position: 'relative' }}>
@@ -669,8 +670,8 @@ const DraftingCanvas: React.FC<{
         ref={canvasRef} 
         style={{
           position: 'absolute',
-          top: svgRef.current ? svgRef.current.offsetTop : 0,
-          left: svgRef.current ? svgRef.current.offsetLeft : 0,
+          top: svgElement?.offsetTop ?? 0,
+          left: svgElement?.offsetLeft ?? 0,
           width: svgRef.current ? svgRef.current.clientWidth : 0,
           height: svgRef.current ? svgRef.current.clientHeight : 0,
           pointerEvents: 'none',

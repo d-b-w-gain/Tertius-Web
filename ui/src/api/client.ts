@@ -1,5 +1,3 @@
-import { userManager } from '../auth/keycloak'
-
 export async function apiFetch(
   url: string,
   getAccessToken: () => Promise<string>,
