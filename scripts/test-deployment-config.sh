@@ -130,6 +130,11 @@ if ! rg -q 'VITE_KEYCLOAK_AUTHORITY=/realms/tertius' "${ROOT_DIR}/.github/workfl
   exit 1
 fi
 
+if ! rg -q 'GIT_COMMIT=\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'GIT_COMMIT_DATE=\$\{\{ steps\.vars\.outputs\.commit_date \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not pass UI build metadata arguments." >&2
+  exit 1
+fi
+
 for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
   if [ ! -f "${ROOT_DIR}/infra/clusters/production/flux-system/${flux_file}" ]; then
     echo "Missing Flux image automation manifest: ${flux_file}." >&2
@@ -162,13 +167,21 @@ if ! rg -q 'branch: master' "${ROOT_DIR}/infra/clusters/production/flux-system/i
   exit 1
 fi
 
-if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'GH_TOKEN: \$\{\{ secrets\.FLUX_IMAGE_UPDATE_PAT \}\}' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'No image update commits to promote' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'changes outside charts/tertius/values.yaml' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Unable to create Flux image update PR automatically' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
+if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'GH_TOKEN: \$\{\{ secrets\.FLUX_IMAGE_UPDATE_PAT \}\}' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'No image update commits to promote' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'changes outside infra/charts/tertius/values.yaml' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Unable to create Flux image update PR automatically' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
   echo ".github/workflows/flux-image-update-pr.yml must open and auto-merge PRs for Flux image update branches." >&2
   exit 1
 fi
 
 if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" || ! rg -q 'name: tertius-web-write' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml"; then
   echo "GitRepository tertius-web is missing the write-capable PAT secretRef." >&2
+  exit 1
+fi
+
+infra_parent_line="$(rg -n '^    !/infra/$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" | cut -d: -f1)"
+infra_charts_line="$(rg -n '^    !/infra/charts/$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" | cut -d: -f1)"
+infra_clusters_line="$(rg -n '^    !/infra/clusters/$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" | cut -d: -f1)"
+if [ -z "$infra_parent_line" ] || [ -z "$infra_charts_line" ] || [ -z "$infra_clusters_line" ] || [ "$infra_parent_line" -ge "$infra_charts_line" ] || [ "$infra_parent_line" -ge "$infra_clusters_line" ]; then
+  echo "GitRepository ignore rules must re-include /infra/ before /infra/charts/ or /infra/clusters/." >&2
   exit 1
 fi
 
