@@ -23,5 +23,5 @@ spec:
     push:
       branch: flux-image-updates
   update:
-    path: ./charts/tertius
+    path: ./infra/charts/tertius
     strategy: Setters

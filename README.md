@@ -142,7 +142,7 @@ The integration tests use testcontainers and require Docker socket access.
 
 ## Kubernetes Deployment Test
 
-The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the `charts/tertius` Helm release, waits for app, Postgres, Valkey, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks.
+The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks.
 
 ```bash
 scripts/test-k3s-deployment.sh

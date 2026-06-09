@@ -19,7 +19,7 @@ The backend currently writes project and output state to the local filesystem. P
 
 ## Decisions
 
-- Use one merged local Helm chart: `charts/tertius`.
+- Use one merged local Helm chart: `infra/charts/tertius`.
 - Add a chart README documenting prerequisites and local k3s test steps.
 - Package the UI and API as separate container images and Kubernetes Deployments.
 - Use Python 3.12 for the API image.
@@ -82,7 +82,7 @@ Because nginx proxies `/api/*` to the API Service, same-origin routing works ide
 
 ## Helm Chart
 
-Create one chart at `charts/tertius`.
+Create one chart at `infra/charts/tertius`.
 
 ### App Workloads
 
@@ -227,10 +227,10 @@ The README will document:
 5. Build the API and UI images locally.
 6. Make the images available to k3s through a local registry or image import.
 7. Create the Cloudflare tunnel token Secret if tunnel testing is enabled.
-8. Run `helm dependency update charts/tertius`.
-9. Run `helm lint charts/tertius`.
-10. Run `helm template charts/tertius --values charts/tertius/values-local.yaml`.
-11. Install with `helm upgrade --install tertius charts/tertius --namespace tertius --create-namespace --values charts/tertius/values-local.yaml`.
+8. Run `helm dependency update infra/charts/tertius`.
+9. Run `helm lint infra/charts/tertius`.
+10. Run `helm template infra/charts/tertius --values infra/charts/tertius/values-local.yaml`.
+11. Install with `helm upgrade --install tertius infra/charts/tertius --namespace tertius --create-namespace --values infra/charts/tertius/values-local.yaml`.
 12. Wait for Deployments, CloudNativePG Clusters, Valkey, and Keycloak to become ready.
 13. Port-forward the UI, API, and Keycloak services for smoke testing.
 
@@ -257,7 +257,7 @@ Required checks before install:
 - `helm version` succeeds.
 - CloudNativePG CRDs are installed, including `clusters.postgresql.cnpg.io`.
 - Keycloak Operator CRDs are installed, including `keycloaks.k8s.keycloak.org`.
-- Valkey chart dependencies can be resolved through `helm dependency update charts/tertius`.
+- Valkey chart dependencies can be resolved through `helm dependency update infra/charts/tertius`.
 - Local API and UI images exist in k3s or can be imported before install.
 
 Required install/upgrade flow:
@@ -265,8 +265,8 @@ Required install/upgrade flow:
 1. Build the API image from `Dockerfile.api`.
 2. Build the UI image from `Dockerfile.ui`.
 3. Load both images into k3s, using either a local registry or `k3s ctr images import`.
-4. Run `helm lint charts/tertius`.
-5. Run `helm template charts/tertius --values charts/tertius/values-local.yaml`.
+4. Run `helm lint infra/charts/tertius`.
+5. Run `helm template infra/charts/tertius --values infra/charts/tertius/values-local.yaml`.
 6. Install or upgrade with `helm upgrade --install`.
 7. Wait for API and UI Deployments to become available.
 8. Wait for CloudNativePG application and Keycloak database clusters to report readiness.
@@ -372,8 +372,8 @@ The implementation plan should include these verification commands:
 - Build UI image.
 - Run API container and verify `/` and `/api/intus/health`.
 - Run `npm run build` in `ui/`.
-- Run `helm dependency update charts/tertius`.
-- Run `helm lint charts/tertius`.
+- Run `helm dependency update infra/charts/tertius`.
+- Run `helm lint infra/charts/tertius`.
 - Run `helm template` against default and local values.
 - Install into local k3s with `values-local.yaml`.
 - Verify pods, services, PVCs, CloudNativePG Clusters, Valkey, and Keycloak are ready.
