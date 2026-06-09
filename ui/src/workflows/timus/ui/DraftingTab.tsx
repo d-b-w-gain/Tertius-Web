@@ -22,6 +22,33 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
+  const [userRequestedBuild, setUserRequestedBuild] = useState(false);
+
+  const scalePresets = [
+    { value: 10, label: '10:1 (Enlarged 10x)' },
+    { value: 5, label: '5:1 (Enlarged 5x)' },
+    { value: 2, label: '2:1 (Enlarged 2x)' },
+    { value: 1, label: '1:1 (Full Size)' },
+    { value: 0.5, label: '1:2 (Half Size)' },
+    { value: 0.25, label: '1:4' },
+    { value: 0.2, label: '1:5' },
+    { value: 0.1, label: '1:10' },
+    { value: 0.05, label: '1:20' },
+    { value: 0.02, label: '1:50' },
+    { value: 0.01, label: '1:100' },
+    { value: 0.005, label: '1:200' },
+    { value: 0.002, label: '1:500' },
+    { value: 0.001, label: '1:1000' },
+  ];
+
+  const toSafeScale = (value: unknown): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 1.0;
+    const clamped = Math.min(10, Math.max(0.001, parsed));
+    return scalePresets.reduce((closest, item) =>
+      Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
+    , scalePresets[0]).value;
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -76,7 +103,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         if (parsed.stamp_text) setStampText(parsed.stamp_text);
         if (parsed.show_redline !== undefined) setShowRedline(parsed.show_redline);
         if (parsed.show_hidden_lines !== undefined) setShowHiddenLines(parsed.show_hidden_lines);
-        if (parsed.scale) setScale(parsed.scale);
+        if (parsed.scale !== undefined) setScale(toSafeScale(parsed.scale));
         if (parsed.sheet_size) setSheetSize(parsed.sheet_size);
       } catch (e) {
         console.error("Failed to load Timus settings");
@@ -117,18 +144,27 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/status`, getAccessToken);
         if (res.ok && mounted) {
           const data = await res.json();
-          setBuildStatus(data.status);
+          if (data.status === 'building' && !userRequestedBuild) {
+            setBuildStatus('stale');
+          } else {
+            setBuildStatus(data.status);
+          }
+
+          if (userRequestedBuild && data.status !== 'building') {
+            setUserRequestedBuild(false);
+          }
         }
       } catch (e) {}
     };
     checkStatus();
     const interval = setInterval(checkStatus, 3000);
     return () => { mounted = false; clearInterval(interval); };
-  }, [activeProject, isActive, serverUrl, getAccessToken]);
+  }, [activeProject, isActive, serverUrl, getAccessToken, userRequestedBuild]);
 
   const triggerBuild = async () => {
     if (!activeProject) return;
     setBuildStatus('building');
+    setUserRequestedBuild(true);
     try {
       await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
     } catch (e) {
@@ -215,19 +251,9 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               onChange={(e) => setScale(parseFloat(e.target.value))}
               className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
             >
-              <option value="10">10:1 (Enlarged 10x)</option>
-              <option value="5">5:1 (Enlarged 5x)</option>
-              <option value="2">2:1 (Enlarged 2x)</option>
-              <option value="1">1:1 (Full Size)</option>
-              <option value="0.5">1:2 (Half Size)</option>
-              <option value="0.2">1:5</option>
-              <option value="0.1">1:10</option>
-              <option value="0.05">1:20</option>
-              <option value="0.02">1:50</option>
-              <option value="0.01">1:100</option>
-              <option value="0.005">1:200</option>
-              <option value="0.002">1:500</option>
-              <option value="0.001">1:1000</option>
+              {scalePresets.map((entry) => (
+                <option value={entry.value.toString()} key={entry.value}>{entry.label}</option>
+              ))}
             </select>
           </div>
 
@@ -265,6 +291,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
         <div className="space-y-2 pt-6 border-t border-slate-900">
           <button
+            type="button"
             onClick={triggerBuild}
             disabled={buildStatus === 'building'}
             className={`w-full font-semibold py-2 px-4 rounded border transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer ${
@@ -273,7 +300,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                 : 'bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-slate-100 border-slate-800'
             }`}
           >
-            {buildStatus === 'building' ? '⚙️ Calculating PDF Lines...' : '🔄 Generate PDF Data'}
+            {buildStatus === 'building' ? 'Calculating PDF Lines...' : 'Generate PDF Data'}
           </button>
           <button
             type="button"
@@ -289,7 +316,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           </button>
           {buildStatus === 'stale' && (
              <div className="text-[10px] text-orange-400 text-center font-mono uppercase mt-1">
-               Project modified. Regenerate PDF Data.
+               PDF data is not current. Use Generate PDF Data to refresh.
              </div>
           )}
         </div>
@@ -387,6 +414,7 @@ const DraftingCanvas: React.FC<{
     const scene = new THREE.Scene();
     
     let isCancelled = false;
+    let modelBounds: THREE.Box3 | null = null;
     const loader = new GLTFLoader();
     
     apiFetch(modelUrl, getAccessToken)
@@ -402,6 +430,7 @@ const DraftingCanvas: React.FC<{
           box.getCenter(center);
           model.position.sub(center);
           model.rotation.x = Math.PI / 2;
+          modelBounds = new THREE.Box3().setFromObject(model);
 
           const solidMat = new THREE.MeshBasicMaterial({ 
             color: 0xffffff, 
@@ -438,23 +467,45 @@ const DraftingCanvas: React.FC<{
     sideCam.position.set(500, 0, 0); sideCam.up.set(0, 0, 1); sideCam.lookAt(0, 0, 0);
     isoCam.position.set(500, -500, 500); isoCam.up.set(0, 0, 1); isoCam.lookAt(0, 0, 0);
     
-    const updateCameras = (w_px: number, h_px: number, projW: number, projH: number) => {
-        const s = stateRef.current;
-        const factor = Math.min(w_px / projW, h_px / projH);
-        const camW = (w_px / factor / s.scale) / 1000;
-        const camH = (h_px / factor / s.scale) / 1000;
-        
-        [topCam, frontCam, sideCam, isoCam].forEach(cam => {
-            const newLeft = -camW / 2;
-            const newTop = camH / 2;
-            if (cam.left !== newLeft || cam.top !== newTop) {
-                cam.left = newLeft;
-                cam.right = camW / 2;
-                cam.top = newTop;
-                cam.bottom = -camH / 2;
-                cam.updateProjectionMatrix();
-            }
-        });
+    const fitOrthographicCameraToModel = (camera: THREE.OrthographicCamera, viewportWidthMm: number, viewportHeightMm: number, fitScale: number) => {
+      if (!modelBounds) return;
+      const bounds = modelBounds;
+      if (bounds.min.equals(bounds.max)) return;
+
+      const target = new THREE.Vector3();
+      bounds.getCenter(target);
+      camera.lookAt(target);
+      camera.updateMatrixWorld();
+
+      const safeScale = Math.max(1e-6, fitScale);
+      const spanX = Math.max(1e-6, bounds.max.x - bounds.min.x);
+      const spanY = Math.max(1e-6, bounds.max.y - bounds.min.y);
+      const spanZ = Math.max(1e-6, bounds.max.z - bounds.min.z);
+      const maxSpan = Math.max(spanX, spanY, spanZ);
+      const unitsPerMm = maxSpan > 1000 ? 1 : 1000;
+
+      const halfWidth = Math.max((viewportWidthMm / (2 * safeScale)) / unitsPerMm, 0.01);
+      const halfHeight = Math.max((viewportHeightMm / (2 * safeScale)) / unitsPerMm, 0.01);
+
+      camera.left = -halfWidth;
+      camera.right = halfWidth;
+      camera.top = halfHeight;
+      camera.bottom = -halfHeight;
+
+      const cameraDistance = camera.position.distanceTo(target);
+      const depthSpan = Math.max(1e-6, spanZ);
+      camera.near = Math.max(0.01, cameraDistance - depthSpan * 5);
+      camera.far = cameraDistance + depthSpan * 5;
+      camera.updateProjectionMatrix();
+    };
+
+    const updateCameras = (wMm: number, hMm: number) => {
+      const s = stateRef.current;
+      [topCam, frontCam, sideCam, isoCam].forEach((cam) => {
+        if (cam instanceof THREE.OrthographicCamera) {
+          fitOrthographicCameraToModel(cam, wMm, hMm, s.scale);
+        }
+      });
     };
 
     const draw = () => {
@@ -487,7 +538,7 @@ const DraftingCanvas: React.FC<{
           renderer.setViewport(vX, vY, vW, vH);
           renderer.setScissor(vX, vY, vW, vH);
           renderer.setScissorTest(true);
-          updateCameras(vW * dpr, vH * dpr, wMm, hMm);
+          updateCameras(wMm, hMm);
           renderer.render(scene, cam);
       };
       
@@ -678,3 +729,4 @@ const DraftingCanvas: React.FC<{
     </div>
   );
 };
+
