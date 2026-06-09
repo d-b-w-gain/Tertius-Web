@@ -136,6 +136,111 @@ try:
                 patch_glb_names(str(output_path), tag_to_name)
             except Exception as patch_e:
                 print("Failed to patch GLB names:", patch_e)
+    elif export_format == "timus_views":
+        import json
+        from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
+        from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir, gp_Pnt2d
+        from OCP.BRepMesh import BRepMesh_IncrementalMesh
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopAbs import TopAbs_SOLID
+        from OCP.TopoDS import TopoDS_Compound
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepBndLib import BRepBndLib
+        from OCP.Bnd import Bnd_Box
+        from OCP.HLRAlgo import HLRAlgo_Projector
+
+        # 1. Output parameters
+        scale = 0.02
+        settings_path = project_dir / "settings.json"
+        if settings_path.exists():
+            try:
+                with open(settings_path) as f:
+                    settings = json.load(f)
+                    scale = settings.get("scale", 0.02)
+            except Exception:
+                pass
+                
+        line_weight_mm = 0.2
+        min_model_size = line_weight_mm / scale
+        deflection = min_model_size / 2.0
+
+        # 2. Cull tiny geometry
+        builder = BRep_Builder()
+        culled_compound = TopoDS_Compound()
+        builder.MakeCompound(culled_compound)
+
+        explorer = TopExp_Explorer(compound.wrapped, TopAbs_SOLID)
+        while explorer.More():
+            solid = explorer.Current()
+            bbox_obj = Bnd_Box()
+            BRepBndLib.Add_s(solid, bbox_obj)
+            xmin, ymin, zmin, xmax, ymax, zmax = bbox_obj.Get()
+            max_dim = max(xmax - xmin, ymax - ymin, zmax - zmin)
+            
+            if max_dim >= min_model_size:
+                builder.Add(culled_compound, solid)
+            explorer.Next()
+            
+        # 3. Analytic HLR projection on culled model
+        culled_bd = bd.Compound(culled_compound)
+        bbox = culled_bd.bounding_box()
+        look_at = bbox.center()
+        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
+        if max_dim == 0:
+            max_dim = 100
+            
+        views = {}
+        for view_name in ["top", "front", "side", "iso"]:
+            if view_name == "top":
+                origin = (look_at.X, look_at.Y, bbox.max.Z + max_dim)
+                up_dir = (0, 1, 0)
+            elif view_name == "front":
+                origin = (look_at.X, bbox.min.Y - max_dim, look_at.Z)
+                up_dir = (0, 0, 1)
+            elif view_name == "side":
+                origin = (bbox.max.X + max_dim, look_at.Y, look_at.Z)
+                up_dir = (0, 0, 1)
+            else:
+                origin = (look_at.X + max_dim, look_at.Y - max_dim, look_at.Z + max_dim)
+                up_dir = (0, 0, 1)
+                
+            try:
+                visible, hidden = culled_bd.project_to_viewport(
+                    origin, 
+                    viewport_up=up_dir, 
+                    look_at=(look_at.X, look_at.Y, look_at.Z)
+                )
+                
+                segments = []
+                
+                def extract_edges(shape_list, is_hidden):
+                    if not shape_list: return
+                    for shape in shape_list:
+                        for edge in shape.edges():
+                            try:
+                                if edge.geom_type.name == 'LINE':
+                                    p1 = edge.position_at(0)
+                                    p2 = edge.position_at(1)
+                                    segments.append(((p1.X, p1.Y), (p2.X, p2.Y), is_hidden))
+                                else:
+                                    num_samples = max(8, min(64, int(edge.length / 2.0)))
+                                    pts = [edge.position_at(i / num_samples) for i in range(num_samples + 1)]
+                                    for i in range(len(pts)-1):
+                                        p1, p2 = pts[i], pts[i+1]
+                                        segments.append(((p1.X, p1.Y), (p2.X, p2.Y), is_hidden))
+                            except Exception:
+                                pass
+
+                extract_edges(visible, False)
+                extract_edges(hidden, True)
+                            
+                views[view_name] = segments
+            except Exception as e:
+                print(f"Failed to project {view_name}: {e}")
+                views[view_name] = []
+
+        with open(str(output_path), "w") as f:
+            json.dump(views, f)
     else:
         raise RuntimeError(f"Unsupported export format: {export_format}")
 except Exception:

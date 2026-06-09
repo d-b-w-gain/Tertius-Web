@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from 'react'
 import type { User } from 'oidc-client-ts'
@@ -33,18 +34,38 @@ const clearSigninCallbackParams = () => {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const silentSigninPromiseRef = useRef<Promise<User | null> | null>(null)
 
   useEffect(() => {
     let isMounted = true
 
     const loadUser = async () => {
       try {
-        if (hasSigninCallbackParams()) {
-          const callbackUser = await userManager.signinRedirectCallback()
-          if (isMounted) {
-            setUser(callbackUser)
+        // Handle silent renew callback in iframe
+        if (window.self !== window.top) {
+          try {
+             await userManager.signinSilentCallback()
+          } catch (e) {
+             console.error("Silent callback error:", e)
           }
-          clearSigninCallbackParams()
+          return
+        }
+
+        if (hasSigninCallbackParams()) {
+          try {
+            const callbackUser = await userManager.signinRedirectCallback()
+            if (isMounted) {
+              setUser(callbackUser)
+            }
+          } catch (e) {
+            console.warn("Signin callback error (likely StrictMode double-fire):", e)
+            const storedUser = await userManager.getUser()
+            if (storedUser && !storedUser.expired && isMounted) {
+               setUser(storedUser)
+            }
+          } finally {
+            clearSigninCallbackParams()
+          }
           return
         }
 
@@ -53,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(storedUser && !storedUser.expired ? storedUser : null)
         }
       } finally {
-        if (isMounted) {
+        if (isMounted && window.self === window.top) {
           setIsLoading(false)
         }
       }
@@ -81,20 +102,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const getAccessToken = useCallback(async () => {
     const current = await userManager.getUser()
     if (current && !current.expired) {
-      setUser(current)
       return current.access_token
     }
 
+    if (silentSigninPromiseRef.current) {
+       const renewed = await silentSigninPromiseRef.current;
+       if (renewed) return renewed.access_token;
+       throw new Error('Concurrent silent sign in failed');
+    }
+
     try {
-      const renewed = await userManager.signinSilent()
+      silentSigninPromiseRef.current = userManager.signinSilent()
+      const renewed = await silentSigninPromiseRef.current
       if (!renewed) {
         throw new Error('Silent sign-in did not return a user')
       }
       setUser(renewed)
       return renewed.access_token
-    } catch {
-      await userManager.signinRedirect()
-      throw new Error('Redirecting to login')
+    } catch (e) {
+      console.error("Silent token refresh failed:", e);
+      throw new Error('Authentication expired. Please sign in again.', { cause: e })
+    } finally {
+      silentSigninPromiseRef.current = null
     }
   }, [])
 

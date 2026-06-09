@@ -63,13 +63,27 @@ export const ProjectSelector: React.FC = () => {
       const list = data.projects || [];
       setProjects(list);
       
+      let currentBackendProject = activeProject;
+      if (!currentBackendProject) {
+         try {
+            const activeRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+            if (activeRes.ok) {
+                const activeData = await activeRes.json();
+                currentBackendProject = activeData.project_name;
+            }
+         } catch (e) {}
+      }
+      
       let target = selectName;
-      if (!target && !activeProject && list.length > 0) {
+      if (!target && !currentBackendProject && list.length > 0) {
           target = list[0];
       }
       
-      if (target) {
+      if (target && target !== currentBackendProject) {
         selectProject(target);
+      } else if (currentBackendProject && currentBackendProject !== activeProject) {
+        setActiveProject(currentBackendProject);
+        fetchGitStatus(currentBackendProject);
       }
     } catch (e) {
       console.error("Failed to fetch projects");

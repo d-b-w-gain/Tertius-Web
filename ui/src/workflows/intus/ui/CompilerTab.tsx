@@ -12,6 +12,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [quality, setQuality] = useState<string>('high');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
+  const [autoCompile, setAutoCompile] = useState<boolean>(true);
   
   const [files, setFiles] = useState<string[]>(['design.py']);
   const [activeFile, setActiveFile] = useState<string>('design.py');
@@ -97,6 +98,12 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              const codeData = await codeRes.json();
              const newCode = codeData.code || '';
              setCode(newCode);
+
+             if (!autoCompile) {
+               setLog(prev => prev + `\n[INFO] External change detected. Auto-compile is disabled.`);
+               return;
+             }
+             
              setLog('External change detected (Artus). Auto-compiling...');
              
              // Trigger auto-compile silently
@@ -119,9 +126,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                  fetchGitStatus(activeProject);
                } else {
                  setLog(prev => prev + `\n[ERROR] ${compData.short}`);
+                 setAutoCompile(false);
                }
              } catch (e) {
                  setLog(prev => prev + `\n[ERROR] Auto-compile failed.`);
+                 setAutoCompile(false);
              }
              setIsCompiling(false);
           }
@@ -133,7 +142,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, isActive, activeFile, getAccessToken]);
+  }, [activeProject, serverUrl, format, quality, isActive, activeFile, getAccessToken, autoCompile]);
 
   const fetchGitStatus = async (name: string) => {
     try {
@@ -238,6 +247,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
         }
         fetchGitStatus(activeProject);
+        setAutoCompile(true); // Re-enable on manual success
       } else {
         setLog(`[ERROR] ${data.short}\n\n${data.error}`);
       }
@@ -286,6 +296,16 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               <option value="step">STEP</option>
               <option value="glb">GLB (Binary GLTF)</option>
             </select>
+          </div>
+          <div className="flex items-center gap-2 ml-2 border-l border-slate-700 pl-4">
+            <input 
+              type="checkbox" 
+              id="autoCompile" 
+              checked={autoCompile} 
+              onChange={(e) => setAutoCompile(e.target.checked)} 
+              className="rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500"
+            />
+            <label htmlFor="autoCompile" className="text-xs text-slate-400 select-none cursor-pointer">Auto-compile</label>
           </div>
         </div>
 
