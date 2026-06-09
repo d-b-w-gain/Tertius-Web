@@ -35,6 +35,11 @@ class ArtifactStore:
             byte_size=len(content),
         )
 
+    def delete(self, storage_key: str) -> None:
+        path = self.path_for(storage_key)
+        if path.exists():
+            path.unlink()
+
     def path_for(self, storage_key: str) -> Path:
         key_path = Path(storage_key)
         if key_path.is_absolute() or ".." in key_path.parts:

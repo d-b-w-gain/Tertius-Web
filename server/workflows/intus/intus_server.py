@@ -253,7 +253,8 @@ def compile_project(
                 raise RuntimeError("Compile succeeded without an output artifact")
             output_bytes = result.output_path.read_bytes()
 
-        artifact_store = ArtifactStore(get_settings().artifact_root)
+        settings = get_settings()
+        artifact_store = ArtifactStore(settings.artifact_root)
         stored = artifact_store.write_bytes(ctx.tenant_id, project_id, ext, output_bytes)
         if not artifact_store.path_for(stored.storage_key).exists():
             raise RuntimeError("Artifact write failed")
@@ -268,7 +269,10 @@ def compile_project(
         )
         persisted_job = db.get(CompileJob, job_id)
         compile_repo.finish_job(persisted_job, "succeeded")
+        pruned_storage_keys = compile_repo.prune_artifacts(project_id, ext, max(1, settings.artifact_retention_limit))
         db.commit()
+        for storage_key in pruned_storage_keys:
+            artifact_store.delete(storage_key)
         return {"success": True, "format": ext, "artifact_id": str(artifact.id)}
 
     except Exception as e:

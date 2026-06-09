@@ -461,7 +461,8 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
                 return
             output_bytes = result.output_path.read_bytes()
 
-        artifact_store = ArtifactStore(get_settings().artifact_root)
+        settings = get_settings()
+        artifact_store = ArtifactStore(settings.artifact_root)
         stored = artifact_store.write_bytes(tenant_id, project_id, "timus_views", output_bytes)
         
         compile_repo.record_artifact(
@@ -475,7 +476,14 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
         persisted_job = db.get(CompileJob, job_id)
         if persisted_job:
             compile_repo.finish_job(persisted_job, "succeeded")
+            pruned_storage_keys = compile_repo.prune_artifacts(
+                project_id,
+                "timus_views",
+                max(1, settings.artifact_retention_limit),
+            )
             db.commit()
+            for storage_key in pruned_storage_keys:
+                artifact_store.delete(storage_key)
     except Exception as e:
         import traceback
         traceback.print_exc()

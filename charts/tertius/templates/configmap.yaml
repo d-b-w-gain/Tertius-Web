@@ -16,6 +16,7 @@ metadata:
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
   API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
+  ARTIFACT_ROOT: {{ .Values.app.config.artifactRoot | quote }}
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
