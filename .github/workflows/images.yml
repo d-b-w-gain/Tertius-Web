@@ -58,6 +58,8 @@ jobs:
           file: Dockerfile.ui
           build-args: |
             VITE_API_URL=/api
+            VITE_KEYCLOAK_AUTHORITY=/realms/tertius
+            VITE_KEYCLOAK_CLIENT_ID=tertius-ui
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-ui:${{ steps.vars.outputs.image_tag }}

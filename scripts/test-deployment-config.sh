@@ -16,6 +16,11 @@ if [ "$api_url_occurrences" -ne 0 ]; then
   exit 1
 fi
 
+if ! rg -q "VITE_KEYCLOAK_CLIENT_ID \|\| 'tertius-ui'" "${ROOT_DIR}/ui/src/auth/keycloak.ts"; then
+  echo "UI Keycloak auth must default to the tertius-ui client when VITE_KEYCLOAK_CLIENT_ID is not set." >&2
+  exit 1
+fi
+
 rendered="$(render_local)"
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
@@ -105,6 +110,11 @@ if ! rg -q 'VITE_API_URL=/api' "${ROOT_DIR}/.github/workflows/images.yml"; then
   exit 1
 fi
 
+if ! rg -q 'VITE_KEYCLOAK_AUTHORITY=/realms/tertius' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'VITE_KEYCLOAK_CLIENT_ID=tertius-ui' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not pass the expected UI Keycloak build arguments." >&2
+  exit 1
+fi
+
 for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
   if [ ! -f "${ROOT_DIR}/clusters/production/flux-system/${flux_file}" ]; then
     echo "Missing Flux image automation manifest: ${flux_file}." >&2
@@ -137,7 +147,7 @@ if ! rg -q 'branch: master' "${ROOT_DIR}/clusters/production/flux-system/image-u
   exit 1
 fi
 
-if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'secrets\.FLUX_IMAGE_UPDATE_PAT' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Unable to create Flux image update PR automatically' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
+if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'GH_TOKEN: \$\{\{ github\.token \}\}' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Unable to create Flux image update PR automatically' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
   echo ".github/workflows/flux-image-update-pr.yml must open and auto-merge PRs for Flux image update branches." >&2
   exit 1
 fi
