@@ -461,9 +461,12 @@ const DraftingCanvas: React.FC<{
       if (isCancelled) return;
       const rect = svg.getBoundingClientRect();
       if (rect.width === 0) return;
+      const svgElement = svg as unknown as HTMLElement;
       
       const width = rect.width * dpr;
       const height = rect.height * dpr;
+      canvas.style.top = `${svgElement.offsetTop}px`;
+      canvas.style.left = `${svgElement.offsetLeft}px`;
       if (canvas.width !== width || canvas.height !== height) {
           renderer.setSize(rect.width, rect.height, false);
           canvas.style.width = `${rect.width}px`;
@@ -540,8 +543,6 @@ const DraftingCanvas: React.FC<{
         renderer.dispose();
     };
   }, [modelUrl, getAccessToken]);
-
-  const svgElement = svgRef.current as unknown as HTMLElement | null;
 
   return (
     <div className="relative w-full h-full flex items-center justify-center">
@@ -670,10 +671,6 @@ const DraftingCanvas: React.FC<{
         ref={canvasRef} 
         style={{
           position: 'absolute',
-          top: svgElement?.offsetTop ?? 0,
-          left: svgElement?.offsetLeft ?? 0,
-          width: svgRef.current ? svgRef.current.clientWidth : 0,
-          height: svgRef.current ? svgRef.current.clientHeight : 0,
           pointerEvents: 'none',
           zIndex: 20
         }} 

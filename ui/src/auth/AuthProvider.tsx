@@ -121,7 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return renewed.access_token
     } catch (e) {
       console.error("Silent token refresh failed:", e);
-      throw new Error('Authentication expired. Please sign in again.')
+      throw new Error('Authentication expired. Please sign in again.', { cause: e })
     } finally {
       silentSigninPromiseRef.current = null
     }
