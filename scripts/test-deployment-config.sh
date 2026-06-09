@@ -21,6 +21,11 @@ if ! rg -q "VITE_KEYCLOAK_CLIENT_ID \|\| 'tertius-ui'" "${ROOT_DIR}/ui/src/auth/
   exit 1
 fi
 
+if ! rg -q 'map \$http_x_forwarded_proto \$forwarded_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/deploy/nginx/default.conf.template"; then
+  echo "Frontend nginx must preserve incoming X-Forwarded-Proto for proxied API and Keycloak requests." >&2
+  exit 1
+fi
+
 rendered="$(render_local)"
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
