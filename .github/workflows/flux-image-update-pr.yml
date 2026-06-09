@@ -17,7 +17,7 @@ jobs:
     steps:
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ secrets.FLUX_IMAGE_UPDATE_PAT }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: flux-image-updates
           BASE_BRANCH: master
         run: |
@@ -41,8 +41,8 @@ jobs:
                 --body "Flux image automation updated the deployed API/UI image tags." \
                 2>"${create_error}")"; then
               cat "${create_error}" >&2
-              echo "::warning::Unable to create Flux image update PR automatically. Create it manually from ${HEAD_BRANCH}."
-              exit 0
+              echo "::error::Unable to create Flux image update PR automatically from ${HEAD_BRANCH}."
+              exit 1
             fi
             rm -f "${create_error}"
             pr_number="${pr_url##*/}"
@@ -52,5 +52,6 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --auto \
               --merge; then
-            echo "::warning::Unable to enable auto-merge for Flux image update PR #${pr_number}."
+            echo "::error::Unable to enable auto-merge for Flux image update PR #${pr_number}."
+            exit 1
           fi
