@@ -45,6 +45,38 @@ curl http://127.0.0.1:8000/api/intus/health
 
 Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.
 
+List the Keycloak-related Secrets in the Tertius namespace:
+
+```bash
+rtk kubectl get secrets -n tertius | grep -i keycloak
+```
+
+List all key names in a Secret before decoding values:
+
+```bash
+rtk kubectl get secret tertius-keycloak-initial-admin -n tertius -o json \
+  | jq '.data | keys'
+```
+
+Decode one Secret key from Kubernetes base64 storage:
+
+```bash
+rtk kubectl get secret tertius-keycloak-initial-admin -n tertius \
+  -o jsonpath='{.data.username}' | base64 -d; echo
+
+rtk kubectl get secret tertius-keycloak-initial-admin -n tertius \
+  -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Decode every key in a Secret:
+
+```bash
+rtk kubectl get secret tertius-keycloak-initial-admin -n tertius -o json \
+  | jq -r '.data | to_entries[] | "\(.key)=\(.value | @base64d)"'
+```
+
+Decoded Secret values are plaintext credentials. Do not paste them into tickets, logs, pull requests, or committed files.
+
 `values-local.yaml` creates placeholder database Secrets for local testing only. Cloudflare Tunnel is disabled by default; create the token Secret before enabling it:
 
 ```bash
