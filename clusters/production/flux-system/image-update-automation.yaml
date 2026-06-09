@@ -21,7 +21,7 @@ spec:
 
         {{range .Changed.Objects}}{{println .}}{{end}}
     push:
-      branch: flux-image-updates
+      branch: master
   update:
     path: ./charts/tertius
     strategy: Setters
