@@ -6,24 +6,24 @@ This directory documents how Tertius is deployed to Kubernetes. Production is ma
 
 Production is GitOps-driven:
 
-1. Flux watches this repository through `clusters/production/flux-system/gitrepository.yaml`.
-2. Flux applies `clusters/production` through `clusters/production/flux-system/kustomization.yaml`.
+1. Flux watches this repository through `infra/clusters/production/flux-system/gitrepository.yaml`.
+2. Flux applies `infra/clusters/production` through `infra/clusters/production/flux-system/kustomization.yaml`.
 3. The production Kustomization creates the `tertius` namespace and a Flux `HelmRelease`.
-4. The `HelmRelease` renders `charts/tertius` into the production cluster.
+4. The `HelmRelease` renders `infra/charts/tertius` into the production cluster.
 5. Production-specific chart values are read from the in-cluster Secret `tertius-production-values`, key `values.yaml`.
 
 The GitRepository intentionally includes only the GitOps and chart paths:
 
-- `clusters/`
-- `clusters/production/`
-- `charts/`
-- `charts/tertius/`
+- `infra/clusters/`
+- `infra/clusters/production/`
+- `infra/charts/`
+- `infra/charts/tertius/`
 
 That keeps Flux focused on deployable configuration instead of the whole application source tree.
 
 ## Runtime Components
 
-The `charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
+The `infra/charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
 
 - **UI Deployment and Service**: Nginx serves the built React/Vite app. Browser traffic uses one origin, with `/api/*` reverse-proxied from Nginx to the API Service.
 - **API Deployment and Service**: FastAPI serves workflow APIs, validates Keycloak tokens, uses Postgres for tenant-scoped state, and stores generated artifacts on a mounted cache volume.
@@ -55,7 +55,7 @@ Keycloak handles browser login and token issuance. The API validates bearer toke
 ## Flux Layout
 
 ```text
-clusters/production/
+infra/clusters/production/
   kustomization.yaml
   flux-system/
     gitrepository.yaml
@@ -64,14 +64,14 @@ clusters/production/
     namespace.yaml
     helmrelease.yaml
 
-charts/tertius/
+infra/charts/tertius/
   Chart.yaml
   values.yaml
   values-local.yaml
   templates/
 ```
 
-The production `HelmRelease` points at `./charts/tertius` from the Flux `GitRepository` source. It reconciles every five minutes, creates the target namespace, retries failed installs/upgrades, and waits through the parent Flux Kustomization.
+The production `HelmRelease` points at `./infra/charts/tertius` from the Flux `GitRepository` source. It reconciles every five minutes, creates the target namespace, retries failed installs/upgrades, and waits through the parent Flux Kustomization.
 
 ## Production Values and Secrets
 
@@ -165,11 +165,44 @@ Use `--delete-data` only when PVCs and CloudNativePG database clusters should al
 These checks are useful before pushing GitOps changes:
 
 ```bash
-helm dependency update charts/tertius
-helm lint charts/tertius
-helm template tertius charts/tertius --values charts/tertius/values-local.yaml
+helm dependency update infra/charts/tertius
+helm lint infra/charts/tertius
+helm template tertius infra/charts/tertius --values infra/charts/tertius/values-local.yaml
 scripts/test-deployment-config.sh
 ```
+
+## Flux Image Update PAT
+
+Flux image automation pushes image tag bumps to the `flux-image-updates` branch. The GitHub Actions workflow `.github/workflows/flux-image-update-pr.yml` then uses the repository secret `FLUX_IMAGE_UPDATE_PAT` to create and auto-merge a PR back to `master`.
+
+Regenerate the token when the workflow fails with:
+
+```text
+Resource not accessible by personal access token (createPullRequest)
+```
+
+Create a fine-grained personal access token:
+
+1. Open <https://github.com/settings/personal-access-tokens>.
+2. Select **Generate new token**, then **Fine-grained token**.
+3. Use a clear token name such as `Tertius Flux image update PR`.
+4. Set **Resource owner** to `d-b-w-gain`.
+5. Set **Repository access** to **Only select repositories**.
+6. Select `d-b-w-gain/Tertius-Web`.
+7. Under **Repository permissions**, set:
+   - **Contents**: `Read and write`
+   - **Pull requests**: `Read and write`
+8. Leave **Metadata** as the default read-only permission.
+9. Generate the token and copy it immediately.
+
+Update the repository secret:
+
+1. Open `d-b-w-gain/Tertius-Web` on GitHub.
+2. Go to **Settings** -> **Secrets and variables** -> **Actions**.
+3. Update `FLUX_IMAGE_UPDATE_PAT` with the new token value.
+4. Rerun the failed **Flux Image Update PR** workflow, or wait for the next Flux image automation push.
+
+The token should not need repository administration permissions. If PR creation still fails after updating the secret, confirm the token owner has write access to `d-b-w-gain/Tertius-Web` and that the token was created for the `d-b-w-gain` resource owner.
 
 ## Production Operations
 
