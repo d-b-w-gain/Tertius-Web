@@ -1,4 +1,5 @@
 export const GUEST_WORKSPACE_KEY = 'tertius_guest_workspace_v1'
+export const GUEST_WORKSPACE_CHANGED_EVENT = 'tertius:guest-workspace-changed'
 
 const DEFAULT_PROJECT_NAME = 'default_purlin'
 const DEFAULT_FILE_NAME = 'design.py'
@@ -90,12 +91,12 @@ function normalizeWorkspace(value: unknown): GuestWorkspace {
       }
     }
 
-    if (!files[DEFAULT_FILE_NAME]) {
+    if (!(DEFAULT_FILE_NAME in files)) {
       files[DEFAULT_FILE_NAME] = FALLBACK_TEMPLATE
     }
 
     const activeFile =
-      typeof rawProject.activeFile === 'string' && files[rawProject.activeFile]
+      typeof rawProject.activeFile === 'string' && rawProject.activeFile in files
         ? rawProject.activeFile
         : DEFAULT_FILE_NAME
 
@@ -137,6 +138,7 @@ export function loadGuestWorkspace(): GuestWorkspace {
 
 export function saveGuestWorkspace(workspace: GuestWorkspace) {
   localStorage.setItem(GUEST_WORKSPACE_KEY, JSON.stringify(normalizeWorkspace(workspace)))
+  window.dispatchEvent(new Event(GUEST_WORKSPACE_CHANGED_EVENT))
 }
 
 export function clearGuestWorkspace() {

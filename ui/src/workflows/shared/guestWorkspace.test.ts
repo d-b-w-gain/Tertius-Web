@@ -59,4 +59,14 @@ describe('guestWorkspace', () => {
 
     expect(loadGuestWorkspace().projects.demo.files['design.py']).toBe('print("demo")')
   })
+
+  it('preserves empty Python files as valid guest content', () => {
+    const workspace = saveGuestCode(loadGuestWorkspace(), 'default_purlin', 'design.py', '')
+
+    saveGuestWorkspace(workspace)
+
+    const stored = loadGuestWorkspace()
+    expect(stored.projects.default_purlin.files['design.py']).toBe('')
+    expect(stored.projects.default_purlin.activeFile).toBe('design.py')
+  })
 })

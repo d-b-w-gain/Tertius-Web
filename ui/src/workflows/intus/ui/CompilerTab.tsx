@@ -2,7 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { createProjectStorage } from '../../shared/projectStorage';
+import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
 
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
@@ -63,9 +65,15 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     loadActiveProject();
     const interval = isGuest ? undefined : setInterval(loadActiveProject, 2000);
+    if (isGuest) {
+      window.addEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
+    }
     return () => {
       isMounted = false;
       if (interval) clearInterval(interval);
+      if (isGuest) {
+        window.removeEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
+      }
     };
   }, [storage, activeProject, activeFile, isGuest]);
 
@@ -235,6 +243,13 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
   };
 
+  const handleCodeChange = (value: string) => {
+    setCode(value);
+    if (isGuest && activeProject && activeFile) {
+      void storage.saveCode(activeProject, activeFile, value);
+    }
+  };
+
   const handleCompile = async () => {
     if (isGuest) {
       setLog('Log in to compile and export this local draft.');
@@ -277,9 +292,13 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         {/* Project Name Display (Selector moved to Artus) */}
         <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-indigo-300">Project:</span>
-            <span className="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 font-mono">
-                {activeProject || 'Loading...'}
-            </span>
+            {isGuest ? (
+              <ProjectSelector />
+            ) : (
+              <span className="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 font-mono">
+                  {activeProject || 'Loading...'}
+              </span>
+            )}
         </div>
 
         <div className="flex-1" />
@@ -391,7 +410,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               defaultLanguage="python"
               theme="vs-dark"
               value={code}
-              onChange={(val) => setCode(val || '')}
+              onChange={(val) => handleCodeChange(val || '')}
               options={{
                 minimap: { enabled: false },
                 fontSize: 14,
