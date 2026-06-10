@@ -90,23 +90,33 @@ interface AssemblyCandidateNode {
   bomCandidateReason: string;
 }
 
+interface AssemblyCandidateExportSummary {
+  totalScannedNodes: number;
+  exportedCandidateCount: number;
+  excludedMeshCount: number;
+  excludedGeneratedOrDefaultCount: number;
+  excludedUnsupportedCount: number;
+}
+
 interface AssemblyCandidateExport {
   exportVersion: 1;
   exportedAt: string;
   projectName: string;
   nodeCount: number;
+  summary: AssemblyCandidateExportSummary;
   nodes: AssemblyCandidateNode[];
 }
 
-const DEFAULT_NODE_NAMES = new Set(['', 'Mesh', 'Component']);
+const DEFAULT_NODE_NAMES = new Set(['', 'Mesh', 'Component', 'SOLID']);
 const GENERATED_NAME_PATTERNS = [
+  /^=>\d+(?:_\d+)?$/i,
   /^node[_\s-]?\d+$/i,
   /^mesh[_\s-]?\d+$/i,
   /^object[_\s-]?3?d?[_\s-]?\d+$/i,
   /^shape[_\s-]?\d+$/i,
   /^face[_\s-]?\d+$/i,
   /^edge[_\s-]?\d+$/i,
-  /^solid[_\s-]?\d+$/i,
+  /^solid(?:[_\s-]?\d+)?$/i,
   /^compound[_\s-]?\d+$/i,
   /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
 ];
@@ -148,22 +158,31 @@ const getCandidateSuggestion = (node: THREE.Object3D, displayName: string) => {
   const isGroup = node.type === 'Group' || node.type === 'Object3D';
   const generatedOrDefault = isGeneratedOrDefaultName(displayName);
 
+  if (isMesh) {
+    return { suggested: false, reason: 'mesh-geometry-excluded' };
+  }
   if (generatedOrDefault) {
     return { suggested: false, reason: 'default-or-generated-name' };
   }
   if (isGroup && node.children.length > 0) {
     return { suggested: true, reason: 'named-group-with-children' };
   }
-  if (isMesh) {
-    return { suggested: true, reason: 'named-mesh' };
-  }
   return { suggested: false, reason: 'unsupported-node-type' };
 };
 
-const collectAssemblyCandidates = (roots: THREE.Object3D[]): AssemblyCandidateNode[] => {
-  const rows: AssemblyCandidateNode[] = [];
+const createEmptyAssemblyExportSummary = (): AssemblyCandidateExportSummary => ({
+  totalScannedNodes: 0,
+  exportedCandidateCount: 0,
+  excludedMeshCount: 0,
+  excludedGeneratedOrDefaultCount: 0,
+  excludedUnsupportedCount: 0,
+});
 
-  const visit = (node: THREE.Object3D, depth: number, parentPath: string, parentName: string, siblingIndex: number) => {
+const collectAssemblyCandidates = (roots: THREE.Object3D[]) => {
+  const rows: AssemblyCandidateNode[] = [];
+  const summary = createEmptyAssemblyExportSummary();
+
+  const visit = (node: THREE.Object3D, parentPath: string, parentName: string, candidateDepth: number, siblingIndex: number) => {
     const isMesh = (node as THREE.Mesh).isMesh === true;
     const isGroup = node.type === 'Group' || node.type === 'Object3D';
     const fallbackName = isMesh ? 'Mesh' : 'Component';
@@ -171,41 +190,58 @@ const collectAssemblyCandidates = (roots: THREE.Object3D[]): AssemblyCandidateNo
     const pathSegment = sanitizePathSegment(displayName, `${fallbackName}_${siblingIndex + 1}`);
     const path = parentPath ? `${parentPath}/${pathSegment}` : pathSegment;
     const candidate = getCandidateSuggestion(node, displayName);
+    const includeNode = candidate.suggested;
 
-    rows.push({
-      id: node.uuid,
-      name: node.name || '',
-      displayName,
-      type: node.type,
-      path,
-      depth,
-      parentPath,
-      parentName,
-      childCount: node.children.length,
-      isMesh,
-      isGroup,
-      hasGeometry: Boolean((node as THREE.Mesh).geometry),
-      hasMaterial: Boolean((node as THREE.Mesh).material),
-      materialNames: getMaterialNames(node),
-      boundingBox: getBoundingBox(node),
-      bomCandidateSuggested: candidate.suggested,
-      bomCandidateReason: candidate.reason,
-    });
+    summary.totalScannedNodes += 1;
 
-    node.children.forEach((child, index) => visit(child, depth + 1, path, displayName, index));
+    if (includeNode) {
+      rows.push({
+        id: node.uuid,
+        name: node.name || '',
+        displayName,
+        type: node.type,
+        path,
+        depth: candidateDepth,
+        parentPath,
+        parentName,
+        childCount: node.children.length,
+        isMesh,
+        isGroup,
+        hasGeometry: Boolean((node as THREE.Mesh).geometry),
+        hasMaterial: Boolean((node as THREE.Mesh).material),
+        materialNames: getMaterialNames(node),
+        boundingBox: getBoundingBox(node),
+        bomCandidateSuggested: candidate.suggested,
+        bomCandidateReason: candidate.reason,
+      });
+
+      summary.exportedCandidateCount += 1;
+    } else if (isMesh) {
+      summary.excludedMeshCount += 1;
+    } else if (isGeneratedOrDefaultName(displayName)) {
+      summary.excludedGeneratedOrDefaultCount += 1;
+    } else {
+      summary.excludedUnsupportedCount += 1;
+    }
+
+    const nextParentPath = includeNode ? path : parentPath;
+    const nextParentName = includeNode ? displayName : parentName;
+    const nextCandidateDepth = includeNode ? candidateDepth + 1 : candidateDepth;
+    node.children.forEach((child, index) => visit(child, nextParentPath, nextParentName, nextCandidateDepth, index));
   };
 
-  roots.forEach((root, index) => visit(root, 0, '', '', index));
-  return rows;
+  roots.forEach((root, index) => visit(root, '', '', 0, index));
+  return { nodes: rows, summary };
 };
 
 const buildAssemblyCandidateExport = (sceneGraph: THREE.Object3D, projectName: string): AssemblyCandidateExport => {
-  const nodes = collectAssemblyCandidates(sceneGraph.children);
+  const { nodes, summary } = collectAssemblyCandidates(sceneGraph.children);
   return {
     exportVersion: 1,
     exportedAt: new Date().toISOString(),
     projectName,
     nodeCount: nodes.length,
+    summary,
     nodes,
   };
 };
@@ -215,8 +251,13 @@ const csvValue = (value: unknown) => {
   return `"${raw.replace(/"/g, '""')}"`;
 };
 
-const encodeAssemblyCandidateCsv = (nodes: AssemblyCandidateNode[]) => {
+const encodeAssemblyCandidateCsv = (payload: AssemblyCandidateExport) => {
   const headers = [
+    'totalScannedNodes',
+    'exportedCandidateCount',
+    'excludedMeshCount',
+    'excludedGeneratedOrDefaultCount',
+    'excludedUnsupportedCount',
     'id',
     'name',
     'displayName',
@@ -238,7 +279,12 @@ const encodeAssemblyCandidateCsv = (nodes: AssemblyCandidateNode[]) => {
     'bomCandidateReason',
   ];
 
-  const rows = nodes.map((node) => [
+  const rows = payload.nodes.map((node) => [
+    payload.summary.totalScannedNodes,
+    payload.summary.exportedCandidateCount,
+    payload.summary.excludedMeshCount,
+    payload.summary.excludedGeneratedOrDefaultCount,
+    payload.summary.excludedUnsupportedCount,
     node.id,
     node.name,
     node.displayName,
@@ -421,7 +467,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     if (!payload) return;
     downloadTextFile(
       datedAssemblyExportFilename('csv', projectName),
-      encodeAssemblyCandidateCsv(payload.nodes),
+      encodeAssemblyCandidateCsv(payload),
       'text/csv',
     );
   };
