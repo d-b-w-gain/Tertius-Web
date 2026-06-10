@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { ProjectSelector } from '../../shared/ui/ProjectSelector';
+import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -158,7 +159,21 @@ const RenderOperation: React.FC<{ node: OperationNode; depth: number; highlighte
   );
 };
 
-export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+export const FeatureTreeTab: React.FC<{ serverUrl: string }> = (props) => {
+  const { authMode, login } = useAuth();
+  if (authMode === 'guest') {
+    return (
+      <GuestWorkflowNotice
+        title="Log in to inspect and modify features"
+        message="Artus feature inspection and AI edits use authenticated project APIs."
+        onLogin={login}
+      />
+    );
+  }
+  return <AuthenticatedFeatureTreeTab {...props} />;
+};
+
+const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
   const { getAccessToken } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);

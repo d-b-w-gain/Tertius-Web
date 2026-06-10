@@ -5,13 +5,28 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 
 interface ViewerProps {
   serverUrl: string;
   isActive?: boolean;
 }
 
-export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+export const ViewerTab: React.FC<ViewerProps> = (props) => {
+  const { authMode, login } = useAuth();
+  if (authMode === 'guest') {
+    return (
+      <GuestWorkflowNotice
+        title="Log in to view compiled models"
+        message="Extus loads authenticated model artifacts after Intus compilation."
+        onLogin={login}
+      />
+    );
+  }
+  return <AuthenticatedViewerTab {...props} />;
+};
+
+const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
