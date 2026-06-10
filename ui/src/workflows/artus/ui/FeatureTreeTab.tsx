@@ -66,6 +66,228 @@ interface OperationNode {
   children?: OperationNode[];
 }
 
+interface AssemblyCandidateNode {
+  id: string;
+  name: string;
+  displayName: string;
+  type: string;
+  path: string;
+  depth: number;
+  parentPath: string;
+  parentName: string;
+  childCount: number;
+  isMesh: boolean;
+  isGroup: boolean;
+  hasGeometry: boolean;
+  hasMaterial: boolean;
+  materialNames: string[];
+  boundingBox: {
+    min: { x: number; y: number; z: number };
+    max: { x: number; y: number; z: number };
+    size: { x: number; y: number; z: number };
+  } | null;
+  bomCandidateSuggested: boolean;
+  bomCandidateReason: string;
+}
+
+interface AssemblyCandidateExport {
+  exportVersion: 1;
+  exportedAt: string;
+  projectName: string;
+  nodeCount: number;
+  nodes: AssemblyCandidateNode[];
+}
+
+const DEFAULT_NODE_NAMES = new Set(['', 'Mesh', 'Component']);
+const GENERATED_NAME_PATTERNS = [
+  /^node[_\s-]?\d+$/i,
+  /^mesh[_\s-]?\d+$/i,
+  /^object[_\s-]?3?d?[_\s-]?\d+$/i,
+  /^shape[_\s-]?\d+$/i,
+  /^face[_\s-]?\d+$/i,
+  /^edge[_\s-]?\d+$/i,
+  /^solid[_\s-]?\d+$/i,
+  /^compound[_\s-]?\d+$/i,
+  /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
+];
+
+const isGeneratedOrDefaultName = (name: string) => {
+  const trimmed = name.trim();
+  return DEFAULT_NODE_NAMES.has(trimmed) || GENERATED_NAME_PATTERNS.some((pattern) => pattern.test(trimmed));
+};
+
+const sanitizePathSegment = (name: string, fallback: string) => {
+  const label = (name || fallback).trim();
+  return label.replace(/\//g, '_') || fallback;
+};
+
+const getMaterialNames = (node: THREE.Object3D) => {
+  const material = (node as THREE.Mesh).material;
+  if (!material) return [];
+  const materials = Array.isArray(material) ? material : [material];
+  return materials.map((m, index) => m.name || `material_${index + 1}`);
+};
+
+const getBoundingBox = (node: THREE.Object3D) => {
+  if (!(node as THREE.Mesh).isMesh && node.children.length === 0) return null;
+
+  const box = new THREE.Box3().setFromObject(node);
+  if (box.isEmpty()) return null;
+
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  return {
+    min: { x: box.min.x, y: box.min.y, z: box.min.z },
+    max: { x: box.max.x, y: box.max.y, z: box.max.z },
+    size: { x: size.x, y: size.y, z: size.z },
+  };
+};
+
+const getCandidateSuggestion = (node: THREE.Object3D, displayName: string) => {
+  const isMesh = (node as THREE.Mesh).isMesh === true;
+  const isGroup = node.type === 'Group' || node.type === 'Object3D';
+  const generatedOrDefault = isGeneratedOrDefaultName(displayName);
+
+  if (generatedOrDefault) {
+    return { suggested: false, reason: 'default-or-generated-name' };
+  }
+  if (isGroup && node.children.length > 0) {
+    return { suggested: true, reason: 'named-group-with-children' };
+  }
+  if (isMesh) {
+    return { suggested: true, reason: 'named-mesh' };
+  }
+  return { suggested: false, reason: 'unsupported-node-type' };
+};
+
+const collectAssemblyCandidates = (roots: THREE.Object3D[]): AssemblyCandidateNode[] => {
+  const rows: AssemblyCandidateNode[] = [];
+
+  const visit = (node: THREE.Object3D, depth: number, parentPath: string, parentName: string, siblingIndex: number) => {
+    const isMesh = (node as THREE.Mesh).isMesh === true;
+    const isGroup = node.type === 'Group' || node.type === 'Object3D';
+    const fallbackName = isMesh ? 'Mesh' : 'Component';
+    const displayName = node.name || fallbackName;
+    const pathSegment = sanitizePathSegment(displayName, `${fallbackName}_${siblingIndex + 1}`);
+    const path = parentPath ? `${parentPath}/${pathSegment}` : pathSegment;
+    const candidate = getCandidateSuggestion(node, displayName);
+
+    rows.push({
+      id: node.uuid,
+      name: node.name || '',
+      displayName,
+      type: node.type,
+      path,
+      depth,
+      parentPath,
+      parentName,
+      childCount: node.children.length,
+      isMesh,
+      isGroup,
+      hasGeometry: Boolean((node as THREE.Mesh).geometry),
+      hasMaterial: Boolean((node as THREE.Mesh).material),
+      materialNames: getMaterialNames(node),
+      boundingBox: getBoundingBox(node),
+      bomCandidateSuggested: candidate.suggested,
+      bomCandidateReason: candidate.reason,
+    });
+
+    node.children.forEach((child, index) => visit(child, depth + 1, path, displayName, index));
+  };
+
+  roots.forEach((root, index) => visit(root, 0, '', '', index));
+  return rows;
+};
+
+const buildAssemblyCandidateExport = (sceneGraph: THREE.Object3D, projectName: string): AssemblyCandidateExport => {
+  const nodes = collectAssemblyCandidates(sceneGraph.children);
+  return {
+    exportVersion: 1,
+    exportedAt: new Date().toISOString(),
+    projectName,
+    nodeCount: nodes.length,
+    nodes,
+  };
+};
+
+const csvValue = (value: unknown) => {
+  const raw = value === null || value === undefined ? '' : String(value);
+  return `"${raw.replace(/"/g, '""')}"`;
+};
+
+const encodeAssemblyCandidateCsv = (nodes: AssemblyCandidateNode[]) => {
+  const headers = [
+    'id',
+    'name',
+    'displayName',
+    'type',
+    'path',
+    'depth',
+    'parentPath',
+    'parentName',
+    'childCount',
+    'isMesh',
+    'isGroup',
+    'hasGeometry',
+    'hasMaterial',
+    'materialNames',
+    'boundingBoxMin',
+    'boundingBoxMax',
+    'boundingBoxSize',
+    'bomCandidateSuggested',
+    'bomCandidateReason',
+  ];
+
+  const rows = nodes.map((node) => [
+    node.id,
+    node.name,
+    node.displayName,
+    node.type,
+    node.path,
+    node.depth,
+    node.parentPath,
+    node.parentName,
+    node.childCount,
+    node.isMesh,
+    node.isGroup,
+    node.hasGeometry,
+    node.hasMaterial,
+    node.materialNames.join('|'),
+    node.boundingBox ? `${node.boundingBox.min.x},${node.boundingBox.min.y},${node.boundingBox.min.z}` : '',
+    node.boundingBox ? `${node.boundingBox.max.x},${node.boundingBox.max.y},${node.boundingBox.max.z}` : '',
+    node.boundingBox ? `${node.boundingBox.size.x},${node.boundingBox.size.y},${node.boundingBox.size.z}` : '',
+    node.bomCandidateSuggested,
+    node.bomCandidateReason,
+  ]);
+
+  return [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\n');
+};
+
+const downloadTextFile = (filename: string, content: string, type: string) => {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const slugifyFilenamePart = (value: string) => {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+};
+
+const datedAssemblyExportFilename = (extension: 'json' | 'csv', projectName: string) => {
+  const date = new Date().toISOString().slice(0, 10);
+  const projectSlug = slugifyFilenamePart(projectName);
+  const projectPart = projectSlug ? `${projectSlug}-` : '';
+  return `assembly-tree-candidates-${projectPart}${date}.${extension}`;
+};
+
 const getIcon = (name: string) => {
   if (name.includes('BuildPart')) return '🧊';
   if (name.includes('BuildSketch')) return '✏️';
@@ -173,10 +395,36 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [activePanel, setActivePanel] = useState<'variables' | 'operations' | 'assembly'>('variables');
   
+  const [projectName, setProjectName] = useState<string>('');
   const [extusUrl, setExtusUrl] = useState<string>('');
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
+
+  const buildExportPayload = () => {
+    if (!sceneGraph) return null;
+    return buildAssemblyCandidateExport(sceneGraph, projectName);
+  };
+
+  const handleExportAssemblyJson = () => {
+    const payload = buildExportPayload();
+    if (!payload) return;
+    downloadTextFile(
+      datedAssemblyExportFilename('json', projectName),
+      JSON.stringify(payload, null, 2),
+      'application/json',
+    );
+  };
+
+  const handleExportAssemblyCsv = () => {
+    const payload = buildExportPayload();
+    if (!payload) return;
+    downloadTextFile(
+      datedAssemblyExportFilename('csv', projectName),
+      encodeAssemblyCandidateCsv(payload.nodes),
+      'text/csv',
+    );
+  };
 
   const handleSelectNode = (node: THREE.Object3D, isDouble: boolean) => {
      const nodeName = node.name || '';
@@ -271,6 +519,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
       const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
       const data = await res.json();
       if (res.ok) {
+        setProjectName(data.project_name || '');
         setFeatures(data.features || []);
         setOperations(data.operations || []);
         setError(null);
@@ -443,12 +692,30 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
           {/* Middle: Assembly Tree */}
           <div className={`flex flex-col bg-slate-950 border border-slate-800 rounded-xl overflow-hidden shadow-lg transition-all ${activePanel === 'assembly' ? 'flex-1 min-h-0' : 'shrink-0'}`}>
             <div 
-              className="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 cursor-pointer hover:bg-slate-800/80 transition-colors"
+              className="flex items-center justify-between p-3 border-b border-slate-800 bg-slate-900/50 shrink-0 cursor-pointer hover:bg-slate-800/80 transition-colors gap-3"
               onClick={() => setActivePanel('assembly')}
             >
               <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
                 <span className="text-sky-500">🧊</span> Assembly Tree
               </h2>
+              <div className="flex items-center gap-2 shrink-0" onClick={e => e.stopPropagation()}>
+                <button
+                  onClick={handleExportAssemblyJson}
+                  disabled={!sceneGraph}
+                  className="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-slate-300 transition-colors"
+                  title="Export the current Assembly Tree candidate nodes as JSON"
+                >
+                  Export JSON
+                </button>
+                <button
+                  onClick={handleExportAssemblyCsv}
+                  disabled={!sceneGraph}
+                  className="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded text-slate-300 transition-colors"
+                  title="Export the current Assembly Tree candidate nodes as CSV"
+                >
+                  Export CSV
+                </button>
+              </div>
             </div>
             
             {activePanel === 'assembly' && (
