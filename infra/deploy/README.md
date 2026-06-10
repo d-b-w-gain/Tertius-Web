@@ -209,10 +209,11 @@ The token should not need repository administration permissions. If PR creation 
 After changing chart templates, chart values, or production manifests:
 
 1. Run the local chart checks.
-2. Build and push matching API and UI images.
-3. Update the production values Secret with the desired image tags and environment settings.
-4. Push the GitOps/chart change to the branch watched by Flux.
-5. Watch Flux reconcile the source, Kustomization, and HelmRelease.
+2. Update the production values Secret with environment-specific runtime settings when needed.
+3. Push the GitOps/chart change to the branch watched by Flux.
+4. Watch Flux reconcile the source, Kustomization, and HelmRelease.
+
+Application image builds are handled by the `Build Images` workflow on `master`; Flux image automation promotes new image tags through `infra/charts/tertius/values.yaml`.
 
 Useful production inspection commands:
 
