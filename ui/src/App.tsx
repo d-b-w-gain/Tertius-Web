@@ -1,37 +1,57 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { useAuth } from './auth/AuthProvider'
+import { LoginStateWidget } from './auth/LoginStateWidget'
+import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
+import { importGuestWorkspace } from './workflows/shared/guestImport'
 
 declare const __GIT_COMMIT__: string
 declare const __GIT_COMMIT_DATE__: string
 
 function App() {
-  const { user, isLoading, login, logout } = useAuth()
+  const { authMode, getAccessToken, isLoading } = useAuth()
   const [activeTab, setActiveTab] = useState('extus')
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
+  const [showImportBanner, setShowImportBanner] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const previousAuthMode = useRef(authMode)
   const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
 
   useEffect(() => {
-    if (!isLoading && !user) {
-      void login()
+    if (authMode === 'guest') {
+      sessionStorage.setItem('tertius_guest_seen', 'true')
     }
-  }, [isLoading, login, user])
+
+    const transitionedToAuth = previousAuthMode.current === 'guest' && authMode === 'authenticated'
+    const sawGuestThisSession = sessionStorage.getItem('tertius_guest_seen') === 'true'
+    if ((transitionedToAuth || sawGuestThisSession) && authMode === 'authenticated' && localStorage.getItem(GUEST_WORKSPACE_KEY)) {
+      setShowImportBanner(true)
+    }
+    previousAuthMode.current = authMode
+  }, [authMode])
+
+  const handleImportGuestWorkspace = async () => {
+    setIsImporting(true)
+    setImportError(null)
+    try {
+      const result = await importGuestWorkspace({ getAccessToken })
+      window.dispatchEvent(new CustomEvent('tertius:guest-imported', { detail: result }))
+      setShowImportBanner(false)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Failed to import guest workspace')
+    } finally {
+      setIsImporting(false)
+    }
+  }
 
   if (isLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
         Loading...
-      </div>
-    )
-  }
-
-  if (!user) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
-        Redirecting to login...
       </div>
     )
   }
@@ -78,6 +98,29 @@ function App() {
       {/* Main Workflow Viewport (Tabbed) */}
       <div className="flex-1 flex flex-col min-w-0 relative">
         {/* Tab Header */}
+        {showImportBanner && (
+          <div className="flex items-center gap-3 border-b border-cyan-900/50 bg-cyan-950/40 px-4 py-2 text-sm text-cyan-100">
+            <span className="min-w-0 flex-1">
+              Import your local guest draft into this account.
+              {importError && <span className="ml-2 text-red-300">{importError}</span>}
+            </span>
+            <button
+              type="button"
+              onClick={handleImportGuestWorkspace}
+              disabled={isImporting}
+              className="rounded bg-cyan-600 px-3 py-1 font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isImporting ? 'Importing...' : 'Import'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowImportBanner(false)}
+              className="rounded px-2 py-1 text-cyan-200 hover:bg-cyan-900/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <div className="flex bg-slate-900 border-b border-slate-800 px-4 pt-4 gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -144,12 +187,7 @@ function App() {
                 </div>
               </div>
             </div>
-            <button
-              onClick={logout}
-              className="px-3 py-2 mb-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0"
-            >
-              Sign out
-            </button>
+            <LoginStateWidget />
           </div>
         </div>
 

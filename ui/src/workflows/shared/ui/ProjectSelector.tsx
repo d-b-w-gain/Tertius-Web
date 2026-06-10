@@ -1,29 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { resolveWorkflowServerUrl } from '../apiConfig';
+import { createProjectStorage } from '../projectStorage';
 
 export const ProjectSelector: React.FC = () => {
-  const { getAccessToken } = useAuth();
-  const serverUrl = '/proxy/api/intus'; // Intus handles project management
+  const { authMode, getAccessToken } = useAuth();
+  const serverUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL);
+  const storage = React.useMemo(
+    () => createProjectStorage({ authMode, serverUrl, getAccessToken }),
+    [authMode, getAccessToken, serverUrl],
+  );
   
   const [projects, setProjects] = useState<string[]>([]);
   const [activeProject, setActiveProject] = useState<string>('');
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[] }>({ is_git: false });
+  const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
 
   // Sync active project with backend (in case another tab changed it, though this is the primary selector)
   useEffect(() => {
     let isMounted = true;
     const fetchActive = async () => {
       try {
-        const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-        if (res.ok && isMounted) {
-           const data = await res.json();
-           if (data.project_name && data.project_name !== activeProject) {
-               setActiveProject(data.project_name);
-               fetchGitStatus(data.project_name);
-           }
+        const projectName = await storage.getActiveProject();
+        if (projectName && projectName !== activeProject && isMounted) {
+          setActiveProject(projectName);
+          fetchGitStatus(projectName);
         }
       } catch (e) {
       }
@@ -35,21 +37,16 @@ export const ProjectSelector: React.FC = () => {
         isMounted = false;
         clearInterval(interval);
     };
-  }, [serverUrl, getAccessToken, activeProject]);
+  }, [storage, activeProject]);
 
   useEffect(() => {
     fetchProjects();
-  }, [getAccessToken]);
+  }, [storage]);
 
   const fetchGitStatus = async (name: string) => {
     try {
-      const res = await apiFetch(`${serverUrl}/projects/${name}/git_status`, getAccessToken);
-      if (res.ok) {
-        const data = await res.json();
-        setGitStatus(data);
-      } else {
-        setGitStatus({ is_git: false });
-      }
+      const data = await storage.getHistory(name);
+      setGitStatus(data);
     } catch {
       setGitStatus({ is_git: false });
     }
@@ -57,20 +54,13 @@ export const ProjectSelector: React.FC = () => {
 
   const fetchProjects = async (selectName?: string) => {
     try {
-      const res = await apiFetch(`${serverUrl}/projects`, getAccessToken);
-      if (!res.ok) return;
-      const data = await res.json();
-      const list = data.projects || [];
+      const list = await storage.listProjects();
       setProjects(list);
       
       let currentBackendProject = activeProject;
       if (!currentBackendProject) {
          try {
-            const activeRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-            if (activeRes.ok) {
-                const activeData = await activeRes.json();
-                currentBackendProject = activeData.project_name;
-            }
+            currentBackendProject = await storage.getActiveProject();
          } catch (e) {}
       }
       
@@ -93,7 +83,7 @@ export const ProjectSelector: React.FC = () => {
   const selectProject = async (name: string) => {
     setActiveProject(name);
     try {
-      await apiFetch(`${serverUrl}/projects/${name}/activate`, getAccessToken, { method: 'POST' });
+      await storage.activateProject(name);
       fetchGitStatus(name);
     } catch (e) {
       alert("Network error selecting project");
@@ -105,15 +95,10 @@ export const ProjectSelector: React.FC = () => {
     if (!name) return;
     
     try {
-      const res = await apiFetch(`${serverUrl}/projects/${name}/new`, getAccessToken, { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        fetchProjects(name);
-        setIsCreating(false);
-        setNewProjectName('');
-      } else {
-        alert(data.error || "Failed to create project");
-      }
+      await storage.createProject(name);
+      fetchProjects(name);
+      setIsCreating(false);
+      setNewProjectName('');
     } catch (e) {
       alert("Network error creating project");
     }
@@ -139,7 +124,7 @@ export const ProjectSelector: React.FC = () => {
       ) : (
         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-slate-800/50 border border-slate-700 opacity-50">
           <span className="w-2 h-2 rounded-full bg-slate-600"></span>
-          <span className="text-[10px] font-mono text-slate-400">No Git</span>
+          <span className="text-[10px] font-mono text-slate-400">{gitStatus.label || 'No Git'}</span>
         </div>
       )}
       

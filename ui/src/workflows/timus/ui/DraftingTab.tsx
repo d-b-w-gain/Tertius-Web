@@ -3,8 +3,23 @@ import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 
-export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
+export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
+  const { authMode, login } = useAuth();
+  if (authMode === 'guest') {
+    return (
+      <GuestWorkflowNotice
+        title="Log in to generate drawings"
+        message="Timus drafting sheets are generated from authenticated project artifacts."
+        onLogin={login}
+      />
+    );
+  }
+  return <AuthenticatedDraftingTab {...props} />;
+};
+
+const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [activeProject, setActiveProject] = useState<string>('');
   
@@ -729,4 +744,3 @@ const DraftingCanvas: React.FC<{
     </div>
   );
 };
-

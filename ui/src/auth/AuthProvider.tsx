@@ -4,16 +4,17 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useState,
   useRef,
+  useState,
   type ReactNode,
 } from 'react'
 import type { User } from 'oidc-client-ts'
 import { userManager } from './keycloak'
 
-interface AuthState {
+export interface AuthState {
   user: User | null
   token: string | null
+  authMode: 'guest' | 'authenticated'
   isLoading: boolean
   getAccessToken: () => Promise<string>
   login: () => Promise<void>
@@ -105,32 +106,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return current.access_token
     }
 
-    if (silentSigninPromiseRef.current) {
-       const renewed = await silentSigninPromiseRef.current;
-       if (renewed) return renewed.access_token;
-       throw new Error('Concurrent silent sign in failed');
+    if (user) {
+      if (silentSigninPromiseRef.current) {
+        const renewed = await silentSigninPromiseRef.current
+        if (renewed) return renewed.access_token
+        throw new Error('Concurrent silent sign in failed')
+      }
+
+      try {
+        silentSigninPromiseRef.current = userManager.signinSilent()
+        const renewed = await silentSigninPromiseRef.current
+        if (!renewed) {
+          throw new Error('Silent sign-in did not return a user')
+        }
+        setUser(renewed)
+        return renewed.access_token
+      } catch (e) {
+        console.error('Silent token refresh failed:', e)
+        throw new Error('Authentication expired. Please sign in again.', { cause: e })
+      } finally {
+        silentSigninPromiseRef.current = null
+      }
     }
 
-    try {
-      silentSigninPromiseRef.current = userManager.signinSilent()
-      const renewed = await silentSigninPromiseRef.current
-      if (!renewed) {
-        throw new Error('Silent sign-in did not return a user')
-      }
-      setUser(renewed)
-      return renewed.access_token
-    } catch (e) {
-      console.error("Silent token refresh failed:", e);
-      throw new Error('Authentication expired. Please sign in again.', { cause: e })
-    } finally {
-      silentSigninPromiseRef.current = null
-    }
-  }, [])
+    throw new Error('Authentication required. Please sign in.')
+  }, [user])
 
   const value = useMemo<AuthState>(
     () => ({
       user,
       token: user?.access_token ?? null,
+      authMode: user ? 'authenticated' : 'guest',
       isLoading,
       getAccessToken,
       login,
