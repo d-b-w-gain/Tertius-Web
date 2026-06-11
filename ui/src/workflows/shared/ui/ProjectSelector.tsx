@@ -3,6 +3,8 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { resolveWorkflowServerUrl } from '../apiConfig';
 import { createProjectStorage } from '../projectStorage';
 
+export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
+
 export const ProjectSelector: React.FC = () => {
   const { authMode, getAccessToken } = useAuth();
   const serverUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL);
@@ -87,6 +89,7 @@ export const ProjectSelector: React.FC = () => {
     try {
       await storage.activateProject(name);
       fetchGitStatus(name);
+      window.dispatchEvent(new CustomEvent(ACTIVE_PROJECT_CHANGED_EVENT, { detail: { activeProject: name } }));
     } catch (e) {
       alert(errorMessage(e, "Network error selecting project"));
     }

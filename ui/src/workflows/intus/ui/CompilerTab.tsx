@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
-import { ProjectSelector } from '../../shared/ui/ProjectSelector';
+import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { createProjectStorage } from '../../shared/projectStorage';
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
 
@@ -33,10 +33,73 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   
   const mtimeRef = useRef<number>(0);
   const isCompilingRef = useRef<boolean>(false);
+  const loadRequestRef = useRef<number>(0);
+  const activeProjectRef = useRef<string>('');
+  const activeFileRef = useRef<string>('design.py');
+  const codeRef = useRef<string>('');
 
   useEffect(() => {
     isCompilingRef.current = isCompiling;
   }, [isCompiling]);
+
+  useEffect(() => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
+
+  useEffect(() => {
+    activeFileRef.current = activeFile;
+  }, [activeFile]);
+
+  useEffect(() => {
+    codeRef.current = code;
+  }, [code]);
+
+  const fetchGitStatus = useCallback(async (name: string) => {
+    try {
+      const data = await storage.getHistory(name);
+      setGitStatus(data);
+    } catch {
+      setGitStatus({ is_git: false });
+    }
+  }, [storage]);
+
+  const loadProject = useCallback(async (
+    projectName: string,
+    preferredFile = activeFileRef.current,
+    options: { saveCurrent?: boolean } = {},
+  ) => {
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
+
+    const currentProject = activeProjectRef.current;
+    const currentFile = activeFileRef.current;
+    const currentCode = codeRef.current;
+
+    if (options.saveCurrent && currentProject && currentFile && currentProject !== projectName) {
+      try {
+        await storage.saveCode(currentProject, currentFile, currentCode);
+      } catch (e) {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[WARN] Could not save ${currentProject}/${currentFile} before switching projects.`);
+      }
+    }
+
+    setActiveProject(projectName);
+    setCode('');
+    mtimeRef.current = 0;
+    fetchGitStatus(projectName);
+
+    const projectFiles = await storage.listFiles(projectName);
+    if (loadRequestRef.current !== requestId) return;
+
+    const nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0];
+    const nextCode = await storage.loadCode(projectName, nextFile);
+    if (loadRequestRef.current !== requestId) return;
+
+    setFiles(nextFiles);
+    setActiveFile(nextFile);
+    setCode(nextCode);
+  }, [fetchGitStatus, storage]);
 
   useEffect(() => {
     let isMounted = true;
@@ -47,19 +110,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           return;
         }
 
-        setActiveProject(projectName);
-        fetchGitStatus(projectName);
-        mtimeRef.current = 0;
-
-        const projectFiles = await storage.listFiles(projectName);
-        const nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
-        const nextFile = nextFiles.includes(activeFile) ? activeFile : nextFiles[0];
-        const nextCode = await storage.loadCode(projectName, nextFile);
-        if (isMounted) {
-          setFiles(nextFiles);
-          setActiveFile(nextFile);
-          setCode(nextCode);
-        }
+        await loadProject(projectName);
       } catch (e) {}
     };
     
@@ -75,7 +126,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         window.removeEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
       }
     };
-  }, [storage, activeProject, activeFile, isGuest]);
+  }, [storage, activeProject, isGuest, loadProject]);
 
   useEffect(() => {
     if (isGuest && autoCompile) {
@@ -90,19 +141,23 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       if (!detail?.activeProject) return;
 
       void (async () => {
-        const projectFiles = await storage.listFiles(detail.activeProject!);
-        const nextFile = detail.activeFile && projectFiles.includes(detail.activeFile) ? detail.activeFile : projectFiles[0] || 'design.py';
-        const nextCode = await storage.loadCode(detail.activeProject!, nextFile);
-        setActiveProject(detail.activeProject!);
-        setFiles(projectFiles.length > 0 ? projectFiles : ['design.py']);
-        setActiveFile(nextFile);
-        setCode(nextCode);
-        mtimeRef.current = 0;
+        await loadProject(detail.activeProject!, detail.activeFile || 'design.py');
       })();
     };
     window.addEventListener('tertius:guest-imported', handleImported);
     return () => window.removeEventListener('tertius:guest-imported', handleImported);
-  }, [isGuest, storage]);
+  }, [isGuest, storage, loadProject]);
+
+  useEffect(() => {
+    const handleActiveProjectChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ activeProject?: string }>).detail;
+      if (!detail?.activeProject || detail.activeProject === activeProjectRef.current) return;
+      void loadProject(detail.activeProject, 'design.py', { saveCurrent: !isGuest });
+    };
+
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
+    return () => window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
+  }, [isGuest, storage, loadProject]);
 
   useEffect(() => {
     if (!isGuest || !activeProject || !activeFile) return;
@@ -174,16 +229,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, quality, isActive, activeFile, getAccessToken, autoCompile, isGuest, storage]);
-
-  const fetchGitStatus = async (name: string) => {
-    try {
-      const data = await storage.getHistory(name);
-      setGitStatus(data);
-    } catch {
-      setGitStatus({ is_git: false });
-    }
-  };
+  }, [activeProject, serverUrl, format, quality, isActive, activeFile, getAccessToken, autoCompile, isGuest, storage, fetchGitStatus]);
 
   const switchFile = async (fileName: string) => {
     if (fileName === activeFile) return;
