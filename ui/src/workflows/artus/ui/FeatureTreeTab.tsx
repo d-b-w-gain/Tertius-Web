@@ -88,6 +88,16 @@ interface AssemblyCandidateNode {
   } | null;
   bomCandidateSuggested: boolean;
   bomCandidateReason: string;
+  sourceFunction: string;
+  sourceScope: string;
+  sourceLine: number | null;
+  sourceConfidence: 'exact' | 'inferred' | 'unknown';
+  sourceMatchReason: string;
+  sourceParameters: Record<string, unknown>;
+  standardizedInputs: Record<string, unknown>;
+  bomReadiness: string;
+  bomMissingFields: string[];
+  bomKind: string;
 }
 
 interface AssemblyCandidateExportSummary {
@@ -105,6 +115,31 @@ interface AssemblyCandidateExport {
   nodeCount: number;
   summary: AssemblyCandidateExportSummary;
   nodes: AssemblyCandidateNode[];
+}
+
+interface BomSourceCall {
+  function: string;
+  scope: string;
+  line: number;
+  parameters: Record<string, unknown>;
+  standardInputs: Record<string, unknown>;
+  bomKind: string;
+  bomReadiness: string;
+  bomMissingFields: string[];
+}
+
+interface BomMetadata {
+  projectName: string;
+  source: string;
+  calls: BomSourceCall[];
+  labels: Array<{ label: string; line: number; scope: string }>;
+  standardFields: string[];
+}
+
+interface SourceMatch {
+  call: BomSourceCall | null;
+  confidence: 'exact' | 'inferred' | 'unknown';
+  reason: string;
 }
 
 const DEFAULT_NODE_NAMES = new Set(['', 'Mesh', 'Component', 'SOLID']);
@@ -170,6 +205,92 @@ const getCandidateSuggestion = (node: THREE.Object3D, displayName: string) => {
   return { suggested: false, reason: 'unsupported-node-type' };
 };
 
+const normalizeForMatch = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+const scoreSourceCall = (node: THREE.Object3D, displayName: string, path: string, call: BomSourceCall) => {
+  const nodeText = `${displayName} ${path}`.toLowerCase();
+  const sourceText = `${call.function} ${call.scope} ${call.bomKind}`.toLowerCase();
+  const normalizedNode = normalizeForMatch(nodeText);
+  const normalizedSource = normalizeForMatch(sourceText);
+  let score = 0;
+  const reasons: string[] = [];
+
+  if (nodeText.includes('fastener') && call.bomKind === 'fastener_assembly') {
+    score += 8;
+    reasons.push('fastener node matched fastener assembly call');
+  }
+  if (nodeText.includes('column') && normalizedSource.includes('column')) {
+    score += 6;
+    reasons.push('column node matched column source scope');
+  }
+  if (nodeText.includes('rafter') && normalizedSource.includes('rafter')) {
+    score += 6;
+    reasons.push('rafter node matched rafter source scope');
+  }
+  if (nodeText.includes('fascia') && normalizedSource.includes('fascia')) {
+    score += 6;
+    reasons.push('fascia node matched fascia source scope');
+  }
+  if (nodeText.includes('apex') && normalizedSource.includes('apex')) {
+    score += 6;
+    reasons.push('apex node matched apex source function');
+  }
+  if (nodeText.includes('knee') && normalizedSource.includes('knee')) {
+    score += 6;
+    reasons.push('knee node matched knee source function');
+  }
+  if (nodeText.includes('base') && (normalizedSource.includes('gpb') || normalizedSource.includes('base'))) {
+    score += 5;
+    reasons.push('base node matched GPB/base source function');
+  }
+  if ((nodeText.includes('100cp') || normalizedNode.includes('cpbracket')) && normalizedSource.includes('100cp')) {
+    score += 7;
+    reasons.push('100CP node matched 100CP source function');
+  }
+  if (nodeText.includes('bracket') && call.bomKind === 'bracket') {
+    score += 3;
+    reasons.push('bracket node matched bracket source kind');
+  }
+  if (nodeText.includes('foundation') && call.bomKind === 'foundation') {
+    score += 6;
+    reasons.push('foundation node matched foundation source function');
+  }
+  if ((nodeText.includes('block') || nodeText.includes('versaloc')) && call.bomKind === 'block') {
+    score += 6;
+    reasons.push('block node matched block source function');
+  }
+
+  if ((node as THREE.Mesh).isMesh) {
+    score = 0;
+  }
+
+  return { score, reason: reasons.join('; ') };
+};
+
+const findSourceMatch = (node: THREE.Object3D, displayName: string, path: string, bomMetadata?: BomMetadata | null): SourceMatch => {
+  if (!bomMetadata?.calls?.length) {
+    return { call: null, confidence: 'unknown', reason: 'no-source-metadata-loaded' };
+  }
+
+  let best: { call: BomSourceCall; score: number; reason: string } | null = null;
+  for (const call of bomMetadata.calls) {
+    const scored = scoreSourceCall(node, displayName, path, call);
+    if (!best || scored.score > best.score) {
+      best = { call, score: scored.score, reason: scored.reason };
+    }
+  }
+
+  if (!best || best.score < 5) {
+    return { call: null, confidence: 'unknown', reason: 'no-confident-source-match' };
+  }
+
+  return {
+    call: best.call,
+    confidence: 'inferred',
+    reason: best.reason || 'best-effort-source-match',
+  };
+};
+
 const createEmptyAssemblyExportSummary = (): AssemblyCandidateExportSummary => ({
   totalScannedNodes: 0,
   exportedCandidateCount: 0,
@@ -178,7 +299,7 @@ const createEmptyAssemblyExportSummary = (): AssemblyCandidateExportSummary => (
   excludedUnsupportedCount: 0,
 });
 
-const collectAssemblyCandidates = (roots: THREE.Object3D[]) => {
+const collectAssemblyCandidates = (roots: THREE.Object3D[], bomMetadata?: BomMetadata | null) => {
   const rows: AssemblyCandidateNode[] = [];
   const summary = createEmptyAssemblyExportSummary();
 
@@ -190,6 +311,8 @@ const collectAssemblyCandidates = (roots: THREE.Object3D[]) => {
     const pathSegment = sanitizePathSegment(displayName, `${fallbackName}_${siblingIndex + 1}`);
     const path = parentPath ? `${parentPath}/${pathSegment}` : pathSegment;
     const candidate = getCandidateSuggestion(node, displayName);
+    const sourceMatch = findSourceMatch(node, displayName, path, bomMetadata);
+    const sourceCall = sourceMatch.call;
     const includeNode = candidate.suggested;
 
     summary.totalScannedNodes += 1;
@@ -213,6 +336,16 @@ const collectAssemblyCandidates = (roots: THREE.Object3D[]) => {
         boundingBox: getBoundingBox(node),
         bomCandidateSuggested: candidate.suggested,
         bomCandidateReason: candidate.reason,
+        sourceFunction: sourceCall?.function || '',
+        sourceScope: sourceCall?.scope || '',
+        sourceLine: sourceCall?.line ?? null,
+        sourceConfidence: sourceMatch.confidence,
+        sourceMatchReason: sourceMatch.reason,
+        sourceParameters: sourceCall?.parameters || {},
+        standardizedInputs: sourceCall?.standardInputs || {},
+        bomReadiness: sourceCall?.bomReadiness || '',
+        bomMissingFields: sourceCall?.bomMissingFields || [],
+        bomKind: sourceCall?.bomKind || '',
       });
 
       summary.exportedCandidateCount += 1;
@@ -234,8 +367,8 @@ const collectAssemblyCandidates = (roots: THREE.Object3D[]) => {
   return { nodes: rows, summary };
 };
 
-const buildAssemblyCandidateExport = (sceneGraph: THREE.Object3D, projectName: string): AssemblyCandidateExport => {
-  const { nodes, summary } = collectAssemblyCandidates(sceneGraph.children);
+const buildAssemblyCandidateExport = (sceneGraph: THREE.Object3D, projectName: string, bomMetadata?: BomMetadata | null): AssemblyCandidateExport => {
+  const { nodes, summary } = collectAssemblyCandidates(sceneGraph.children, bomMetadata);
   return {
     exportVersion: 1,
     exportedAt: new Date().toISOString(),
@@ -277,6 +410,16 @@ const encodeAssemblyCandidateCsv = (payload: AssemblyCandidateExport) => {
     'boundingBoxSize',
     'bomCandidateSuggested',
     'bomCandidateReason',
+    'sourceFunction',
+    'sourceScope',
+    'sourceLine',
+    'sourceConfidence',
+    'sourceMatchReason',
+    'sourceParameters',
+    'standardizedInputs',
+    'bomReadiness',
+    'bomMissingFields',
+    'bomKind',
   ];
 
   const rows = payload.nodes.map((node) => [
@@ -304,6 +447,16 @@ const encodeAssemblyCandidateCsv = (payload: AssemblyCandidateExport) => {
     node.boundingBox ? `${node.boundingBox.size.x},${node.boundingBox.size.y},${node.boundingBox.size.z}` : '',
     node.bomCandidateSuggested,
     node.bomCandidateReason,
+    node.sourceFunction,
+    node.sourceScope,
+    node.sourceLine ?? '',
+    node.sourceConfidence,
+    node.sourceMatchReason,
+    JSON.stringify(node.sourceParameters),
+    JSON.stringify(node.standardizedInputs),
+    node.bomReadiness,
+    node.bomMissingFields.join('|'),
+    node.bomKind,
   ]);
 
   return [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\n');
@@ -444,12 +597,13 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
   const [projectName, setProjectName] = useState<string>('');
   const [extusUrl, setExtusUrl] = useState<string>('');
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
+  const [bomMetadata, setBomMetadata] = useState<BomMetadata | null>(null);
   
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
 
   const buildExportPayload = () => {
     if (!sceneGraph) return null;
-    return buildAssemblyCandidateExport(sceneGraph, projectName);
+    return buildAssemblyCandidateExport(sceneGraph, projectName, bomMetadata);
   };
 
   const handleExportAssemblyJson = () => {
@@ -579,9 +733,27 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) =
     }
   };
 
+  const fetchBomMetadata = async () => {
+    try {
+      const res = await apiFetch(`${serverUrl}/bom_metadata`, getAccessToken);
+      const data = await res.json();
+      if (res.ok) {
+        setBomMetadata(data);
+      } else {
+        setBomMetadata(null);
+      }
+    } catch (e) {
+      setBomMetadata(null);
+    }
+  };
+
   useEffect(() => {
     fetchFeatures();
-    const interval = setInterval(fetchFeatures, 4000);
+    fetchBomMetadata();
+    const interval = setInterval(() => {
+      fetchFeatures();
+      fetchBomMetadata();
+    }, 4000);
     return () => clearInterval(interval);
   }, [serverUrl, getAccessToken]);
 

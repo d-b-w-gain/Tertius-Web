@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
+from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -74,6 +76,222 @@ def extract_dependencies(node):
         if isinstance(child, ast.Name):
             deps.add(child.id)
     return [d for d in deps if d not in ('bd', 'build123d', 'Align', 'Mode', 'MIN', 'CENTER', 'MAX', 'SUBTRACT', 'ADD', 'INTERSECT')]
+
+
+STANDARD_BOM_FIELDS = {
+    "part_number",
+    "product_key",
+    "manufacturer",
+    "standard",
+    "size",
+    "length",
+    "length_mm",
+    "width",
+    "width_mm",
+    "height",
+    "height_mm",
+    "thickness",
+    "thickness_mm",
+    "diameter",
+    "diameter_mm",
+    "grip_length",
+    "grip_length_mm",
+    "quantity",
+    "unit",
+    "role",
+    "material",
+    "finish",
+    "source_library",
+    "bracket_type",
+}
+
+
+@dataclass
+class FunctionSignature:
+    name: str
+    params: list[str]
+    filename: str
+    line: int
+
+
+def compact_expr(node: ast.AST) -> dict[str, Any]:
+    if isinstance(node, ast.Constant):
+        return {"kind": "literal", "value": node.value}
+    if isinstance(node, ast.Name):
+        return {"kind": "reference", "name": node.id}
+    try:
+        return {"kind": "expression", "source": ast.unparse(node)}
+    except Exception:
+        return {"kind": "expression", "source": ast.dump(node)}
+
+
+def call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return None
+
+
+def infer_bom_kind(function_name: str) -> str:
+    name = function_name.lower()
+    if "fastener" in name:
+        return "fastener_assembly"
+    if "purlin" in name or "fascia" in name or "column" in name or "rafter" in name:
+        return "structural_member"
+    if "bracket" in name or "gpb" in name or "cp" in name:
+        return "bracket"
+    if "block" in name:
+        return "block"
+    if "rebar" in name:
+        return "rebar"
+    if "foundation" in name:
+        return "foundation"
+    return "component"
+
+
+def standardize_bom_inputs(parameters: dict[str, Any]) -> dict[str, Any]:
+    standard: dict[str, Any] = {}
+    for key, value in parameters.items():
+        out_key = key
+        if key == "length":
+            out_key = "length_mm"
+        elif key == "grip_length":
+            out_key = "grip_length_mm"
+        elif key == "bracket_type":
+            out_key = "part_number"
+        if out_key in STANDARD_BOM_FIELDS:
+            standard[out_key] = value
+    return standard
+
+
+def bom_readiness(function_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    kind = infer_bom_kind(function_name)
+    standard_inputs = standardize_bom_inputs(parameters)
+    keys = set(standard_inputs)
+    missing = []
+    if kind == "fastener_assembly":
+        if "size" not in keys:
+            missing.append("size")
+        if "length_mm" not in keys:
+            missing.append("length_mm")
+    elif kind == "structural_member":
+        if "part_number" not in keys and "product_key" not in keys:
+            missing.append("part_number")
+        if "length_mm" not in keys:
+            missing.append("length_mm")
+    elif kind == "bracket":
+        if "part_number" not in keys and "product_key" not in keys:
+            missing.append("part_number")
+
+    if not missing and standard_inputs:
+        level = "ok"
+    elif standard_inputs:
+        level = "warning"
+    else:
+        level = "info"
+
+    return {
+        "level": level,
+        "kind": kind,
+        "missing": missing,
+        "standard_inputs": standard_inputs,
+    }
+
+
+def collect_function_signatures(files: dict[str, str]) -> dict[str, FunctionSignature]:
+    signatures: dict[str, FunctionSignature] = {}
+    for filename, content in files.items():
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                signatures[node.name] = FunctionSignature(
+                    name=node.name,
+                    params=[arg.arg for arg in node.args.args],
+                    filename=filename,
+                    line=node.lineno,
+                )
+    return signatures
+
+
+def extract_bom_metadata(project_name: str, files: dict[str, str]) -> dict[str, Any]:
+    signatures = collect_function_signatures(files)
+    design = files.get("design.py", "")
+    tree = ast.parse(design)
+    calls = []
+    labels = []
+    scope: list[str] = []
+    seen_calls: set[tuple[int, int]] = set()
+
+    def visit(node: ast.AST):
+        if isinstance(node, ast.FunctionDef):
+            scope.append(node.name)
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+            scope.pop()
+            return
+
+        if isinstance(node, ast.Call):
+            key = (node.lineno, node.col_offset)
+            if key not in seen_calls:
+                seen_calls.add(key)
+                name = call_name(node.func)
+                short_name = name.rsplit(".", 1)[-1] if name else ""
+                signature = signatures.get(short_name)
+
+                parameters: dict[str, Any] = {}
+                if signature:
+                    for index, arg in enumerate(node.args):
+                        param = signature.params[index] if index < len(signature.params) else f"arg_{index}"
+                        parameters[param] = compact_expr(arg)
+                else:
+                    for index, arg in enumerate(node.args):
+                        parameters[f"arg_{index}"] = compact_expr(arg)
+                for keyword in node.keywords:
+                    if keyword.arg:
+                        parameters[keyword.arg] = compact_expr(keyword.value)
+
+                if name in {"bd.Compound", "Compound"}:
+                    label = parameters.get("label")
+                    if label and label.get("kind") == "literal":
+                        labels.append({
+                            "label": label.get("value"),
+                            "line": node.lineno,
+                            "scope": "::".join(scope) or "<module>",
+                        })
+
+                if short_name.startswith("make_"):
+                    readiness = bom_readiness(short_name, parameters)
+                    calls.append({
+                        "function": short_name,
+                        "scope": "::".join(scope) or "<module>",
+                        "line": node.lineno,
+                        "parameters": parameters,
+                        "standardInputs": readiness["standard_inputs"],
+                        "bomKind": readiness["kind"],
+                        "bomReadiness": readiness["level"],
+                        "bomMissingFields": readiness["missing"],
+                        "signatureSource": {
+                            "filename": signature.filename,
+                            "line": signature.line,
+                        } if signature else None,
+                    })
+
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return {
+        "projectName": project_name,
+        "source": "design.py",
+        "calls": calls,
+        "labels": labels,
+        "standardFields": sorted(STANDARD_BOM_FIELDS),
+    }
 
 def parse_tree(node):
     nodes = []
@@ -176,6 +394,23 @@ def get_features(ctx: AuthContext = Depends(get_auth_context), db: Session = Dep
             operations.extend(parse_tree(node))
             
         return {"project_name": project_name, "features": variables, "operations": operations}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/bom_metadata")
+def get_bom_metadata(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    active_design = get_active_design_code(db, ctx)
+    if active_design is None:
+        return JSONResponse(status_code=404, content={"error": "No active project found."})
+
+    project_name, _content = active_design
+    files = ProjectRepository(db, ctx.tenant_id).files_for_runtime(project_name)
+    if files is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    try:
+        return extract_bom_metadata(project_name, files)
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
