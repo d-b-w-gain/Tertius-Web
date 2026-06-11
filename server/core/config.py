@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     database_url: str = Field(default="postgresql+psycopg://tertius:tertius@localhost:5432/tertius")
     keycloak_issuer: str = Field(default="http://localhost:8080/realms/tertius")
     keycloak_audience: str = Field(default="tertius-web")
+    keycloak_authorized_party: str = Field(default="tertius-ui")
     keycloak_jwks_url_override: str | None = Field(default=None)
     artifact_root: str = Field(default="/tmp/tertius-artifacts")
     artifact_retention_limit: int = Field(default=10)

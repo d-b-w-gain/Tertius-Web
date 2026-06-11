@@ -19,6 +19,7 @@ data:
   ARTIFACT_ROOT: {{ .Values.app.config.artifactRoot | quote }}
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
+  KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}

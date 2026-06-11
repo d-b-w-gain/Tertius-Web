@@ -78,17 +78,36 @@ function createGuestStorage(): ProjectStorage {
 }
 
 function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Promise<string>): ProjectStorage {
+  const responseJson = async (response: Response) => {
+    try {
+      return await response.clone().json()
+    } catch {
+      return null
+    }
+  }
+
+  const responseErrorMessage = async (response: Response, fallback: string) => {
+    const data: unknown = await responseJson(response)
+    if (data && typeof data === 'object') {
+      const error = 'error' in data ? data.error : undefined
+      const detail = 'detail' in data ? data.detail : undefined
+      if (typeof error === 'string' && error.trim()) return error
+      if (typeof detail === 'string' && detail.trim()) return detail
+    }
+
+    if (!response.ok) {
+      return `${fallback} (${response.status} ${response.statusText || 'HTTP error'})`
+    }
+    return fallback
+  }
+
   const requireOk = async (response: Response, message: string) => {
     if (!response.ok) {
-      throw new Error(message)
+      throw new Error(await responseErrorMessage(response, message))
     }
-    const text = await response.clone().text()
-    if (!text) {
-      return
-    }
-    const data = JSON.parse(text)
-    if (data && data.success === false) {
-      throw new Error(data.error || message)
+    const data: unknown = await responseJson(response)
+    if (data && typeof data === 'object' && 'success' in data && data.success === false) {
+      throw new Error(await responseErrorMessage(response, message))
     }
   }
 

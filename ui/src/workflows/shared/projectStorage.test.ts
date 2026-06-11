@@ -46,7 +46,7 @@ describe('projectStorage', () => {
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects', getAccessToken)
   })
 
-  it('throws when authenticated writes fail', async () => {
+  it('throws server error messages when authenticated writes fail', async () => {
     mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'bad file' }), { status: 400 }))
     const storage = createProjectStorage({
       authMode: 'authenticated',
@@ -54,6 +54,21 @@ describe('projectStorage', () => {
       getAccessToken: vi.fn(),
     })
 
-    await expect(storage.saveCode('demo', 'bad.py', 'print("x")')).rejects.toThrow('Failed to save bad.py')
+    await expect(storage.saveCode('demo', 'bad.py', 'print("x")')).rejects.toThrow('bad file')
+  })
+
+  it('includes HTTP status when authenticated writes fail without JSON details', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(new Response('<h1>Server Error</h1>', {
+      status: 500,
+      statusText: 'Internal Server Error',
+      headers: { 'Content-Type': 'text/html' },
+    }))
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.createProject('demo')).rejects.toThrow('Failed to create project demo (500 Internal Server Error)')
   })
 })

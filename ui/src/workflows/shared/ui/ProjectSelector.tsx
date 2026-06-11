@@ -17,6 +17,8 @@ export const ProjectSelector: React.FC = () => {
   const [newProjectName, setNewProjectName] = useState('');
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
 
+  const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
+
   // Sync active project with backend (in case another tab changed it, though this is the primary selector)
   useEffect(() => {
     let isMounted = true;
@@ -86,7 +88,7 @@ export const ProjectSelector: React.FC = () => {
       await storage.activateProject(name);
       fetchGitStatus(name);
     } catch (e) {
-      alert("Network error selecting project");
+      alert(errorMessage(e, "Network error selecting project"));
     }
   };
 
@@ -100,7 +102,7 @@ export const ProjectSelector: React.FC = () => {
       setIsCreating(false);
       setNewProjectName('');
     } catch (e) {
-      alert("Network error creating project");
+      alert(errorMessage(e, "Network error creating project"));
     }
   };
 
