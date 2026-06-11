@@ -53,6 +53,63 @@ if ! printf '%s\n' "$rendered" | rg -q 'name: tertius-valkey'; then
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/name: nats'; then
+  echo "Local Helm render did not include NATS resources." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; then
+  echo "Local Helm render did not derive the expected release-local NATS_URL." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'jetstream'; then
+  echo "Local Helm render did not include JetStream configuration." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'claimName: .*js|storageClassName: local-path'; then
+  echo "Local Helm render did not include the expected NATS fileStore PVC configuration." >&2
+  exit 1
+fi
+
+if rg -q 'nats://tertius-nats:4222' "$LOCAL_VALUES"; then
+  echo "Local values must not hardcode the NATS service URL; release names vary in CI and local k3s." >&2
+  exit 1
+fi
+
+if [ ! -f "${CHART_DIR}/Chart.lock" ]; then
+  echo "Missing Helm Chart.lock; run helm dependency update infra/charts/tertius." >&2
+  exit 1
+fi
+
+missing_dependency_archive=0
+for archive in $(awk '
+  /^[[:space:]]*-[[:space:]]*name:/ {
+    name = $0
+    sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", name)
+    gsub(/"/, "", name)
+    gsub(/\047/, "", name)
+    next
+  }
+  name != "" && /^[[:space:]]*version:/ {
+    version = $0
+    sub(/^[[:space:]]*version:[[:space:]]*/, "", version)
+    gsub(/"/, "", version)
+    gsub(/\047/, "", version)
+    print name "-" version ".tgz"
+    name = ""
+  }
+' "${CHART_DIR}/Chart.lock"); do
+  if [ ! -f "${CHART_DIR}/charts/${archive}" ]; then
+    echo "Missing vendored Helm dependency archive: infra/charts/tertius/charts/${archive}" >&2
+    missing_dependency_archive=1
+  fi
+done
+if [ "$missing_dependency_archive" -ne 0 ]; then
+  exit 1
+fi
+
 if ! printf '%s\n' "$rendered" | rg -q 'requestedSize|storage: "1Gi"|storage: 1Gi'; then
   echo "Local Helm render did not include the expected Valkey 1Gi storage request." >&2
   exit 1
@@ -82,6 +139,11 @@ fi
 
 if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:master-[0-9]+-[a-f0-9]{7}"'; then
   echo "Production Helm defaults do not render the expected GHCR UI image." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$production_rendered" | rg -q 'NodePort|LoadBalancer|Ingress|cloudflare|cloudflared'; then
+  echo "Production Helm defaults must keep NATS internal-only and avoid public NATS routing." >&2
   exit 1
 fi
 

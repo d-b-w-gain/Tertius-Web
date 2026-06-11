@@ -3,6 +3,7 @@ app:
   config:
     keycloakAudience: tertius-web
     keycloakIssuerUrl: ""
+    natsUrl: ""
     oidcIssuerUrl: http://localhost:8081/realms/tertius
   secret:
     create: true
@@ -77,3 +78,19 @@ valkey:
     limits:
       cpu: 250m
       memory: 256Mi
+
+nats:
+  config:
+    jetstream:
+      fileStore:
+        pvc:
+          size: 1Gi
+          storageClassName: local-path
+  container:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi

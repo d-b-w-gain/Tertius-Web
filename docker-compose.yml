@@ -6,6 +6,8 @@ services:
     volumes:
       - ./server:/app/server
       - ./artifacts:/tmp/tertius-artifacts
+    environment:
+      NATS_URL: nats://nats:4222
 
   frontend:
     image: node:20
@@ -43,6 +45,20 @@ services:
     volumes:
       - ./infra/keycloak/tertius-realm.json:/opt/keycloak/data/import/tertius-realm.json:ro
 
+  nats:
+    image: nats:2
+    command:
+      - -js
+      - -sd
+      - /data
+      - -m
+      - "8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - tertius-nats:/data
+
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
   #   image: cloudflare/cloudflared:latest
@@ -52,3 +68,4 @@ services:
 
 volumes:
   tertius-postgres:
+  tertius-nats:

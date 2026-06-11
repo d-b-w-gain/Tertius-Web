@@ -1,6 +1,6 @@
 # Tertius Helm Chart
 
-This chart renders the Tertius API and UI plus the Kubernetes resources needed for future Postgres, Valkey, Keycloak, and Cloudflare Tunnel integration.
+This chart renders the Tertius API and UI plus the Kubernetes resources needed for Postgres, Valkey, Keycloak, NATS JetStream, and Cloudflare Tunnel integration.
 
 ## Prerequisites
 
@@ -8,7 +8,7 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 - Helm 3.
 - CloudNativePG operator with `clusters.postgresql.cnpg.io` installed.
 - Keycloak Operator with `keycloaks.k8s.keycloak.org` installed.
-- Valkey Helm dependency resolved with `helm dependency update infra/charts/tertius`.
+- Valkey and NATS Helm dependencies resolved with `helm dependency update infra/charts/tertius`.
 - API and UI images already available to the cluster.
 
 ## Local k3s Flow
@@ -24,6 +24,8 @@ helm upgrade --install tertius infra/charts/tertius \
 ```
 
 For local image testing, build images as `tertius-api:local` and `tertius-ui:local`, then make them available to k3s through a local registry or `k3s ctr images import`. The local values use `IfNotPresent` so k3s can use locally loaded images.
+
+Do not run local smoke upgrades against a Flux-managed release unless that is intentional. Use an isolated namespace and release such as `NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke` when the cluster already manages `tertius/tertius` through GitOps.
 
 Port-forward smoke tests:
 
@@ -41,9 +43,15 @@ curl http://127.0.0.1:8000/
 curl http://127.0.0.1:8000/api/intus/health
 ```
 
+The chart enables NATS JetStream with file-backed PVC storage by default. The API receives `NATS_URL` through the chart ConfigMap. When `app.config.natsUrl` is empty, the value is derived from the release-local NATS service, for example `nats://tertius-nats:4222` for release `tertius`. Set `app.config.natsUrl` only for unusual deployments with a different internal service contract.
+
+NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod. NATS authentication is intentionally deferred for this stack-only change; define the exact Secret, chart values, and API env contract before the first producer or consumer workflow goes live.
+
+If future NetworkPolicy egress hardening is added, API egress must account for NATS `4222`, Postgres, Valkey, Keycloak, DNS, and any required external services together. This chart currently keeps its NetworkPolicy behavior ingress-only.
+
 ## Secrets
 
-Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.
+Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, NATS credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.
 
 List the Keycloak-related Secrets in the Tertius namespace:
 
@@ -106,4 +114,4 @@ With this in place the browser can keep one origin and still reach authenticatio
 
 ## Notes
 
-This chart provisions future-facing infrastructure and environment variables. The application does not yet consume Postgres, Valkey, or Keycloak for runtime behavior.
+This chart provisions future-facing infrastructure and environment variables. NATS is available as a platform capability, but application-level streams, publishers, consumers, and authentication are deferred until a workflow needs them.

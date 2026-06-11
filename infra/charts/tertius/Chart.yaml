@@ -9,3 +9,7 @@ dependencies:
     version: 0.9.4
     repository: https://valkey.io/valkey-helm/
     condition: valkey.enabled
+  - name: nats
+    version: 2.14.2
+    repository: https://nats-io.github.io/k8s/helm/charts/
+    condition: nats.enabled

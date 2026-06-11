@@ -2,5 +2,8 @@ dependencies:
 - name: valkey
   repository: https://valkey.io/valkey-helm/
   version: 0.9.4
-digest: sha256:02d171e6b43fc1a26390ea72c0ace962f93d0f85473bbec32837b1c18a88160c
-generated: "2026-06-07T15:39:17.363667+10:00"
+- name: nats
+  repository: https://nats-io.github.io/k8s/helm/charts/
+  version: 2.14.2
+digest: sha256:c268ff29497686660cb8d67317ee93acf0180402fb8c209f81c508efb8ef0f86
+generated: "2026-06-12T07:32:57.614181138+10:00"

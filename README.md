@@ -53,12 +53,12 @@ Tertius currently bundles four specialized, highly decoupled workflows:
 - **Docker** (for hosting the CAD backend cleanly)
 - **Node.js 20+** (for frontend development)
 
-### 1. Launching Postgres and Keycloak
+### 1. Launching Postgres, Keycloak, and NATS
 
-Local development uses Postgres for app data and Keycloak for login. Start both services from the repository root:
+Local development uses Postgres for app data, Keycloak for login, and NATS JetStream for future asynchronous workflow handoff. Start the stack dependencies from the repository root:
 
 ```bash
-docker compose up -d postgres keycloak
+docker compose up -d postgres keycloak nats
 ```
 
 Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-web`, and the demo login is:
@@ -82,10 +82,12 @@ The important server values are:
 DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
 KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
 KEYCLOAK_AUDIENCE=tertius-web
+NATS_URL=nats://localhost:4222
 ALLOWED_ORIGINS=http://localhost:5173
 ```
 
 Generated workflow artifacts are stored in Postgres; run Alembic migrations before compiling or serving artifacts.
+NATS monitoring is available locally at `http://localhost:8222`. The current application only receives `NATS_URL`; producers, consumers, stream definitions, and NATS authentication are intentionally deferred until a concrete workflow depends on them.
 
 For the frontend, copy `ui/.env.example` or set:
 
@@ -143,7 +145,7 @@ The integration tests use testcontainers and require Docker socket access.
 
 ## Kubernetes Deployment Test
 
-The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks.
+The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies when vendored archives are incomplete, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, NATS, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks including a JetStream health check.
 
 ```bash
 scripts/test-k3s-deployment.sh
@@ -156,6 +158,12 @@ ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-d
 ```
 
 Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, and `KEYCLOAK_REALM`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving database and cache PVCs plus CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed. The API no longer owns an artifact PVC.
+
+If the cluster is already running a Flux-managed `tertius` release, run local smoke tests against an isolated release so Flux does not reconcile the test deployment mid-run:
+
+```bash
+NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke scripts/test-k3s-deployment.sh
+```
 
 ## License
 MIT License.
