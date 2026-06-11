@@ -16,6 +16,21 @@ def test_settings_parse_allowed_origins():
     assert settings.allowed_origin_list == ["http://localhost:5173", "https://app.example.com"]
 
 
+def test_settings_builds_database_url_from_chart_database_env():
+    settings = Settings(
+        database_url="",
+        app_db_host="tertius-postgres-rw",
+        app_db_name="tertius",
+        app_db_owner="tertius",
+        app_db_password="secret with spaces",
+        keycloak_issuer="http://localhost:8080/realms/tertius",
+        keycloak_audience="tertius-web",
+        artifact_root="/tmp/tertius-artifacts",
+    )
+
+    assert settings.database_url == "postgresql+psycopg://tertius:secret+with+spaces@tertius-postgres-rw:5432/tertius"
+
+
 def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
     env_dir = tmp_path / "server"
     env_dir.mkdir()

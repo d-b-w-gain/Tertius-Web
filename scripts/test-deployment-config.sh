@@ -38,6 +38,16 @@ if ! printf '%s\n' "$rendered" | rg -q 'ARTIFACT_ROOT: "/app/cache/tertius/artif
   exit 1
 fi
 
+if rg -q 'tertius-postgres-rw' "$LOCAL_VALUES"; then
+  echo "Local values must not hardcode the app database service name; release names vary in CI and local k3s." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'APP_DB_HOST: "tertius-postgres-rw"'; then
+  echo "Local Helm render must derive APP_DB_HOST from the release name." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$rendered" | rg -q 'name: tertius-valkey'; then
   echo "Local Helm render did not include the Valkey data PVC." >&2
   exit 1

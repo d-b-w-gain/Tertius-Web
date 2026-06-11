@@ -6,7 +6,7 @@ app:
     oidcIssuerUrl: http://localhost:8081/realms/tertius
   secret:
     create: true
-    databaseUrl: postgresql+psycopg://tertius:tertius-local-password@tertius-postgres-rw:5432/tertius
+    databaseUrl: ""
     valkeyUrl: redis://tertius-valkey:6379/0
 
 api:

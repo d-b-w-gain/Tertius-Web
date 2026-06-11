@@ -701,8 +701,13 @@ postgres_check_for_cluster() {
     exit 1
   }
 
+  sql="select 1"
+  if [ "$dbname" = "tertius" ]; then
+    sql="select count(*) from projects"
+  fi
+
   pod_name="${RELEASE_NAME}-pg-check-$(date +%s)"
-  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$image_name" --env="PGPASSWORD=${password}" --command -- psql -h "${cluster}-rw" -U "$username" -d "$dbname" -c "select 1"
+  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$image_name" --env="PGPASSWORD=${password}" --command -- psql -h "${cluster}-rw" -U "$username" -d "$dbname" -c "$sql"
 }
 
 check_postgres() {
