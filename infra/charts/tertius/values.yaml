@@ -27,7 +27,7 @@ api:
   replicaCount: 2
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-27-294686f # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-28-6b604ab # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -54,7 +54,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-26-d442fe3 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    tag: master-27-294686f # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:
