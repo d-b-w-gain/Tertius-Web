@@ -193,6 +193,16 @@ def readiness_for(function_name: str, params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def should_record_bom_call(function_name: str, params: dict[str, Any], signature: FunctionSignature | None) -> bool:
+    if function_name.startswith("make_"):
+        return True
+    if infer_kind(function_name) != "component":
+        return True
+    if signature and set(params) & STANDARD_FIELDS:
+        return True
+    return False
+
+
 class DesignProbe(ast.NodeVisitor):
     def __init__(self, path: Path, signatures: dict[str, FunctionSignature]) -> None:
         self.path = path
@@ -272,7 +282,7 @@ class DesignProbe(ast.NodeVisitor):
                 }
             )
 
-        if not short_name.startswith("make_"):
+        if not should_record_bom_call(short_name, params, signature):
             return
 
         readiness = readiness_for(short_name, params)

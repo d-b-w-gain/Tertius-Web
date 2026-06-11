@@ -200,6 +200,18 @@ def bom_readiness(function_name: str, parameters: dict[str, Any]) -> dict[str, A
     }
 
 
+def should_record_bom_call(function_name: str, parameters: dict[str, Any], signature: FunctionSignature | None) -> bool:
+    if function_name.startswith("make_"):
+        return True
+    if infer_bom_kind(function_name) != "component":
+        return True
+    if signature and set(parameters) & STANDARD_BOM_FIELDS:
+        return True
+    if standardize_bom_inputs(parameters):
+        return True
+    return False
+
+
 def collect_function_signatures(files: dict[str, str]) -> dict[str, FunctionSignature]:
     signatures: dict[str, FunctionSignature] = {}
     for filename, content in files.items():
@@ -301,7 +313,7 @@ def extract_bom_metadata(project_name: str, files: dict[str, str]) -> dict[str, 
                                 "scope": "::".join(scope) or "<module>",
                             })
 
-                    if short_name.startswith("make_"):
+                    if should_record_bom_call(short_name, parameters, signature):
                         readiness = bom_readiness(short_name, parameters)
                         calls.append({
                             "function": short_name,
