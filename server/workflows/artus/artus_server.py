@@ -218,76 +218,116 @@ def collect_function_signatures(files: dict[str, str]) -> dict[str, FunctionSign
     return signatures
 
 
-def extract_bom_metadata(project_name: str, files: dict[str, str]) -> dict[str, Any]:
-    signatures = collect_function_signatures(files)
-    design = files.get("design.py", "")
-    tree = ast.parse(design)
-    calls = []
-    labels = []
-    scope: list[str] = []
-    seen_calls: set[tuple[int, int]] = set()
+def collect_local_import_closure(files: dict[str, str], entrypoint: str = "design.py") -> list[str]:
+    visited: set[str] = set()
+    ordered: list[str] = []
 
-    def visit(node: ast.AST):
-        if isinstance(node, ast.FunctionDef):
-            scope.append(node.name)
-            for child in ast.iter_child_nodes(node):
-                visit(child)
-            scope.pop()
+    def visit_file(filename: str) -> None:
+        if filename in visited or filename not in files:
+            return
+        visited.add(filename)
+        ordered.append(filename)
+        try:
+            tree = ast.parse(files[filename])
+        except SyntaxError:
             return
 
-        if isinstance(node, ast.Call):
-            key = (node.lineno, node.col_offset)
-            if key not in seen_calls:
-                seen_calls.add(key)
-                name = call_name(node.func)
-                short_name = name.rsplit(".", 1)[-1] if name else ""
-                signature = signatures.get(short_name)
+        for node in ast.walk(tree):
+            module_names: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                module_names.append(node.module.split(".", 1)[0])
+            elif isinstance(node, ast.Import):
+                module_names.extend(alias.name.split(".", 1)[0] for alias in node.names)
 
-                parameters: dict[str, Any] = {}
-                if signature:
-                    for index, arg in enumerate(node.args):
-                        param = signature.params[index] if index < len(signature.params) else f"arg_{index}"
-                        parameters[param] = compact_expr(arg)
-                else:
-                    for index, arg in enumerate(node.args):
-                        parameters[f"arg_{index}"] = compact_expr(arg)
-                for keyword in node.keywords:
-                    if keyword.arg:
-                        parameters[keyword.arg] = compact_expr(keyword.value)
+            for module_name in module_names:
+                candidate = f"{module_name}.py"
+                if candidate in files:
+                    visit_file(candidate)
 
-                if name in {"bd.Compound", "Compound"}:
-                    label = parameters.get("label")
-                    if label and label.get("kind") == "literal":
-                        labels.append({
-                            "label": label.get("value"),
-                            "line": node.lineno,
+    visit_file(entrypoint)
+    return ordered
+
+
+def extract_bom_metadata(project_name: str, files: dict[str, str]) -> dict[str, Any]:
+    signatures = collect_function_signatures(files)
+    calls = []
+    labels = []
+    source_files = collect_local_import_closure(files)
+
+    for source_file in source_files:
+        try:
+            tree = ast.parse(files.get(source_file, ""))
+        except SyntaxError:
+            continue
+
+        scope: list[str] = []
+        seen_calls: set[tuple[str, int, int]] = set()
+
+        def visit(node: ast.AST):
+            if isinstance(node, ast.FunctionDef):
+                scope.append(node.name)
+                for child in ast.iter_child_nodes(node):
+                    visit(child)
+                scope.pop()
+                return
+
+            if isinstance(node, ast.Call):
+                key = (source_file, node.lineno, node.col_offset)
+                if key not in seen_calls:
+                    seen_calls.add(key)
+                    name = call_name(node.func)
+                    short_name = name.rsplit(".", 1)[-1] if name else ""
+                    signature = signatures.get(short_name)
+
+                    parameters: dict[str, Any] = {}
+                    if signature:
+                        for index, arg in enumerate(node.args):
+                            param = signature.params[index] if index < len(signature.params) else f"arg_{index}"
+                            parameters[param] = compact_expr(arg)
+                    else:
+                        for index, arg in enumerate(node.args):
+                            parameters[f"arg_{index}"] = compact_expr(arg)
+                    for keyword in node.keywords:
+                        if keyword.arg:
+                            parameters[keyword.arg] = compact_expr(keyword.value)
+
+                    if name in {"bd.Compound", "Compound"}:
+                        label = parameters.get("label")
+                        if label and label.get("kind") == "literal":
+                            labels.append({
+                                "label": label.get("value"),
+                                "sourceFile": source_file,
+                                "line": node.lineno,
+                                "scope": "::".join(scope) or "<module>",
+                            })
+
+                    if short_name.startswith("make_"):
+                        readiness = bom_readiness(short_name, parameters)
+                        calls.append({
+                            "function": short_name,
+                            "sourceFile": source_file,
                             "scope": "::".join(scope) or "<module>",
+                            "line": node.lineno,
+                            "parameters": parameters,
+                            "standardInputs": readiness["standard_inputs"],
+                            "bomKind": readiness["kind"],
+                            "bomReadiness": readiness["level"],
+                            "bomMissingFields": readiness["missing"],
+                            "signatureSource": {
+                                "filename": signature.filename,
+                                "line": signature.line,
+                            } if signature else None,
                         })
 
-                if short_name.startswith("make_"):
-                    readiness = bom_readiness(short_name, parameters)
-                    calls.append({
-                        "function": short_name,
-                        "scope": "::".join(scope) or "<module>",
-                        "line": node.lineno,
-                        "parameters": parameters,
-                        "standardInputs": readiness["standard_inputs"],
-                        "bomKind": readiness["kind"],
-                        "bomReadiness": readiness["level"],
-                        "bomMissingFields": readiness["missing"],
-                        "signatureSource": {
-                            "filename": signature.filename,
-                            "line": signature.line,
-                        } if signature else None,
-                    })
+            for child in ast.iter_child_nodes(node):
+                visit(child)
 
-        for child in ast.iter_child_nodes(node):
-            visit(child)
+        visit(tree)
 
-    visit(tree)
     return {
         "projectName": project_name,
         "source": "design.py",
+        "sourceFiles": source_files,
         "calls": calls,
         "labels": labels,
         "standardFields": sorted(STANDARD_BOM_FIELDS),

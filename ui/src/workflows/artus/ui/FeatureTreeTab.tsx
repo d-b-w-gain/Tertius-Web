@@ -89,6 +89,7 @@ interface AssemblyCandidateNode {
   bomCandidateSuggested: boolean;
   bomCandidateReason: string;
   sourceFunction: string;
+  sourceFile: string;
   sourceScope: string;
   sourceLine: number | null;
   sourceConfidence: 'exact' | 'inferred' | 'unknown';
@@ -119,6 +120,7 @@ interface AssemblyCandidateExport {
 
 interface BomSourceCall {
   function: string;
+  sourceFile: string;
   scope: string;
   line: number;
   parameters: Record<string, unknown>;
@@ -131,6 +133,7 @@ interface BomSourceCall {
 interface BomMetadata {
   projectName: string;
   source: string;
+  sourceFiles?: string[];
   calls: BomSourceCall[];
   labels: Array<{ label: string; line: number; scope: string }>;
   standardFields: string[];
@@ -337,6 +340,7 @@ const collectAssemblyCandidates = (roots: THREE.Object3D[], bomMetadata?: BomMet
         bomCandidateSuggested: candidate.suggested,
         bomCandidateReason: candidate.reason,
         sourceFunction: sourceCall?.function || '',
+        sourceFile: sourceCall?.sourceFile || '',
         sourceScope: sourceCall?.scope || '',
         sourceLine: sourceCall?.line ?? null,
         sourceConfidence: sourceMatch.confidence,
@@ -411,6 +415,7 @@ const encodeAssemblyCandidateCsv = (payload: AssemblyCandidateExport) => {
     'bomCandidateSuggested',
     'bomCandidateReason',
     'sourceFunction',
+    'sourceFile',
     'sourceScope',
     'sourceLine',
     'sourceConfidence',
@@ -448,6 +453,7 @@ const encodeAssemblyCandidateCsv = (payload: AssemblyCandidateExport) => {
     node.bomCandidateSuggested,
     node.bomCandidateReason,
     node.sourceFunction,
+    node.sourceFile,
     node.sourceScope,
     node.sourceLine ?? '',
     node.sourceConfidence,

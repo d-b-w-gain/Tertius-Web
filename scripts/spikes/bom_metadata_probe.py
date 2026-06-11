@@ -95,6 +95,37 @@ def collect_signatures(project_dir: Path) -> dict[str, FunctionSignature]:
     return signatures
 
 
+def collect_local_import_closure(project_dir: Path, entrypoint: str = "design.py") -> list[Path]:
+    visited: set[str] = set()
+    ordered: list[Path] = []
+
+    def visit_file(filename: str) -> None:
+        path = project_dir / filename
+        if filename in visited or not path.exists():
+            return
+        visited.add(filename)
+        ordered.append(path)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            return
+
+        for node in ast.walk(tree):
+            module_names: list[str] = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                module_names.append(node.module.split(".", 1)[0])
+            elif isinstance(node, ast.Import):
+                module_names.extend(alias.name.split(".", 1)[0] for alias in node.names)
+
+            for module_name in module_names:
+                candidate = f"{module_name}.py"
+                if (project_dir / candidate).exists():
+                    visit_file(candidate)
+
+    visit_file(entrypoint)
+    return ordered
+
+
 def call_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -248,6 +279,7 @@ class DesignProbe(ast.NodeVisitor):
         self.calls.append(
             {
                 "function": short_name,
+                "sourceFile": self.path.name,
                 "line": node.lineno,
                 "scope": "::".join(self.scope) or "<module>",
                 "targets": targets,
@@ -266,24 +298,32 @@ class DesignProbe(ast.NodeVisitor):
 def probe_design(path: Path) -> dict[str, Any]:
     project_dir = path.parent
     signatures = collect_signatures(project_dir)
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    probe = DesignProbe(path, signatures)
-    probe.visit(tree)
+    source_files = collect_local_import_closure(project_dir, path.name)
+    calls: list[dict[str, Any]] = []
+    labels: list[dict[str, Any]] = []
+
+    for source_file in source_files:
+        tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+        probe = DesignProbe(source_file, signatures)
+        probe.visit(tree)
+        calls.extend(probe.calls)
+        labels.extend(probe.labels)
 
     summary: dict[str, int] = {}
-    for call in probe.calls:
+    for call in calls:
         level = call["bom_readiness"]["level"]
         summary[level] = summary.get(level, 0) + 1
 
     return {
         "schemaVersion": 1,
         "source": str(path),
-        "functionCallCount": len(probe.calls),
-        "labelCount": len(probe.labels),
+        "sourceFiles": [str(source_file) for source_file in source_files],
+        "functionCallCount": len(calls),
+        "labelCount": len(labels),
         "readinessSummary": summary,
         "standardFields": sorted(STANDARD_FIELDS),
-        "calls": probe.calls,
-        "labels": probe.labels,
+        "calls": calls,
+        "labels": labels,
     }
 
 
@@ -299,6 +339,9 @@ def main() -> int:
         return 0
 
     print(f"Source: {result['source']}")
+    print("Source files:")
+    for source_file in result["sourceFiles"]:
+        print(f"  {source_file}")
     print(f"Function calls: {result['functionCallCount']}")
     print(f"Labels: {result['labelCount']}")
     print(f"Readiness: {result['readinessSummary']}")
@@ -310,7 +353,7 @@ def main() -> int:
         missing = ", ".join(readiness["missing_for_bom"]) or "-"
         print(
             f"{readiness['level'].upper():7} line {call['line']:>3} "
-            f"{call['scope']} -> {targets}: {call['function']}({params}) "
+            f"{call['sourceFile']}::{call['scope']} -> {targets}: {call['function']}({params}) "
             f"kind={readiness['kind']} missing={missing}"
         )
     return 0
