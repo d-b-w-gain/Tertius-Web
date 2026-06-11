@@ -1,14 +1,72 @@
+let transientFailureCount = 0
+let readonlyBackoffUntil = 0
+
+function isReadonlyRequest(init: RequestInit) {
+  const method = (init.method || 'GET').toUpperCase()
+  return method === 'GET' || method === 'HEAD'
+}
+
+function isTransientServerFailure(status: number) {
+  return status === 500 || status === 502 || status === 503 || status === 504
+}
+
+function recordTransientFailure() {
+  transientFailureCount = Math.min(transientFailureCount + 1, 6)
+  const delay = Math.min(30_000, 1_000 * 2 ** (transientFailureCount - 1))
+  readonlyBackoffUntil = Date.now() + delay
+}
+
+function recordSuccess() {
+  transientFailureCount = 0
+  readonlyBackoffUntil = 0
+}
+
+function backoffResponse() {
+  const retryAfterSeconds = Math.max(1, Math.ceil((readonlyBackoffUntil - Date.now()) / 1000))
+  return new Response(JSON.stringify({
+    error: 'Backend is recovering; polling paused briefly.',
+    retryAfterSeconds,
+  }), {
+    status: 503,
+    statusText: 'Service Unavailable',
+    headers: {
+      'Content-Type': 'application/json',
+      'Retry-After': String(retryAfterSeconds),
+    },
+  })
+}
+
 export async function apiFetch(
   url: string,
   getAccessToken: () => Promise<string>,
   init: RequestInit = {},
 ) {
+  const readonly = isReadonlyRequest(init)
+  if (readonly && Date.now() < readonlyBackoffUntil) {
+    return backoffResponse()
+  }
+
   const headers = new Headers(init.headers)
   headers.set('Authorization', `Bearer ${await getAccessToken()}`)
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(url, { ...init, headers })
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, headers })
+  } catch (error) {
+    if (readonly) {
+      recordTransientFailure()
+    }
+    throw error
+  }
+
+  if (readonly && isTransientServerFailure(response.status)) {
+    recordTransientFailure()
+  } else if (response.ok) {
+    recordSuccess()
+  }
+
   return response
 }
