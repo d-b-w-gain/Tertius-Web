@@ -43,11 +43,11 @@ describe('guestImport', () => {
     expect(result.activeProject).toBe('demo-guest-20260610-1130-2')
     expect(result.activeFile).toBe('helper.py')
     expect(mocks.apiFetch.mock.calls.map((call) => call[0])).toEqual([
-      'http://localhost:8000/api/intus/projects',
-      'http://localhost:8000/api/intus/projects/demo-guest-20260610-1130-2/new',
-      'http://localhost:8000/api/intus/projects/demo-guest-20260610-1130-2/save',
-      'http://localhost:8000/api/intus/projects/demo-guest-20260610-1130-2/save',
-      'http://localhost:8000/api/intus/projects/demo-guest-20260610-1130-2/activate',
+      '/api/intus/projects',
+      '/api/intus/projects/demo-guest-20260610-1130-2/new',
+      '/api/intus/projects/demo-guest-20260610-1130-2/save',
+      '/api/intus/projects/demo-guest-20260610-1130-2/save',
+      '/api/intus/projects/demo-guest-20260610-1130-2/activate',
     ])
     expect(mocks.apiFetch.mock.calls.some((call) => String(call[0]).includes('/proxy'))).toBe(false)
     expect(mocks.apiFetch.mock.calls[2][2]).toMatchObject({
