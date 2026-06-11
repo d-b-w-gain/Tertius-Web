@@ -136,6 +136,77 @@ Use the local harness to test the Helm chart against an already-running k3s-comp
 scripts/test-k3s-deployment.sh
 ```
 
+### Windows Docker k3s Debug Environment
+
+Use this when you want production-shaped debugging on a Windows machine without replacing the normal Docker Compose dev stack. Compose is still the fastest path for application development; local k3s is for deployment, resource, probe, PVC, service-routing, and operator issues.
+
+Prerequisites on Windows:
+
+- Docker Desktop with Linux containers enabled.
+- `kubectl` on PATH.
+- `helm` on PATH.
+- Git Bash or WSL for running `scripts/test-k3s-deployment.sh`.
+
+Start a single-node k3s cluster in Docker and install the operators required by the chart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -InstallOperators
+```
+
+The script creates a Docker container named `tertius-k3s`, writes `.kube/tertius-k3s.yaml`, and prints the `KUBECONFIG` and `K3S_CONTAINER` values needed by the Bash harness. The k3s image tag is pinned; override it with `-K3sVersion` when intentionally testing another Kubernetes version.
+
+Run the Helm deployment harness from Git Bash or WSL:
+
+```bash
+export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
+export K3S_CONTAINER=tertius-k3s
+scripts/test-k3s-deployment.sh
+```
+
+Open the local UI after the harness starts port-forwards:
+
+```text
+http://localhost:18080
+```
+
+Useful debug commands:
+
+```bash
+kubectl -n tertius get pods -o wide
+kubectl -n tertius get events --sort-by='.lastTimestamp'
+kubectl -n tertius top pods
+kubectl -n tertius describe pod -l app.kubernetes.io/component=api
+kubectl -n tertius logs deploy/tertius-api --tail=200
+kubectl -n tertius get clusters.postgresql.cnpg.io
+kubectl -n tertius get keycloaks.k8s.keycloak.org
+```
+
+Reset the local k3s container when you want a clean cluster:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -Reset -InstallOperators
+```
+
+Clean up the Tertius release but keep persistent data:
+
+```bash
+export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
+export K3S_CONTAINER=tertius-k3s
+scripts/test-k3s-deployment.sh --cleanup
+```
+
+Delete the local release, database clusters, and PVC data:
+
+```bash
+scripts/test-k3s-deployment.sh --cleanup --delete-data
+```
+
+If `helm` is missing on Windows, install it before using `-InstallOperators` or running the harness. For example:
+
+```powershell
+winget install Helm.Helm
+```
+
 Tunnel-enabled local run:
 
 ```bash
