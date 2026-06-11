@@ -11,7 +11,6 @@ app:
   environment: production
   config:
     apiBasePath: /api
-    artifactRoot: /app/cache/tertius/artifacts
     keycloakAudience: tertius-web
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
@@ -34,12 +33,6 @@ api:
   service:
     type: ClusterIP
     port: 8000
-  persistence:
-    enabled: true
-    accessModes:
-      - ReadWriteOnce
-    size: 2Gi
-    storageClassName: local-path
   resources:
     requests:
       cpu: 500m

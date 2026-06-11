@@ -52,9 +52,6 @@ spec:
                   name: {{ .Values.postgres.appUserSecretName | quote }}
                   key: username
                   optional: true
-          volumeMounts:
-            - name: api-cache
-              mountPath: /app/cache/tertius
           startupProbe:
             httpGet:
               path: /
@@ -75,14 +72,6 @@ spec:
             periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      volumes:
-        - name: api-cache
-          {{- if .Values.api.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ include "tertius.apiName" . }}-cache
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
 ---
 apiVersion: v1
 kind: Service

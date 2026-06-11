@@ -3,6 +3,9 @@ from dataclasses import dataclass
 import os
 from uuid import uuid4
 
+os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
+os.environ.setdefault("DOCKER_CLIENT_TIMEOUT", "300")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -20,16 +23,17 @@ from workflows.intus.intus_server import app as intus_app
 from workflows.timus.timus_server import app as timus_app
 
 
-os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
-
-
 def postgres_test_image() -> str:
-    return os.environ.get("POSTGRES_TEST_IMAGE", "postgres:16")
+    return os.environ.get("POSTGRES_TEST_IMAGE", "postgres:18")
+
+
+def docker_client_timeout() -> int:
+    return int(os.environ.get("DOCKER_CLIENT_TIMEOUT", "300"))
 
 
 @pytest.fixture(scope="session")
 def postgres_url() -> Generator[str, None, None]:
-    with PostgresContainer(postgres_test_image()) as postgres:
+    with PostgresContainer(postgres_test_image(), docker_client_kw={"timeout": docker_client_timeout()}) as postgres:
         host = postgres.get_container_host_ip()
         port = postgres.get_exposed_port(5432)
         username = postgres.username

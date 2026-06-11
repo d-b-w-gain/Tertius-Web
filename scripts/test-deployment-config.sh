@@ -33,8 +33,8 @@ if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'ARTIFACT_ROOT: "/app/cache/tertius/artifacts"'; then
-  echo "Local Helm render must set ARTIFACT_ROOT to the API PVC-backed artifact path." >&2
+if printf '%s\n' "$rendered" | rg -q 'name: tertius-api-cache|claimName: tertius-api-cache|mountPath: /app/cache/tertius|ARTIFACT_ROOT'; then
+  echo "Local Helm render must not include the API artifact PVC, API cache mount, or ARTIFACT_ROOT." >&2
   exit 1
 fi
 

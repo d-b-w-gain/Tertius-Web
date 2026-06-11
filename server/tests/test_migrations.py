@@ -33,6 +33,12 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "projects" in table_names
     assert "project_files" in table_names
     assert "artifacts" in table_names
+    artifact_columns = {
+        column["name"]: column for column in inspector.get_columns("artifacts")
+    }
+    assert "content" in artifact_columns
+    assert str(artifact_columns["content"]["type"]).lower() in {"bytea", "blob", "largebinary"}
+    assert artifact_columns["content"]["nullable"] is True
 
 
 def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):

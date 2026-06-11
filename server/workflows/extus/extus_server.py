@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from core.artifacts import ArtifactStore
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.config import get_settings
 from core.db import get_db
 from core.models import Artifact, Project, UserWorkspaceState
 
@@ -58,12 +56,6 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
     )
 
 
-def get_artifact_path(artifact: Artifact):
-    try:
-        return ArtifactStore(get_settings().artifact_root).path_for(artifact.storage_key)
-    except ValueError:
-        return None
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -90,22 +82,16 @@ def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session =
 @app.get("/status")
 def get_status(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     artifact = get_latest_model_artifact(db, ctx)
-    if artifact is None:
+    if artifact is None or artifact.content is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    path = get_artifact_path(artifact)
-    if path is None or not path.exists():
-        return JSONResponse(status_code=404, content={"error": "File not found"})
-    return {"mtime": path.stat().st_mtime}
+    return {"mtime": artifact.created_at.timestamp()}
 
 @app.get("/model")
 def get_model(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     artifact = get_latest_model_artifact(db, ctx)
-    if artifact is None:
+    if artifact is None or artifact.content is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    path = get_artifact_path(artifact)
-    if path is None or not path.exists():
-        return JSONResponse(status_code=404, content={"error": "File not found"})
-    return FileResponse(path, media_type=artifact.content_type)
+    return Response(content=artifact.content, media_type=artifact.content_type)
 
 if __name__ == "__main__":
     import uvicorn

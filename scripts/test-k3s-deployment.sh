@@ -643,7 +643,7 @@ curl_expect_same_body() {
   fi
 }
 
-check_pvc_bound_and_mounted() {
+check_release_pvcs_bound() {
   pvc_names=$(capture kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' || true)
   [ -n "$pvc_names" ] || {
     echo "No PVCs found for release ${RELEASE_NAME}." >&2
@@ -654,11 +654,14 @@ check_pvc_bound_and_mounted() {
     echo "At least one PVC is not Bound." >&2
     exit 1
   fi
+}
 
+check_api_has_no_pvc_mount() {
   api_pod=$(find_pod api)
   api_claims=$(capture kubectl get pod "$api_pod" -n "$NAMESPACE" -o jsonpath='{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{"\n"}{end}' || true)
-  if ! printf '%s\n' "$api_claims" | grep -q .; then
-    echo "API pod ${api_pod} does not mount a PVC." >&2
+  if printf '%s\n' "$api_claims" | grep -q .; then
+    echo "API pod ${api_pod} still mounts PVCs:" >&2
+    printf '%s\n' "$api_claims" >&2
     exit 1
   fi
 }
@@ -800,7 +803,8 @@ check_tunnel() {
 
 run_smoke_tests() {
   smoke_test_http
-  check_pvc_bound_and_mounted
+  check_release_pvcs_bound
+  check_api_has_no_pvc_mount
   check_postgres
   check_valkey
   check_keycloak

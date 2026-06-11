@@ -3,7 +3,6 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from core.artifacts import ArtifactStore
 from core.models import (
     Artifact,
     AppUser,
@@ -128,12 +127,7 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
-    monkeypatch,
-    tmp_path,
 ):
-    artifact_root = tmp_path / "artifacts"
-    store = ArtifactStore(artifact_root)
-
     other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
     other_tenant = Tenant(id=uuid4(), name="Other Tenant")
     db_session.add_all([other_user, other_tenant])
@@ -143,9 +137,6 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     db_session.add(other_project)
     db_session.flush()
 
-    other_stored = store.write_bytes(other_tenant.id, other_project.id, "stl", b"solid other")
-    older_stored = store.write_bytes(seeded_tenant.tenant_id, seeded_tenant.project_id, "stl", b"solid older")
-    latest_stored = store.write_bytes(seeded_tenant.tenant_id, seeded_tenant.project_id, "stl", b"solid latest")
     now = datetime.now(timezone.utc)
     db_session.add_all(
         [
@@ -153,38 +144,35 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
                 tenant_id=other_tenant.id,
                 project_id=other_project.id,
                 kind="stl",
-                storage_key=other_stored.storage_key,
-                content_type=other_stored.content_type,
-                byte_size=other_stored.byte_size,
+                storage_key="other.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid other"),
+                content=b"solid other",
                 created_at=now + timedelta(minutes=10),
             ),
             Artifact(
                 tenant_id=seeded_tenant.tenant_id,
                 project_id=seeded_tenant.project_id,
                 kind="stl",
-                storage_key=older_stored.storage_key,
-                content_type=older_stored.content_type,
-                byte_size=older_stored.byte_size,
+                storage_key="older.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid older"),
+                content=b"solid older",
                 created_at=now,
             ),
             Artifact(
                 tenant_id=seeded_tenant.tenant_id,
                 project_id=seeded_tenant.project_id,
                 kind="stl",
-                storage_key=latest_stored.storage_key,
-                content_type=latest_stored.content_type,
-                byte_size=latest_stored.byte_size,
+                storage_key="latest.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid latest"),
+                content=b"solid latest",
                 created_at=now + timedelta(minutes=1),
             ),
         ]
     )
     db_session.commit()
-    monkeypatch.setattr(
-        extus_server,
-        "get_settings",
-        lambda: type("Settings", (), {"artifact_root": str(artifact_root)})(),
-        raising=False,
-    )
 
     project_response = authenticated_extus_client.get("/project_name")
     status_response = authenticated_extus_client.get("/status")
@@ -198,12 +186,10 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     assert model_response.content == b"solid latest"
 
 
-def test_extus_model_returns_404_when_active_artifact_file_is_missing(
+def test_extus_model_returns_404_when_active_artifact_content_is_missing(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
-    monkeypatch,
-    tmp_path,
 ):
     db_session.add(
         Artifact(
@@ -216,12 +202,6 @@ def test_extus_model_returns_404_when_active_artifact_file_is_missing(
         )
     )
     db_session.commit()
-    monkeypatch.setattr(
-        extus_server,
-        "get_settings",
-        lambda: type("Settings", (), {"artifact_root": str(tmp_path / "artifacts")})(),
-        raising=False,
-    )
 
     response = authenticated_extus_client.get("/model")
 

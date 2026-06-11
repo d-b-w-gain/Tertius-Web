@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from core.artifacts import ArtifactStore
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.compile_runtime import hydrate_project_files
@@ -254,24 +253,15 @@ def compile_project(
             output_bytes = result.output_path.read_bytes()
 
         settings = get_settings()
-        artifact_store = ArtifactStore(settings.artifact_root)
-        stored = artifact_store.write_bytes(ctx.tenant_id, project_id, ext, output_bytes)
-        if not artifact_store.path_for(stored.storage_key).exists():
-            raise RuntimeError("Artifact write failed")
-
         artifact = compile_repo.record_artifact(
             project_id,
             job_id,
             ext,
-            stored.storage_key,
-            stored.content_type,
-            stored.byte_size,
+            output_bytes,
         )
         persisted_job = db.get(CompileJob, job_id)
         compile_repo.finish_job(persisted_job, "succeeded")
         pruned_artifacts = compile_repo.prunable_artifacts(project_id, ext, max(1, settings.artifact_retention_limit))
-        for pruned_artifact in pruned_artifacts:
-            artifact_store.delete(pruned_artifact.storage_key)
         compile_repo.delete_artifacts(pruned_artifacts)
         db.commit()
         return {"success": True, "format": ext, "artifact_id": str(artifact.id)}

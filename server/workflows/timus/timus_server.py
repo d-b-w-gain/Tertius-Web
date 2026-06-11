@@ -22,7 +22,6 @@ from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project,
 from core.repositories import ProjectRepository, CompileRepository
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
-from core.artifacts import ArtifactStore
 from core.config import get_settings
 
 app = FastAPI(title="Timus Drafting Server")
@@ -462,16 +461,11 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
             output_bytes = result.output_path.read_bytes()
 
         settings = get_settings()
-        artifact_store = ArtifactStore(settings.artifact_root)
-        stored = artifact_store.write_bytes(tenant_id, project_id, "timus_views", output_bytes)
-        
         compile_repo.record_artifact(
             project_id,
             job_id,
             "timus_views",
-            stored.storage_key,
-            stored.content_type,
-            stored.byte_size,
+            output_bytes,
         )
         persisted_job = db.get(CompileJob, job_id)
         if persisted_job:
@@ -481,8 +475,6 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
                 "timus_views",
                 max(1, settings.artifact_retention_limit),
             )
-            for pruned_artifact in pruned_artifacts:
-                artifact_store.delete(pruned_artifact.storage_key)
             compile_repo.delete_artifacts(pruned_artifacts)
             db.commit()
     except Exception as e:
@@ -621,13 +613,9 @@ def get_gltf_model(name: str, ctx: AuthContext = Depends(get_auth_context), db: 
             Artifact.kind.in_(["gltf", "glb"])
         ).order_by(desc(Artifact.created_at))
     )
-    if not latest_artifact: return Response("No 3D model found", 404)
-    
-    artifact_store = ArtifactStore(get_settings().artifact_root)
-    artifact_path = artifact_store.path_for(latest_artifact.storage_key)
-    with open(artifact_path, "rb") as f:
-        data = f.read()
-    return Response(content=data, media_type=latest_artifact.content_type)
+    if not latest_artifact or latest_artifact.content is None:
+        return Response("No 3D model found", 404)
+    return Response(content=latest_artifact.content, media_type=latest_artifact.content_type)
 
 @app.get("/projects/{name}/model_status")
 def get_model_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -785,11 +773,9 @@ def get_drafting_pdf(
             ).order_by(desc(Artifact.created_at))
         )
         if latest_artifact:
-            artifact_store = ArtifactStore(get_settings().artifact_root)
-            artifact_path = artifact_store.path_for(latest_artifact.storage_key)
-
-            with open(artifact_path, "r") as f:
-                views = json.load(f)
+            if latest_artifact.content is None:
+                return Response("No drafting views found", 404)
+            views = json.loads(latest_artifact.content.decode("utf-8"))
         else:
             repo = ProjectRepository(db, ctx.tenant_id)
             files = repo.files_for_runtime(name)

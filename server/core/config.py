@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     keycloak_audience: str = Field(default="tertius-web")
     keycloak_authorized_party: str = Field(default="tertius-ui")
     keycloak_jwks_url_override: str | None = Field(default=None)
-    artifact_root: str = Field(default="/tmp/tertius-artifacts")
     artifact_retention_limit: int = Field(default=10)
     allowed_origins: str = Field(default="http://localhost:5173")
 

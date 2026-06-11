@@ -15,9 +15,6 @@ api:
     repository: localhost/tertius-api
     tag: local
     pullPolicy: IfNotPresent
-  persistence:
-    size: 2Gi
-    storageClassName: local-path
   resources:
     requests:
       cpu: 100m

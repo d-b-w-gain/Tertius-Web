@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.models import Artifact, CompileJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
@@ -259,18 +260,20 @@ class CompileRepository:
         project_id: UUID,
         job_id: UUID | None,
         kind: str,
-        storage_key: str,
-        content_type: str,
-        byte_size: int,
+        content: bytes,
+        storage_key: str | None = None,
+        content_type: str | None = None,
     ) -> Artifact:
+        normalized_kind = kind.lower()
         artifact = Artifact(
             tenant_id=self.tenant_id,
             project_id=project_id,
             compile_job_id=job_id,
-            kind=kind.lower(),
-            storage_key=storage_key,
-            content_type=content_type,
-            byte_size=byte_size,
+            kind=normalized_kind,
+            storage_key=storage_key or artifact_storage_key(self.tenant_id, project_id, normalized_kind),
+            content_type=content_type or content_type_for_kind(normalized_kind),
+            byte_size=len(content),
+            content=content,
         )
         self.db.add(artifact)
         self.db.flush()

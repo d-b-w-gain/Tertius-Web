@@ -93,6 +93,7 @@ def test_artifact_compile_job_must_match_artifact_tenant(db_session):
             kind="pdf",
             storage_key="artifacts/output.pdf",
             content_type="application/pdf",
+            content=b"%PDF",
         )
     )
 
@@ -129,6 +130,7 @@ def test_artifact_compile_job_must_match_artifact_project(db_session):
             kind="pdf",
             storage_key="artifacts/output.pdf",
             content_type="application/pdf",
+            content=b"%PDF",
         )
     )
 
