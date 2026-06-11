@@ -24,7 +24,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 
 def postgres_test_image() -> str:
-    return os.environ.get("POSTGRES_TEST_IMAGE", "postgres:16")
+    return os.environ.get("POSTGRES_TEST_IMAGE", "postgres:18")
 
 
 @pytest.fixture(scope="session")
