@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import jwt
+from jwt import InvalidAudienceError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
@@ -32,13 +33,24 @@ def decode_keycloak_token(token: str) -> dict:
     settings = get_settings()
     jwk_client = PyJWKClient(settings.keycloak_jwks_url)
     signing_key = jwk_client.get_signing_key_from_jwt(token)
-    return jwt.decode(
-        token,
-        signing_key.key,
-        algorithms=["RS256"],
-        audience=settings.keycloak_audience,
-        options={"verify_iss": False},
-    )
+    try:
+        return jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.keycloak_audience,
+            options={"verify_iss": False},
+        )
+    except InvalidAudienceError:
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_iss": False, "verify_aud": False},
+        )
+        if claims.get("azp") != settings.keycloak_authorized_party:
+            raise
+        return claims
 
 
 def get_auth_context(

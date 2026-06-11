@@ -93,6 +93,16 @@ def test_decode_keycloak_token_accepts_valid_rs256_token(monkeypatch):
     assert claims["sub"] == "kc-user-1"
 
 
+def test_decode_keycloak_token_accepts_trusted_ui_authorized_party(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    claims = decode_keycloak_token(_token(key, aud="account", azp="tertius-ui"))
+
+    assert claims["sub"] == "kc-user-1"
+
 
 def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
     key = _private_key()
@@ -102,6 +112,16 @@ def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
 
     with pytest.raises(jwt.InvalidAudienceError):
         decode_keycloak_token(_token(key, aud="wrong-audience"))
+
+
+def test_decode_keycloak_token_rejects_untrusted_authorized_party(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidAudienceError):
+        decode_keycloak_token(_token(key, aud="account", azp="other-client"))
 
 
 def test_decode_keycloak_token_rejects_expired_token(monkeypatch):

@@ -27,6 +27,7 @@ def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
                 "DATABASE_URL=postgresql+psycopg://env:env@localhost:5432/envdb",
                 "KEYCLOAK_ISSUER=http://keycloak.example.test/realms/env",
                 "KEYCLOAK_AUDIENCE=env-audience",
+                "KEYCLOAK_AUTHORIZED_PARTY=env-ui",
                 "ARTIFACT_ROOT=/tmp/env-artifacts",
                 "ALLOWED_ORIGINS=https://env.example.test",
             ]
@@ -38,6 +39,7 @@ def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
         "DATABASE_URL",
         "KEYCLOAK_ISSUER",
         "KEYCLOAK_AUDIENCE",
+        "KEYCLOAK_AUTHORIZED_PARTY",
         "ARTIFACT_ROOT",
         "ALLOWED_ORIGINS",
     ):
@@ -56,5 +58,6 @@ def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
     assert settings.database_url == "postgresql+psycopg://env:env@localhost:5432/envdb"
     assert settings.keycloak_issuer == "http://keycloak.example.test/realms/env"
     assert settings.keycloak_audience == "env-audience"
+    assert settings.keycloak_authorized_party == "env-ui"
     assert settings.artifact_root == "/tmp/env-artifacts"
     assert settings.allowed_origin_list == ["https://env.example.test"]
