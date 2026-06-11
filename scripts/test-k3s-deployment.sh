@@ -15,6 +15,8 @@ TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
 KEYCLOAK_CHECK_IMAGE="${KEYCLOAK_CHECK_IMAGE:-busybox:1.37.0}"
 VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
+NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
+ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
@@ -46,6 +48,8 @@ Environment:
   KEYCLOAK_REALM                Default: tertius
   KEYCLOAK_CHECK_IMAGE          Default: busybox:1.37.0
   VALKEY_CHECK_IMAGE            Default: valkey image from values-local.yaml, then valkey/valkey:9.0.0
+  NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
+  ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
@@ -352,6 +356,40 @@ require_chart_files() {
   }
 }
 
+chart_lock_dependencies_present() {
+  [ -f "${CHART_DIR}/Chart.lock" ] || return 1
+  [ -d "${CHART_DIR}/charts" ] || return 1
+
+  missing=0
+  archives=$(awk '
+    /^[[:space:]]*-[[:space:]]*name:/ {
+      name = $0
+      sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", name)
+      gsub(/"/, "", name)
+      gsub(/\047/, "", name)
+      next
+    }
+    name != "" && /^[[:space:]]*version:/ {
+      version = $0
+      sub(/^[[:space:]]*version:[[:space:]]*/, "", version)
+      gsub(/"/, "", version)
+      gsub(/\047/, "", version)
+      print name "-" version ".tgz"
+      name = ""
+    }
+  ' "${CHART_DIR}/Chart.lock")
+
+  for archive in $archives; do
+    [ -n "$archive" ] || continue
+    if [ ! -f "${CHART_DIR}/charts/${archive}" ]; then
+      echo "Missing vendored Helm dependency archive: ${CHART_DIR}/charts/${archive}" >&2
+      missing=1
+    fi
+  done
+
+  [ "$missing" -eq 0 ]
+}
+
 check_preflight() {
   need kubectl
   need helm
@@ -380,7 +418,14 @@ check_preflight() {
     run kubectl get secret "$TUNNEL_TOKEN_SECRET_NAME" -n "$NAMESPACE"
   fi
 
-  if [ -d "${CHART_DIR}/charts" ] && find "${CHART_DIR}/charts" -name 'valkey-*.tgz' -print -quit | grep -q .; then
+  if ! truthy "$ALLOW_FLUX_MANAGED_RELEASE" && kubectl get helmrelease "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "Refusing to smoke test Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
+    echo "Use an isolated target, for example: NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke $0" >&2
+    echo "Or set ALLOW_FLUX_MANAGED_RELEASE=true if you intentionally want to race the GitOps controller." >&2
+    exit 1
+  fi
+
+  if chart_lock_dependencies_present; then
     echo "Using vendored Helm chart dependencies from ${CHART_DIR}/charts."
   else
     run helm dependency update "$CHART_DIR"
@@ -514,6 +559,8 @@ wait_for_rollout() {
   [ -z "$statefulsets" ] || run kubectl rollout status -n "$NAMESPACE" $statefulsets --timeout="$TIMEOUT"
   valkey_pods=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=valkey" -o name 2>/dev/null || true)
   [ -z "$valkey_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $valkey_pods --timeout="$TIMEOUT"
+  nats_pods=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=nats" -o name 2>/dev/null || true)
+  [ -z "$nats_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $nats_pods --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready keycloaks.k8s.keycloak.org -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   if truthy "$ENABLE_TUNNEL"; then
@@ -755,6 +802,17 @@ check_valkey() {
   run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$VALKEY_CHECK_IMAGE" --command -- valkey-cli -h "$svc" PING
 }
 
+check_nats() {
+  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=nats")
+  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'nats' | head -1 || true)
+  [ -n "$svc" ] || {
+    echo "Unable to find NATS service for release ${RELEASE_NAME}." >&2
+    exit 1
+  }
+  pod_name="${RELEASE_NAME}-nats-check-$(date +%s)"
+  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$NATS_CHECK_IMAGE" --command -- nats server check jetstream --server "nats://${svc}:4222"
+}
+
 keycloak_probe() {
   url=$1
   pod_name="${RELEASE_NAME}-keycloak-check-$(date +%s)"
@@ -826,12 +884,13 @@ run_smoke_tests() {
   check_api_has_no_pvc_mount
   check_postgres
   check_valkey
+  check_nats
   check_keycloak
   check_tunnel
 }
 
 delete_test_pods() {
-  pods=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep -E "/${RELEASE_NAME}-(pg|valkey|keycloak)-check-" || true)
+  pods=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep -E "/${RELEASE_NAME}-(pg|valkey|nats|keycloak)-check-" || true)
   [ -z "$pods" ] || run kubectl delete -n "$NAMESPACE" $pods --ignore-not-found=true
 }
 

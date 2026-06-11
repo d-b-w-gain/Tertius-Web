@@ -10,6 +10,7 @@ metadata:
 {{- $realmName := default "tertius" .Values.keycloak.realmImport.realm }}
 {{- $keycloakAudience := default .Values.app.config.oidcAudience .Values.app.config.keycloakAudience }}
 {{- $keycloakIssuer := $keycloakIssuerFromValues }}
+{{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
 {{- if not $keycloakIssuer }}
 {{- $keycloakIssuer = printf "http://%s:%s/realms/%s" $keycloakHost $keycloakPort $realmName }}
 {{- end }}
@@ -22,6 +23,7 @@ data:
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}
+  NATS_URL: {{ $natsUrl | quote }}
   APP_DB_HOST: {{ printf "%s-rw" (include "tertius.appDbName" .) | quote }}
   APP_DB_NAME: {{ .Values.postgres.database | quote }}
   APP_DB_OWNER: {{ .Values.postgres.owner | quote }}
