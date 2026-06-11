@@ -54,7 +54,6 @@ def _patch_settings(monkeypatch):
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
         keycloak_issuer="http://issuer.example/realms/tertius",
         keycloak_audience="tertius-web",
-        artifact_root="/tmp/tertius-artifacts",
     )
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
 

@@ -82,9 +82,10 @@ The important server values are:
 DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
 KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
 KEYCLOAK_AUDIENCE=tertius-web
-ARTIFACT_ROOT=/tmp/tertius-artifacts
 ALLOWED_ORIGINS=http://localhost:5173
 ```
+
+Generated workflow artifacts are stored in Postgres; run Alembic migrations before compiling or serving artifacts.
 
 For the frontend, copy `ui/.env.example` or set:
 
@@ -154,7 +155,7 @@ Tunnel-enabled run:
 ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-deployment.sh
 ```
 
-Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, and `KEYCLOAK_REALM`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving PVCs and CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed.
+Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, and `KEYCLOAK_REALM`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving database and cache PVCs plus CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed. The API no longer owns an artifact PVC.
 
 ## License
 MIT License.

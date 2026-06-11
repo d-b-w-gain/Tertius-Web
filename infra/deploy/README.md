@@ -26,8 +26,7 @@ That keeps Flux focused on deployable configuration instead of the whole applica
 The `infra/charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
 
 - **UI Deployment and Service**: Nginx serves the built React/Vite app. Browser traffic uses one origin, with `/api/*` reverse-proxied from Nginx to the API Service.
-- **API Deployment and Service**: FastAPI serves workflow APIs, validates Keycloak tokens, uses Postgres for tenant-scoped state, and stores generated artifacts on a mounted cache volume.
-- **API PVC**: Mounted at `/app/cache/tertius` for generated workflow/cache artifacts that need to survive pod restarts.
+- **API Deployment and Service**: FastAPI serves workflow APIs, validates Keycloak tokens, and uses Postgres for tenant-scoped state and generated artifacts.
 - **CloudNativePG application database**: Provides the Tertius Postgres database through a `postgresql.cnpg.io/v1` `Cluster`.
 - **Valkey**: Redis-compatible cache service installed from the chart dependency.
 - **Keycloak**: Identity provider managed through the Keycloak Operator, backed by a separate CloudNativePG database.
@@ -123,7 +122,7 @@ The production cluster must already have:
 - Helm Controller and Source Controller from Flux.
 - CloudNativePG CRDs, including `clusters.postgresql.cnpg.io`.
 - Keycloak Operator CRDs, including `keycloaks.k8s.keycloak.org`.
-- A storage class suitable for the API cache PVC, Postgres, Keycloak Postgres, and Valkey.
+- A storage class suitable for Postgres, Keycloak Postgres, and Valkey.
 - Access to the API and UI container image registry.
 - Any required image pull Secrets.
 - The `tertius-production-values` Secret in the `tertius` namespace.

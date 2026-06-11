@@ -59,7 +59,7 @@ Responsibilities:
 - Expose port `8000`.
 - Run `uvicorn server.main:app --host 0.0.0.0 --port 8000`.
 
-The image should keep the runtime filesystem layout compatible with the current backend code. The Helm chart will mount persistent storage so `/app/cache/tertius` exists and survives pod restarts.
+Generated artifacts are stored in Postgres. The API image should not require a persistent artifact filesystem.
 
 ### UI Image
 
@@ -92,13 +92,10 @@ The chart will render:
 - API `Service`
 - UI `Deployment`
 - UI `Service`
-- API persistent volume claim
 - shared app `ConfigMap`
 - app Secret references for future database/cache credentials
 - optional NetworkPolicies
 - optional ServiceAccount
-
-The API Deployment will mount a PVC at `/app/cache/tertius`.
 
 The UI Service will receive browser traffic for static assets and frontend routes.
 
@@ -280,7 +277,7 @@ Required smoke tests:
 - Through the UI port-forward, verify `GET /api/` reaches the FastAPI root through nginx reverse proxying.
 - Through the UI port-forward, verify `GET /api/intus/health` returns healthy JSON.
 - Port-forward the API Service directly and verify `GET /` returns the backend status JSON.
-- Verify the API PVC is bound and mounted by the API pod.
+- Verify remaining database and cache PVCs are bound, and verify the API pod does not mount an artifact PVC.
 - Run a short in-cluster Postgres check using a temporary pod or operator-provided connection secret. This should confirm connection to both the future Tertius app database and the Keycloak database.
 - Run a short in-cluster Valkey check using `valkey-cli PING` from a temporary pod or the Valkey chart's test pod if available.
 - Port-forward Keycloak and verify the well-known OIDC configuration endpoint responds for the configured realm when realm import is enabled. If realm import is disabled, verify the Keycloak root or health endpoint responds instead.
@@ -344,7 +341,7 @@ The chart should:
 - Avoid embedding real database or Valkey passwords in Git.
 - Avoid embedding real Keycloak admin credentials, realm secrets, or OIDC client secrets in Git.
 - Use Secret references for sensitive values.
-- Run containers as non-root where the base images and filesystem permissions allow it. For the API, set a pod `securityContext.fsGroup` so the non-root user can write to the PVC mounted at `/app/cache/tertius` (including git-backed project history); without `fsGroup` the mounted volume will not be writable by a non-root user.
+- Run containers as non-root where the base images and filesystem permissions allow it.
 - Set resource requests and limits.
 - Keep CloudNativePG operator installation outside the app chart.
 - Prefer same-origin API routing to avoid permissive CORS in production.
