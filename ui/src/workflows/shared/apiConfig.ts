@@ -14,7 +14,7 @@ function normalizePath(pathname: string): string {
 }
 
 function getFallbackApiBase() {
-  return 'http://localhost:8000';
+  return '/api';
 }
 
 export function resolveApiBase(rawBase?: string): string {
