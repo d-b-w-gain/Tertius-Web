@@ -239,6 +239,10 @@ detect_k3s_container() {
   if [ -n "$K3S_CONTAINER" ]; then
     return
   fi
+  if command -v docker >/dev/null 2>&1 && docker container inspect tertius-k3s >/dev/null 2>&1; then
+    K3S_CONTAINER=tertius-k3s
+    return
+  fi
   if ! command -v podman >/dev/null 2>&1; then
     return
   fi
@@ -401,6 +405,13 @@ k3s_ctr() {
     podman exec "$K3S_CONTAINER" ctr "$@"
     return
   fi
+  if [ -n "$K3S_CONTAINER" ] && command -v docker >/dev/null 2>&1 && docker container inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
+    if docker exec "$K3S_CONTAINER" k3s ctr "$@" 2>/dev/null; then
+      return
+    fi
+    docker exec "$K3S_CONTAINER" ctr "$@"
+    return
+  fi
   if command -v sudo >/dev/null 2>&1; then
     sudo -n k3s ctr "$@"
     return
@@ -437,6 +448,14 @@ load_image() {
     quote_cmd podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     run podman exec "$K3S_CONTAINER" rm -f "$container_tar"
+    return
+  fi
+  if [ -n "$K3S_CONTAINER" ] && command -v docker >/dev/null 2>&1 && docker container inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
+    container_tar="/tmp/$(basename "$tar_file")"
+    run docker cp "$tar_file" "${K3S_CONTAINER}:${container_tar}"
+    quote_cmd docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
+    docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
+    run docker exec "$K3S_CONTAINER" rm -f "$container_tar"
     return
   fi
   quote_cmd k3s ctr -n k8s.io images import "$tar_file"
