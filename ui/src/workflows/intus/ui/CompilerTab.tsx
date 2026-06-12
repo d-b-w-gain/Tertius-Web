@@ -218,6 +218,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [fetchGitStatus, storage]);
 
   useEffect(() => {
+    if (!isActive) return;
     let isMounted = true;
     const loadActiveProject = async () => {
       try {
@@ -242,7 +243,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         window.removeEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
       }
     };
-  }, [storage, activeProject, isGuest, loadProject]);
+  }, [storage, activeProject, isGuest, isActive, loadProject]);
 
   useEffect(() => {
     if (isGuest && autoCompile) {

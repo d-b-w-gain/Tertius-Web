@@ -76,6 +76,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   }, [title]);
 
   useEffect(() => {
+    if (!isActive) return;
     let isMounted = true;
     const fetchActive = async () => {
       try {
@@ -95,7 +96,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
         isMounted = false;
         clearInterval(interval);
     };
-  }, [serverUrl, getAccessToken]);
+  }, [serverUrl, getAccessToken, isActive]);
 
   useEffect(() => {
     if (!activeProject) return;
