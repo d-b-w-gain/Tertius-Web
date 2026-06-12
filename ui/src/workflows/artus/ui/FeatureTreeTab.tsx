@@ -1,11 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
-import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
+import {
+  MODEL_STATUS_POLL_INTERVAL_MS,
+  PROJECT_DATA_POLL_INTERVAL_MS,
+  getPollingDelay,
+  shouldRunPollingRequest,
+} from '../../shared/polling';
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -252,7 +257,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, getPollingDelay(3000));
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -283,7 +288,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
   }, [extusUrl, getAccessToken]);
 
-  const fetchFeatures = async () => {
+  const fetchFeatures = useCallback(async () => {
     if (!shouldRunPollingRequest()) return;
     try {
       const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
@@ -300,13 +305,13 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     } catch (e) {
       setError("Failed to connect to Artus server.");
     }
-  };
+  }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
     fetchFeatures();
-    const interval = setInterval(fetchFeatures, getPollingDelay(4000));
+    const interval = setInterval(fetchFeatures, getPollingDelay(PROJECT_DATA_POLL_INTERVAL_MS));
     return () => clearInterval(interval);
-  }, [serverUrl, getAccessToken]);
+  }, [fetchFeatures]);
 
   // Auto-generate AI prompt whenever edits change
   useEffect(() => {

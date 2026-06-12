@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../../auth/AuthProvider';
 import { resolveWorkflowServerUrl } from '../apiConfig';
 import { createProjectStorage } from '../projectStorage';
-import { getPollingDelay, shouldRunPollingRequest } from '../polling';
+import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../polling';
 
 export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
+
+const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 
 export const ProjectSelector: React.FC = () => {
   const { authMode, getAccessToken } = useAuth();
@@ -20,45 +22,27 @@ export const ProjectSelector: React.FC = () => {
   const [newProjectName, setNewProjectName] = useState('');
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
 
-  const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
-
-  // Sync active project with backend (in case another tab changed it, though this is the primary selector)
-  useEffect(() => {
-    let isMounted = true;
-    const fetchActive = async () => {
-      if (!shouldRunPollingRequest()) return;
-      try {
-        const projectName = await storage.getActiveProject();
-        if (projectName && projectName !== activeProject && isMounted) {
-          setActiveProject(projectName);
-          fetchGitStatus(projectName);
-        }
-      } catch (e) {
-      }
-    };
-    
-    fetchActive();
-    const interval = setInterval(fetchActive, getPollingDelay(2000));
-    return () => {
-        isMounted = false;
-        clearInterval(interval);
-    };
-  }, [storage, activeProject]);
-
-  useEffect(() => {
-    fetchProjects();
-  }, [storage]);
-
-  const fetchGitStatus = async (name: string) => {
+  const fetchGitStatus = useCallback(async (name: string) => {
     try {
       const data = await storage.getHistory(name);
       setGitStatus(data);
     } catch {
       setGitStatus({ is_git: false });
     }
-  };
+  }, [storage]);
 
-  const fetchProjects = async (selectName?: string) => {
+  const selectProject = useCallback(async (name: string) => {
+    setActiveProject(name);
+    try {
+      await storage.activateProject(name);
+      fetchGitStatus(name);
+      window.dispatchEvent(new CustomEvent(ACTIVE_PROJECT_CHANGED_EVENT, { detail: { activeProject: name } }));
+    } catch (e) {
+      alert(errorMessage(e, "Network error selecting project"));
+    }
+  }, [storage, fetchGitStatus]);
+
+  const fetchProjects = useCallback(async (selectName?: string) => {
     try {
       const list = await storage.listProjects();
       setProjects(list);
@@ -84,18 +68,34 @@ export const ProjectSelector: React.FC = () => {
     } catch (e) {
       console.error("Failed to fetch projects");
     }
-  };
+  }, [storage, activeProject, selectProject, fetchGitStatus]);
 
-  const selectProject = async (name: string) => {
-    setActiveProject(name);
-    try {
-      await storage.activateProject(name);
-      fetchGitStatus(name);
-      window.dispatchEvent(new CustomEvent(ACTIVE_PROJECT_CHANGED_EVENT, { detail: { activeProject: name } }));
-    } catch (e) {
-      alert(errorMessage(e, "Network error selecting project"));
-    }
-  };
+  // Sync active project with backend (in case another tab changed it, though this is the primary selector)
+  useEffect(() => {
+    let isMounted = true;
+    const fetchActive = async () => {
+      if (!shouldRunPollingRequest()) return;
+      try {
+        const projectName = await storage.getActiveProject();
+        if (projectName && projectName !== activeProject && isMounted) {
+          setActiveProject(projectName);
+          fetchGitStatus(projectName);
+        }
+      } catch (e) {
+      }
+    };
+
+    fetchActive();
+    const interval = setInterval(fetchActive, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
+    return () => {
+        isMounted = false;
+        clearInterval(interval);
+    };
+  }, [storage, activeProject, fetchGitStatus]);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
 
   const handleNewProjectSubmit = async () => {
     const name = newProjectName.trim();
