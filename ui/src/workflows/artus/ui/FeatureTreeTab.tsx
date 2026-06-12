@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
@@ -288,7 +288,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
   }, [extusUrl, getAccessToken]);
 
-  const fetchFeatures = async () => {
+  const fetchFeatures = useCallback(async () => {
     if (!shouldRunPollingRequest()) return;
     try {
       const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
@@ -305,13 +305,13 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     } catch (e) {
       setError("Failed to connect to Artus server.");
     }
-  };
+  }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
     fetchFeatures();
     const interval = setInterval(fetchFeatures, getPollingDelay(PROJECT_DATA_POLL_INTERVAL_MS));
     return () => clearInterval(interval);
-  }, [serverUrl, getAccessToken]);
+  }, [fetchFeatures]);
 
   // Auto-generate AI prompt whenever edits change
   useEffect(() => {

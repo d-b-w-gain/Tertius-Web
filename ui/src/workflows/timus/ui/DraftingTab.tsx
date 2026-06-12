@@ -11,6 +11,32 @@ import {
   shouldRunPollingRequest,
 } from '../../shared/polling';
 
+const scalePresets = [
+  { value: 10, label: '10:1 (Enlarged 10x)' },
+  { value: 5, label: '5:1 (Enlarged 5x)' },
+  { value: 2, label: '2:1 (Enlarged 2x)' },
+  { value: 1, label: '1:1 (Full Size)' },
+  { value: 0.5, label: '1:2 (Half Size)' },
+  { value: 0.25, label: '1:4' },
+  { value: 0.2, label: '1:5' },
+  { value: 0.1, label: '1:10' },
+  { value: 0.05, label: '1:20' },
+  { value: 0.02, label: '1:50' },
+  { value: 0.01, label: '1:100' },
+  { value: 0.005, label: '1:200' },
+  { value: 0.002, label: '1:500' },
+  { value: 0.001, label: '1:1000' },
+];
+
+const toSafeScale = (value: unknown): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1.0;
+  const clamped = Math.min(10, Math.max(0.001, parsed));
+  return scalePresets.reduce((closest, item) =>
+    Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
+  , scalePresets[0]).value;
+};
+
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
   const { authMode, login } = useAuth();
   if (authMode === 'guest') {
@@ -44,32 +70,6 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
   const [userRequestedBuild, setUserRequestedBuild] = useState(false);
-
-  const scalePresets = [
-    { value: 10, label: '10:1 (Enlarged 10x)' },
-    { value: 5, label: '5:1 (Enlarged 5x)' },
-    { value: 2, label: '2:1 (Enlarged 2x)' },
-    { value: 1, label: '1:1 (Full Size)' },
-    { value: 0.5, label: '1:2 (Half Size)' },
-    { value: 0.25, label: '1:4' },
-    { value: 0.2, label: '1:5' },
-    { value: 0.1, label: '1:10' },
-    { value: 0.05, label: '1:20' },
-    { value: 0.02, label: '1:50' },
-    { value: 0.01, label: '1:100' },
-    { value: 0.005, label: '1:200' },
-    { value: 0.002, label: '1:500' },
-    { value: 0.001, label: '1:1000' },
-  ];
-
-  const toSafeScale = (value: unknown): number => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return 1.0;
-    const clamped = Math.min(10, Math.max(0.001, parsed));
-    return scalePresets.reduce((closest, item) =>
-      Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
-    , scalePresets[0]).value;
-  };
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
