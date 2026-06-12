@@ -45,7 +45,7 @@ function jsonResponse(data: unknown, ok = true) {
   }
 }
 
-async function renderCompiler(isActive = false) {
+async function renderCompiler(isActive = true) {
   render(<CompilerTab serverUrl="/api/intus" isActive={isActive} />)
   await screen.findByText('default_purlin')
   await act(async () => {})
@@ -71,6 +71,16 @@ describe('CompilerTab compile jobs', () => {
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+  })
+
+  it('does not poll active project while the tab is inactive', async () => {
+    render(<CompilerTab serverUrl="/api/intus" isActive={false} />)
+
+    await act(async () => {})
+
+    expect(storage.getActiveProject).not.toHaveBeenCalled()
+    expect(storage.listFiles).not.toHaveBeenCalled()
+    expect(storage.loadCode).not.toHaveBeenCalled()
   })
 
   it('manual compile starts a job, polls status, then logs success', async () => {

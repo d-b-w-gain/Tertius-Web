@@ -1,5 +1,6 @@
 let transientFailureCount = 0
 let readonlyBackoffUntil = 0
+const readonlyInFlightRequests = new Map<string, Promise<Response>>()
 
 function isReadonlyRequest(init: RequestInit) {
   const method = (init.method || 'GET').toUpperCase()
@@ -8,6 +9,10 @@ function isReadonlyRequest(init: RequestInit) {
 
 function isTransientServerFailure(status: number) {
   return status === 500 || status === 502 || status === 503 || status === 504
+}
+
+function readonlyRequestKey(url: string, init: RequestInit) {
+  return `${(init.method || 'GET').toUpperCase()} ${url}`
 }
 
 function recordTransientFailure() {
@@ -46,27 +51,45 @@ export async function apiFetch(
     return backoffResponse()
   }
 
-  const headers = new Headers(init.headers)
-  headers.set('Authorization', `Bearer ${await getAccessToken()}`)
-  if (init.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
+  const key = readonly ? readonlyRequestKey(url, init) : undefined
+  const inFlight = key ? readonlyInFlightRequests.get(key) : undefined
+  if (inFlight) {
+    return inFlight.then((response) => response.clone())
   }
 
-  let response: Response
-  try {
-    response = await fetch(url, { ...init, headers })
-  } catch (error) {
-    if (readonly) {
-      recordTransientFailure()
+  const request = (async () => {
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${await getAccessToken()}`)
+    if (init.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json')
     }
-    throw error
+
+    let response: Response
+    try {
+      response = await fetch(url, { ...init, headers })
+    } catch (error) {
+      if (readonly) {
+        recordTransientFailure()
+      }
+      throw error
+    }
+
+    if (readonly && isTransientServerFailure(response.status)) {
+      recordTransientFailure()
+    } else if (response.ok) {
+      recordSuccess()
+    }
+
+    return response
+  })()
+
+  if (key) {
+    readonlyInFlightRequests.set(key, request)
+    request.then(
+      () => readonlyInFlightRequests.delete(key),
+      () => readonlyInFlightRequests.delete(key),
+    )
   }
 
-  if (readonly && isTransientServerFailure(response.status)) {
-    recordTransientFailure()
-  } else if (response.ok) {
-    recordSuccess()
-  }
-
-  return response
+  return request.then((response) => response.clone())
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../../auth/AuthProvider';
 import { resolveWorkflowServerUrl } from '../apiConfig';
 import { createProjectStorage } from '../projectStorage';
+import { getPollingDelay, shouldRunPollingRequest } from '../polling';
 
 export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
 
@@ -25,6 +26,7 @@ export const ProjectSelector: React.FC = () => {
   useEffect(() => {
     let isMounted = true;
     const fetchActive = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const projectName = await storage.getActiveProject();
         if (projectName && projectName !== activeProject && isMounted) {
@@ -36,7 +38,7 @@ export const ProjectSelector: React.FC = () => {
     };
     
     fetchActive();
-    const interval = setInterval(fetchActive, 2000);
+    const interval = setInterval(fetchActive, getPollingDelay(2000));
     return () => {
         isMounted = false;
         clearInterval(interval);

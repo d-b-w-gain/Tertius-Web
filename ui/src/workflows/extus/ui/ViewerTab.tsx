@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 
 interface ViewerProps {
@@ -205,6 +206,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     let mtime = 0;
     
     const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
         if (projRes.ok && mounted) {
@@ -233,7 +235,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 3000);
+    const interval = setInterval(checkStatus, getPollingDelay(3000));
     
     return () => {
       mounted = false;
