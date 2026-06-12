@@ -15,6 +15,14 @@ app:
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
     natsUrl: ""
+    compileStreamName: TERTIUS_COMPILE
+    compileRequestSubject: tertius.compile.request
+    compileSucceededSubject: tertius.compile.succeeded
+    compileFailedSubject: tertius.compile.failed
+    compileWorkerQueue: compile-workers
+    compileAckWaitSeconds: 660
+    compileMaxDeliver: 3
+    compileTimeoutSeconds: 600
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
@@ -51,6 +59,11 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+
+compileWorker:
+  replicaCount: 1
+  resources: {}
+
 ui:
   replicaCount: 1
   image:

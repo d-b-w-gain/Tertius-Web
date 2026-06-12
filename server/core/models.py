@@ -150,6 +150,9 @@ class CompileJob(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     export_format: Mapped[str] = mapped_column(String(16), nullable=False)
     error: Mapped[Optional[str]] = mapped_column(Text)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    user_message: Mapped[Optional[str]] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 

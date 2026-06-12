@@ -2,8 +2,6 @@ import core.config as config
 from core.config import Settings
 
 
-
-
 def test_settings_parse_allowed_origins():
     settings = Settings(
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
@@ -71,3 +69,55 @@ def test_settings_loads_server_env_when_cwd_is_elsewhere(monkeypatch, tmp_path):
     assert settings.keycloak_audience == "env-audience"
     assert settings.keycloak_authorized_party == "env-ui"
     assert settings.allowed_origin_list == ["https://env.example.test"]
+
+
+
+def test_settings_exposes_compile_nats_defaults(monkeypatch):
+    for env_var in (
+        "NATS_URL",
+        "COMPILE_STREAM_NAME",
+        "COMPILE_REQUEST_SUBJECT",
+        "COMPILE_SUCCEEDED_SUBJECT",
+        "COMPILE_FAILED_SUBJECT",
+        "COMPILE_WORKER_QUEUE",
+        "COMPILE_ACK_WAIT_SECONDS",
+        "COMPILE_MAX_DELIVER",
+        "COMPILE_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    settings = Settings()
+
+    assert settings.nats_url == "nats://localhost:4222"
+    assert settings.compile_stream_name == "TERTIUS_COMPILE"
+    assert settings.compile_request_subject == "tertius.compile.request"
+    assert settings.compile_succeeded_subject == "tertius.compile.succeeded"
+    assert settings.compile_failed_subject == "tertius.compile.failed"
+    assert settings.compile_worker_queue == "compile-workers"
+    assert settings.compile_ack_wait_seconds == 660
+    assert settings.compile_max_deliver == 3
+    assert settings.compile_timeout_seconds == 600
+
+
+def test_settings_allows_compile_nats_overrides(monkeypatch):
+    monkeypatch.setenv("NATS_URL", "nats://nats.tertius.svc:4222")
+    monkeypatch.setenv("COMPILE_STREAM_NAME", "CUSTOM_COMPILE")
+    monkeypatch.setenv("COMPILE_REQUEST_SUBJECT", "custom.compile.request")
+    monkeypatch.setenv("COMPILE_SUCCEEDED_SUBJECT", "custom.compile.succeeded")
+    monkeypatch.setenv("COMPILE_FAILED_SUBJECT", "custom.compile.failed")
+    monkeypatch.setenv("COMPILE_WORKER_QUEUE", "custom-workers")
+    monkeypatch.setenv("COMPILE_ACK_WAIT_SECONDS", "900")
+    monkeypatch.setenv("COMPILE_MAX_DELIVER", "5")
+    monkeypatch.setenv("COMPILE_TIMEOUT_SECONDS", "840")
+
+    settings = Settings()
+
+    assert settings.nats_url == "nats://nats.tertius.svc:4222"
+    assert settings.compile_stream_name == "CUSTOM_COMPILE"
+    assert settings.compile_request_subject == "custom.compile.request"
+    assert settings.compile_succeeded_subject == "custom.compile.succeeded"
+    assert settings.compile_failed_subject == "custom.compile.failed"
+    assert settings.compile_worker_queue == "custom-workers"
+    assert settings.compile_ack_wait_seconds == 900
+    assert settings.compile_max_deliver == 5
+    assert settings.compile_timeout_seconds == 840

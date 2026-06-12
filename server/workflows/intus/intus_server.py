@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-import traceback
 from pathlib import Path
 from typing import Optional
+from uuid import UUID
 from pydantic import BaseModel
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -11,11 +11,11 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_runtime import hydrate_project_files
-from core.compile_sandbox import run_compile_sandbox
+from core.compile_messages import CompileCommand
 from core.config import get_settings
 from core.db import get_db
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
+from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream
 from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
 
 app = FastAPI(title="Intus Compiler Server")
@@ -47,6 +47,17 @@ class CompileRequest(BaseModel):
     code: str
     export_format: str = "stl"
     file: Optional[str] = "design.py"
+
+
+async def publish_compile_command(command: CompileCommand) -> None:
+    settings = get_settings()
+    nc = await connect_nats(settings.nats_url)
+    try:
+        js = await ensure_compile_stream(nc, settings)
+        await NatsPublisher(js).publish_json(settings.compile_request_subject, command)
+        await nc.flush()
+    finally:
+        await nc.close()
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/health")
@@ -196,7 +207,7 @@ def delete_file(name: str, file: str, ctx: AuthContext = Depends(get_auth_contex
     return {"success": True}
 
 @app.post("/projects/{name}/compile")
-def compile_project(
+async def compile_project(
     name: str,
     req: CompileRequest,
     ctx: AuthContext = Depends(get_auth_context),
@@ -219,7 +230,6 @@ def compile_project(
 
     project_id = project.id
     job_id = None
-    job = None
     try:
         saved = repo.save_code(
             name,
@@ -231,54 +241,87 @@ def compile_project(
         if not saved:
             return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-        files = repo.files_for_runtime(name)
-        if files is None:
-            return JSONResponse(status_code=404, content={"error": "Project not found"})
-
-        job = compile_repo.start_job(project_id, ctx.user_id, ext)
+        job = compile_repo.start_job(project_id, ctx.user_id, ext, status="queued")
         job_id = job.id
         db.commit()
 
-        with hydrate_project_files(files) as project_dir:
-            result = run_compile_sandbox(project_dir, ext)
-            if not result.success:
-                error = result.error or result.stderr or "Compile failed"
-                persisted_job = db.get(CompileJob, job_id)
-                compile_repo.finish_job(persisted_job, "failed", error=error)
-                db.commit()
-                return JSONResponse(status_code=200, content={"success": False, "error": error, "short": error})
-
-            if result.output_path is None:
-                raise RuntimeError("Compile succeeded without an output artifact")
-            output_bytes = result.output_path.read_bytes()
-
-        settings = get_settings()
-        artifact = compile_repo.record_artifact(
-            project_id,
-            job_id,
-            ext,
-            output_bytes,
+        command = CompileCommand(
+            job_id=job.id,
+            tenant_id=ctx.tenant_id,
+            project_id=project_id,
+            requested_by=ctx.user_id,
+            export_format=ext,
+            created_at=job.created_at,
         )
-        persisted_job = db.get(CompileJob, job_id)
-        compile_repo.finish_job(persisted_job, "succeeded")
-        pruned_artifacts = compile_repo.prunable_artifacts(project_id, ext, max(1, settings.artifact_retention_limit))
-        compile_repo.delete_artifacts(pruned_artifacts)
-        db.commit()
-        return {"success": True, "format": ext, "artifact_id": str(artifact.id)}
+        await publish_compile_command(command)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"success": True, "job_id": str(job.id), "status": "queued", "format": ext},
+        )
 
-    except Exception as e:
-        tb = traceback.format_exc()
-        db.rollback()
+    except Exception as exc:
         if job_id is not None:
+            db.rollback()
             persisted_job = db.get(CompileJob, job_id)
             if persisted_job is not None:
-                compile_repo.finish_job(persisted_job, "failed", error=tb)
+                compile_repo.finish_job(
+                    persisted_job,
+                    "failed",
+                    error=f"Failed to enqueue compile job: {exc}",
+                    error_code="enqueue_failed",
+                    user_message="Compile could not be started. Try again.",
+                    retryable=True,
+                )
                 db.commit()
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "success": False,
+                    "job_id": str(job_id),
+                    "error": str(exc),
+                    "short": "Failed to enqueue compile job",
+                },
+            )
         return JSONResponse(status_code=200, content={
             "success": False,
-            "error": tb,
-            "short": str(e)
+            "error": str(exc),
+            "short": str(exc)
         })
+
+
+@app.get("/projects/{name}/compile/jobs/{job_id}")
+def get_compile_job_status(
+    name: str,
+    job_id: UUID,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    compile_repo = CompileRepository(db, ctx.tenant_id)
+    try:
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    job = compile_repo.get_job(project.id, job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "Compile job not found"})
+
+    artifact = compile_repo.artifact_for_job(job.id) if job.status == "succeeded" else None
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "format": job.export_format,
+        "error": job.error,
+        "error_code": job.error_code,
+        "user_message": job.user_message,
+        "retryable": job.retryable,
+        "artifact_id": str(artifact.id) if artifact else None,
+        "created_at": job.created_at.isoformat(),
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
 
 if __name__ == "__main__":
     import uvicorn

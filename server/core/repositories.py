@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
+from core.compile_messages import CompileCommand
 from core.models import Artifact, CompileJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
@@ -238,21 +239,59 @@ class CompileRepository:
         self.db = db
         self.tenant_id = tenant_id
 
-    def start_job(self, project_id: UUID, user_id: UUID, export_format: str) -> CompileJob:
+    def start_job(self, project_id: UUID, user_id: UUID, export_format: str, status: str = "running") -> CompileJob:
         job = CompileJob(
             tenant_id=self.tenant_id,
             project_id=project_id,
             requested_by=user_id,
-            status="running",
+            status=status,
             export_format=export_format,
         )
         self.db.add(job)
         self.db.flush()
         return job
 
-    def finish_job(self, job: CompileJob, status: str, error: str | None = None) -> None:
+    def get_job(self, project_id: UUID, job_id: UUID) -> CompileJob | None:
+        return self.db.scalar(
+            select(CompileJob).where(
+                CompileJob.tenant_id == self.tenant_id,
+                CompileJob.project_id == project_id,
+                CompileJob.id == job_id,
+            )
+        )
+
+    def get_job_for_command(self, command: CompileCommand) -> CompileJob | None:
+        return self.db.scalar(
+            select(CompileJob).where(
+                CompileJob.id == command.job_id,
+                CompileJob.tenant_id == command.tenant_id,
+                CompileJob.project_id == command.project_id,
+                CompileJob.requested_by == command.requested_by,
+                CompileJob.export_format == command.export_format,
+            )
+        )
+
+    def mark_job_running(self, job: CompileJob) -> None:
+        job.status = "running"
+        job.error = None
+        job.error_code = None
+        job.user_message = None
+        job.retryable = False
+
+    def finish_job(
+        self,
+        job: CompileJob,
+        status: str,
+        error: str | None = None,
+        error_code: str | None = None,
+        user_message: str | None = None,
+        retryable: bool = False,
+    ) -> None:
         job.status = status
         job.error = error
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = retryable
         job.finished_at = now_utc()
 
     def record_artifact(
@@ -297,3 +336,13 @@ class CompileRepository:
         for artifact in artifacts:
             self.db.delete(artifact)
         self.db.flush()
+
+    def artifact_for_job(self, job_id: UUID) -> Artifact | None:
+        return self.db.scalar(
+            select(Artifact)
+            .where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.compile_job_id == job_id,
+            )
+            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        )

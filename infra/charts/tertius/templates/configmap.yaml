@@ -24,6 +24,14 @@ data:
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}
   NATS_URL: {{ $natsUrl | quote }}
+  COMPILE_STREAM_NAME: {{ .Values.app.config.compileStreamName | quote }}
+  COMPILE_REQUEST_SUBJECT: {{ .Values.app.config.compileRequestSubject | quote }}
+  COMPILE_SUCCEEDED_SUBJECT: {{ .Values.app.config.compileSucceededSubject | quote }}
+  COMPILE_FAILED_SUBJECT: {{ .Values.app.config.compileFailedSubject | quote }}
+  COMPILE_WORKER_QUEUE: {{ .Values.app.config.compileWorkerQueue | quote }}
+  COMPILE_ACK_WAIT_SECONDS: {{ .Values.app.config.compileAckWaitSeconds | quote }}
+  COMPILE_MAX_DELIVER: {{ .Values.app.config.compileMaxDeliver | quote }}
+  COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   APP_DB_HOST: {{ printf "%s-rw" (include "tertius.appDbName" .) | quote }}
   APP_DB_NAME: {{ .Values.postgres.database | quote }}
   APP_DB_OWNER: {{ .Values.postgres.owner | quote }}

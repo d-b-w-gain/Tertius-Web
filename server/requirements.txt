@@ -11,6 +11,7 @@ psycopg[binary]
 alembic
 PyJWT[crypto]
 httpx
+nats-py
 pytest
 pytest-asyncio
 testcontainers[postgres]

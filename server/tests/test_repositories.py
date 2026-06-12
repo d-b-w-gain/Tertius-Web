@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from core.compile_messages import CompileCommand
 from core.models import (
     AppUser,
+    CompileJob,
     Project,
     ProjectFile,
     SourceSnapshot,
@@ -15,7 +18,7 @@ from core.models import (
     TenantMembership,
     UserWorkspaceState,
 )
-from core.repositories import ProjectRepository, require_valid_project_name, require_valid_python_filename
+from core.repositories import CompileRepository, ProjectRepository, require_valid_project_name, require_valid_python_filename
 
 
 def seed_two_tenants(db: Session):
@@ -194,3 +197,60 @@ def test_project_file_cannot_cross_tenant_project_boundary(db_session):
 
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_compile_repository_gets_job_and_artifact_by_scope(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
+    artifact = repo.record_artifact(seeded_tenant.project_id, job.id, "glb", b"model")
+    db_session.commit()
+
+    assert repo.get_job(seeded_tenant.project_id, job.id).id == job.id
+    assert repo.artifact_for_job(job.id).id == artifact.id
+
+
+def test_compile_repository_returns_none_for_wrong_project(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
+    db_session.commit()
+
+    assert repo.get_job(uuid4(), job.id) is None
+
+
+def test_compile_repository_validates_command_identity(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
+    db_session.commit()
+
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        export_format="stl",
+        created_at=job.created_at,
+    )
+    mismatched = command.model_copy(update={"export_format": "glb"})
+
+    assert repo.get_job_for_command(command).id == job.id
+    assert repo.get_job_for_command(mismatched) is None
+
+
+def test_compile_repository_persists_structured_failure(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
+
+    repo.finish_job(
+        job,
+        "failed",
+        error="boom",
+        error_code="sandbox_error",
+        user_message="Compile failed. Fix the model source and try again.",
+        retryable=True,
+    )
+    db_session.commit()
+
+    persisted = db_session.get(CompileJob, job.id)
+    assert persisted.error_code == "sandbox_error"
+    assert persisted.user_message == "Compile failed. Fix the model source and try again."
+    assert persisted.retryable is True
