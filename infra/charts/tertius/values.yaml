@@ -33,7 +33,7 @@ app:
     valkeyUrl: redis://tertius-valkey:6379/0
     oidcClientSecret: ""
 api:
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
     tag: master-29-3375080 # {"$imagepolicy": "flux-system:tertius-api:tag"}
@@ -61,8 +61,14 @@ api:
       periodSeconds: 20
 
 compileWorker:
-  replicaCount: 1
-  resources: {}
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 4Gi
 
 ui:
   replicaCount: 1
