@@ -5,7 +5,12 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { createProjectStorage } from '../../shared/projectStorage';
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
-import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
+import {
+  ACTIVE_PROJECT_POLL_INTERVAL_MS,
+  FILE_STATUS_POLL_INTERVAL_MS,
+  getPollingDelay,
+  shouldRunPollingRequest,
+} from '../../shared/polling';
 
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
@@ -234,7 +239,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     };
     
     loadActiveProject();
-    const interval = isGuest ? undefined : setInterval(loadActiveProject, getPollingDelay(2000));
+    const interval = isGuest ? undefined : setInterval(loadActiveProject, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
     if (isGuest) {
       window.addEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
     }
@@ -319,7 +324,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       }
     };
     
-    const interval = setInterval(checkSync, getPollingDelay(1000));
+    const interval = setInterval(checkSync, getPollingDelay(FILE_STATUS_POLL_INTERVAL_MS));
     return () => clearInterval(interval);
   }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 

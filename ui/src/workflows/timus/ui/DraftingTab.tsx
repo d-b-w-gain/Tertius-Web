@@ -4,7 +4,12 @@ import { useAuth } from '../../../auth/AuthProvider';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
-import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
+import {
+  ACTIVE_PROJECT_POLL_INTERVAL_MS,
+  MODEL_STATUS_POLL_INTERVAL_MS,
+  getPollingDelay,
+  shouldRunPollingRequest,
+} from '../../shared/polling';
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
   const { authMode, login } = useAuth();
@@ -93,7 +98,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     };
     
     fetchActive();
-    const interval = setInterval(fetchActive, getPollingDelay(2000));
+    const interval = setInterval(fetchActive, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
     return () => {
         isMounted = false;
         clearInterval(interval);
@@ -176,7 +181,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
       } catch (e) {}
     };
     checkStatus();
-    const interval = setInterval(checkStatus, getPollingDelay(3000));
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
   }, [activeProject, isActive, serverUrl, getAccessToken, userRequestedBuild]);
 
@@ -411,7 +416,7 @@ const DraftingCanvas: React.FC<{
       } catch (e) {}
     };
     checkModel();
-    const interval = setInterval(checkModel, getPollingDelay(3000));
+    const interval = setInterval(checkModel, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
   }, [serverUrl, activeProject, isActive, getAccessToken]);
 

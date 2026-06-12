@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../../auth/AuthProvider';
 import { resolveWorkflowServerUrl } from '../apiConfig';
 import { createProjectStorage } from '../projectStorage';
-import { getPollingDelay, shouldRunPollingRequest } from '../polling';
+import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../polling';
 
 export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
 
@@ -38,7 +38,7 @@ export const ProjectSelector: React.FC = () => {
     };
     
     fetchActive();
-    const interval = setInterval(fetchActive, getPollingDelay(2000));
+    const interval = setInterval(fetchActive, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
     return () => {
         isMounted = false;
         clearInterval(interval);

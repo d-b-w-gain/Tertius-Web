@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CompilerTab } from './CompilerTab'
+import { FILE_STATUS_POLL_INTERVAL_MS } from '../../shared/polling'
+
+const maxFileStatusPollingDelay = Math.ceil(FILE_STATUS_POLL_INTERVAL_MS * 1.1)
 
 const storage = vi.hoisted(() => ({
   getActiveProject: vi.fn(),
@@ -94,7 +97,7 @@ describe('CompilerTab compile jobs', () => {
       }))
 
     await renderCompiler()
-    vi.useFakeTimers()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
 
     fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
 
@@ -132,7 +135,7 @@ describe('CompilerTab compile jobs', () => {
       }))
 
     await renderCompiler()
-    vi.useFakeTimers()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
 
     fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
     await act(async () => {})
@@ -243,6 +246,7 @@ describe('CompilerTab compile jobs', () => {
   })
 
   it('auto-compile uses polling and disables auto-compile after a failed terminal status', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     storage.loadCode
       .mockResolvedValueOnce('box = Box(1, 1, 1)')
       .mockResolvedValueOnce('box = Box(3, 3, 3)')
@@ -262,25 +266,31 @@ describe('CompilerTab compile jobs', () => {
 
     await renderCompiler(true)
 
-    await waitFor(() => {
-      expect(mocks.apiFetch).toHaveBeenCalledWith(
-        '/api/intus/projects/default_purlin/compile',
-        mocks.getAccessToken,
-        expect.objectContaining({ method: 'POST' }),
-      )
-    }, { timeout: 2500 })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
 
-    await waitFor(() => {
-      expect(mocks.apiFetch).toHaveBeenCalledWith(
-        '/api/intus/projects/default_purlin/compile/jobs/job-1',
-        mocks.getAccessToken,
-      )
-      expect(screen.getByText(/Compile failed/)).toBeInTheDocument()
-      expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
-    }, { timeout: 2500 })
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/intus/projects/default_purlin/compile',
+      mocks.getAccessToken,
+      expect.objectContaining({ method: 'POST' }),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/intus/projects/default_purlin/compile/jobs/job-1',
+      mocks.getAccessToken,
+    )
+    expect(screen.getByText(/Compile failed/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
   })
 
   it('reloads a server-side edit that lands while a compile job is running', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     storage.loadCode
       .mockResolvedValueOnce('box = Box(1, 1, 1)')
       .mockResolvedValueOnce('box = Box(4, 4, 4)')
@@ -299,17 +309,21 @@ describe('CompilerTab compile jobs', () => {
 
     await renderCompiler(true)
 
-    await waitFor(() => {
-      expect(storage.getStatus).toHaveBeenCalledTimes(1)
-    }, { timeout: 1500 })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+
+    expect(storage.getStatus).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByLabelText('Auto-compile'))
     fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
     await act(async () => {})
 
-    await waitFor(() => {
-      expect(screen.getByText(/Compiled glb artifact artifact-1/)).toBeInTheDocument()
-    }, { timeout: 2500 })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect(screen.getByText(/Compiled glb artifact artifact-1/)).toBeInTheDocument()
 
     await waitFor(() => {
       expect(storage.loadCode).toHaveBeenCalledWith('default_purlin', 'design.py')
