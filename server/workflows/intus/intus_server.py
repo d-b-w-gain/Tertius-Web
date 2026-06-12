@@ -280,6 +280,8 @@ async def compile_project(
                     "job_id": str(job_id),
                     "error": str(exc),
                     "short": "Failed to enqueue compile job",
+                    "user_message": "Compile could not be started. Try again.",
+                    "retryable": True,
                 },
             )
         return JSONResponse(status_code=200, content={

@@ -48,11 +48,17 @@ function jsonResponse(data: unknown, ok = true) {
 async function renderCompiler(isActive = false) {
   render(<CompilerTab serverUrl="/api/intus" isActive={isActive} />)
   await screen.findByText('default_purlin')
+  await act(async () => {})
 }
 
 describe('CompilerTab compile jobs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    for (const mock of Object.values(storage)) {
+      mock.mockReset()
+    }
+    mocks.apiFetch.mockReset()
+    mocks.getAccessToken.mockReset()
     storage.getActiveProject.mockResolvedValue('default_purlin')
     storage.listFiles.mockResolvedValue(['design.py'])
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
@@ -130,6 +136,48 @@ describe('CompilerTab compile jobs', () => {
     expect(screen.getByRole('button', { name: /Try again/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
     expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops polling and surfaces non-ok job status responses', async () => {
+    mocks.apiFetch
+      .mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'Compile job not found' }, false))
+
+    await renderCompiler()
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+
+    expect(screen.getByText(/Compile job not found/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows retry affordance when queueing returns a retryable failure job', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(jsonResponse({
+      success: false,
+      job_id: 'job-1',
+      short: 'Failed to enqueue compile job',
+      user_message: 'Compile could not be started. Try again.',
+      retryable: true,
+    }, false))
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('code editor'), { target: { value: 'box = Box(2, 2, 2)' } })
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {})
+
+    expect(screen.getByText(/Compile could not be started/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Try again/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
   })
 
   it('try again posts current editor contents and polls the new job', async () => {
@@ -221,4 +269,41 @@ describe('CompilerTab compile jobs', () => {
       expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
     }, { timeout: 2500 })
   })
+
+  it('reloads a server-side edit that lands while a compile job is running', async () => {
+    storage.loadCode
+      .mockResolvedValueOnce('box = Box(1, 1, 1)')
+      .mockResolvedValueOnce('box = Box(4, 4, 4)')
+    storage.getStatus
+      .mockResolvedValueOnce({ mtime: 1 })
+      .mockResolvedValueOnce({ mtime: 2 })
+      .mockResolvedValueOnce({ mtime: 2 })
+    mocks.apiFetch
+      .mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        job_id: 'job-1',
+        status: 'succeeded',
+        format: 'glb',
+        artifact_id: 'artifact-1',
+      }))
+
+    await renderCompiler(true)
+
+    await waitFor(() => {
+      expect(storage.getStatus).toHaveBeenCalledTimes(1)
+    }, { timeout: 1500 })
+
+    fireEvent.click(screen.getByLabelText('Auto-compile'))
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {})
+
+    await waitFor(() => {
+      expect(screen.getByText(/Compiled glb artifact artifact-1/)).toBeInTheDocument()
+    }, { timeout: 2500 })
+
+    await waitFor(() => {
+      expect(storage.loadCode).toHaveBeenCalledWith('default_purlin', 'design.py')
+      expect(screen.getByLabelText('code editor')).toHaveValue('box = Box(4, 4, 4)')
+    }, { timeout: 2500 })
+  }, 10000)
 })

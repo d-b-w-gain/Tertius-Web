@@ -68,6 +68,8 @@ def test_compile_marks_job_failed_when_enqueue_fails(authenticated_intus_client,
     body = response.json()
     assert body["success"] is False
     assert body["job_id"]
+    assert body["user_message"] == "Compile could not be started. Try again."
+    assert body["retryable"] is True
 
     job = db_session.get(CompileJob, body["job_id"])
     assert job.status == "failed"
