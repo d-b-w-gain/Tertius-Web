@@ -21,6 +21,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [autoCompile, setAutoCompile] = useState<boolean>(true);
+  const [failedCompileRetry, setFailedCompileRetry] = useState<{ code: string } | null>(null);
   
   const [files, setFiles] = useState<string[]>(['design.py']);
   const [activeFile, setActiveFile] = useState<string>('design.py');
@@ -34,6 +35,9 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const mtimeRef = useRef<number>(0);
   const isCompilingRef = useRef<boolean>(false);
   const loadRequestRef = useRef<number>(0);
+  const pollTimerRef = useRef<number | undefined>(undefined);
+  const compileRequestRef = useRef<number>(0);
+  const startCompileRef = useRef<((nextCode: string, mode: 'manual' | 'auto') => Promise<void>) | null>(null);
   const activeProjectRef = useRef<string>('');
   const activeFileRef = useRef<string>('design.py');
   const codeRef = useRef<string>('');
@@ -54,6 +58,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     codeRef.current = code;
   }, [code]);
 
+  const setCompilingState = useCallback((value: boolean) => {
+    isCompilingRef.current = value;
+    setIsCompiling(value);
+  }, []);
+
   const fetchGitStatus = useCallback(async (name: string) => {
     try {
       const data = await storage.getHistory(name);
@@ -62,6 +71,113 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       setGitStatus({ is_git: false });
     }
   }, [storage]);
+
+  const pollCompileJob = useCallback((projectName: string, jobId: string, requestId: number, mode: 'manual' | 'auto') => {
+    const tick = async () => {
+      if (compileRequestRef.current !== requestId) return;
+
+      try {
+        const res = await apiFetch(`${serverUrl}/projects/${projectName}/compile/jobs/${jobId}`, getAccessToken);
+        const data = await res.json();
+
+        if (!res.ok) {
+          const message = data.user_message || data.short || data.error || 'Compile job status could not be loaded.';
+          setLog(prev => `${prev}\n[ERROR] ${message}`);
+          setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
+          if (mode === 'auto') setAutoCompile(false);
+          setCompilingState(false);
+          return;
+        }
+
+        if (data.status === 'succeeded') {
+          const outputFormat = data.format || data.export_format || format;
+          setLog(prev => `${prev}\n[SUCCESS] Compiled ${outputFormat} artifact ${data.artifact_id}`);
+          setFailedCompileRetry(null);
+          const postStatus = await storage.getStatus(projectName, activeFileRef.current);
+          if (postStatus.mtime) {
+            if (mtimeRef.current === 0 || postStatus.mtime <= mtimeRef.current) {
+              mtimeRef.current = postStatus.mtime;
+            } else {
+              const latestCode = await storage.loadCode(projectName, activeFileRef.current);
+              const shouldAutoCompileLatest = autoCompile && latestCode !== codeRef.current;
+              setCode(latestCode);
+              mtimeRef.current = postStatus.mtime;
+              if (shouldAutoCompileLatest) {
+                setCompilingState(false);
+                void startCompileRef.current?.(latestCode, 'auto');
+                return;
+              }
+            }
+          }
+          fetchGitStatus(projectName);
+          if (mode === 'manual') setAutoCompile(true);
+          setCompilingState(false);
+          return;
+        }
+
+        if (data.status === 'failed') {
+          const message = data.user_message || 'Compile failed. Try again.';
+          const details = data.error ? `\n${data.error}` : '';
+          setLog(prev => `${prev}\n[ERROR] ${message}${details}`);
+          setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
+          if (mode === 'auto') setAutoCompile(false);
+          setCompilingState(false);
+          return;
+        }
+
+        pollTimerRef.current = window.setTimeout(tick, 2000);
+      } catch {
+        pollTimerRef.current = window.setTimeout(tick, 3000);
+      }
+    };
+
+    pollTimerRef.current = window.setTimeout(tick, 1000);
+  }, [autoCompile, fetchGitStatus, format, getAccessToken, serverUrl, setCompilingState, storage]);
+
+  const startCompile = useCallback(async (nextCode: string, mode: 'manual' | 'auto') => {
+    if (!activeProjectRef.current || isGuest || isCompilingRef.current) return;
+
+    const projectName = activeProjectRef.current;
+    const requestId = compileRequestRef.current + 1;
+    compileRequestRef.current = requestId;
+    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current);
+
+    setCompilingState(true);
+    setFailedCompileRetry(null);
+    setLog(mode === 'manual' ? `Compile queued for ${projectName}...` : 'External change detected. Compile queued...');
+
+    try {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/compile`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: nextCode, export_format: format, quality, file: activeFileRef.current })
+      });
+      const data = await res.json();
+
+      if (!res.ok || !data.job_id) {
+        setLog(`[ERROR] ${data.user_message || data.short || data.error || 'Failed to queue compile job'}`);
+        setFailedCompileRetry(data.retryable ? { code: nextCode } : null);
+        if (mode === 'auto') setAutoCompile(false);
+        setCompilingState(false);
+        return;
+      }
+
+      setLog(prev => `${prev}\n[INFO] Job ${data.job_id} is ${data.status || 'queued'}`);
+      pollCompileJob(projectName, data.job_id, requestId, mode);
+    } catch {
+      setLog('[FATAL] Failed to reach server during compile.');
+      if (mode === 'auto') setAutoCompile(false);
+      setCompilingState(false);
+    }
+  }, [format, getAccessToken, isGuest, pollCompileJob, quality, serverUrl, setCompilingState]);
+
+  useEffect(() => {
+    startCompileRef.current = startCompile;
+  }, [startCompile]);
+
+  useEffect(() => () => {
+    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current);
+  }, []);
 
   const loadProject = useCallback(async (
     projectName: string,
@@ -191,35 +307,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                return;
              }
              
-             setLog('External change detected (Artus). Auto-compiling...');
-             
-             // Trigger auto-compile silently
-             setIsCompiling(true);
-             try {
-               const compRes = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
-                 method: 'POST',
-                 headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ code: newCode, export_format: format, quality, file: activeFile })
-               });
-               const compData = await compRes.json();
-               if (compData.success) {
-                 setLog(prev => prev + `\n[SUCCESS] Auto-compiled to ${compData.file}`);
-                 // Update mtime to prevent loop
-                 const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
-                 if (postStatusRes.ok) {
-                   const postStatus = await postStatusRes.json();
-                   if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
-                 }
-                 fetchGitStatus(activeProject);
-               } else {
-                 setLog(prev => prev + `\n[ERROR] ${compData.short}`);
-                 setAutoCompile(false);
-               }
-             } catch (e) {
-                 setLog(prev => prev + `\n[ERROR] Auto-compile failed.`);
-                 setAutoCompile(false);
-             }
-             setIsCompiling(false);
+             void startCompile(newCode, 'auto');
           }
         }
       } catch (e) {
@@ -229,7 +317,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     const interval = setInterval(checkSync, 1000);
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, quality, isActive, activeFile, getAccessToken, autoCompile, isGuest, storage, fetchGitStatus]);
+  }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 
   const switchFile = async (fileName: string) => {
     if (fileName === activeFile) return;
@@ -301,33 +389,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       setLog('Log in to compile and export this local draft.');
       return;
     }
-    if (!activeProject) return;
-    setIsCompiling(true);
-    setLog(`Compiling ${activeProject}...`);
-    try {
-      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, export_format: format, quality, file: activeFile })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setLog(`[SUCCESS] Compiled and exported to ${data.file}`);
-        // Prevent sync loop by updating baseline
-        const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
-        if (postStatusRes.ok) {
-          const postStatus = await postStatusRes.json();
-          if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
-        }
-        fetchGitStatus(activeProject);
-        setAutoCompile(true); // Re-enable on manual success
-      } else {
-        setLog(`[ERROR] ${data.short}\n\n${data.error}`);
-      }
-    } catch (e) {
-      setLog(`[FATAL] Failed to reach server during compile.`);
-    }
-    setIsCompiling(false);
+    await startCompile(code, 'manual');
   };
 
   return (
@@ -487,7 +549,19 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               </button>
             </div>
             {activePane === 'output' && (
-              <button onClick={() => setLog('')} className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">Clear</button>
+              <div className="flex items-center gap-2">
+                {failedCompileRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void startCompile(failedCompileRetry.code, 'manual')}
+                    disabled={isCompiling || isGuest}
+                    className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 disabled:opacity-50"
+                  >
+                    Try again
+                  </button>
+                )}
+                <button onClick={() => setLog('')} className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">Clear</button>
+              </div>
             )}
           </div>
           

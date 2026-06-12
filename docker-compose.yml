@@ -5,9 +5,40 @@ services:
       - "8000:8000"
     volumes:
       - ./server:/app/server
-      - ./artifacts:/tmp/tertius-artifacts
     environment:
       NATS_URL: nats://nats:4222
+      COMPILE_STREAM_NAME: TERTIUS_COMPILE
+      COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_SUCCEEDED_SUBJECT: tertius.compile.succeeded
+      COMPILE_FAILED_SUBJECT: tertius.compile.failed
+      COMPILE_WORKER_QUEUE: compile-workers
+      APP_DB_HOST: postgres
+      APP_DB_NAME: tertius
+      APP_DB_OWNER: tertius
+      APP_DB_PASSWORD: tertius
+    depends_on:
+      - postgres
+      - nats
+
+  compile-worker:
+    build: .
+    command: sh /app/server/start-compile-worker.sh
+    volumes:
+      - ./server:/app/server
+    environment:
+      NATS_URL: nats://nats:4222
+      COMPILE_STREAM_NAME: TERTIUS_COMPILE
+      COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_SUCCEEDED_SUBJECT: tertius.compile.succeeded
+      COMPILE_FAILED_SUBJECT: tertius.compile.failed
+      COMPILE_WORKER_QUEUE: compile-workers
+      APP_DB_HOST: postgres
+      APP_DB_NAME: tertius
+      APP_DB_OWNER: tertius
+      APP_DB_PASSWORD: tertius
+    depends_on:
+      - postgres
+      - nats
 
   frontend:
     image: node:20

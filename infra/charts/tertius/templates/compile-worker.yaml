@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.apiName" . }}-compile-worker
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: compile-worker
+spec:
+  replicas: {{ .Values.compileWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: compile-worker
+  template:
+    metadata:
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: compile-worker
+    spec:
+      serviceAccountName: {{ include "tertius.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: compile-worker
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command: ["sh", "/app/server/start-compile-worker.sh"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "tertius.configName" . }}
+            - secretRef:
+                name: {{ include "tertius.secretName" . }}
+                optional: true
+          env:
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.appUserSecretName | quote }}
+                  key: password
+                  optional: true
+            - name: APP_DB_OWNER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.appUserSecretName | quote }}
+                  key: username
+                  optional: true
+          resources:
+            {{- toYaml .Values.compileWorker.resources | nindent 12 }}

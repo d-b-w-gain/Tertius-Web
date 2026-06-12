@@ -55,7 +55,7 @@ Tertius currently bundles four specialized, highly decoupled workflows:
 
 ### 1. Launching Postgres, Keycloak, and NATS
 
-Local development uses Postgres for app data, Keycloak for login, and NATS JetStream for future asynchronous workflow handoff. Start the stack dependencies from the repository root:
+Local development uses Postgres for app data, Keycloak for login, and NATS JetStream for asynchronous compile jobs. Start the stack dependencies from the repository root:
 
 ```bash
 docker compose up -d postgres keycloak nats
@@ -87,7 +87,12 @@ ALLOWED_ORIGINS=http://localhost:5173
 ```
 
 Generated workflow artifacts are stored in Postgres; run Alembic migrations before compiling or serving artifacts.
-NATS monitoring is available locally at `http://localhost:8222`. The current application only receives `NATS_URL`; producers, consumers, stream definitions, and NATS authentication are intentionally deferred until a concrete workflow depends on them.
+NATS monitoring is available locally at `http://localhost:8222`. Intus compile requests are queued to JetStream and processed by a separate worker:
+
+```bash
+cd server
+PYTHONPATH=. rtk uv run python -m workflows.intus.compile_worker
+```
 
 For the frontend, copy `ui/.env.example` or set:
 
@@ -102,8 +107,7 @@ VITE_KEYCLOAK_CLIENT_ID=tertius-web
 The server relies on several internal X11 dependencies (like `libxrender1`) to render geometry headlessly in `OCP`. To prevent cluttering your local machine, run it in Docker:
 
 ```bash
-docker build -t tertius-server .
-docker run -p 8000:8000 tertius-server
+docker compose up -d postgres keycloak nats backend compile-worker frontend
 ```
 *The API will be available at `http://localhost:8000/docs`.*
 

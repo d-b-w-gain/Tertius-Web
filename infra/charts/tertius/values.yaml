@@ -15,6 +15,14 @@ app:
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
     natsUrl: ""
+    compileStreamName: TERTIUS_COMPILE
+    compileRequestSubject: tertius.compile.request
+    compileSucceededSubject: tertius.compile.succeeded
+    compileFailedSubject: tertius.compile.failed
+    compileWorkerQueue: compile-workers
+    compileAckWaitSeconds: 660
+    compileMaxDeliver: 3
+    compileTimeoutSeconds: 600
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
@@ -25,7 +33,7 @@ app:
     valkeyUrl: redis://tertius-valkey:6379/0
     oidcClientSecret: ""
 api:
-  replicaCount: 2
+  replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
     tag: master-30-8ce0e30 # {"$imagepolicy": "flux-system:tertius-api:tag"}
@@ -51,6 +59,17 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+
+compileWorker:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+
 ui:
   replicaCount: 1
   image:

@@ -63,6 +63,21 @@ if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; t
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/component: compile-worker'; then
+  echo "Local Helm render did not include the compile worker deployment." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'command: \["sh", "/app/server/start-compile-worker.sh"\]'; then
+  echo "Compile worker deployment must run the dedicated worker startup script." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_STREAM_NAME'; then
+  echo "Local Helm render did not include compile worker stream configuration." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$rendered" | rg -q 'jetstream'; then
   echo "Local Helm render did not include JetStream configuration." >&2
   exit 1

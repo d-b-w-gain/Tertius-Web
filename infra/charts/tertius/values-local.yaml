@@ -24,6 +24,16 @@ api:
       cpu: "1"
       memory: 1Gi
 
+compileWorker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
 ui:
   replicaCount: 1
   image:
