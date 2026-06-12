@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 from pydantic import BaseModel
 
 
@@ -45,7 +43,7 @@ async def ensure_compile_stream(nc, settings):
                 filter_subject=settings.compile_request_subject,
                 deliver_policy=DeliverPolicy.ALL,
                 ack_policy=AckPolicy.EXPLICIT,
-                ack_wait=timedelta(seconds=settings.compile_ack_wait_seconds),
+                ack_wait=settings.compile_ack_wait_seconds,
                 max_deliver=settings.compile_max_deliver,
             ),
         )

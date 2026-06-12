@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -95,6 +95,7 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     consumer_config = jetstream.consumers[("TERTIUS_COMPILE", "compile-workers")]
     assert consumer_config.durable_name == "compile-workers"
     assert consumer_config.filter_subject == "tertius.compile.request"
-    assert consumer_config.ack_wait == timedelta(seconds=660)
+    assert consumer_config.ack_wait == 660
+    assert consumer_config.as_dict()["ack_wait"] == 660_000_000_000
     assert consumer_config.max_deliver == 3
     assert connection.published == []
