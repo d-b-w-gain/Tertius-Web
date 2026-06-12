@@ -5,6 +5,7 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { createProjectStorage } from '../../shared/projectStorage';
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
+import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
 
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
@@ -221,6 +222,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!isActive) return;
     let isMounted = true;
     const loadActiveProject = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const projectName = await storage.getActiveProject();
         if (!projectName || !isMounted || projectName === activeProject) {
@@ -232,7 +234,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     };
     
     loadActiveProject();
-    const interval = isGuest ? undefined : setInterval(loadActiveProject, 2000);
+    const interval = isGuest ? undefined : setInterval(loadActiveProject, getPollingDelay(2000));
     if (isGuest) {
       window.addEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
     }
@@ -289,6 +291,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (isGuest || !activeProject || !isActive) return;
     
     const checkSync = async () => {
+      if (!shouldRunPollingRequest()) return;
       if (isCompilingRef.current) return;
       try {
         const data = await storage.getStatus(activeProject, activeFile);
@@ -316,7 +319,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       }
     };
     
-    const interval = setInterval(checkSync, 1000);
+    const interval = setInterval(checkSync, getPollingDelay(1000));
     return () => clearInterval(interval);
   }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 

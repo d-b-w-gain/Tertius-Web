@@ -5,6 +5,7 @@ import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
+import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -234,6 +235,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     let mtime = 0;
     
     const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${extusServerUrl}/status`, getAccessToken);
         if (res.ok) {
@@ -250,7 +252,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 3000);
+    const interval = setInterval(checkStatus, getPollingDelay(3000));
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -282,6 +284,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   }, [extusUrl, getAccessToken]);
 
   const fetchFeatures = async () => {
+    if (!shouldRunPollingRequest()) return;
     try {
       const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
       const data = await res.json();
@@ -301,7 +304,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
 
   useEffect(() => {
     fetchFeatures();
-    const interval = setInterval(fetchFeatures, 4000);
+    const interval = setInterval(fetchFeatures, getPollingDelay(4000));
     return () => clearInterval(interval);
   }, [serverUrl, getAccessToken]);
 

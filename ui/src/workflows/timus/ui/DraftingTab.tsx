@@ -4,6 +4,7 @@ import { useAuth } from '../../../auth/AuthProvider';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
+import { getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
   const { authMode, login } = useAuth();
@@ -79,6 +80,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     if (!isActive) return;
     let isMounted = true;
     const fetchActive = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
         if (res.ok && isMounted) {
@@ -91,7 +93,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     };
     
     fetchActive();
-    const interval = setInterval(fetchActive, 2000);
+    const interval = setInterval(fetchActive, getPollingDelay(2000));
     return () => {
         isMounted = false;
         clearInterval(interval);
@@ -156,6 +158,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     if (!activeProject || !isActive) return;
     let mounted = true;
     const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/status`, getAccessToken);
         if (res.ok && mounted) {
@@ -173,7 +176,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
       } catch (e) {}
     };
     checkStatus();
-    const interval = setInterval(checkStatus, 3000);
+    const interval = setInterval(checkStatus, getPollingDelay(3000));
     return () => { mounted = false; clearInterval(interval); };
   }, [activeProject, isActive, serverUrl, getAccessToken, userRequestedBuild]);
 
@@ -395,6 +398,7 @@ const DraftingCanvas: React.FC<{
     let mounted = true;
     let mtime = 0;
     const checkModel = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, getAccessToken);
         if (res.ok && mounted) {
@@ -407,7 +411,7 @@ const DraftingCanvas: React.FC<{
       } catch (e) {}
     };
     checkModel();
-    const interval = setInterval(checkModel, 3000);
+    const interval = setInterval(checkModel, getPollingDelay(3000));
     return () => { mounted = false; clearInterval(interval); };
   }, [serverUrl, activeProject, isActive, getAccessToken]);
 

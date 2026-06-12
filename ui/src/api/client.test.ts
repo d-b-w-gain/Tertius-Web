@@ -43,4 +43,23 @@ describe('apiFetch', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(getAccessToken).toHaveBeenCalledTimes(2)
   })
+
+  it('deduplicates concurrent readonly requests for the same endpoint', async () => {
+    let resolveFetch: (response: Response) => void = () => {}
+    const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { apiFetch } = await loadClient()
+    const getAccessToken = vi.fn().mockResolvedValue('token')
+
+    const first = apiFetch('/api/intus/project_name', getAccessToken)
+    const second = apiFetch('/api/intus/project_name', getAccessToken)
+    resolveFetch(new Response(JSON.stringify({ project_name: 'default_purlin' })))
+
+    await expect(first).resolves.toBeInstanceOf(Response)
+    await expect(second).resolves.toBeInstanceOf(Response)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(getAccessToken).toHaveBeenCalledTimes(1)
+  })
 })
