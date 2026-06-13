@@ -12,6 +12,23 @@ import {
   shouldRunPollingRequest,
 } from '../../shared/polling';
 
+const COMPILE_AUTH_TIMEOUT_MS = 15_000;
+const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const { authMode, getAccessToken } = useAuth();
@@ -153,11 +170,20 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     setLog(mode === 'manual' ? `Compile queued for ${projectName}...` : 'External change detected. Compile queued...');
 
     try {
-      const res = await apiFetch(`${serverUrl}/projects/${projectName}/compile`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: nextCode, export_format: format, quality, file: activeFileRef.current })
-      });
+      const token = await withTimeout(
+        getAccessToken(),
+        COMPILE_AUTH_TIMEOUT_MS,
+        'Compile could not start because authentication timed out. Please try again or sign in again.',
+      );
+      const res = await withTimeout(
+        apiFetch(`${serverUrl}/projects/${projectName}/compile`, async () => token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: nextCode, export_format: format, quality, file: activeFileRef.current })
+        }),
+        COMPILE_CREATE_JOB_TIMEOUT_MS,
+        'Compile request timed out before a job was created. Please try again.',
+      );
       const data = await res.json();
 
       if (!res.ok || !data.job_id) {
@@ -170,8 +196,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
       setLog(prev => `${prev}\n[INFO] Job ${data.job_id} is ${data.status || 'queued'}`);
       pollCompileJob(projectName, data.job_id, requestId, mode);
-    } catch {
-      setLog('[FATAL] Failed to reach server during compile.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reach server during compile.';
+      setLog(`[ERROR] ${message}`);
+      setFailedCompileRetry({ code: nextCode });
       if (mode === 'auto') setAutoCompile(false);
       setCompilingState(false);
     }

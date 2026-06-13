@@ -104,7 +104,7 @@ describe('CompilerTab compile jobs', () => {
     await act(async () => {})
     expect(mocks.apiFetch).toHaveBeenCalledWith(
       '/api/intus/projects/default_purlin/compile',
-      mocks.getAccessToken,
+      expect.any(Function),
       expect.objectContaining({ method: 'POST' }),
     )
     expect(screen.getByText(/Compile queued/)).toBeInTheDocument()
@@ -193,6 +193,80 @@ describe('CompilerTab compile jobs', () => {
     expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
   })
 
+  it('manual compile resets when authentication preflight times out', async () => {
+    mocks.getAccessToken.mockImplementationOnce(() => new Promise<string>(() => {}))
+
+    await renderCompiler()
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    expect(screen.getByRole('button', { name: /Compiling/i })).toBeDisabled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+    })
+
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
+    expect(screen.getByText(/authentication timed out/i)).toBeInTheDocument()
+    expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('manual compile resets when job creation request times out', async () => {
+    mocks.apiFetch.mockImplementationOnce(() => new Promise<Response>(() => {}))
+
+    await renderCompiler()
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    expect(screen.getByRole('button', { name: /Compiling/i })).toBeDisabled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
+    expect(screen.getByText(/request timed out before a job was created/i)).toBeInTheDocument()
+  })
+
+  it('manual compile can be retried after a pre-job timeout', async () => {
+    mocks.apiFetch
+      .mockImplementationOnce(() => new Promise<Response>(() => {}))
+      .mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-2', status: 'queued' }))
+      .mockResolvedValueOnce(jsonResponse({
+        job_id: 'job-2',
+        status: 'succeeded',
+        format: 'glb',
+        artifact_id: 'artifact-2',
+        finished_at: '2026-06-13T00:00:00Z',
+      }))
+
+    await renderCompiler()
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {})
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/intus/projects/default_purlin/compile',
+      expect.any(Function),
+      expect.objectContaining({ method: 'POST' }),
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/intus/projects/default_purlin/compile/jobs/job-2',
+      mocks.getAccessToken,
+    )
+  })
+
   it('try again posts current editor contents and polls the new job', async () => {
     mocks.apiFetch
       .mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'queued' }))
@@ -273,7 +347,7 @@ describe('CompilerTab compile jobs', () => {
 
     expect(mocks.apiFetch).toHaveBeenCalledWith(
       '/api/intus/projects/default_purlin/compile',
-      mocks.getAccessToken,
+      expect.any(Function),
       expect.objectContaining({ method: 'POST' }),
     )
 
@@ -286,6 +360,33 @@ describe('CompilerTab compile jobs', () => {
       mocks.getAccessToken,
     )
     expect(screen.getByText(/Compile failed/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
+  })
+
+  it('auto-compile resets and disables auto-compile when job creation request times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.loadCode
+      .mockResolvedValueOnce('box = Box(1, 1, 1)')
+      .mockResolvedValueOnce('box = Box(3, 3, 3)')
+    storage.getStatus
+      .mockResolvedValueOnce({ mtime: 1 })
+      .mockResolvedValueOnce({ mtime: 2 })
+    mocks.apiFetch.mockImplementationOnce(() => new Promise<Response>(() => {}))
+
+    await renderCompiler(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+    expect(screen.getByRole('button', { name: /Compiling/i })).toBeDisabled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000)
+    })
+
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
+    expect(screen.getByText(/request timed out before a job was created/i)).toBeInTheDocument()
     expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
   })
 
