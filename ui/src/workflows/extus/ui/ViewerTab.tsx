@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -52,6 +52,19 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
 
+  const resizeRendererToContainer = useCallback(() => {
+    const container = containerRef.current;
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    if (!container || !renderer || !camera) return;
+
+    const w = container.clientWidth || 1;
+    const h = container.clientHeight || 1;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }, []);
+
   // 1. Initialize Scene (run once)
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
@@ -62,13 +75,15 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     scene.background = new THREE.Color(0x0f172a); // slate-900
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100000);
+    const initialWidth = container.clientWidth || 1;
+    const initialHeight = container.clientHeight || 1;
+    const camera = new THREE.PerspectiveCamera(50, initialWidth / initialHeight, 0.1, 100000);
     camera.up.set(0, 0, 1);
     camera.position.set(200, 200, 200);
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(initialWidth, initialHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -124,15 +139,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     axesHelper.name = "AxesHelper";
     scene.add(axesHelper);
 
-    const onResize = () => {
-      if (!container || !renderer || !camera) return;
-      const w = container.clientWidth || 1;
-      const h = container.clientHeight || 1;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', onResize);
+    window.addEventListener('resize', resizeRendererToContainer);
 
     const animate = () => {
       animIdRef.current = requestAnimationFrame(animate);
@@ -142,7 +149,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     animate();
 
     return () => {
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', resizeRendererToContainer);
       controls.removeEventListener('start', handleInteraction);
       canvas.removeEventListener('mousedown', handleInteraction);
       canvas.removeEventListener('wheel', handleInteraction);
@@ -160,7 +167,15 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
       });
       renderer.dispose();
     };
-  }, []);
+  }, [resizeRendererToContainer]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    resizeRendererToContainer();
+    const frame = requestAnimationFrame(resizeRendererToContainer);
+    return () => cancelAnimationFrame(frame);
+  }, [isActive, resizeRendererToContainer]);
 
   useEffect(() => {
     if (!sceneRef.current) return;
