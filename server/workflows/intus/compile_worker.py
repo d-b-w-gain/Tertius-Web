@@ -52,13 +52,18 @@ async def handle_compile_message(msg, db, publisher: NatsPublisher, settings) ->
                 retryable=job.retryable,
                 finished_at=job.finished_at or now_utc(),
             )
-            await publisher.publish_json(settings.compile_failed_subject, event)
+            await publisher.publish_json(settings.compile_failed_subject, event, message_id=_compile_result_message_id(event))
+        await msg.ack()
+        return
+
+    if job.status in {"succeeded", "failed"}:
+        await _publish_terminal_event(job, repo, publisher, settings)
         await msg.ack()
         return
 
     claimed = repo.claim_job_for_command(command, lease_seconds=settings.compile_ack_wait_seconds)
     if claimed is None:
-        await msg.ack()
+        await _nak_after_lease(msg, job, settings)
         return
     db.commit()
 
@@ -74,8 +79,40 @@ async def handle_compile_message(msg, db, publisher: NatsPublisher, settings) ->
         return
 
     subject = settings.compile_succeeded_subject if event.status == "succeeded" else settings.compile_failed_subject
-    await publisher.publish_json(subject, event)
+    await publisher.publish_json(subject, event, message_id=_compile_result_message_id(event))
     await msg.ack()
+
+
+async def _publish_terminal_event(job: CompileJob, repo: CompileRepository, publisher: NatsPublisher, settings) -> None:
+    artifact = repo.artifact_for_job(job.id) if job.status == "succeeded" else None
+    event = CompileResultEvent(
+        job_id=job.id,
+        tenant_id=job.tenant_id,
+        project_id=job.project_id,
+        status=job.status,
+        export_format=job.export_format,
+        artifact_id=artifact.id if artifact else None,
+        error_code=job.error_code,
+        user_message=job.user_message,
+        error=job.error,
+        retryable=job.retryable,
+        finished_at=job.finished_at or now_utc(),
+    )
+    subject = settings.compile_succeeded_subject if job.status == "succeeded" else settings.compile_failed_subject
+    await publisher.publish_json(subject, event, message_id=_compile_result_message_id(event))
+
+
+def _compile_result_message_id(event: CompileResultEvent) -> str:
+    return f"compile-result:{event.job_id}:{event.status}"
+
+
+async def _nak_after_lease(msg, job: CompileJob, settings) -> None:
+    if job.status != "running" or job.lease_expires_at is None:
+        await msg.ack()
+        return
+
+    delay = max(1, min(settings.compile_ack_wait_seconds, (job.lease_expires_at - now_utc()).total_seconds()))
+    await msg.nak(delay=delay)
 
 
 async def republish_stale_queued_jobs(db, publisher: NatsPublisher, settings, older_than_seconds: int = 60) -> int:

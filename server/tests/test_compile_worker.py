@@ -185,20 +185,22 @@ class FakeMsg:
         self.data = data
         self.acked = False
         self.naked = False
+        self.nak_delay = None
         self.termed = False
 
     async def ack(self):
         self.acked = True
 
-    async def nak(self):
+    async def nak(self, delay=None):
         self.naked = True
+        self.nak_delay = delay
 
     async def term(self):
         self.termed = True
 
 
 class FakePublisher:
-    async def publish_json(self, subject, event):
+    async def publish_json(self, subject, event, message_id=None):
         pass
 
 
@@ -218,18 +220,18 @@ def test_worker_publishes_success_subject_and_acks(monkeypatch, db_session, seed
     settings = worker_settings()
 
     def fake_execute(db, job_id, claim_token, timeout_seconds, artifact_retention_limit):
-        return SimpleNamespace(status="succeeded", model_dump_json=lambda: "{}")
+        return SimpleNamespace(job_id=job_id, status="succeeded", model_dump_json=lambda: "{}")
 
     class FakePublisher:
-        async def publish_json(self, subject, event):
-            published.append(subject)
+        async def publish_json(self, subject, event, message_id=None):
+            published.append((subject, message_id))
 
     monkeypatch.setattr("workflows.intus.compile_worker.execute_compile_job", fake_execute)
 
     msg = FakeMsg(command_payload(job, seeded_tenant))
     asyncio.run(handle_compile_message(msg, db_session, FakePublisher(), settings))
 
-    assert published == ["tertius.compile.succeeded"]
+    assert published == [("tertius.compile.succeeded", f"compile-result:{job.id}:succeeded")]
     assert msg.acked is True
     assert msg.naked is False
     assert msg.termed is False
@@ -265,8 +267,8 @@ def test_worker_publishes_failed_subject_and_acks(monkeypatch, db_session, seede
         )
 
     class FakePublisher:
-        async def publish_json(self, subject, event):
-            published.append((subject, event))
+        async def publish_json(self, subject, event, message_id=None):
+            published.append((subject, event, message_id))
 
     monkeypatch.setattr("workflows.intus.compile_worker.execute_compile_job", fake_execute)
 
@@ -276,6 +278,7 @@ def test_worker_publishes_failed_subject_and_acks(monkeypatch, db_session, seede
     assert published[0][0] == "tertius.compile.failed"
     assert published[0][1].user_message == "Compile failed. Fix the model source and try again."
     assert published[0][1].retryable is True
+    assert published[0][2] == f"compile-result:{job.id}:failed"
     assert msg.acked is True
 
 
@@ -295,8 +298,8 @@ def test_worker_rejects_mismatched_command_identity(db_session, seeded_tenant):
     settings = worker_settings()
 
     class FakePublisher:
-        async def publish_json(self, subject, event):
-            published.append((subject, event))
+        async def publish_json(self, subject, event, message_id=None):
+            published.append((subject, event, message_id))
 
     msg = FakeMsg(command_payload(job, seeded_tenant, export_format="glb"))
     asyncio.run(handle_compile_message(msg, db_session, FakePublisher(), settings))
@@ -306,6 +309,7 @@ def test_worker_rejects_mismatched_command_identity(db_session, seeded_tenant):
     assert persisted.error_code == "invalid_command"
     assert persisted.retryable is False
     assert published[0][0] == "tertius.compile.failed"
+    assert published[0][2] == f"compile-result:{job.id}:failed"
     assert msg.acked is True
 
 
@@ -335,6 +339,41 @@ def test_worker_acks_duplicate_terminal_job_without_reexecuting(db_session, seed
     assert called is False
 
 
+def test_worker_republishes_terminal_job_on_duplicate_redelivery(db_session, seeded_tenant, monkeypatch):
+    from workflows.intus.compile_worker import handle_compile_message
+
+    published = []
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+        finished_at=now_utc(),
+    )
+    db_session.add(job)
+    db_session.commit()
+    called = False
+
+    def fake_execute(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    class FakePublisher:
+        async def publish_json(self, subject, event, message_id=None):
+            published.append((subject, event, message_id))
+
+    monkeypatch.setattr("workflows.intus.compile_worker.execute_compile_job", fake_execute)
+    msg = FakeMsg(command_payload(job, seeded_tenant, export_format="glb"))
+    asyncio.run(handle_compile_message(msg, db_session, FakePublisher(), worker_settings()))
+
+    assert msg.acked is True
+    assert called is False
+    assert published[0][0] == "tertius.compile.succeeded"
+    assert published[0][1].job_id == job.id
+    assert published[0][2] == f"compile-result:{job.id}:succeeded"
+
+
 def test_worker_acks_duplicate_running_job_with_active_lease_without_reexecuting(db_session, seeded_tenant, monkeypatch):
     from workflows.intus.compile_worker import handle_compile_message
 
@@ -361,7 +400,8 @@ def test_worker_acks_duplicate_running_job_with_active_lease_without_reexecuting
     msg = FakeMsg(command_payload(job, seeded_tenant, export_format="glb"))
     asyncio.run(handle_compile_message(msg, db_session, FakePublisher(), worker_settings()))
 
-    assert msg.acked is True
+    assert msg.acked is False
+    assert msg.naked is True
     assert called is False
 
 
