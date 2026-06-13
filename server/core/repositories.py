@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
+from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand
-from core.models import Artifact, CompileJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, CompileJobFile, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
@@ -139,7 +141,7 @@ class ProjectRepository:
         )
         return None if file is None else file.content
 
-    def save_code(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
+    def stage_code_update(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
         filename = require_valid_python_filename(filename)
         project = self.get_project(project_name)
         if project is None:
@@ -162,8 +164,13 @@ class ProjectRepository:
         project.updated_at = now_utc()
         self.db.flush()
         self._snapshot(project, user_id, message)
-        self.db.commit()
         return True
+
+    def save_code(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
+        saved = self.stage_code_update(project_name, filename, content, user_id, message)
+        if saved:
+            self.db.commit()
+        return saved
 
     def delete_file(self, project_name: str, filename: str) -> bool:
         filename = require_valid_python_filename(filename)
@@ -293,6 +300,111 @@ class CompileRepository:
         job.user_message = user_message
         job.retryable = retryable
         job.finished_at = now_utc()
+
+    def claim_job_for_command(self, command: CompileCommand, lease_seconds: int) -> CompileJob | None:
+        now = now_utc()
+        claim_token = uuid.uuid4()
+        stmt = (
+            update(CompileJob)
+            .where(
+                CompileJob.id == command.job_id,
+                CompileJob.tenant_id == command.tenant_id,
+                CompileJob.project_id == command.project_id,
+                CompileJob.requested_by == command.requested_by,
+                CompileJob.export_format == command.export_format,
+                or_(
+                    CompileJob.status == "queued",
+                    (CompileJob.status == "running") & (CompileJob.lease_expires_at < now),
+                ),
+            )
+            .values(
+                status="running",
+                error=None,
+                error_code=None,
+                user_message=None,
+                retryable=False,
+                finished_at=None,
+                claim_token=claim_token,
+                claimed_at=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                attempt_count=CompileJob.attempt_count + 1,
+            )
+            .returning(CompileJob.id)
+        )
+        claimed_id = self.db.scalar(stmt)
+        if claimed_id is None:
+            return None
+        return self.db.get(CompileJob, claimed_id)
+
+    def snapshot_job_files(self, job: CompileJob, files: dict[str, str]) -> None:
+        for filename, content in files.items():
+            self.db.add(
+                CompileJobFile(
+                    compile_job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    project_id=job.project_id,
+                    filename=filename,
+                    content=content,
+                )
+            )
+
+    def files_for_job(self, job_id: UUID) -> dict[str, str]:
+        rows = self.db.scalars(
+            select(CompileJobFile).where(
+                CompileJobFile.compile_job_id == job_id,
+                CompileJobFile.tenant_id == self.tenant_id,
+            )
+        ).all()
+        return {row.filename: row.content for row in rows}
+
+    def stale_queued_jobs(self, older_than_seconds: int, limit: int = 50) -> list[CompileJob]:
+        cutoff = now_utc() - timedelta(seconds=older_than_seconds)
+        return list(
+            self.db.scalars(
+                select(CompileJob)
+                .where(
+                    CompileJob.tenant_id == self.tenant_id,
+                    CompileJob.status == "queued",
+                    CompileJob.created_at < cutoff,
+                )
+                .order_by(CompileJob.created_at)
+                .limit(limit)
+            )
+        )
+
+    def finish_job_if_claim_current(
+        self,
+        job_id: UUID,
+        claim_token: UUID,
+        status: str,
+        error: str | None = None,
+        error_code: str | None = None,
+        user_message: str | None = None,
+        retryable: bool = False,
+    ) -> CompileJob | None:
+        stmt = (
+            update(CompileJob)
+            .where(
+                CompileJob.id == job_id,
+                CompileJob.tenant_id == self.tenant_id,
+                CompileJob.status == "running",
+                CompileJob.claim_token == claim_token,
+            )
+            .values(
+                status=status,
+                error=error,
+                error_code=error_code,
+                user_message=user_message,
+                retryable=retryable,
+                finished_at=now_utc(),
+                lease_expires_at=None,
+            )
+            .returning(CompileJob.id)
+        )
+        finished_id = self.db.scalar(stmt)
+        if finished_id is None:
+            return None
+        return self.db.get(CompileJob, finished_id)
 
     def record_artifact(
         self,

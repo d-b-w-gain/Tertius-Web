@@ -13,6 +13,7 @@ class FakeJetStream:
         self.published = []
         self.streams = {}
         self.consumers = {}
+        self.updated_consumers = []
         self.core_published = []
 
     async def publish(self, subject, payload):
@@ -40,6 +41,10 @@ class FakeJetStream:
 
     async def add_consumer(self, stream_name, config):
         self.consumers[(stream_name, config.durable_name)] = config
+
+    async def update_consumer(self, stream_name, config):
+        self.consumers[(stream_name, config.durable_name)] = config
+        self.updated_consumers.append((stream_name, config))
 
 
 class FakeConnection:
@@ -99,3 +104,18 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     assert consumer_config.as_dict()["ack_wait"] == 660_000_000_000
     assert consumer_config.max_deliver == 3
     assert connection.published == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_compile_stream_updates_existing_consumer_config():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+    await ensure_compile_stream(connection, settings)
+
+    settings.compile_ack_wait_seconds = 900
+    await ensure_compile_stream(connection, settings)
+
+    assert jetstream.updated_consumers
+    updated = jetstream.updated_consumers[-1][1]
+    assert updated.ack_wait == 900

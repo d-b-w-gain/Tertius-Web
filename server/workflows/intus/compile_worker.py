@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sqlalchemy import select
+
 from core.compile_messages import CompileCommand, CompileResultEvent
 from core.config import get_settings
 from core.db import SessionLocal
@@ -54,15 +56,45 @@ async def handle_compile_message(msg, db, publisher: NatsPublisher, settings) ->
         await msg.ack()
         return
 
+    claimed = repo.claim_job_for_command(command, lease_seconds=settings.compile_ack_wait_seconds)
+    if claimed is None:
+        await msg.ack()
+        return
+    db.commit()
+
     event = execute_compile_job(
         db,
-        job.id,
+        claimed.id,
+        claim_token=claimed.claim_token,
         timeout_seconds=settings.compile_timeout_seconds,
         artifact_retention_limit=settings.artifact_retention_limit,
     )
+    if event is None:
+        await msg.ack()
+        return
+
     subject = settings.compile_succeeded_subject if event.status == "succeeded" else settings.compile_failed_subject
     await publisher.publish_json(subject, event)
     await msg.ack()
+
+
+async def republish_stale_queued_jobs(db, publisher: NatsPublisher, settings, older_than_seconds: int = 60) -> int:
+    tenant_ids = db.scalars(select(CompileJob.tenant_id).where(CompileJob.status == "queued").distinct()).all()
+    count = 0
+    for tenant_id in tenant_ids:
+        repo = CompileRepository(db, tenant_id)
+        for job in repo.stale_queued_jobs(older_than_seconds=older_than_seconds):
+            command = CompileCommand(
+                job_id=job.id,
+                tenant_id=job.tenant_id,
+                project_id=job.project_id,
+                requested_by=job.requested_by,
+                export_format=job.export_format,
+                created_at=job.created_at,
+            )
+            await publisher.publish_json(settings.compile_request_subject, command)
+            count += 1
+    return count
 
 
 async def run_worker() -> None:
@@ -77,9 +109,21 @@ async def run_worker() -> None:
             settings.compile_request_subject,
             settings.compile_worker_queue,
         )
+        last_recovery = asyncio.get_running_loop().time()
 
         while True:
             try:
+                now = asyncio.get_running_loop().time()
+                if now - last_recovery >= 60:
+                    with SessionLocal() as db:
+                        try:
+                            republished = await republish_stale_queued_jobs(db, publisher, settings, older_than_seconds=60)
+                            if republished:
+                                logger.warning("Republished %s stale queued compile jobs", republished)
+                        except Exception:
+                            logger.exception("Compile worker stale queued recovery failed")
+                    last_recovery = now
+
                 messages = await subscription.fetch(batch=1, timeout=5)
             except TimeoutError:
                 continue

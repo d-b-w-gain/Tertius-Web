@@ -33,20 +33,27 @@ async def ensure_compile_stream(nc, settings):
     except NotFoundError:
         await js.add_stream(StreamConfig(name=settings.compile_stream_name, subjects=subjects))
 
+    desired_consumer = ConsumerConfig(
+        durable_name=settings.compile_worker_queue,
+        filter_subject=settings.compile_request_subject,
+        deliver_policy=DeliverPolicy.ALL,
+        ack_policy=AckPolicy.EXPLICIT,
+        ack_wait=settings.compile_ack_wait_seconds,
+        max_deliver=settings.compile_max_deliver,
+    )
+
     try:
-        await js.consumer_info(settings.compile_stream_name, settings.compile_worker_queue)
+        info = await js.consumer_info(settings.compile_stream_name, settings.compile_worker_queue)
+        current = info.config if hasattr(info, "config") else info
+        if (
+            current.filter_subject != desired_consumer.filter_subject
+            or current.ack_wait != desired_consumer.ack_wait
+            or current.max_deliver != desired_consumer.max_deliver
+            or current.ack_policy != desired_consumer.ack_policy
+        ):
+            await js.update_consumer(settings.compile_stream_name, desired_consumer)
     except NotFoundError:
-        await js.add_consumer(
-            settings.compile_stream_name,
-            ConsumerConfig(
-                durable_name=settings.compile_worker_queue,
-                filter_subject=settings.compile_request_subject,
-                deliver_policy=DeliverPolicy.ALL,
-                ack_policy=AckPolicy.EXPLICIT,
-                ack_wait=settings.compile_ack_wait_seconds,
-                max_deliver=settings.compile_max_deliver,
-            ),
-        )
+        await js.add_consumer(settings.compile_stream_name, desired_consumer)
 
     return js
 

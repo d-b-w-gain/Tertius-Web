@@ -8,94 +8,103 @@ from sqlalchemy.orm import Session
 from core.compile_messages import CompileResultEvent
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
-from core.models import CompileJob, Project, now_utc
-from core.repositories import CompileRepository, ProjectRepository
+from core.models import CompileJob, now_utc
+from core.repositories import CompileRepository
 
 
 def execute_compile_job(
     db: Session,
     job_id: UUID,
+    claim_token: UUID,
     timeout_seconds: int,
     artifact_retention_limit: int,
-) -> CompileResultEvent:
+) -> CompileResultEvent | None:
     job = db.get(CompileJob, job_id)
     if job is None:
         raise ValueError(f"Compile job {job_id} not found")
 
     compile_repo = CompileRepository(db, job.tenant_id)
-    project_repo = ProjectRepository(db, job.tenant_id)
-    compile_repo.mark_job_running(job)
-    db.commit()
-
-    project = db.get(Project, job.project_id)
-    if project is None:
-        compile_repo.finish_job(
-            job,
-            "failed",
-            error="Project not found",
-            error_code="project_not_found",
-            user_message="Compile failed because the project no longer exists.",
-            retryable=False,
-        )
-        db.commit()
-        return _event(
-            job,
-            "failed",
-            error_code="project_not_found",
-            user_message="Compile failed because the project no longer exists.",
-            error="Project not found",
-            retryable=False,
-        )
 
     try:
-        files = project_repo.files_for_runtime(project.name)
-        if files is None:
-            raise RuntimeError("Project not found")
+        files = compile_repo.files_for_job(job.id)
+        if not files:
+            finished = compile_repo.finish_job_if_claim_current(
+                job.id,
+                claim_token,
+                "failed",
+                error="Compile job snapshot is empty",
+                error_code="missing_snapshot",
+                user_message="Compile failed because the submitted source snapshot is missing. Try again.",
+                retryable=True,
+            )
+            if finished is None:
+                db.rollback()
+                return None
+            db.commit()
+            return _event(
+                finished,
+                "failed",
+                error_code=finished.error_code,
+                user_message=finished.user_message,
+                error=finished.error,
+                retryable=finished.retryable,
+            )
 
         with hydrate_project_files(files) as project_dir:
             result = run_compile_sandbox(project_dir, job.export_format, timeout_seconds=timeout_seconds)
             if not result.success:
                 error = result.error or result.stderr or "Compile failed"
-                compile_repo.finish_job(
-                    job,
+                finished = compile_repo.finish_job_if_claim_current(
+                    job.id,
+                    claim_token,
                     "failed",
                     error=error,
                     error_code=_error_code(error),
                     user_message=_user_message(error),
                     retryable=True,
                 )
+                if finished is None:
+                    db.rollback()
+                    return None
                 db.commit()
                 return _event(
-                    job,
+                    finished,
                     "failed",
-                    error_code=job.error_code,
-                    user_message=job.user_message,
+                    error_code=finished.error_code,
+                    user_message=finished.user_message,
                     error=error,
-                    retryable=job.retryable,
+                    retryable=finished.retryable,
                 )
 
             if result.output_path is None:
-                compile_repo.finish_job(
-                    job,
+                finished = compile_repo.finish_job_if_claim_current(
+                    job.id,
+                    claim_token,
                     "failed",
                     error="Compile succeeded without an output artifact",
                     error_code="missing_artifact",
                     user_message="Compile failed before an artifact was produced. Try again.",
                     retryable=True,
                 )
+                if finished is None:
+                    db.rollback()
+                    return None
                 db.commit()
                 return _event(
-                    job,
+                    finished,
                     "failed",
-                    error_code=job.error_code,
-                    user_message=job.user_message,
-                    error=job.error,
-                    retryable=job.retryable,
+                    error_code=finished.error_code,
+                    user_message=finished.user_message,
+                    error=finished.error,
+                    retryable=finished.retryable,
                 )
             output_bytes = result.output_path.read_bytes()
 
         artifact = compile_repo.record_artifact(job.project_id, job.id, job.export_format, output_bytes)
-        compile_repo.finish_job(job, "succeeded")
+        finished = compile_repo.finish_job_if_claim_current(job.id, claim_token, "succeeded")
+        if finished is None:
+            db.rollback()
+            return None
         pruned = compile_repo.prunable_artifacts(
             job.project_id,
             job.export_format,
@@ -103,29 +112,33 @@ def execute_compile_job(
         )
         compile_repo.delete_artifacts(pruned)
         db.commit()
-        return _event(job, "succeeded", artifact_id=artifact.id)
+        return _event(finished, "succeeded", artifact_id=artifact.id)
     except Exception as exc:
         db.rollback()
         job = db.get(CompileJob, job_id)
         error = traceback.format_exc()
         if job is not None:
             compile_repo = CompileRepository(db, job.tenant_id)
-            compile_repo.finish_job(
-                job,
+            finished = compile_repo.finish_job_if_claim_current(
+                job.id,
+                claim_token,
                 "failed",
                 error=error,
                 error_code="executor_error",
                 user_message="Compile failed before the worker could finish. Try again.",
                 retryable=True,
             )
+            if finished is None:
+                db.rollback()
+                return None
             db.commit()
             return _event(
-                job,
+                finished,
                 "failed",
-                error_code=job.error_code,
-                user_message=job.user_message,
+                error_code=finished.error_code,
+                user_message=finished.user_message,
                 error=str(exc),
-                retryable=job.retryable,
+                retryable=finished.retryable,
             )
         raise
 

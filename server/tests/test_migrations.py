@@ -33,12 +33,34 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "projects" in table_names
     assert "project_files" in table_names
     assert "artifacts" in table_names
+    assert "compile_jobs" in table_names
     artifact_columns = {
         column["name"]: column for column in inspector.get_columns("artifacts")
     }
     assert "content" in artifact_columns
     assert str(artifact_columns["content"]["type"]).lower() in {"bytea", "blob", "largebinary"}
     assert artifact_columns["content"]["nullable"] is True
+    compile_job_columns = {
+        column["name"]: column for column in inspector.get_columns("compile_jobs")
+    }
+    assert "claim_token" in compile_job_columns
+    assert "claimed_at" in compile_job_columns
+    assert "lease_expires_at" in compile_job_columns
+    assert "attempt_count" in compile_job_columns
+
+    assert "compile_job_files" in table_names
+    snapshot_columns = {
+        column["name"]: column for column in inspector.get_columns("compile_job_files")
+    }
+    assert {
+        "id",
+        "compile_job_id",
+        "tenant_id",
+        "project_id",
+        "filename",
+        "content",
+        "created_at",
+    } <= set(snapshot_columns)
 
 
 def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):

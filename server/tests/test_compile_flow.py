@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from core.models import Artifact, CompileJob, ProjectFile
+from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile
 from workflows.intus import intus_server
 
 
@@ -26,6 +26,10 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
 
     job = db_session.get(CompileJob, body["job_id"])
     saved_file = db_session.scalar(select(ProjectFile).where(ProjectFile.filename == "design.py"))
+    snapshot_rows = db_session.scalars(
+        select(CompileJobFile).where(CompileJobFile.compile_job_id == job.id)
+    ).all()
+    snapshot = {row.filename: row.content for row in snapshot_rows}
     assert job.status == "queued"
     assert job.project_id == seeded_tenant.project_id
     assert published[0].job_id == job.id
@@ -34,6 +38,7 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
     assert published[0].requested_by == seeded_tenant.user_id
     assert published[0].export_format == "stl"
     assert saved_file.content == "shape = 'queued'\n"
+    assert snapshot["design.py"] == "shape = 'queued'\n"
 
 
 def test_compile_rejects_invalid_filename(authenticated_intus_client, monkeypatch):
@@ -53,7 +58,7 @@ def test_compile_rejects_invalid_filename(authenticated_intus_client, monkeypatc
     assert published == []
 
 
-def test_compile_marks_job_failed_when_enqueue_fails(authenticated_intus_client, db_session, monkeypatch):
+def test_compile_leaves_job_queued_when_publish_fails_after_commit(authenticated_intus_client, db_session, monkeypatch):
     async def fake_publish_compile(command):
         raise RuntimeError("nats down")
 
@@ -68,14 +73,13 @@ def test_compile_marks_job_failed_when_enqueue_fails(authenticated_intus_client,
     body = response.json()
     assert body["success"] is False
     assert body["job_id"]
-    assert body["user_message"] == "Compile could not be started. Try again."
+    assert body["user_message"] == "Compile queued but could not be published immediately. It will be retried."
     assert body["retryable"] is True
 
     job = db_session.get(CompileJob, body["job_id"])
-    assert job.status == "failed"
-    assert job.error_code == "enqueue_failed"
-    assert job.user_message == "Compile could not be started. Try again."
-    assert job.retryable is True
+    assert job.status == "queued"
+    assert job.error_code is None
+    assert job.retryable is False
 
 
 def test_compile_job_status_returns_artifact_after_success(authenticated_intus_client, db_session, seeded_tenant):
