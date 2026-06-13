@@ -33,7 +33,7 @@ def wait_for_keycloak(base_url: str) -> None:
 def write_test_realm(source: Path, destination: Path) -> None:
     realm = json.loads(source.read_text(encoding="utf-8"))
     for client in realm["clients"]:
-        if client["clientId"] == "tertius-web":
+        if client["clientId"] == "tertius-ui":
             client["directAccessGrantsEnabled"] = True
     destination.write_text(json.dumps(realm), encoding="utf-8")
 
@@ -43,7 +43,7 @@ def get_demo_access_token(base_url: str) -> str:
         f"{base_url}/realms/tertius/protocol/openid-connect/token",
         data={
             "grant_type": "password",
-            "client_id": "tertius-web",
+            "client_id": "tertius-ui",
             "username": "demo",
             "password": "demo",
         },
@@ -58,7 +58,7 @@ def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Se
     write_test_realm(Path("infra/keycloak/tertius-realm.json"), realm_file)
 
     with (
-        DockerContainer("quay.io/keycloak/keycloak:26.0")
+        DockerContainer("quay.io/keycloak/keycloak:26.6.3")
         .with_env("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
         .with_env("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")
         .with_volume_mapping(str(realm_file), "/opt/keycloak/data/import/tertius-realm.json", "ro")

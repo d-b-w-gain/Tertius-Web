@@ -63,7 +63,7 @@ services:
       - tertius-postgres:/var/lib/postgresql/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.6.3
     command:
       - start-dev
       - --import-realm

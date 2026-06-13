@@ -5,8 +5,8 @@
   "loginWithEmailAllowed": true,
   "clients": [
     {
-      "clientId": "tertius-web",
-      "name": "Tertius Web",
+      "clientId": "tertius-ui",
+      "name": "Tertius UI",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,

@@ -61,7 +61,7 @@ Local development uses Postgres for app data, Keycloak for login, and NATS JetSt
 docker compose up -d postgres keycloak nats
 ```
 
-Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-web`, and the demo login is:
+Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-ui`, and the demo login is:
 
 ```text
 demo / demo
@@ -97,9 +97,9 @@ PYTHONPATH=. rtk uv run python -m workflows.intus.compile_worker
 For the frontend, copy `ui/.env.example` or set:
 
 ```bash
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_URL=http://localhost:8000
 VITE_KEYCLOAK_AUTHORITY=http://localhost:8080/realms/tertius
-VITE_KEYCLOAK_CLIENT_ID=tertius-web
+VITE_KEYCLOAK_CLIENT_ID=tertius-ui
 ```
 
 ### 2. Launching the Backend (Docker)
