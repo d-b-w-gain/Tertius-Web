@@ -70,7 +70,7 @@ jobs:
       - deployment-config-check
     timeout-minutes: 90
     if: |
-      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request' && github.head_ref != 'flux-image-updates') ||
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && inputs.run_k3s == true)
     env:
