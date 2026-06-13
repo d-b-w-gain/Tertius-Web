@@ -36,7 +36,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-36-44b1176 # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-37-0b3af32 # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -59,7 +59,6 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
-
 compileWorker:
   replicaCount: 2
   resources:
@@ -69,7 +68,6 @@ compileWorker:
     limits:
       cpu: "4"
       memory: 4Gi
-
 ui:
   replicaCount: 1
   image:
