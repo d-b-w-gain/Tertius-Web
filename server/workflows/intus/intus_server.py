@@ -230,8 +230,9 @@ async def compile_project(
 
     project_id = project.id
     job_id = None
+    committed = False
     try:
-        saved = repo.save_code(
+        saved = repo.stage_code_update(
             name,
             filename,
             req.code,
@@ -243,7 +244,12 @@ async def compile_project(
 
         job = compile_repo.start_job(project_id, ctx.user_id, ext, status="queued")
         job_id = job.id
+        files = repo.files_for_runtime(name)
+        if files is None:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        compile_repo.snapshot_job_files(job, files)
         db.commit()
+        committed = True
 
         command = CompileCommand(
             job_id=job.id,
@@ -262,6 +268,18 @@ async def compile_project(
     except Exception as exc:
         if job_id is not None:
             db.rollback()
+            if committed:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "success": False,
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "short": "Compile command publish failed",
+                        "user_message": "Compile queued but could not be published immediately. It will be retried.",
+                        "retryable": True,
+                    },
+                )
             persisted_job = db.get(CompileJob, job_id)
             if persisted_job is not None:
                 compile_repo.finish_job(

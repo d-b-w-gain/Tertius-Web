@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from core.compile_messages import CompileCommand
 from core.models import (
     AppUser,
+    CompileJobFile,
     CompileJob,
     Project,
     ProjectFile,
@@ -17,6 +18,7 @@ from core.models import (
     Tenant,
     TenantMembership,
     UserWorkspaceState,
+    now_utc,
 )
 from core.repositories import CompileRepository, ProjectRepository, require_valid_project_name, require_valid_python_filename
 
@@ -254,3 +256,100 @@ def test_compile_repository_persists_structured_failure(db_session, seeded_tenan
     assert persisted.error_code == "sandbox_error"
     assert persisted.user_message == "Compile failed. Fix the model source and try again."
     assert persisted.retryable is True
+
+
+def test_compile_repository_claims_queued_job_once(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
+    db_session.commit()
+
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        export_format="glb",
+        created_at=job.created_at,
+    )
+
+    claimed = repo.claim_job_for_command(command, lease_seconds=660)
+    assert claimed is not None
+    first_token = claimed.claim_token
+    assert claimed.status == "running"
+    assert claimed.attempt_count == 1
+    assert claimed.lease_expires_at is not None
+    db_session.commit()
+
+    duplicate = repo.claim_job_for_command(command, lease_seconds=660)
+    assert duplicate is None
+
+    persisted = db_session.get(CompileJob, job.id)
+    assert persisted.claim_token == first_token
+    assert persisted.attempt_count == 1
+
+
+def test_compile_repository_reclaims_expired_running_job(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
+    db_session.commit()
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        export_format="glb",
+        created_at=job.created_at,
+    )
+    first = repo.claim_job_for_command(command, lease_seconds=1)
+    first.lease_expires_at = now_utc() - timedelta(seconds=1)
+    first_token = first.claim_token
+    db_session.commit()
+
+    second = repo.claim_job_for_command(command, lease_seconds=660)
+    assert second is not None
+    assert second.claim_token != first_token
+    assert second.attempt_count == 2
+
+
+def test_compile_repository_finishes_only_current_claim(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
+    db_session.commit()
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        export_format="glb",
+        created_at=job.created_at,
+    )
+    claimed = repo.claim_job_for_command(command, lease_seconds=660)
+    stale_token = uuid4()
+    db_session.commit()
+
+    assert repo.finish_job_if_claim_current(job.id, stale_token, "failed", error_code="stale_claim") is None
+    persisted = db_session.get(CompileJob, job.id)
+    assert persisted.status == "running"
+    assert persisted.claim_token == claimed.claim_token
+
+    finished = repo.finish_job_if_claim_current(job.id, claimed.claim_token, "succeeded")
+    assert finished is not None
+    assert finished.status == "succeeded"
+    assert finished.lease_expires_at is None
+
+
+def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    project_repo = ProjectRepository(db_session, seeded_tenant.tenant_id)
+    project_repo.save_code("default_purlin", "design.py", "shape = 'snapshot'\n", seeded_tenant.user_id, "snapshot")
+    job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
+
+    files = project_repo.files_for_runtime("default_purlin")
+    repo.snapshot_job_files(job, files)
+    project_repo.save_code("default_purlin", "design.py", "shape = 'later'\n", seeded_tenant.user_id, "later")
+    db_session.commit()
+
+    snapshot = repo.files_for_job(job.id)
+    snapshot_rows = db_session.scalars(select(CompileJobFile).where(CompileJobFile.compile_job_id == job.id)).all()
+    assert snapshot["design.py"] == "shape = 'snapshot'\n"
+    assert snapshot_rows

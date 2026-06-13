@@ -13,10 +13,11 @@ class FakeJetStream:
         self.published = []
         self.streams = {}
         self.consumers = {}
+        self.added_consumers = []
         self.core_published = []
 
-    async def publish(self, subject, payload):
-        self.published.append((subject, payload))
+    async def publish(self, subject, payload, headers=None):
+        self.published.append((subject, payload, headers))
 
     async def stream_info(self, name):
         from nats.js.errors import NotFoundError
@@ -40,6 +41,7 @@ class FakeJetStream:
 
     async def add_consumer(self, stream_name, config):
         self.consumers[(stream_name, config.durable_name)] = config
+        self.added_consumers.append((stream_name, config))
 
 
 class FakeConnection:
@@ -70,10 +72,32 @@ async def test_nats_publisher_publishes_json_through_jetstream():
     await publisher.publish_json("tertius.compile.request", command)
 
     assert len(jetstream.published) == 1
-    subject, payload = jetstream.published[0]
+    subject, payload, headers = jetstream.published[0]
     assert subject == "tertius.compile.request"
     assert isinstance(payload, bytes)
     assert b'"export_format":"glb"' in payload
+    assert headers is None
+
+
+@pytest.mark.asyncio
+async def test_nats_publisher_uses_message_id_header_for_dedupe():
+    jetstream = FakeJetStream()
+    publisher = NatsPublisher(jetstream)
+    command = CompileCommand(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        project_id=uuid4(),
+        requested_by=uuid4(),
+        export_format="glb",
+        created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+    )
+
+    await publisher.publish_json("tertius.compile.succeeded", command, message_id="compile-result-1")
+
+    subject, payload, headers = jetstream.published[0]
+    assert subject == "tertius.compile.succeeded"
+    assert isinstance(payload, bytes)
+    assert headers == {"Nats-Msg-Id": "compile-result-1"}
 
 
 @pytest.mark.asyncio
@@ -99,3 +123,18 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     assert consumer_config.as_dict()["ack_wait"] == 660_000_000_000
     assert consumer_config.max_deliver == 3
     assert connection.published == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_compile_stream_updates_existing_consumer_config():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+    await ensure_compile_stream(connection, settings)
+
+    settings.compile_ack_wait_seconds = 900
+    await ensure_compile_stream(connection, settings)
+
+    assert len(jetstream.added_consumers) == 2
+    updated = jetstream.added_consumers[-1][1]
+    assert updated.ack_wait == 900

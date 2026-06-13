@@ -153,8 +153,33 @@ class CompileJob(Base):
     error_code: Mapped[Optional[str]] = mapped_column(String(64))
     user_message: Mapped[Optional[str]] = mapped_column(Text)
     retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    claim_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CompileJobFile(Base):
+    __tablename__ = "compile_job_files"
+    __table_args__ = (
+        UniqueConstraint("compile_job_id", "filename", name="uq_compile_job_file_name"),
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_compile_job_files_compile_job_project_tenant",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    compile_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
 class Artifact(Base):

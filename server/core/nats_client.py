@@ -7,8 +7,9 @@ class NatsPublisher:
     def __init__(self, jetstream):
         self.jetstream = jetstream
 
-    async def publish_json(self, subject: str, message: BaseModel) -> None:
-        await self.jetstream.publish(subject, message.model_dump_json().encode("utf-8"))
+    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None) -> None:
+        headers = {"Nats-Msg-Id": message_id} if message_id else None
+        await self.jetstream.publish(subject, message.model_dump_json().encode("utf-8"), headers=headers)
 
 
 async def connect_nats(url: str):
@@ -33,20 +34,27 @@ async def ensure_compile_stream(nc, settings):
     except NotFoundError:
         await js.add_stream(StreamConfig(name=settings.compile_stream_name, subjects=subjects))
 
+    desired_consumer = ConsumerConfig(
+        durable_name=settings.compile_worker_queue,
+        filter_subject=settings.compile_request_subject,
+        deliver_policy=DeliverPolicy.ALL,
+        ack_policy=AckPolicy.EXPLICIT,
+        ack_wait=settings.compile_ack_wait_seconds,
+        max_deliver=settings.compile_max_deliver,
+    )
+
     try:
-        await js.consumer_info(settings.compile_stream_name, settings.compile_worker_queue)
+        info = await js.consumer_info(settings.compile_stream_name, settings.compile_worker_queue)
+        current = info.config if hasattr(info, "config") else info
+        if (
+            current.filter_subject != desired_consumer.filter_subject
+            or current.ack_wait != desired_consumer.ack_wait
+            or current.max_deliver != desired_consumer.max_deliver
+            or current.ack_policy != desired_consumer.ack_policy
+        ):
+            await js.add_consumer(settings.compile_stream_name, desired_consumer)
     except NotFoundError:
-        await js.add_consumer(
-            settings.compile_stream_name,
-            ConsumerConfig(
-                durable_name=settings.compile_worker_queue,
-                filter_subject=settings.compile_request_subject,
-                deliver_policy=DeliverPolicy.ALL,
-                ack_policy=AckPolicy.EXPLICIT,
-                ack_wait=settings.compile_ack_wait_seconds,
-                max_deliver=settings.compile_max_deliver,
-            ),
-        )
+        await js.add_consumer(settings.compile_stream_name, desired_consumer)
 
     return js
 
