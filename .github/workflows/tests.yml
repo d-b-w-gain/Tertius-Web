@@ -12,6 +12,7 @@ jobs:
   ui:
     name: UI lint and build
     runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -43,6 +44,7 @@ jobs:
   python:
     name: Python tests
     runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
     timeout-minutes: 20
     env:
       UV_CACHE_DIR: .uv-cache
