@@ -294,6 +294,16 @@ if ! rg -q -- '--version 2\.20\.1' "${ROOT_DIR}/.github/workflows/chart-tests.ym
   exit 1
 fi
 
+if ! rg -q 'docker/setup-buildx-action@v3' "${ROOT_DIR}/.github/workflows/chart-tests.yml" || ! rg -q 'BUILDX_GHA_CACHE: "true"' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
+  echo ".github/workflows/chart-tests.yml must enable Buildx and opt the k3s smoke image builds into the GitHub Actions cache." >&2
+  exit 1
+fi
+
+if ! rg -q 'type=gha,scope=\$\{scope\}' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'build_image tertius-api' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'build_image tertius-ui' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q -- '--load' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "scripts/test-k3s-deployment.sh must build k3s smoke images with Buildx GHA cache and --load when enabled." >&2
+  exit 1
+fi
+
 production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
 
 if ! printf '%s\n' "$production_rendered" | rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' || ! printf '%s\n' "$production_rendered" | rg -q 'admin: "https://tertius\.johnsonyuen\.com"'; then
