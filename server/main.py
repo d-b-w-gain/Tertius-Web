@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -15,11 +16,14 @@ from workflows.intus.intus_server import app as intus_app
 from workflows.artus.artus_server import app as artus_app
 from workflows.extus.extus_server import app as extus_app
 from workflows.timus.timus_server import app as timus_app
+from workflows.intus.compile_result_consumer import run_result_consumer
 
 settings = get_settings()
 
 # Create the master Monolith app
 app = FastAPI(title="Tertius Monolith API")
+_compile_result_stop_event: asyncio.Event | None = None
+_compile_result_task: asyncio.Task | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +45,25 @@ def read_me(ctx: AuthContext = Depends(get_auth_context)):
         "tenant_id": str(ctx.tenant_id),
         "email": ctx.email,
     }
+
+
+@app.on_event("startup")
+async def start_compile_result_consumer():
+    global _compile_result_stop_event, _compile_result_task
+    _compile_result_stop_event = asyncio.Event()
+    _compile_result_task = asyncio.create_task(run_result_consumer(_compile_result_stop_event))
+
+
+@app.on_event("shutdown")
+async def stop_compile_result_consumer():
+    if _compile_result_stop_event is not None:
+        _compile_result_stop_event.set()
+    if _compile_result_task is not None:
+        _compile_result_task.cancel()
+        try:
+            await _compile_result_task
+        except asyncio.CancelledError:
+            pass
 
 
 # Mount the workflows to sub-paths

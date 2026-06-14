@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -28,6 +29,9 @@ class FakeJetStream:
         return self.streams[name]
 
     async def add_stream(self, config):
+        self.streams[config.name] = config
+
+    async def update_stream(self, config):
         self.streams[config.name] = config
 
     async def consumer_info(self, stream_name, consumer_name):
@@ -92,10 +96,10 @@ async def test_nats_publisher_uses_message_id_header_for_dedupe():
         created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
     )
 
-    await publisher.publish_json("tertius.compile.succeeded", command, message_id="compile-result-1")
+    await publisher.publish_json("tertius.compile.result", command, message_id="compile-result-1")
 
     subject, payload, headers = jetstream.published[0]
-    assert subject == "tertius.compile.succeeded"
+    assert subject == "tertius.compile.result"
     assert isinstance(payload, bytes)
     assert headers == {"Nats-Msg-Id": "compile-result-1"}
 
@@ -112,16 +116,18 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     stream_config = jetstream.streams["TERTIUS_COMPILE"]
     assert stream_config.subjects == [
         "tertius.compile.request",
-        "tertius.compile.succeeded",
-        "tertius.compile.failed",
+        "tertius.compile.result",
     ]
 
     consumer_config = jetstream.consumers[("TERTIUS_COMPILE", "compile-workers")]
     assert consumer_config.durable_name == "compile-workers"
     assert consumer_config.filter_subject == "tertius.compile.request"
-    assert consumer_config.ack_wait == 660
-    assert consumer_config.as_dict()["ack_wait"] == 660_000_000_000
+    assert consumer_config.ack_wait == 900
+    assert consumer_config.as_dict()["ack_wait"] == 900_000_000_000
     assert consumer_config.max_deliver == 3
+    result_consumer_config = jetstream.consumers[("TERTIUS_COMPILE", "compile-result-api")]
+    assert result_consumer_config.durable_name == "compile-result-api"
+    assert result_consumer_config.filter_subject == "tertius.compile.result"
     assert connection.published == []
 
 
@@ -132,9 +138,28 @@ async def test_ensure_compile_stream_updates_existing_consumer_config():
     settings = Settings()
     await ensure_compile_stream(connection, settings)
 
-    settings.compile_ack_wait_seconds = 900
+    settings.compile_ack_wait_seconds = 901
     await ensure_compile_stream(connection, settings)
 
-    assert len(jetstream.added_consumers) == 2
-    updated = jetstream.added_consumers[-1][1]
-    assert updated.ack_wait == 900
+    assert len(jetstream.added_consumers) == 4
+    updated = [config for _, config in jetstream.added_consumers if config.durable_name == "compile-workers"][-1]
+    assert updated.ack_wait == 901
+
+
+@pytest.mark.asyncio
+async def test_ensure_compile_stream_updates_existing_stream_subjects_and_max_message_size():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+    jetstream.streams["TERTIUS_COMPILE"] = SimpleNamespace(
+        config=SimpleNamespace(name="TERTIUS_COMPILE", subjects=["tertius.compile.request"], max_msg_size=-1)
+    )
+
+    await ensure_compile_stream(connection, settings)
+
+    stream_config = jetstream.streams["TERTIUS_COMPILE"]
+    assert stream_config.subjects == [
+        "tertius.compile.request",
+        "tertius.compile.result",
+    ]
+    assert stream_config.max_msg_size == 8388608

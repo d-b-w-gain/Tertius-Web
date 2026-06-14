@@ -13,9 +13,12 @@ ENABLE_TUNNEL="${ENABLE_TUNNEL:-false}"
 TUNNEL_TOKEN_SECRET_NAME="${TUNNEL_TOKEN_SECRET_NAME:-}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
+KEYCLOAK_SMOKE_USERNAME="${KEYCLOAK_SMOKE_USERNAME:-demo}"
+KEYCLOAK_SMOKE_PASSWORD="${KEYCLOAK_SMOKE_PASSWORD:-demo}"
 KEYCLOAK_CHECK_IMAGE="${KEYCLOAK_CHECK_IMAGE:-busybox:1.37.0}"
 VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
 NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
+KEDA_ENABLED="${KEDA_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
@@ -46,9 +49,12 @@ Environment:
   TUNNEL_TOKEN_SECRET_NAME      Required when ENABLE_TUNNEL=true
   TUNNEL_HOSTNAME               Optional external hostname to smoke test when tunnel is enabled.
   KEYCLOAK_REALM                Default: tertius
+  KEYCLOAK_SMOKE_USERNAME       Default: demo
+  KEYCLOAK_SMOKE_PASSWORD       Default: demo
   KEYCLOAK_CHECK_IMAGE          Default: busybox:1.37.0
   VALKEY_CHECK_IMAGE            Default: valkey image from values-local.yaml, then valkey/valkey:9.0.0
   NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
+  KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
@@ -534,6 +540,7 @@ helm_set_args() {
 --set-string api.image.tag=${api_tag}
 --set-string ui.image.repository=${ui_repo}
 --set-string ui.image.tag=${ui_tag}
+--set keda.enabled=${KEDA_ENABLED}
 "
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
@@ -837,15 +844,21 @@ keycloak_probe() {
   return 1
 }
 
+keycloak_service() {
+  keycloak_cr=$(first_resource_by_label keycloaks.k8s.keycloak.org "app.kubernetes.io/instance=${RELEASE_NAME}")
+  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=keycloak")
+  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -i keycloak | head -1 || true)
+  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "${keycloak_cr}-service" || true)
+  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "$keycloak_cr" || true)
+  printf '%s' "$svc"
+}
+
 check_keycloak() {
   keycloak_cr=$(first_resource_by_label keycloaks.k8s.keycloak.org "app.kubernetes.io/instance=${RELEASE_NAME}")
   if [ -n "$keycloak_cr" ] && kubectl get job "${keycloak_cr}-realm" -n "$NAMESPACE" >/dev/null 2>&1; then
     run kubectl wait --for=condition=Complete "job/${keycloak_cr}-realm" -n "$NAMESPACE" --timeout="$TIMEOUT"
   fi
-  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=keycloak")
-  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -i keycloak | head -1 || true)
-  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "${keycloak_cr}-service" || true)
-  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "$keycloak_cr" || true)
+  svc=$(keycloak_service)
   [ -n "$svc" ] || {
     echo "Unable to find Keycloak service for release ${RELEASE_NAME}." >&2
     exit 1
@@ -857,6 +870,149 @@ check_keycloak() {
     return
   fi
   keycloak_probe "$master_url"
+}
+
+keycloak_token() {
+  svc=$(keycloak_service)
+  [ -n "$svc" ] || {
+    echo "Unable to find Keycloak service for token request." >&2
+    exit 1
+  }
+  remote_port=$(service_port "$svc")
+  KEYCLOAK_LOCAL_PORT=$(start_port_forward "$svc" "$KEYCLOAK_LOCAL_PORT" "$remote_port")
+
+  token_file=$(mktemp "${TMPDIR:-/tmp}/tertius-token.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${token_file}"
+  token_url="http://127.0.0.1:${KEYCLOAK_LOCAL_PORT}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+  quote_cmd curl --fail --silent --show-error --max-time 20 \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=password" \
+    -d "client_id=tertius-ui" \
+    -d "username=${KEYCLOAK_SMOKE_USERNAME}" \
+    -d "password=${KEYCLOAK_SMOKE_PASSWORD}" \
+    "$token_url" \
+    -o "$token_file" >&2
+  token_status=$(curl --silent --show-error --max-time 20 \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=password" \
+    -d "client_id=tertius-ui" \
+    -d "username=${KEYCLOAK_SMOKE_USERNAME}" \
+    -d "password=${KEYCLOAK_SMOKE_PASSWORD}" \
+    "$token_url" \
+    -o "$token_file" \
+    --write-out "%{http_code}") || {
+    echo "Keycloak token request failed before an HTTP response." >&2
+    cat "$token_file" >&2 || true
+    exit 1
+  }
+  if [ "$token_status" -lt 200 ] || [ "$token_status" -ge 300 ]; then
+    echo "Keycloak token request returned HTTP ${token_status}." >&2
+    cat "$token_file" >&2 || true
+    exit 1
+  fi
+  COMPILE_SMOKE_TOKEN=$(python3 - "$token_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    token = json.load(f).get("access_token", "")
+if not token:
+    raise SystemExit("Keycloak token response did not include access_token")
+print(token)
+PY
+)
+}
+
+smoke_test_compile_job() {
+  if ! truthy "$KEDA_ENABLED"; then
+    echo "KEDA_ENABLED is false; skipping compile job lifecycle smoke test."
+    return
+  fi
+
+  keycloak_token
+  token=$COMPILE_SMOKE_TOKEN
+  request_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-request.XXXXXX")
+  response_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-response.XXXXXX")
+  status_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-status.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${request_file} ${response_file} ${status_file}"
+
+  python3 - "$request_file" <<'PY'
+import json
+import sys
+
+payload = {
+    "code": "import build123d as bd\nbox = bd.Box(10, 10, 10)\n",
+    "export_format": "stl",
+    "file": "design.py",
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(payload, f)
+PY
+
+  compile_url="http://127.0.0.1:${API_LOCAL_PORT}/api/intus/projects/default_purlin/compile"
+  echo "+ curl --fail --silent --show-error --max-time 30 -H 'Authorization: Bearer <redacted>' -H 'Content-Type: application/json' -X POST --data-binary @${request_file} ${compile_url} -o ${response_file}" >&2
+  curl --fail --silent --show-error --max-time 30 \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -X POST \
+    --data-binary "@${request_file}" \
+    "$compile_url" \
+    -o "$response_file"
+
+  job_id=$(python3 - "$response_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    body = json.load(f)
+if body.get("success") is not True or body.get("status") != "queued" or body.get("format") != "stl":
+    raise SystemExit(f"Unexpected compile enqueue response: {body}")
+job_id = body.get("job_id")
+if not job_id:
+    raise SystemExit(f"Compile enqueue response did not include job_id: {body}")
+print(job_id)
+PY
+)
+
+  status_url="http://127.0.0.1:${API_LOCAL_PORT}/api/intus/projects/default_purlin/compile/jobs/${job_id}"
+  for _ in $(seq 1 60); do
+    echo "+ curl --fail --silent --show-error --max-time 20 -H 'Authorization: Bearer <redacted>' ${status_url} -o ${status_file}" >&2
+    curl --fail --silent --show-error --max-time 20 \
+      -H "Authorization: Bearer ${token}" \
+      "$status_url" \
+      -o "$status_file"
+    status=$(python3 - "$status_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("status", ""))
+PY
+)
+    if [ "$status" = "succeeded" ]; then
+      python3 - "$status_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    body = json.load(f)
+if body.get("format") != "stl" or not body.get("artifact_id") or body.get("error") is not None or body.get("error_code") is not None or body.get("retryable") is not False or not body.get("finished_at"):
+    raise SystemExit(f"Unexpected successful compile job response: {body}")
+print(f"Compile job {body['job_id']} succeeded with artifact {body['artifact_id']}")
+PY
+      return
+    fi
+    if [ "$status" = "failed" ]; then
+      echo "Compile job ${job_id} failed:" >&2
+      cat "$status_file" >&2
+      exit 1
+    fi
+    sleep 3
+  done
+
+  echo "Timed out waiting for compile job ${job_id} to succeed. Last status:" >&2
+  cat "$status_file" >&2
+  exit 1
 }
 
 smoke_test_http() {
@@ -893,6 +1049,7 @@ run_smoke_tests() {
   check_valkey
   check_nats
   check_keycloak
+  smoke_test_compile_job
   check_tunnel
 }
 

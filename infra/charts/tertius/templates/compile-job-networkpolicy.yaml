@@ -1,0 +1,35 @@
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.compileJobs.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tertius.fullname" . }}-compile-job
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: compile-job
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: compile-job
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/component: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+{{- end }}

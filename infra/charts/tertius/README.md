@@ -8,7 +8,8 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 - Helm 3.
 - CloudNativePG operator with `clusters.postgresql.cnpg.io` installed.
 - Keycloak Operator with `keycloaks.k8s.keycloak.org` installed.
-- `RuntimeClass/gvisor` available for the compile worker, or override `compileWorker.runtimeClassName`.
+- KEDA with the `ScaledJob` CRD installed when `keda.enabled=true`.
+- `RuntimeClass/gvisor` available for compile Jobs, or override `compileJobs.runtimeClassName`.
 - Valkey and NATS Helm dependencies resolved with `helm dependency update infra/charts/tertius`.
 - API and UI images already available to the cluster.
 
@@ -46,9 +47,13 @@ curl http://127.0.0.1:8000/api/intus/health
 
 The chart enables NATS JetStream with file-backed PVC storage by default. The API receives `NATS_URL` through the chart ConfigMap. When `app.config.natsUrl` is empty, the value is derived from the release-local NATS service, for example `nats://tertius-nats:4222` for release `tertius`. Set `app.config.natsUrl` only for unusual deployments with a different internal service contract.
 
-NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod. NATS authentication is intentionally deferred for this stack-only change; define the exact Secret, chart values, and API env contract before the first producer or consumer workflow goes live.
+NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod.
 
-If future NetworkPolicy egress hardening is added, API egress must account for NATS `4222`, Postgres, Valkey, Keycloak, DNS, and any required external services together. This chart currently keeps its NetworkPolicy behavior ingress-only.
+Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image with `server/start-compile-job.sh`, read one compile request from JetStream, publish one result to JetStream, and exit. They intentionally receive only NATS and compile-limit environment variables. Do not add app Secret env, database env, service-account tokens, PVCs, or API/Keycloak/Postgres egress to compile Jobs.
+
+The chart does not install KEDA or its CRDs. `keda.enabled` defaults to `true` for the production and local values so compile work is rendered by default, but clusters without KEDA can render or install the rest of the chart with `--set keda.enabled=false`. Re-enable it only after the `ScaledJob` CRD is present.
+
+By default, compile Job pods get a dedicated NetworkPolicy that denies ingress and only allows egress to DNS and NATS `4222`. API/UI ingress policies remain controlled by `networkPolicy.enabled`. If API egress hardening is added later, it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required external services together.
 
 ## Secrets
 

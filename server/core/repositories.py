@@ -10,7 +10,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
-from core.compile_messages import CompileCommand
+from core.compile_messages import CompileCommand, CompileResultPayload
 from core.models import Artifact, CompileJob, CompileJobFile, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
@@ -278,12 +278,36 @@ class CompileRepository:
             )
         )
 
-    def mark_job_running(self, job: CompileJob) -> None:
+    def get_job_for_result(self, result: CompileResultPayload) -> CompileJob | None:
+        return self.db.scalar(
+            select(CompileJob).where(
+                CompileJob.id == result.job_id,
+                CompileJob.tenant_id == result.tenant_id,
+                CompileJob.project_id == result.project_id,
+                CompileJob.export_format == result.export_format,
+            )
+        )
+
+    def mark_job_dispatched(self, job: CompileJob, lease_seconds: int) -> None:
+        now = now_utc()
         job.status = "running"
         job.error = None
         job.error_code = None
         job.user_message = None
         job.retryable = False
+        job.finished_at = None
+        job.claimed_at = now
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.attempt_count += 1
+
+    def mark_job_publish_pending(self, job: CompileJob, error: str) -> None:
+        job.status = "queued"
+        job.error = error
+        job.error_code = "publish_pending"
+        job.user_message = "Compile queued but could not be published immediately. It will be retried."
+        job.retryable = True
+        job.claimed_at = None
+        job.lease_expires_at = None
 
     def finish_job(
         self,
@@ -368,6 +392,22 @@ class CompileRepository:
                     CompileJob.created_at < cutoff,
                 )
                 .order_by(CompileJob.created_at)
+                .limit(limit)
+            )
+        )
+
+    def stale_running_jobs(self, limit: int = 50) -> list[CompileJob]:
+        now = now_utc()
+        return list(
+            self.db.scalars(
+                select(CompileJob)
+                .where(
+                    CompileJob.tenant_id == self.tenant_id,
+                    CompileJob.status == "running",
+                    CompileJob.lease_expires_at.is_not(None),
+                    CompileJob.lease_expires_at < now,
+                )
+                .order_by(CompileJob.lease_expires_at)
                 .limit(limit)
             )
         )

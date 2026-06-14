@@ -52,7 +52,7 @@ spec:
         name: Tertius UI
         publicClient: true
         standardFlowEnabled: true
-        directAccessGrantsEnabled: false
+        directAccessGrantsEnabled: {{ .Values.keycloak.realmImport.uiDirectAccessGrantsEnabled }}
         redirectUris:
           - "*"
         webOrigins:
@@ -69,5 +69,18 @@ spec:
       - clientId: {{ .Values.keycloak.realmImport.apiClientId | quote }}
         name: Tertius API
         bearerOnly: true
+    {{- if .Values.keycloak.realmImport.smokeUser.enabled }}
+    users:
+      - username: {{ .Values.keycloak.realmImport.smokeUser.username | quote }}
+        enabled: true
+        emailVerified: true
+        firstName: {{ .Values.keycloak.realmImport.smokeUser.firstName | quote }}
+        lastName: {{ .Values.keycloak.realmImport.smokeUser.lastName | quote }}
+        email: {{ .Values.keycloak.realmImport.smokeUser.email | quote }}
+        credentials:
+          - type: password
+            value: {{ .Values.keycloak.realmImport.smokeUser.password | quote }}
+            temporary: false
+    {{- end }}
 {{- end }}
 {{- end }}

@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the server directory
 COPY server/ /app/server/
-RUN chmod +x /app/server/start-api.sh /app/server/start-compile-worker.sh
+RUN chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh
 
 # Expose the API port
 EXPOSE 8000

@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile
+from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile, now_utc
 from workflows.intus import intus_server
 
 
@@ -30,15 +30,70 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
         select(CompileJobFile).where(CompileJobFile.compile_job_id == job.id)
     ).all()
     snapshot = {row.filename: row.content for row in snapshot_rows}
-    assert job.status == "queued"
+    assert job.status == "running"
+    assert job.lease_expires_at is not None
     assert job.project_id == seeded_tenant.project_id
     assert published[0].job_id == job.id
     assert published[0].tenant_id == seeded_tenant.tenant_id
     assert published[0].project_id == seeded_tenant.project_id
     assert published[0].requested_by == seeded_tenant.user_id
     assert published[0].export_format == "stl"
+    assert published[0].request_id == f"compile-request:{job.id}"
+    assert [(file.filename, file.content) for file in published[0].files] == [("design.py", "shape = 'queued'\n")]
     assert saved_file.content == "shape = 'queued'\n"
     assert snapshot["design.py"] == "shape = 'queued'\n"
+
+
+def test_compile_marks_published_job_running_with_recovery_lease(
+    authenticated_intus_client, db_session, monkeypatch
+):
+    async def fake_publish_compile(command):
+        return None
+
+    monkeypatch.setattr(intus_server, "publish_compile_command", fake_publish_compile)
+
+    before_request = now_utc()
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={"code": "shape = 'recoverable'\n", "export_format": "stl", "file": "design.py"},
+    )
+
+    assert response.status_code == 202
+    job = db_session.get(CompileJob, response.json()["job_id"])
+    assert job.status == "running"
+    assert job.claimed_at is not None
+    assert job.claimed_at >= before_request
+    assert job.lease_expires_at is not None
+    assert job.lease_expires_at > job.claimed_at
+    assert job.error_code is None
+
+
+def test_compile_marks_job_failed_when_source_bundle_exceeds_limit(
+    authenticated_intus_client, db_session, monkeypatch
+):
+    published = []
+
+    async def fake_publish_compile(command):
+        published.append(command)
+
+    monkeypatch.setattr(intus_server, "publish_compile_command", fake_publish_compile)
+    settings = intus_server.get_settings()
+    monkeypatch.setattr(settings, "compile_request_max_bytes", 20)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={"code": "shape = 'too large'\n", "export_format": "stl", "file": "design.py"},
+    )
+
+    assert response.status_code == 413
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == "source_bundle_too_large"
+    assert published == []
+
+    job = db_session.get(CompileJob, body["job_id"])
+    assert job.status == "failed"
+    assert job.error_code == "source_bundle_too_large"
 
 
 def test_compile_rejects_invalid_filename(authenticated_intus_client, monkeypatch):
@@ -78,8 +133,8 @@ def test_compile_leaves_job_queued_when_publish_fails_after_commit(authenticated
 
     job = db_session.get(CompileJob, body["job_id"])
     assert job.status == "queued"
-    assert job.error_code is None
-    assert job.retryable is False
+    assert job.error_code == "publish_pending"
+    assert job.retryable is True
 
 
 def test_compile_job_status_returns_artifact_after_success(authenticated_intus_client, db_session, seeded_tenant):

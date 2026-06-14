@@ -14,6 +14,37 @@ render_default() {
   helm template "$RELEASE_NAME" "$CHART_DIR"
 }
 
+render_keda_disabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set keda.enabled=false
+}
+
+render_network_policy_enabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=true
+}
+
+render_network_policy_disabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=false
+}
+
+extract_render_doc() {
+  local content="$1"
+  local kind_pattern="$2"
+  local extra_pattern="${3:-}"
+
+  printf '%s\n' "$content" | awk -v kind_pattern="$kind_pattern" -v extra_pattern="$extra_pattern" '
+    BEGIN { doc = "" }
+    /^---$/ {
+      if (doc ~ kind_pattern && (extra_pattern == "" || doc ~ extra_pattern)) print doc
+      doc = ""
+      next
+    }
+    { doc = doc $0 "\n" }
+    END {
+      if (doc ~ kind_pattern && (extra_pattern == "" || doc ~ extra_pattern)) print doc
+    }
+  '
+}
+
 api_url_occurrences=$((rg -n 'const serverUrl = `\$\{baseUrl\}/api/\$\{workflowBase\}`' "${ROOT_DIR}/ui/src" || true) | wc -l | tr -d ' ')
 if [ "$api_url_occurrences" -ne 0 ]; then
   echo "UI launchers still append /api after VITE_API_URL; this produces /api/api/<workflow> when VITE_API_URL=/api." >&2
@@ -32,6 +63,13 @@ fi
 
 rendered="$(render_local)"
 default_rendered="$(render_default)"
+keda_disabled_rendered="$(render_keda_disabled)"
+network_policy_enabled_rendered="$(render_network_policy_enabled)"
+network_policy_disabled_rendered="$(render_network_policy_disabled)"
+scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
+default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
+compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
+compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   echo "Local Helm render did not include any PersistentVolumeClaim resources." >&2
@@ -68,28 +106,108 @@ if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; t
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/component: compile-worker'; then
-  echo "Local Helm render did not include the compile worker deployment." >&2
+if ! printf '%s\n' "$rendered" | rg -q 'directAccessGrantsEnabled: true' || ! printf '%s\n' "$rendered" | rg -q 'username: "demo"'; then
+  echo "Local Helm render must include the k3s smoke user and direct access grant support." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'command: \["sh", "/app/server/start-compile-worker.sh"\]'; then
-  echo "Compile worker deployment must run the dedicated worker startup script." >&2
+if printf '%s\n' "$default_rendered" | rg -q 'directAccessGrantsEnabled: true|username: "demo"'; then
+  echo "Default Helm render must not enable the k3s smoke user or direct access grants." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$default_rendered" | rg -q 'runtimeClassName: "gvisor"'; then
-  echo "Compile worker deployment must use the gvisor RuntimeClass in default values." >&2
+if ! printf '%s\n' "$scaled_job" | rg -q 'kind: ScaledJob'; then
+  echo "Local Helm render did not include the compile KEDA ScaledJob." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'automountServiceAccountToken: false'; then
-  echo "Compile worker deployment must not mount a service account token." >&2
+if printf '%s\n' "$keda_disabled_rendered" | rg -q 'kind: ScaledJob'; then
+  echo "Helm render with keda.enabled=false must not include the compile KEDA ScaledJob." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_STREAM_NAME'; then
-  echo "Local Helm render did not include compile worker stream configuration." >&2
+if printf '%s\n' "$rendered" | rg -q 'kind: Deployment' && printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/component: compile-worker'; then
+  echo "Local Helm render must not include the old compile-worker Deployment." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'type: nats-jetstream'; then
+  echo "Compile ScaledJob must use the KEDA nats-jetstream scaler." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'natsServerMonitoringEndpoint: "tertius-nats-headless.default.svc.cluster.local:8222"'; then
+  echo "Compile ScaledJob must point KEDA at the NATS headless service monitoring endpoint." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'app.kubernetes.io/component: compile-job'; then
+  echo "Compile ScaledJob must label pods with app.kubernetes.io/component: compile-job." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$default_scaled_job" | rg -q 'runtimeClassName: "gvisor"'; then
+  echo "Compile ScaledJob must use the gvisor RuntimeClass in default values." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'automountServiceAccountToken: false'; then
+  echo "Compile ScaledJob must not mount a service account token." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'backoffLimit: 0' || ! printf '%s\n' "$scaled_job" | rg -q 'activeDeadlineSeconds:'; then
+  echo "Compile ScaledJob must render backoffLimit: 0 and activeDeadlineSeconds." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-compile-job.sh"\]'; then
+  echo "Compile ScaledJob must run the one-shot compile job startup script." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL'; then
+  echo "Compile ScaledJob must not receive app secrets or database environment." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'COMPILE_STREAM_NAME' || ! printf '%s\n' "$scaled_job" | rg -q 'COMPILE_RESULT_SUBJECT'; then
+  echo "Local Helm render did not include compile job NATS stream/result configuration." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_ACK_WAIT_SECONDS: "900"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_ACK_WAIT_SECONDS' | rg -q 'value: "900"'; then
+  echo "Compile ack wait must render as 900 seconds so it exceeds compile timeout plus publish/ack margin." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$rendered" | rg -q 'COMPILE_(REQUEST|RESULT)_MAX_BYTES: "?[0-9]+e[+-]?[0-9]+"?' || printf '%s\n' "$scaled_job" | rg -q 'value: "?[0-9]+e[+-]?[0-9]+"?'; then
+  echo "Compile byte limits must render as plain integer strings, not scientific notation." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "8388608"'; then
+  echo "ConfigMap compile byte limits must render as the exact string \"8388608\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "8388608"'; then
+  echo "Compile ScaledJob byte limits must render as the exact string \"8388608\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'name: tertius-compile-job' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'port: 4222'; then
+  echo "Helm render with networkPolicy.enabled=true did not include the NATS-only compile Job NetworkPolicy." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/instance: tertius' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/component: nats'; then
+  echo "Compile Job NetworkPolicy must restrict NATS egress to release-local NATS pods." >&2
+  exit 1
+fi
+
+if [ -n "$compile_job_network_policy_disabled" ]; then
+  echo "Compile Job NetworkPolicy must not render when global networkPolicy.enabled=false." >&2
   exit 1
 fi
 
@@ -155,6 +273,11 @@ if ! rg -q '^USER 1000:1000$' "${ROOT_DIR}/Dockerfile.api"; then
   exit 1
 fi
 
+if ! rg -q -- '--version 2\.20\.1' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
+  echo ".github/workflows/chart-tests.yml must pin the KEDA Helm chart version used by CI." >&2
+  exit 1
+fi
+
 production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
 
 if ! printf '%s\n' "$production_rendered" | rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' || ! printf '%s\n' "$production_rendered" | rg -q 'admin: "https://tertius\.johnsonyuen\.com"'; then
@@ -172,7 +295,7 @@ if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/t
   exit 1
 fi
 
-if printf '%s\n' "$production_rendered" | rg -q 'NodePort|LoadBalancer|Ingress|cloudflare|cloudflared'; then
+if printf '%s\n' "$production_rendered" | rg -C 3 -i 'app.kubernetes.io/name: nats|name: nats' | rg -q 'NodePort|LoadBalancer|Ingress|cloudflare|cloudflared'; then
   echo "Production Helm defaults must keep NATS internal-only and avoid public NATS routing." >&2
   exit 1
 fi

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
+
+SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views"}
 
 
 SANDBOX_SCRIPT = r"""
@@ -258,49 +262,78 @@ class CompileSandboxResult:
     error: str | None
 
 
+def _sandbox_env() -> dict[str, str]:
+    return {
+        "PATH": "",
+        "PYTHONPATH": "",
+        "PYTHONIOENCODING": "utf-8",
+    }
+
+
+def _text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_compile_sandbox(project_dir: Path, export_format: str, timeout_seconds: int = 30) -> CompileSandboxResult:
     ext = export_format.lower()
-    output_path = project_dir / f"output.{ext}"
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", SANDBOX_SCRIPT, ext],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
+    if ext not in SUPPORTED_EXPORT_FORMATS:
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or "",
+            stdout="",
+            stderr="",
+            error=f"Unsupported export format: {export_format}",
+        )
+
+    output_path = project_dir / f"output.{ext}"
+    process = subprocess.Popen(
+        [sys.executable, "-c", SANDBOX_SCRIPT, ext],
+        cwd=project_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_sandbox_env(),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate()
+        return CompileSandboxResult(
+            success=False,
+            output_path=None,
+            stdout=_text(exc.stdout) or _text(stdout),
+            stderr=_text(exc.stderr) or _text(stderr),
             error=f"Compile timed out after {timeout_seconds} seconds",
         )
 
-    if result.returncode != 0:
+    if process.returncode != 0:
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            error=result.stderr.strip() or f"Compile exited with status {result.returncode}",
+            stdout=stdout,
+            stderr=stderr,
+            error=stderr.strip() or f"Compile exited with status {process.returncode}",
         )
 
     if not output_path.exists():
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=stdout,
+            stderr=stderr,
             error=f"Compile completed without creating output.{ext}",
         )
 
     return CompileSandboxResult(
         success=True,
         output_path=output_path,
-        stdout=result.stdout,
-        stderr=result.stderr,
+        stdout=stdout,
+        stderr=stderr,
         error=None,
     )
