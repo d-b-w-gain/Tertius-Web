@@ -14,7 +14,7 @@ spec:
   successfulJobsHistoryLimit: {{ .Values.compileJobs.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.compileJobs.failedJobsHistoryLimit }}
   scalingStrategy:
-    strategy: eager
+    strategy: {{ .Values.compileJobs.scalingStrategy }}
   jobTargetRef:
     parallelism: 1
     completions: 1
