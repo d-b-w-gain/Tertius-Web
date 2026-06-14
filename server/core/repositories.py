@@ -288,12 +288,26 @@ class CompileRepository:
             )
         )
 
-    def mark_job_running(self, job: CompileJob) -> None:
+    def mark_job_dispatched(self, job: CompileJob, lease_seconds: int) -> None:
+        now = now_utc()
         job.status = "running"
         job.error = None
         job.error_code = None
         job.user_message = None
         job.retryable = False
+        job.finished_at = None
+        job.claimed_at = now
+        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.attempt_count += 1
+
+    def mark_job_publish_pending(self, job: CompileJob, error: str) -> None:
+        job.status = "queued"
+        job.error = error
+        job.error_code = "publish_pending"
+        job.user_message = "Compile queued but could not be published immediately. It will be retried."
+        job.retryable = True
+        job.claimed_at = None
+        job.lease_expires_at = None
 
     def finish_job(
         self,

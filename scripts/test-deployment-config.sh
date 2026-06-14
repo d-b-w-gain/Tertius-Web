@@ -18,6 +18,33 @@ render_keda_disabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set keda.enabled=false
 }
 
+render_network_policy_enabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=true
+}
+
+render_network_policy_disabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=false
+}
+
+extract_render_doc() {
+  local content="$1"
+  local kind_pattern="$2"
+  local extra_pattern="${3:-}"
+
+  printf '%s\n' "$content" | awk -v kind_pattern="$kind_pattern" -v extra_pattern="$extra_pattern" '
+    BEGIN { doc = "" }
+    /^---$/ {
+      if (doc ~ kind_pattern && (extra_pattern == "" || doc ~ extra_pattern)) print doc
+      doc = ""
+      next
+    }
+    { doc = doc $0 "\n" }
+    END {
+      if (doc ~ kind_pattern && (extra_pattern == "" || doc ~ extra_pattern)) print doc
+    }
+  '
+}
+
 api_url_occurrences=$((rg -n 'const serverUrl = `\$\{baseUrl\}/api/\$\{workflowBase\}`' "${ROOT_DIR}/ui/src" || true) | wc -l | tr -d ' ')
 if [ "$api_url_occurrences" -ne 0 ]; then
   echo "UI launchers still append /api after VITE_API_URL; this produces /api/api/<workflow> when VITE_API_URL=/api." >&2
@@ -37,9 +64,12 @@ fi
 rendered="$(render_local)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
-scaled_job="$(printf '%s\n' "$rendered" | awk 'BEGIN{doc=""} /^---$/{if (doc ~ /kind: ScaledJob/) print doc; doc=""; next} {doc=doc $0 "\n"} END{if (doc ~ /kind: ScaledJob/) print doc}')"
-default_scaled_job="$(printf '%s\n' "$default_rendered" | awk 'BEGIN{doc=""} /^---$/{if (doc ~ /kind: ScaledJob/) print doc; doc=""; next} {doc=doc $0 "\n"} END{if (doc ~ /kind: ScaledJob/) print doc}')"
-compile_job_network_policy="$(printf '%s\n' "$default_rendered" | awk 'BEGIN{doc=""} /^---$/{if (doc ~ /kind: NetworkPolicy/ && doc ~ /name: tertius-compile-job/) print doc; doc=""; next} {doc=doc $0 "\n"} END{if (doc ~ /kind: NetworkPolicy/ && doc ~ /name: tertius-compile-job/) print doc}')"
+network_policy_enabled_rendered="$(render_network_policy_enabled)"
+network_policy_disabled_rendered="$(render_network_policy_disabled)"
+scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
+default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
+compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
+compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   echo "Local Helm render did not include any PersistentVolumeClaim resources." >&2
@@ -166,13 +196,18 @@ if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! 
   exit 1
 fi
 
-if ! printf '%s\n' "$default_rendered" | rg -q 'name: tertius-compile-job' || ! printf '%s\n' "$default_rendered" | rg -q 'port: 4222'; then
-  echo "Local Helm render did not include the NATS-only compile Job NetworkPolicy." >&2
+if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'name: tertius-compile-job' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'port: 4222'; then
+  echo "Helm render with networkPolicy.enabled=true did not include the NATS-only compile Job NetworkPolicy." >&2
   exit 1
 fi
 
 if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/instance: tertius' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/component: nats'; then
   echo "Compile Job NetworkPolicy must restrict NATS egress to release-local NATS pods." >&2
+  exit 1
+fi
+
+if [ -n "$compile_job_network_policy_disabled" ]; then
+  echo "Compile Job NetworkPolicy must not render when global networkPolicy.enabled=false." >&2
   exit 1
 fi
 
@@ -235,6 +270,11 @@ fi
 
 if ! rg -q '^USER 1000:1000$' "${ROOT_DIR}/Dockerfile.api"; then
   echo "Dockerfile.api does not switch the API runtime to the non-root UID/GID 1000." >&2
+  exit 1
+fi
+
+if ! rg -q -- '--version 2\.20\.1' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
+  echo ".github/workflows/chart-tests.yml must pin the KEDA Helm chart version used by CI." >&2
   exit 1
 fi
 

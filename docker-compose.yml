@@ -10,8 +10,6 @@ services:
       COMPILE_STREAM_NAME: TERTIUS_COMPILE
       COMPILE_REQUEST_SUBJECT: tertius.compile.request
       COMPILE_RESULT_SUBJECT: tertius.compile.result
-      COMPILE_SUCCEEDED_SUBJECT: tertius.compile.succeeded
-      COMPILE_FAILED_SUBJECT: tertius.compile.failed
       COMPILE_WORKER_QUEUE: compile-workers
       COMPILE_RESULT_CONSUMER: compile-result-api
       COMPILE_REQUEST_MAX_BYTES: 8388608

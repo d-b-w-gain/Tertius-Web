@@ -8,6 +8,7 @@ from core.compile_messages import (
     CompileResultPayload,
     CompileSourceFile,
     assert_message_size,
+    compile_result_message_id,
     serialized_message_size,
 )
 
@@ -51,6 +52,7 @@ def test_compile_result_payload_serializes_artifact_metadata():
     assert '"status":"succeeded"' in payload
     assert '"artifact_byte_size":5' in payload
     assert '"artifact_content_base64":"c29saWQ="' in payload
+    assert compile_result_message_id(result) == f"compile-result:{result.job_id}:succeeded"
 
 
 def test_assert_message_size_rejects_oversized_payload():

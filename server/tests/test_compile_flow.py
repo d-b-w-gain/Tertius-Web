@@ -1,6 +1,6 @@
 from sqlalchemy import select
 
-from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile
+from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile, now_utc
 from workflows.intus import intus_server
 
 
@@ -30,7 +30,8 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
         select(CompileJobFile).where(CompileJobFile.compile_job_id == job.id)
     ).all()
     snapshot = {row.filename: row.content for row in snapshot_rows}
-    assert job.status == "queued"
+    assert job.status == "running"
+    assert job.lease_expires_at is not None
     assert job.project_id == seeded_tenant.project_id
     assert published[0].job_id == job.id
     assert published[0].tenant_id == seeded_tenant.tenant_id
@@ -41,6 +42,30 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
     assert [(file.filename, file.content) for file in published[0].files] == [("design.py", "shape = 'queued'\n")]
     assert saved_file.content == "shape = 'queued'\n"
     assert snapshot["design.py"] == "shape = 'queued'\n"
+
+
+def test_compile_marks_published_job_running_with_recovery_lease(
+    authenticated_intus_client, db_session, monkeypatch
+):
+    async def fake_publish_compile(command):
+        return None
+
+    monkeypatch.setattr(intus_server, "publish_compile_command", fake_publish_compile)
+
+    before_request = now_utc()
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={"code": "shape = 'recoverable'\n", "export_format": "stl", "file": "design.py"},
+    )
+
+    assert response.status_code == 202
+    job = db_session.get(CompileJob, response.json()["job_id"])
+    assert job.status == "running"
+    assert job.claimed_at is not None
+    assert job.claimed_at >= before_request
+    assert job.lease_expires_at is not None
+    assert job.lease_expires_at > job.claimed_at
+    assert job.error_code is None
 
 
 def test_compile_marks_job_failed_when_source_bundle_exceeds_limit(

@@ -288,6 +288,7 @@ async def compile_project(
                     "retryable": False,
                 },
             )
+        compile_repo.mark_job_dispatched(job, lease_seconds=get_settings().compile_ack_wait_seconds)
         db.commit()
         committed = True
         await publish_compile_command(command)
@@ -302,10 +303,11 @@ async def compile_project(
             if committed:
                 persisted_job = db.get(CompileJob, job_id)
                 if persisted_job is not None:
-                    persisted_job.error = f"Compile command publish failed: {exc}"
-                    persisted_job.error_code = "publish_pending"
-                    persisted_job.user_message = "Compile queued but could not be published immediately. It will be retried."
-                    persisted_job.retryable = True
+                    compile_repo = CompileRepository(db, persisted_job.tenant_id)
+                    compile_repo.mark_job_publish_pending(
+                        persisted_job,
+                        error=f"Compile command publish failed: {exc}",
+                    )
                     db.commit()
                 return JSONResponse(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

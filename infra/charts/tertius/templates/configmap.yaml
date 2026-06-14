@@ -27,8 +27,6 @@ data:
   COMPILE_STREAM_NAME: {{ .Values.app.config.compileStreamName | quote }}
   COMPILE_REQUEST_SUBJECT: {{ .Values.app.config.compileRequestSubject | quote }}
   COMPILE_RESULT_SUBJECT: {{ .Values.app.config.compileResultSubject | quote }}
-  COMPILE_SUCCEEDED_SUBJECT: {{ .Values.app.config.compileSucceededSubject | quote }}
-  COMPILE_FAILED_SUBJECT: {{ .Values.app.config.compileFailedSubject | quote }}
   COMPILE_WORKER_QUEUE: {{ .Values.app.config.compileWorkerQueue | quote }}
   COMPILE_RESULT_CONSUMER: {{ .Values.app.config.compileResultConsumer | quote }}
   COMPILE_ACK_WAIT_SECONDS: {{ .Values.app.config.compileAckWaitSeconds | quote }}

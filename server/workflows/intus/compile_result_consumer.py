@@ -9,7 +9,6 @@ from sqlalchemy import select
 
 from core.compile_messages import (
     CompileCommand,
-    CompileResultEvent,
     CompileResultPayload,
     CompileSourceFile,
     assert_message_size,
@@ -251,10 +250,6 @@ async def run_result_consumer(stop_event: asyncio.Event | None = None) -> None:
         finally:
             if nc is not None:
                 await nc.close()
-
-
-def result_message_id(result: CompileResultPayload | CompileResultEvent) -> str:
-    return f"compile-result:{result.job_id}:{result.status}"
 
 
 def _decode_artifact(result: CompileResultPayload) -> bytes:

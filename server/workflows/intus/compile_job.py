@@ -5,7 +5,13 @@ import base64
 import logging
 from datetime import datetime, timezone
 
-from core.compile_messages import CompileCommand, CompileResultPayload, assert_message_size, serialized_message_size
+from core.compile_messages import (
+    CompileCommand,
+    CompileResultPayload,
+    assert_message_size,
+    compile_result_message_id,
+    serialized_message_size,
+)
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
@@ -29,7 +35,7 @@ async def handle_compile_request_message(msg, publisher: NatsPublisher, settings
         await publisher.publish_json(
             settings.compile_result_subject,
             result,
-            message_id=_result_message_id(result),
+            message_id=compile_result_message_id(result),
         )
         await msg.ack()
     except Exception:
@@ -185,10 +191,6 @@ def _user_message(error: str) -> str:
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _result_message_id(result: CompileResultPayload) -> str:
-    return f"compile-result:{result.job_id}:{result.status}"
 
 
 if __name__ == "__main__":

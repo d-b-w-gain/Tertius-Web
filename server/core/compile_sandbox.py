@@ -7,7 +7,7 @@ import signal
 from dataclasses import dataclass
 from pathlib import Path
 
-SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb"}
+SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views"}
 
 
 SANDBOX_SCRIPT = r"""

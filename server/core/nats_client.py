@@ -26,8 +26,6 @@ async def ensure_compile_stream(nc, settings):
     subjects = [
         settings.compile_request_subject,
         settings.compile_result_subject,
-        settings.compile_succeeded_subject,
-        settings.compile_failed_subject,
     ]
 
     max_msg_size = min(settings.compile_request_max_bytes, settings.compile_result_max_bytes)

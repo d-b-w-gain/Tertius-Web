@@ -30,8 +30,6 @@ class Settings(BaseSettings):
     compile_stream_name: str = Field(default="TERTIUS_COMPILE")
     compile_request_subject: str = Field(default="tertius.compile.request")
     compile_result_subject: str = Field(default="tertius.compile.result")
-    compile_succeeded_subject: str = Field(default="tertius.compile.succeeded")
-    compile_failed_subject: str = Field(default="tertius.compile.failed")
     compile_worker_queue: str = Field(default="compile-workers")
     compile_result_consumer: str = Field(default="compile-result-api")
     compile_ack_wait_seconds: int = Field(default=900)

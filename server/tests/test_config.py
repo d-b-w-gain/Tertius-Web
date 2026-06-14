@@ -78,8 +78,6 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
         "COMPILE_STREAM_NAME",
         "COMPILE_REQUEST_SUBJECT",
         "COMPILE_RESULT_SUBJECT",
-        "COMPILE_SUCCEEDED_SUBJECT",
-        "COMPILE_FAILED_SUBJECT",
         "COMPILE_WORKER_QUEUE",
         "COMPILE_RESULT_CONSUMER",
         "COMPILE_ACK_WAIT_SECONDS",
@@ -96,8 +94,6 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
     assert settings.compile_stream_name == "TERTIUS_COMPILE"
     assert settings.compile_request_subject == "tertius.compile.request"
     assert settings.compile_result_subject == "tertius.compile.result"
-    assert settings.compile_succeeded_subject == "tertius.compile.succeeded"
-    assert settings.compile_failed_subject == "tertius.compile.failed"
     assert settings.compile_worker_queue == "compile-workers"
     assert settings.compile_result_consumer == "compile-result-api"
     assert settings.compile_ack_wait_seconds == 900
@@ -113,8 +109,6 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     monkeypatch.setenv("COMPILE_STREAM_NAME", "CUSTOM_COMPILE")
     monkeypatch.setenv("COMPILE_REQUEST_SUBJECT", "custom.compile.request")
     monkeypatch.setenv("COMPILE_RESULT_SUBJECT", "custom.compile.result")
-    monkeypatch.setenv("COMPILE_SUCCEEDED_SUBJECT", "custom.compile.succeeded")
-    monkeypatch.setenv("COMPILE_FAILED_SUBJECT", "custom.compile.failed")
     monkeypatch.setenv("COMPILE_WORKER_QUEUE", "custom-workers")
     monkeypatch.setenv("COMPILE_RESULT_CONSUMER", "custom-result-api")
     monkeypatch.setenv("COMPILE_ACK_WAIT_SECONDS", "900")
@@ -129,8 +123,6 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     assert settings.compile_stream_name == "CUSTOM_COMPILE"
     assert settings.compile_request_subject == "custom.compile.request"
     assert settings.compile_result_subject == "custom.compile.result"
-    assert settings.compile_succeeded_subject == "custom.compile.succeeded"
-    assert settings.compile_failed_subject == "custom.compile.failed"
     assert settings.compile_worker_queue == "custom-workers"
     assert settings.compile_result_consumer == "custom-result-api"
     assert settings.compile_ack_wait_seconds == 900

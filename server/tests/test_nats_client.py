@@ -96,10 +96,10 @@ async def test_nats_publisher_uses_message_id_header_for_dedupe():
         created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
     )
 
-    await publisher.publish_json("tertius.compile.succeeded", command, message_id="compile-result-1")
+    await publisher.publish_json("tertius.compile.result", command, message_id="compile-result-1")
 
     subject, payload, headers = jetstream.published[0]
-    assert subject == "tertius.compile.succeeded"
+    assert subject == "tertius.compile.result"
     assert isinstance(payload, bytes)
     assert headers == {"Nats-Msg-Id": "compile-result-1"}
 
@@ -117,8 +117,6 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     assert stream_config.subjects == [
         "tertius.compile.request",
         "tertius.compile.result",
-        "tertius.compile.succeeded",
-        "tertius.compile.failed",
     ]
 
     consumer_config = jetstream.consumers[("TERTIUS_COMPILE", "compile-workers")]
@@ -163,7 +161,5 @@ async def test_ensure_compile_stream_updates_existing_stream_subjects_and_max_me
     assert stream_config.subjects == [
         "tertius.compile.request",
         "tertius.compile.result",
-        "tertius.compile.succeeded",
-        "tertius.compile.failed",
     ]
     assert stream_config.max_msg_size == 8388608

@@ -21,6 +21,26 @@ Path("spawned.txt").write_text("spawned", encoding="utf-8")
     assert not (tmp_path / "spawned.txt").exists()
 
 
+def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
+    spawned = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, timeout):
+            spawned["command"] = True
+            (tmp_path / "output.timus_views").write_text("{}", encoding="utf-8")
+            return "", ""
+
+    monkeypatch.setattr("core.compile_sandbox.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+
+    result = run_compile_sandbox(tmp_path, "timus_views", timeout_seconds=5)
+
+    assert result.success is True
+    assert spawned["command"] is True
+    assert result.output_path == tmp_path / "output.timus_views"
+
+
 def test_compile_sandbox_does_not_expose_worker_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DB_PASSWORD", "super-secret")
     (tmp_path / "design.py").write_text(

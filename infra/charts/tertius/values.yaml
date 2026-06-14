@@ -18,8 +18,6 @@ app:
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request
     compileResultSubject: tertius.compile.result
-    compileSucceededSubject: tertius.compile.succeeded
-    compileFailedSubject: tertius.compile.failed
     compileWorkerQueue: compile-workers
     compileResultConsumer: compile-result-api
     compileAckWaitSeconds: 900
@@ -182,7 +180,7 @@ cloudflared:
       cpu: 250m
       memory: 256Mi
 networkPolicy:
-  enabled: false
+  enabled: true
   compileJobs:
     enabled: true
 valkey:
