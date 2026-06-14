@@ -128,6 +128,8 @@ The production cluster must already have:
 - The `tertius-production-values` Secret in the `tertius` namespace.
 - A Cloudflare tunnel token Secret if `cloudflared.enabled=true`.
 
+For node-level dependency setup, including k3s Cilium migration, gVisor `RuntimeClass/gvisor`, and NetworkPolicy acceptance tests for compile jobs, see `infra/cluster-dependencies.md`.
+
 ## Local k3s Validation
 
 Use the local harness to test the Helm chart against an already-running k3s-compatible cluster. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the release, waits for app and platform resources, then runs smoke checks.

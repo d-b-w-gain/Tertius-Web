@@ -10,6 +10,10 @@ render_local() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES"
 }
 
+render_default() {
+  helm template "$RELEASE_NAME" "$CHART_DIR"
+}
+
 api_url_occurrences=$((rg -n 'const serverUrl = `\$\{baseUrl\}/api/\$\{workflowBase\}`' "${ROOT_DIR}/ui/src" || true) | wc -l | tr -d ' ')
 if [ "$api_url_occurrences" -ne 0 ]; then
   echo "UI launchers still append /api after VITE_API_URL; this produces /api/api/<workflow> when VITE_API_URL=/api." >&2
@@ -27,6 +31,7 @@ if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/infra/deploy/
 fi
 
 rendered="$(render_local)"
+default_rendered="$(render_default)"
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   echo "Local Helm render did not include any PersistentVolumeClaim resources." >&2
@@ -70,6 +75,16 @@ fi
 
 if ! printf '%s\n' "$rendered" | rg -q 'command: \["sh", "/app/server/start-compile-worker.sh"\]'; then
   echo "Compile worker deployment must run the dedicated worker startup script." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$default_rendered" | rg -q 'runtimeClassName: "gvisor"'; then
+  echo "Compile worker deployment must use the gvisor RuntimeClass in default values." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'automountServiceAccountToken: false'; then
+  echo "Compile worker deployment must not mount a service account token." >&2
   exit 1
 fi
 

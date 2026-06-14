@@ -61,6 +61,7 @@ api:
       periodSeconds: 20
 compileWorker:
   replicaCount: 2
+  runtimeClassName: gvisor
   resources:
     requests:
       cpu: 500m

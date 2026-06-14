@@ -474,6 +474,7 @@ cluster_has_image() {
 
 load_image() {
   image=$1
+  tar_file=""
   if cluster_has_image "$image"; then
     echo "Image already present in k3s containerd: ${image}"
     return
@@ -493,6 +494,8 @@ load_image() {
     quote_cmd podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     run podman exec "$K3S_CONTAINER" rm -f "$container_tar"
+    rm -f "$tar_file"
+    TEMP_FILES="${TEMP_FILES//$tar_file/}"
     return
   fi
   if [ -n "$K3S_CONTAINER" ] && command -v docker >/dev/null 2>&1 && docker container inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
@@ -501,6 +504,8 @@ load_image() {
     quote_cmd docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     run docker exec "$K3S_CONTAINER" rm -f "$container_tar"
+    rm -f "$tar_file"
+    TEMP_FILES="${TEMP_FILES//$tar_file/}"
     return
   fi
   quote_cmd k3s ctr -n k8s.io images import "$tar_file"
@@ -509,6 +514,8 @@ load_image() {
     echo "Use a local registry tag such as localhost:5000/tertius-api:local, or run this script where k3s ctr is available." >&2
     exit 1
   fi
+  rm -f "$tar_file"
+  TEMP_FILES="${TEMP_FILES//$tar_file/}"
 }
 
 load_images() {
