@@ -98,6 +98,8 @@ valkey:
 
 nats:
   config:
+    merge:
+      max_payload: 8388608
     jetstream:
       fileStore:
         pvc:
