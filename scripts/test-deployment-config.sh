@@ -18,6 +18,10 @@ render_keda_disabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set keda.enabled=false
 }
 
+render_compile_strategy_accurate() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set compileJobs.scalingStrategy=accurate
+}
+
 render_network_policy_enabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=true
 }
@@ -64,10 +68,12 @@ fi
 rendered="$(render_local)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
+compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
+compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
 compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 
@@ -133,6 +139,16 @@ fi
 
 if ! printf '%s\n' "$scaled_job" | rg -q 'type: nats-jetstream'; then
   echo "Compile ScaledJob must use the KEDA nats-jetstream scaler." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$scaled_job" | rg -q 'strategy: eager|scalingStrategy:'; then
+  echo "Compile ScaledJob must omit scalingStrategy by default so KEDA uses its non-eager default behavior for single queued compiles." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$compile_strategy_accurate_scaled_job" | rg -q 'strategy: accurate'; then
+  echo "Compile ScaledJob must allow overriding the KEDA scaling strategy from values." >&2
   exit 1
 fi
 

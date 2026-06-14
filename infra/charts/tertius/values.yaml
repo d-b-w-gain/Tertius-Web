@@ -65,6 +65,7 @@ compileJobs:
   runtimeClassName: gvisor
   maxReplicaCount: 4
   pollingInterval: 5
+  scalingStrategy: ""
   activeDeadlineSeconds: 720
   ttlSecondsAfterFinished: 300
   successfulJobsHistoryLimit: 3

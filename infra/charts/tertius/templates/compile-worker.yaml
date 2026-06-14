@@ -13,8 +13,10 @@ spec:
   maxReplicaCount: {{ .Values.compileJobs.maxReplicaCount }}
   successfulJobsHistoryLimit: {{ .Values.compileJobs.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.compileJobs.failedJobsHistoryLimit }}
+  {{- with .Values.compileJobs.scalingStrategy }}
   scalingStrategy:
-    strategy: eager
+    strategy: {{ . }}
+  {{- end }}
   jobTargetRef:
     parallelism: 1
     completions: 1
