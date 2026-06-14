@@ -8,6 +8,7 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 - Helm 3.
 - CloudNativePG operator with `clusters.postgresql.cnpg.io` installed.
 - Keycloak Operator with `keycloaks.k8s.keycloak.org` installed.
+- `RuntimeClass/gvisor` available for the compile worker, or override `compileWorker.runtimeClassName`.
 - Valkey and NATS Helm dependencies resolved with `helm dependency update infra/charts/tertius`.
 - API and UI images already available to the cluster.
 

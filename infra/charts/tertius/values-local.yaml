@@ -26,6 +26,7 @@ api:
 
 compileWorker:
   replicaCount: 1
+  runtimeClassName: ""
   resources:
     requests:
       cpu: 100m

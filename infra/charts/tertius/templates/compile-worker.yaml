@@ -18,6 +18,10 @@ spec:
         app.kubernetes.io/component: compile-worker
     spec:
       serviceAccountName: {{ include "tertius.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.compileWorker.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
