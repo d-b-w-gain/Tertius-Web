@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_messages import CompileCommand
+from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
@@ -54,7 +54,11 @@ async def publish_compile_command(command: CompileCommand) -> None:
     nc = await connect_nats(settings.nats_url)
     try:
         js = await ensure_compile_stream(nc, settings)
-        await NatsPublisher(js).publish_json(settings.compile_request_subject, command)
+        await NatsPublisher(js).publish_json(
+            settings.compile_request_subject,
+            command,
+            message_id=command.request_id,
+        )
         await nc.flush()
     finally:
         await nc.close()
@@ -248,9 +252,8 @@ async def compile_project(
         if files is None:
             return JSONResponse(status_code=404, content={"error": "Project not found"})
         compile_repo.snapshot_job_files(job, files)
-        db.commit()
-        committed = True
 
+        request_id = f"compile-request:{job.id}"
         command = CompileCommand(
             job_id=job.id,
             tenant_id=ctx.tenant_id,
@@ -258,7 +261,35 @@ async def compile_project(
             requested_by=ctx.user_id,
             export_format=ext,
             created_at=job.created_at,
+            files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
+            request_id=request_id,
         )
+        try:
+            assert_message_size(command, get_settings().compile_request_max_bytes, "request")
+        except ValueError as exc:
+            compile_repo.finish_job(
+                job,
+                "failed",
+                error=str(exc),
+                error_code="source_bundle_too_large",
+                user_message="Compile source is too large to queue. Split the model into smaller files.",
+                retryable=False,
+            )
+            db.commit()
+            committed = True
+            return JSONResponse(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content={
+                    "success": False,
+                    "job_id": str(job.id),
+                    "error": str(exc),
+                    "error_code": "source_bundle_too_large",
+                    "user_message": "Compile source is too large to queue. Split the model into smaller files.",
+                    "retryable": False,
+                },
+            )
+        db.commit()
+        committed = True
         await publish_compile_command(command)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
@@ -269,6 +300,13 @@ async def compile_project(
         if job_id is not None:
             db.rollback()
             if committed:
+                persisted_job = db.get(CompileJob, job_id)
+                if persisted_job is not None:
+                    persisted_job.error = f"Compile command publish failed: {exc}"
+                    persisted_job.error_code = "publish_pending"
+                    persisted_job.user_message = "Compile queued but could not be published immediately. It will be retried."
+                    persisted_job.retryable = True
+                    db.commit()
                 return JSONResponse(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     content={

@@ -1,56 +1,105 @@
-apiVersion: apps/v1
-kind: Deployment
+{{- if .Values.keda.enabled }}
+{{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
+{{- $natsMonitoringEndpoint := printf "%s-nats-headless.%s.svc.cluster.local:8222" .Release.Name .Release.Namespace }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
 metadata:
-  name: {{ include "tertius.apiName" . }}-compile-worker
+  name: {{ include "tertius.apiName" . }}-compile
   labels:
     {{- include "tertius.labels" . | nindent 4 }}
-    app.kubernetes.io/component: compile-worker
+    app.kubernetes.io/component: compile-job
 spec:
-  replicas: {{ .Values.compileWorker.replicaCount }}
-  selector:
-    matchLabels:
-      {{- include "tertius.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: compile-worker
-  template:
-    metadata:
-      labels:
-        {{- include "tertius.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: compile-worker
-    spec:
-      serviceAccountName: {{ include "tertius.serviceAccountName" . }}
-      automountServiceAccountToken: false
-      {{- with .Values.compileWorker.runtimeClassName }}
-      runtimeClassName: {{ . | quote }}
-      {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      containers:
-        - name: compile-worker
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
-          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
-          command: ["sh", "/app/server/start-compile-worker.sh"]
-          envFrom:
-            - configMapRef:
-                name: {{ include "tertius.configName" . }}
-            - secretRef:
-                name: {{ include "tertius.secretName" . }}
-                optional: true
-          env:
-            - name: APP_DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.postgres.appUserSecretName | quote }}
-                  key: password
-                  optional: true
-            - name: APP_DB_OWNER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.postgres.appUserSecretName | quote }}
-                  key: username
-                  optional: true
-          resources:
-            {{- toYaml .Values.compileWorker.resources | nindent 12 }}
+  pollingInterval: {{ .Values.compileJobs.pollingInterval }}
+  maxReplicaCount: {{ .Values.compileJobs.maxReplicaCount }}
+  successfulJobsHistoryLimit: {{ .Values.compileJobs.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.compileJobs.failedJobsHistoryLimit }}
+  scalingStrategy:
+    strategy: eager
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 0
+    activeDeadlineSeconds: {{ .Values.compileJobs.activeDeadlineSeconds }}
+    ttlSecondsAfterFinished: {{ .Values.compileJobs.ttlSecondsAfterFinished }}
+    template:
+      metadata:
+        labels:
+          {{- include "tertius.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: compile-job
+      spec:
+        restartPolicy: Never
+        automountServiceAccountToken: false
+        enableServiceLinks: false
+        hostNetwork: false
+        hostPID: false
+        hostIPC: false
+        {{- with .Values.compileJobs.runtimeClassName }}
+        runtimeClassName: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imagePullSecrets }}
+        imagePullSecrets:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: compile
+            image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+            imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+            command: ["sh", "/app/server/start-compile-job.sh"]
+            env:
+              - name: COMPILE_JOB_MODE
+                value: "nats-only"
+              - name: PYTHONDONTWRITEBYTECODE
+                value: "1"
+              - name: NATS_URL
+                value: {{ $natsUrl | quote }}
+              - name: COMPILE_STREAM_NAME
+                value: {{ .Values.app.config.compileStreamName | quote }}
+              - name: COMPILE_REQUEST_SUBJECT
+                value: {{ .Values.app.config.compileRequestSubject | quote }}
+              - name: COMPILE_RESULT_SUBJECT
+                value: {{ .Values.app.config.compileResultSubject | quote }}
+              - name: COMPILE_WORKER_QUEUE
+                value: {{ .Values.app.config.compileWorkerQueue | quote }}
+              - name: COMPILE_ACK_WAIT_SECONDS
+                value: {{ .Values.app.config.compileAckWaitSeconds | quote }}
+              - name: COMPILE_MAX_DELIVER
+                value: {{ .Values.app.config.compileMaxDeliver | quote }}
+              - name: COMPILE_TIMEOUT_SECONDS
+                value: {{ .Values.app.config.compileTimeoutSeconds | quote }}
+              - name: COMPILE_REQUEST_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
+              - name: COMPILE_RESULT_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            volumeMounts:
+              - name: tmp
+                mountPath: /tmp
+            resources:
+              {{- toYaml .Values.compileJobs.resources | nindent 14 }}
+        volumes:
+          - name: tmp
+            emptyDir:
+              sizeLimit: {{ .Values.compileJobs.tmpSizeLimit | quote }}
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        natsServerMonitoringEndpoint: {{ $natsMonitoringEndpoint | quote }}
+        account: "$G"
+        stream: {{ .Values.app.config.compileStreamName | quote }}
+        consumer: {{ .Values.app.config.compileWorkerQueue | quote }}
+        lagThreshold: "1"
+        activationLagThreshold: "0"
+        useHttps: "false"
+{{- end }}

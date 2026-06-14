@@ -9,9 +9,13 @@ services:
       NATS_URL: nats://nats:4222
       COMPILE_STREAM_NAME: TERTIUS_COMPILE
       COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_RESULT_SUBJECT: tertius.compile.result
       COMPILE_SUCCEEDED_SUBJECT: tertius.compile.succeeded
       COMPILE_FAILED_SUBJECT: tertius.compile.failed
       COMPILE_WORKER_QUEUE: compile-workers
+      COMPILE_RESULT_CONSUMER: compile-result-api
+      COMPILE_REQUEST_MAX_BYTES: 8388608
+      COMPILE_RESULT_MAX_BYTES: 8388608
       APP_DB_HOST: postgres
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
@@ -20,24 +24,20 @@ services:
       - postgres
       - nats
 
-  compile-worker:
+  compile-job-runner:
     build: .
-    command: sh /app/server/start-compile-worker.sh
+    command: sh -c "while true; do sh /app/server/start-compile-job.sh; sleep 2; done"
     volumes:
       - ./server:/app/server
     environment:
       NATS_URL: nats://nats:4222
       COMPILE_STREAM_NAME: TERTIUS_COMPILE
       COMPILE_REQUEST_SUBJECT: tertius.compile.request
-      COMPILE_SUCCEEDED_SUBJECT: tertius.compile.succeeded
-      COMPILE_FAILED_SUBJECT: tertius.compile.failed
+      COMPILE_RESULT_SUBJECT: tertius.compile.result
       COMPILE_WORKER_QUEUE: compile-workers
-      APP_DB_HOST: postgres
-      APP_DB_NAME: tertius
-      APP_DB_OWNER: tertius
-      APP_DB_PASSWORD: tertius
+      COMPILE_RESULT_MAX_BYTES: 8388608
+      COMPILE_JOB_MODE: nats-only
     depends_on:
-      - postgres
       - nats
 
   frontend:
@@ -59,6 +59,7 @@ services:
       POSTGRES_DB: tertius
       POSTGRES_USER: tertius
       POSTGRES_PASSWORD: tertius
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - tertius-postgres:/var/lib/postgresql/data
 

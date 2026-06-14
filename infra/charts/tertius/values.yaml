@@ -17,12 +17,16 @@ app:
     natsUrl: ""
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request
+    compileResultSubject: tertius.compile.result
     compileSucceededSubject: tertius.compile.succeeded
     compileFailedSubject: tertius.compile.failed
     compileWorkerQueue: compile-workers
-    compileAckWaitSeconds: 660
+    compileResultConsumer: compile-result-api
+    compileAckWaitSeconds: 900
     compileMaxDeliver: 3
     compileTimeoutSeconds: 600
+    compileRequestMaxBytes: 8388608
+    compileResultMaxBytes: 8388608
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
@@ -59,16 +63,26 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
-compileWorker:
-  replicaCount: 2
+compileJobs:
   runtimeClassName: gvisor
+  maxReplicaCount: 4
+  pollingInterval: 5
+  activeDeadlineSeconds: 720
+  ttlSecondsAfterFinished: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  tmpSizeLimit: 1Gi
   resources:
     requests:
       cpu: 500m
       memory: 512Mi
+      ephemeral-storage: 512Mi
     limits:
       cpu: "4"
       memory: 4Gi
+      ephemeral-storage: 2Gi
+keda:
+  enabled: true
 ui:
   replicaCount: 1
   image:
@@ -143,6 +157,14 @@ keycloak:
     realm: tertius
     uiClientId: tertius-ui
     apiClientId: tertius-api
+    uiDirectAccessGrantsEnabled: false
+    smokeUser:
+      enabled: false
+      username: demo
+      password: demo
+      email: demo@example.com
+      firstName: Demo
+      lastName: User
 cloudflared:
   enabled: false
   replicaCount: 1
@@ -161,6 +183,8 @@ cloudflared:
       memory: 256Mi
 networkPolicy:
   enabled: false
+  compileJobs:
+    enabled: true
 valkey:
   enabled: true
   image:
