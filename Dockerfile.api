@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir -r /app/server/requirements.txt
 
 COPY server/ /app/server/
 
-RUN chmod +x /app/server/start-api.sh /app/server/start-compile-worker.sh
+RUN chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh
 
 USER 1000:1000
 
