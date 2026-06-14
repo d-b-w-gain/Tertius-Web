@@ -207,6 +207,8 @@ valkey:
 nats:
   enabled: true
   config:
+    merge:
+      max_payload: 8388608
     jetstream:
       enabled: true
       fileStore:

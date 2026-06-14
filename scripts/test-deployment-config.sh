@@ -207,6 +207,11 @@ if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' ||
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q '"max_payload": 8388608'; then
+  echo "NATS server max_payload must match the compile message byte limit." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "8388608"'; then
   echo "Compile ScaledJob byte limits must render as the exact string \"8388608\"." >&2
   exit 1
