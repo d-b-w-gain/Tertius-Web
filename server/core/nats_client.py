@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from typing import Any, Protocol
+
 from pydantic import BaseModel
+
+
+class Publisher(Protocol):
+    async def publish_json(self, subject: str, message: Any, message_id: str | None = None) -> None: ...
 
 
 class NatsPublisher:

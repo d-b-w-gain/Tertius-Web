@@ -6,11 +6,12 @@ import tempfile
 import traceback
 from datetime import timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, confloat, constr
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 import json
@@ -73,19 +74,23 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
 def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
     env = {"bd": bd, "build123d": bd}
 
-    if project_dir is not None and project_dir not in sys.path:
-        sys.path.insert(0, project_dir)
-        remove_project_dir = True
-    else:
-        remove_project_dir = False
+    if project_dir is None:
+        exec(code, env)
+        return _collect_shapes(env)
 
+    remove_project_dir = project_dir not in sys.path
+    if remove_project_dir:
+        sys.path.insert(0, project_dir)
     try:
         exec(code, env)
+        return _collect_shapes(env)
     finally:
         if remove_project_dir:
             sys.path.remove(project_dir)
 
-    shapes = []
+
+def _collect_shapes(env: dict[str, Any]) -> bd.Compound:
+    shapes: list[bd.Shape] = []
     for val in env.values():
         if isinstance(val, bd.Shape) and hasattr(val, "volume"):
             g_type = val.geom_type() if callable(val.geom_type) else val.geom_type
@@ -100,8 +105,8 @@ def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Comp
     if not shapes:
         raise ValueError("No 3D shapes found in script.")
 
-    final_shapes = []
-    seen = set()
+    final_shapes: list[bd.Shape] = []
+    seen: set[int] = set()
     for shape in shapes:
         if id(shape) not in seen:
             seen.add(id(shape))
@@ -264,23 +269,23 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
         size_mm = size * 25.4 / 72
         scale = size_mm / baseline
         
-        ops = []
+        ops: list[tuple] = []
         current_x = 0.0
-        
+
         for char in text:
             if char == ' ':
                 current_x += space_width + tracking
                 continue
-            
+
             codepoint = ord(char)
             glyph_name = cmap.get(codepoint)
             if not glyph_name:
                 continue
-            
+
             glyph = glyph_set[glyph_name]
             pen = RecordingPen()
             glyph.draw(pen)
-            
+
             for cmd, args in pen.value:
                 if cmd == 'moveTo':
                     x, y = args[0]
@@ -290,14 +295,14 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
                     ops.append(('L', (current_x + x) * scale, (baseline - y) * scale))
                 elif cmd == 'curveTo':
                     (x1, y1), (x2, y2), (x3, y3) = args
-                    ops.append(('C', 
+                    ops.append(('C',
                                 (current_x + x1) * scale, (baseline - y1) * scale,
                                 (current_x + x2) * scale, (baseline - y2) * scale,
                                 (current_x + x3) * scale, (baseline - y3) * scale))
             current_x += glyph.width + tracking
-            
-        subpaths = []
-        current = []
+
+        subpaths: list[list[tuple]] = []
+        current: list[tuple] = []
         for op in ops:
             if op[0] == 'M' and current:
                 subpaths.append(current)
@@ -328,11 +333,11 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
         pdf.cell(w=110, h=7, text=text, ln=0)
 
 class TimusSettingsRequest(BaseModel):
-    title: constr(min_length=1, max_length=255)
-    stamp_text: constr(min_length=1, max_length=32)
+    title: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    stamp_text: Annotated[str, StringConstraints(min_length=1, max_length=32)]
     show_redline: bool
     show_hidden_lines: bool
-    scale: confloat(gt=0, le=1000)
+    scale: Annotated[float, Field(gt=0, le=1000)]
     sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
 
 
@@ -347,7 +352,7 @@ def serialize_timus_settings(settings: TimusSettings):
     }
 
 
-PROJECTION_CACHE = {}
+PROJECTION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _artifact_is_current_for_design(artifact: Artifact, design_file: ProjectFile) -> bool:
@@ -423,7 +428,7 @@ def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
     return views
 
 
-def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str, name: str):
+def _background_build_timus_views(tenant_id: UUID, user_id: UUID, project_id: UUID, name: str):
     db = SessionLocal()
     try:
         repo = ProjectRepository(db, tenant_id)
@@ -431,23 +436,23 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
         files = repo.files_for_runtime(name)
         if not files:
             return
-            
+
         job = compile_repo.start_job(project_id, user_id, "timus_views")
         job_id = job.id
         db.commit()
-        
+
         with hydrate_project_files(files) as project_dir:
             settings_path = project_dir / "settings.json"
             import json
-            
-            settings = db.scalar(
+
+            user_settings = db.scalar(
                 select(TimusSettings).where(
                     TimusSettings.user_id == user_id,
                     TimusSettings.tenant_id == tenant_id,
                     TimusSettings.project_id == project_id,
                 )
             )
-            settings_dict = serialize_timus_settings(settings) if settings else {
+            settings_dict = serialize_timus_settings(user_settings) if user_settings else {
                 "title": name.upper(),
                 "stamp_text": "APPROVED",
                 "show_redline": True,
@@ -455,9 +460,9 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
                 "scale": 1.0,
                 "sheet_size": "A4",
             }
-                
+
             settings_path.write_text(json.dumps(settings_dict))
-            
+
             result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=300)
             if not result.success:
                 error = result.error or result.stderr or "Compile failed"
@@ -471,7 +476,7 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
                 return
             output_bytes = result.output_path.read_bytes()
 
-        settings = get_settings()
+        app_settings = get_settings()
         compile_repo.record_artifact(
             project_id,
             job_id,
@@ -484,7 +489,7 @@ def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str,
             pruned_artifacts = compile_repo.prunable_artifacts(
                 project_id,
                 "timus_views",
-                max(1, settings.artifact_retention_limit),
+                max(1, app_settings.artifact_retention_limit),
             )
             compile_repo.delete_artifacts(pruned_artifacts)
             db.commit()
@@ -790,6 +795,8 @@ def get_drafting_pdf(
         else:
             repo = ProjectRepository(db, ctx.tenant_id)
             files = repo.files_for_runtime(name)
+            if files is None:
+                return Response("Project files not found", 404)
             with hydrate_project_files(files) as project_dir:
                 compound = get_compound_from_code(design_file.content, str(project_dir))
 

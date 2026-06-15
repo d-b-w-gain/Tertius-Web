@@ -60,6 +60,7 @@ building = bd.Compound(children=[part], label="Colour test assembly")
     result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
 
     assert result.success is True, result.error
+    assert result.output_path is not None
     data = result.output_path.read_bytes()
     magic, _version, _length = struct.unpack("<4sII", data[:12])
     assert magic == b"glTF"
@@ -96,6 +97,7 @@ building = bd.Compound([left, right], label="two child-coloured solids real comp
     result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
 
     assert result.success is True, result.error
+    assert result.output_path is not None
     data = result.output_path.read_bytes()
     magic, _version, _length = struct.unpack("<4sII", data[:12])
     assert magic == b"glTF"

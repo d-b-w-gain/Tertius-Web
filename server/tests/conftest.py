@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from dataclasses import dataclass
 import os
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 os.environ.setdefault("DOCKER_CLIENT_TIMEOUT", "300")
@@ -56,9 +56,9 @@ def db_session(postgres_url: str) -> Generator[Session, None, None]:
 
 @dataclass(frozen=True)
 class SeededTenant:
-    user_id: object
-    tenant_id: object
-    project_id: object
+    user_id: UUID
+    tenant_id: UUID
+    project_id: UUID
 
 
 @pytest.fixture()

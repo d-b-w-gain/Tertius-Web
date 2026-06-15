@@ -51,9 +51,9 @@ Create `Dockerfile.api`.
 
 Responsibilities:
 
-- Start from `python:3.12-slim`.
+- Start from `python:3.14-slim` and copy in `uv` from `ghcr.io/astral-sh/uv`.
 - Install system dependencies required by OpenCASCADE, Build123D, geometry rendering, and git-backed project history.
-- Install `server/requirements.txt`.
+- `uv sync --no-dev --locked` against the root `pyproject.toml` and `uv.lock` (this also installs the project itself).
 - Copy `server/` into the image.
 - Set `WORKDIR /app`.
 - Expose port `8000`.

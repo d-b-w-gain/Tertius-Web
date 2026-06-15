@@ -15,13 +15,13 @@ from core.compile_messages import (
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
-from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, pull_compile_subscription
+from core.nats_client import NatsPublisher, Publisher, connect_nats, ensure_compile_stream, pull_compile_subscription
 
 
 logger = logging.getLogger(__name__)
 
 
-async def handle_compile_request_message(msg, publisher: NatsPublisher, settings) -> None:
+async def handle_compile_request_message(msg, publisher: Publisher, settings) -> None:
     try:
         command = CompileCommand.model_validate_json(msg.data)
     except Exception:

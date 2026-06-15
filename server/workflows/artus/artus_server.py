@@ -198,7 +198,7 @@ def update_features(
         lines = content.splitlines()
         tree = ast.parse(content)
         
-        assignments = {}
+        assignments: dict[str, ast.Assign] = {}
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
@@ -211,6 +211,7 @@ def update_features(
                 node = assignments[key]
                 line_idx = node.lineno - 1
                 raw_line = lines[line_idx]
+                assert isinstance(node.value, ast.Constant)
                 old_val = node.value.value
                 
                 start_col = getattr(node.value, "col_offset", None)

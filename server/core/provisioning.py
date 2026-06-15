@@ -69,11 +69,15 @@ def provision_user_context(db: Session, principal: Principal) -> AuthContext:
     user.display_name = principal.display_name
     user.last_seen_at = now_utc()
 
-    membership = db.scalar(select(TenantMembership).where(TenantMembership.user_id == user.id))
+    existing_membership = db.scalar(
+        select(TenantMembership).where(TenantMembership.user_id == user.id)
+    )
+    if existing_membership is None:
+        raise RuntimeError(f"User {user.id} has no tenant membership")
     db.commit()
     return AuthContext(
         user_id=user.id,
-        tenant_id=membership.tenant_id,
+        tenant_id=existing_membership.tenant_id,
         keycloak_subject=user.keycloak_subject,
         email=user.email,
     )

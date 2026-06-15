@@ -114,7 +114,7 @@ function normalizeWorkspace(value: unknown): GuestWorkspace {
   const activeProject =
     typeof raw.activeProject === 'string' && projects[raw.activeProject]
       ? raw.activeProject
-      : Object.keys(projects)[0]
+      : Object.keys(projects)[0] ?? DEFAULT_PROJECT_NAME
 
   return {
     version: 1,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ from workflows.intus import compile_result_consumer as consumer_module
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def nats_url() -> str:
+def nats_url() -> Generator[str, None, None]:
     """Start a NATS 2.x container with JetStream enabled.
 
     Uses nats:2.10-alpine which is the smallest stable image with JetStream.

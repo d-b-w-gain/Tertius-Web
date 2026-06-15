@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,7 +18,7 @@ from workflows.intus.intus_server import app as intus_app
 
 def wait_for_keycloak(base_url: str) -> None:
     deadline = time.time() + 90
-    last_error = None
+    last_error: Exception | None = None
     while time.time() < deadline:
         try:
             response = httpx.get(f"{base_url}/realms/tertius/.well-known/openid-configuration", timeout=2)
@@ -53,7 +54,7 @@ def get_demo_access_token(base_url: str) -> str:
     return response.json()["access_token"]
 
 
-def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Session, tmp_path: Path):
+def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     realm_file = tmp_path / "tertius-realm.json"
     write_test_realm(Path("infra/keycloak/tertius-realm.json"), realm_file)
 
@@ -78,15 +79,9 @@ def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Se
             keycloak_audience="tertius-api",
         )
         intus_app.dependency_overrides[get_db] = override_db
-        try:
-            original_get_settings = auth.get_settings
-            auth.get_settings = lambda: settings
-            try:
-                response = TestClient(intus_app).get("/projects", headers={"Authorization": f"Bearer {token}"})
-            finally:
-                auth.get_settings = original_get_settings
-        finally:
-            intus_app.dependency_overrides.clear()
+        monkeypatch.setattr(auth, "get_settings", lambda: settings)
+        response = TestClient(intus_app).get("/projects", headers={"Authorization": f"Bearer {token}"})
+        intus_app.dependency_overrides.clear()
 
     assert response.status_code == 200
     assert response.json() == {"projects": ["default_purlin"]}
@@ -97,6 +92,13 @@ def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Se
     project = db_session.scalar(select(Project))
     design_file = db_session.scalar(select(ProjectFile))
     workspace = db_session.scalar(select(UserWorkspaceState))
+
+    assert user is not None
+    assert tenant is not None
+    assert membership is not None
+    assert project is not None
+    assert design_file is not None
+    assert workspace is not None
 
     assert user.keycloak_subject
     assert user.email == "demo@example.com"

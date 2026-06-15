@@ -261,7 +261,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (loadRequestRef.current !== requestId) return;
 
     const nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
-    const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0];
+    const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0]!;
     const nextCode = await storage.loadCode(projectName, nextFile);
     if (loadRequestRef.current !== requestId) return;
 

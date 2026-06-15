@@ -538,7 +538,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
             if (c.name !== "TertiusBatchedMesh" && (c as THREE.Mesh).isMesh) c.visible = false;
           });
           if (intersects.length > 0) {
-             let node: THREE.Object3D | null = intersects[0].object;
+             let node: THREE.Object3D | null = intersects[0]!.object;
              const rootScene = meshRef.current.children[0]; // gltf.scene
              const assemblyRoot = rootScene && rootScene.children.length === 1 ? rootScene.children[0] : rootScene;
 

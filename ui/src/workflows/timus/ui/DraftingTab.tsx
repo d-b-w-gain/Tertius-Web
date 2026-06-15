@@ -32,9 +32,11 @@ const toSafeScale = (value: unknown): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 1.0;
   const clamped = Math.min(10, Math.max(0.001, parsed));
+  const firstPreset = scalePresets[0];
+  if (!firstPreset) return clamped;
   return scalePresets.reduce((closest, item) =>
     Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
-  , scalePresets[0]).value;
+  , firstPreset).value;
 };
 
 export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
@@ -587,7 +589,7 @@ const DraftingCanvas: React.FC<{
         }
     }, 200);
     
-    let resizeTimeout: any;
+    let resizeTimeout: ReturnType<typeof setTimeout> | undefined;
     const ro = new ResizeObserver(() => {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(draw, 50);
