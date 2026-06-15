@@ -75,6 +75,48 @@ building = bd.Compound(children=[part], label="Colour test assembly")
     assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
 
 
+def test_compile_sandbox_marks_compound_material_colors_as_authored_in_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+
+manor_red = bd.Color(0.3686, 0.1608, 0.1569, 1.0)
+
+left = bd.Box(40, 30, 20).moved(bd.Location((-30, 0, 0)))
+left.color = manor_red
+
+right = bd.Cylinder(radius=14, height=24).moved(bd.Location((30, 0, 0)))
+right.color = manor_red
+
+building = bd.Compound([left, right], label="two child-coloured solids real compound")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+
+    coloured_materials = [
+        material
+        for material in gltf_json.get("materials", [])
+        if material.get("pbrMetallicRoughness", {}).get("baseColorFactor") == [
+            0.3686000108718872,
+            0.1607999950647354,
+            0.15690000355243683,
+            1.0,
+        ]
+    ]
+    assert coloured_materials
+    assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in coloured_materials)
+
+
 def test_compile_sandbox_does_not_expose_worker_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DB_PASSWORD", "super-secret")
     (tmp_path / "design.py").write_text(

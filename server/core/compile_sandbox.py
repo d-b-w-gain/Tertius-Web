@@ -122,8 +122,6 @@ try:
 
                 # 2. Patch the .glb files
                 def patch_glb_metadata(glb_path, name_mapping, color_mapping):
-                    if not name_mapping and not color_mapping:
-                        return
                     with open(glb_path, "rb") as f:
                         data = f.read()
 
@@ -139,6 +137,19 @@ try:
                     gltf_json = json.loads(json_data)
 
                     changed = False
+                    # Build123D sometimes exports valid material base colours for
+                    # compounds without giving us a node tag match above. Mark
+                    # those explicit GLTF colours as authored so the viewer does
+                    # not replace them with the default steel material while
+                    # batching meshes.
+                    for material in gltf_json.get("materials", []):
+                        pbr = material.get("pbrMetallicRoughness")
+                        if isinstance(pbr, dict) and "baseColorFactor" in pbr:
+                            extras = material.setdefault("extras", {})
+                            if extras.get("tertiusAuthoredColor") is not True:
+                                extras["tertiusAuthoredColor"] = True
+                                changed = True
+
                     for node in gltf_json.get("nodes", []):
                         node_tag = node.get("name")
                         if node_tag in color_mapping and "mesh" in node:
@@ -150,6 +161,8 @@ try:
                                     materials = gltf_json.get("materials", [])
                                     if isinstance(material_index, int) and 0 <= material_index < len(materials):
                                         material = materials[material_index]
+                                        pbr = material.setdefault("pbrMetallicRoughness", {})
+                                        pbr["baseColorFactor"] = color_mapping[node_tag]
                                         extras = material.setdefault("extras", {})
                                         extras["tertiusAuthoredColor"] = True
                                         changed = True
