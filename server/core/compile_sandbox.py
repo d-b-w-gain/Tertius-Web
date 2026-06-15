@@ -57,7 +57,7 @@ try:
             seen.add(id(shape))
             final_shapes.append(shape)
 
-    compound = bd.Compound(final_shapes) if len(final_shapes) > 1 else final_shapes[0]
+    compound = bd.Compound(final_shapes, children=final_shapes) if len(final_shapes) > 1 else final_shapes[0]
     if export_format == "stl":
         bd.export_stl(compound, str(output_path))
     elif export_format == "step":
@@ -80,9 +80,16 @@ try:
                 doc = _create_xde(compound, getattr(bd, "Unit").MM)
                 shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
                 tag_to_name = {}
+                tag_to_color = {}
+
+                def color_factor(color):
+                    rgba = list(color.to_tuple())
+                    if len(rgba) == 3:
+                        rgba.append(1.0)
+                    return [float(component) for component in rgba[:4]]
 
                 for node in bd.PreOrderIter(compound):
-                    if node.label:
+                    if node.label or node.color is not None:
                         inst_label = shape_tool.FindShape(node.wrapped, findInstance=True)
                         if inst_label.IsNull():
                             inst_label = shape_tool.FindShape(node.wrapped, findInstance=False)
@@ -90,13 +97,17 @@ try:
                         if not inst_label.IsNull():
                             entry = TCollection_AsciiString()
                             TDF_Tool.Entry_s(inst_label, entry)
-                            tag_to_name[f"=>[{entry.ToCString()}]"] = node.label
+                            node_tag = f"=>[{entry.ToCString()}]"
+                            if node.label:
+                                tag_to_name[node_tag] = node.label
+                            if node.color is not None:
+                                tag_to_color[node_tag] = color_factor(node.color)
 
                 compound.location = original_location
 
                 # 2. Patch the .glb files
-                def patch_glb_names(glb_path, mapping):
-                    if not mapping:
+                def patch_glb_metadata(glb_path, name_mapping, color_mapping):
+                    if not name_mapping and not color_mapping:
                         return
                     with open(glb_path, "rb") as f:
                         data = f.read()
@@ -114,8 +125,21 @@ try:
 
                     changed = False
                     for node in gltf_json.get("nodes", []):
-                        if node.get("name") in mapping:
-                            node["name"] = mapping[node["name"]]
+                        node_tag = node.get("name")
+                        if node_tag in color_mapping and "mesh" in node:
+                            mesh_index = node["mesh"]
+                            meshes = gltf_json.get("meshes", [])
+                            if isinstance(mesh_index, int) and 0 <= mesh_index < len(meshes):
+                                for primitive in meshes[mesh_index].get("primitives", []):
+                                    material_index = primitive.get("material")
+                                    materials = gltf_json.get("materials", [])
+                                    if isinstance(material_index, int) and 0 <= material_index < len(materials):
+                                        material = materials[material_index]
+                                        extras = material.setdefault("extras", {})
+                                        extras["tertiusAuthoredColor"] = True
+                                        changed = True
+                        if node_tag in name_mapping:
+                            node["name"] = name_mapping[node_tag]
                             changed = True
 
                     if not changed:
@@ -137,7 +161,7 @@ try:
                     with open(glb_path, "wb") as f:
                         f.write(new_data)
 
-                patch_glb_names(str(output_path), tag_to_name)
+                patch_glb_metadata(str(output_path), tag_to_name, tag_to_color)
             except Exception as patch_e:
                 print("Failed to patch GLB names:", patch_e)
     elif export_format == "timus_views":

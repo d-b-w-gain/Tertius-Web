@@ -13,6 +13,85 @@ interface ViewerProps {
   isActive?: boolean;
 }
 
+export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
+
+type ViewerBatchOptions = {
+  createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
+};
+
+type ViewerBatch = {
+  mesh: THREE.Mesh;
+  usesAuthoredColors: boolean;
+};
+
+function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
+  return Array.isArray(material) ? material : [material];
+}
+
+export function hasAuthoredMaterialColor(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
+  if (!material) return false;
+  return materialList(material).some((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
+}
+
+function colorFromMaterial(material: THREE.Material | THREE.Material[] | null | undefined): THREE.Color | null {
+  if (!material) return null;
+  const authored = materialList(material).find((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
+  const color = authored && 'color' in authored ? (authored as THREE.MeshStandardMaterial).color : null;
+  return color ? color.clone() : null;
+}
+
+function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+  if (geometry.getAttribute('color')) return geometry;
+  const position = geometry.getAttribute('position');
+  if (!position) return geometry;
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i += 1) {
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geometry;
+}
+
+export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
+  if (meshes.length === 0) return null;
+
+  const usesAuthoredColors = meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
+  const defaultColor = new THREE.Color(DEFAULT_MODEL_COLOR);
+  const geometries = meshes.map((mesh) => {
+    const geometry = mesh.geometry.clone();
+    if (usesAuthoredColors) {
+      geometryWithVertexColor(geometry, colorFromMaterial(mesh.material) ?? defaultColor);
+    }
+    return geometry;
+  });
+
+  const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
+  geometries.forEach((geometry) => geometry.dispose());
+  if (!mergedGeometry) return null;
+
+  const material = usesAuthoredColors
+    ? new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        metalness: 0.6,
+        roughness: 0.4,
+        side: THREE.FrontSide,
+      })
+    : new THREE.MeshStandardMaterial({
+        color: DEFAULT_MODEL_COLOR,
+        metalness: 0.6,
+        roughness: 0.4,
+        side: THREE.FrontSide,
+      });
+
+  return {
+    mesh: (options.createMesh ?? ((geometry, meshMaterial) => new THREE.Mesh(geometry, meshMaterial)))(mergedGeometry, material),
+    usesAuthoredColors,
+  };
+}
+
 export const ViewerTab: React.FC<ViewerProps> = (props) => {
   const { authMode, login } = useAuth();
   if (authMode === 'guest') {
@@ -314,7 +393,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
       
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
-        color: 0x8b9bb4, // Steel blueish
+        color: DEFAULT_MODEL_COLOR, // Steel blueish
         metalness: 0.6,
         roughness: 0.4,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
@@ -334,7 +413,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
       
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
-      const geometries: THREE.BufferGeometry[] = [];
+      const sourceMeshes: THREE.Mesh[] = [];
       
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
@@ -342,7 +421,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
            geom.applyMatrix4(relativeMatrix);
-           geometries.push(geom);
+           sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
@@ -351,26 +430,37 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
         }
       });
       
-      if (geometries.length > 0) {
+      if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
           const CHUNK_SIZE = 1000;
           const chunks: THREE.BufferGeometry[] = [];
           
-          for (let i = 0; i < geometries.length; i += CHUNK_SIZE) {
-             const chunk = geometries.slice(i, i + CHUNK_SIZE);
-             const mergedChunk = BufferGeometryUtils.mergeGeometries(chunk, false);
-             if (mergedChunk) chunks.push(mergedChunk);
-             
-             // Free individual geometries immediately to keep heap size small
-             chunk.forEach(g => g.dispose());
+          for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
+             const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE));
+             if (batch) {
+               chunks.push(batch.mesh.geometry);
+               if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
+               else batch.mesh.material.dispose();
+             }
           }
           
           const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
           chunks.forEach(g => g.dispose()); // Free intermediate chunks
+          sourceMeshes.forEach(mesh => mesh.geometry.dispose());
           
           if (finalMergedGeom) {
-             const batchedMesh = new THREE.Mesh(finalMergedGeom, sharedMaterial);
+             const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
+             const batchedMaterial = hasAuthoredColors
+               ? new THREE.MeshStandardMaterial({
+                   color: 0xffffff,
+                   vertexColors: true,
+                   metalness: 0.6,
+                   roughness: 0.4,
+                   side: THREE.FrontSide
+                 })
+               : sharedMaterial;
+             const batchedMesh = new THREE.Mesh(finalMergedGeom, batchedMaterial);
              batchedMesh.name = "TertiusBatchedMesh";
              batchedMesh.castShadow = isHigh;
              batchedMesh.receiveShadow = isHigh;
