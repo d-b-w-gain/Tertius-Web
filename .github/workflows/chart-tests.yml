@@ -88,7 +88,6 @@ jobs:
       K3S_VERSION: v1.33.3+k3s1
       K3S_CACHE_VERSION: v1
       K3S_CACHE_DIR: .cache/k3s
-      K3S_AIRGAP_ARCH: amd64
 
       HELM_CACHE_VERSION: v1
       HELM_CACHE_HOME: ${{ github.workspace }}/.cache/helm/cache
@@ -96,8 +95,6 @@ jobs:
       HELM_DATA_HOME: ${{ github.workspace }}/.cache/helm/data
       HELM_REPOSITORY_CACHE: ${{ github.workspace }}/.cache/helm/repository
       HELM_REPOSITORY_CONFIG: ${{ github.workspace }}/.cache/helm/repositories.yaml
-
-      WORKLOAD_IMAGES_CACHE_VERSION: v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -110,7 +107,7 @@ jobs:
         with:
           path: .cache/k3s
           key: >-
-            k3s-${{ runner.os }}-${{ runner.arch }}-${{ env.K3S_VERSION }}-${{ env.K3S_AIRGAP_ARCH }}-${{ env.CI_CACHE_EPOCH }}-${{ env.K3S_CACHE_VERSION }}
+            k3s-${{ runner.os }}-${{ runner.arch }}-${{ env.K3S_VERSION }}-${{ env.CI_CACHE_EPOCH }}-${{ env.K3S_CACHE_VERSION }}
 
       - name: Download k3s artifacts
         if: steps.cache-k3s.outputs.cache-hit != 'true'
@@ -130,10 +127,6 @@ jobs:
             -o "$K3S_CACHE_DIR/install.sh" \
             https://get.k3s.io
 
-          curl -fsSL \
-            -o "$K3S_CACHE_DIR/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst" \
-            "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION_URL}/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst"
-
           chmod +x "$K3S_CACHE_DIR/k3s" "$K3S_CACHE_DIR/install.sh"
 
       - name: Validate k3s cache
@@ -145,10 +138,6 @@ jobs:
           test -x "$K3S_CACHE_DIR/install.sh"
 
           "$K3S_CACHE_DIR/k3s" --version | grep "$K3S_VERSION"
-
-          if [ -f "$K3S_CACHE_DIR/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst" ]; then
-            test -s "$K3S_CACHE_DIR/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst"
-          fi
 
       # ---- Helm caches ----
 
@@ -170,16 +159,6 @@ jobs:
           key: >-
             helm-chart-deps-${{ runner.os }}-${{ env.CI_CACHE_EPOCH }}-${{ env.HELM_CACHE_VERSION }}-${{ hashFiles('infra/charts/**/Chart.lock', 'infra/charts/**/Chart.yaml') }}
 
-      # ---- Workload image cache ----
-
-      - name: Restore workload image tar cache
-        id: cache-workload-images
-        uses: actions/cache@v4
-        with:
-          path: .cache/k3s-images
-          key: >-
-            workload-images-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_CACHE_EPOCH }}-${{ env.WORKLOAD_IMAGES_CACHE_VERSION }}-${{ hashFiles('ci/k3s-images.txt') }}
-
       - name: Prepare Helm cache directories
         shell: bash
         run: |
@@ -191,43 +170,6 @@ jobs:
             "$HELM_DATA_HOME" \
             "$HELM_REPOSITORY_CACHE"
 
-      - name: Pull and save workload images
-        if: steps.cache-workload-images.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          mkdir -p .cache/k3s-images
-
-          if [ ! -f ci/k3s-images.txt ]; then
-            echo "No workload image manifest; skipping."
-            exit 0
-          fi
-
-          images="$(grep -v '^\s*$' ci/k3s-images.txt | grep -v '^\s*#' || true)"
-
-          if [ -n "$images" ]; then
-            while IFS= read -r image; do
-              [ -z "$image" ] && continue
-              case "$image" in \#*) continue ;; esac
-              docker pull "$image"
-            done < ci/k3s-images.txt
-
-            docker save $images -o .cache/k3s-images/workload-images.tar
-          fi
-
-      - name: Validate workload image tar cache
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          if [ -f ci/k3s-images.txt ]; then
-            images="$(grep -v '^\s*$' ci/k3s-images.txt | grep -v '^\s*#' || true)"
-            if [ -n "$images" ]; then
-              test -s .cache/k3s-images/workload-images.tar
-            fi
-          fi
-
       # ---- Tooling ----
 
       - name: Install tooling
@@ -235,30 +177,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # ---- Preload images into k3s ----
-
-      - name: Preload k3s system images
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          if [ -f "$K3S_CACHE_DIR/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst" ]; then
-            sudo mkdir -p /var/lib/rancher/k3s/agent/images
-            sudo cp "$K3S_CACHE_DIR/k3s-airgap-images-${K3S_AIRGAP_ARCH}.tar.zst" \
-              /var/lib/rancher/k3s/agent/images/
-          fi
-
-      - name: Preload workload images
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          if [ -f .cache/k3s-images/workload-images.tar ]; then
-            sudo mkdir -p /var/lib/rancher/k3s/agent/images
-            sudo cp .cache/k3s-images/workload-images.tar \
-              /var/lib/rancher/k3s/agent/images/
-          fi
 
       # ---- Install k3s ----
 
