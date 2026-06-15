@@ -17,6 +17,7 @@ on:
       - 'scripts/bundle.py'
       - 'Dockerfile.api'
       - 'Dockerfile.ui'
+      - 'ci/k3s-images.txt'
   push:
     branches:
       - master
@@ -35,6 +36,7 @@ on:
       - 'scripts/bundle.py'
       - 'Dockerfile.api'
       - 'Dockerfile.ui'
+      - 'ci/k3s-images.txt'
   workflow_dispatch:
     inputs:
       run_k3s:
@@ -80,18 +82,119 @@ jobs:
       TIMEOUT: 6m
       KEDA_ENABLED: "true"
       BUILDX_GHA_CACHE: "true"
+
+      CI_CACHE_EPOCH: 2026-06-15-v1
+
+      K3S_VERSION: v1.33.3+k3s1
+      K3S_CACHE_VERSION: v1
+      K3S_CACHE_DIR: .cache/k3s
+
+      HELM_CACHE_VERSION: v1
+      HELM_CACHE_HOME: ${{ github.workspace }}/.cache/helm/cache
+      HELM_CONFIG_HOME: ${{ github.workspace }}/.cache/helm/config
+      HELM_DATA_HOME: ${{ github.workspace }}/.cache/helm/data
+      HELM_REPOSITORY_CACHE: ${{ github.workspace }}/.cache/helm/repository
+      HELM_REPOSITORY_CONFIG: ${{ github.workspace }}/.cache/helm/repositories.yaml
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ---- k3s cache ----
+
+      - name: Restore k3s cache
+        id: cache-k3s
+        uses: actions/cache@v4
+        with:
+          path: .cache/k3s
+          key: >-
+            k3s-${{ runner.os }}-${{ runner.arch }}-${{ env.K3S_VERSION }}-${{ env.CI_CACHE_EPOCH }}-${{ env.K3S_CACHE_VERSION }}
+
+      - name: Download k3s artifacts
+        if: steps.cache-k3s.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "$K3S_CACHE_DIR"
+
+          K3S_VERSION_URL="${K3S_VERSION/+/%2B}"
+
+          curl -fsSL \
+            -o "$K3S_CACHE_DIR/k3s" \
+            "https://github.com/k3s-io/k3s/releases/download/${K3S_VERSION_URL}/k3s"
+
+          curl -fsSL \
+            -o "$K3S_CACHE_DIR/install.sh" \
+            https://get.k3s.io
+
+          chmod +x "$K3S_CACHE_DIR/k3s" "$K3S_CACHE_DIR/install.sh"
+
+      - name: Validate k3s cache
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -x "$K3S_CACHE_DIR/k3s"
+          test -x "$K3S_CACHE_DIR/install.sh"
+
+          "$K3S_CACHE_DIR/k3s" --version | grep "$K3S_VERSION"
+
+      # ---- Helm caches ----
+
+      - name: Restore Helm repo cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/helm
+          key: >-
+            helm-repo-${{ runner.os }}-${{ env.CI_CACHE_EPOCH }}-${{ env.HELM_CACHE_VERSION }}-${{ hashFiles('infra/charts/**/Chart.lock', 'infra/charts/**/Chart.yaml') }}
+          restore-keys: |
+            helm-repo-${{ runner.os }}-${{ env.CI_CACHE_EPOCH }}-${{ env.HELM_CACHE_VERSION }}-
+            helm-repo-${{ runner.os }}-${{ env.CI_CACHE_EPOCH }}-
+
+      - name: Restore Helm chart dependency cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            infra/charts/**/charts
+          key: >-
+            helm-chart-deps-${{ runner.os }}-${{ env.CI_CACHE_EPOCH }}-${{ env.HELM_CACHE_VERSION }}-${{ hashFiles('infra/charts/**/Chart.lock', 'infra/charts/**/Chart.yaml') }}
+
+      - name: Prepare Helm cache directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p \
+            "$HELM_CACHE_HOME" \
+            "$HELM_CONFIG_HOME" \
+            "$HELM_DATA_HOME" \
+            "$HELM_REPOSITORY_CACHE"
+
+      # ---- Tooling ----
+
       - name: Install tooling
         uses: azure/setup-helm@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Prepare k3s cluster
+
+      # ---- Install k3s ----
+
+      - name: Start k3s install timer
+        shell: bash
+        run: echo "K3S_INSTALL_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Install k3s
+        shell: bash
         run: |
-          curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors https://get.k3s.io -o /tmp/install-k3s.sh
+          set -euxo pipefail
+
+          sudo install -m 0755 "$K3S_CACHE_DIR/k3s" /usr/local/bin/k3s
+
           for attempt in 1 2 3; do
-            if sudo sh /tmp/install-k3s.sh --write-kubeconfig /tmp/kubeconfig --write-kubeconfig-mode 0644; then
+            if sudo INSTALL_K3S_SKIP_DOWNLOAD=true \
+              "$K3S_CACHE_DIR/install.sh" \
+              --write-kubeconfig /tmp/kubeconfig --write-kubeconfig-mode 0644; then
               break
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -99,9 +202,21 @@ jobs:
             fi
             sleep $((attempt * 15))
           done
+
           kubectl wait --for=condition=Ready node --all --timeout=90s
-      - name: Install CloudNativePG operator
+
+      - name: Report k3s install duration
+        shell: bash
         run: |
+          end="$(date +%s)"
+          echo "k3s install duration: $((end - K3S_INSTALL_START))s"
+
+      # ---- Operators ----
+
+      - name: Install CloudNativePG operator
+        shell: bash
+        run: |
+          set -euxo pipefail
           helm repo add cloudnativepg https://cloudnative-pg.github.io/charts
           helm repo update
           helm install cloudnativepg cloudnativepg/cloudnative-pg \
@@ -109,8 +224,11 @@ jobs:
             --create-namespace \
             --wait \
             --timeout 5m
+
       - name: Install KEDA operator
+        shell: bash
         run: |
+          set -euxo pipefail
           helm repo add kedacore https://kedacore.github.io/charts
           helm repo update
           helm install keda kedacore/keda \
@@ -119,20 +237,38 @@ jobs:
             --create-namespace \
             --wait \
             --timeout 5m
+
       - name: Install Keycloak operator CRDs and controller
+        shell: bash
         run: |
+          set -euxo pipefail
           kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
           kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
           kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "${NAMESPACE}" apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/kubernetes.yml
           kubectl patch clusterrolebinding keycloak-operator-clusterrole-binding --type='json' -p="[{\"op\":\"replace\",\"path\":\"/subjects/0/namespace\",\"value\":\"${NAMESPACE}\"}]"
           kubectl -n "${NAMESPACE}" wait deploy keycloak-operator --for=condition=Available --timeout=90s
+
+      # ---- Chart test ----
+
       - name: Make scripts executable
         run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh
+
+      - name: Start chart test timer
+        shell: bash
+        run: echo "CHART_TEST_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Run k3s chart test with cleanup
+        shell: bash
         run: |
           set +e
           ./scripts/test-k3s-deployment.sh
           result=$?
           ./scripts/test-k3s-deployment.sh --cleanup --delete-data || true
           exit $result
+
+      - name: Report chart test duration
+        shell: bash
+        run: |
+          end="$(date +%s)"
+          echo "chart test duration (incl deploy + smoke): $((end - CHART_TEST_START))s"
