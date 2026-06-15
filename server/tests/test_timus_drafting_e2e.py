@@ -298,6 +298,55 @@ def test_drafting_cache_is_invalidated_on_design_change(
     timus_server.PROJECTION_CACHE.clear()
 
 
+def test_drafting_pdf_recomputes_when_persisted_views_are_stale(
+    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
+):
+    """A persisted timus_views artifact should not be used after design.py changes."""
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design.content = BOX_CODE
+    stale_artifact_time = design.updated_at
+    db_session.add(
+        Artifact(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            compile_job_id=None,
+            kind="timus_views",
+            storage_key="test/stale-timus-views.json",
+            content_type="application/json",
+            byte_size=2,
+            content=b"{}",
+            created_at=stale_artifact_time,
+        )
+    )
+    db_session.commit()
+
+    design.content = CYLINDER_CODE
+    design.updated_at = stale_artifact_time + timedelta(seconds=1)
+    db_session.commit()
+
+    recomputed = {"called": False}
+
+    def fake_get_projected_views(cache_key, compound, mtime):
+        recomputed["called"] = True
+        return {"top": [], "front": [], "side": [], "iso": []}
+
+    monkeypatch.setattr(timus_server, "get_projected_views", fake_get_projected_views)
+
+    response = authenticated_timus_client.get(
+        "/projects/default_purlin/drafting.pdf",
+        params={"size": "A4", "scale": "0.1"},
+    )
+
+    assert response.status_code == 200
+    assert recomputed["called"], "Stale persisted views should be recomputed"
+
+
 # ---------------------------------------------------------------------------
 # Settings round-trip + validation
 # ---------------------------------------------------------------------------
