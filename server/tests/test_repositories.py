@@ -363,3 +363,66 @@ def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):
     snapshot_rows = db_session.scalars(select(CompileJobFile).where(CompileJobFile.compile_job_id == job.id)).all()
     assert snapshot["design.py"] == "shape = 'snapshot'\n"
     assert snapshot_rows
+
+
+def test_project_repository_lists_file_metadata_with_design_first(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+
+    metadata = repo.list_file_metadata("same_name")
+
+    assert [row["filename"] for row in metadata] == ["design.py", "helper.py"]
+    assert all(row["id"] for row in metadata)
+    assert all(row["updated_at"] for row in metadata)
+
+
+def test_project_repository_batch_file_updates_create_one_snapshot(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+    file_rows = db_session.scalars(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded["tenant_a"],
+            ProjectFile.filename.in_(["design.py", "helper.py"]),
+        )
+    ).all()
+    files = {row.id: row for row in file_rows}
+
+    snapshot, changed = repo.stage_file_updates(
+        "same_name",
+        {
+            next(row.id for row in files.values() if row.filename == "design.py"): "design = 2",
+            next(row.id for row in files.values() if row.filename == "helper.py"): "helper = 2",
+        },
+        seeded["user_a"],
+        "LLM edit: update two files",
+    )
+    db_session.commit()
+
+    assert snapshot.message == "LLM edit: update two files"
+    assert len(changed) == 2
+    assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
+    assert repo.get_code("same_name", "design.py") == "design = 2"
+    assert repo.get_code("same_name", "helper.py") == "helper = 2"
+
+
+def test_project_repository_stage_file_updates_truncates_long_snapshot_message(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+    file_rows = db_session.scalars(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded["tenant_a"],
+            ProjectFile.filename == "design.py",
+        )
+    ).all()
+    long_message = "LLM edit: " + ("x" * 12000)
+
+    snapshot, _ = repo.stage_file_updates(
+        "same_name",
+        {file_rows[0].id: "design = 3"},
+        seeded["user_a"],
+        long_message,
+    )
+    db_session.commit()
+
+    assert len(snapshot.message) <= 500
+    assert snapshot.message.startswith("LLM edit:")

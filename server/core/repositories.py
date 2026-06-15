@@ -131,6 +131,22 @@ class ProjectRepository:
             filenames.insert(0, "design.py")
         return filenames
 
+    def list_file_metadata(self, project_name: str) -> list[dict[str, object]]:
+        project = self.get_project(project_name)
+        if project is None:
+            return []
+        files = self.db.scalars(
+            select(ProjectFile)
+            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .order_by(ProjectFile.filename)
+        ).all()
+        rows = [
+            {"id": file.id, "filename": file.filename, "updated_at": file.updated_at}
+            for file in files
+        ]
+        rows.sort(key=lambda row: (row["filename"] != "design.py", row["filename"]))
+        return rows
+
     def get_code(self, project_name: str, filename: str) -> str | None:
         filename = require_valid_python_filename(filename)
         project = self.get_project(project_name)
@@ -176,6 +192,48 @@ class ProjectRepository:
         if saved:
             self.db.commit()
         return saved
+
+    def files_by_ids(self, project_name: str, file_ids: list[UUID]) -> dict[UUID, ProjectFile]:
+        project = self.get_project(project_name)
+        if project is None or not file_ids:
+            return {}
+        rows = self.db.scalars(
+            select(ProjectFile).where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+                ProjectFile.id.in_(file_ids),
+            )
+        ).all()
+        return {row.id: row for row in rows}
+
+    def stage_file_updates(
+        self,
+        project_name: str,
+        updates: dict[UUID, str],
+        user_id: UUID,
+        message: str,
+    ) -> tuple[SourceSnapshot, list[ProjectFile]] | None:
+        project = self.get_project(project_name)
+        if project is None:
+            return None
+        files = self.files_by_ids(project_name, list(updates.keys()))
+        if set(files) != set(updates):
+            return None
+        now = now_utc()
+        changed: list[ProjectFile] = []
+        for file_id, content in updates.items():
+            file = files[file_id]
+            if file.content != content:
+                file.content = content
+                file.updated_at = now
+                changed.append(file)
+        if not changed:
+            raise ValueError("LLM returned no file changes")
+        project.updated_at = now
+        self.db.flush()
+        truncated_message = (message or "LLM edit")[:500]
+        snapshot = self._snapshot(project, user_id, truncated_message)
+        return snapshot, changed
 
     def delete_file(self, project_name: str, filename: str) -> bool:
         filename = require_valid_python_filename(filename)
@@ -225,7 +283,7 @@ class ProjectRepository:
         ).all()
         return [f"{row.content_hash[:7]} {row.message}" for row in rows]
 
-    def _snapshot(self, project: Project, user_id: UUID, message: str) -> None:
+    def _snapshot(self, project: Project, user_id: UUID, message: str) -> SourceSnapshot:
         files = self.db.scalars(
             select(ProjectFile)
             .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
@@ -244,6 +302,7 @@ class ProjectRepository:
 
         for file in files:
             self.db.add(SourceSnapshotFile(snapshot_id=snapshot.id, filename=file.filename, content=file.content))
+        return snapshot
 
 
 class CompileRepository:
