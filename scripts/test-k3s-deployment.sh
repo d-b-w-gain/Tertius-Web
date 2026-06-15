@@ -20,6 +20,7 @@ VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
 NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
 KEDA_ENABLED="${KEDA_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
+BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
@@ -56,6 +57,7 @@ Environment:
   NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
   KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
+  BUILDX_GHA_CACHE              Default: false. Set true in GitHub Actions to use Buildx GHA cache for local image builds.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
@@ -438,9 +440,36 @@ check_preflight() {
   fi
 }
 
+buildx_gha_cache_available() {
+  truthy "$BUILDX_GHA_CACHE" || return 1
+  [ "$DOCKER" = "docker" ] || return 1
+  "$DOCKER" buildx version >/dev/null 2>&1
+}
+
+build_image() {
+  scope=$1
+  dockerfile=$2
+  image=$3
+  shift 3
+
+  if buildx_gha_cache_available; then
+    run "$DOCKER" buildx build \
+      --load \
+      --cache-from "type=gha,scope=${scope}" \
+      --cache-to "type=gha,mode=max,scope=${scope},ignore-error=true" \
+      -f "$dockerfile" \
+      -t "$image" \
+      "$@" \
+      "$ROOT_DIR"
+    return
+  fi
+
+  run "$DOCKER" build -f "$dockerfile" -t "$image" "$@" "$ROOT_DIR"
+}
+
 build_images() {
-  run "$DOCKER" build -f "${ROOT_DIR}/Dockerfile.api" -t "$API_IMAGE" "$ROOT_DIR"
-  run "$DOCKER" build -f "${ROOT_DIR}/Dockerfile.ui" --build-arg VITE_API_URL=/api -t "$UI_IMAGE" "$ROOT_DIR"
+  build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
 }
 
 k3s_ctr() {

@@ -24,7 +24,7 @@ app:
     compileMaxDeliver: 3
     compileTimeoutSeconds: 600
     compileRequestMaxBytes: 8388608
-    compileResultMaxBytes: 8388608
+    compileResultMaxBytes: 33554432
     billingRateCentsPerHour: 100
     billingFormatMultiplierStl: 1.0
     billingFormatMultiplierStep: 1.5
@@ -43,7 +43,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-43-0eb4d77 # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-46-bac1e02 # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -91,7 +91,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-43-0eb4d77 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    tag: master-46-bac1e02 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:
@@ -212,6 +212,8 @@ valkey:
 nats:
   enabled: true
   config:
+    merge:
+      max_payload: 33554432
     jetstream:
       enabled: true
       fileStore:

@@ -202,13 +202,18 @@ if printf '%s\n' "$rendered" | rg -q 'COMPILE_(REQUEST|RESULT)_MAX_BYTES: "?[0-9
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "8388608"'; then
-  echo "ConfigMap compile byte limits must render as the exact string \"8388608\"." >&2
+if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "33554432"'; then
+  echo "ConfigMap compile byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "8388608"'; then
-  echo "Compile ScaledJob byte limits must render as the exact string \"8388608\"." >&2
+if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
+  echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q '"max_payload": 33554432'; then
+  echo "NATS must render max_payload 33554432 so it can accept larger compile result messages." >&2
   exit 1
 fi
 
@@ -291,6 +296,16 @@ fi
 
 if ! rg -q -- '--version 2\.20\.1' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
   echo ".github/workflows/chart-tests.yml must pin the KEDA Helm chart version used by CI." >&2
+  exit 1
+fi
+
+if ! rg -q 'docker/setup-buildx-action@v3' "${ROOT_DIR}/.github/workflows/chart-tests.yml" || ! rg -q 'BUILDX_GHA_CACHE: "true"' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
+  echo ".github/workflows/chart-tests.yml must enable Buildx and opt the k3s smoke image builds into the GitHub Actions cache." >&2
+  exit 1
+fi
+
+if ! rg -q 'type=gha,scope=\$\{scope\}' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'build_image tertius-api' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'build_image tertius-ui' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q -- '--load' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "scripts/test-k3s-deployment.sh must build k3s smoke images with Buildx GHA cache and --load when enabled." >&2
   exit 1
 fi
 
