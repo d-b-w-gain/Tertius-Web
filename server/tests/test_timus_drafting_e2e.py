@@ -77,9 +77,12 @@ def test_hlr_projection_produces_edges_for_all_four_views(db_session, seeded_ten
             segments = views[view_name]
             assert isinstance(segments, list), f"{view_name} segments should be a list"
             if segments:
-                # Each segment is [x1, y1, x2, y2] or [x1, y1, x2, y2, is_hidden]
+                # Segment format: [[x1, y1], [x2, y2], is_hidden] (3 elements)
                 seg = segments[0]
-                assert len(seg) >= 4, f"Segment should have at least 4 coordinates, got {seg}"
+                assert len(seg) == 3, f"Segment should have 3 elements (p1, p2, hidden), got {seg}"
+                assert len(seg[0]) == 2, f"Point 1 should have 2 coordinates, got {seg[0]}"
+                assert len(seg[1]) == 2, f"Point 2 should have 2 coordinates, got {seg[1]}"
+                assert isinstance(seg[2], bool), f"Hidden flag should be a bool, got {type(seg[2])}"
 
 
 # ---------------------------------------------------------------------------
