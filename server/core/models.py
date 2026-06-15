@@ -195,7 +195,7 @@ class CompileUsageRecord(Base):
 class LlmUsageRecord(Base):
     __tablename__ = "llm_usage_records"
     __table_args__ = (
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="SET NULL"),
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="SET NULL (project_id)"),
         UniqueConstraint("event_id", name="uq_llm_usage_records_event_id"),
         Index("ix_llm_usage_records_tenant_created", "tenant_id", "created_at"),
         Index("ix_llm_usage_records_user_created", "user_id", "created_at"),

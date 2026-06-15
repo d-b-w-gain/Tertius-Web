@@ -4,12 +4,22 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.config import Settings
 from core.db import get_db
 from core.llm_client import TokenUsage
 from core.llm_usage import LlmUsageLimitExceeded
 from core.models import AppUser, Project, Tenant, TenantMembership
 from workflows.intus import intus_server
 from workflows.intus.intus_server import app
+
+
+class FakeBillingPublisher:
+    async def publish_json(self, subject, message, message_id=None):
+        return None
+
+
+def enable_llm(monkeypatch):
+    monkeypatch.setattr(intus_server, "get_settings", lambda: Settings(llm_api_key="test-key"))
 
 
 def test_build_script_generation_requires_existing_project(authenticated_intus_client):
@@ -40,6 +50,8 @@ def test_build_script_generation_does_not_cross_tenant(authenticated_intus_clien
 
 
 def test_build_script_generation_returns_generated_script(authenticated_intus_client, seeded_tenant, monkeypatch):
+    enable_llm(monkeypatch)
+
     async def fake_generate_build_script(request, *, settings, auth, project_id, openai_client=None, billing_publisher=None):
         assert request.prompt == "make a bracket"
         assert request.active_file == "design.py"
@@ -63,7 +75,7 @@ def test_build_script_generation_returns_generated_script(authenticated_intus_cl
     monkeypatch.setattr(intus_server, "generate_build_script", fake_generate_build_script)
 
     async def fake_create_billing_publisher(settings):
-        return None, None
+        return FakeBillingPublisher(), None
 
     monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
 
@@ -106,6 +118,8 @@ def test_build_script_generation_is_authenticated(db_session, seeded_tenant):
 def test_build_script_generation_public_mounted_route(db_session, seeded_tenant, monkeypatch):
     from main import app as main_app
 
+    enable_llm(monkeypatch)
+
     async def fake_generate_build_script(request, *, settings, auth, project_id, openai_client=None, billing_publisher=None):
         return SimpleNamespace(
             success=True,
@@ -124,7 +138,7 @@ def test_build_script_generation_public_mounted_route(db_session, seeded_tenant,
     monkeypatch.setattr(intus_server, "generate_build_script", fake_generate_build_script)
 
     async def fake_create_billing_publisher(settings):
-        return None, None
+        return FakeBillingPublisher(), None
 
     monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
 
@@ -187,7 +201,34 @@ def test_build_script_generation_reports_missing_provider_key(authenticated_intu
     }
 
 
+def test_build_script_generation_fails_closed_when_billing_publisher_unavailable(authenticated_intus_client, monkeypatch):
+    enable_llm(monkeypatch)
+
+    async def fake_generate_build_script(*args, **kwargs):
+        raise AssertionError("provider should not be called when billing setup fails")
+
+    async def fake_create_billing_publisher(settings):
+        raise intus_server.LlmBillingError("LLM billing failed")
+
+    monkeypatch.setattr(intus_server, "generate_build_script", fake_generate_build_script)
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/build-script/generate",
+        json={"prompt": "make a bracket"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "success": False,
+        "error": "LLM billing failed",
+        "retryable": True,
+    }
+
+
 def test_build_script_generation_returns_429_when_llm_limit_exceeded(authenticated_intus_client, monkeypatch):
+    enable_llm(monkeypatch)
+
     def fake_assert_llm_usage_allowed(*args, **kwargs):
         raise LlmUsageLimitExceeded("LLM usage limit exceeded")
 
@@ -206,12 +247,51 @@ def test_build_script_generation_returns_429_when_llm_limit_exceeded(authenticat
     }
 
 
+def test_build_script_generation_estimates_prompt_and_completion_tokens_for_quota(authenticated_intus_client, monkeypatch):
+    enable_llm(monkeypatch)
+
+    seen_estimates = []
+
+    def fake_assert_llm_usage_allowed(*args, **kwargs):
+        seen_estimates.append(kwargs["estimated_tokens"])
+
+    async def fake_create_billing_publisher(settings):
+        return FakeBillingPublisher(), None
+
+    async def fake_generate_build_script(request, *, settings, auth, project_id, openai_client=None, billing_publisher=None):
+        return SimpleNamespace(
+            success=True,
+            script="import build123d as bd\npart = bd.Box(1, 2, 3)",
+            model="deepseek-v4-flash",
+            usage=TokenUsage(prompt_tokens=2000, completion_tokens=2, total_tokens=2002),
+            provider_request_id="chatcmpl-test",
+        )
+
+    monkeypatch.setattr(intus_server, "assert_llm_usage_allowed", fake_assert_llm_usage_allowed)
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+    monkeypatch.setattr(intus_server, "generate_build_script", fake_generate_build_script)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/build-script/generate",
+        json={
+            "prompt": "make a bracket " * 200,
+            "current_code": "import build123d as bd\n" * 200,
+        },
+    )
+
+    assert response.status_code == 200
+    assert seen_estimates
+    assert seen_estimates[0] > intus_server.get_settings().llm_max_output_tokens
+
+
 def test_build_script_generation_reports_provider_failure(authenticated_intus_client, monkeypatch):
+    enable_llm(monkeypatch)
+
     async def fake_generate_build_script(*args, **kwargs):
         raise RuntimeError("provider timed out")
 
     async def fake_create_billing_publisher(settings):
-        return None, None
+        return FakeBillingPublisher(), None
 
     monkeypatch.setattr(intus_server, "generate_build_script", fake_generate_build_script)
     monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)

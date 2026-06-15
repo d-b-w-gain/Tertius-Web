@@ -15,7 +15,13 @@ from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
-from core.llm_client import BuildScriptGenerationInput, LlmBillingError, LlmNotConfiguredError, generate_build_script
+from core.llm_client import (
+    BuildScriptGenerationInput,
+    LlmBillingError,
+    LlmNotConfiguredError,
+    estimate_build_script_tokens,
+    generate_build_script,
+)
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
@@ -83,7 +89,7 @@ async def create_billing_publisher(settings):
             except Exception:
                 logger.exception("Failed to close LLM billing NATS connection after setup failure")
         logger.exception("Failed to create LLM billing publisher")
-        return None, None
+        raise LlmBillingError("LLM billing failed")
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/health")
@@ -391,12 +397,17 @@ async def generate_project_build_script(
     billing_publisher = None
     billing_nc = None
     try:
+        if not settings.llm_api_key:
+            raise LlmNotConfiguredError("LLM provider is not configured")
         assert_llm_usage_allowed(
             db,
             settings,
             tenant_id=ctx.tenant_id,
             user_id=ctx.user_id,
-            estimated_tokens=settings.llm_max_output_tokens,
+            estimated_tokens=estimate_build_script_tokens(
+                req,
+                max_output_tokens=settings.llm_max_output_tokens,
+            ),
         )
         billing_publisher, billing_nc = await create_billing_publisher(settings)
         result = await generate_build_script(

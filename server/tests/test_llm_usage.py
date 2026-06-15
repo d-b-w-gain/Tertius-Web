@@ -62,6 +62,18 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
     assert row.status == "completed"
 
 
+def test_llm_usage_project_foreign_key_preserves_tenant_on_project_delete():
+    set_null_constraints = [
+        constraint
+        for constraint in LlmUsageRecord.__table__.foreign_key_constraints
+        if constraint.ondelete == "SET NULL (project_id)"
+    ]
+
+    assert len(set_null_constraints) == 1
+    constrained_columns = {column.name for column in set_null_constraints[0].columns}
+    assert constrained_columns == {"project_id", "tenant_id"}
+
+
 def test_llm_usage_guard_rejects_user_minute_rate_limit(db_session, seeded_tenant):
     settings = Settings(llm_user_rate_limit_per_minute=1)
     record_llm_usage(db_session, auth=_auth(seeded_tenant), project_id=seeded_tenant.project_id, request=_request(), result=_result(), settings=settings)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from math import ceil
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -78,6 +79,12 @@ def build_script_messages(request: BuildScriptGenerationInput) -> list[dict[str,
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def estimate_build_script_tokens(request: BuildScriptGenerationInput, *, max_output_tokens: int) -> int:
+    prompt_chars = sum(len(message["content"]) for message in build_script_messages(request))
+    metadata_chars = sum(len(key) + len(value) for key, value in request.metadata.items())
+    return max_output_tokens + ceil((prompt_chars + metadata_chars) / 4)
 
 
 def strip_markdown_code_fence(content: str) -> str:
