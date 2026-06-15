@@ -171,6 +171,7 @@ class CompileUsageRecord(Base):
             name="fk_usage_records_compile_job_project_tenant",
             ondelete="CASCADE",
         ),
+        UniqueConstraint("tenant_id", "compile_job_id", name="uq_compile_usage_records_tenant_job"),
         Index("ix_compile_usage_records_tenant_created", "tenant_id", "created_at"),
     )
 

@@ -503,3 +503,83 @@ def test_apply_compile_result_creates_usage_record_on_failure(db_session, seeded
     assert usage.status == "failed"
     assert usage.artifact_byte_size == 0
     assert usage.format_multiplier == 1.5
+
+
+def test_apply_compile_result_uses_api_timestamps_for_usage_duration(db_session, seeded_tenant):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    claimed_at = datetime(2026, 6, 14, 10, 0, tzinfo=timezone.utc)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="stl",
+        claimed_at=claimed_at,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    payload = result_payload(
+        job,
+        seeded_tenant,
+        worker_started_at=datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc),
+        worker_finished_at=datetime(2026, 6, 14, 12, 0, tzinfo=timezone.utc),
+    )
+
+    applied = apply_compile_result(db_session, payload, consumer_settings())
+
+    usage = db_session.scalar(
+        select(CompileUsageRecord).where(CompileUsageRecord.compile_job_id == job.id)
+    )
+    persisted = db_session.get(CompileJob, job.id)
+    assert applied is True
+    assert usage.compute_duration_seconds == (persisted.finished_at - claimed_at).total_seconds()
+    assert usage.compute_duration_seconds > 0
+
+
+def test_record_usage_is_idempotent_for_compile_job(db_session, seeded_tenant):
+    from core.repositories import CompileRepository
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="stl",
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    first = repo.record_usage(
+        project_id=job.project_id,
+        compile_job_id=job.id,
+        requested_by=job.requested_by,
+        export_format=job.export_format,
+        status=job.status,
+        compute_duration_seconds=1.0,
+        artifact_byte_size=10,
+        cost_cents=1,
+        base_rate_cents_per_hour=100,
+        format_multiplier=1.0,
+    )
+    second = repo.record_usage(
+        project_id=job.project_id,
+        compile_job_id=job.id,
+        requested_by=job.requested_by,
+        export_format=job.export_format,
+        status=job.status,
+        compute_duration_seconds=2.0,
+        artifact_byte_size=20,
+        cost_cents=2,
+        base_rate_cents_per_hour=100,
+        format_multiplier=1.0,
+    )
+
+    records = db_session.scalars(
+        select(CompileUsageRecord).where(CompileUsageRecord.compile_job_id == job.id)
+    ).all()
+    assert second.id == first.id
+    assert len(records) == 1
+    assert records[0].compute_duration_seconds == 1.0

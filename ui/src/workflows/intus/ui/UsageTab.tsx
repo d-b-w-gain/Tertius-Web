@@ -49,6 +49,12 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+function numericValue(value: unknown): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value);
+  return 0;
+}
+
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(0)}s`;
   if (seconds < 3600) return `${(seconds / 60).toFixed(1)}m`;
@@ -180,7 +186,7 @@ export const UsageTab: React.FC<{ serverUrl: string; getAccessToken: () => Promi
               <Tooltip
                 contentStyle={{ background: '#1e293b', border: '1px solid #475569', borderRadius: '6px' }}
                 labelStyle={{ color: '#e2e8f0' }}
-                formatter={(value: number) => [`$${value.toFixed(2)}`, 'Cost']}
+                formatter={(value) => [`$${numericValue(value).toFixed(2)}`, 'Cost']}
               />
               <Bar dataKey="cost_dollars" fill="#6366f1" radius={[4, 4, 0, 0]} />
             </BarChart>
@@ -202,9 +208,10 @@ export const UsageTab: React.FC<{ serverUrl: string; getAccessToken: () => Promi
                   cx="50%"
                   cy="50%"
                   outerRadius={80}
-                  label={({ export_format, cost_cents }: FormatItem) =>
-                    `${export_format.toUpperCase()} ${formatCents(cost_cents)}`
-                  }
+                  label={(props) => {
+                    const payload = props.payload as FormatItem | undefined;
+                    return payload ? `${payload.export_format.toUpperCase()} ${formatCents(payload.cost_cents)}` : '';
+                  }}
                   labelLine={false}
                 >
                   {formatBreakdown.map((entry, index) => (
@@ -216,7 +223,7 @@ export const UsageTab: React.FC<{ serverUrl: string; getAccessToken: () => Promi
                 </Pie>
                 <Tooltip
                   contentStyle={{ background: '#1e293b', border: '1px solid #475569', borderRadius: '6px' }}
-                  formatter={(value: number) => [formatCents(value), 'Cost']}
+                  formatter={(value) => [formatCents(numericValue(value)), 'Cost']}
                 />
               </PieChart>
             </ResponsiveContainer>

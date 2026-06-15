@@ -19,6 +19,7 @@ MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "100000"))
 DEFAULT_SANDBOX = os.getenv("CODEX_SANDBOX", "read-only")
 MAX_CONCURRENT_CODEX = int(os.getenv("MAX_CONCURRENT_CODEX", "1"))
 WRAPPER_API_KEY = os.getenv("WRAPPER_API_KEY")
+PLACEHOLDER_API_KEYS = {"", "replace-me", "changeme"}
 
 ALLOWED_SANDBOXES = {"read-only", "workspace-write"}
 
@@ -48,7 +49,12 @@ class PromptResponse(BaseModel):
 
 
 def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
-    if WRAPPER_API_KEY and x_api_key != WRAPPER_API_KEY:
+    if not WRAPPER_API_KEY or WRAPPER_API_KEY in PLACEHOLDER_API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Codex API wrapper is not configured with a valid API key.",
+        )
+    if x_api_key != WRAPPER_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-API-Key header.",

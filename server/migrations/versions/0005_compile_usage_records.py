@@ -40,6 +40,7 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(["requested_by"], ["app_users.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("tenant_id", "compile_job_id", name="uq_compile_usage_records_tenant_job"),
     )
     op.create_index("ix_compile_usage_records_tenant_id", "compile_usage_records", ["tenant_id"])
     op.create_index("ix_compile_usage_records_project_id", "compile_usage_records", ["project_id"])

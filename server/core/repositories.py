@@ -513,6 +513,15 @@ class CompileRepository:
         base_rate_cents_per_hour: int,
         format_multiplier: float,
     ) -> CompileUsageRecord:
+        existing = self.db.scalar(
+            select(CompileUsageRecord).where(
+                CompileUsageRecord.tenant_id == self.tenant_id,
+                CompileUsageRecord.compile_job_id == compile_job_id,
+            )
+        )
+        if existing is not None:
+            return existing
+
         record = CompileUsageRecord(
             tenant_id=self.tenant_id,
             project_id=project_id,

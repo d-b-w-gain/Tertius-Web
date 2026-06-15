@@ -30,11 +30,14 @@ logger = logging.getLogger(__name__)
 
 
 def _record_usage_if_applicable(db, result: CompileResultPayload, job: CompileJob, settings, artifact_byte_size: int = 0) -> None:
-    if result.worker_started_at is None or result.worker_finished_at is None:
+    started_at = job.claimed_at or result.worker_started_at
+    finished_at = job.finished_at if job.claimed_at is not None else result.worker_finished_at
+    if started_at is None or finished_at is None:
         logger.warning("Skipping usage record for job %s: missing timing data", job.id)
         return
-    duration = (result.worker_finished_at - result.worker_started_at).total_seconds()
+    duration = (finished_at - started_at).total_seconds()
     if duration < 0:
+        logger.warning("Clamping negative usage duration for job %s", job.id)
         duration = 0.0
     cost = compute_cost_cents(duration, job.export_format, settings)
     repo = CompileRepository(db, job.tenant_id)

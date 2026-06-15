@@ -10,8 +10,8 @@ metadata:
   namespace: codex-api
 type: Opaque
 stringData:
-  # Replace before applying, or create this Secret out-of-band.
-  WRAPPER_API_KEY: "replace-me"
+  # Set before applying, or create this Secret out-of-band.
+  WRAPPER_API_KEY: ""
 ---
 apiVersion: v1
 kind: ConfigMap
