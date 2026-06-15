@@ -14,6 +14,7 @@ app:
     keycloakAudience: tertius-web
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
+    keycloakJwksUrlOverride: ""
     natsUrl: ""
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request

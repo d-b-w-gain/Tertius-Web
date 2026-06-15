@@ -122,6 +122,11 @@ if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; t
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localhost/realms/tertius"' || ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"'; then
+  echo "Local ConfigMap must validate the public Keycloak issuer while fetching JWKS through the in-cluster service URL." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$rendered" | rg -q 'LLM_BASE_URL: "https://api.deepseek.com"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_MODEL: "deepseek-v4-flash"'; then
   echo "ConfigMap must render DeepSeek LLM base URL and model." >&2
   exit 1

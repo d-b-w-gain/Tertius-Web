@@ -2,7 +2,8 @@ app:
   environment: local
   config:
     keycloakAudience: tertius-web
-    keycloakIssuerUrl: ""
+    keycloakIssuerUrl: http://keycloak.localhost/realms/tertius
+    keycloakJwksUrlOverride: auto
     natsUrl: ""
     llmBaseUrl: https://api.deepseek.com
     llmModel: deepseek-v4-flash

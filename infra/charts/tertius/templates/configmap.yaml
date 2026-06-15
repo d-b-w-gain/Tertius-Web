@@ -10,9 +10,13 @@ metadata:
 {{- $realmName := default "tertius" .Values.keycloak.realmImport.realm }}
 {{- $keycloakAudience := default .Values.app.config.oidcAudience .Values.app.config.keycloakAudience }}
 {{- $keycloakIssuer := $keycloakIssuerFromValues }}
+{{- $keycloakJwksUrlOverride := .Values.app.config.keycloakJwksUrlOverride | trim | default "" }}
 {{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
 {{- if not $keycloakIssuer }}
 {{- $keycloakIssuer = printf "http://%s:%s/realms/%s" $keycloakHost $keycloakPort $realmName }}
+{{- end }}
+{{- if eq $keycloakJwksUrlOverride "auto" }}
+{{- $keycloakJwksUrlOverride = printf "http://%s:%s/realms/%s/protocol/openid-connect/certs" $keycloakHost $keycloakPort $realmName }}
 {{- end }}
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
@@ -20,6 +24,7 @@ data:
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}
+  KEYCLOAK_JWKS_URL_OVERRIDE: {{ $keycloakJwksUrlOverride | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}

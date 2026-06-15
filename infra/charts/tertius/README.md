@@ -47,6 +47,8 @@ curl http://127.0.0.1:8000/api/intus/health
 
 The chart enables NATS JetStream with file-backed PVC storage by default. The API receives `NATS_URL` through the chart ConfigMap. When `app.config.natsUrl` is empty, the value is derived from the release-local NATS service, for example `nats://tertius-nats:4222` for release `tertius`. Set `app.config.natsUrl` only for unusual deployments with a different internal service contract.
 
+The API validates Keycloak token issuers against `app.config.keycloakIssuerUrl`. When Keycloak advertises a public issuer that is not directly resolvable from inside the cluster, set `app.config.keycloakJwksUrlOverride` to the in-cluster JWKS endpoint so the API can validate signatures without weakening issuer checks. Set it to `auto` to derive the release-local Keycloak service URL. The local k3s values use this split because Keycloak issues tokens for `http://keycloak.localhost/realms/tertius` while the API reaches JWKS through the release-local Keycloak service.
+
 NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod.
 
 Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image with `server/start-compile-job.sh`, read one compile request from JetStream, publish one result to JetStream, and exit. They intentionally receive only NATS and compile-limit environment variables. Do not add app Secret env, database env, service-account tokens, PVCs, or API/Keycloak/Postgres egress to compile Jobs.
