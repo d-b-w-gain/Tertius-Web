@@ -21,7 +21,7 @@ describe('guestWorkspace', () => {
     expect(loadGuestWorkspace().activeProject).toBe('default_purlin')
 
     localStorage.setItem(GUEST_WORKSPACE_KEY, '{bad json')
-    expect(loadGuestWorkspace().projects.default_purlin.files['design.py']).toContain('purlin')
+    expect(loadGuestWorkspace().projects.default_purlin!.files['design.py']).toContain('purlin')
 
     localStorage.setItem(GUEST_WORKSPACE_KEY, JSON.stringify({ version: 99 }))
     expect(loadGuestWorkspace().version).toBe(1)
@@ -44,12 +44,12 @@ describe('guestWorkspace', () => {
     workspace = setGuestActiveProject(workspace, 'demo')
 
     expect(workspace.activeProject).toBe('demo')
-    expect(workspace.projects.demo.activeFile).toBe('helper.py')
+    expect(workspace.projects.demo!.activeFile).toBe('helper.py')
     expect(getGuestCode(workspace, 'demo', 'helper.py')).toBe('VALUE = 42')
 
     workspace = deleteGuestFile(workspace, 'demo', 'helper.py')
-    expect(workspace.projects.demo.files['helper.py']).toBeUndefined()
-    expect(workspace.projects.demo.activeFile).toBe('design.py')
+    expect(workspace.projects.demo!.files['helper.py']).toBeUndefined()
+    expect(workspace.projects.demo!.activeFile).toBe('design.py')
   })
 
   it('persists workspace changes to localStorage', () => {
@@ -57,7 +57,7 @@ describe('guestWorkspace', () => {
 
     saveGuestWorkspace(workspace)
 
-    expect(loadGuestWorkspace().projects.demo.files['design.py']).toBe('print("demo")')
+    expect(loadGuestWorkspace().projects.demo!.files['design.py']).toBe('print("demo")')
   })
 
   it('preserves empty Python files as valid guest content', () => {
@@ -66,7 +66,7 @@ describe('guestWorkspace', () => {
     saveGuestWorkspace(workspace)
 
     const stored = loadGuestWorkspace()
-    expect(stored.projects.default_purlin.files['design.py']).toBe('')
-    expect(stored.projects.default_purlin.activeFile).toBe('design.py')
+    expect(stored.projects.default_purlin!.files['design.py']).toBe('')
+    expect(stored.projects.default_purlin!.activeFile).toBe('design.py')
   })
 })

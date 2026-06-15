@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 
 import core.auth as auth
 from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context
@@ -154,13 +156,13 @@ def test_decode_keycloak_token_rejects_unknown_kid(monkeypatch):
 
 def test_get_auth_context_rejects_missing_bearer_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(credentials=None, db=None)
+        get_auth_context(credentials=None, db=cast(Session, None))
 
     assert exc.value.status_code == 401
 
 
 def test_get_auth_context_rejects_malformed_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"), db=None)
+        get_auth_context(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"), db=cast(Session, None))
 
     assert exc.value.status_code == 401

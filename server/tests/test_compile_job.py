@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from core.compile_messages import CompileCommand, CompileSourceFile, serialized_message_size
 
 
 def command_payload(**overrides):
-    payload = {
+    payload: dict[str, object] = {
         "job_id": uuid4(),
         "tenant_id": uuid4(),
         "project_id": uuid4(),
@@ -20,7 +22,7 @@ def command_payload(**overrides):
         "request_id": "compile-request:test",
     }
     payload.update(overrides)
-    return CompileCommand(**payload).model_dump_json().encode("utf-8")
+    return CompileCommand.model_validate(payload).model_dump_json().encode("utf-8")
 
 
 def job_settings(**overrides):
@@ -55,7 +57,7 @@ class FakePublisher:
         self.fail = fail
         self.published = []
 
-    async def publish_json(self, subject, message, message_id=None):
+    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None) -> None:
         if self.fail:
             raise RuntimeError("publish failed")
         self.published.append((subject, message, message_id))

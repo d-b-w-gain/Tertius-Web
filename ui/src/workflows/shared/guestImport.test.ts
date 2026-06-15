@@ -50,7 +50,7 @@ describe('guestImport', () => {
       '/api/intus/projects/demo-guest-20260610-1130-2/activate',
     ])
     expect(mocks.apiFetch.mock.calls.some((call) => String(call[0]).includes('/proxy'))).toBe(false)
-    expect(mocks.apiFetch.mock.calls[2][2]).toMatchObject({
+    expect(mocks.apiFetch.mock.calls[2]![2]).toMatchObject({
       method: 'POST',
       body: JSON.stringify({ file: 'design.py', code: 'print("design")' }),
     })

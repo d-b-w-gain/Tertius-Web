@@ -18,6 +18,7 @@ from core.db import SessionLocal
 from core.models import CompileJob, CompileJobFile, now_utc
 from core.nats_client import (
     NatsPublisher,
+    Publisher,
     connect_nats,
     ensure_compile_stream,
     pull_compile_result_subscription,
@@ -138,7 +139,7 @@ async def handle_compile_result_message(msg, db, settings) -> None:
         await msg.nak()
 
 
-async def republish_stale_queued_jobs(db, publisher: NatsPublisher, settings, older_than_seconds: int = 60) -> int:
+async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_than_seconds: int = 60) -> int:
     cutoff = now_utc() - timedelta(seconds=older_than_seconds)
     jobs = db.scalars(
         select(CompileJob)

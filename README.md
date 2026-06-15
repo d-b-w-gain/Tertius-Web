@@ -147,6 +147,17 @@ UV_CACHE_DIR=.uv-cache uv run pytest
 
 The integration tests use testcontainers and require Docker socket access.
 
+### Type checking (mypy)
+
+A baseline `mypy` configuration lives at the repo root in `pyproject.toml` (`[tool.mypy]`). It is intentionally permissive — the goal is visibility into typing gaps, not strict enforcement. Install mypy into the same venv and run it from the repo root:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv pip install --python .venv/bin/python mypy
+.venv/bin/mypy
+```
+
+Configuration notes: `mypy_path` mirrors `pytest.ini` (`server`), `ignore_missing_imports = true` keeps third-party libs like `build123d` and `py-lib3mf` quiet, and `migrations/versions/` is excluded. See `pyproject.toml` for the full policy.
+
 ## Kubernetes Deployment Test
 
 The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies when vendored archives are incomplete, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, NATS, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks including a JetStream health check.

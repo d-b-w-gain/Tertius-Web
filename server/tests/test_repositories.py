@@ -207,8 +207,12 @@ def test_compile_repository_gets_job_and_artifact_by_scope(db_session, seeded_te
     artifact = repo.record_artifact(seeded_tenant.project_id, job.id, "glb", b"model")
     db_session.commit()
 
-    assert repo.get_job(seeded_tenant.project_id, job.id).id == job.id
-    assert repo.artifact_for_job(job.id).id == artifact.id
+    fetched_job = repo.get_job(seeded_tenant.project_id, job.id)
+    assert fetched_job is not None
+    assert fetched_job.id == job.id
+    fetched_artifact = repo.artifact_for_job(job.id)
+    assert fetched_artifact is not None
+    assert fetched_artifact.id == artifact.id
 
 
 def test_compile_repository_returns_none_for_wrong_project(db_session, seeded_tenant):
@@ -234,7 +238,9 @@ def test_compile_repository_validates_command_identity(db_session, seeded_tenant
     )
     mismatched = command.model_copy(update={"export_format": "glb"})
 
-    assert repo.get_job_for_command(command).id == job.id
+    matched_job = repo.get_job_for_command(command)
+    assert matched_job is not None
+    assert matched_job.id == job.id
     assert repo.get_job_for_command(mismatched) is None
 
 
@@ -301,6 +307,7 @@ def test_compile_repository_reclaims_expired_running_job(db_session, seeded_tena
         created_at=job.created_at,
     )
     first = repo.claim_job_for_command(command, lease_seconds=1)
+    assert first is not None
     first.lease_expires_at = now_utc() - timedelta(seconds=1)
     first_token = first.claim_token
     db_session.commit()
@@ -324,11 +331,13 @@ def test_compile_repository_finishes_only_current_claim(db_session, seeded_tenan
         created_at=job.created_at,
     )
     claimed = repo.claim_job_for_command(command, lease_seconds=660)
+    assert claimed is not None
     stale_token = uuid4()
     db_session.commit()
 
     assert repo.finish_job_if_claim_current(job.id, stale_token, "failed", error_code="stale_claim") is None
     persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
     assert persisted.status == "running"
     assert persisted.claim_token == claimed.claim_token
 
@@ -345,6 +354,7 @@ def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):
     job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued")
 
     files = project_repo.files_for_runtime("default_purlin")
+    assert files is not None
     repo.snapshot_job_files(job, files)
     project_repo.save_code("default_purlin", "design.py", "shape = 'later'\n", seeded_tenant.user_id, "later")
     db_session.commit()

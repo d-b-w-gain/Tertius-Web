@@ -3,6 +3,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from core.compile_messages import CompileResultPayload
@@ -238,7 +239,7 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject, command, message_id=None):
+        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
@@ -255,6 +256,7 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     assert message_id == f"compile-request:{stale_job.id}"
     assert command.request_id == message_id
     persisted = db_session.get(CompileJob, stale_job.id)
+    assert persisted is not None
     assert persisted.status == "queued"
     assert persisted.claim_token is None
 
@@ -285,7 +287,7 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject, command, message_id=None):
+        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
@@ -293,6 +295,7 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     )
 
     persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
     assert republished == 0
     assert published == []
     assert persisted.status == "queued"
@@ -326,7 +329,7 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject, command, message_id=None):
+        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
             published.append((subject, command, message_id))
 
     settings = consumer_settings()
@@ -337,6 +340,7 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     )
 
     persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
     assert republished == 0
     assert published == []
     assert persisted.status == "failed"
@@ -361,7 +365,7 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject, command, message_id=None):
+        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
@@ -369,6 +373,7 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     )
 
     persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
     assert republished == 0
     assert published == []
     assert persisted.status == "failed"

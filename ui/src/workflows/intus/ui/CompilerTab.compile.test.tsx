@@ -301,7 +301,7 @@ describe('CompilerTab compile jobs', () => {
 
     await act(async () => {})
     expect(mocks.apiFetch).toHaveBeenCalledTimes(3)
-    const retryOptions = mocks.apiFetch.mock.calls[2][2]
+    const retryOptions = mocks.apiFetch.mock.calls[2]![2]!
     expect(JSON.parse(retryOptions.body)).toEqual(expect.objectContaining({
       code: 'box = Box(2, 2, 2)',
       export_format: 'glb',
