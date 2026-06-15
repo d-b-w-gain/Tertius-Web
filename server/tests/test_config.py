@@ -101,7 +101,7 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
     assert settings.compile_max_deliver == 3
     assert settings.compile_timeout_seconds == 600
     assert settings.compile_request_max_bytes == 8 * 1024 * 1024
-    assert settings.compile_result_max_bytes == 8 * 1024 * 1024
+    assert settings.compile_result_max_bytes == 32 * 1024 * 1024
 
 
 def test_settings_allows_compile_nats_overrides(monkeypatch):

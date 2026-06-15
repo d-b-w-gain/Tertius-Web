@@ -13,7 +13,7 @@ services:
       COMPILE_WORKER_QUEUE: compile-workers
       COMPILE_RESULT_CONSUMER: compile-result-api
       COMPILE_REQUEST_MAX_BYTES: 8388608
-      COMPILE_RESULT_MAX_BYTES: 8388608
+      COMPILE_RESULT_MAX_BYTES: 33554432
       APP_DB_HOST: postgres
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
@@ -33,7 +33,7 @@ services:
       COMPILE_REQUEST_SUBJECT: tertius.compile.request
       COMPILE_RESULT_SUBJECT: tertius.compile.result
       COMPILE_WORKER_QUEUE: compile-workers
-      COMPILE_RESULT_MAX_BYTES: 8388608
+      COMPILE_RESULT_MAX_BYTES: 33554432
       COMPILE_JOB_MODE: nats-only
     depends_on:
       - nats
@@ -78,16 +78,14 @@ services:
   nats:
     image: nats:2
     command:
-      - -js
-      - -sd
-      - /data
-      - -m
-      - "8222"
+      - -c
+      - /etc/nats/nats-server.conf
     ports:
       - "4222:4222"
       - "8222:8222"
     volumes:
       - tertius-nats:/data
+      - ./infra/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
 
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
