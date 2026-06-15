@@ -202,18 +202,18 @@ if printf '%s\n' "$rendered" | rg -q 'COMPILE_(REQUEST|RESULT)_MAX_BYTES: "?[0-9
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "8388608"'; then
-  echo "ConfigMap compile byte limits must render as the exact string \"8388608\"." >&2
+if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "33554432"'; then
+  echo "ConfigMap compile byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q '"max_payload": 8388608'; then
-  echo "NATS server max_payload must match the compile message byte limit." >&2
+if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
+  echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "8388608"'; then
-  echo "Compile ScaledJob byte limits must render as the exact string \"8388608\"." >&2
+if ! printf '%s\n' "$rendered" | rg -q '"max_payload": 33554432'; then
+  echo "NATS must render max_payload 33554432 so it can accept larger compile result messages." >&2
   exit 1
 fi
 

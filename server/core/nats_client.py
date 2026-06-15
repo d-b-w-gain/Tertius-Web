@@ -28,7 +28,7 @@ async def ensure_compile_stream(nc, settings):
         settings.compile_result_subject,
     ]
 
-    max_msg_size = min(settings.compile_request_max_bytes, settings.compile_result_max_bytes)
+    max_msg_size = max(settings.compile_request_max_bytes, settings.compile_result_max_bytes)
 
     try:
         info = await js.stream_info(settings.compile_stream_name)

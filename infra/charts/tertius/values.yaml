@@ -24,7 +24,7 @@ app:
     compileMaxDeliver: 3
     compileTimeoutSeconds: 600
     compileRequestMaxBytes: 8388608
-    compileResultMaxBytes: 8388608
+    compileResultMaxBytes: 33554432
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
@@ -208,7 +208,7 @@ nats:
   enabled: true
   config:
     merge:
-      max_payload: 8388608
+      max_payload: 33554432
     jetstream:
       enabled: true
       fileStore:

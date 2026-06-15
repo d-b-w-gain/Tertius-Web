@@ -162,4 +162,16 @@ async def test_ensure_compile_stream_updates_existing_stream_subjects_and_max_me
         "tertius.compile.request",
         "tertius.compile.result",
     ]
-    assert stream_config.max_msg_size == 8388608
+    assert stream_config.max_msg_size == 33554432
+
+
+@pytest.mark.asyncio
+async def test_ensure_compile_stream_allows_larger_result_than_request_messages():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings(compile_request_max_bytes=8 * 1024 * 1024, compile_result_max_bytes=32 * 1024 * 1024)
+
+    await ensure_compile_stream(connection, settings)
+
+    stream_config = jetstream.streams["TERTIUS_COMPILE"]
+    assert stream_config.max_msg_size == 32 * 1024 * 1024

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     compile_max_deliver: int = Field(default=3)
     compile_timeout_seconds: int = Field(default=600)
     compile_request_max_bytes: int = Field(default=8 * 1024 * 1024)
-    compile_result_max_bytes: int = Field(default=8 * 1024 * 1024)
+    compile_result_max_bytes: int = Field(default=32 * 1024 * 1024)
     allowed_origins: str = Field(default="http://localhost:5173")
 
     @model_validator(mode="after")
