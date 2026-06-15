@@ -370,6 +370,14 @@ def get_compile_job_status(
     job = compile_repo.get_job(project.id, job_id)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "Compile job not found"})
+    job = compile_repo.reconcile_stale_job(
+        project.id,
+        job.id,
+        queued_older_than_seconds=get_settings().compile_ack_wait_seconds,
+    )
+    db.commit()
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "Compile job not found"})
 
     artifact = compile_repo.artifact_for_job(job.id) if job.status == "succeeded" else None
     return {

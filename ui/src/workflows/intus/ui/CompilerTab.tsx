@@ -14,6 +14,16 @@ import {
 
 const COMPILE_AUTH_TIMEOUT_MS = 15_000;
 const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
+const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
+const COMPILE_STATUS_POLL_MS = 2_000;
+const COMPILE_STATUS_RETRY_MS = 3_000;
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timeoutId: number | undefined;
@@ -96,6 +106,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [storage]);
 
   const pollCompileJob = useCallback((projectName: string, jobId: string, requestId: number, mode: 'manual' | 'auto') => {
+    const pollStartedAt = Date.now();
     const tick = async () => {
       if (compileRequestRef.current !== requestId) return;
 
@@ -140,21 +151,29 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
         if (data.status === 'failed') {
           const message = data.user_message || 'Compile failed. Try again.';
+          const errorCode = data.error_code ? ` (${data.error_code})` : '';
           const details = data.error ? `\n${data.error}` : '';
-          setLog(prev => `${prev}\n[ERROR] ${message}${details}`);
+          setLog(prev => `${prev}\n[ERROR]${errorCode} ${message}${details}`);
           setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
           if (mode === 'auto') setAutoCompile(false);
           setCompilingState(false);
           return;
         }
 
-        pollTimerRef.current = window.setTimeout(tick, 2000);
+        const createdAt = data.created_at ? Date.parse(data.created_at) : NaN;
+        const elapsedFrom = Number.isNaN(createdAt) ? pollStartedAt : createdAt;
+        const elapsed = formatElapsed(Date.now() - elapsedFrom);
+        const statusText = data.status || 'running';
+        setLog(`[INFO] Job ${jobId} is ${statusText}\n[INFO] Waiting ${elapsed} for ${projectName} ${data.format || format} compile...`);
+        pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_POLL_MS);
       } catch {
-        pollTimerRef.current = window.setTimeout(tick, 3000);
+        const elapsed = formatElapsed(Date.now() - pollStartedAt);
+        setLog(`[WARN] Waiting ${elapsed}; temporarily could not refresh compile job ${jobId}. Retrying...`);
+        pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_RETRY_MS);
       }
     };
 
-    pollTimerRef.current = window.setTimeout(tick, 1000);
+    pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS);
   }, [autoCompile, fetchGitStatus, format, getAccessToken, serverUrl, setCompilingState, storage]);
 
   const startCompile = useCallback(async (nextCode: string, mode: 'manual' | 'auto') => {

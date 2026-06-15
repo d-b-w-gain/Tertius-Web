@@ -16,6 +16,11 @@ from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+WORKER_LOST_ERROR = "Compile worker stopped before reporting a result"
+WORKER_LOST_ERROR_CODE = "worker_lost"
+WORKER_LOST_USER_MESSAGE = (
+    "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
+)
 
 
 def require_valid_python_filename(filename: str) -> str:
@@ -411,6 +416,48 @@ class CompileRepository:
                 .limit(limit)
             )
         )
+
+    def reconcile_stale_job(
+        self,
+        project_id: UUID,
+        job_id: UUID,
+        queued_older_than_seconds: int,
+    ) -> CompileJob | None:
+        now = now_utc()
+        queued_cutoff = now - timedelta(seconds=queued_older_than_seconds)
+        stmt = (
+            update(CompileJob)
+            .where(
+                CompileJob.id == job_id,
+                CompileJob.tenant_id == self.tenant_id,
+                CompileJob.project_id == project_id,
+                or_(
+                    (
+                        (CompileJob.status == "running")
+                        & CompileJob.lease_expires_at.is_not(None)
+                        & (CompileJob.lease_expires_at < now)
+                    ),
+                    (
+                        (CompileJob.status == "queued")
+                        & (CompileJob.created_at < queued_cutoff)
+                    ),
+                ),
+            )
+            .values(
+                status="failed",
+                error=WORKER_LOST_ERROR,
+                error_code=WORKER_LOST_ERROR_CODE,
+                user_message=WORKER_LOST_USER_MESSAGE,
+                retryable=True,
+                finished_at=now,
+                lease_expires_at=None,
+            )
+            .returning(CompileJob.id)
+        )
+        reconciled_id = self.db.scalar(stmt)
+        if reconciled_id is not None:
+            self.db.flush()
+        return self.get_job(project_id, job_id)
 
     def finish_job_if_claim_current(
         self,
