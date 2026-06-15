@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     LargeBinary,
     Numeric,
     String,
@@ -170,6 +171,7 @@ class CompileUsageRecord(Base):
             name="fk_usage_records_compile_job_project_tenant",
             ondelete="CASCADE",
         ),
+        Index("ix_compile_usage_records_tenant_created", "tenant_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
