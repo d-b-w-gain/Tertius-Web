@@ -22,7 +22,7 @@ The backend currently writes project and output state to the local filesystem. P
 - Use one merged local Helm chart: `infra/charts/tertius`.
 - Add a chart README documenting prerequisites and local k3s test steps.
 - Package the UI and API as separate container images and Kubernetes Deployments.
-- Use Python 3.12 for the API image.
+- Use Python 3.14 for the API image.
 - Use Node 24 LTS for the UI build stage.
 - Use nginx as the UI runtime image.
 - Use CloudNativePG for Postgres, with the operator installed as a prerequisite.
@@ -33,7 +33,7 @@ The backend currently writes project and output state to the local filesystem. P
 
 ## Runtime Compatibility
 
-Python 3.14 is the latest stable Python line, but Tertius should not target it yet because `build123d` declares an upper bound of `<3.14` on PyPI (current releases support 3.10 through 3.13). Python 3.12 is the conservative target for the API container; 3.13 is also supported by build123d if a newer runtime is wanted later.
+Python 3.14 is the platform runtime target for Tertius. The compile sandbox carries compatibility shims for Build123D/OCP API drift where needed, so API, worker, CI, and local development stay on the same Python line.
 
 Node 24 is the current LTS line and is suitable for the Vite build stage.
 
@@ -381,7 +381,7 @@ The implementation plan should include these verification commands:
 ## Implementation Defaults
 
 - UI runtime: nginx.
-- API runtime: Python 3.12.
+- API runtime: Python 3.14.
 - UI build runtime: Node 24 LTS.
 - PostgreSQL default major version: 18.
 - Valkey default image: latest stable Valkey image available when implementation begins, pinned to an exact tag in values.

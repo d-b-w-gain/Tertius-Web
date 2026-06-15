@@ -17,6 +17,13 @@ import traceback
 from pathlib import Path
 
 import build123d as bd
+from OCP.TopoDS import TopoDS_Shape
+
+if not hasattr(TopoDS_Shape, "HashCode"):
+    def _topods_shape_hash_code(self, upper_bound):
+        return hash(self) % upper_bound
+
+    TopoDS_Shape.HashCode = _topods_shape_hash_code
 
 project_dir = Path.cwd()
 export_format = sys.argv[1].lower()

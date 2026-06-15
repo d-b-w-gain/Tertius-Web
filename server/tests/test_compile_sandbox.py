@@ -2,6 +2,7 @@ import os
 import json
 import struct
 import time
+from pathlib import Path
 
 from core.compile_sandbox import run_compile_sandbox
 
@@ -117,6 +118,19 @@ building = bd.Compound([left, right], label="two child-coloured solids real comp
     ]
     assert coloured_materials
     assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in coloured_materials)
+
+
+def test_compile_sandbox_compiles_default_purlin_to_glb(tmp_path):
+    default_purlin = Path("server/workflows/intus/templates/default_purlin.py").read_text(encoding="utf-8")
+    (tmp_path / "design.py").write_text(default_purlin, encoding="utf-8")
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=60)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
 
 
 def test_compile_sandbox_does_not_expose_worker_secrets(tmp_path, monkeypatch):
