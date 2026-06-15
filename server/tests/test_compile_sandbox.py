@@ -1,4 +1,6 @@
 import os
+import json
+import struct
 import time
 
 from core.compile_sandbox import run_compile_sandbox
@@ -39,6 +41,38 @@ def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
     assert result.success is True
     assert spawned["command"] is True
     assert result.output_path == tmp_path / "output.timus_views"
+
+
+def test_compile_sandbox_preserves_build123d_part_color_in_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+
+part = bd.Part() + bd.Solid.make_box(20, 20, 20)
+part.label = "Red test cube"
+part.color = bd.Color(1.0, 0.0, 0.0, 1.0)
+
+building = bd.Compound(children=[part], label="Colour test assembly")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+
+    base_colors = [
+        material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+        for material in gltf_json.get("materials", [])
+    ]
+    assert [1.0, 0.0, 0.0, 1.0] in base_colors
+    assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
 
 
 def test_compile_sandbox_does_not_expose_worker_secrets(tmp_path, monkeypatch):
