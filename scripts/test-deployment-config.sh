@@ -22,6 +22,12 @@ render_compile_strategy_accurate() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set compileJobs.scalingStrategy=accurate
 }
 
+render_app_secret_created() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.llmSecret.create=true \
+    --set-string app.llmSecret.apiKey=deepseek-test-key
+}
+
 render_network_policy_enabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=true
 }
@@ -69,11 +75,15 @@ rendered="$(render_local)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
+app_secret_rendered="$(render_app_secret_created)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
+app_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'name: tertius-config')"
+api_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: api')"
+ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
 compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 
@@ -109,6 +119,36 @@ fi
 
 if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; then
   echo "Local Helm render did not derive the expected release-local NATS_URL." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'LLM_BASE_URL: "https://api.deepseek.com"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_MODEL: "deepseek-v4-flash"'; then
+  echo "ConfigMap must render DeepSeek LLM base URL and model." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_TENANT_DAILY_TOKEN_QUOTA: "100000"'; then
+  echo "ConfigMap must render paid LLM rate and quota settings." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY'; then
+  echo "ConfigMap must not render LLM_API_KEY." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "deepseek-test-key"'; then
+  echo "Dedicated LLM Secret must render LLM_API_KEY when app.llmSecret.create=true." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_API_KEY'; then
+  echo "API Deployment must reference LLM_API_KEY from the dedicated LLM Secret." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_BASE_URL|LLM_MODEL|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
+  echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
 
@@ -182,8 +222,8 @@ if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-co
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL'; then
-  echo "Compile ScaledJob must not receive app secrets or database environment." >&2
+if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_BASE_URL|LLM_MODEL'; then
+  echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi
 

@@ -10,6 +10,8 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
+    JSON,
     LargeBinary,
     Numeric,
     String,
@@ -188,6 +190,34 @@ class CompileUsageRecord(Base):
     base_rate_cents_per_hour: Mapped[int] = mapped_column(nullable=False)
     format_multiplier: Mapped[float] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class LlmUsageRecord(Base):
+    __tablename__ = "llm_usage_records"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="SET NULL"),
+        UniqueConstraint("event_id", name="uq_llm_usage_records_event_id"),
+        Index("ix_llm_usage_records_tenant_created", "tenant_id", "created_at"),
+        Index("ix_llm_usage_records_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False, index=True)
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True, index=True)
+    workflow: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_request_id: Mapped[Optional[str]] = mapped_column(String(255))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
 
 
 class CompileJobFile(Base):

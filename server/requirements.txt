@@ -12,6 +12,7 @@ alembic
 PyJWT[crypto]
 httpx
 nats-py
+openai
 pytest
 pytest-asyncio
 testcontainers[postgres]

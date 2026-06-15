@@ -34,6 +34,17 @@ data:
   COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+  LLM_BASE_URL: {{ .Values.app.config.llmBaseUrl | quote }}
+  LLM_MODEL: {{ .Values.app.config.llmModel | quote }}
+  LLM_TIMEOUT_SECONDS: {{ .Values.app.config.llmTimeoutSeconds | quote }}
+  LLM_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmMaxOutputTokens | quote }}
+  LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
+  LLM_TENANT_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmTenantRateLimitPerMinute | quote }}
+  LLM_TENANT_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmTenantDailyTokenQuota | quote }}
+  LLM_USER_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmUserDailyTokenQuota | quote }}
+  BILLING_STREAM_NAME: {{ .Values.app.config.billingStreamName | quote }}
+  BILLING_LLM_USAGE_SUBJECT: {{ .Values.app.config.billingLlmUsageSubject | quote }}
+  BILLING_MAX_BYTES: {{ printf "%d" (.Values.app.config.billingMaxBytes | int64) | quote }}
   BILLING_RATE_CENTS_PER_HOUR: {{ .Values.app.config.billingRateCentsPerHour | quote }}
   BILLING_FORMAT_MULTIPLIER_STL: {{ .Values.app.config.billingFormatMultiplierStl | quote }}
   BILLING_FORMAT_MULTIPLIER_STEP: {{ .Values.app.config.billingFormatMultiplierStep | quote }}

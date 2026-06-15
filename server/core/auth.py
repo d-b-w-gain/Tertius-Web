@@ -41,14 +41,15 @@ def decode_keycloak_token(token: str) -> dict:
             signing_key.key,
             algorithms=["RS256"],
             audience=settings.keycloak_audience,
-            options={"verify_iss": False},
+            issuer=settings.keycloak_issuer.rstrip("/"),
         )
     except InvalidAudienceError:
         claims = jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
-            options={"verify_iss": False, "verify_aud": False},
+            issuer=settings.keycloak_issuer.rstrip("/"),
+            options={"verify_aud": False},
         )
         if claims.get("azp") != settings.keycloak_authorized_party:
             raise

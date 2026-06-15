@@ -55,6 +55,32 @@ The chart does not install KEDA or its CRDs. `keda.enabled` defaults to `true` f
 
 By default, compile Job pods get a dedicated NetworkPolicy that denies ingress and only allows egress to DNS and NATS `4222`. API/UI ingress policies remain controlled by `networkPolicy.enabled`. If API egress hardening is added later, it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required external services together.
 
+## LLM Build Script Generation
+
+The API can call an OpenAI-compatible LLM provider to generate Intus build scripts.
+
+Non-secret provider settings are rendered into the app ConfigMap:
+
+- `app.config.llmBaseUrl` -> `LLM_BASE_URL`, default `https://api.deepseek.com`
+- `app.config.llmModel` -> `LLM_MODEL`, default `deepseek-v4-flash`
+- `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
+- `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
+- `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`
+- `app.config.llmUserDailyTokenQuota` -> `LLM_USER_DAILY_TOKEN_QUOTA`
+- `app.config.billingStreamName` -> `BILLING_STREAM_NAME`
+- `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
+- `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
+
+The provider API key is secret material:
+
+- `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
+- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages the key out of chart values.
+- Do not put `LLM_API_KEY` in the shared app Secret selected by `app.secretName`; keep provider credentials in the dedicated LLM Secret.
+
+Only the API Deployment receives `LLM_API_KEY`. UI and Compile Jobs do not receive the LLM configuration or key.
+
 ## Secrets
 
 Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, NATS credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.

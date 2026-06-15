@@ -4,7 +4,22 @@ app:
     keycloakAudience: tertius-web
     keycloakIssuerUrl: ""
     natsUrl: ""
+    llmBaseUrl: https://api.deepseek.com
+    llmModel: deepseek-v4-flash
+    llmTimeoutSeconds: 60
+    llmMaxOutputTokens: 2048
+    llmUserRateLimitPerMinute: 10
+    llmTenantRateLimitPerMinute: 60
+    llmTenantDailyTokenQuota: 100000
+    llmUserDailyTokenQuota: 25000
+    billingStreamName: TERTIUS_BILLING
+    billingLlmUsageSubject: tertius.billing.usage.llm.tokens
+    billingMaxBytes: 262144
     oidcIssuerUrl: http://localhost:8081/realms/tertius
+  llmSecretName: ""
+  llmSecret:
+    create: false
+    apiKey: ""
   secret:
     create: true
     databaseUrl: ""

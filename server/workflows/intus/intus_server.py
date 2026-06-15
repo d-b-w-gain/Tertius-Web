@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -14,13 +15,16 @@ from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
+from core.llm_client import BuildScriptGenerationInput, LlmBillingError, LlmNotConfiguredError, generate_build_script
+from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
-from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream
+from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
 from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
 from workflows.intus.usage_server import router as usage_router
 
 app = FastAPI(title="Intus Compiler Server")
 app.include_router(usage_router)
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,6 +68,22 @@ async def publish_compile_command(command: CompileCommand) -> None:
         await nc.flush()
     finally:
         await nc.close()
+
+
+async def create_billing_publisher(settings):
+    nc = None
+    try:
+        nc = await connect_nats(settings.nats_url)
+        js = await ensure_billing_stream(nc, settings)
+        return NatsPublisher(js), nc
+    except Exception:
+        if nc is not None:
+            try:
+                await nc.close()
+            except Exception:
+                logger.exception("Failed to close LLM billing NATS connection after setup failure")
+        logger.exception("Failed to create LLM billing publisher")
+        return None, None
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/health")
@@ -349,6 +369,96 @@ async def compile_project(
             "error": str(exc),
             "short": str(exc)
         })
+
+
+@app.post("/projects/{name}/build-script/generate")
+async def generate_project_build_script(
+    name: str,
+    req: BuildScriptGenerationInput,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        require_valid_python_filename(req.active_file)
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+
+    settings = get_settings()
+    billing_publisher = None
+    billing_nc = None
+    try:
+        assert_llm_usage_allowed(
+            db,
+            settings,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            estimated_tokens=settings.llm_max_output_tokens,
+        )
+        billing_publisher, billing_nc = await create_billing_publisher(settings)
+        result = await generate_build_script(
+            req,
+            settings=settings,
+            auth=ctx,
+            project_id=project.id,
+            billing_publisher=billing_publisher,
+        )
+        record_llm_usage(
+            db,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            provider_request_id=getattr(result, "provider_request_id", None),
+            event_id=getattr(result, "billing_event_id", None),
+            settings=settings,
+        )
+        db.commit()
+    except LlmUsageLimitExceeded as exc:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"success": False, "error": str(exc), "retryable": True},
+        )
+    except LlmNotConfiguredError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmBillingError:
+        logger.exception("LLM billing failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "LLM billing failed", "retryable": True},
+        )
+    except Exception:
+        logger.exception("LLM build script generation failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "LLM generation failed", "retryable": True},
+        )
+    finally:
+        if billing_nc is not None:
+            try:
+                await billing_nc.flush()
+            except Exception:
+                logger.exception("Failed to flush LLM billing NATS connection")
+            finally:
+                try:
+                    await billing_nc.close()
+                except Exception:
+                    logger.exception("Failed to close LLM billing NATS connection")
+
+    return {
+        "success": result.success,
+        "script": result.script,
+        "model": result.model,
+        "usage": result.usage.model_dump(),
+    }
 
 
 @app.get("/projects/{name}/compile/jobs/{job_id}")

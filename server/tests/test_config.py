@@ -130,3 +130,66 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     assert settings.compile_timeout_seconds == 840
     assert settings.compile_request_max_bytes == 1048576
     assert settings.compile_result_max_bytes == 2097152
+
+
+def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
+    for env_var in (
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "LLM_API_KEY",
+        "LLM_TIMEOUT_SECONDS",
+        "LLM_MAX_OUTPUT_TOKENS",
+        "LLM_USER_RATE_LIMIT_PER_MINUTE",
+        "LLM_TENANT_RATE_LIMIT_PER_MINUTE",
+        "LLM_TENANT_DAILY_TOKEN_QUOTA",
+        "LLM_USER_DAILY_TOKEN_QUOTA",
+        "BILLING_STREAM_NAME",
+        "BILLING_LLM_USAGE_SUBJECT",
+        "BILLING_MAX_BYTES",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    settings = Settings()
+
+    assert settings.llm_base_url == "https://api.deepseek.com"
+    assert settings.llm_model == "deepseek-v4-flash"
+    assert settings.llm_api_key == ""
+    assert settings.llm_timeout_seconds == 60
+    assert settings.llm_max_output_tokens == 2048
+    assert settings.llm_user_rate_limit_per_minute == 10
+    assert settings.llm_tenant_rate_limit_per_minute == 60
+    assert settings.llm_tenant_daily_token_quota == 100000
+    assert settings.llm_user_daily_token_quota == 25000
+    assert settings.billing_stream_name == "TERTIUS_BILLING"
+    assert settings.billing_llm_usage_subject == "tertius.billing.usage.llm.tokens"
+    assert settings.billing_max_bytes == 262144
+
+
+def test_settings_allows_llm_and_billing_overrides(monkeypatch):
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("LLM_API_KEY", "secret-key")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1024")
+    monkeypatch.setenv("LLM_USER_RATE_LIMIT_PER_MINUTE", "5")
+    monkeypatch.setenv("LLM_TENANT_RATE_LIMIT_PER_MINUTE", "25")
+    monkeypatch.setenv("LLM_TENANT_DAILY_TOKEN_QUOTA", "50000")
+    monkeypatch.setenv("LLM_USER_DAILY_TOKEN_QUOTA", "10000")
+    monkeypatch.setenv("BILLING_STREAM_NAME", "CUSTOM_BILLING")
+    monkeypatch.setenv("BILLING_LLM_USAGE_SUBJECT", "custom.billing.llm")
+    monkeypatch.setenv("BILLING_MAX_BYTES", "65536")
+
+    settings = Settings()
+
+    assert settings.llm_base_url == "https://api.deepseek.com"
+    assert settings.llm_model == "deepseek-v4-flash"
+    assert settings.llm_api_key == "secret-key"
+    assert settings.llm_timeout_seconds == 30
+    assert settings.llm_max_output_tokens == 1024
+    assert settings.llm_user_rate_limit_per_minute == 5
+    assert settings.llm_tenant_rate_limit_per_minute == 25
+    assert settings.llm_tenant_daily_token_quota == 50000
+    assert settings.llm_user_daily_token_quota == 10000
+    assert settings.billing_stream_name == "CUSTOM_BILLING"
+    assert settings.billing_llm_usage_subject == "custom.billing.llm"
+    assert settings.billing_max_bytes == 65536
