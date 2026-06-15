@@ -8,11 +8,13 @@ const maxFileStatusPollingDelay = Math.ceil(FILE_STATUS_POLL_INTERVAL_MS * 1.1)
 const storage = vi.hoisted(() => ({
   getActiveProject: vi.fn(),
   listFiles: vi.fn(),
+  listFileMetadata: vi.fn(),
   loadCode: vi.fn(),
   saveCode: vi.fn(),
   deleteFile: vi.fn(),
   getStatus: vi.fn(),
   getHistory: vi.fn(),
+  applyLlmFileEdit: vi.fn(),
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -64,11 +66,15 @@ describe('CompilerTab compile jobs', () => {
     mocks.getAccessToken.mockReset()
     storage.getActiveProject.mockResolvedValue('default_purlin')
     storage.listFiles.mockResolvedValue(['design.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py' },
+    ])
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
     storage.saveCode.mockResolvedValue(undefined)
     storage.deleteFile.mockResolvedValue(undefined)
     storage.getStatus.mockResolvedValue({ mtime: 42 })
     storage.getHistory.mockResolvedValue({ is_git: true, history: [] })
+    storage.applyLlmFileEdit.mockReset()
   })
 
   afterEach(() => {
@@ -431,4 +437,130 @@ describe('CompilerTab compile jobs', () => {
       expect(screen.getByLabelText('code editor')).toHaveValue('box = Box(4, 4, 4)')
     }, { timeout: 2500 })
   }, 10000)
+
+  it('loads file metadata after the project loads', async () => {
+    await renderCompiler()
+    await act(async () => {})
+
+    expect(storage.listFileMetadata).toHaveBeenCalledWith('default_purlin')
+  })
+
+  it('submits AI edit with all current file ids and the active file id', async () => {
+    storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py' },
+      { id: 'file-helper-id', filename: 'helper.py' },
+    ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve('design content')
+      if (file === 'helper.py') return Promise.resolve('helper content')
+      return Promise.resolve('')
+    })
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [
+        { id: 'file-design-id', filename: 'design.py', content: 'design content v2', changed: true },
+      ],
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'refactor both files' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(storage.applyLlmFileEdit).toHaveBeenCalledWith(
+        'default_purlin',
+        {
+          prompt: 'refactor both files',
+          files: [
+            { id: 'file-design-id', filename: 'design.py' },
+            { id: 'file-helper-id', filename: 'helper.py' },
+          ],
+          active_file_id: 'file-design-id',
+          metadata: { source: 'compiler_tab' },
+        },
+      )
+    })
+  })
+
+  it('updates the active editor and file tabs from a successful AI edit response', async () => {
+    storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py' },
+      { id: 'file-helper-id', filename: 'helper.py' },
+    ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve('design v1')
+      if (file === 'helper.py') return Promise.resolve('helper v1')
+      return Promise.resolve('')
+    })
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [
+        { id: 'file-design-id', filename: 'design.py', content: 'design v2 (AI)', changed: true, summary: 'updated design' },
+        { id: 'file-helper-id', filename: 'helper.py', content: 'helper v2 (AI)', changed: true, summary: 'added helper' },
+      ],
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'improve both files' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design v2 (AI)')
+    })
+    expect(screen.getByText(/AI updated 2 file/)).toBeInTheDocument()
+  })
+
+  it('refetches server-side content when switching to a file changed by AI', async () => {
+    storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py' },
+      { id: 'file-helper-id', filename: 'helper.py' },
+    ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve('design v1')
+      if (file === 'helper.py') return Promise.resolve('helper v2 (AI updated)')
+      return Promise.resolve('')
+    })
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [
+        { id: 'file-design-id', filename: 'design.py', content: 'design v2 (AI)', changed: true, summary: 'updated design' },
+        { id: 'file-helper-id', filename: 'helper.py', content: 'helper v2 (AI)', changed: true, summary: 'updated helper' },
+      ],
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'update both files' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design v2 (AI)')
+    })
+
+    const callsBefore = storage.loadCode.mock.calls.length
+
+    fireEvent.click(screen.getByRole('button', { name: 'helper.py' }))
+
+    await waitFor(() => {
+      expect(storage.loadCode.mock.calls.length).toBeGreaterThan(callsBefore)
+      expect(storage.loadCode).toHaveBeenCalledWith('default_purlin', 'helper.py')
+    })
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('helper v2 (AI updated)')
+    })
+  })
 })

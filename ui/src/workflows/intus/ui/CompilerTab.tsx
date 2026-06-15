@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
-import { createProjectStorage } from '../../shared/projectStorage';
+import { createProjectStorage, type ProjectFileMetadata } from '../../shared/projectStorage';
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
 import {
   ACTIVE_PROJECT_POLL_INTERVAL_MS,
@@ -60,6 +60,9 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [activeFile, setActiveFile] = useState<string>('design.py');
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [fileMetadata, setFileMetadata] = useState<ProjectFileMetadata[]>([]);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isApplyingAiEdit, setIsApplyingAiEdit] = useState(false);
   
   // Git UI State
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
@@ -257,14 +260,27 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     mtimeRef.current = 0;
     fetchGitStatus(projectName);
 
-    const projectFiles = await storage.listFiles(projectName);
+    let metadata: ProjectFileMetadata[];
+    try {
+      metadata = await storage.listFileMetadata(projectName);
+    } catch (e) {
+      metadata = [];
+    }
     if (loadRequestRef.current !== requestId) return;
 
-    const nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    let nextFiles: string[];
+    if (metadata.length > 0) {
+      nextFiles = metadata.map(file => file.filename);
+    } else {
+      const projectFiles = await storage.listFiles(projectName);
+      if (loadRequestRef.current !== requestId) return;
+      nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    }
     const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0]!;
     const nextCode = await storage.loadCode(projectName, nextFile);
     if (loadRequestRef.current !== requestId) return;
 
+    setFileMetadata(metadata);
     setFiles(nextFiles);
     setActiveFile(nextFile);
     setCode(nextCode);
@@ -448,6 +464,39 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     await startCompile(code, 'manual');
   };
 
+  const applyAiEdit = async () => {
+    if (isGuest || !activeProject || !aiPrompt.trim() || fileMetadata.length === 0) return;
+    setIsApplyingAiEdit(true);
+    try {
+      const result = await storage.applyLlmFileEdit(activeProject, {
+        prompt: aiPrompt.trim(),
+        files: fileMetadata.map(file => ({ id: file.id, filename: file.filename })),
+        active_file_id: fileMetadata.find(file => file.filename === activeFile)?.id,
+        metadata: { source: 'compiler_tab' },
+      });
+      const nextMetadata = result.files.map(file => ({
+        id: file.id,
+        filename: file.filename,
+        updated_at: file.updated_at,
+      }));
+      setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing));
+      setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
+      const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
+      if (activeChanged) {
+        setActiveFile(activeChanged.filename);
+        setCode(activeChanged.content);
+      }
+      setAiPrompt('');
+      setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).`);
+      fetchGitStatus(activeProject);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI file edit failed.';
+      setLog(prev => `${prev ? `${prev}\n` : ''}[ERROR] ${message}`);
+    } finally {
+      setIsApplyingAiEdit(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-900 text-slate-200">
       {/* Toolbar */}
@@ -566,6 +615,32 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               >
                 +
               </button>
+            )}
+
+            {!isGuest && (
+              <div className="flex-1" />
+            )}
+
+            {!isGuest && (
+              <form
+                onSubmit={(e) => { e.preventDefault(); void applyAiEdit(); }}
+                className="flex items-center gap-2 px-2 py-1"
+              >
+                <input
+                  aria-label="AI prompt"
+                  placeholder="Ask AI to edit..."
+                  value={aiPrompt}
+                  onChange={e => setAiPrompt(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 w-56"
+                />
+                <button
+                  type="submit"
+                  disabled={isApplyingAiEdit || !aiPrompt.trim() || fileMetadata.length === 0}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
+                >
+                  {isApplyingAiEdit ? 'Applying...' : 'AI Edit'}
+                </button>
+              </form>
             )}
           </div>
           <div className="flex-1 w-full relative">

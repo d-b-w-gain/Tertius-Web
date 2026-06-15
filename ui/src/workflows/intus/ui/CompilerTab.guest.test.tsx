@@ -3,6 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { GUEST_WORKSPACE_KEY } from '../../shared/guestWorkspace'
 import { CompilerTab } from './CompilerTab'
 
+const storage = vi.hoisted(() => ({
+  getActiveProject: vi.fn(),
+  listFiles: vi.fn(),
+  listFileMetadata: vi.fn(),
+  loadCode: vi.fn(),
+  saveCode: vi.fn(),
+  deleteFile: vi.fn(),
+  getStatus: vi.fn(),
+  getHistory: vi.fn(),
+  applyLlmFileEdit: vi.fn(),
+}))
+
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   getAccessToken: vi.fn(),
@@ -19,6 +31,16 @@ vi.mock('../../../auth/AuthProvider', () => ({
   }),
 }))
 
+vi.mock('../../shared/projectStorage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/projectStorage')>()
+  return {
+    createProjectStorage: (options: Parameters<typeof actual.createProjectStorage>[0]) => {
+      const real = actual.createProjectStorage(options)
+      return { ...real, applyLlmFileEdit: storage.applyLlmFileEdit }
+    },
+  }
+})
+
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
     <textarea aria-label="code editor" value={value} onChange={(event) => onChange(event.currentTarget.value)} />
@@ -29,6 +51,7 @@ describe('CompilerTab guest mode', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()
+    storage.listFileMetadata.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -80,5 +103,29 @@ describe('CompilerTab guest mode', () => {
     expect(compileButton).toBeDisabled()
     await waitFor(() => expect(mocks.apiFetch).not.toHaveBeenCalled())
     expect(mocks.getAccessToken).not.toHaveBeenCalled()
+  })
+
+  it('does not render the AI prompt control for guests', async () => {
+    render(<CompilerTab serverUrl="/api/intus" isActive />)
+
+    await screen.findByLabelText('code editor')
+    expect(screen.queryByLabelText('AI prompt')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /AI edit/i })).not.toBeInTheDocument()
+  })
+
+  it('never invokes storage.applyLlmFileEdit for guests', async () => {
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [],
+    })
+
+    render(<CompilerTab serverUrl="/api/intus" isActive />)
+
+    await screen.findByLabelText('code editor')
+
+    expect(storage.applyLlmFileEdit).not.toHaveBeenCalled()
   })
 })
