@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "serena": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "serena",
+        "start-mcp-server",
+        "--project",
+        "/home/johnson/code/Tertius-Web",
+        "--transport",
+        "stdio"
+      ]
+    }
+  }
+}

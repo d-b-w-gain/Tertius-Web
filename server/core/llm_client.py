@@ -13,7 +13,7 @@ from core.billing_messages import (
     assert_billing_message_size,
     billing_usage_message_id,
 )
-from core.nats_client import NatsPublisher
+from core.nats_client import NatsPublisher, Publisher
 
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ async def generate_build_script(
     auth: AuthContext,
     project_id: UUID | None,
     openai_client=None,
-    billing_publisher: NatsPublisher | None = None,
+    billing_publisher: Publisher | None = None,
 ) -> BuildScriptGenerationResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")

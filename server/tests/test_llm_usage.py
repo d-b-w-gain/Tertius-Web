@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -63,9 +64,10 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
 
 
 def test_llm_usage_project_foreign_key_preserves_tenant_on_project_delete():
+    table = cast(Any, LlmUsageRecord.__table__)
     set_null_constraints = [
         constraint
-        for constraint in LlmUsageRecord.__table__.foreign_key_constraints
+        for constraint in table.foreign_key_constraints
         if constraint.ondelete == "SET NULL (project_id)"
     ]
 

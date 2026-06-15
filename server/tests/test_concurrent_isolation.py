@@ -141,10 +141,14 @@ def test_finish_job_rejects_stale_claim_token(db_session, seeded_tenant):
 
     # First worker claims
     claimed1 = repo.claim_job_for_command(command, lease_seconds=0)
+    assert claimed1 is not None
+    assert claimed1.claim_token is not None
     token1 = claimed1.claim_token
 
     # Second worker reclaims (lease expired)
     claimed2 = repo.claim_job_for_command(command, lease_seconds=60)
+    assert claimed2 is not None
+    assert claimed2.claim_token is not None
     token2 = claimed2.claim_token
     assert token1 != token2
 

@@ -58,7 +58,7 @@ def assert_llm_usage_allowed(
             LlmUsageRecord.tenant_id == tenant_id,
             LlmUsageRecord.created_at >= day_start,
         )
-    )
+    ) or 0
     if tenant_tokens + estimated_tokens > settings.llm_tenant_daily_token_quota:
         _raise_limit()
 
@@ -68,7 +68,7 @@ def assert_llm_usage_allowed(
             LlmUsageRecord.user_id == user_id,
             LlmUsageRecord.created_at >= day_start,
         )
-    )
+    ) or 0
     if user_tokens + estimated_tokens > settings.llm_user_daily_token_quota:
         _raise_limit()
 

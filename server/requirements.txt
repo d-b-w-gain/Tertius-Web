@@ -16,3 +16,4 @@ openai
 pytest
 pytest-asyncio
 testcontainers[postgres]
+mypy==2.1.0

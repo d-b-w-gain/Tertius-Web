@@ -70,5 +70,8 @@ jobs:
       - name: Install Python dependencies
         run: uv pip install -r server/requirements.txt
 
+      - name: Run Python type checks
+        run: uv run mypy
+
       - name: Run Python tests
         run: uv run pytest

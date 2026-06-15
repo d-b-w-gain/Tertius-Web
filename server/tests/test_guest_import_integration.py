@@ -12,6 +12,7 @@ belongs in the UI tests that execute the production guestImport.ts implementatio
 
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 from sqlalchemy import select
