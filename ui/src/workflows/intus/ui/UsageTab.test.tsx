@@ -108,8 +108,6 @@ describe('UsageTab', () => {
   })
 
   it('hides on 403 response', async () => {
-    mocks.apiFetch.mockResolvedValue(jsonResponse({ error: 'forbidden' }, false))
-    // Override status code for the mock
     mocks.apiFetch.mockResolvedValue({
       ok: false,
       status: 403,

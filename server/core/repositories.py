@@ -582,7 +582,7 @@ class UsageRepository:
             )
             .where(
                 CompileUsageRecord.tenant_id == self.tenant_id,
-                CompileUsageRecord.created_at >= func.now() - func.make_interval(months, 0, 0, 0),
+                CompileUsageRecord.created_at >= func.now() - func.make_interval(0, months, 0, 0),
             )
             .group_by("month")
             .order_by("month")
