@@ -48,7 +48,7 @@ def test_compile_sandbox_preserves_build123d_part_color_in_glb(tmp_path):
         """
 import build123d as bd
 
-part = bd.Part() + bd.Solid.make_box(20, 20, 20)
+part = bd.Solid.make_box(20, 20, 20)
 part.label = "Red test cube"
 part.color = bd.Color(1.0, 0.0, 0.0, 1.0)
 
