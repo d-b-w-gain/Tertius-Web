@@ -1,6 +1,0 @@
-.git
-__pycache__
-*.pyc
-.venv
-.env
-uv.lock
