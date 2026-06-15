@@ -38,6 +38,8 @@ spec:
               value: {{ (default (printf "%s-service" (include "tertius.keycloakName" .)) .Values.ui.keycloakServiceHost) | quote }}
             - name: KEYCLOAK_SERVICE_PORT
               value: {{ (default "8080" .Values.ui.keycloakServicePort) | quote }}
+            - name: NGINX_ENVSUBST_FILTER
+              value: "^(API_SERVICE_HOST|API_SERVICE_PORT|KEYCLOAK_SERVICE_HOST|KEYCLOAK_SERVICE_PORT)$"
           readinessProbe:
             httpGet:
               path: /
