@@ -361,6 +361,11 @@ if ! printf '%s\n' "$production_rendered" | rg -q 'hostname: "https://tertius\.j
   exit 1
 fi
 
+if ! printf '%s\n' "$production_rendered" | rg -q 'KEYCLOAK_ISSUER: "https://tertius\.johnsonyuen\.com/realms/tertius"' || ! printf '%s\n' "$production_rendered" | rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"'; then
+  echo "Production ConfigMap must validate the public Keycloak issuer while fetching JWKS through the in-cluster service URL." >&2
+  exit 1
+fi
+
 if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-[0-9]+-[a-f0-9]{7}"'; then
   echo "Production Helm defaults do not render the expected GHCR API image." >&2
   exit 1

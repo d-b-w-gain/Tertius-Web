@@ -13,8 +13,8 @@ app:
     apiBasePath: /api
     keycloakAudience: tertius-api
     keycloakAuthorizedParty: tertius-ui
-    keycloakIssuerUrl: ""
-    keycloakJwksUrlOverride: ""
+    keycloakIssuerUrl: https://tertius.johnsonyuen.com/realms/tertius
+    keycloakJwksUrlOverride: auto
     natsUrl: ""
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request
