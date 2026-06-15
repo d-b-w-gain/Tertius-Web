@@ -1,7 +1,7 @@
 app:
   environment: local
   config:
-    keycloakAudience: tertius-web
+    keycloakAudience: tertius-api
     keycloakIssuerUrl: http://keycloak.localhost/realms/tertius
     keycloakJwksUrlOverride: auto
     natsUrl: ""

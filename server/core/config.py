@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     app_db_owner: str = Field(default="tertius")
     app_db_password: str = Field(default="")
     keycloak_issuer: str = Field(default="http://localhost:8080/realms/tertius")
-    keycloak_audience: str = Field(default="tertius-web")
+    keycloak_audience: str = Field(default="tertius-api")
     keycloak_authorized_party: str = Field(default="tertius-ui")
     keycloak_jwks_url_override: str | None = Field(default=None)
     artifact_retention_limit: int = Field(default=10)

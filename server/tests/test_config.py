@@ -6,7 +6,7 @@ def test_settings_parse_allowed_origins():
     settings = Settings(
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
         keycloak_issuer="http://localhost:8080/realms/tertius",
-        keycloak_audience="tertius-web",
+        keycloak_audience="tertius-api",
         allowed_origins="http://localhost:5173,https://app.example.com",
     )
 
@@ -21,7 +21,7 @@ def test_settings_builds_database_url_from_chart_database_env():
         app_db_owner="tertius",
         app_db_password="secret with spaces",
         keycloak_issuer="http://localhost:8080/realms/tertius",
-        keycloak_audience="tertius-web",
+        keycloak_audience="tertius-api",
     )
 
     assert settings.database_url == "postgresql+psycopg://tertius:secret+with+spaces@tertius-postgres-rw:5432/tertius"

@@ -19,7 +19,7 @@ def _token(private_key, **overrides):
     payload = {
         "sub": "kc-user-1",
         "iss": "http://issuer.example/realms/tertius",
-        "aud": "tertius-web",
+        "aud": "tertius-api",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
     payload.update(overrides)
@@ -53,7 +53,7 @@ def _patch_settings(monkeypatch):
     settings = Settings(
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
         keycloak_issuer="http://issuer.example/realms/tertius",
-        keycloak_audience="tertius-web",
+        keycloak_audience="tertius-api",
     )
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
 
