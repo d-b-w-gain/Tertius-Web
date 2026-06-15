@@ -7,11 +7,13 @@ from jwt import InvalidAudienceError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.auth_types import AuthContext, Principal
 from core.config import get_settings
 from core.db import get_db
+from core.models import TenantMembership
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -68,3 +70,18 @@ def get_auth_context(
     from core.provisioning import provision_user_context
 
     return provision_user_context(db, principal)
+
+
+def require_tenant_owner(
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> AuthContext:
+    membership = db.scalar(
+        select(TenantMembership).where(
+            TenantMembership.tenant_id == ctx.tenant_id,
+            TenantMembership.user_id == ctx.user_id,
+        )
+    )
+    if membership is None or membership.role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant owner access required")
+    return ctx

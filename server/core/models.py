@@ -161,6 +161,32 @@ class CompileJob(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
+class CompileUsageRecord(Base):
+    __tablename__ = "compile_usage_records"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_usage_records_compile_job_project_tenant",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    compile_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    export_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    compute_duration_seconds: Mapped[float] = mapped_column(nullable=False)
+    artifact_byte_size: Mapped[int] = mapped_column(default=0, nullable=False)
+    cost_cents: Mapped[int] = mapped_column(default=0, nullable=False)
+    base_rate_cents_per_hour: Mapped[int] = mapped_column(nullable=False)
+    format_multiplier: Mapped[float] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
 class CompileJobFile(Base):
     __tablename__ = "compile_job_files"
     __table_args__ = (

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from core.compile_messages import CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile
+from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 from core.models import now_utc
 
 
@@ -36,6 +36,11 @@ def consumer_settings():
         compile_result_subject="tertius.compile.result",
         compile_result_consumer="compile-result-api",
         nats_url="nats://test",
+        billing_rate_cents_per_hour=100,
+        billing_format_multiplier_stl=1.0,
+        billing_format_multiplier_step=1.5,
+        billing_format_multiplier_gltf=2.0,
+        billing_format_multiplier_glb=2.0,
     )
 
 
@@ -433,3 +438,68 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     assert persisted.status == "failed"
     assert persisted.error_code == "stale_running"
     assert persisted.retryable is True
+
+
+def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded_tenant):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
+
+    assert applied is True
+    usage = db_session.scalar(
+        select(CompileUsageRecord).where(CompileUsageRecord.compile_job_id == job.id)
+    )
+    assert usage is not None
+    assert usage.status == "succeeded"
+    assert usage.export_format == "glb"
+    assert usage.compute_duration_seconds == 0.0
+    assert usage.cost_cents == 0
+    assert usage.base_rate_cents_per_hour == 100
+    assert usage.format_multiplier == 2.0
+    assert usage.artifact_byte_size == len(b"solid result")
+
+
+def test_apply_compile_result_creates_usage_record_on_failure(db_session, seeded_tenant):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="step",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    payload = result_payload(
+        job,
+        seeded_tenant,
+        status="failed",
+        artifact_content_base64=None,
+        artifact_byte_size=None,
+        artifact_content_type=None,
+        error_code="timeout",
+        error="timed out",
+    )
+
+    applied = apply_compile_result(db_session, payload, consumer_settings())
+
+    assert applied is True
+    usage = db_session.scalar(
+        select(CompileUsageRecord).where(CompileUsageRecord.compile_job_id == job.id)
+    )
+    assert usage is not None
+    assert usage.status == "failed"
+    assert usage.artifact_byte_size == 0
+    assert usage.format_multiplier == 1.5

@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     compile_request_max_bytes: int = Field(default=8 * 1024 * 1024)
     compile_result_max_bytes: int = Field(default=8 * 1024 * 1024)
     allowed_origins: str = Field(default="http://localhost:5173")
+    billing_rate_cents_per_hour: int = Field(default=100)
+    billing_format_multiplier_stl: float = Field(default=1.0)
+    billing_format_multiplier_step: float = Field(default=1.5)
+    billing_format_multiplier_gltf: float = Field(default=2.0)
+    billing_format_multiplier_glb: float = Field(default=2.0)
 
     @model_validator(mode="after")
     def populate_database_url(self):

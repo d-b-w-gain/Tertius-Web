@@ -1,0 +1,175 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codex-api
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: codex-api-secret
+  namespace: codex-api
+type: Opaque
+stringData:
+  # Replace before applying, or create this Secret out-of-band.
+  WRAPPER_API_KEY: "replace-me"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codex-default-config
+  namespace: codex-api
+data:
+  config.toml: |
+    # Keep credentials in CODEX_HOME/auth.json on the PVC instead of a keyring.
+    cli_auth_credentials_store = "file"
+
+    # API calls must not pause for interactive approval.
+    approval_policy = "never"
+
+    # Keep the default conservative; the API can opt into workspace-write per request.
+    sandbox_mode = "read-only"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: codex-home
+  namespace: codex-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Uncomment if your cluster does not have a default StorageClass.
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-api
+  namespace: codex-api
+  labels:
+    app.kubernetes.io/name: codex-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codex-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codex-api
+    spec:
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: seed-codex-home
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /codex-home
+              if [ ! -f /codex-home/config.toml ]; then
+                cp /defaults/config.toml /codex-home/config.toml
+              fi
+              chown -R 10001:10001 /codex-home
+              chmod 700 /codex-home
+              chmod 600 /codex-home/config.toml || true
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: codex-home
+              mountPath: /codex-home
+            - name: codex-default-config
+              mountPath: /defaults
+              readOnly: true
+      containers:
+        - name: api
+          # Build and push the included Dockerfile, then replace this image.
+          image: ghcr.io/YOUR_ORG/codex-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: HOME
+              value: /home/codex
+            - name: CODEX_HOME
+              value: /codex-home
+            - name: CODEX_WORKSPACE
+              value: /workspace
+            - name: CODEX_TIMEOUT_SECONDS
+              value: "900"
+            - name: CODEX_SANDBOX
+              value: read-only
+            - name: MAX_PROMPT_CHARS
+              value: "100000"
+            - name: MAX_CONCURRENT_CODEX
+              value: "1"
+            - name: WRAPPER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codex-api-secret
+                  key: WRAPPER_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: codex-home
+              mountPath: /codex-home
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: codex-home
+          persistentVolumeClaim:
+            claimName: codex-home
+        - name: workspace
+          emptyDir: {}
+        - name: codex-default-config
+          configMap:
+            name: codex-default-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codex-api
+  namespace: codex-api
+  labels:
+    app.kubernetes.io/name: codex-api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: codex-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
