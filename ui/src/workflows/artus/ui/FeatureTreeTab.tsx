@@ -165,7 +165,7 @@ const RenderOperation: React.FC<{ node: OperationNode; depth: number; highlighte
   );
 };
 
-export const FeatureTreeTab: React.FC<{ serverUrl: string }> = (props) => {
+export const FeatureTreeTab: React.FC<{ serverUrl: string; isActive?: boolean }> = (props) => {
   const { authMode, login } = useAuth();
   if (authMode === 'guest') {
     return (
@@ -179,7 +179,7 @@ export const FeatureTreeTab: React.FC<{ serverUrl: string }> = (props) => {
   return <AuthenticatedFeatureTreeTab {...props} />;
 };
 
-const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUrl }) => {
+const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string; isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);
@@ -235,6 +235,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   }, []);
 
   useEffect(() => {
+    if (!isActive || activePanel !== 'assembly') return;
+
     const extusServerUrl = serverUrl.replace('artus', 'extus');
     let mounted = true;
     let mtime = 0;
@@ -262,10 +264,10 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
       mounted = false;
       clearInterval(interval);
     };
-  }, [serverUrl, getAccessToken]);
+  }, [serverUrl, getAccessToken, isActive, activePanel]);
 
   useEffect(() => {
-    if (!extusUrl) return;
+    if (!extusUrl || !isActive || activePanel !== 'assembly') return;
     let isCancelled = false;
     const loader = new GLTFLoader();
 
@@ -286,7 +288,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     return () => {
       isCancelled = true;
     };
-  }, [extusUrl, getAccessToken]);
+  }, [extusUrl, getAccessToken, isActive, activePanel]);
 
   const fetchFeatures = useCallback(async () => {
     if (!shouldRunPollingRequest()) return;
@@ -308,10 +310,12 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   }, [serverUrl, getAccessToken]);
 
   useEffect(() => {
+    if (!isActive) return;
+
     fetchFeatures();
     const interval = setInterval(fetchFeatures, getPollingDelay(PROJECT_DATA_POLL_INTERVAL_MS));
     return () => clearInterval(interval);
-  }, [fetchFeatures]);
+  }, [fetchFeatures, isActive]);
 
   // Auto-generate AI prompt whenever edits change
   useEffect(() => {
@@ -394,7 +398,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
                 <span className="text-emerald-500 shrink-0">🌲</span> Parametric Variables
               </h2>
               <div onClick={e => e.stopPropagation()}>
-                  <ProjectSelector />
+                  <ProjectSelector isActive={isActive} />
               </div>
               <div 
                 className="flex items-center gap-2 shrink-0 ml-auto"

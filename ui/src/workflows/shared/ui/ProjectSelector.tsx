@@ -8,7 +8,7 @@ export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
 
 const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 
-export const ProjectSelector: React.FC = () => {
+export const ProjectSelector: React.FC<{ isActive?: boolean }> = ({ isActive = true }) => {
   const { authMode, getAccessToken } = useAuth();
   const serverUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL);
   const storage = React.useMemo(
@@ -72,6 +72,8 @@ export const ProjectSelector: React.FC = () => {
 
   // Sync active project with backend (in case another tab changed it, though this is the primary selector)
   useEffect(() => {
+    if (!isActive) return;
+
     let isMounted = true;
     const fetchActive = async () => {
       if (!shouldRunPollingRequest()) return;
@@ -91,11 +93,13 @@ export const ProjectSelector: React.FC = () => {
         isMounted = false;
         clearInterval(interval);
     };
-  }, [storage, activeProject, fetchGitStatus]);
+  }, [storage, activeProject, fetchGitStatus, isActive]);
 
   useEffect(() => {
+    if (!isActive) return;
+
     fetchProjects();
-  }, [fetchProjects]);
+  }, [fetchProjects, isActive]);
 
   const handleNewProjectSubmit = async () => {
     const name = newProjectName.trim();
