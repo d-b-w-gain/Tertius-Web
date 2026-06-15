@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from sqlalchemy import select
 
 from core.models import Artifact, CompileJob, CompileJobFile, ProjectFile, now_utc
@@ -191,3 +193,97 @@ def test_compile_job_status_returns_persisted_failure_fields(authenticated_intus
     assert body["user_message"] == "Compile failed. Fix the model source and try again."
     assert body["retryable"] is True
     assert body["artifact_id"] is None
+
+
+def test_compile_job_status_marks_expired_running_job_failed(authenticated_intus_client, db_session, seeded_tenant):
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+        claimed_at=now_utc() - timedelta(minutes=20),
+        lease_expires_at=now_utc() - timedelta(seconds=1),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "worker_lost"
+    assert body["user_message"] == (
+        "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
+    )
+    assert body["retryable"] is True
+    assert body["finished_at"] is not None
+
+
+def test_compile_job_status_marks_old_queued_job_failed(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    settings = intus_server.get_settings()
+    monkeypatch.setattr(settings, "compile_ack_wait_seconds", 60)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="queued",
+        export_format="glb",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "worker_lost"
+    assert body["retryable"] is True
+
+
+def test_compile_job_status_keeps_unexpired_running_job(authenticated_intus_client, db_session, seeded_tenant):
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+        claimed_at=now_utc(),
+        lease_expires_at=now_utc() + timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["error_code"] is None
+    assert body["finished_at"] is None
+
+
+def test_compile_job_status_keeps_completed_job(authenticated_intus_client, db_session, seeded_tenant):
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+        lease_expires_at=now_utc() - timedelta(minutes=5),
+        finished_at=now_utc() - timedelta(minutes=4),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "succeeded"
+    assert body["error_code"] is None
