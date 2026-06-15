@@ -1,5 +1,43 @@
+[project]
+name = "tertius-web"
+version = "0.1.0"
+description = "Tertius Web platform (API server and supporting tooling)"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "build123d",
+    "py-lib3mf==2.3.1",
+    "fpdf2",
+    "fonttools",
+    "pydantic-settings",
+    "SQLAlchemy>=2.0",
+    "psycopg[binary]",
+    "alembic",
+    "PyJWT[crypto]",
+    "httpx",
+    "nats-py",
+    "openai",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "testcontainers[postgres]",
+    "mypy==2.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server"]
+
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 mypy_path = ["server"]
 explicit_package_bases = true
 files = ["server", "extract_coords.py"]

@@ -137,26 +137,21 @@ python scripts/bundle.py
 
 ### Local Python tests with UV
 
-Use UV for the local Python test environment. The dependency source of truth remains `server/requirements.txt`.
+Use UV for the local Python test environment. The dependency source of truth is the root `pyproject.toml` (lockfile: `uv.lock`). Python is pinned to 3.14 in `.python-version`, matching CI.
 
 ```bash
-UV_CACHE_DIR=.uv-cache uv venv
-UV_CACHE_DIR=.uv-cache uv pip install -r server/requirements.txt
+UV_CACHE_DIR=.uv-cache uv sync --group dev
 UV_CACHE_DIR=.uv-cache uv run pytest
+UV_CACHE_DIR=.uv-cache uv run mypy
 ```
 
 The integration tests use testcontainers and require Docker socket access.
 
 ### Type checking (mypy)
 
-A baseline `mypy` configuration lives at the repo root in `pyproject.toml` (`[tool.mypy]`). It is intentionally permissive — the goal is visibility into typing gaps, not strict enforcement. Install mypy into the same venv and run it from the repo root:
+A baseline `mypy` configuration lives at the repo root in `pyproject.toml` (`[tool.mypy]`). It is intentionally permissive — the goal is visibility into typing gaps, not strict enforcement. Run it from the repo root via `uv run mypy`.
 
-```bash
-UV_CACHE_DIR=.uv-cache uv pip install --python .venv/bin/python mypy
-.venv/bin/mypy
-```
-
-Configuration notes: `mypy_path` mirrors `pytest.ini` (`server`), `ignore_missing_imports = true` keeps third-party libs like `build123d` and `py-lib3mf` quiet, and `migrations/versions/` is excluded. See `pyproject.toml` for the full policy.
+Configuration notes: `python_version` matches `.python-version` (3.14), `mypy_path` mirrors `pytest.ini` (`server`), `ignore_missing_imports = true` keeps third-party libs like `build123d` and `py-lib3mf` quiet, and `migrations/versions/` is excluded. See `pyproject.toml` for the full policy.
 
 ## Kubernetes Deployment Test
 
