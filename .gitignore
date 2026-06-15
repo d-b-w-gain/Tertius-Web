@@ -43,6 +43,7 @@ ui/build/
 .DS_Store
 Thumbs.db
 cache/
+.cache/
 
 # Local tooling
 .serena/
