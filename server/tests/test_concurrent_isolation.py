@@ -9,9 +9,13 @@ Tests correctness under concurrent access:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from uuid import uuid4
 
+from sqlalchemy import create_engine
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from core.compile_messages import CompileCommand
 from core.models import (
@@ -62,11 +66,16 @@ def _make_command(job, seeded_tenant):
     )
 
 
+def _session_factory(postgres_url: str):
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    return engine, sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
 # ---------------------------------------------------------------------------
 # Lease claiming: two workers, one job — only one wins
 # ---------------------------------------------------------------------------
 
-def test_two_workers_claiming_same_job_only_one_wins(db_session, seeded_tenant):
+def test_two_workers_claiming_same_job_only_one_wins(postgres_url, db_session, seeded_tenant):
     """When two workers try to claim the same queued job, exactly one
     should succeed (get a claim_token) and the other should get None."""
     repo = CompileRepository(db_session, seeded_tenant.tenant_id)
@@ -74,9 +83,26 @@ def test_two_workers_claiming_same_job_only_one_wins(db_session, seeded_tenant):
 
     command = _make_command(job, seeded_tenant)
 
-    # Both workers attempt to claim the same job
-    claim1 = repo.claim_job_for_command(command, lease_seconds=60)
-    claim2 = repo.claim_job_for_command(command, lease_seconds=60)
+    engine, SessionLocal = _session_factory(postgres_url)
+    barrier = Barrier(2)
+
+    def claim_once():
+        with SessionLocal() as session:
+            barrier.wait(timeout=10)
+            claim = CompileRepository(session, seeded_tenant.tenant_id).claim_job_for_command(
+                command,
+                lease_seconds=60,
+            )
+            session.commit()
+            if claim is None:
+                return None
+            return {"claim_token": claim.claim_token, "status": claim.status}
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claim1, claim2 = list(executor.map(lambda _: claim_once(), range(2)))
+    finally:
+        engine.dispose()
 
     # Exactly one should succeed
     claims = [c for c in (claim1, claim2) if c is not None]
@@ -84,8 +110,8 @@ def test_two_workers_claiming_same_job_only_one_wins(db_session, seeded_tenant):
 
     # The winner should have a claim_token
     winner = claims[0]
-    assert winner.claim_token is not None
-    assert winner.status == "running"
+    assert winner["claim_token"] is not None
+    assert winner["status"] == "running"
 
 
 def test_lease_reclamation_after_expiry(db_session, seeded_tenant):
@@ -135,7 +161,7 @@ def test_finish_job_rejects_stale_claim_token(db_session, seeded_tenant):
 # Concurrent artifact creation + pruning
 # ---------------------------------------------------------------------------
 
-def test_concurrent_artifact_prune_and_create_do_not_conflict(db_session, seeded_tenant):
+def test_concurrent_artifact_prune_and_create_do_not_conflict(postgres_url, db_session, seeded_tenant):
     """Creating a new artifact while pruning old ones should not conflict."""
     repo = CompileRepository(db_session, seeded_tenant.tenant_id)
 
@@ -158,36 +184,48 @@ def test_concurrent_artifact_prune_and_create_do_not_conflict(db_session, seeded
     ).all()
     assert len(before) == settings_retention + 2
 
-    # Prune: keep max(1, retention_limit) = 3 latest
-    prunable = repo.prunable_artifacts(
-        seeded_tenant.project_id, "stl", max(1, settings_retention)
-    )
-    repo.delete_artifacts(prunable)
-    db_session.commit()
+    engine, SessionLocal = _session_factory(postgres_url)
+    barrier = Barrier(2)
+    created_job_id = {}
 
-    after = db_session.scalars(
-        select(Artifact).where(
-            Artifact.tenant_id == seeded_tenant.tenant_id,
-            Artifact.project_id == seeded_tenant.project_id,
-            Artifact.kind == "stl",
-        )
-    ).all()
-    assert len(after) == settings_retention, (
-        f"Should keep {settings_retention} artifacts, found {len(after)}"
-    )
+    def prune_old_artifacts():
+        with SessionLocal() as session:
+            prune_repo = CompileRepository(session, seeded_tenant.tenant_id)
+            prunable = prune_repo.prunable_artifacts(
+                seeded_tenant.project_id,
+                "stl",
+                max(1, settings_retention),
+            )
+            barrier.wait(timeout=10)
+            prune_repo.delete_artifacts(prunable)
+            session.commit()
+            return len(prunable)
 
-    # Create a new artifact — should still have retention limit total
-    new_job = _create_job(repo, seeded_tenant.project_id, seeded_tenant.user_id, db_session, seeded_tenant.tenant_id)
-    repo.record_artifact(seeded_tenant.project_id, new_job.id, "stl", b"new_artifact")
-    repo.finish_job(new_job, "succeeded")
-    db_session.commit()
+    def create_new_artifact():
+        with SessionLocal() as session:
+            create_repo = CompileRepository(session, seeded_tenant.tenant_id)
+            barrier.wait(timeout=10)
+            new_job = _create_job(
+                create_repo,
+                seeded_tenant.project_id,
+                seeded_tenant.user_id,
+                session,
+                seeded_tenant.tenant_id,
+            )
+            create_repo.record_artifact(seeded_tenant.project_id, new_job.id, "stl", b"new_artifact")
+            create_repo.finish_job(new_job, "succeeded")
+            session.commit()
+            created_job_id["value"] = new_job.id
 
-    # Now prune again
-    prunable2 = repo.prunable_artifacts(
-        seeded_tenant.project_id, "stl", max(1, settings_retention)
-    )
-    repo.delete_artifacts(prunable2)
-    db_session.commit()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            pruned_count, _ = list(
+                executor.map(lambda fn: fn(), [prune_old_artifacts, create_new_artifact])
+            )
+    finally:
+        engine.dispose()
+
+    assert pruned_count == 2
 
     final = db_session.scalars(
         select(Artifact).where(
@@ -196,7 +234,21 @@ def test_concurrent_artifact_prune_and_create_do_not_conflict(db_session, seeded
             Artifact.kind == "stl",
         )
     ).all()
-    assert len(final) == settings_retention
+    assert len(final) == settings_retention + 1
+    assert any(artifact.compile_job_id == created_job_id["value"] for artifact in final)
+
+    prunable2 = repo.prunable_artifacts(
+        seeded_tenant.project_id, "stl", max(1, settings_retention)
+    )
+    repo.delete_artifacts(prunable2)
+    db_session.commit()
+    assert len(db_session.scalars(
+        select(Artifact).where(
+            Artifact.tenant_id == seeded_tenant.tenant_id,
+            Artifact.project_id == seeded_tenant.project_id,
+            Artifact.kind == "stl",
+        )
+    ).all()) == settings_retention
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +323,7 @@ def test_cross_tenant_artifact_isolation(db_session):
     assert job_in_b is None, "Tenant B should not find Tenant A's job by direct query"
 
 
-def test_concurrent_job_creation_in_different_tenants_do_not_interfere(db_session):
+def test_concurrent_job_creation_in_different_tenants_do_not_interfere(postgres_url, db_session):
     """Jobs created concurrently in different tenants should not interfere."""
     user_a = AppUser(id=uuid4(), keycloak_subject="kc-x", email="x@test.com")
     user_b = AppUser(id=uuid4(), keycloak_subject="kc-y", email="y@test.com")
@@ -286,16 +338,38 @@ def test_concurrent_job_creation_in_different_tenants_do_not_interfere(db_sessio
     db_session.add_all([project_x, project_y])
     db_session.commit()
 
-    repo_x = CompileRepository(db_session, tenant_a.id)
-    repo_y = CompileRepository(db_session, tenant_b.id)
+    engine, SessionLocal = _session_factory(postgres_url)
+    barrier = Barrier(2)
 
-    # Create jobs "concurrently" (same transaction)
-    job_x = repo_x.start_job(project_x.id, user_a.id, "stl")
-    job_y = repo_y.start_job(project_y.id, user_b.id, "glb")
-    db_session.flush()
-    db_session.add(CompileJobFile(compile_job_id=job_x.id, tenant_id=tenant_a.id, project_id=project_x.id, filename="design.py", content="x"))
-    db_session.add(CompileJobFile(compile_job_id=job_y.id, tenant_id=tenant_b.id, project_id=project_y.id, filename="design.py", content="y"))
-    db_session.commit()
+    def create_job(tenant_id, project_id, user_id, export_format, content):
+        with SessionLocal() as session:
+            barrier.wait(timeout=10)
+            repo = CompileRepository(session, tenant_id)
+            job = repo.start_job(project_id, user_id, export_format)
+            session.flush()
+            session.add(
+                CompileJobFile(
+                    compile_job_id=job.id,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    filename="design.py",
+                    content=content,
+                )
+            )
+            session.commit()
+            return job.id
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_x = executor.submit(create_job, tenant_a.id, project_x.id, user_a.id, "stl", "x")
+            future_y = executor.submit(create_job, tenant_b.id, project_y.id, user_b.id, "glb", "y")
+            job_x_id = future_x.result(timeout=10)
+            job_y_id = future_y.result(timeout=10)
+    finally:
+        engine.dispose()
+
+    job_x = db_session.get(CompileJob, job_x_id)
+    job_y = db_session.get(CompileJob, job_y_id)
 
     # Verify both jobs are in their correct tenants
     assert job_x.tenant_id == tenant_a.id

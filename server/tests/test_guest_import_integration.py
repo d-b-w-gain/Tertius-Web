@@ -1,16 +1,17 @@
-"""Guest workspace import integration tests.
+"""Intus API contract smoke tests for guest workspace import.
 
-Tests the full guest -> authenticated import flow:
-  - Populate localStorage guest workspace -> import via real Intus API
-  - Collision-safe naming (timestamp suffix on conflict)
-  - Multi-project, multi-file import
-  - Error resilience (continues after partial failure)
-  - localStorage cleared only after full success
+These tests verify the backend endpoints used by ui/src/workflows/shared/guestImport.ts:
+  - list projects
+  - create projects
+  - save project files
+  - activate the imported project
+
+Browser-only behavior such as localStorage cleanup and collision-safe guest naming
+belongs in the UI tests that execute the production guestImport.ts implementation.
 """
 
 from __future__ import annotations
 
-import time
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -19,14 +20,14 @@ from core.models import UserWorkspaceState
 from core.repositories import ProjectRepository
 
 # ---------------------------------------------------------------------------
-# Guest workspace JSON structure (mirrors ui/src/workflows/shared/guestWorkspace.ts)
+# Minimal guest workspace-shaped payloads for driving the Intus API contract
 # ---------------------------------------------------------------------------
 
 GUEST_WORKSPACE_VERSION = 1
 
 
 def _make_guest_workspace(projects: list[dict]) -> dict:
-    """Build a localStorage-compatible guest workspace payload."""
+    """Build a minimal guest workspace-shaped payload for API smoke tests."""
     return {
         "version": GUEST_WORKSPACE_VERSION,
         "activeProject": projects[0]["name"] if projects else None,
@@ -55,16 +56,7 @@ def _make_guest_file(filename: str, content: str) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestGuestImportIntegration:
-    """Test the full import flow by calling Intus API endpoints directly.
-
-    The guest import logic (from ui/src/workflows/shared/guestImport.ts):
-    1. Read guest workspace from localStorage
-    2. List existing server projects
-    3. For each guest project: create with collision-safe name
-    4. For each file in project: save via POST /projects/{name}/save
-    5. Activate the imported project
-    6. Clear localStorage on success
-    """
+    """Smoke-test the Intus API endpoints called by guestImport.ts."""
 
     def test_import_creates_projects_and_files(self, authenticated_intus_client, db_session, seeded_tenant):
         """Import a guest workspace and verify all projects and files are created."""
@@ -125,45 +117,6 @@ class TestGuestImportIntegration:
         )
         assert code_resp.status_code == 200
         assert "bd.Box(10,10,10)" in code_resp.text
-
-    def test_import_with_collision_creates_suffixed_project(self, authenticated_intus_client, db_session, seeded_tenant):
-        """If a project with the same name exists, the import should create
-        one with a timestamp suffix instead of overwriting."""
-        base_name = f"collision_{uuid4().hex[:8]}"
-
-        # Pre-create a project with the same name
-        authenticated_intus_client.post(f"/projects/{base_name}/new")
-
-        # Import with collision detection
-        existing = authenticated_intus_client.get("/projects")
-        existing_names = existing.json()["projects"]
-
-        imported_name = base_name
-        if imported_name in existing_names:
-            imported_name = f"{base_name}_{int(time.time())}"
-
-        authenticated_intus_client.post(f"/projects/{imported_name}/new")
-        authenticated_intus_client.post(
-            f"/projects/{imported_name}/save",
-            json={"code": "import build123d as bd\nlength = 42\n", "file": "design.py"},
-        )
-
-        # Both projects should exist
-        repo = ProjectRepository(db_session, seeded_tenant.tenant_id)
-        assert repo.get_project(base_name) is not None, "Original project should still exist"
-        assert repo.get_project(imported_name) is not None, "Suffixed project should exist"
-
-        # Verify the suffixed project has correct content
-        files = authenticated_intus_client.get(f"/projects/{imported_name}/files")
-        assert files.status_code == 200
-        filenames = files.json()["files"]
-        assert "design.py" in filenames
-
-        # Verify the imported content
-        code = authenticated_intus_client.get(
-            f"/projects/{imported_name}/code", params={"filename": "design.py"}
-        )
-        assert "length = 42" in code.text
 
     def test_import_preserves_multiple_files(self, authenticated_intus_client, db_session, seeded_tenant):
         """Import a project with multiple files and verify all are preserved."""

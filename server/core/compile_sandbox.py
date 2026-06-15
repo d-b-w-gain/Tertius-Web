@@ -197,12 +197,6 @@ try:
         from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
         from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir, gp_Pnt2d
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
-        from OCP.TopExp import TopExp_Explorer
-        from OCP.TopAbs import TopAbs_SOLID
-        from OCP.TopoDS import TopoDS_Compound
-        from OCP.BRep import BRep_Builder
-        from OCP.BRepBndLib import BRepBndLib
-        from OCP.Bnd import Bnd_Box
         from OCP.HLRAlgo import HLRAlgo_Projector
 
         # 1. Output parameters
@@ -220,26 +214,11 @@ try:
         min_model_size = line_weight_mm / scale
         deflection = min_model_size / 2.0
 
-        # 2. Cull tiny geometry
-        builder = BRep_Builder()
-        culled_compound = TopoDS_Compound()
-        builder.MakeCompound(culled_compound)
-
-        explorer = TopExp_Explorer(compound.wrapped, TopAbs_SOLID)
-        while explorer.More():
-            solid = explorer.Current()
-            bbox_obj = Bnd_Box()
-            BRepBndLib.Add_s(solid, bbox_obj)
-            xmin, ymin, zmin, xmax, ymax, zmax = bbox_obj.Get()
-            max_dim = max(xmax - xmin, ymax - ymin, zmax - zmin)
-            
-            if max_dim >= min_model_size:
-                builder.Add(culled_compound, solid)
-            explorer.Next()
-            
-        # 3. Analytic HLR projection on culled model
-        culled_bd = bd.Compound(culled_compound)
-        bbox = culled_bd.bounding_box()
+        # 2. Analytic HLR projection on model
+        # Project the build123d shape directly; wrapping a manually-built OCP
+        # compound can fail in build123d's viewport projection path.
+        projection_shape = compound
+        bbox = projection_shape.bounding_box()
         look_at = bbox.center()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
         if max_dim == 0:
@@ -261,7 +240,7 @@ try:
                 up_dir = (0, 0, 1)
                 
             try:
-                visible, hidden = culled_bd.project_to_viewport(
+                visible, hidden = projection_shape.project_to_viewport(
                     origin, 
                     viewport_up=up_dir, 
                     look_at=(look_at.X, look_at.Y, look_at.Z)
@@ -272,9 +251,17 @@ try:
                 def extract_edges(shape_list, is_hidden):
                     if not shape_list: return
                     for shape in shape_list:
-                        for edge in shape.edges():
+                        try:
+                            edges = list(shape.edges()) if hasattr(shape, "edges") else []
+                        except Exception:
+                            edges = []
+                        if not edges:
+                            edges = [shape]
+                        for edge in edges:
                             try:
-                                if edge.geom_type.name == 'LINE':
+                                geom_type = edge.geom_type() if callable(edge.geom_type) else edge.geom_type
+                                geom_name = getattr(geom_type, "name", str(geom_type))
+                                if geom_name == 'LINE':
                                     p1 = edge.position_at(0)
                                     p2 = edge.position_at(1)
                                     segments.append(((p1.X, p1.Y), (p2.X, p2.Y), is_hidden))

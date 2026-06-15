@@ -11,13 +11,15 @@ Tests the full drafting pipeline:
 
 from __future__ import annotations
 
+from datetime import timedelta
 import json
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from core.compile_sandbox import run_compile_sandbox
-from core.models import ProjectFile, TimusSettings
+from core.models import Artifact, CompileJob, ProjectFile, TimusSettings
 from workflows.timus import timus_server
 
 # ---------------------------------------------------------------------------
@@ -76,13 +78,14 @@ def test_hlr_projection_produces_edges_for_all_four_views(db_session, seeded_ten
             assert view_name in views, f"Missing view: {view_name}"
             segments = views[view_name]
             assert isinstance(segments, list), f"{view_name} segments should be a list"
-            if segments:
-                # Segment format: [[x1, y1], [x2, y2], is_hidden] (3 elements)
-                seg = segments[0]
-                assert len(seg) == 3, f"Segment should have 3 elements (p1, p2, hidden), got {seg}"
-                assert len(seg[0]) == 2, f"Point 1 should have 2 coordinates, got {seg[0]}"
-                assert len(seg[1]) == 2, f"Point 2 should have 2 coordinates, got {seg[1]}"
-                assert isinstance(seg[2], bool), f"Hidden flag should be a bool, got {type(seg[2])}"
+            assert segments, f"{view_name} should contain at least one projected edge segment"
+
+            # Segment format: [[x1, y1], [x2, y2], is_hidden] (3 elements)
+            seg = segments[0]
+            assert len(seg) == 3, f"Segment should have 3 elements (p1, p2, hidden), got {seg}"
+            assert len(seg[0]) == 2, f"Point 1 should have 2 coordinates, got {seg[0]}"
+            assert len(seg[1]) == 2, f"Point 2 should have 2 coordinates, got {seg[1]}"
+            assert isinstance(seg[2], bool), f"Hidden flag should be a bool, got {type(seg[2])}"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +181,7 @@ def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session
 # ---------------------------------------------------------------------------
 
 def test_background_build_flow_trigger_poll_retrieve(
-    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
+    authenticated_timus_client, db_session, seeded_tenant, postgres_url, monkeypatch
 ):
     """Trigger a background build, poll status, then retrieve the built views."""
     design = db_session.scalar(
@@ -191,18 +194,54 @@ def test_background_build_flow_trigger_poll_retrieve(
     design.content = BOX_CODE
     db_session.commit()
 
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(timus_server, "SessionLocal", TestingSessionLocal)
+
     # Initial status should be "none" (no artifact yet)
     status = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
     assert status.json()["status"] in ("none", "building", "ready", "stale")
 
-    # Trigger a build
-    trigger = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
-    assert trigger.status_code == 200
-    assert trigger.json()["status"] in ("started", "building")
+    try:
+        # Trigger a build
+        trigger = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
+        assert trigger.status_code == 200
+        assert trigger.json()["status"] in ("started", "building")
 
-    # After trigger, status should be "building" or "ready"
-    status2 = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
-    assert status2.json()["status"] in ("building", "ready", "started", "none")
+        # After trigger, status should be "building" or "ready"; "none" means no build result exists.
+        status2 = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
+        assert status2.json()["status"] in ("building", "ready")
+
+        db_session.expire_all()
+        job = db_session.scalar(
+            select(CompileJob).where(
+                CompileJob.tenant_id == seeded_tenant.tenant_id,
+                CompileJob.project_id == seeded_tenant.project_id,
+                CompileJob.export_format == "timus_views",
+            )
+        )
+        assert job is not None, "Background build should persist a timus_views job"
+        assert job.status == "succeeded"
+
+        artifact = db_session.scalar(
+            select(Artifact).where(
+                Artifact.tenant_id == seeded_tenant.tenant_id,
+                Artifact.project_id == seeded_tenant.project_id,
+                Artifact.compile_job_id == job.id,
+                Artifact.kind == "timus_views",
+            )
+        )
+        assert artifact is not None, "Background build should persist a timus_views artifact"
+        assert artifact.content is not None, "timus_views artifact should contain JSON result bytes"
+        result_views = json.loads(artifact.content.decode("utf-8"))
+        for view_name in ["top", "front", "side", "iso"]:
+            assert result_views.get(view_name), f"Artifact result missing segments for {view_name}"
+
+        retrieve = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
+        assert retrieve.status_code == 200
+        assert retrieve.content.startswith(b"%PDF-")
+    finally:
+        engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +275,11 @@ def test_drafting_cache_is_invalidated_on_design_change(
 
     cache_key = f"{seeded_tenant.tenant_id}:{seeded_tenant.project_id}:default_purlin"
     assert cache_key in timus_server.PROJECTION_CACHE, "Views should be cached after first request"
+    first_mtime, first_views = timus_server.PROJECTION_CACHE[cache_key]
 
     # Change design.py to different geometry
     design.content = CYLINDER_CODE
+    design.updated_at = design.updated_at + timedelta(seconds=1)
     db_session.commit()
 
     # Second request: mtime changed, should recompute (not serve from cache)
@@ -248,9 +289,11 @@ def test_drafting_cache_is_invalidated_on_design_change(
     )
     assert response2.status_code == 200
 
-    # Cache should now have the new mtime
-    _, cached_mtime = timus_server.PROJECTION_CACHE.get(cache_key, (None, None))
-    assert cached_mtime is not None
+    # Cache should now reflect the second design state, either by mtime or output.
+    second_mtime, second_views = timus_server.PROJECTION_CACHE[cache_key]
+    assert (second_mtime != first_mtime) or (second_views != first_views), (
+        "Second request should recompute cached views after design.py changes"
+    )
 
     timus_server.PROJECTION_CACHE.clear()
 

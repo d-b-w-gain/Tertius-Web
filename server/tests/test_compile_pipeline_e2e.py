@@ -29,6 +29,7 @@ from core.nats_client import (
     pull_compile_subscription,
 )
 from core.repositories import CompileRepository
+from workflows.intus import intus_server
 from workflows.intus import compile_job as compile_job_module
 from workflows.intus import compile_result_consumer as consumer_module
 
@@ -161,46 +162,55 @@ def _create_job_and_snapshot(db_session, seeded_tenant, repo, content="import bu
 
 @pytest.mark.asyncio
 async def test_full_pipeline_publishes_command_worker_processes_and_consumer_persists_artifact(
-    nats_url, db_session, seeded_tenant, monkeypatch
+    nats_url, authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
-    """End-to-end: publish CompileCommand -> worker processes -> consumer persists."""
+    """End-to-end: API compile -> NATS -> worker -> result consumer -> DB."""
     settings = compile_settings(nats_url)
+    monkeypatch.setattr(intus_server, "get_settings", lambda: settings)
     nc, js = await _setup_nats(settings)
 
     try:
-        repo = CompileRepository(db_session, seeded_tenant.tenant_id)
-        job = _create_job_and_snapshot(db_session, seeded_tenant, repo)
-
-        # Publish CompileCommand
-        command = CompileCommand(
-            job_id=job.id,
-            tenant_id=seeded_tenant.tenant_id,
-            project_id=seeded_tenant.project_id,
-            requested_by=seeded_tenant.user_id,
-            export_format="stl",
-            created_at=job.created_at,
-            files=[CompileSourceFile(filename="design.py", content="import build123d as bd\nbox = bd.Box(10,10,10)\n")],
-            request_id=f"compile-request:{job.id}",
+        response = authenticated_intus_client.post(
+            "/projects/default_purlin/compile",
+            json={
+                "code": "import build123d as bd\nbox = bd.Box(10,10,10)\n",
+                "export_format": "stl",
+                "file": "design.py",
+            },
         )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["success"] is True
+        job = db_session.get(CompileJob, body["job_id"])
+        assert job is not None
+        assert job.status == "running"
+        assert job.lease_expires_at is not None
 
         publisher = NatsPublisher(js)
-        await publisher.publish_json(
-            settings.compile_request_subject,
-            command,
-            message_id=command.request_id,
-        )
 
         # Worker processes the message
         monkeypatch.setattr(compile_job_module, "run_compile_sandbox", fake_sandbox_success)
 
         sub = await pull_compile_subscription(js, settings)
         messages = await sub.fetch(batch=1, timeout=5)
+        assert len(messages) == 1
         for msg in messages:
+            command = CompileCommand.model_validate_json(msg.data)
+            assert command.job_id == job.id
+            assert command.tenant_id == seeded_tenant.tenant_id
+            assert command.project_id == seeded_tenant.project_id
+            assert command.requested_by == seeded_tenant.user_id
+            assert command.export_format == "stl"
+            assert command.request_id == f"compile-request:{job.id}"
+            assert [(file.filename, file.content) for file in command.files] == [
+                ("design.py", "import build123d as bd\nbox = bd.Box(10,10,10)\n")
+            ]
             await compile_job_module.handle_compile_request_message(msg, publisher, settings)
 
         # Result consumer persists to DB
         result_sub = await pull_compile_result_subscription(js, settings)
         result_messages = await result_sub.fetch(batch=1, timeout=5)
+        assert len(result_messages) == 1
         for msg in result_messages:
             await consumer_module.handle_compile_result_message(msg, db_session, settings)
 
