@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from core.compile_messages import CompileCommand, CompileSourceFile, serialized_message_size
 
 
-def command_payload(**overrides):
+def command_payload(**overrides: object) -> bytes:
     payload: dict[str, object] = {
         "job_id": uuid4(),
         "tenant_id": uuid4(),
