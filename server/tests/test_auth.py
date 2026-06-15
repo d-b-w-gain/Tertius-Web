@@ -113,6 +113,16 @@ def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
         decode_keycloak_token(_token(key, aud="wrong-audience"))
 
 
+def test_decode_keycloak_token_rejects_wrong_issuer(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidIssuerError):
+        decode_keycloak_token(_token(key, iss="http://attacker.example/realms/tertius"))
+
+
 def test_decode_keycloak_token_rejects_untrusted_authorized_party(monkeypatch):
     key = _private_key()
     _JwkClient.public_key = key.public_key()

@@ -47,6 +47,8 @@ curl http://127.0.0.1:8000/api/intus/health
 
 The chart enables NATS JetStream with file-backed PVC storage by default. The API receives `NATS_URL` through the chart ConfigMap. When `app.config.natsUrl` is empty, the value is derived from the release-local NATS service, for example `nats://tertius-nats:4222` for release `tertius`. Set `app.config.natsUrl` only for unusual deployments with a different internal service contract.
 
+The API validates Keycloak token issuers against `app.config.keycloakIssuerUrl`. When Keycloak advertises a public issuer that is not directly resolvable from inside the cluster, set `app.config.keycloakJwksUrlOverride` to the in-cluster JWKS endpoint so the API can validate signatures without weakening issuer checks. Set it to `auto` to derive the release-local Keycloak service URL. The local k3s values use this split because Keycloak issues tokens for `http://keycloak.localhost/realms/tertius` while the API reaches JWKS through the release-local Keycloak service.
+
 NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod.
 
 Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image with `server/start-compile-job.sh`, read one compile request from JetStream, publish one result to JetStream, and exit. They intentionally receive only NATS and compile-limit environment variables. Do not add app Secret env, database env, service-account tokens, PVCs, or API/Keycloak/Postgres egress to compile Jobs.
@@ -54,6 +56,32 @@ Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image
 The chart does not install KEDA or its CRDs. `keda.enabled` defaults to `true` for the production and local values so compile work is rendered by default, but clusters without KEDA can render or install the rest of the chart with `--set keda.enabled=false`. Re-enable it only after the `ScaledJob` CRD is present.
 
 By default, compile Job pods get a dedicated NetworkPolicy that denies ingress and only allows egress to DNS and NATS `4222`. API/UI ingress policies remain controlled by `networkPolicy.enabled`. If API egress hardening is added later, it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required external services together.
+
+## LLM Build Script Generation
+
+The API can call an OpenAI-compatible LLM provider to generate Intus build scripts.
+
+Non-secret provider settings are rendered into the app ConfigMap:
+
+- `app.config.llmBaseUrl` -> `LLM_BASE_URL`, default `https://api.deepseek.com`
+- `app.config.llmModel` -> `LLM_MODEL`, default `deepseek-v4-flash`
+- `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
+- `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
+- `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`
+- `app.config.llmUserDailyTokenQuota` -> `LLM_USER_DAILY_TOKEN_QUOTA`
+- `app.config.billingStreamName` -> `BILLING_STREAM_NAME`
+- `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
+- `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
+
+The provider API key is secret material:
+
+- `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
+- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages the key out of chart values.
+- Do not put `LLM_API_KEY` in the shared app Secret selected by `app.secretName`; keep provider credentials in the dedicated LLM Secret.
+
+Only the API Deployment receives `LLM_API_KEY`. UI and Compile Jobs do not receive the LLM configuration or key.
 
 ## Secrets
 

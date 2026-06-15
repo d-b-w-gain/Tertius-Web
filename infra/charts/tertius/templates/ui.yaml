@@ -29,12 +29,6 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.ui.port }}
-          envFrom:
-            - configMapRef:
-                name: {{ include "tertius.configName" . }}
-            - secretRef:
-                name: {{ include "tertius.secretName" . }}
-                optional: true
           env:
             - name: API_SERVICE_HOST
               value: {{ include "tertius.apiName" . | quote }}

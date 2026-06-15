@@ -6,7 +6,7 @@ import pytest
 
 from core.compile_messages import CompileCommand
 from core.config import Settings
-from core.nats_client import NatsPublisher, ensure_compile_stream
+from core.nats_client import NatsPublisher, ensure_billing_stream, ensure_compile_stream
 
 
 class FakeJetStream:
@@ -175,3 +175,33 @@ async def test_ensure_compile_stream_allows_larger_result_than_request_messages(
 
     stream_config = jetstream.streams["TERTIUS_COMPILE"]
     assert stream_config.max_msg_size == 32 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_ensure_billing_stream_creates_llm_usage_stream():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+
+    result = await ensure_billing_stream(connection, settings)
+
+    assert result is jetstream
+    stream_config = jetstream.streams["TERTIUS_BILLING"]
+    assert stream_config.subjects == ["tertius.billing.usage.llm.tokens"]
+    assert stream_config.max_msg_size == 262144
+
+
+@pytest.mark.asyncio
+async def test_ensure_billing_stream_updates_existing_subjects_and_size():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+    jetstream.streams["TERTIUS_BILLING"] = SimpleNamespace(
+        config=SimpleNamespace(name="TERTIUS_BILLING", subjects=["old.subject"], max_msg_size=-1)
+    )
+
+    await ensure_billing_stream(connection, settings)
+
+    stream_config = jetstream.streams["TERTIUS_BILLING"]
+    assert stream_config.subjects == ["tertius.billing.usage.llm.tokens"]
+    assert stream_config.max_msg_size == 262144

@@ -99,6 +99,39 @@ async def ensure_compile_stream(nc, settings):
     return js
 
 
+async def ensure_billing_stream(nc, settings):
+    from nats.js.api import StreamConfig
+    from nats.js.errors import NotFoundError
+
+    js = nc.jetstream()
+    subjects = [settings.billing_llm_usage_subject]
+    max_msg_size = settings.billing_max_bytes
+
+    try:
+        info = await js.stream_info(settings.billing_stream_name)
+        current = info.config if hasattr(info, "config") else info
+        current_subjects = list(getattr(current, "subjects", []) or [])
+        current_max_msg_size = getattr(current, "max_msg_size", None)
+        if sorted(current_subjects) != sorted(subjects) or current_max_msg_size != max_msg_size:
+            await js.update_stream(
+                StreamConfig(
+                    name=settings.billing_stream_name,
+                    subjects=subjects,
+                    max_msg_size=max_msg_size,
+                )
+            )
+    except NotFoundError:
+        await js.add_stream(
+            StreamConfig(
+                name=settings.billing_stream_name,
+                subjects=subjects,
+                max_msg_size=max_msg_size,
+            )
+        )
+
+    return js
+
+
 async def pull_compile_subscription(js, settings):
     return await js.pull_subscribe(
         settings.compile_request_subject,

@@ -14,6 +14,7 @@ app:
     keycloakAudience: tertius-web
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
+    keycloakJwksUrlOverride: ""
     natsUrl: ""
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request
@@ -25,6 +26,17 @@ app:
     compileTimeoutSeconds: 600
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
+    llmBaseUrl: https://api.deepseek.com
+    llmModel: deepseek-v4-flash
+    llmTimeoutSeconds: 60
+    llmMaxOutputTokens: 2048
+    llmUserRateLimitPerMinute: 10
+    llmTenantRateLimitPerMinute: 60
+    llmTenantDailyTokenQuota: 100000
+    llmUserDailyTokenQuota: 25000
+    billingStreamName: TERTIUS_BILLING
+    billingLlmUsageSubject: tertius.billing.usage.llm.tokens
+    billingMaxBytes: 262144
     billingRateCentsPerHour: 100
     billingFormatMultiplierStl: 1.0
     billingFormatMultiplierStep: 1.5
@@ -33,6 +45,10 @@ app:
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
+  llmSecretName: ""
+  llmSecret:
+    create: false
+    apiKey: ""
   secretName: ""
   secret:
     create: false
