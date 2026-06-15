@@ -6,12 +6,12 @@ import uuid
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
@@ -498,3 +498,174 @@ class CompileRepository:
             )
             .order_by(Artifact.created_at.desc(), Artifact.id.desc())
         )
+
+    def record_usage(
+        self,
+        *,
+        project_id: UUID,
+        compile_job_id: UUID,
+        requested_by: UUID,
+        export_format: str,
+        status: str,
+        compute_duration_seconds: float,
+        artifact_byte_size: int,
+        cost_cents: int,
+        base_rate_cents_per_hour: int,
+        format_multiplier: float,
+    ) -> CompileUsageRecord:
+        existing = self.db.scalar(
+            select(CompileUsageRecord).where(
+                CompileUsageRecord.tenant_id == self.tenant_id,
+                CompileUsageRecord.compile_job_id == compile_job_id,
+            )
+        )
+        if existing is not None:
+            return existing
+
+        record = CompileUsageRecord(
+            tenant_id=self.tenant_id,
+            project_id=project_id,
+            compile_job_id=compile_job_id,
+            requested_by=requested_by,
+            export_format=export_format,
+            status=status,
+            compute_duration_seconds=compute_duration_seconds,
+            artifact_byte_size=artifact_byte_size,
+            cost_cents=cost_cents,
+            base_rate_cents_per_hour=base_rate_cents_per_hour,
+            format_multiplier=format_multiplier,
+        )
+        self.db.add(record)
+        self.db.flush()
+        return record
+
+
+class UsageRepository:
+    def __init__(self, db: Session, tenant_id: UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+
+    def total_summary(self) -> dict:
+        row = self.db.execute(
+            select(
+                func.count(CompileUsageRecord.id),
+                func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
+                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(func.sum(CompileUsageRecord.artifact_byte_size), 0),
+            ).where(CompileUsageRecord.tenant_id == self.tenant_id)
+        ).one()
+        return {
+            "total_jobs": row[0],
+            "total_cost_cents": row[1],
+            "total_compute_seconds": row[2],
+            "total_artifact_bytes": row[3],
+        }
+
+    def daily_breakdown(self, days: int = 30) -> list[dict]:
+        rows = self.db.execute(
+            select(
+                func.date_trunc("day", CompileUsageRecord.created_at).label("day"),
+                func.count(CompileUsageRecord.id),
+                func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
+                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+            )
+            .where(
+                CompileUsageRecord.tenant_id == self.tenant_id,
+                CompileUsageRecord.created_at >= func.now() - func.make_interval(0, 0, 0, days),
+            )
+            .group_by("day")
+            .order_by("day")
+        ).all()
+        return [
+            {"day": str(row[0]), "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            for row in rows
+        ]
+
+    def monthly_breakdown(self, months: int = 12) -> list[dict]:
+        rows = self.db.execute(
+            select(
+                func.date_trunc("month", CompileUsageRecord.created_at).label("month"),
+                func.count(CompileUsageRecord.id),
+                func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
+                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+            )
+            .where(
+                CompileUsageRecord.tenant_id == self.tenant_id,
+                CompileUsageRecord.created_at >= func.now() - func.make_interval(0, months, 0, 0),
+            )
+            .group_by("month")
+            .order_by("month")
+        ).all()
+        return [
+            {"month": str(row[0]), "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            for row in rows
+        ]
+
+    def project_breakdown(self) -> list[dict]:
+        from core.models import Project
+
+        rows = self.db.execute(
+            select(
+                CompileUsageRecord.project_id,
+                Project.name,
+                func.count(CompileUsageRecord.id),
+                func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
+                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+            )
+            .join(Project, Project.id == CompileUsageRecord.project_id)
+            .where(CompileUsageRecord.tenant_id == self.tenant_id)
+            .group_by(CompileUsageRecord.project_id, Project.name)
+            .order_by(func.sum(CompileUsageRecord.cost_cents).desc())
+        ).all()
+        return [
+            {"project_id": str(row[0]), "project_name": row[1], "job_count": row[2], "cost_cents": row[3], "compute_seconds": row[4]}
+            for row in rows
+        ]
+
+    def format_breakdown(self) -> list[dict]:
+        rows = self.db.execute(
+            select(
+                CompileUsageRecord.export_format,
+                func.count(CompileUsageRecord.id),
+                func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
+                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+            )
+            .where(CompileUsageRecord.tenant_id == self.tenant_id)
+            .group_by(CompileUsageRecord.export_format)
+            .order_by(func.sum(CompileUsageRecord.cost_cents).desc())
+        ).all()
+        return [
+            {"export_format": row[0], "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            for row in rows
+        ]
+
+    def recent_jobs(self, limit: int = 50) -> list[dict]:
+        from core.models import AppUser
+
+        rows = self.db.execute(
+            select(
+                CompileUsageRecord.created_at,
+                CompileUsageRecord.export_format,
+                CompileUsageRecord.status,
+                CompileUsageRecord.compute_duration_seconds,
+                CompileUsageRecord.artifact_byte_size,
+                CompileUsageRecord.cost_cents,
+                AppUser.username,
+            )
+            .join(AppUser, AppUser.id == CompileUsageRecord.requested_by)
+            .where(CompileUsageRecord.tenant_id == self.tenant_id)
+            .order_by(CompileUsageRecord.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "created_at": str(row[0]),
+                "export_format": row[1],
+                "status": row[2],
+                "compute_duration_seconds": row[3],
+                "artifact_byte_size": row[4],
+                "cost_cents": row[5],
+                "username": row[6],
+            }
+            for row in rows
+        ]

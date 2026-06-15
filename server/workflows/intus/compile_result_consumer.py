@@ -22,10 +22,37 @@ from core.nats_client import (
     ensure_compile_stream,
     pull_compile_result_subscription,
 )
-from core.repositories import CompileRepository
+from core.repositories import CompileRepository, UsageRepository
+from core.billing import compute_cost_cents, get_format_multiplier
 
 
 logger = logging.getLogger(__name__)
+
+
+def _record_usage_if_applicable(db, result: CompileResultPayload, job: CompileJob, settings, artifact_byte_size: int = 0) -> None:
+    started_at = job.claimed_at or result.worker_started_at
+    finished_at = job.finished_at if job.claimed_at is not None else result.worker_finished_at
+    if started_at is None or finished_at is None:
+        logger.warning("Skipping usage record for job %s: missing timing data", job.id)
+        return
+    duration = (finished_at - started_at).total_seconds()
+    if duration < 0:
+        logger.warning("Clamping negative usage duration for job %s", job.id)
+        duration = 0.0
+    cost = compute_cost_cents(duration, job.export_format, settings)
+    repo = CompileRepository(db, job.tenant_id)
+    repo.record_usage(
+        project_id=job.project_id,
+        compile_job_id=job.id,
+        requested_by=job.requested_by,
+        export_format=job.export_format,
+        status=job.status,
+        compute_duration_seconds=duration,
+        artifact_byte_size=artifact_byte_size,
+        cost_cents=cost,
+        base_rate_cents_per_hour=settings.billing_rate_cents_per_hour,
+        format_multiplier=get_format_multiplier(job.export_format, settings),
+    )
 
 
 def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
@@ -48,6 +75,7 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
             user_message=result.user_message,
             retryable=result.retryable,
         )
+        _record_usage_if_applicable(db, result, job, settings)
         db.commit()
         return True
 
@@ -62,6 +90,7 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
             user_message="Compile result could not be verified. Try again.",
             retryable=True,
         )
+        _record_usage_if_applicable(db, result, job, settings)
         db.commit()
         return True
     if len(artifact_bytes) > settings.compile_result_max_bytes:
@@ -73,6 +102,7 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
             user_message="Compile succeeded but the artifact is too large to return.",
             retryable=False,
         )
+        _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
         db.commit()
         return True
 
@@ -84,6 +114,7 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         content_type=result.artifact_content_type,
     )
     repo.finish_job(job, "succeeded")
+    _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
     pruned = repo.prunable_artifacts(job.project_id, job.export_format, max(1, settings.artifact_retention_limit))
     repo.delete_artifacts(pruned)
     db.commit()

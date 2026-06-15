@@ -17,8 +17,10 @@ from core.db import get_db
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream
 from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
+from workflows.intus.usage_server import router as usage_router
 
 app = FastAPI(title="Intus Compiler Server")
+app.include_router(usage_router)
 
 app.add_middleware(
     CORSMiddleware,

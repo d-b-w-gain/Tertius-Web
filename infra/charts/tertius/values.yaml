@@ -25,6 +25,11 @@ app:
     compileTimeoutSeconds: 600
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
+    billingRateCentsPerHour: 100
+    billingFormatMultiplierStl: 1.0
+    billingFormatMultiplierStep: 1.5
+    billingFormatMultiplierGltf: 2.0
+    billingFormatMultiplierGlb: 2.0
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api

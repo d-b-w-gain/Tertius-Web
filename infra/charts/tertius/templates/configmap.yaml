@@ -34,6 +34,11 @@ data:
   COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+  BILLING_RATE_CENTS_PER_HOUR: {{ .Values.app.config.billingRateCentsPerHour | quote }}
+  BILLING_FORMAT_MULTIPLIER_STL: {{ .Values.app.config.billingFormatMultiplierStl | quote }}
+  BILLING_FORMAT_MULTIPLIER_STEP: {{ .Values.app.config.billingFormatMultiplierStep | quote }}
+  BILLING_FORMAT_MULTIPLIER_GLTF: {{ .Values.app.config.billingFormatMultiplierGltf | quote }}
+  BILLING_FORMAT_MULTIPLIER_GLB: {{ .Values.app.config.billingFormatMultiplierGlb | quote }}
   APP_DB_HOST: {{ printf "%s-rw" (include "tertius.appDbName" .) | quote }}
   APP_DB_NAME: {{ .Values.postgres.database | quote }}
   APP_DB_OWNER: {{ .Values.postgres.owner | quote }}
