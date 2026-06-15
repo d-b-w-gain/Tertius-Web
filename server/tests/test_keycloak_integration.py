@@ -75,7 +75,7 @@ def test_keycloak_token_authenticates_request_and_provisions_user(db_session: Se
         settings = Settings(
             database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
             keycloak_issuer=f"{base_url}/realms/tertius",
-            keycloak_audience="tertius-web",
+            keycloak_audience="tertius-api",
         )
         intus_app.dependency_overrides[get_db] = override_db
         try:

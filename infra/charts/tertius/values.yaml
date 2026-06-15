@@ -11,7 +11,7 @@ app:
   environment: production
   config:
     apiBasePath: /api
-    keycloakAudience: tertius-web
+    keycloakAudience: tertius-api
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: ""
     keycloakJwksUrlOverride: ""

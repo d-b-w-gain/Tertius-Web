@@ -61,7 +61,7 @@ Local development uses Postgres for app data, Keycloak for login, and NATS JetSt
 docker compose up -d postgres keycloak nats
 ```
 
-Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-ui`, and the demo login is:
+Keycloak imports the `tertius` realm on startup. The frontend client is `tertius-ui`, the API audience is `tertius-api`, and the demo login is:
 
 ```text
 demo / demo
@@ -81,7 +81,7 @@ The important server values are:
 ```bash
 DATABASE_URL=postgresql+psycopg://tertius:tertius@localhost:5432/tertius
 KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
-KEYCLOAK_AUDIENCE=tertius-web
+KEYCLOAK_AUDIENCE=tertius-api
 NATS_URL=nats://localhost:4222
 ALLOWED_ORIGINS=http://localhost:5173
 ```
