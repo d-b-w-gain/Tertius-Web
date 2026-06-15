@@ -17,6 +17,7 @@ export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 
 type ViewerBatchOptions = {
   createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
+  useAuthoredColors?: boolean;
 };
 
 type ViewerBatch = {
@@ -57,7 +58,7 @@ function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Co
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
   if (meshes.length === 0) return null;
 
-  const usesAuthoredColors = meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
+  const usesAuthoredColors = options.useAuthoredColors ?? meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
   const defaultColor = new THREE.Color(DEFAULT_MODEL_COLOR);
   const geometries = meshes.map((mesh) => {
     const geometry = mesh.geometry.clone();
@@ -435,9 +436,10 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
           const CHUNK_SIZE = 1000;
           const chunks: THREE.BufferGeometry[] = [];
+          const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
           
           for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
-             const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE));
+             const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE), { useAuthoredColors: hasAuthoredColors });
              if (batch) {
                chunks.push(batch.mesh.geometry);
                if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
@@ -450,7 +452,6 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
           sourceMeshes.forEach(mesh => mesh.geometry.dispose());
           
           if (finalMergedGeom) {
-             const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
              const batchedMaterial = hasAuthoredColors
                ? new THREE.MeshStandardMaterial({
                    color: 0xffffff,
