@@ -17,17 +17,48 @@ export type ProjectGitStatus = {
   label?: string
 }
 
+export type ProjectFileMetadata = {
+  id: string
+  filename: string
+  updated_at?: string
+}
+
+export type LlmFileEditResult = {
+  success: true
+  model: string
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  snapshot: { id: string; message: string; content_hash: string }
+  files: Array<{
+    id: string
+    filename: string
+    content: string
+    updated_at?: string
+    changed: boolean
+    summary?: string
+  }>
+}
+
 export type ProjectStorage = {
   listProjects: () => Promise<string[]>
   getActiveProject: () => Promise<string>
   createProject: (name: string) => Promise<void>
   activateProject: (name: string) => Promise<void>
   listFiles: (projectName: string) => Promise<string[]>
+  listFileMetadata: (projectName: string) => Promise<ProjectFileMetadata[]>
   loadCode: (projectName: string, filename: string) => Promise<string>
   saveCode: (projectName: string, filename: string, code: string) => Promise<void>
   deleteFile: (projectName: string, filename: string) => Promise<void>
   getStatus: (projectName: string, filename?: string) => Promise<{ mtime?: number }>
   getHistory: (projectName: string) => Promise<ProjectGitStatus>
+  applyLlmFileEdit: (
+    projectName: string,
+    request: {
+      prompt: string
+      files: Array<{ id: string; filename: string }>
+      active_file_id?: string
+      metadata?: Record<string, string>
+    },
+  ) => Promise<LlmFileEditResult>
 }
 
 type CreateProjectStorageOptions = {
@@ -59,6 +90,12 @@ function createGuestStorage(): ProjectStorage {
     async listFiles(projectName) {
       return Object.keys(loadGuestWorkspace().projects[projectName]?.files ?? {})
     },
+    async listFileMetadata(projectName) {
+      return Object.keys(loadGuestWorkspace().projects[projectName]?.files ?? {}).map((filename) => ({
+        id: '',
+        filename,
+      }))
+    },
     async loadCode(projectName, filename) {
       return getGuestCode(loadGuestWorkspace(), projectName, filename)
     },
@@ -73,6 +110,9 @@ function createGuestStorage(): ProjectStorage {
     },
     async getHistory() {
       return { is_git: false, label: 'Local draft' }
+    },
+    async applyLlmFileEdit() {
+      throw new Error('Log in to use AI file edits')
     },
   }
 }
@@ -142,6 +182,16 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       const data = await res.json()
       return data.files || ['design.py']
     },
+    async listFileMetadata(projectName) {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files`, getAccessToken)
+      if (!res.ok) return [{ id: '', filename: 'design.py' }]
+      const data = await res.json()
+      if (Array.isArray(data.file_metadata)) {
+        return data.file_metadata as ProjectFileMetadata[]
+      }
+      const fallbackNames: string[] = Array.isArray(data.files) ? data.files : ['design.py']
+      return fallbackNames.map((filename) => ({ id: '', filename }))
+    },
     async loadCode(projectName, filename) {
       const res = await apiFetch(`${serverUrl}/projects/${projectName}/code?file=${filename}`, getAccessToken)
       if (!res.ok) return ''
@@ -175,6 +225,15 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       const res = await apiFetch(`${serverUrl}/projects/${projectName}/git_status`, getAccessToken)
       if (!res.ok) return { is_git: false }
       return res.json()
+    },
+    async applyLlmFileEdit(projectName, request) {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      await requireOk(res, 'LLM file edit failed')
+      return (await res.json()) as LlmFileEditResult
     },
   }
 }
