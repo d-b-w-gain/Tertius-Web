@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import traceback
+from datetime import timezone
 from pathlib import Path
 from typing import Literal
 
@@ -347,6 +348,16 @@ def serialize_timus_settings(settings: TimusSettings):
 
 
 PROJECTION_CACHE = {}
+
+
+def _artifact_is_current_for_design(artifact: Artifact, design_file: ProjectFile) -> bool:
+    artifact_created_at = artifact.created_at
+    design_updated_at = design_file.updated_at
+    if artifact_created_at.tzinfo is None:
+        artifact_created_at = artifact_created_at.replace(tzinfo=timezone.utc)
+    if design_updated_at.tzinfo is None:
+        design_updated_at = design_updated_at.replace(tzinfo=timezone.utc)
+    return artifact_created_at >= design_updated_at
 
 
 def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
@@ -772,7 +783,7 @@ def get_drafting_pdf(
                 Artifact.kind == "timus_views"
             ).order_by(desc(Artifact.created_at))
         )
-        if latest_artifact:
+        if latest_artifact and _artifact_is_current_for_design(latest_artifact, design_file):
             if latest_artifact.content is None:
                 return Response("No drafting views found", 404)
             views = json.loads(latest_artifact.content.decode("utf-8"))
