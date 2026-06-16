@@ -1,6 +1,9 @@
+import { userManager } from '../auth/keycloak'
+
 let transientFailureCount = 0
 let readonlyBackoffUntil = 0
 const readonlyInFlightRequests = new Map<string, Promise<Response>>()
+const STALE_TOKEN_REDIRECT_KEY = 'tertius:stale-token-redirecting'
 
 function isReadonlyRequest(init: RequestInit) {
   const method = (init.method || 'GET').toUpperCase()
@@ -24,6 +27,34 @@ function recordTransientFailure() {
 function recordSuccess() {
   transientFailureCount = 0
   readonlyBackoffUntil = 0
+  sessionStorage.removeItem(STALE_TOKEN_REDIRECT_KEY)
+}
+
+async function isInvalidBearerToken(response: Response) {
+  if (response.status !== 401) {
+    return false
+  }
+
+  try {
+    const body = await response.clone().json()
+    return body?.detail === 'Invalid bearer token'
+  } catch {
+    return false
+  }
+}
+
+async function forceFreshLogin() {
+  if (sessionStorage.getItem(STALE_TOKEN_REDIRECT_KEY) === 'true') {
+    return
+  }
+
+  sessionStorage.setItem(STALE_TOKEN_REDIRECT_KEY, 'true')
+
+  try {
+    await userManager.removeUser()
+  } finally {
+    await userManager.signinRedirect()
+  }
 }
 
 function backoffResponse() {
@@ -76,6 +107,8 @@ export async function apiFetch(
 
     if (readonly && isTransientServerFailure(response.status)) {
       recordTransientFailure()
+    } else if (await isInvalidBearerToken(response)) {
+      void forceFreshLogin()
     } else if (response.ok) {
       recordSuccess()
     }
