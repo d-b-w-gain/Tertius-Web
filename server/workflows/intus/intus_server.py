@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from typing import Optional, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,12 +16,18 @@ from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
+from core.billing_messages import (
+    LlmTokenUsageEvent,
+    assert_billing_message_size,
+    billing_usage_message_id,
+)
 from core.llm_client import (
     BuildScriptGenerationInput,
     LlmBillingError,
     LlmEditableFile,
     LlmFileEditInput,
     LlmInvalidFileEditError,
+    LlmNoFileChangesError,
     LlmNotConfiguredError,
     estimate_build_script_tokens,
     estimate_file_edit_tokens,
@@ -96,6 +102,52 @@ async def create_billing_publisher(settings):
                 logger.exception("Failed to close LLM billing NATS connection after setup failure")
         logger.exception("Failed to create LLM billing publisher")
         raise LlmBillingError("LLM billing failed")
+
+
+def _llm_provider_from_settings(settings) -> str:
+    if "deepseek" in settings.llm_base_url.lower():
+        return "deepseek"
+    return "openai-compatible"
+
+
+async def publish_file_edit_billing_event(
+    *,
+    billing_publisher,
+    settings,
+    auth: AuthContext,
+    project_id: UUID,
+    request: LlmFileEditInput,
+    result,
+    event_id: UUID,
+) -> None:
+    usage = result.usage
+    event = LlmTokenUsageEvent(
+        event_id=event_id,
+        tenant_id=auth.tenant_id,
+        user_id=auth.user_id,
+        project_id=project_id,
+        workflow="intus",
+        operation="files.llm_edit",
+        provider=_llm_provider_from_settings(settings),
+        model=result.model,
+        prompt=request.prompt,
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        occurred_at=datetime.now(timezone.utc),
+        provider_request_id=getattr(result, "provider_request_id", None),
+        metadata=request.metadata,
+    )
+    try:
+        assert_billing_message_size(event, settings.billing_max_bytes)
+        await billing_publisher.publish_json(
+            settings.billing_llm_usage_subject,
+            event,
+            message_id=billing_usage_message_id(event),
+        )
+    except Exception as exc:
+        logger.exception("Failed to publish LLM billing usage event")
+        raise LlmBillingError("LLM billing failed") from exc
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/health")
@@ -560,14 +612,12 @@ async def llm_edit_files(
                 max_output_tokens=settings.llm_max_output_tokens,
             ),
         )
-        billing_publisher, billing_nc = await create_billing_publisher(settings)
         result = await generate_file_edits(
             req,
             files=editable_files,
             settings=settings,
             auth=ctx,
             project_id=project.id,
-            billing_publisher=billing_publisher,
         )
         if not result.files:
             return JSONResponse(
@@ -584,6 +634,7 @@ async def llm_edit_files(
             )
         except ValueError as exc:
             if str(exc) == "LLM returned no file changes":
+                db.rollback()
                 return JSONResponse(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     content={"success": False, "error": "LLM returned no file changes", "retryable": False},
@@ -600,6 +651,18 @@ async def llm_edit_files(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"success": False, "error": "LLM file update failed", "retryable": True},
             )
+        billing_publisher, billing_nc = await create_billing_publisher(settings)
+        billing_event_id = uuid4()
+        result.billing_event_id = billing_event_id
+        await publish_file_edit_billing_event(
+            billing_publisher=billing_publisher,
+            settings=settings,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            event_id=billing_event_id,
+        )
         record_llm_usage(
             db,
             auth=ctx,
@@ -607,7 +670,7 @@ async def llm_edit_files(
             request=req,
             result=result,
             provider_request_id=getattr(result, "provider_request_id", None),
-            event_id=getattr(result, "billing_event_id", None),
+            event_id=billing_event_id,
             settings=settings,
             operation="files.llm_edit",
         )
@@ -621,6 +684,12 @@ async def llm_edit_files(
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmNoFileChangesError:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"success": False, "error": "LLM returned no file changes", "retryable": False},
         )
     except LlmInvalidFileEditError:
         logger.exception("LLM file edit returned invalid response")

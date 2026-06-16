@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from math import ceil
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from core.auth_types import AuthContext
 from core.billing_messages import (
@@ -36,11 +36,42 @@ class LlmInvalidFileEditError(RuntimeError):
     pass
 
 
+class LlmNoFileChangesError(RuntimeError):
+    pass
+
+
+MAX_METADATA_ENTRIES = 50
+MAX_METADATA_KEY_CHARS = 200
+MAX_METADATA_VALUE_CHARS = 200
+
+
+def validate_llm_metadata(metadata: dict[str, str]) -> dict[str, str]:
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+    if len(metadata) > MAX_METADATA_ENTRIES:
+        raise ValueError("metadata must contain at most 50 entries")
+    for key, value in metadata.items():
+        if not isinstance(key, str):
+            raise ValueError("metadata keys must be strings")
+        if not isinstance(value, str):
+            raise ValueError("metadata values must be strings")
+        if len(key) > MAX_METADATA_KEY_CHARS:
+            raise ValueError("metadata keys must be at most 200 characters")
+        if len(value) > MAX_METADATA_VALUE_CHARS:
+            raise ValueError("metadata values must be at most 200 characters")
+    return metadata
+
+
 class BuildScriptGenerationInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     active_file: str = Field(default="design.py")
     current_code: str = Field(default="", max_length=200000)
     metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def validate_metadata(cls, metadata):
+        return validate_llm_metadata({} if metadata is None else metadata)
 
 
 class TokenUsage(BaseModel):
@@ -74,6 +105,11 @@ class LlmFileEditInput(BaseModel):
     files: list[LlmFilePointer] = Field(min_length=1, max_length=20)
     active_file_id: UUID | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def validate_metadata(cls, metadata):
+        return validate_llm_metadata({} if metadata is None else metadata)
 
 
 class LlmReturnedFileEdit(BaseModel):
@@ -299,7 +335,7 @@ def parse_llm_file_edit_response(
         raise LlmInvalidFileEditError("provider response 'files' must be a list")
 
     if len(raw_files) == 0:
-        raise LlmInvalidFileEditError("LLM returned no file changes")
+        raise LlmNoFileChangesError("LLM returned no file changes")
 
     if len(raw_files) > len(allowed_file_ids):
         raise LlmInvalidFileEditError("provider returned more files than were requested")
@@ -363,36 +399,5 @@ async def generate_file_edits(
         usage=usage,
         provider_request_id=provider_request_id,
     )
-
-    if billing_publisher is not None:
-        billing_event_id = uuid4()
-        result.billing_event_id = billing_event_id
-        event = LlmTokenUsageEvent(
-            event_id=billing_event_id,
-            tenant_id=auth.tenant_id,
-            user_id=auth.user_id,
-            project_id=project_id,
-            workflow="intus",
-            operation="files.llm_edit",
-            provider=_provider_from_settings(settings),
-            model=settings.llm_model,
-            prompt=request.prompt,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
-            occurred_at=datetime.now(timezone.utc),
-            provider_request_id=provider_request_id,
-            metadata=request.metadata,
-        )
-        try:
-            assert_billing_message_size(event, settings.billing_max_bytes)
-            await billing_publisher.publish_json(
-                settings.billing_llm_usage_subject,
-                event,
-                message_id=billing_usage_message_id(event),
-            )
-        except Exception as exc:
-            logger.exception("Failed to publish LLM billing usage event")
-            raise LlmBillingError("LLM billing failed") from exc
 
     return result

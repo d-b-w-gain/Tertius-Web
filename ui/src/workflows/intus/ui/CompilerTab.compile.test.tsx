@@ -487,6 +487,22 @@ describe('CompilerTab compile jobs', () => {
     })
   })
 
+  it('disables AI edit when file metadata lacks ids', async () => {
+    storage.listFiles.mockResolvedValue(['design.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: '', filename: 'design.py' },
+    ])
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'refactor design' } })
+    const button = screen.getByRole('button', { name: /AI edit/i })
+
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(storage.applyLlmFileEdit).not.toHaveBeenCalled()
+  })
+
   it('updates the active editor and file tabs from a successful AI edit response', async () => {
     storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
     storage.listFileMetadata.mockResolvedValue([

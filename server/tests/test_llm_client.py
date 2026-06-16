@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from core.auth_types import AuthContext
 from core.config import Settings
@@ -13,6 +14,7 @@ from core.llm_client import (
     LlmFileEditInput,
     LlmFilePointer,
     LlmInvalidFileEditError,
+    LlmNoFileChangesError,
     LlmNotConfiguredError,
     build_file_edit_messages,
     estimate_file_edit_tokens,
@@ -225,7 +227,7 @@ def test_parse_llm_file_edit_response_rejects_empty_files():
     file_id = uuid4()
     payload = json.dumps({"files": []})
 
-    with pytest.raises(LlmInvalidFileEditError):
+    with pytest.raises(LlmNoFileChangesError):
         parse_llm_file_edit_response(payload, _allowed_file_ids(file_id))
 
 
@@ -334,6 +336,47 @@ def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
     assert estimate > 2048
 
 
+def test_llm_file_edit_input_rejects_more_than_50_metadata_entries():
+    with pytest.raises(ValidationError, match="metadata must contain at most 50 entries"):
+        LlmFileEditInput(
+            prompt="edit",
+            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            metadata={f"k{i}": "v" for i in range(51)},
+        )
+
+
+def test_llm_file_edit_input_rejects_metadata_key_longer_than_200_chars():
+    with pytest.raises(ValidationError, match="metadata keys must be at most 200 characters"):
+        LlmFileEditInput(
+            prompt="edit",
+            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            metadata={"k" * 201: "v"},
+        )
+
+
+def test_llm_file_edit_input_rejects_metadata_value_longer_than_200_chars():
+    with pytest.raises(ValidationError, match="metadata values must be at most 200 characters"):
+        LlmFileEditInput(
+            prompt="edit",
+            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            metadata={"source": "v" * 201},
+        )
+
+
+def test_build_script_generation_input_rejects_oversized_metadata():
+    with pytest.raises(ValidationError, match="metadata must contain at most 50 entries"):
+        BuildScriptGenerationInput(
+            prompt="make a bracket",
+            metadata={f"k{i}": "v" for i in range(51)},
+        )
+
+    with pytest.raises(ValidationError, match="metadata keys must be at most 200 characters"):
+        BuildScriptGenerationInput(prompt="make a bracket", metadata={"k" * 201: "v"})
+
+    with pytest.raises(ValidationError, match="metadata values must be at most 200 characters"):
+        BuildScriptGenerationInput(prompt="make a bracket", metadata={"source": "v" * 201})
+
+
 # ---------------------------------------------------------------------------
 # LLM File Edit Provider Call + Billing
 # ---------------------------------------------------------------------------
@@ -352,7 +395,7 @@ def _file_edit_request_and_files() -> tuple[LlmFileEditInput, list[LlmEditableFi
 
 
 @pytest.mark.asyncio
-async def test_generate_file_edits_publishes_billing_event_with_files_llm_edit_operation():
+async def test_generate_file_edits_returns_provider_result_without_publishing_billing():
     request, files = _file_edit_request_and_files()
     payload = json.dumps(
         {
@@ -398,19 +441,9 @@ async def test_generate_file_edits_publishes_billing_event_with_files_llm_edit_o
     assert call["response_format"] == {"type": "json_object"}
     assert len(call["messages"]) == 2
 
-    assert publisher.published, "billing event should be published for valid provider output"
-    subject, billing_event, message_id = publisher.published[0]
-    assert subject == "tertius.billing.usage.llm.tokens"
-    assert billing_event.workflow == "intus"
-    assert billing_event.operation == "files.llm_edit"
-    assert billing_event.prompt == "rename length to span"
-    assert billing_event.tenant_id == auth.tenant_id
-    assert billing_event.user_id == auth.user_id
-    assert billing_event.project_id == project_id
-    assert billing_event.metadata == {"source": "compiler_tab"}
-    assert message_id is not None
-    assert message_id.startswith("billing-usage:")
-    assert result.billing_event_id == billing_event.event_id
+    assert result.provider_request_id == "chatcmpl-test"
+    assert result.billing_event_id is None
+    assert publisher.published == []
 
 
 @pytest.mark.asyncio
@@ -521,39 +554,4 @@ async def test_generate_file_edits_requires_configured_key():
             project_id=uuid4(),
             openai_client=FakeOpenAIClient(),
             billing_publisher=FakePublisher(),
-        )
-
-
-@pytest.mark.asyncio
-async def test_generate_file_edits_raises_when_billing_publish_fails():
-    request, files = _file_edit_request_and_files()
-    payload = json.dumps(
-        {
-            "files": [
-                {
-                    "file_id": str(request.files[0].id),
-                    "content": "span = 100\n",
-                    "summary": "ok",
-                }
-            ]
-        }
-    )
-    client = FakeOpenAIClient()
-    client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
-
-    class FailingPublisher(FakePublisher):
-        async def publish_json(self, subject, message, message_id=None):
-            raise RuntimeError("nats unavailable")
-
-    with pytest.raises(LlmBillingError):
-        await generate_file_edits(
-            request,
-            files=files,
-            settings=Settings(llm_api_key="secret"),
-            auth=AuthContext(
-                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
-            ),
-            project_id=uuid4(),
-            openai_client=client,
-            billing_publisher=FailingPublisher(),
         )

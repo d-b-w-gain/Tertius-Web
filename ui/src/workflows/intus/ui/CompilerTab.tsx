@@ -464,8 +464,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     await startCompile(code, 'manual');
   };
 
+  const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id);
+
   const applyAiEdit = async () => {
-    if (isGuest || !activeProject || !aiPrompt.trim() || fileMetadata.length === 0) return;
+    if (isGuest || !activeProject || !aiPrompt.trim() || !hasEditableFilePointers) return;
     setIsApplyingAiEdit(true);
     try {
       const result = await storage.applyLlmFileEdit(activeProject, {
@@ -635,7 +637,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                 />
                 <button
                   type="submit"
-                  disabled={isApplyingAiEdit || !aiPrompt.trim() || fileMetadata.length === 0}
+                  disabled={isApplyingAiEdit || !aiPrompt.trim() || !hasEditableFilePointers}
                   className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
                 >
                   {isApplyingAiEdit ? 'Applying...' : 'AI Edit'}
