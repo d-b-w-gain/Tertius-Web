@@ -6,6 +6,6 @@ Purpose:
 2. Watches `output.stl` in the shared cache folder.
 3. Hot-reloads and re-renders the 3D model immediately when the STL file changes on disk.
 
-Shared Project Data: C:\Users\ben\ContextUI\default\cache\tertius
+Shared Project Data: [tertius cache root]
 - Watches: `output.stl`
 - Modifies: Nothing (Read-only UI)

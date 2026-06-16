@@ -9,6 +9,6 @@ Purpose:
 5. Flexible Export: Allows the user to select the compilation output format (e.g., STL, STEP, GLB) and exports the generated 3D geometry accordingly.
 6. Error Reporting: Outputs tracebacks and compilation errors if the script fails to run, ensuring the LLM (in Artus) or the user can debug.
 
-Shared Project Data: C:\Users\ben\ContextUI\default\cache\tertius\[project_name]
+Shared Project Data: [tertius cache root]/[project_name]
 - Watches: The active project's `design.py`
 - Modifies: The active project's `output.[format]` (e.g., `output.stl`)
