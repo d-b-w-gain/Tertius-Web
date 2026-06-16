@@ -34,5 +34,8 @@ def extract_polygon(img_path):
         print(f"Pt {i}: (X: {pt[1]:.1f}, Y: {pt[0]:.1f})")
 
 if __name__ == "__main__":
-    img_path = r"C:\Users\ben\.gemini\antigravity\brain\0fff33aa-cd8b-40bd-b488-1d633362d9ee\media__1780643388298.png"
+    if len(sys.argv) != 2:
+        print("Usage: python extract_coords.py <path-to-image>")
+        raise SystemExit(2)
+    img_path = sys.argv[1]
     extract_polygon(img_path)

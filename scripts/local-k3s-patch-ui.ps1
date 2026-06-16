@@ -13,7 +13,7 @@ function Write-Ok {
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $uiDir = Join-Path $repoRoot "ui"
-
+$wslRepoRoot = (wsl -d Ubuntu-24.04 -- wslpath -a $repoRoot).Trim()
 Write-Step "Building patched UI bundle"
 Push-Location $uiDir
 try {
@@ -43,7 +43,7 @@ Write-Ok "Using UI pod $pod"
 
 Write-Step "Copying patched UI bundle into pod"
 wsl -d Ubuntu-24.04 -u root -- kubectl -n tertius exec $pod -- sh -lc "rm -rf /usr/share/nginx/html/*"
-wsl -d Ubuntu-24.04 -u root -- kubectl -n tertius cp /mnt/c/Users/ben/Documents/Projects/Tertius-Web/ui/dist/. "${pod}:/usr/share/nginx/html"
+wsl -d Ubuntu-24.04 -u root -- kubectl -n tertius cp "$wslRepoRoot/ui/dist/." "${pod}:/usr/share/nginx/html"
 
 Write-Step "Checking patched UI is served"
 $response = Invoke-WebRequest -Uri "http://localhost:18080/" -UseBasicParsing -TimeoutSec 10
@@ -51,3 +51,4 @@ if ($response.StatusCode -ne 200) {
     throw "Patched UI did not return HTTP 200."
 }
 Write-Ok "Patched UI is live at http://localhost:18080/"
+
