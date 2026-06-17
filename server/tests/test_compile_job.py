@@ -78,9 +78,10 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     output_path = tmp_path / "output.stl"
     output_path.write_bytes(b"solid job")
 
-    def fake_run_compile_sandbox(project_dir, export_format, timeout_seconds):
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
         assert (project_dir / "design.py").read_text() == "shape = 'queued'\n"
         assert export_format == "stl"
+        assert quality is None
         assert timeout_seconds == 600
         return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
 
@@ -103,7 +104,7 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
 def test_compile_job_publishes_failure_and_acks(monkeypatch):
     from workflows.intus.compile_job import handle_compile_request_message
 
-    def fake_run_compile_sandbox(project_dir, export_format, timeout_seconds):
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
         return SimpleNamespace(success=False, output_path=None, stdout="", stderr="boom", error="boom")
 
     monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
@@ -124,7 +125,7 @@ def test_compile_job_truncates_huge_sandbox_error_to_publish_failure(monkeypatch
 
     huge_stderr = "sandbox exploded\n" + ("x" * 20_000)
 
-    def fake_run_compile_sandbox(project_dir, export_format, timeout_seconds):
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
         return SimpleNamespace(success=False, output_path=None, stdout="", stderr=huge_stderr, error="")
 
     monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
