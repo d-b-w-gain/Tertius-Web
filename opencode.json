@@ -5,16 +5,17 @@
       "type": "local",
       "enabled": true,
       "command": [
-        "/root/.local/bin/uvx",
+        "uvx",
         "--from",
         "git+https://github.com/oraios/serena",
         "serena",
         "start-mcp-server",
         "--project",
-        "/root/code/Tertius-Web",
+        ".",
         "--transport",
         "stdio"
-      ]
+      ],
+      "cwd": "."
     },
     "superpowers": {
       "type": "local",
