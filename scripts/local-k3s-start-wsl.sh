@@ -33,17 +33,78 @@ wait_for_kubectl() {
   return 1
 }
 
-bad_pod_count() {
-  kubectl -n "$NAMESPACE" get pods --no-headers 2>/dev/null |
+get_unready_controller_pods() {
+  kubectl -n "$NAMESPACE" get pods \
+    -l 'app.kubernetes.io/component in (api,ui),app.kubernetes.io/instance=tertius' \
+    --no-headers 2>/dev/null |
     awk '
       {
         split($2, ready, "/")
         if ($3 != "Running" || ready[1] != ready[2]) {
-          bad++
+          print $1
         }
       }
-      END { print bad + 0 }
     '
+  kubectl -n "$NAMESPACE" get pods \
+    -l 'app.kubernetes.io/name in (valkey,nats)' \
+    --no-headers 2>/dev/null |
+    awk '
+      {
+        split($2, ready, "/")
+        if ($3 != "Running" || ready[1] != ready[2]) {
+          print $1
+        }
+      }
+    '
+  kubectl -n "$NAMESPACE" get pods \
+    -l 'cnpg.io/cluster' \
+    --no-headers 2>/dev/null |
+    awk '
+      {
+        split($2, ready, "/")
+        if ($3 != "Running" || ready[1] != ready[2]) {
+          print $1
+        }
+      }
+    '
+  kubectl -n "$NAMESPACE" get pods \
+    -l 'app=keycloak,app.kubernetes.io/managed-by=keycloak-operator' \
+    --no-headers 2>/dev/null |
+    awk '
+      {
+        split($2, ready, "/")
+        if ($3 != "Running" || ready[1] != ready[2]) {
+          print $1
+        }
+      }
+    '
+  kubectl -n "$NAMESPACE" get pods \
+    -l 'app.kubernetes.io/name=keycloak-operator' \
+    --no-headers 2>/dev/null |
+    awk '
+      {
+        split($2, ready, "/")
+        if ($3 != "Running" || ready[1] != ready[2]) {
+          print $1
+        }
+      }
+    '
+}
+
+bad_pod_count() {
+  get_unready_controller_pods | sed '/^$/d' | wc -l
+}
+
+recycle_unready_controller_pods() {
+  local pods
+  pods="$(get_unready_controller_pods | sed '/^$/d' | sort -u)"
+  if [ -z "$pods" ]; then
+    return 0
+  fi
+
+  warn "Recycling unready long-lived pods after k3s runtime restart:"
+  printf '%s\n' "$pods"
+  printf '%s\n' "$pods" | xargs -r kubectl -n "$NAMESPACE" delete pod --wait=false
 }
 
 wait_for_pods() {
@@ -90,6 +151,7 @@ if [ "$(bad_pod_count)" != "0" ]; then
   warn "Pods are not ready yet. Restarting k3s once, then waiting without rolling every workload."
   systemctl restart k3s
   wait_for_kubectl 60 3
+  recycle_unready_controller_pods
   wait_for_pods 72 5 || {
     warn "Pods did not all become ready. Current state:"
     kubectl -n "$NAMESPACE" get pods || true

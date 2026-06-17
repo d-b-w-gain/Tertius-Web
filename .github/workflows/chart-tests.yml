@@ -82,6 +82,7 @@ jobs:
       TIMEOUT: 6m
       KEDA_ENABLED: "true"
       BUILDX_GHA_CACHE: "true"
+      CLEAN_LOCAL_IMAGES_AFTER_LOAD: "true"
 
       CI_CACHE_EPOCH: 2026-06-15-v1
 

@@ -6,6 +6,7 @@ PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:18080}"
 REALM="${REALM:-tertius}"
 UI_CLIENT_ID="${UI_CLIENT_ID:-tertius-ui}"
 API_CLIENT_ID="${API_CLIENT_ID:-tertius-api}"
+KEYCLOAK_ADMIN_SECRET="${KEYCLOAK_ADMIN_SECRET:-tertius-keycloak-initial-admin}"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -16,7 +17,7 @@ ok() {
 }
 
 issuer="${PUBLIC_BASE_URL}/realms/${REALM}"
-jwks="http://tertius-keycloak:8080/realms/${REALM}/protocol/openid-connect/certs"
+jwks="http://tertius-keycloak-service:8080/realms/${REALM}/protocol/openid-connect/certs"
 
 step "Repairing API auth environment"
 kubectl -n "$NAMESPACE" set env deployment/tertius-api \
@@ -30,12 +31,29 @@ kubectl -n "$NAMESPACE" rollout status deployment/tertius-api --timeout=180s
 ok "API auth env is set for ${issuer}"
 
 step "Finding Keycloak pod"
-keycloak_pod="$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/name=tertius-keycloak -o jsonpath='{.items[0].metadata.name}')"
+keycloak_pod="$(kubectl -n "$NAMESPACE" get pod -l app=keycloak,app.kubernetes.io/managed-by=keycloak-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+if [ -z "$keycloak_pod" ]; then
+  keycloak_pod="$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/instance=tertius-keycloak,app.kubernetes.io/component=server -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+fi
+if [ -z "$keycloak_pod" ]; then
+  echo "Could not find the Keycloak server pod in namespace '${NAMESPACE}'." >&2
+  kubectl -n "$NAMESPACE" get pods --show-labels >&2
+  exit 1
+fi
 ok "Using Keycloak pod ${keycloak_pod}"
+
+step "Reading Keycloak admin credentials"
+keycloak_admin_user="$(kubectl -n "$NAMESPACE" get secret "$KEYCLOAK_ADMIN_SECRET" -o jsonpath='{.data.username}' | base64 -d)"
+keycloak_admin_password="$(kubectl -n "$NAMESPACE" get secret "$KEYCLOAK_ADMIN_SECRET" -o jsonpath='{.data.password}' | base64 -d)"
+if [ -z "$keycloak_admin_user" ] || [ -z "$keycloak_admin_password" ]; then
+  echo "Secret '${KEYCLOAK_ADMIN_SECRET}' must contain username and password." >&2
+  exit 1
+fi
+ok "Using admin user from secret ${KEYCLOAK_ADMIN_SECRET}"
 
 step "Waiting for Keycloak admin endpoint"
 for i in $(seq 1 60); do
-  if kubectl -n "$NAMESPACE" exec "$keycloak_pod" -- /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password admin >/dev/null 2>&1; then
+  if kubectl -n "$NAMESPACE" exec "$keycloak_pod" -- /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user "$keycloak_admin_user" --password "$keycloak_admin_password" >/dev/null 2>&1; then
     ok "Keycloak admin login succeeded"
     break
   fi

@@ -17,8 +17,8 @@ class FakeJetStream:
         self.added_consumers = []
         self.core_published = []
 
-    async def publish(self, subject, payload, headers=None):
-        self.published.append((subject, payload, headers))
+    async def publish(self, subject, payload, headers=None, timeout=None):
+        self.published.append((subject, payload, headers, timeout))
 
     async def stream_info(self, name):
         from nats.js.errors import NotFoundError
@@ -76,11 +76,12 @@ async def test_nats_publisher_publishes_json_through_jetstream():
     await publisher.publish_json("tertius.compile.request", command)
 
     assert len(jetstream.published) == 1
-    subject, payload, headers = jetstream.published[0]
+    subject, payload, headers, timeout = jetstream.published[0]
     assert subject == "tertius.compile.request"
     assert isinstance(payload, bytes)
     assert b'"export_format":"glb"' in payload
     assert headers is None
+    assert timeout == 60.0
 
 
 @pytest.mark.asyncio
@@ -98,10 +99,11 @@ async def test_nats_publisher_uses_message_id_header_for_dedupe():
 
     await publisher.publish_json("tertius.compile.result", command, message_id="compile-result-1")
 
-    subject, payload, headers = jetstream.published[0]
+    subject, payload, headers, timeout = jetstream.published[0]
     assert subject == "tertius.compile.result"
     assert isinstance(payload, bytes)
     assert headers == {"Nats-Msg-Id": "compile-result-1"}
+    assert timeout == 60.0
 
 
 @pytest.mark.asyncio
@@ -124,7 +126,7 @@ async def test_ensure_compile_stream_creates_stream_and_durable_consumer():
     assert consumer_config.filter_subject == "tertius.compile.request"
     assert consumer_config.ack_wait == 900
     assert consumer_config.as_dict()["ack_wait"] == 900_000_000_000
-    assert consumer_config.max_deliver == 3
+    assert consumer_config.max_deliver == 1
     result_consumer_config = jetstream.consumers[("TERTIUS_COMPILE", "compile-result-api")]
     assert result_consumer_config.durable_name == "compile-result-api"
     assert result_consumer_config.filter_subject == "tertius.compile.result"
@@ -162,7 +164,7 @@ async def test_ensure_compile_stream_updates_existing_stream_subjects_and_max_me
         "tertius.compile.request",
         "tertius.compile.result",
     ]
-    assert stream_config.max_msg_size == 33554432
+    assert stream_config.max_msg_size == 90 * 1024 * 1024
 
 
 @pytest.mark.asyncio

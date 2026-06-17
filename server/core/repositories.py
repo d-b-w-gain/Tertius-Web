@@ -401,18 +401,26 @@ class CompileRepository:
             )
         )
 
-    def stale_running_jobs(self, limit: int = 50) -> list[CompileJob]:
+    def stale_running_jobs(self, older_than_seconds: int, limit: int = 50) -> list[CompileJob]:
         now = now_utc()
+        cutoff = now - timedelta(seconds=older_than_seconds)
         return list(
             self.db.scalars(
                 select(CompileJob)
                 .where(
                     CompileJob.tenant_id == self.tenant_id,
                     CompileJob.status == "running",
-                    CompileJob.lease_expires_at.is_not(None),
-                    CompileJob.lease_expires_at < now,
+                    or_(
+                        (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
+                        (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < cutoff)),
+                        (
+                            CompileJob.claimed_at.is_(None)
+                            & CompileJob.lease_expires_at.is_(None)
+                            & (CompileJob.created_at < cutoff)
+                        ),
+                    ),
                 )
-                .order_by(CompileJob.lease_expires_at)
+                .order_by(CompileJob.lease_expires_at, CompileJob.created_at)
                 .limit(limit)
             )
         )
@@ -422,9 +430,11 @@ class CompileRepository:
         project_id: UUID,
         job_id: UUID,
         queued_older_than_seconds: int,
+        running_older_than_seconds: int,
     ) -> CompileJob | None:
         now = now_utc()
         queued_cutoff = now - timedelta(seconds=queued_older_than_seconds)
+        running_cutoff = now - timedelta(seconds=running_older_than_seconds)
         stmt = (
             update(CompileJob)
             .where(
@@ -434,8 +444,15 @@ class CompileRepository:
                 or_(
                     (
                         (CompileJob.status == "running")
-                        & CompileJob.lease_expires_at.is_not(None)
-                        & (CompileJob.lease_expires_at < now)
+                        & or_(
+                            (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
+                            (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < running_cutoff)),
+                            (
+                                CompileJob.claimed_at.is_(None)
+                                & CompileJob.lease_expires_at.is_(None)
+                                & (CompileJob.created_at < running_cutoff)
+                            ),
+                        )
                     ),
                     (
                         (CompileJob.status == "queued")

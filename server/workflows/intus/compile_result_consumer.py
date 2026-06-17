@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import logging
 from datetime import timedelta
 
@@ -94,13 +95,14 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         _record_usage_if_applicable(db, result, job, settings)
         db.commit()
         return True
-    if len(artifact_bytes) > settings.compile_result_max_bytes:
+    max_decompressed_bytes = 256 * 1024 * 1024  # 256MB limit for database/cache storage
+    if len(artifact_bytes) > max_decompressed_bytes:
         repo.finish_job(
             job,
             "failed",
-            error=f"Compile artifact is {len(artifact_bytes)} bytes, above {settings.compile_result_max_bytes} byte limit",
+            error=f"Compile artifact is {len(artifact_bytes)} bytes, above {max_decompressed_bytes} byte limit",
             error_code="artifact_too_large",
-            user_message="Compile succeeded but the artifact is too large to return.",
+            user_message="Compile succeeded but the decompressed artifact is too large to return.",
             retryable=False,
         )
         _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
@@ -208,17 +210,22 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
 
 
 def fail_stale_running_jobs(db) -> int:
+    settings = get_settings()
+    stale_after_seconds = settings.compile_timeout_seconds + 30
     tenant_ids = db.scalars(select(CompileJob.tenant_id).where(CompileJob.status == "running").distinct()).all()
     count = 0
     for tenant_id in tenant_ids:
         repo = CompileRepository(db, tenant_id)
-        for job in repo.stale_running_jobs():
+        for job in repo.stale_running_jobs(older_than_seconds=stale_after_seconds):
             repo.finish_job(
                 job,
                 "failed",
-                error="Compile job lease expired before a result was recorded",
-                error_code="stale_running",
-                user_message="Compile did not finish before the worker stopped. Try again.",
+                error="Compile worker stopped before reporting a result",
+                error_code="worker_lost",
+                user_message=(
+                    "Compile worker stopped unexpectedly. The model may have exceeded available memory "
+                    "or the worker was restarted."
+                ),
                 retryable=True,
             )
             count += 1
@@ -288,6 +295,10 @@ def _decode_artifact(result: CompileResultPayload) -> bytes:
     if not result.artifact_content_base64:
         raise ValueError("succeeded compile result did not include artifact content")
     artifact_bytes = base64.b64decode(result.artifact_content_base64.encode("ascii"), validate=True)
+
+    if result.is_compressed:
+        artifact_bytes = gzip.decompress(artifact_bytes)
+
     if result.artifact_byte_size is not None and result.artifact_byte_size != len(artifact_bytes):
         raise ValueError("compile result artifact byte size did not match decoded content")
     return artifact_bytes

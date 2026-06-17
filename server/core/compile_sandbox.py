@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 import os
 import signal
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,9 +24,9 @@ if not hasattr(TopoDS_Shape, "HashCode"):
         return hash(self) % upper_bound
 
     TopoDS_Shape.HashCode = _topods_shape_hash_code
-
 project_dir = Path.cwd()
 export_format = sys.argv[1].lower()
+quality_arg = sys.argv[2].lower() if len(sys.argv) > 2 else None
 output_path = project_dir / f"output.{export_format}"
 env = {"bd": bd, "build123d": bd}
 
@@ -85,14 +85,35 @@ try:
     elif export_format == "step":
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
-        bd.export_gltf(compound, str(output_path), binary=(export_format == "glb"))
+        deflection = 0.001
+        if quality_arg == "sketch":
+            deflection = 200.0
+        elif quality_arg == "rough":
+            deflection = 100.0
+        elif quality_arg == "low":
+            deflection = 50.0
+        elif quality_arg == "medium":
+            deflection = 30.0
+        elif quality_arg == "normal":
+            deflection = 10.0
+        elif quality_arg == "high":
+            deflection = 1.0
+
+        bd.export_gltf(
+            compound,
+            str(output_path),
+            binary=(export_format == "glb"),
+            linear_deflection=deflection,
+            angular_deflection=0.1
+        )
 
         if export_format == "glb":
             try:
                 from build123d.exporters3d import _create_xde
                 from OCP.XCAFDoc import XCAFDoc_DocumentTool
-                from OCP.TCollection import TCollection_AsciiString
+                from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
                 from OCP.TDF import TDF_Tool
+                from OCP.TDataStd import TDataStd_Name
                 import json
                 import struct
 
@@ -119,11 +140,12 @@ try:
                         if not inst_label.IsNull():
                             entry = TCollection_AsciiString()
                             TDF_Tool.Entry_s(inst_label, entry)
-                            node_tag = f"=>[{entry.ToCString()}]"
+                            tag = f"=>[{entry.ToCString()}]"
                             if node.label:
-                                tag_to_name[node_tag] = node.label
+                                tag_to_name[tag] = node.label
                             if node.color is not None:
-                                tag_to_color[node_tag] = color_factor(node.color)
+                                tag_to_color[tag] = color_factor(node.color)
+                            TDataStd_Name.Set_s(inst_label, TCollection_ExtendedString(tag))
 
                 compound.location = original_location
 
@@ -144,11 +166,6 @@ try:
                     gltf_json = json.loads(json_data)
 
                     changed = False
-                    # Build123D sometimes exports valid material base colours for
-                    # compounds without giving us a node tag match above. Mark
-                    # those explicit GLTF colours as authored so the viewer does
-                    # not replace them with the default steel material while
-                    # batching meshes.
                     for material in gltf_json.get("materials", []):
                         pbr = material.get("pbrMetallicRoughness")
                         if isinstance(pbr, dict) and "baseColorFactor" in pbr:
@@ -204,6 +221,12 @@ try:
         from OCP.HLRBRep import HLRBRep_PolyAlgo, HLRBRep_PolyHLRToShape
         from OCP.gp import gp_Ax2, gp_Pnt, gp_Dir, gp_Pnt2d
         from OCP.BRepMesh import BRepMesh_IncrementalMesh
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopAbs import TopAbs_SOLID
+        from OCP.TopoDS import TopoDS_Compound
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepBndLib import BRepBndLib
+        from OCP.Bnd import Bnd_Box
         from OCP.HLRAlgo import HLRAlgo_Projector
 
         # 1. Output parameters
@@ -221,11 +244,26 @@ try:
         min_model_size = line_weight_mm / scale
         deflection = min_model_size / 2.0
 
-        # 2. Analytic HLR projection on model
-        # Project the build123d shape directly; wrapping a manually-built OCP
-        # compound can fail in build123d's viewport projection path.
-        projection_shape = compound
-        bbox = projection_shape.bounding_box()
+        # 2. Cull tiny geometry
+        builder = BRep_Builder()
+        culled_compound = TopoDS_Compound()
+        builder.MakeCompound(culled_compound)
+
+        explorer = TopExp_Explorer(compound.wrapped, TopAbs_SOLID)
+        while explorer.More():
+            solid = explorer.Current()
+            bbox_obj = Bnd_Box()
+            BRepBndLib.Add_s(solid, bbox_obj)
+            xmin, ymin, zmin, xmax, ymax, zmax = bbox_obj.Get()
+            max_dim = max(xmax - xmin, ymax - ymin, zmax - zmin)
+            
+            if max_dim >= min_model_size:
+                builder.Add(culled_compound, solid)
+            explorer.Next()
+            
+        # 3. Analytic HLR projection on culled model
+        culled_bd = bd.Compound(culled_compound)
+        bbox = culled_bd.bounding_box()
         look_at = bbox.center()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
         if max_dim == 0:
@@ -247,7 +285,7 @@ try:
                 up_dir = (0, 0, 1)
                 
             try:
-                visible, hidden = projection_shape.project_to_viewport(
+                visible, hidden = culled_bd.project_to_viewport(
                     origin, 
                     viewport_up=up_dir, 
                     look_at=(look_at.X, look_at.Y, look_at.Z)
@@ -258,17 +296,9 @@ try:
                 def extract_edges(shape_list, is_hidden):
                     if not shape_list: return
                     for shape in shape_list:
-                        try:
-                            edges = list(shape.edges()) if hasattr(shape, "edges") else []
-                        except Exception:
-                            edges = []
-                        if not edges:
-                            edges = [shape]
-                        for edge in edges:
+                        for edge in shape.edges():
                             try:
-                                geom_type = edge.geom_type() if callable(edge.geom_type) else edge.geom_type
-                                geom_name = getattr(geom_type, "name", str(geom_type))
-                                if geom_name == 'LINE':
+                                if edge.geom_type.name == 'LINE':
                                     p1 = edge.position_at(0)
                                     p2 = edge.position_at(1)
                                     segments.append(((p1.X, p1.Y), (p2.X, p2.Y), is_hidden))
@@ -308,15 +338,7 @@ class CompileSandboxResult:
     error: str | None
 
 
-def _sandbox_env() -> dict[str, str]:
-    return {
-        "PATH": "",
-        "PYTHONPATH": "",
-        "PYTHONIOENCODING": "utf-8",
-    }
-
-
-def _text(value: str | bytes | None) -> str:
+def _subprocess_output_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
@@ -324,7 +346,38 @@ def _text(value: str | bytes | None) -> str:
     return value
 
 
-def run_compile_sandbox(project_dir: Path, export_format: str, timeout_seconds: int = 30) -> CompileSandboxResult:
+def _sandbox_env(project_dir: Path) -> dict[str, str]:
+    sandbox_home = str(project_dir)
+    env = {
+        "HOME": sandbox_home,
+        "PATH": "",
+        "PYTHONPATH": "",
+        "PYTHONIOENCODING": "utf-8",
+        "TMP": sandbox_home,
+        "TEMP": sandbox_home,
+    }
+    if sys.platform == "win32":
+        env["USERPROFILE"] = sandbox_home
+        for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"):
+            if value := os.environ.get(name):
+                env[name] = value
+    return env
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+
+    os.killpg(process.pid, signal.SIGKILL)
+
+
+def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | None = None, timeout_seconds: int = 30) -> CompileSandboxResult:
     ext = export_format.lower()
     if ext not in SUPPORTED_EXPORT_FORMATS:
         return CompileSandboxResult(
@@ -336,25 +389,40 @@ def run_compile_sandbox(project_dir: Path, export_format: str, timeout_seconds: 
         )
 
     output_path = project_dir / f"output.{ext}"
-    process = subprocess.Popen(
-        [sys.executable, "-c", SANDBOX_SCRIPT, ext],
-        cwd=project_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=_sandbox_env(),
-        start_new_session=True,
-    )
+    args = [sys.executable, "-c", SANDBOX_SCRIPT, ext]
+    if quality:
+        args.append(quality)
+
+    if sys.platform == "win32":
+        process = subprocess.Popen(
+            args,
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_sandbox_env(project_dir),
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        process = subprocess.Popen(
+            args,
+            cwd=project_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_sandbox_env(project_dir),
+            start_new_session=True,
+        )
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        os.killpg(process.pid, signal.SIGKILL)
+        _kill_process_tree(process)
         stdout, stderr = process.communicate()
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=_text(exc.stdout) or _text(stdout),
-            stderr=_text(exc.stderr) or _text(stderr),
+            stdout=_subprocess_output_text(exc.stdout) or _subprocess_output_text(stdout),
+            stderr=_subprocess_output_text(exc.stderr) or _subprocess_output_text(stderr),
             error=f"Compile timed out after {timeout_seconds} seconds",
         )
 

@@ -441,7 +441,7 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     persisted = db_session.get(CompileJob, job.id)
     assert failed == 1
     assert persisted.status == "failed"
-    assert persisted.error_code == "stale_running"
+    assert persisted.error_code == "worker_lost"
     assert persisted.retryable is True
 
 

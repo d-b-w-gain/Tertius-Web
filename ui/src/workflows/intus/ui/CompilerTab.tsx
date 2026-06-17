@@ -50,10 +50,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
   const [format, setFormat] = useState<string>('glb');
-  const [quality, setQuality] = useState<string>('high');
+  const [quality, setQuality] = useState<string>('sketch');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
-  const [autoCompile, setAutoCompile] = useState<boolean>(true);
+  const [autoCompile, setAutoCompile] = useState<boolean>(false);
   const [failedCompileRetry, setFailedCompileRetry] = useState<{ code: string } | null>(null);
   
   const [files, setFiles] = useState<string[]>(['design.py']);
@@ -393,6 +393,39 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFiles = e.target.files;
+    if (!uploadedFiles || uploadedFiles.length === 0) return;
+
+    const newFileNames: string[] = [];
+
+    for (let i = 0; i < uploadedFiles.length; i++) {
+      const file = uploadedFiles.item(i);
+      if (!file) continue;
+      const text = await file.text();
+      try {
+        await storage.saveCode(activeProject, file.name, text);
+        newFileNames.push(file.name);
+      } catch (err) {
+        alert(`Failed to upload ${file.name}`);
+      }
+    }
+
+    if (newFileNames.length > 0) {
+      setFiles(prev => Array.from(new Set([...prev, ...newFileNames])));
+      if (newFileNames.includes('design.py')) {
+        switchFile('design.py');
+      } else {
+        const firstFile = newFileNames[0];
+        if (firstFile) {
+          switchFile(firstFile);
+        }
+      }
+    }
+
+    e.target.value = '';
+  };
+
   const handleNewFileSubmit = async () => {
     let name = newFileName.trim();
     if (!name) return;
@@ -476,8 +509,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               onChange={(e) => setQuality(e.target.value)}
             >
               <option value="high">High</option>
+              <option value="normal">Normal</option>
               <option value="medium">Medium</option>
               <option value="low">Low</option>
+              <option value="rough">Rough</option>
+              <option value="sketch">Sketch</option>
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -529,7 +565,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                   f === activeFile ? 'bg-slate-900 border-b-2 border-b-indigo-500' : 'hover:bg-slate-900'
                 }`}
               >
-                <button 
+                <button
                   onClick={() => switchFile(f)}
                   className={`px-4 py-2 text-xs font-mono ${f === activeFile ? 'text-indigo-300 font-bold' : 'text-slate-500 hover:text-slate-300'}`}
                 >
@@ -559,13 +595,27 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                 />
               </form>
             ) : (
-              <button 
-                onClick={() => setIsCreatingFile(true)}
-                className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors"
-                title="New File"
-              >
-                +
-              </button>
+              <div className="flex items-center">
+                <button
+                  onClick={() => setIsCreatingFile(true)}
+                  className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors"
+                  title="New File"
+                >
+                  +
+                </button>
+                <label
+                  className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors cursor-pointer"
+                  title="Upload Files"
+                >
+                  Upload
+                  <input
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileUpload}
+                  />
+                </label>
+              </div>
             )}
           </div>
           <div className="flex-1 w-full relative">

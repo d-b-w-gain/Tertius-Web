@@ -100,7 +100,7 @@ def compile_settings(nats_url: str) -> Settings:
     )
 
 
-def fake_sandbox_success(project_dir, export_format, timeout_seconds):
+def fake_sandbox_success(project_dir, export_format, quality=None, timeout_seconds=30):
     """Return a fake CompileSandboxResult with a tiny STL payload."""
     from core.compile_sandbox import CompileSandboxResult
 
@@ -115,7 +115,7 @@ def fake_sandbox_success(project_dir, export_format, timeout_seconds):
     )
 
 
-def fake_sandbox_failure(project_dir, export_format, timeout_seconds):
+def fake_sandbox_failure(project_dir, export_format, quality=None, timeout_seconds=30):
     """Return a fake CompileSandboxResult indicating failure."""
     from core.compile_sandbox import CompileSandboxResult
 

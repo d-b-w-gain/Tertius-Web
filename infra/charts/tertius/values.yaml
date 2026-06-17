@@ -22,8 +22,8 @@ app:
     compileWorkerQueue: compile-workers
     compileResultConsumer: compile-result-api
     compileAckWaitSeconds: 900
-    compileMaxDeliver: 3
-    compileTimeoutSeconds: 600
+    compileMaxDeliver: 1
+    compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
     llmBaseUrl: https://api.deepseek.com
@@ -95,12 +95,12 @@ compileJobs:
   resources:
     requests:
       cpu: 500m
-      memory: 512Mi
+      memory: 1Gi
       ephemeral-storage: 512Mi
     limits:
       cpu: "4"
-      memory: 4Gi
-      ephemeral-storage: 2Gi
+      memory: 8Gi
+      ephemeral-storage: 4Gi
 keda:
   enabled: true
 ui:
