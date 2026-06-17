@@ -50,7 +50,7 @@ def get_default_purlin():
 
 DEFAULT_PURLIN = get_default_purlin()
 
-# â”€â”€ Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
     file: Optional[str] = "design.py"
@@ -58,6 +58,7 @@ class CodeRequest(BaseModel):
 class CompileRequest(BaseModel):
     code: str
     export_format: str = "stl"
+    quality: Optional[str] = None
     file: Optional[str] = "design.py"
 
 
@@ -288,6 +289,7 @@ async def compile_project(
             project_id=project_id,
             requested_by=ctx.user_id,
             export_format=ext,
+            quality=req.quality,
             created_at=job.created_at,
             files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
             request_id=request_id,
@@ -491,10 +493,12 @@ def get_compile_job_status(
     job = compile_repo.get_job(project.id, job_id)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "Compile job not found"})
+    settings = get_settings()
     job = compile_repo.reconcile_stale_job(
         project.id,
         job.id,
-        queued_older_than_seconds=get_settings().compile_ack_wait_seconds,
+        queued_older_than_seconds=settings.compile_ack_wait_seconds,
+        running_older_than_seconds=settings.compile_timeout_seconds + 30,
     )
     db.commit()
     if job is None:

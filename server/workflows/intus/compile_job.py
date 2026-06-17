@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import logging
 from datetime import datetime, timezone
 
@@ -60,6 +61,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
+            quality=command.quality,
             timeout_seconds=settings.compile_timeout_seconds,
         )
         if not result.success:
@@ -85,15 +87,25 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
             )
         output_bytes = result.output_path.read_bytes()
 
+    is_compressed = False
+    payload_bytes = output_bytes
+
+    # Compress the artifact if it might reduce payload size over NATS
+    compressed_bytes = gzip.compress(output_bytes)
+    if len(compressed_bytes) < len(output_bytes):
+        payload_bytes = compressed_bytes
+        is_compressed = True
+
     success = CompileResultPayload(
         job_id=command.job_id,
         tenant_id=command.tenant_id,
         project_id=command.project_id,
         export_format=command.export_format,
         status="succeeded",
-        artifact_content_base64=base64.b64encode(output_bytes).decode("ascii"),
-        artifact_byte_size=len(output_bytes),
+        artifact_content_base64=base64.b64encode(payload_bytes).decode("ascii"),
+        artifact_byte_size=len(output_bytes),  # original uncompressed size
         artifact_content_type=None,
+        is_compressed=is_compressed,
         worker_started_at=started_at,
         worker_finished_at=now_utc(),
     )
@@ -178,12 +190,16 @@ def _failed_result(
 
 
 def _error_code(error: str) -> str:
+    if "killed" in error.lower() and "memory" in error.lower():
+        return "worker_oom"
     if "timed out" in error.lower():
         return "timeout"
     return "sandbox_error"
 
 
 def _user_message(error: str) -> str:
+    if "killed" in error.lower() and "memory" in error.lower():
+        return "Compile ran out of memory while building the model. Try simplifying the model or exporting a smaller format."
     if "timed out" in error.lower():
         return "Compile timed out after 10 minutes. Try again."
     return "Compile failed. Fix the model source and try again."

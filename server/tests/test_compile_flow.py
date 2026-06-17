@@ -221,6 +221,58 @@ def test_compile_job_status_marks_expired_running_job_failed(authenticated_intus
     assert body["finished_at"] is not None
 
 
+def test_compile_job_status_marks_long_running_job_failed_before_ack_wait(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    settings = intus_server.get_settings()
+    monkeypatch.setattr(settings, "compile_timeout_seconds", 60)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+        claimed_at=now_utc() - timedelta(minutes=5),
+        lease_expires_at=now_utc() + timedelta(minutes=10),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "worker_lost"
+    assert body["user_message"] == (
+        "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
+    )
+
+
+def test_compile_job_status_marks_legacy_running_job_without_lease_failed(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    settings = intus_server.get_settings()
+    monkeypatch.setattr(settings, "compile_timeout_seconds", 60)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = authenticated_intus_client.get(f"/projects/default_purlin/compile/jobs/{job.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "worker_lost"
+
+
 def test_compile_job_status_marks_old_queued_job_failed(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):

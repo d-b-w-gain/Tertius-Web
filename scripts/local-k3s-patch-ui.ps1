@@ -11,9 +11,10 @@ function Write-Ok {
     Write-Host "OK: $Message" -ForegroundColor Green
 }
 
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $uiDir = Join-Path $repoRoot "ui"
-$wslRepoRoot = (wsl -d Ubuntu-24.04 -- wslpath -a $repoRoot).Trim()
+$repoRootForwardSlashes = $repoRoot.Replace('\', '/')
+$wslRepoRoot = (wsl -d Ubuntu-24.04 -- wslpath -a "$repoRootForwardSlashes").Trim()
 Write-Step "Building patched UI bundle"
 Push-Location $uiDir
 try {

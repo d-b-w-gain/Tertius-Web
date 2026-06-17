@@ -18,6 +18,7 @@ class CompileCommand(BaseModel):
     project_id: UUID
     requested_by: UUID
     export_format: str
+    quality: str | None = None
     created_at: datetime
     files: list[CompileSourceFile] = []
     request_id: str | None = None
@@ -36,6 +37,7 @@ class CompileResultPayload(BaseModel):
     user_message: str | None = None
     error: str | None = None
     retryable: bool = False
+    is_compressed: bool = False
     worker_started_at: datetime
     worker_finished_at: datetime
 

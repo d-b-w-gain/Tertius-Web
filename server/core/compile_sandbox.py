@@ -92,8 +92,9 @@ try:
             try:
                 from build123d.exporters3d import _create_xde
                 from OCP.XCAFDoc import XCAFDoc_DocumentTool
-                from OCP.TCollection import TCollection_AsciiString
+                from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
                 from OCP.TDF import TDF_Tool
+                from OCP.TDataStd import TDataStd_Name
                 import json
                 import struct
 
@@ -125,6 +126,7 @@ try:
                                     node.color.wrapped.GetRGB().Blue(),
                                     node.color.wrapped.Alpha()
                                 ]
+                            TDataStd_Name.Set_s(inst_label, TCollection_ExtendedString(tag))
 
                 compound.location = original_location
 
