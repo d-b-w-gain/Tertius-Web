@@ -607,6 +607,12 @@ describe('CompilerTab compile jobs', () => {
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: 'helper.py' })).not.toBeInTheDocument()
     })
+    const deleteCallOrder = storage.deleteFile.mock.invocationCallOrder[0] ?? 0
+    const laterHelperSaves = storage.saveCode.mock.calls.filter((call, index) => {
+      const callOrder = storage.saveCode.mock.invocationCallOrder[index] ?? 0
+      return callOrder > deleteCallOrder && call[0] === 'default_purlin' && call[1] === 'helper.py'
+    })
+    expect(laterHelperSaves).toEqual([])
     fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'update remaining file' } })
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
@@ -615,6 +621,44 @@ describe('CompilerTab compile jobs', () => {
         { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:02:00Z' },
       ])
     })
+  })
+
+  it('deletes the active file without saving it back before switching to design.py', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    storage.listFileMetadata
+      .mockResolvedValueOnce([
+        { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+        { id: 'file-helper-id', filename: 'helper.py', updated_at: '2026-06-17T00:01:00Z' },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:02:00Z' },
+      ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'helper.py') return Promise.resolve('helper code')
+      return Promise.resolve('design code')
+    })
+
+    await renderCompiler()
+
+    fireEvent.click(screen.getByRole('button', { name: 'helper.py' }))
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('helper code')
+    })
+    fireEvent.change(screen.getByLabelText('code editor'), { target: { value: 'edited helper code' } })
+    fireEvent.click(screen.getByTitle('Delete file'))
+
+    await waitFor(() => {
+      expect(storage.deleteFile).toHaveBeenCalledWith('default_purlin', 'helper.py')
+      expect(screen.getByRole('button', { name: 'design.py' })).toHaveClass('text-indigo-300')
+      expect(screen.getByLabelText('code editor')).toHaveValue('design code')
+    })
+
+    const deleteCallOrder = storage.deleteFile.mock.invocationCallOrder[0] ?? 0
+    const laterHelperSaves = storage.saveCode.mock.calls.filter((call, index) => {
+      const callOrder = storage.saveCode.mock.invocationCallOrder[index] ?? 0
+      return callOrder > deleteCallOrder && call[0] === 'default_purlin' && call[1] === 'helper.py'
+    })
+    expect(laterHelperSaves).toEqual([])
   })
 
   it('caps AI edit requests at 20 files while keeping the active file', async () => {

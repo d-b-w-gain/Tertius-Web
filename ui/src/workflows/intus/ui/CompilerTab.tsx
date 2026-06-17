@@ -399,13 +399,17 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     return () => clearInterval(interval);
   }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 
-  const switchFile = async (fileName: string) => {
+  const switchFile = async (
+    fileName: string,
+    options: { saveCurrent?: boolean } = { saveCurrent: true },
+  ) => {
     if (fileName === activeFile) return;
     
-    // Auto-save current before switching
-    try {
-      await storage.saveCode(activeProject, activeFile, code);
-    } catch(e) {}
+    if (options.saveCurrent !== false) {
+      try {
+        await storage.saveCode(activeProject, activeFile, code);
+      } catch(e) {}
+    }
 
     setActiveFile(fileName);
     mtimeRef.current = 0; // Prevent false-positive sync when switching files
@@ -432,7 +436,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       await refreshFileMetadata(activeProject);
       setIsCreatingFile(false);
       setNewFileName('');
-      switchFile(name);
+      await switchFile(name);
     } catch (e) {
       alert("Network error creating file");
     }
@@ -447,7 +451,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       await refreshFileMetadata(activeProject);
       
       if (activeFile === fileName) {
-        switchFile('design.py');
+        await switchFile('design.py', { saveCurrent: false });
       }
     } catch (e) {
       alert("Network error deleting file");

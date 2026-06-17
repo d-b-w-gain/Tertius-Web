@@ -220,6 +220,79 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
     assert message_id is not None
 
 
+def test_llm_file_edit_allows_provider_to_return_changed_subset(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    helper = ProjectFile(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        filename="helper.py",
+        content="def make_purlin():\n    return None\n",
+    )
+    db_session.add(helper)
+    db_session.commit()
+
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_helper_content = helper.content
+
+    fake_result = SimpleNamespace(
+        success=True,
+        files=[
+            SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
+        ],
+        model="deepseek-v4-flash",
+        usage=TokenUsage(prompt_tokens=100, completion_tokens=200, total_tokens=300),
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", make_fake_generate_file_edits(return_value=fake_result))
+
+    publisher = FakeBillingPublisher()
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [
+                file_pointer(design),
+                file_pointer(helper),
+            ],
+            "active_file_id": str(design.id),
+            "metadata": {"source": "compiler_tab"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert len(body["files"]) == 1
+    assert body["files"][0]["filename"] == "design.py"
+
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design.id).content == "import helper\n"
+    assert db_session.get(ProjectFile, helper.id).content == original_helper_content
+    assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
+    assert db_session.scalar(
+        select(func.count()).select_from(LlmUsageRecord).where(
+            LlmUsageRecord.tenant_id == seeded_tenant.tenant_id,
+            LlmUsageRecord.operation == "files.llm_edit",
+        )
+    ) == 1
+    assert len(publisher.published) == 1
+
+
 def test_llm_file_edit_returns_409_when_file_version_changes_before_persist(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):

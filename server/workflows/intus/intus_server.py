@@ -641,13 +641,29 @@ async def llm_edit_files(
                 content={"success": False, "error": "LLM returned no file changes", "retryable": False},
             )
         try:
+            requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
+            requested_files = repo.files_by_ids(name, list(requested_versions.keys()))
+            if set(requested_files) != set(requested_versions):
+                return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
+            for file_id, expected_updated_at in requested_versions.items():
+                if normalize_file_version(requested_files[file_id].updated_at) != normalize_file_version(expected_updated_at):
+                    db.rollback()
+                    return JSONResponse(
+                        status_code=status.HTTP_409_CONFLICT,
+                        content={
+                            "success": False,
+                            "error": "Files changed while AI edit was running. Reload and try again.",
+                            "retryable": False,
+                        },
+                    )
             updates = {edit.file_id: edit.content for edit in result.files}
+            changed_versions = {file_id: requested_versions[file_id] for file_id in updates}
             stage_result = repo.stage_file_updates(
                 name,
                 updates,
                 ctx.user_id,
                 f"LLM edit: {req.prompt[:480]}",
-                expected_updated_at={pointer.id: pointer.updated_at for pointer in req.files},
+                expected_updated_at=changed_versions,
             )
         except ValueError as exc:
             if str(exc) == "LLM returned no file changes":
