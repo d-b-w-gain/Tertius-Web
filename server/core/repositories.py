@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
@@ -21,6 +21,18 @@ WORKER_LOST_ERROR_CODE = "worker_lost"
 WORKER_LOST_USER_MESSAGE = (
     "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
 )
+
+
+class FileVersionConflictError(RuntimeError):
+    pass
+
+
+def normalize_file_version(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat(timespec="microseconds")
 
 
 def require_valid_python_filename(filename: str) -> str:
@@ -202,7 +214,7 @@ class ProjectRepository:
                 ProjectFile.tenant_id == self.tenant_id,
                 ProjectFile.project_id == project.id,
                 ProjectFile.id.in_(file_ids),
-            )
+            ).execution_options(populate_existing=True)
         ).all()
         return {row.id: row for row in rows}
 
@@ -212,6 +224,7 @@ class ProjectRepository:
         updates: dict[UUID, str],
         user_id: UUID,
         message: str,
+        expected_updated_at: dict[UUID, datetime] | None = None,
     ) -> tuple[SourceSnapshot, list[ProjectFile]] | None:
         project = self.get_project(project_name)
         if project is None:
@@ -219,6 +232,11 @@ class ProjectRepository:
         files = self.files_by_ids(project_name, list(updates.keys()))
         if set(files) != set(updates):
             return None
+        if expected_updated_at is not None:
+            for file_id, expected_version in expected_updated_at.items():
+                file = files.get(file_id)
+                if file is None or normalize_file_version(file.updated_at) != normalize_file_version(expected_version):
+                    raise FileVersionConflictError("Files changed while AI edit was running")
         now = now_utc()
         changed: list[ProjectFile] = []
         for file_id, content in updates.items():

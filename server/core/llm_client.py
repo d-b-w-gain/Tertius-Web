@@ -92,6 +92,7 @@ class BuildScriptGenerationResult(BaseModel):
 class LlmFilePointer(BaseModel):
     id: UUID
     filename: str
+    updated_at: datetime
 
 
 class LlmEditableFile(BaseModel):

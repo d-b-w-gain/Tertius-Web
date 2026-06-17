@@ -135,7 +135,7 @@ describe('projectStorage', () => {
 
     const result = await storage.applyLlmFileEdit('demo', {
       prompt: 'add a docstring',
-      files: [{ id: 'f-1', filename: 'design.py' }],
+      files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       active_file_id: 'f-1',
       metadata: { source: 'inline' },
     })
@@ -148,7 +148,7 @@ describe('projectStorage', () => {
         method: 'POST',
         body: JSON.stringify({
           prompt: 'add a docstring',
-          files: [{ id: 'f-1', filename: 'design.py' }],
+          files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
           active_file_id: 'f-1',
           metadata: { source: 'inline' },
         }),
@@ -166,7 +166,7 @@ describe('projectStorage', () => {
     await expect(
       storage.applyLlmFileEdit('demo', {
         prompt: 'add a docstring',
-        files: [{ id: 'f-1', filename: 'design.py' }],
+        files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       }),
     ).rejects.toThrow('Log in to use AI file edits')
     expect(mocks.apiFetch).not.toHaveBeenCalled()

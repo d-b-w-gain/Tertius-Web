@@ -54,7 +54,7 @@ export type ProjectStorage = {
     projectName: string,
     request: {
       prompt: string
-      files: Array<{ id: string; filename: string }>
+      files: Array<{ id: string; filename: string; updated_at: string }>
       active_file_id?: string
       metadata?: Record<string, string>
     },

@@ -37,7 +37,13 @@ from core.llm_client import (
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
-from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
+from core.repositories import (
+    CompileRepository,
+    FileVersionConflictError,
+    ProjectRepository,
+    normalize_file_version,
+    require_valid_python_filename,
+)
 from workflows.intus.usage_server import router as usage_router
 
 app = FastAPI(title="Intus Compiler Server")
@@ -104,6 +110,7 @@ async def create_billing_publisher(settings):
         raise LlmBillingError("LLM billing failed")
 
 
+# â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _llm_provider_from_settings(settings) -> str:
     if "deepseek" in settings.llm_base_url.lower():
         return "deepseek"
@@ -149,7 +156,7 @@ async def publish_file_edit_billing_event(
         logger.exception("Failed to publish LLM billing usage event")
         raise LlmBillingError("LLM billing failed") from exc
 
-# â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 @app.get("/health")
 def health():
     try:
@@ -587,6 +594,15 @@ async def llm_edit_files(
                 status_code=400,
                 content={"success": False, "error": "File pointer does not match filename"},
             )
+        if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "success": False,
+                    "error": "Files changed while AI edit was running. Reload and try again.",
+                    "retryable": False,
+                },
+            )
 
     editable_files = [
         LlmEditableFile(
@@ -631,6 +647,7 @@ async def llm_edit_files(
                 updates,
                 ctx.user_id,
                 f"LLM edit: {req.prompt[:480]}",
+                expected_updated_at={pointer.id: pointer.updated_at for pointer in req.files},
             )
         except ValueError as exc:
             if str(exc) == "LLM returned no file changes":
@@ -640,6 +657,16 @@ async def llm_edit_files(
                     content={"success": False, "error": "LLM returned no file changes", "retryable": False},
                 )
             raise
+        except FileVersionConflictError:
+            db.rollback()
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "success": False,
+                    "error": "Files changed while AI edit was running. Reload and try again.",
+                    "retryable": False,
+                },
+            )
         if stage_result is None:
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -670,7 +697,7 @@ async def llm_edit_files(
             request=req,
             result=result,
             provider_request_id=getattr(result, "provider_request_id", None),
-            event_id=billing_event_id,
+            event_id=getattr(result, "billing_event_id", None),
             settings=settings,
             operation="files.llm_edit",
         )
@@ -691,7 +718,8 @@ async def llm_edit_files(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"success": False, "error": "LLM returned no file changes", "retryable": False},
         )
-    except LlmInvalidFileEditError:
+    except LlmInvalidFileEditError as exc:
+        logger.debug("LLM file edit response rejected: %s", exc)
         logger.exception("LLM file edit returned invalid response")
         db.rollback()
         return JSONResponse(

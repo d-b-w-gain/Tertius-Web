@@ -17,6 +17,7 @@ const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
 const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
 const COMPILE_STATUS_POLL_MS = 2_000;
 const COMPILE_STATUS_RETRY_MS = 3_000;
+const AI_EDIT_FILE_LIMIT = 20;
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -286,6 +287,13 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     setCode(nextCode);
   }, [fetchGitStatus, storage]);
 
+  const refreshFileMetadata = useCallback(async (projectName: string) => {
+    const metadata = await storage.listFileMetadata(projectName);
+    setFileMetadata(metadata);
+    setFiles(metadata.length > 0 ? metadata.map(file => file.filename) : ['design.py']);
+    return metadata;
+  }, [storage]);
+
   useEffect(() => {
     if (!isActive) return;
     let isMounted = true;
@@ -421,8 +429,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     try {
       await storage.saveCode(activeProject, name, "");
-      
-      setFiles([...files, name]);
+      await refreshFileMetadata(activeProject);
       setIsCreatingFile(false);
       setNewFileName('');
       switchFile(name);
@@ -437,9 +444,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     try {
       await storage.deleteFile(activeProject, fileName);
-      
-      const newFiles = files.filter(f => f !== fileName);
-      setFiles(newFiles);
+      await refreshFileMetadata(activeProject);
       
       if (activeFile === fileName) {
         switchFile('design.py');
@@ -464,16 +469,30 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     await startCompile(code, 'manual');
   };
 
-  const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id);
+  const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id && file.updated_at);
 
   const applyAiEdit = async () => {
     if (isGuest || !activeProject || !aiPrompt.trim() || !hasEditableFilePointers) return;
     setIsApplyingAiEdit(true);
     try {
+      await storage.saveCode(activeProject, activeFile, code);
+      const latestMetadata = await refreshFileMetadata(activeProject);
+      const activeMetadata = latestMetadata.find(file => file.filename === activeFile);
+      const remainingMetadata = latestMetadata.filter(file => file.filename !== activeFile);
+      const requestFiles = [
+        ...(activeMetadata ? [activeMetadata] : []),
+        ...remainingMetadata,
+      ]
+        .filter(file => file.id && file.updated_at)
+        .slice(0, AI_EDIT_FILE_LIMIT);
+      if (requestFiles.length === 0) return;
+      if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
+      }
       const result = await storage.applyLlmFileEdit(activeProject, {
         prompt: aiPrompt.trim(),
-        files: fileMetadata.map(file => ({ id: file.id, filename: file.filename })),
-        active_file_id: fileMetadata.find(file => file.filename === activeFile)?.id,
+        files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
+        active_file_id: activeMetadata?.id,
         metadata: { source: 'compiler_tab' },
       });
       const nextMetadata = result.files.map(file => ({

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -22,6 +23,13 @@ from core.llm_client import (
     generate_file_edits,
     parse_llm_file_edit_response,
 )
+
+
+FILE_UPDATED_AT = datetime(2026, 6, 17, tzinfo=timezone.utc)
+
+
+def llm_file_pointer(file_id: UUID | None = None, filename: str = "design.py") -> LlmFilePointer:
+    return LlmFilePointer(id=file_id or uuid4(), filename=filename, updated_at=FILE_UPDATED_AT)
 
 
 class FakeChatCompletions:
@@ -287,7 +295,7 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
     file_id = uuid4()
     request = LlmFileEditInput(
         prompt="rename length to span",
-        files=[LlmFilePointer(id=file_id, filename="design.py")],
+        files=[llm_file_pointer(file_id)],
         active_file_id=file_id,
     )
     files = [LlmEditableFile(id=file_id, filename="design.py", content="length = 100\n")]
@@ -311,7 +319,7 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
 def test_build_file_edit_messages_includes_none_active_file_id():
     request = LlmFileEditInput(
         prompt="refactor",
-        files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+        files=[llm_file_pointer()],
         active_file_id=None,
     )
     files = [LlmEditableFile(id=request.files[0].id, filename="design.py", content="")]
@@ -327,7 +335,7 @@ def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
     file_id = uuid4()
     request = LlmFileEditInput(
         prompt="x" * 12_000,
-        files=[LlmFilePointer(id=file_id, filename="design.py")],
+        files=[llm_file_pointer(file_id)],
     )
     files = [LlmEditableFile(id=file_id, filename="design.py", content="y" * 200_000)]
 
@@ -340,7 +348,7 @@ def test_llm_file_edit_input_rejects_more_than_50_metadata_entries():
     with pytest.raises(ValidationError, match="metadata must contain at most 50 entries"):
         LlmFileEditInput(
             prompt="edit",
-            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            files=[llm_file_pointer()],
             metadata={f"k{i}": "v" for i in range(51)},
         )
 
@@ -349,7 +357,7 @@ def test_llm_file_edit_input_rejects_metadata_key_longer_than_200_chars():
     with pytest.raises(ValidationError, match="metadata keys must be at most 200 characters"):
         LlmFileEditInput(
             prompt="edit",
-            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            files=[llm_file_pointer()],
             metadata={"k" * 201: "v"},
         )
 
@@ -358,7 +366,7 @@ def test_llm_file_edit_input_rejects_metadata_value_longer_than_200_chars():
     with pytest.raises(ValidationError, match="metadata values must be at most 200 characters"):
         LlmFileEditInput(
             prompt="edit",
-            files=[LlmFilePointer(id=uuid4(), filename="design.py")],
+            files=[llm_file_pointer()],
             metadata={"source": "v" * 201},
         )
 
@@ -386,7 +394,7 @@ def _file_edit_request_and_files() -> tuple[LlmFileEditInput, list[LlmEditableFi
     file_id = uuid4()
     request = LlmFileEditInput(
         prompt="rename length to span",
-        files=[LlmFilePointer(id=file_id, filename="design.py")],
+        files=[llm_file_pointer(file_id)],
         active_file_id=file_id,
         metadata={"source": "compiler_tab"},
     )

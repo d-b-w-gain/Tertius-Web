@@ -20,7 +20,13 @@ from core.models import (
     UserWorkspaceState,
     now_utc,
 )
-from core.repositories import CompileRepository, ProjectRepository, require_valid_project_name, require_valid_python_filename
+from core.repositories import (
+    CompileRepository,
+    FileVersionConflictError,
+    ProjectRepository,
+    require_valid_project_name,
+    require_valid_python_filename,
+)
 
 
 def seed_two_tenants(db: Session):
@@ -403,6 +409,34 @@ def test_project_repository_batch_file_updates_create_one_snapshot(db_session):
     assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
     assert repo.get_code("same_name", "design.py") == "design = 2"
     assert repo.get_code("same_name", "helper.py") == "helper = 2"
+
+
+def test_project_repository_stage_file_updates_rejects_stale_versions_without_snapshot(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo = ProjectRepository(db_session, seeded["tenant_a"])
+    file_row = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded["tenant_a"],
+            ProjectFile.filename == "design.py",
+        )
+    )
+    stale_version = file_row.updated_at
+    file_row.content = "design = user_change"
+    file_row.updated_at = stale_version + timedelta(seconds=1)
+    db_session.commit()
+
+    with pytest.raises(FileVersionConflictError):
+        repo.stage_file_updates(
+            "same_name",
+            {file_row.id: "design = ai_change"},
+            seeded["user_a"],
+            "LLM edit: update design",
+            expected_updated_at={file_row.id: stale_version},
+        )
+
+    db_session.rollback()
+    assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 0
+    assert repo.get_code("same_name", "design.py") == "design = user_change"
 
 
 def test_project_repository_stage_file_updates_truncates_long_snapshot_message(db_session):
