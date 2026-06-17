@@ -205,17 +205,33 @@ class ProjectRepository:
             self.db.commit()
         return saved
 
-    def files_by_ids(self, project_name: str, file_ids: list[UUID]) -> dict[UUID, ProjectFile]:
+    def files_by_ids(
+        self,
+        project_name: str,
+        file_ids: list[UUID],
+        for_update: bool = False,
+    ) -> dict[UUID, ProjectFile]:
         project = self.get_project(project_name)
         if project is None or not file_ids:
             return {}
-        rows = self.db.scalars(
-            select(ProjectFile).where(
+        stmt = (
+            select(ProjectFile)
+            .where(
                 ProjectFile.tenant_id == self.tenant_id,
                 ProjectFile.project_id == project.id,
                 ProjectFile.id.in_(file_ids),
-            ).execution_options(populate_existing=True)
-        ).all()
+            )
+            .execution_options(populate_existing=True)
+        )
+        if for_update:
+            # Acquire row-level locks so the version re-check and the
+            # subsequent content mutation in stage_file_updates happen
+            # atomically. A concurrent save in another transaction will
+            # either block until we commit (and then be the last writer)
+            # or, if it already committed, be visible to this query so the
+            # caller can detect the stale version.
+            stmt = stmt.with_for_update()
+        rows = self.db.scalars(stmt).all()
         return {row.id: row for row in rows}
 
     def stage_file_updates(
@@ -229,7 +245,19 @@ class ProjectRepository:
         project = self.get_project(project_name)
         if project is None:
             return None
-        files = self.files_by_ids(project_name, list(updates.keys()))
+        # When an expected version is supplied, load the target rows with
+        # SELECT ... FOR UPDATE so the version re-check and the subsequent
+        # content mutation happen while holding row locks. This closes the
+        # race window between the endpoint's pre-check and the final write:
+        # a concurrent save that commits after the pre-check but before this
+        # point is already visible (-> conflict), and a concurrent save that
+        # is still in-flight blocks on these locks until we commit, so it can
+        # never be silently overwritten by the AI edit.
+        files = self.files_by_ids(
+            project_name,
+            list(updates.keys()),
+            for_update=expected_updated_at is not None,
+        )
         if set(files) != set(updates):
             return None
         if expected_updated_at is not None:

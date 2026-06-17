@@ -1,10 +1,11 @@
+import threading
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from core.compile_messages import CompileCommand
 from core.models import (
@@ -437,6 +438,150 @@ def test_project_repository_stage_file_updates_rejects_stale_versions_without_sn
     db_session.rollback()
     assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 0
     assert repo.get_code("same_name", "design.py") == "design = user_change"
+
+
+def _other_session_factory(postgres_url: str):
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    return engine, sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+def test_stage_file_updates_detects_concurrent_save_from_another_session(
+    postgres_url, db_session, seeded_tenant
+):
+    """A concurrent save committed by a separate session between the endpoint's
+    pre-check and stage_file_updates must be detected at persist time and
+    rejected without creating a snapshot. The FOR UPDATE re-read inside
+    stage_file_updates sees the committed change even though the caller still
+    holds the stale version pointer.
+    """
+    repo = ProjectRepository(db_session, seeded_tenant.tenant_id)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design_id = design.id
+    stale_version = design.updated_at
+
+    # Simulate a concurrent user save in a separate session that commits
+    # after the AI edit's pre-check but before stage_file_updates persists.
+    other_engine, OtherSession = _other_session_factory(postgres_url)
+    try:
+        with OtherSession() as other_session:
+            other_file = other_session.get(ProjectFile, design_id)
+            other_file.content = "design = user_change"
+            other_file.updated_at = stale_version + timedelta(seconds=1)
+            other_session.commit()
+    finally:
+        other_engine.dispose()
+
+    # The AI edit still holds the stale version pointer and tries to persist.
+    with pytest.raises(FileVersionConflictError):
+        repo.stage_file_updates(
+            "default_purlin",
+            {design_id: "design = ai_change"},
+            seeded_tenant.user_id,
+            "LLM edit: update design",
+            expected_updated_at={design_id: stale_version},
+        )
+
+    db_session.rollback()
+    assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 0
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design_id).content == "design = user_change"
+
+
+def test_stage_file_updates_holds_for_update_lock_against_concurrent_save(
+    postgres_url, db_session, seeded_tenant
+):
+    """The FOR UPDATE guard in stage_file_updates holds row locks for the
+    whole persist, so a concurrent save in another session cannot commit
+    between the version re-check and the content mutation. This proves the
+    final write is guarded: a late concurrent save is blocked until the AI
+    edit commits, and can never be silently overwritten mid-persist.
+    """
+    repo = ProjectRepository(db_session, seeded_tenant.tenant_id)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design_id = design.id
+    current_version = design.updated_at
+    db_session.expire_all()
+
+    other_engine, OtherSession = _other_session_factory(postgres_url)
+
+    lock_acquired = threading.Event()
+    save_started = threading.Event()
+    save_completed = threading.Event()
+    save_result: dict[str, object] = {}
+
+    def concurrent_save():
+        if not lock_acquired.wait(timeout=10):
+            save_result["error"] = TimeoutError("AI edit never acquired the lock")
+            save_completed.set()
+            return
+        try:
+            with OtherSession() as other_session:
+                other_file = other_session.get(ProjectFile, design_id)
+                other_file.content = "design = user_save"
+                other_file.updated_at = current_version + timedelta(seconds=2)
+                save_started.set()  # about to flush/commit (UPDATE will block)
+                other_session.commit()
+            save_completed.set()
+        except Exception as exc:  # pragma: no cover - surfaced via assertions
+            save_result["error"] = exc
+            save_completed.set()
+
+    original_files_by_ids = repo.files_by_ids
+
+    def hooked_files_by_ids(project_name, file_ids, for_update=False):
+        rows = original_files_by_ids(project_name, file_ids, for_update=for_update)
+        if for_update and file_ids:
+            lock_acquired.set()
+            save_started.wait(timeout=10)
+            # The concurrent save has reached its blocked UPDATE. It must not
+            # be able to commit while the AI edit holds the FOR UPDATE lock.
+            assert not save_completed.wait(timeout=1.0), (
+                "concurrent save committed while AI edit held the FOR UPDATE lock"
+            )
+        return rows
+
+    repo.files_by_ids = hooked_files_by_ids  # type: ignore[method-assign]
+
+    thread = threading.Thread(target=concurrent_save, daemon=True)
+    thread.start()
+    try:
+        snapshot, changed = repo.stage_file_updates(
+            "default_purlin",
+            {design_id: "design = ai_edit"},
+            seeded_tenant.user_id,
+            "LLM edit: guard test",
+            expected_updated_at={design_id: current_version},
+        )
+        db_session.commit()
+    finally:
+        thread.join(timeout=15)
+        repo.files_by_ids = original_files_by_ids  # type: ignore[method-assign]
+        other_engine.dispose()
+
+    assert snapshot is not None
+    assert len(changed) == 1
+    # The concurrent save was blocked for the duration of the AI persist and
+    # only completed after the AI edit committed and released the row locks.
+    assert save_completed.is_set(), save_result.get("error")
+    assert "error" not in save_result, save_result.get("error")
+    # One snapshot from the AI edit; the direct ORM commit in the concurrent
+    # save does not create a snapshot.
+    db_session.expire_all()
+    assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
+    # The user save committed last, so it is the final writer. The guarantee
+    # proven above is that the AI edit was never overwritten *during* its
+    # persist window.
+    assert db_session.get(ProjectFile, design_id).content == "design = user_save"
 
 
 def test_project_repository_stage_file_updates_truncates_long_snapshot_message(db_session):

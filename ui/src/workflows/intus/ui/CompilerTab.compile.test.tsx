@@ -789,4 +789,126 @@ describe('CompilerTab compile jobs', () => {
       expect(screen.getByLabelText('code editor')).toHaveValue('helper v2 (AI updated)')
     })
   })
+
+  it('resets the polling baseline when an AI edit switches to a different changed file', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+      { id: 'file-helper-id', filename: 'helper.py', updated_at: '2026-06-17T00:01:00Z' },
+    ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve('design v1')
+      if (file === 'helper.py') return Promise.resolve('helper v2 (AI)')
+      return Promise.resolve('')
+    })
+    storage.getStatus
+      .mockResolvedValueOnce({ mtime: 10 })
+      .mockResolvedValueOnce({ mtime: 20 })
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [
+        { id: 'file-helper-id', filename: 'helper.py', content: 'helper v2 (AI)', changed: true, summary: 'updated helper' },
+      ],
+    })
+
+    await renderCompiler(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+
+    expect(storage.getStatus).toHaveBeenCalledWith('default_purlin', 'design.py')
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'update helper' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('helper v2 (AI)')
+    })
+    expect(screen.getByRole('button', { name: 'helper.py' })).toHaveClass('text-indigo-300')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+
+    expect(storage.getStatus).toHaveBeenLastCalledWith('default_purlin', 'helper.py')
+  })
+
+  it('establishes a fresh polling baseline after an AI edit switches to a non-active changed file', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+      { id: 'file-helper-id', filename: 'helper.py', updated_at: '2026-06-17T00:01:00Z' },
+    ])
+    storage.loadCode.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve('design v1')
+      if (file === 'helper.py') return Promise.resolve('helper v2 (AI)')
+      return Promise.resolve('')
+    })
+    // design.py gets a low baseline; helper.py reports a higher mtime so that
+    // a stale baseline would misclassify the poll as an external change.
+    storage.getStatus.mockImplementation((_project, file) => {
+      if (file === 'design.py') return Promise.resolve({ mtime: 100 })
+      if (file === 'helper.py') return Promise.resolve({ mtime: 200 })
+      return Promise.resolve({})
+    })
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+      files: [
+        { id: 'file-helper-id', filename: 'helper.py', content: 'helper v2 (AI)', changed: true, summary: 'updated helper' },
+      ],
+    })
+
+    await renderCompiler(true)
+
+    // Establish a polling baseline for design.py.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+    expect(storage.getStatus).toHaveBeenCalledWith('default_purlin', 'design.py')
+
+    // Disable auto-compile so a misclassified external change logs a message
+    // instead of triggering a compile.
+    fireEvent.click(screen.getByLabelText('Auto-compile'))
+    expect(screen.getByLabelText('Auto-compile')).not.toBeChecked()
+
+    // Apply an AI edit that only changes helper.py (not the active design.py).
+    // The UI should route through switchFile, which resets the polling baseline
+    // and reloads the file from the server.
+    const loadCodeCallsBefore = storage.loadCode.mock.calls.length
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'update helper' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('helper v2 (AI)')
+      expect(screen.getByRole('button', { name: 'helper.py' })).toHaveClass('text-indigo-300')
+    })
+    // switchFile reloaded helper.py from the server (canonical reload path).
+    expect(storage.loadCode.mock.calls.length).toBeGreaterThan(loadCodeCallsBefore)
+    expect(storage.loadCode).toHaveBeenCalledWith('default_purlin', 'helper.py')
+    // switchFile({ saveCurrent: false }) must not save the current editor
+    // content; the only design.py save is the pre-edit save in applyAiEdit.
+    expect(storage.saveCode.mock.calls.filter((call) => call[1] === 'design.py')).toHaveLength(1)
+
+    // The next poll should target helper.py and treat its mtime as a fresh
+    // baseline. helper.py's mtime (200) is higher than design.py's old
+    // baseline (100); without the reset this would log "External change
+    // detected" and reload the file again.
+    const loadCodeBeforePoll = storage.loadCode.mock.calls.length
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(maxFileStatusPollingDelay)
+    })
+    expect(storage.getStatus).toHaveBeenLastCalledWith('default_purlin', 'helper.py')
+    expect(screen.queryByText(/External change detected/)).not.toBeInTheDocument()
+    // No extra reload from an external-change misclassification.
+    expect(storage.loadCode.mock.calls.length).toBe(loadCodeBeforePoll)
+  })
 })

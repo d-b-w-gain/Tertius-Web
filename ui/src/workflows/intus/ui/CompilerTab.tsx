@@ -508,8 +508,19 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
       const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
       if (activeChanged) {
-        setActiveFile(activeChanged.filename);
-        setCode(activeChanged.content);
+        if (activeChanged.filename === activeFile) {
+          // Staying on the current file: set code from the server response and
+          // reset the polling baseline so the next poll establishes a fresh
+          // mtime instead of treating the AI edit as a stale external change.
+          mtimeRef.current = 0;
+          setCode(activeChanged.content);
+        } else {
+          // Switching to a different changed file: route through switchFile so
+          // the baseline reset and canonical server reload path are reused.
+          // Avoid saving the current editor content (which would create an
+          // extra snapshot) since the AI edit already persisted the changes.
+          await switchFile(activeChanged.filename, { saveCurrent: false });
+        }
       }
       setAiPrompt('');
       setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).`);
