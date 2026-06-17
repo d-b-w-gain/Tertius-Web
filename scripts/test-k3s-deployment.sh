@@ -21,6 +21,7 @@ NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
 KEDA_ENABLED="${KEDA_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
 BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
+CLEAN_LOCAL_IMAGES_AFTER_LOAD="${CLEAN_LOCAL_IMAGES_AFTER_LOAD:-false}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
@@ -58,6 +59,7 @@ Environment:
   KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
   BUILDX_GHA_CACHE              Default: false. Set true in GitHub Actions to use Buildx GHA cache for local image builds.
+  CLEAN_LOCAL_IMAGES_AFTER_LOAD Default: false. Set true in CI to reduce peak disk use while importing images into k3s.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
@@ -472,6 +474,14 @@ build_images() {
   build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
 }
 
+build_and_load_images() {
+  build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
+  load_image "$API_IMAGE"
+
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
+  load_image "$UI_IMAGE"
+}
+
 k3s_ctr() {
   if command -v k3s >/dev/null 2>&1; then
     if k3s ctr "$@"; then
@@ -523,6 +533,9 @@ load_image() {
   tar_file=$(mktemp "${TMPDIR:-/tmp}/tertius-image.XXXXXX")
   TEMP_FILES="${TEMP_FILES} ${tar_file}"
   run "$DOCKER" save -o "$tar_file" "$image"
+  if truthy "$CLEAN_LOCAL_IMAGES_AFTER_LOAD"; then
+    run "$DOCKER" image rm -f "$image" || true
+  fi
   if [ -n "$K3S_CONTAINER" ] && command -v podman >/dev/null 2>&1 && podman container exists "$K3S_CONTAINER" >/dev/null 2>&1; then
     container_tar="/tmp/$(basename "$tar_file")"
     run podman cp "$tar_file" "${K3S_CONTAINER}:${container_tar}"
@@ -1121,8 +1134,12 @@ main() {
   fi
 
   check_preflight
-  build_images
-  load_images
+  if truthy "$CLEAN_LOCAL_IMAGES_AFTER_LOAD"; then
+    build_and_load_images
+  else
+    build_images
+    load_images
+  fi
   render_and_install
   wait_for_rollout
   run_smoke_tests
