@@ -330,6 +330,14 @@ class CompileSandboxResult:
     error: str | None
 
 
+def _subprocess_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | None = None, timeout_seconds: int = 30) -> CompileSandboxResult:
     ext = export_format.lower()
     output_path = project_dir / f"output.{ext}"
@@ -350,8 +358,8 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or "",
+            stdout=_subprocess_output_text(exc.stdout),
+            stderr=_subprocess_output_text(exc.stderr),
             error=f"Compile timed out after {timeout_seconds} seconds",
         )
 

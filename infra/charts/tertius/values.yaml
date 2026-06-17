@@ -21,11 +21,11 @@ app:
     compileResultSubject: tertius.compile.result
     compileWorkerQueue: compile-workers
     compileResultConsumer: compile-result-api
-    compileAckWaitSeconds: 400
+    compileAckWaitSeconds: 900
     compileMaxDeliver: 1
     compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
-    compileResultMaxBytes: 94371840
+    compileResultMaxBytes: 33554432
     llmBaseUrl: https://api.deepseek.com
     llmModel: deepseek-v4-flash
     llmTimeoutSeconds: 60
@@ -229,8 +229,7 @@ nats:
   enabled: true
   config:
     merge:
-      max_payload: 104857600
-      max_pending: 104857600
+      max_payload: 33554432
     jetstream:
       enabled: true
       fileStore:
