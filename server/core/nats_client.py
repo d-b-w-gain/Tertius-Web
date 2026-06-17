@@ -6,16 +6,16 @@ from pydantic import BaseModel
 
 
 class Publisher(Protocol):
-    async def publish_json(self, subject: str, message: Any, message_id: str | None = None) -> None: ...
+    async def publish_json(self, subject: str, message: Any, message_id: str | None = None, timeout: float = 60.0) -> None: ...
 
 
 class NatsPublisher:
     def __init__(self, jetstream):
         self.jetstream = jetstream
 
-    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None) -> None:
+    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None, timeout: float = 60.0) -> None:
         headers = {"Nats-Msg-Id": message_id} if message_id else None
-        await self.jetstream.publish(subject, message.model_dump_json().encode("utf-8"), headers=headers)
+        await self.jetstream.publish(subject, message.model_dump_json().encode("utf-8"), headers=headers, timeout=timeout)
 
 
 async def connect_nats(url: str):
