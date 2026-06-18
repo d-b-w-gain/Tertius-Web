@@ -12,6 +12,7 @@ vi.mock('../../../auth/AuthProvider', () => ({
   useAuth: () => ({ authMode: 'authenticated', getAccessToken: mocks.getAccessToken }),
 }))
 vi.mock('../../shared/ui/ProjectSelector', () => ({
+  ACTIVE_PROJECT_CHANGED_EVENT: 'tertius:active-project-changed',
   ProjectSelector: () => <div data-testid="project-selector" />,
 }))
 
@@ -88,6 +89,14 @@ function setupRoutes(state: MockRouteState = {}) {
       const ok = routeState.editStatus >= 200 && routeState.editStatus < 300
       return Promise.resolve(jsonResponse(routeState.editBody, ok, routeState.editStatus))
     }
+    if (url === `/api/intus/projects/${routeState.projectName}/compile` && options?.method === 'POST') {
+      return Promise.resolve(jsonResponse({
+        success: true,
+        job_id: 'compile-job-1',
+        status: 'queued',
+        format: 'glb',
+      }, true, 202))
+    }
     return Promise.resolve(jsonResponse({ error: `Unhandled ${url}` }, false, 404))
   })
 
@@ -104,6 +113,12 @@ async function renderAuthenticatedFeatureTree() {
 function editRequests() {
   return mocks.apiFetch.mock.calls.filter(([url, , options]) => (
     url === '/api/intus/projects/default_purlin/files/llm-edit' && options?.method === 'POST'
+  ))
+}
+
+function compileRequests(projectName = 'default_purlin') {
+  return mocks.apiFetch.mock.calls.filter(([url, , options]) => (
+    url === `/api/intus/projects/${projectName}/compile` && options?.method === 'POST'
   ))
 }
 
@@ -222,6 +237,28 @@ describe('FeatureTreeTab authenticated AI edit', () => {
     expect(mocks.apiFetch.mock.calls.filter(([url]) => url === '/api/artus/features').length).toBeGreaterThanOrEqual(2)
   })
 
+  it('queues an Intus compile after AI edit success without requiring the Intus tab to be active', async () => {
+    setupRoutes()
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'make it compile after edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await waitFor(() => {
+      expect(compileRequests()).toHaveLength(1)
+    })
+    const body = JSON.parse(compileRequests()[0]![2]!.body as string)
+    expect(body).toEqual({
+      code: 'updated design',
+      export_format: 'glb',
+      quality: 'sketch',
+      file: 'design.py',
+    })
+    expect(screen.getByText(/Compile queued for the updated design/)).toBeInTheDocument()
+  })
+
   it('shows backend conflict errors and refreshes metadata and features', async () => {
     setupRoutes({
       editStatus: 409,
@@ -242,5 +279,69 @@ describe('FeatureTreeTab authenticated AI edit', () => {
     })
     expect(mocks.apiFetch.mock.calls.filter(([url]) => url === '/api/intus/projects/default_purlin/files')).toHaveLength(2)
     expect(mocks.apiFetch.mock.calls.filter(([url]) => url === '/api/artus/features').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('disables AI edit immediately after a project selector change until Artus features refresh', async () => {
+    let releaseFeatureRefresh: (() => void) | undefined
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, options?: RequestInit) => {
+      if (url === '/api/artus/features') {
+        return new Promise((resolve) => {
+          releaseFeatureRefresh = () => resolve(jsonResponse({
+            project_name: 'project_b',
+            features: [
+              { name: 'width', value: 200, type: 'int', description: '' },
+            ],
+            operations: [],
+          }))
+        })
+      }
+      if (url === '/api/extus/status') {
+        return Promise.resolve(jsonResponse({}))
+      }
+      if (url === '/api/intus/projects/project_b/files' && !options) {
+        return Promise.resolve(jsonResponse({
+          files: ['design.py'],
+          file_metadata: [
+            { id: 'file-design-b', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+          ],
+        }))
+      }
+      if (url === '/api/intus/projects/project_b/files/llm-edit' && options?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          success: true,
+          model: 'test-model',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+          files: [
+            { id: 'file-design-b', filename: 'design.py', content: 'project b design', changed: true },
+          ],
+        }))
+      }
+      if (url === '/api/intus/projects/project_b/compile' && options?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, job_id: 'job-b', status: 'queued', format: 'glb' }, true, 202))
+      }
+      return Promise.resolve(jsonResponse({ error: `Unhandled ${url}` }, false, 404))
+    })
+
+    render(<FeatureTreeTab serverUrl="/api/artus" />)
+    window.dispatchEvent(new CustomEvent('tertius:active-project-changed', { detail: { activeProject: 'project_b' } }))
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'edit the newly selected project' },
+    })
+    const applyButton = screen.getByRole('button', { name: 'Apply AI' })
+
+    expect(applyButton).toBeDisabled()
+    fireEvent.click(applyButton)
+    expect(editRequests()).toHaveLength(0)
+
+    releaseFeatureRefresh?.()
+    await screen.findByDisplayValue('200')
+    expect(applyButton).toBeEnabled()
+
+    fireEvent.click(applyButton)
+    await waitFor(() => {
+      expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/project_b/files/llm-edit')).toBe(true)
+    })
+    expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/default_purlin/files/llm-edit')).toBe(false)
   })
 })

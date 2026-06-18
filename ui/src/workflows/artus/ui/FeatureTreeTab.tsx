@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
-import { ProjectSelector } from '../../shared/ui/ProjectSelector';
+import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 import {
   createProjectStorage,
@@ -17,6 +17,8 @@ import {
 } from '../../shared/polling';
 
 const AI_EDIT_FILE_LIMIT = 20;
+const AI_EDIT_COMPILE_FORMAT = 'glb';
+const AI_EDIT_COMPILE_QUALITY = 'sketch';
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string;
@@ -208,6 +210,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const [operations, setOperations] = useState<OperationNode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeProject, setActiveProject] = useState('');
+  const [isProjectSyncPending, setIsProjectSyncPending] = useState(false);
   const [, setFileMetadata] = useState<ProjectFileMetadata[]>([]);
   
   // AI State
@@ -328,11 +331,13 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
       const data = await res.json();
       if (res.ok) {
         setActiveProject(data.project_name || '');
+        setIsProjectSyncPending(false);
         setFeatures(data.features || []);
         setOperations(data.operations || []);
         setError(null);
       } else {
         setActiveProject('');
+        setIsProjectSyncPending(false);
         setFileMetadata([]);
         setError(data.error);
         setFeatures([]);
@@ -340,6 +345,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
       }
     } catch (e) {
       setActiveProject('');
+      setIsProjectSyncPending(false);
       setFileMetadata([]);
       setError("Failed to connect to Artus server.");
       setFeatures([]);
@@ -350,6 +356,20 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const fetchFeatures = useCallback(async () => {
     if (!shouldRunPollingRequest()) return;
     await loadFeatures();
+  }, [loadFeatures]);
+
+  useEffect(() => {
+    const handleActiveProjectChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ activeProject?: string }>).detail;
+      if (!detail?.activeProject) return;
+      setActiveProject(detail.activeProject);
+      setIsProjectSyncPending(true);
+      setFileMetadata([]);
+      void loadFeatures();
+    };
+
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
+    return () => window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
   }, [loadFeatures]);
 
   useEffect(() => {
@@ -402,8 +422,39 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
   }, [activeProject, storage]);
 
+  const queueCompileAfterAiEdit = useCallback(async (projectName: string, changedFiles: Array<{ filename: string; content: string }>) => {
+    const designChange = changedFiles.find(file => file.filename === 'design.py');
+    const code = designChange?.content ?? await storage.loadCode(projectName, 'design.py');
+
+    if (!code) {
+      throw new Error('Compile could not start because design.py could not be loaded.');
+    }
+
+    const res = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        export_format: AI_EDIT_COMPILE_FORMAT,
+        quality: AI_EDIT_COMPILE_QUALITY,
+        file: 'design.py',
+      }),
+    });
+
+    if (!res.ok) {
+      let message = 'Compile could not start after AI edit.';
+      try {
+        const data = await res.json();
+        message = data.user_message || data.short || data.error || message;
+      } catch {
+        // Keep the fallback message when the compile endpoint has no JSON body.
+      }
+      throw new Error(message);
+    }
+  }, [getAccessToken, intusServerUrl, storage]);
+
   const handleAiModify = async () => {
-    if (!prompt.trim() || !activeProject) return;
+    if (!prompt.trim() || !activeProject || isProjectSyncPending) return;
     setIsProcessing(true);
     setAiMessage(null);
     try {
@@ -442,7 +493,15 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
         ? `AI updated ${result.files.length} file(s). ${summaries}`
         : `AI updated ${result.files.length} file(s).`;
 
-      setAiMessage([truncatedMessage, successMessage].filter(Boolean).join(' '));
+      let compileMessage = 'Compile queued for the updated design.';
+      try {
+        await queueCompileAfterAiEdit(activeProject, result.files);
+      } catch (compileError) {
+        const message = compileError instanceof Error ? compileError.message : 'Compile could not start after AI edit.';
+        compileMessage = `Compile warning: ${message}`;
+      }
+
+      setAiMessage([truncatedMessage, successMessage, compileMessage].filter(Boolean).join(' '));
       setPrompt('');
       setEdits({});
       await loadFeatures();
@@ -661,8 +720,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
             />
             <button 
               onClick={handleAiModify}
-              disabled={isProcessing || !prompt.trim() || !activeProject}
-              title={!activeProject ? 'Select or load a project before using AI edit' : undefined}
+              disabled={isProcessing || !prompt.trim() || !activeProject || isProjectSyncPending}
+              title={!activeProject || isProjectSyncPending ? 'Select or load a project before using AI edit' : undefined}
               className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-semibold text-white shadow-lg shadow-emerald-900/20 transition-all"
             >
               {isProcessing ? 'Thinking...' : 'Apply AI'}
