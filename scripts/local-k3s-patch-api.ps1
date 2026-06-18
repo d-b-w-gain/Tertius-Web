@@ -88,7 +88,10 @@ try {
     Write-Step "Patching compile ScaledJob image when present"
     $scaledJobExists = wsl.exe -d Ubuntu-24.04 -u root -- kubectl -n $Namespace get scaledjob $ScaledJob --ignore-not-found -o name
     if (-not [string]::IsNullOrWhiteSpace($scaledJobExists)) {
-        Write-Warn "Compile ScaledJob was not patched. Run a full local redeploy when compile-worker code changes need testing."
+        Invoke-Native {
+            wsl.exe -d Ubuntu-24.04 -u root -- kubectl -n $Namespace patch scaledjob $ScaledJob --type=json -p "[{`"op`":`"replace`",`"path`":`"/spec/jobTargetRef/template/spec/containers/0/image`",`"value`":`"$image`"}]"
+        } "Compile ScaledJob patch"
+        Write-Ok "Compile ScaledJob image patched"
     }
     else {
         Write-Ok "Compile ScaledJob not present; skipped"
@@ -111,6 +114,6 @@ finally {
         Remove-Item -LiteralPath $tarPath -Force -ErrorAction SilentlyContinue
     }
     if ($wslTarPath) {
-        wsl.exe -d Ubuntu-24.04 -- rm -f "$wslTarPath" 2>$null
+        wsl.exe -d Ubuntu-24.04 -u root -- rm -f "$wslTarPath" 2>$null
     }
 }

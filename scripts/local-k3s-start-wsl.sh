@@ -148,8 +148,7 @@ step "Current Tertius pods"
 kubectl -n "$NAMESPACE" get pods
 
 if [ "$(bad_pod_count)" != "0" ]; then
-  warn "Pods are not ready yet. Restarting k3s once, then waiting without rolling every workload."
-  systemctl restart k3s
+  warn "Pods are not ready yet. Waiting without restarting k3s."
   wait_for_kubectl 60 3
   recycle_unready_controller_pods
   wait_for_pods 72 5 || {

@@ -1,6 +1,10 @@
 .git
 .gitignore
+.kubectl
+.mypy_cache
 .pytest_cache
+.test-tmp
+.venv
 .ruff_cache
 .uv-cache
 artifacts
