@@ -619,7 +619,7 @@ async def llm_edit_files(
     billing_publisher = None
     billing_nc = None
     snapshot = None
-    changed_files = []
+    changed_files: list[ProjectFile] = []
     result = None
     try:
         if not settings.llm_api_key:
