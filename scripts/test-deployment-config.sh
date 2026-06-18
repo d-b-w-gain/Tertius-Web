@@ -138,6 +138,11 @@ if ! printf '%s\n' "$rendered" | rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' ||
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "8192"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "8"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"'; then
+  echo "ConfigMap must render file-edit-specific LLM output and context limits." >&2
+  exit 1
+fi
+
 if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT'; then
   echo "ConfigMap must not render LLM provider secrets or prompts." >&2
   exit 1

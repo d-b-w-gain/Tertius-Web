@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from math import ceil
+from pathlib import PurePosixPath
+from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from core.auth_types import AuthContext
 from core.billing_messages import (
@@ -37,13 +41,15 @@ class LlmInvalidFileEditError(RuntimeError):
     pass
 
 
-class LlmNoFileChangesError(RuntimeError):
+class LlmFileEditTruncatedError(LlmGenerationError):
     pass
 
 
 MAX_METADATA_ENTRIES = 50
 MAX_METADATA_KEY_CHARS = 200
 MAX_METADATA_VALUE_CHARS = 200
+LLM_FILE_EDIT_MAX_FILES = 20
+LlmFileEditOutcome = Literal["changed", "no_change", "cannot_complete"]
 
 
 def validate_llm_metadata(metadata: dict[str, str]) -> dict[str, str]:
@@ -115,17 +121,38 @@ class LlmFileEditInput(BaseModel):
 
 
 class LlmReturnedFileEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     file_id: UUID
     content: str = Field(max_length=200000)
     summary: str = Field(default="", max_length=500)
 
 
 class LlmFileEditProviderResult(BaseModel):
-    files: list[LlmReturnedFileEdit] = Field(min_length=1, max_length=20)
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: LlmFileEditOutcome
+    message: str = Field(default="", max_length=500)
+    files: list[LlmReturnedFileEdit] = Field(default_factory=list, max_length=LLM_FILE_EDIT_MAX_FILES)
+
+    @model_validator(mode="after")
+    def validate_outcome_contract(self):
+        message = self.message.strip()
+        if self.outcome == "changed":
+            if not self.files:
+                raise ValueError("changed outcome requires at least one file")
+            return self
+        if self.files:
+            raise ValueError(f"{self.outcome} outcome must not include file edits")
+        if not message:
+            raise ValueError(f"{self.outcome} outcome requires a message")
+        return self
 
 
 class LlmFileEditResult(BaseModel):
     success: bool = True
+    outcome: LlmFileEditOutcome
+    message: str = ""
     files: list[LlmReturnedFileEdit]
     model: str
     usage: TokenUsage
@@ -275,6 +302,8 @@ def build_file_edit_messages(
         f"Files available for editing:\n{json.dumps(available, indent=2)}\n\n"
         "Return JSON matching:\n"
         "{\n"
+        '  "outcome": "changed",\n'
+        '  "message": "",\n'
         '  "files": [\n'
         "    {\n"
         '      "file_id": "<uuid from files available for editing>",\n'
@@ -323,31 +352,19 @@ def parse_llm_file_edit_response(
     if not isinstance(payload, dict):
         raise LlmInvalidFileEditError("provider response must be a JSON object")
 
-    if "files" not in payload:
-        raise LlmInvalidFileEditError("provider response missing 'files' key")
+    if "outcome" not in payload:
+        payload = {"outcome": "changed", "message": "", **payload}
 
-    raw_files = payload["files"]
-    if not isinstance(raw_files, list):
-        raise LlmInvalidFileEditError("provider response 'files' must be a list")
+    try:
+        parsed = LlmFileEditProviderResult.model_validate(payload)
+    except ValidationError as exc:
+        raise LlmInvalidFileEditError(f"provider response is invalid: {exc}") from exc
 
-    if len(raw_files) == 0:
-        raise LlmNoFileChangesError("LLM returned no file changes")
-
-    if len(raw_files) > len(allowed_file_ids):
+    if len(parsed.files) > len(allowed_file_ids):
         raise LlmInvalidFileEditError("provider returned more files than were requested")
 
-    if len(raw_files) > 20:
-        raise LlmInvalidFileEditError("provider returned too many files")
-
     seen_ids: set[UUID] = set()
-    parsed: list[LlmReturnedFileEdit] = []
-    for index, entry in enumerate(raw_files):
-        if not isinstance(entry, dict):
-            raise LlmInvalidFileEditError(f"file edit entry {index} must be an object")
-        try:
-            edit = LlmReturnedFileEdit.model_validate(entry)
-        except ValidationError as exc:
-            raise LlmInvalidFileEditError(f"file edit entry {index} is invalid: {exc}") from exc
+    for edit in parsed.files:
         if edit.file_id not in allowed_file_ids:
             raise LlmInvalidFileEditError(
                 f"provider returned unauthorized file_id {edit.file_id}"
@@ -357,9 +374,128 @@ def parse_llm_file_edit_response(
                 f"provider returned duplicate file_id {edit.file_id}"
             )
         seen_ids.add(edit.file_id)
-        parsed.append(edit)
 
-    return LlmFileEditProviderResult(files=parsed)
+    return parsed
+
+
+def _module_stem(filename: str) -> str | None:
+    path = PurePosixPath(filename)
+    if path.suffix != ".py":
+        return None
+    return path.with_suffix("").as_posix().replace("/", ".")
+
+
+def _local_imports(file: LlmEditableFile, local_modules: set[str]) -> set[str]:
+    try:
+        tree = ast.parse(file.content)
+    except SyntaxError:
+        logger.debug("Skipping import discovery for syntax-invalid file %s", file.filename)
+        return set()
+
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                for index in range(len(parts), 0, -1):
+                    candidate = ".".join(parts[:index])
+                    if candidate in local_modules:
+                        found.add(candidate)
+                        break
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            parts = node.module.split(".")
+            for index in range(len(parts), 0, -1):
+                candidate = ".".join(parts[:index])
+                if candidate in local_modules:
+                    found.add(candidate)
+                    break
+    return found
+
+
+def select_llm_edit_context_files(
+    *,
+    prompt: str,
+    active_file_id: UUID | None,
+    files: list[LlmEditableFile],
+    max_files: int,
+    max_chars: int,
+) -> list[LlmEditableFile]:
+    max_files = max(1, min(max_files, LLM_FILE_EDIT_MAX_FILES))
+    max_chars = max(1, max_chars)
+    by_id = {file.id: file for file in files}
+    by_filename = {file.filename: file for file in files}
+    module_to_file = {
+        stem: file
+        for file in files
+        if (stem := _module_stem(file.filename)) is not None
+    }
+    imports_by_id = {
+        file.id: _local_imports(file, set(module_to_file))
+        for file in files
+    }
+
+    selected: list[LlmEditableFile] = []
+    selected_ids: set[UUID] = set()
+    total_chars = 0
+    mandatory_ids: set[UUID] = set()
+    if active_file_id in by_id:
+        mandatory_ids.add(active_file_id)
+    if "design.py" in by_filename:
+        mandatory_ids.add(by_filename["design.py"].id)
+
+    def add(file: LlmEditableFile, *, mandatory: bool = False) -> bool:
+        nonlocal total_chars
+        if file.id in selected_ids:
+            return True
+        if len(selected) >= max_files:
+            return False
+        would_exceed = total_chars + len(file.content) > max_chars
+        if would_exceed and not mandatory:
+            return False
+        selected.append(file)
+        selected_ids.add(file.id)
+        total_chars += len(file.content)
+        if would_exceed and mandatory:
+            logger.debug("Mandatory LLM edit context file %s exceeds target budget", file.filename)
+        return True
+
+    if active_file_id in by_id:
+        add(by_id[active_file_id], mandatory=True)
+    if "design.py" in by_filename:
+        add(by_filename["design.py"], mandatory=True)
+
+    prompt_lower = prompt.lower()
+    prompt_terms = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_./-]*", prompt_lower))
+    for file in files:
+        stem = PurePosixPath(file.filename).with_suffix("").as_posix().lower()
+        basename = PurePosixPath(file.filename).name.lower()
+        if basename in prompt_terms or stem in prompt_terms or file.filename.lower() in prompt_lower:
+            add(file)
+
+    def add_import_neighbors(reverse: bool) -> None:
+        current_ids = [file.id for file in selected]
+        for selected_id in current_ids:
+            selected_file = by_id[selected_id]
+            selected_stem = _module_stem(selected_file.filename)
+            if reverse:
+                if selected_stem is None:
+                    continue
+                for file in files:
+                    if selected_stem in imports_by_id[file.id]:
+                        add(file)
+            else:
+                for module in imports_by_id[selected_id]:
+                    imported = module_to_file.get(module)
+                    if imported is not None:
+                        add(imported)
+
+    add_import_neighbors(reverse=False)
+    add_import_neighbors(reverse=True)
+
+    for file in files:
+        add(file, mandatory=file.id in mandatory_ids)
+
+    return selected
 
 
 async def generate_file_edits(
@@ -384,16 +520,28 @@ async def generate_file_edits(
             files,
             system_prompt=settings.llm_file_edit_system_prompt,
         ),
-        max_tokens=settings.llm_max_output_tokens,
+        max_tokens=settings.llm_file_edit_max_output_tokens,
         response_format={"type": "json_object"},
     )
-    content = response.choices[0].message.content or ""
     usage = extract_usage(response)
     provider_request_id = getattr(response, "id", None)
+    choice = response.choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason == "length":
+        logger.warning(
+            "LLM file edit response truncated provider_request_id=%s finish_reason=%s",
+            provider_request_id,
+            finish_reason,
+        )
+        raise LlmFileEditTruncatedError("LLM file edit response was truncated")
+
+    content = choice.message.content or ""
 
     parsed = parse_llm_file_edit_response(content, allowed_file_ids)
 
     result = LlmFileEditResult(
+        outcome=parsed.outcome,
+        message=parsed.message,
         files=parsed.files,
         model=settings.llm_model,
         usage=usage,

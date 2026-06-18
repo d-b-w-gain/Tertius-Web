@@ -458,6 +458,8 @@ describe('CompilerTab compile jobs', () => {
     })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -497,6 +499,8 @@ describe('CompilerTab compile jobs', () => {
       ])
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -540,6 +544,8 @@ describe('CompilerTab compile jobs', () => {
       ])
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -588,6 +594,8 @@ describe('CompilerTab compile jobs', () => {
     })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -670,6 +678,8 @@ describe('CompilerTab compile jobs', () => {
     storage.listFileMetadata.mockResolvedValue(metadata)
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -726,6 +736,8 @@ describe('CompilerTab compile jobs', () => {
     })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -746,6 +758,62 @@ describe('CompilerTab compile jobs', () => {
     expect(screen.getByText(/AI updated 2 file/)).toBeInTheDocument()
   })
 
+  it('handles no-change AI edit outcomes without changing the editor', async () => {
+    storage.listFiles.mockResolvedValue(['design.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+    ])
+    storage.loadCode.mockResolvedValue('design v1')
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      outcome: 'no_change',
+      message: 'The design already matches.',
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: null,
+      files: [],
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'make it match' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/The design already matches/)).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText('code editor')).toHaveValue('design v1')
+    expect(screen.getByLabelText('AI prompt')).toHaveValue('')
+  })
+
+  it('handles cannot-complete AI edit outcomes as warnings', async () => {
+    storage.listFiles.mockResolvedValue(['design.py'])
+    storage.listFileMetadata.mockResolvedValue([
+      { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
+    ])
+    storage.loadCode.mockResolvedValue('design v1')
+    storage.applyLlmFileEdit.mockResolvedValue({
+      success: true,
+      outcome: 'cannot_complete',
+      message: 'A new file is required.',
+      model: 'test-model',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      snapshot: null,
+      files: [],
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'split into a new file' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/\[WARN\] A new file is required/)).toBeInTheDocument()
+    })
+    expect(screen.getByLabelText('code editor')).toHaveValue('design v1')
+    expect(screen.queryByText(/\[ERROR\]/)).not.toBeInTheDocument()
+  })
+
   it('refetches server-side content when switching to a file changed by AI', async () => {
     storage.listFiles.mockResolvedValue(['design.py', 'helper.py'])
     storage.listFileMetadata.mockResolvedValue([
@@ -759,6 +827,8 @@ describe('CompilerTab compile jobs', () => {
     })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -807,6 +877,8 @@ describe('CompilerTab compile jobs', () => {
       .mockResolvedValueOnce({ mtime: 20 })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -859,6 +931,8 @@ describe('CompilerTab compile jobs', () => {
     })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },

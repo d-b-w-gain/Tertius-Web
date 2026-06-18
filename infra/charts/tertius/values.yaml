@@ -30,6 +30,9 @@ app:
     llmModel: deepseek-v4-flash
     llmTimeoutSeconds: 60
     llmMaxOutputTokens: 2048
+    llmFileEditMaxOutputTokens: 8192
+    llmFileEditMaxContextFiles: 8
+    llmFileEditMaxContextChars: 80000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: 100000

@@ -11,8 +11,8 @@ from core.config import Settings
 from core.db import get_db
 from core.llm_client import (
     LlmBillingError,
+    LlmFileEditTruncatedError,
     LlmInvalidFileEditError,
-    LlmNoFileChangesError,
     TokenUsage,
 )
 from core.llm_usage import LlmUsageLimitExceeded
@@ -66,7 +66,7 @@ def make_fake_generate_file_edits(return_value=None, raises=None):
         if raises is not None:
             raise raises
         assert request.prompt == "Refactor purlin into helper"
-        assert {str(f.id) for f in request.files} == {str(f.id) for f in files}
+        assert {str(f.id) for f in files}.issubset({str(f.id) for f in request.files})
         assert auth.tenant_id is not None
         assert project_id is not None
         if billing_publisher is not None:
@@ -141,6 +141,8 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
             SimpleNamespace(
@@ -178,6 +180,8 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
+    assert body["outcome"] == "changed"
+    assert body["message"] == ""
     assert body["model"] == "deepseek-v4-flash"
     assert body["usage"] == {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
     assert body["snapshot"]["id"]
@@ -243,6 +247,8 @@ def test_llm_file_edit_allows_provider_to_return_changed_subset(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
@@ -307,6 +313,8 @@ def test_llm_file_edit_returns_409_when_file_version_changes_before_persist(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
@@ -473,40 +481,7 @@ def test_llm_file_edit_returns_502_when_provider_returns_unauthorized_file(
     assert usage_count == 0
 
 
-def test_llm_file_edit_returns_422_when_provider_returns_no_changes(
-    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
-):
-    enable_llm(monkeypatch)
-    design = db_session.scalar(
-        select(ProjectFile).where(
-            ProjectFile.tenant_id == seeded_tenant.tenant_id,
-            ProjectFile.filename == "design.py",
-        )
-    )
-    design_id = design.id
-
-    async def fake_generate_file_edits(*args, **kwargs):
-        raise LlmNoFileChangesError("LLM returned no file changes")
-
-    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
-
-    response = authenticated_intus_client.post(
-        "/projects/default_purlin/files/llm-edit",
-        json={
-            "prompt": "Refactor purlin into helper",
-            "files": [file_pointer(design)],
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json() == {
-        "success": False,
-        "error": "LLM returned no file changes",
-        "retryable": False,
-    }
-
-
-def test_llm_file_edit_noop_response_does_not_publish_billing_or_persist_files(
+def test_llm_file_edit_no_change_returns_200_records_usage_without_snapshot(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
     enable_llm(monkeypatch)
@@ -520,9 +495,71 @@ def test_llm_file_edit_noop_response_does_not_publish_billing_or_persist_files(
 
     fake_result = SimpleNamespace(
         success=True,
-        files=[
-            SimpleNamespace(file_id=design.id, content=original_content, summary="No changes"),
-        ],
+        outcome="no_change",
+        message="Already matches the request",
+        files=[],
+        model="deepseek-v4-flash",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+
+    monkeypatch.setattr(
+        intus_server,
+        "generate_file_edits",
+        make_fake_generate_file_edits(return_value=fake_result),
+    )
+    publisher = FakeBillingPublisher()
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["outcome"] == "no_change"
+    assert body["message"] == "Already matches the request"
+    assert body["snapshot"] is None
+    assert body["files"] == []
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design.id).content == original_content
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalar(
+        select(func.count()).select_from(LlmUsageRecord).where(
+            LlmUsageRecord.tenant_id == seeded_tenant.tenant_id,
+            LlmUsageRecord.operation == "files.llm_edit",
+        )
+    ) == 1
+    assert len(publisher.published) == 1
+
+
+def test_llm_file_edit_cannot_complete_returns_200_records_usage_without_snapshot(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="cannot_complete",
+        message="Creating a new file is required",
+        files=[],
         model="deepseek-v4-flash",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
@@ -548,17 +585,110 @@ def test_llm_file_edit_noop_response_does_not_publish_billing_or_persist_files(
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["outcome"] == "cannot_complete"
+    assert body["message"] == "Creating a new file is required"
+    assert body["snapshot"] is None
+    assert body["files"] == []
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design.id).content == original_content
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalar(
+        select(func.count()).select_from(LlmUsageRecord).where(
+            LlmUsageRecord.tenant_id == seeded_tenant.tenant_id,
+            LlmUsageRecord.operation == "files.llm_edit",
+        )
+    ) == 1
+    assert len(publisher.published) == 1
+
+
+def test_llm_file_edit_billing_failure_on_no_change_returns_503_without_snapshot(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="no_change",
+        message="Already matches the request",
+        files=[],
+        model="deepseek-v4-flash",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+    monkeypatch.setattr(
+        intus_server,
+        "generate_file_edits",
+        make_fake_generate_file_edits(return_value=fake_result),
+    )
+
+    async def fake_create_billing_publisher(settings):
+        return FakeBillingPublisher(raise_on_publish=True), None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+        },
+    )
+
+    assert response.status_code == 503
     assert response.json() == {
         "success": False,
-        "error": "LLM returned no file changes",
-        "retryable": False,
+        "error": "LLM billing failed",
+        "retryable": True,
+    }
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
+def test_llm_file_edit_truncated_response_does_not_persist(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        raise LlmFileEditTruncatedError("truncated")
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "success": False,
+        "error": "LLM response was truncated",
+        "retryable": True,
     }
     db_session.expire_all()
     assert db_session.get(ProjectFile, design.id).content == original_content
     assert db_session.scalars(select(SourceSnapshot)).all() == []
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
-    assert publisher.published == []
 
 
 def test_llm_file_edit_returns_503_when_billing_publisher_unavailable(
@@ -576,6 +706,8 @@ def test_llm_file_edit_returns_503_when_billing_publisher_unavailable(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
@@ -637,6 +769,8 @@ def test_llm_file_edit_returns_503_when_billing_publish_fails_after_provider(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
@@ -706,6 +840,8 @@ def test_llm_file_edit_public_mounted_route(
 
     fake_result = SimpleNamespace(
         success=True,
+        outcome="changed",
+        message="",
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],

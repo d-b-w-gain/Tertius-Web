@@ -67,6 +67,9 @@ Non-secret provider settings are rendered into the app ConfigMap:
 - `app.config.llmModel` -> `LLM_MODEL`, default `deepseek-v4-flash`
 - `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
 - `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
+- `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`
+- `app.config.llmFileEditMaxContextFiles` -> `LLM_FILE_EDIT_MAX_CONTEXT_FILES`
+- `app.config.llmFileEditMaxContextChars` -> `LLM_FILE_EDIT_MAX_CONTEXT_CHARS`
 - `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
 - `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
 - `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`
