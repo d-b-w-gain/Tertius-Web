@@ -443,20 +443,26 @@ def select_llm_edit_context_files(
     if "design.py" in by_filename:
         mandatory_ids.add(by_filename["design.py"].id)
 
+    for file_id in mandatory_ids:
+        file = by_id[file_id]
+        if len(file.content) > max_chars:
+            raise ValueError(
+                f"Required file {file.filename} ({len(file.content)} chars) exceeds "
+                f"the AI edit context budget ({max_chars} chars). Reduce the file or "
+                f"raise LLM_FILE_EDIT_MAX_CONTEXT_CHARS."
+            )
+
     def add(file: LlmEditableFile, *, mandatory: bool = False) -> bool:
         nonlocal total_chars
         if file.id in selected_ids:
             return True
         if len(selected) >= max_files:
             return False
-        would_exceed = total_chars + len(file.content) > max_chars
-        if would_exceed and not mandatory:
+        if total_chars + len(file.content) > max_chars:
             return False
         selected.append(file)
         selected_ids.add(file.id)
         total_chars += len(file.content)
-        if would_exceed and mandatory:
-            logger.debug("Mandatory LLM edit context file %s exceeds target budget", file.filename)
         return True
 
     if active_file_id in by_id:

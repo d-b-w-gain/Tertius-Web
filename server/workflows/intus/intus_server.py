@@ -754,6 +754,12 @@ async def llm_edit_files(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={"success": False, "error": "LLM returned invalid file edits", "retryable": True},
         )
+    except ValueError as exc:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"success": False, "error": str(exc), "retryable": False},
+        )
     except LlmBillingError:
         logger.exception("LLM billing failed")
         db.rollback()

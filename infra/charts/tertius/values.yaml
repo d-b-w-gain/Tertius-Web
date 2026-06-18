@@ -30,13 +30,13 @@ app:
     llmModel: deepseek-v4-flash
     llmTimeoutSeconds: 60
     llmMaxOutputTokens: 2048
-    llmFileEditMaxOutputTokens: 8192
-    llmFileEditMaxContextFiles: 8
+    llmFileEditMaxOutputTokens: 65536
+    llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 80000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
-    llmTenantDailyTokenQuota: 100000
-    llmUserDailyTokenQuota: 25000
+    llmTenantDailyTokenQuota: "3200000"
+    llmUserDailyTokenQuota: "3200000"
     billingStreamName: TERTIUS_BILLING
     billingLlmUsageSubject: tertius.billing.usage.llm.tokens
     billingMaxBytes: 262144

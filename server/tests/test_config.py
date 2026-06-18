@@ -163,13 +163,13 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     )
     assert settings.llm_timeout_seconds == 60
     assert settings.llm_max_output_tokens == 2048
-    assert settings.llm_file_edit_max_output_tokens == 8192
-    assert settings.llm_file_edit_max_context_files == 8
+    assert settings.llm_file_edit_max_output_tokens == 65536
+    assert settings.llm_file_edit_max_context_files == 20
     assert settings.llm_file_edit_max_context_chars == 80000
     assert settings.llm_user_rate_limit_per_minute == 10
     assert settings.llm_tenant_rate_limit_per_minute == 60
-    assert settings.llm_tenant_daily_token_quota == 100000
-    assert settings.llm_user_daily_token_quota == 25000
+    assert settings.llm_tenant_daily_token_quota == 3200000
+    assert settings.llm_user_daily_token_quota == 3200000
     assert settings.billing_stream_name == "TERTIUS_BILLING"
     assert settings.billing_llm_usage_subject == "tertius.billing.usage.llm.tokens"
     assert settings.billing_max_bytes == 262144

@@ -478,6 +478,21 @@ def test_select_llm_edit_context_files_handles_cycles_syntax_errors_and_limits()
     assert [file.filename for file in selected] == ["design.py", "a.py", "b.py"]
 
 
+def test_select_llm_edit_context_files_errors_when_mandatory_file_exceeds_budget():
+    files = [
+        LlmEditableFile(id=uuid4(), filename="design.py", content="x" * 100),
+    ]
+
+    with pytest.raises(ValueError, match="exceeds the AI edit context budget"):
+        select_llm_edit_context_files(
+            prompt="update design",
+            active_file_id=None,
+            files=files,
+            max_files=5,
+            max_chars=50,
+        )
+
+
 def test_estimate_file_edit_tokens_uses_system_prompt_override():
     request, files = _file_edit_request_and_files()
 
@@ -602,7 +617,7 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
 
     call = client.chat.completions.calls[0]
     assert call["model"] == "deepseek-v4-flash"
-    assert call["max_tokens"] == 8192
+    assert call["max_tokens"] == 65536
     assert call["response_format"] == {"type": "json_object"}
     assert len(call["messages"]) == 2
     assert call["messages"][0]["content"] == settings.llm_file_edit_system_prompt
