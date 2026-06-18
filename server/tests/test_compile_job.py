@@ -101,6 +101,36 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     assert message_id == f"compile-result:{result.job_id}:succeeded"
 
 
+def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    output_path = tmp_path / "output.timus_views"
+    output_path.write_text("{}", encoding="utf-8")
+
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+        assert (project_dir / "design.py").exists()
+        assert (project_dir / "settings.json").read_text(encoding="utf-8") == '{"sheet_size":"A4"}'
+        assert export_format == "timus_views"
+        return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    msg = FakeMsg(command_payload(
+        export_format="timus_views",
+        files=[
+            CompileSourceFile(filename="design.py", content="shape = 'queued'\n"),
+            CompileSourceFile(filename="settings.json", content='{"sheet_size":"A4"}'),
+        ],
+    ))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
+
+    assert msg.acked is True
+    result = publisher.published[0][1]
+    assert result.status == "succeeded"
+    assert base64.b64decode(result.artifact_content_base64) == b"{}"
+
+
 def test_compile_job_publishes_failure_and_acks(monkeypatch):
     from workflows.intus.compile_job import handle_compile_request_message
 

@@ -15,8 +15,7 @@ from datetime import timedelta
 import json
 
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import select
 
 from core.compile_sandbox import run_compile_sandbox
 from core.models import Artifact, CompileJob, ProjectFile, TimusSettings
@@ -44,6 +43,28 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
     import re
 
     return len(re.findall(rb"/Type\s*/Page[^s]", pdf_bytes))
+
+
+def _persist_timus_views_artifact(db_session, seeded_tenant, views: dict | None = None) -> Artifact:
+    payload = views or {
+        "top": [[[0, 0], [10, 0], False]],
+        "front": [[[0, 0], [0, 10], False]],
+        "side": [[[0, 0], [8, 0], False]],
+        "iso": [[[0, 0], [6, 6], False]],
+    }
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        compile_job_id=None,
+        kind="timus_views",
+        storage_key="test/current-timus-views.json",
+        content_type="application/json",
+        byte_size=len(json.dumps(payload).encode("utf-8")),
+        content=json.dumps(payload).encode("utf-8"),
+    )
+    db_session.add(artifact)
+    db_session.commit()
+    return artifact
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +126,7 @@ def test_drafting_pdf_endpoint_returns_valid_pdf(authenticated_timus_client, db_
     )
     design.content = BOX_CODE
     db_session.commit()
+    _persist_timus_views_artifact(db_session, seeded_tenant)
 
     response = authenticated_timus_client.get(
         "/projects/default_purlin/drafting.pdf",
@@ -143,6 +165,7 @@ def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session
     )
     design.content = BOX_CODE
     db_session.commit()
+    _persist_timus_views_artifact(db_session, seeded_tenant)
 
     a4_response = authenticated_timus_client.get(
         "/projects/default_purlin/drafting.pdf",
@@ -181,9 +204,9 @@ def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session
 # ---------------------------------------------------------------------------
 
 def test_background_build_flow_trigger_poll_retrieve(
-    authenticated_timus_client, db_session, seeded_tenant, postgres_url, monkeypatch
+    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
 ):
-    """Trigger a background build, poll status, then retrieve the built views."""
+    """Trigger a Timus build, verify it is queued for the compile worker, then retrieve stored views."""
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -194,65 +217,121 @@ def test_background_build_flow_trigger_poll_retrieve(
     design.content = BOX_CODE
     db_session.commit()
 
-    engine = create_engine(postgres_url, pool_pre_ping=True)
-    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    monkeypatch.setattr(timus_server, "SessionLocal", TestingSessionLocal)
+    published = []
+
+    async def fake_publish(command):
+        published.append(command)
+
+    def fail_if_direct_sandbox(*args, **kwargs):
+        raise AssertionError("Timus drafting build must not run the sandbox in the API process")
+
+    monkeypatch.setattr(timus_server, "publish_timus_compile_command", fake_publish)
+    monkeypatch.setattr(timus_server, "run_compile_sandbox", fail_if_direct_sandbox, raising=False)
 
     # Initial status should be "none" (no artifact yet)
     status = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
     assert status.json()["status"] in ("none", "building", "ready", "stale")
 
-    try:
-        # Trigger a build
-        trigger = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
-        assert trigger.status_code == 200
-        assert trigger.json()["status"] in ("started", "building")
+    trigger = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
+    assert trigger.status_code == 202
+    assert trigger.json()["status"] in ("queued", "building")
+    assert len(published) == 1
+    assert published[0].export_format == "timus_views"
+    assert {source.filename for source in published[0].files} >= {"design.py", "settings.json"}
 
-        # After trigger, status should be "building" or "ready"; "none" means no build result exists.
-        status2 = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
-        assert status2.json()["status"] in ("building", "ready")
+    status2 = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
+    assert status2.json()["status"] == "building"
 
-        db_session.expire_all()
-        job = db_session.scalar(
-            select(CompileJob).where(
-                CompileJob.tenant_id == seeded_tenant.tenant_id,
-                CompileJob.project_id == seeded_tenant.project_id,
-                CompileJob.export_format == "timus_views",
-            )
+    db_session.expire_all()
+    job = db_session.scalar(
+        select(CompileJob).where(
+            CompileJob.tenant_id == seeded_tenant.tenant_id,
+            CompileJob.project_id == seeded_tenant.project_id,
+            CompileJob.export_format == "timus_views",
         )
-        assert job is not None, "Background build should persist a timus_views job"
-        assert job.status == "succeeded"
+    )
+    assert job is not None, "Build should persist a timus_views job"
+    assert job.status == "running"
 
-        artifact = db_session.scalar(
-            select(Artifact).where(
-                Artifact.tenant_id == seeded_tenant.tenant_id,
-                Artifact.project_id == seeded_tenant.project_id,
-                Artifact.compile_job_id == job.id,
-                Artifact.kind == "timus_views",
-            )
-        )
-        assert artifact is not None, "Background build should persist a timus_views artifact"
-        assert artifact.content is not None, "timus_views artifact should contain JSON result bytes"
-        result_views = json.loads(artifact.content.decode("utf-8"))
-        for view_name in ["top", "front", "side", "iso"]:
-            assert result_views.get(view_name), f"Artifact result missing segments for {view_name}"
+    artifact = _persist_timus_views_artifact(db_session, seeded_tenant)
+    artifact.compile_job_id = job.id
+    job.status = "succeeded"
+    db_session.commit()
 
-        retrieve = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
-        assert retrieve.status_code == 200
-        assert retrieve.content.startswith(b"%PDF-")
-    finally:
-        engine.dispose()
+    retrieve = authenticated_timus_client.get("/projects/default_purlin/drafting.pdf")
+    assert retrieve.status_code == 200
+    assert retrieve.content.startswith(b"%PDF-")
+
+
+def test_drafting_build_expires_abandoned_running_job(
+    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
+):
+    """A stale Timus build left running by a restart should not block a new build."""
+    stale_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="timus_views",
+    )
+    db_session.add(stale_job)
+    db_session.flush()
+    stale_job.created_at = stale_job.created_at - timedelta(seconds=timus_server.TIMUS_BUILD_TIMEOUT_SECONDS + 1)
+    db_session.commit()
+
+    published = []
+
+    async def fake_publish(command):
+        published.append(command)
+
+    monkeypatch.setattr(timus_server, "publish_timus_compile_command", fake_publish)
+
+    response = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "queued"
+    assert len(published) == 1
+    db_session.refresh(stale_job)
+    assert stale_job.status == "failed"
+    assert stale_job.error_code == "timus_build_abandoned"
+
+
+def test_drafting_status_reports_latest_failed_job(
+    authenticated_timus_client, db_session, seeded_tenant
+):
+    failed_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="failed",
+        export_format="timus_views",
+        error_code="timus_build_interrupted",
+        user_message="PDF data generation was interrupted. Generate PDF Data again.",
+        retryable=True,
+    )
+    db_session.add(failed_job)
+    db_session.commit()
+
+    response = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "failed",
+        "job_id": str(failed_job.id),
+        "error_code": "timus_build_interrupted",
+        "user_message": "PDF data generation was interrupted. Generate PDF Data again.",
+        "retryable": True,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Cache poisoning: stale cache not served after design.py change
 # ---------------------------------------------------------------------------
 
-def test_drafting_cache_is_invalidated_on_design_change(
+def test_drafting_pdf_requires_current_artifact_after_design_change(
     authenticated_timus_client, db_session, seeded_tenant, monkeypatch
 ):
-    """When design.py changes, the projection cache should be invalidated and
-    the PDF should reflect the new geometry."""
+    """When design.py changes, PDF download should require regenerated PDF Data."""
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -262,46 +341,30 @@ def test_drafting_cache_is_invalidated_on_design_change(
     )
     design.content = BOX_CODE
     db_session.commit()
+    _persist_timus_views_artifact(db_session, seeded_tenant)
 
-    # Clear the module-level cache
-    timus_server.PROJECTION_CACHE.clear()
-
-    # First request: generates and caches views for BOX_CODE
     response1 = authenticated_timus_client.get(
         "/projects/default_purlin/drafting.pdf",
         params={"size": "A4", "scale": "0.1"},
     )
     assert response1.status_code == 200
 
-    cache_key = f"{seeded_tenant.tenant_id}:{seeded_tenant.project_id}:default_purlin"
-    assert cache_key in timus_server.PROJECTION_CACHE, "Views should be cached after first request"
-    first_mtime, first_views = timus_server.PROJECTION_CACHE[cache_key]
-
-    # Change design.py to different geometry
     design.content = CYLINDER_CODE
     design.updated_at = design.updated_at + timedelta(seconds=1)
     db_session.commit()
 
-    # Second request: mtime changed, should recompute (not serve from cache)
     response2 = authenticated_timus_client.get(
         "/projects/default_purlin/drafting.pdf",
         params={"size": "A4", "scale": "0.1"},
     )
-    assert response2.status_code == 200
-
-    # Cache should now reflect the second design state, either by mtime or output.
-    second_mtime, second_views = timus_server.PROJECTION_CACHE[cache_key]
-    assert (second_mtime != first_mtime) or (second_views != first_views), (
-        "Second request should recompute cached views after design.py changes"
-    )
-
-    timus_server.PROJECTION_CACHE.clear()
+    assert response2.status_code == 409
+    assert response2.json()["user_message"] == "Generate PDF Data before downloading the drafting PDF."
 
 
-def test_drafting_pdf_recomputes_when_persisted_views_are_stale(
+def test_drafting_pdf_does_not_recompute_when_persisted_views_are_stale(
     authenticated_timus_client, db_session, seeded_tenant, monkeypatch
 ):
-    """A persisted timus_views artifact should not be used after design.py changes."""
+    """A stale timus_views artifact should not trigger API-side projection work."""
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -330,11 +393,8 @@ def test_drafting_pdf_recomputes_when_persisted_views_are_stale(
     design.updated_at = stale_artifact_time + timedelta(seconds=1)
     db_session.commit()
 
-    recomputed = {"called": False}
-
     def fake_get_projected_views(cache_key, compound, mtime):
-        recomputed["called"] = True
-        return {"top": [], "front": [], "side": [], "iso": []}
+        raise AssertionError("Stale persisted views must not be recomputed in the API process")
 
     monkeypatch.setattr(timus_server, "get_projected_views", fake_get_projected_views)
 
@@ -343,8 +403,7 @@ def test_drafting_pdf_recomputes_when_persisted_views_are_stale(
         params={"size": "A4", "scale": "0.1"},
     )
 
-    assert response.status_code == 200
-    assert recomputed["called"], "Stale persisted views should be recomputed"
+    assert response.status_code == 409
 
 
 # ---------------------------------------------------------------------------

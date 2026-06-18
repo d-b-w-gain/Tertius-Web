@@ -71,7 +71,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
-  const [userRequestedBuild, setUserRequestedBuild] = useState(false);
+  const [buildMessage, setBuildMessage] = useState<string>('');
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -170,31 +170,36 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/status`, getAccessToken);
         if (res.ok && mounted) {
           const data = await res.json();
-          if (data.status === 'building' && !userRequestedBuild) {
-            setBuildStatus('stale');
-          } else {
-            setBuildStatus(data.status);
-          }
-
-          if (userRequestedBuild && data.status !== 'building') {
-            setUserRequestedBuild(false);
-          }
+          setBuildStatus(data.status);
+          setBuildMessage(data.user_message || '');
         }
-      } catch (e) {}
+      } catch (e) {
+        setBuildMessage('Unable to check PDF Data status.');
+      }
     };
     checkStatus();
     const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
-  }, [activeProject, isActive, serverUrl, getAccessToken, userRequestedBuild]);
+  }, [activeProject, isActive, serverUrl, getAccessToken]);
 
   const triggerBuild = async () => {
     if (!activeProject) return;
     setBuildStatus('building');
-    setUserRequestedBuild(true);
+    setBuildMessage('');
     try {
-      await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        setBuildStatus(data.status === 'queued' ? 'building' : data.status || 'failed');
+        setBuildMessage(data.user_message || data.error || 'PDF Data could not be started. Try again.');
+        return;
+      }
+      setBuildStatus(data.status === 'queued' ? 'building' : data.status || 'building');
+      setBuildMessage(data.user_message || '');
     } catch (e) {
       console.error(e);
+      setBuildStatus('failed');
+      setBuildMessage('PDF Data could not be started. Try again.');
     }
   };
 
@@ -203,7 +208,12 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     try {
       const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
       const res = await apiFetch(url, getAccessToken);
-      if (!res.ok) return;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setBuildStatus('stale');
+        setBuildMessage(data.user_message || 'Generate PDF Data before downloading the drafting PDF.');
+        return;
+      }
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
       window.open(objectUrl, '_blank', 'noopener,noreferrer');
@@ -345,6 +355,16 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
                PDF data is not current. Use Generate PDF Data to refresh.
              </div>
           )}
+          {buildStatus === 'failed' && (
+             <div className="text-[10px] text-red-400 text-center font-mono uppercase mt-1">
+               {buildMessage || 'PDF Data generation failed. Try again.'}
+             </div>
+          )}
+          {buildStatus !== 'failed' && buildMessage && (
+             <div className="text-[10px] text-slate-400 text-center font-mono uppercase mt-1">
+               {buildMessage}
+             </div>
+          )}
         </div>
       </div>
 
@@ -396,23 +416,33 @@ const DraftingCanvas: React.FC<{
 
   const svgRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const accessTokenRef = useRef(getAccessToken);
+  const modelMtimeRef = useRef<number>(0);
   
   const [modelUrl, setModelUrl] = useState<string>('');
+
+  useEffect(() => {
+    accessTokenRef.current = getAccessToken;
+  }, [getAccessToken]);
+
+  useEffect(() => {
+    modelMtimeRef.current = 0;
+    setModelUrl('');
+  }, [activeProject]);
   
   // Model Polling
   useEffect(() => {
     if (!activeProject || !isActive) return;
     let mounted = true;
-    let mtime = 0;
     const checkModel = async () => {
       if (!shouldRunPollingRequest()) return;
       try {
-        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, getAccessToken);
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, accessTokenRef.current);
         if (res.ok && mounted) {
           const data = await res.json();
-          if (data.mtime && data.mtime !== mtime) {
-            mtime = data.mtime;
-            setModelUrl(`${serverUrl}/projects/${activeProject}/model?t=${mtime}`);
+          if (data.mtime && data.mtime !== modelMtimeRef.current) {
+            modelMtimeRef.current = data.mtime;
+            setModelUrl(`${serverUrl}/projects/${activeProject}/model?t=${data.mtime}`);
           }
         }
       } catch (e) {}
@@ -420,7 +450,7 @@ const DraftingCanvas: React.FC<{
     checkModel();
     const interval = setInterval(checkModel, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
-  }, [serverUrl, activeProject, isActive, getAccessToken]);
+  }, [serverUrl, activeProject, isActive]);
 
   const stateRef = useRef({ w, h, view_w, view_h, scale, selectedView });
   useEffect(() => {
@@ -444,7 +474,7 @@ const DraftingCanvas: React.FC<{
     let modelBounds: THREE.Box3 | null = null;
     const loader = new GLTFLoader();
     
-    apiFetch(modelUrl, getAccessToken)
+    apiFetch(modelUrl, accessTokenRef.current)
       .then(res => res.arrayBuffer())
       .then(buffer => {
         if (isCancelled) return;
@@ -620,7 +650,7 @@ const DraftingCanvas: React.FC<{
         });
         renderer.dispose();
     };
-  }, [modelUrl, getAccessToken]);
+  }, [modelUrl]);
 
   return (
     <div className="relative w-full h-full flex items-center justify-center">

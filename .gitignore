@@ -51,3 +51,4 @@ cache/
 # Local tooling
 .serena/
 .uv-cache/
+.kubectl/

@@ -365,29 +365,30 @@ def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
     timus_server.PROJECTION_CACHE.clear()
     poisoned_views = {"top": ["poison"], "front": ["poison"], "side": ["poison"], "iso": ["poison"]}
     timus_server.PROJECTION_CACHE["default_purlin"] = (db_design.updated_at.timestamp(), poisoned_views)
-
-    class FakePoint:
-        X = 0
-        Y = 0
-        Z = 0
-
-    class FakeBox:
-        min = FakePoint()
-        max = type("Point", (), {"X": 10, "Y": 10, "Z": 10})()
-
-        def center(self):
-            return FakePoint()
-
-    class FakeCompound:
-        def bounding_box(self):
-            return FakeBox()
-
-        def project_to_viewport(self, **kwargs):
-            return [], []
+    current_views = b'{"top":[[[0,0],[1,0],false]],"front":[[[0,0],[0,1],false]],"side":[[[0,0],[1,1],false]],"iso":[[[0,0],[2,2],false]]}'
+    db_session.add(
+        Artifact(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            compile_job_id=None,
+            kind="timus_views",
+            storage_key="test/current-timus-views.json",
+            content_type="application/json",
+            byte_size=len(current_views),
+            content=current_views,
+        )
+    )
+    db_session.commit()
 
     drawn_segments = []
 
-    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code, project_dir=None: FakeCompound())
+    monkeypatch.setattr(
+        timus_server,
+        "get_compound_from_code",
+        lambda code, project_dir=None: (_ for _ in ()).throw(
+            AssertionError("PDF download must use the stored timus_views artifact")
+        ),
+    )
     monkeypatch.setattr(timus_server, "_draw_drafting_sheet_background", lambda *args, **kwargs: None)
     monkeypatch.setattr(timus_server, "_draw_gorton_text", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -400,4 +401,4 @@ def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
 
     assert response.status_code == 200
     assert ["poison"] not in drawn_segments
-    assert f"{seeded_tenant.tenant_id}:{seeded_tenant.project_id}:default_purlin" in timus_server.PROJECTION_CACHE
+    assert drawn_segments
