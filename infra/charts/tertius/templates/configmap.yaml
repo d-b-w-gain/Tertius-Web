@@ -43,6 +43,9 @@ data:
   LLM_MODEL: {{ .Values.app.config.llmModel | quote }}
   LLM_TIMEOUT_SECONDS: {{ .Values.app.config.llmTimeoutSeconds | quote }}
   LLM_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmMaxOutputTokens | quote }}
+  LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmFileEditMaxOutputTokens | quote }}
+  LLM_FILE_EDIT_MAX_CONTEXT_FILES: {{ .Values.app.config.llmFileEditMaxContextFiles | quote }}
+  LLM_FILE_EDIT_MAX_CONTEXT_CHARS: {{ .Values.app.config.llmFileEditMaxContextChars | quote }}
   LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
   LLM_TENANT_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmTenantRateLimitPerMinute | quote }}
   LLM_TENANT_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmTenantDailyTokenQuota | quote }}

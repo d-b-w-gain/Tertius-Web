@@ -25,9 +25,11 @@ export type ProjectFileMetadata = {
 
 export type LlmFileEditResult = {
   success: true
+  outcome: 'changed' | 'no_change' | 'cannot_complete'
+  message: string
   model: string
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
-  snapshot: { id: string; message: string; content_hash: string }
+  snapshot: { id: string; message: string; content_hash: string } | null
   files: Array<{
     id: string
     filename: string

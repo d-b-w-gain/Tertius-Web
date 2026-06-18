@@ -118,6 +118,8 @@ describe('projectStorage', () => {
     const getAccessToken = vi.fn()
     const responseBody = {
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'gpt-4',
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       snapshot: { id: 'snap-1', message: 'llm edit', content_hash: 'abc123' },

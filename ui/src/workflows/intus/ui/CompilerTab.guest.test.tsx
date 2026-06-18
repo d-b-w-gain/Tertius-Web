@@ -116,6 +116,8 @@ describe('CompilerTab guest mode', () => {
   it('never invokes storage.applyLlmFileEdit for guests', async () => {
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },

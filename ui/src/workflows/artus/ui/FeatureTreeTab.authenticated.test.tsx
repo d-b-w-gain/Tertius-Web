@@ -48,6 +48,8 @@ function setupRoutes(state: MockRouteState = {}) {
     editStatus: 200,
     editBody: {
       success: true,
+      outcome: 'changed',
+      message: '',
       model: 'test-model',
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
@@ -309,6 +311,8 @@ describe('FeatureTreeTab authenticated AI edit', () => {
       if (url === '/api/intus/projects/project_b/files/llm-edit' && options?.method === 'POST') {
         return Promise.resolve(jsonResponse({
           success: true,
+          outcome: 'changed',
+          message: '',
           model: 'test-model',
           usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },

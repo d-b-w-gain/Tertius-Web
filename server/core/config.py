@@ -5,6 +5,8 @@ from urllib.parse import quote_plus
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
+
 
 SERVER_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
@@ -40,12 +42,16 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="https://api.deepseek.com")
     llm_model: str = Field(default="deepseek-v4-flash")
     llm_api_key: str = Field(default="")
+    llm_file_edit_system_prompt: str = Field(default=FILE_EDIT_SYSTEM_PROMPT)
     llm_timeout_seconds: int = Field(default=60)
     llm_max_output_tokens: int = Field(default=2048)
+    llm_file_edit_max_output_tokens: int = Field(default=65536, gt=0)
+    llm_file_edit_max_context_files: int = Field(default=20, ge=1, le=20)
+    llm_file_edit_max_context_chars: int = Field(default=80000, gt=0)
     llm_user_rate_limit_per_minute: int = Field(default=10)
     llm_tenant_rate_limit_per_minute: int = Field(default=60)
-    llm_tenant_daily_token_quota: int = Field(default=100000)
-    llm_user_daily_token_quota: int = Field(default=25000)
+    llm_tenant_daily_token_quota: int = Field(default=3200000)
+    llm_user_daily_token_quota: int = Field(default=3200000)
     billing_stream_name: str = Field(default="TERTIUS_BILLING")
     billing_llm_usage_subject: str = Field(default="tertius.billing.usage.llm.tokens")
     billing_max_bytes: int = Field(default=256 * 1024)

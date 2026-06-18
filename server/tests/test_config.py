@@ -137,8 +137,12 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
         "LLM_BASE_URL",
         "LLM_MODEL",
         "LLM_API_KEY",
+        "LLM_FILE_EDIT_SYSTEM_PROMPT",
         "LLM_TIMEOUT_SECONDS",
         "LLM_MAX_OUTPUT_TOKENS",
+        "LLM_FILE_EDIT_MAX_OUTPUT_TOKENS",
+        "LLM_FILE_EDIT_MAX_CONTEXT_FILES",
+        "LLM_FILE_EDIT_MAX_CONTEXT_CHARS",
         "LLM_USER_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_DAILY_TOKEN_QUOTA",
@@ -154,12 +158,18 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     assert settings.llm_base_url == "https://api.deepseek.com"
     assert settings.llm_model == "deepseek-v4-flash"
     assert settings.llm_api_key == ""
+    assert settings.llm_file_edit_system_prompt.startswith(
+        "You are the Tertius Intus CAD editing agent."
+    )
     assert settings.llm_timeout_seconds == 60
     assert settings.llm_max_output_tokens == 2048
+    assert settings.llm_file_edit_max_output_tokens == 65536
+    assert settings.llm_file_edit_max_context_files == 20
+    assert settings.llm_file_edit_max_context_chars == 80000
     assert settings.llm_user_rate_limit_per_minute == 10
     assert settings.llm_tenant_rate_limit_per_minute == 60
-    assert settings.llm_tenant_daily_token_quota == 100000
-    assert settings.llm_user_daily_token_quota == 25000
+    assert settings.llm_tenant_daily_token_quota == 3200000
+    assert settings.llm_user_daily_token_quota == 3200000
     assert settings.billing_stream_name == "TERTIUS_BILLING"
     assert settings.billing_llm_usage_subject == "tertius.billing.usage.llm.tokens"
     assert settings.billing_max_bytes == 262144
@@ -169,8 +179,12 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
     monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("LLM_API_KEY", "secret-key")
+    monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", "custom file edit prompt")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1024")
+    monkeypatch.setenv("LLM_FILE_EDIT_MAX_OUTPUT_TOKENS", "4096")
+    monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_FILES", "6")
+    monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_CHARS", "50000")
     monkeypatch.setenv("LLM_USER_RATE_LIMIT_PER_MINUTE", "5")
     monkeypatch.setenv("LLM_TENANT_RATE_LIMIT_PER_MINUTE", "25")
     monkeypatch.setenv("LLM_TENANT_DAILY_TOKEN_QUOTA", "50000")
@@ -184,8 +198,12 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     assert settings.llm_base_url == "https://api.deepseek.com"
     assert settings.llm_model == "deepseek-v4-flash"
     assert settings.llm_api_key == "secret-key"
+    assert settings.llm_file_edit_system_prompt == "custom file edit prompt"
     assert settings.llm_timeout_seconds == 30
     assert settings.llm_max_output_tokens == 1024
+    assert settings.llm_file_edit_max_output_tokens == 4096
+    assert settings.llm_file_edit_max_context_files == 6
+    assert settings.llm_file_edit_max_context_chars == 50000
     assert settings.llm_user_rate_limit_per_minute == 5
     assert settings.llm_tenant_rate_limit_per_minute == 25
     assert settings.llm_tenant_daily_token_quota == 50000
