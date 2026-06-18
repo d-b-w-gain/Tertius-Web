@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
-import { createProjectStorage } from '../../shared/projectStorage';
+import { createProjectStorage, type ProjectFileMetadata } from '../../shared/projectStorage';
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
 import {
   ACTIVE_PROJECT_POLL_INTERVAL_MS,
@@ -17,6 +17,7 @@ const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
 const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
 const COMPILE_STATUS_POLL_MS = 2_000;
 const COMPILE_STATUS_RETRY_MS = 3_000;
+const AI_EDIT_FILE_LIMIT = 20;
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -60,6 +61,9 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [activeFile, setActiveFile] = useState<string>('design.py');
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [fileMetadata, setFileMetadata] = useState<ProjectFileMetadata[]>([]);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isApplyingAiEdit, setIsApplyingAiEdit] = useState(false);
   
   // Git UI State
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
@@ -257,18 +261,38 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     mtimeRef.current = 0;
     fetchGitStatus(projectName);
 
-    const projectFiles = await storage.listFiles(projectName);
+    let metadata: ProjectFileMetadata[];
+    try {
+      metadata = await storage.listFileMetadata(projectName);
+    } catch (e) {
+      metadata = [];
+    }
     if (loadRequestRef.current !== requestId) return;
 
-    const nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    let nextFiles: string[];
+    if (metadata.length > 0) {
+      nextFiles = metadata.map(file => file.filename);
+    } else {
+      const projectFiles = await storage.listFiles(projectName);
+      if (loadRequestRef.current !== requestId) return;
+      nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    }
     const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0]!;
     const nextCode = await storage.loadCode(projectName, nextFile);
     if (loadRequestRef.current !== requestId) return;
 
+    setFileMetadata(metadata);
     setFiles(nextFiles);
     setActiveFile(nextFile);
     setCode(nextCode);
   }, [fetchGitStatus, storage]);
+
+  const refreshFileMetadata = useCallback(async (projectName: string) => {
+    const metadata = await storage.listFileMetadata(projectName);
+    setFileMetadata(metadata);
+    setFiles(metadata.length > 0 ? metadata.map(file => file.filename) : ['design.py']);
+    return metadata;
+  }, [storage]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -375,13 +399,17 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     return () => clearInterval(interval);
   }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 
-  const switchFile = async (fileName: string) => {
+  const switchFile = async (
+    fileName: string,
+    options: { saveCurrent?: boolean } = { saveCurrent: true },
+  ) => {
     if (fileName === activeFile) return;
     
-    // Auto-save current before switching
-    try {
-      await storage.saveCode(activeProject, activeFile, code);
-    } catch(e) {}
+    if (options.saveCurrent !== false) {
+      try {
+        await storage.saveCode(activeProject, activeFile, code);
+      } catch(e) {}
+    }
 
     setActiveFile(fileName);
     mtimeRef.current = 0; // Prevent false-positive sync when switching files
@@ -438,11 +466,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     try {
       await storage.saveCode(activeProject, name, "");
-      
-      setFiles([...files, name]);
+      await refreshFileMetadata(activeProject);
       setIsCreatingFile(false);
       setNewFileName('');
-      switchFile(name);
+      await switchFile(name);
     } catch (e) {
       alert("Network error creating file");
     }
@@ -454,12 +481,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     
     try {
       await storage.deleteFile(activeProject, fileName);
-      
-      const newFiles = files.filter(f => f !== fileName);
-      setFiles(newFiles);
+      await refreshFileMetadata(activeProject);
       
       if (activeFile === fileName) {
-        switchFile('design.py');
+        await switchFile('design.py', { saveCurrent: false });
       }
     } catch (e) {
       alert("Network error deleting file");
@@ -479,6 +504,66 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       return;
     }
     await startCompile(code, 'manual');
+  };
+
+  const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id && file.updated_at);
+
+  const applyAiEdit = async () => {
+    if (isGuest || !activeProject || !aiPrompt.trim() || !hasEditableFilePointers) return;
+    setIsApplyingAiEdit(true);
+    try {
+      await storage.saveCode(activeProject, activeFile, code);
+      const latestMetadata = await refreshFileMetadata(activeProject);
+      const activeMetadata = latestMetadata.find(file => file.filename === activeFile);
+      const remainingMetadata = latestMetadata.filter(file => file.filename !== activeFile);
+      const requestFiles = [
+        ...(activeMetadata ? [activeMetadata] : []),
+        ...remainingMetadata,
+      ]
+        .filter(file => file.id && file.updated_at)
+        .slice(0, AI_EDIT_FILE_LIMIT);
+      if (requestFiles.length === 0) return;
+      if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
+      }
+      const result = await storage.applyLlmFileEdit(activeProject, {
+        prompt: aiPrompt.trim(),
+        files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
+        active_file_id: activeMetadata?.id,
+        metadata: { source: 'compiler_tab' },
+      });
+      const nextMetadata = result.files.map(file => ({
+        id: file.id,
+        filename: file.filename,
+        updated_at: file.updated_at,
+      }));
+      setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing));
+      setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
+      const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
+      if (activeChanged) {
+        if (activeChanged.filename === activeFile) {
+          // Staying on the current file: set code from the server response and
+          // reset the polling baseline so the next poll establishes a fresh
+          // mtime instead of treating the AI edit as a stale external change.
+          mtimeRef.current = 0;
+          setCode(activeChanged.content);
+        } else {
+          // Switching to a different changed file: route through switchFile so
+          // the baseline reset and canonical server reload path are reused.
+          // Avoid saving the current editor content (which would create an
+          // extra snapshot) since the AI edit already persisted the changes.
+          await switchFile(activeChanged.filename, { saveCurrent: false });
+        }
+      }
+      setAiPrompt('');
+      setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).`);
+      fetchGitStatus(activeProject);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI file edit failed.';
+      setLog(prev => `${prev ? `${prev}\n` : ''}[ERROR] ${message}`);
+    } finally {
+      setIsApplyingAiEdit(false);
+    }
   };
 
   return (
@@ -616,6 +701,32 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                   />
                 </label>
               </div>
+            )}
+
+            {!isGuest && (
+              <div className="flex-1" />
+            )}
+
+            {!isGuest && (
+              <form
+                onSubmit={(e) => { e.preventDefault(); void applyAiEdit(); }}
+                className="flex items-center gap-2 px-2 py-1"
+              >
+                <input
+                  aria-label="AI prompt"
+                  placeholder="Ask AI to edit..."
+                  value={aiPrompt}
+                  onChange={e => setAiPrompt(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 w-56"
+                />
+                <button
+                  type="submit"
+                  disabled={isApplyingAiEdit || !aiPrompt.trim() || !hasEditableFilePointers}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
+                >
+                  {isApplyingAiEdit ? 'Applying...' : 'AI Edit'}
+                </button>
+              </form>
             )}
           </div>
           <div className="flex-1 w-full relative">

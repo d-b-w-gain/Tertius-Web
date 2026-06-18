@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
-from typing import Optional
-from uuid import UUID
+from typing import Optional, cast
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,17 +16,34 @@ from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
+from core.billing_messages import (
+    LlmTokenUsageEvent,
+    assert_billing_message_size,
+    billing_usage_message_id,
+)
 from core.llm_client import (
     BuildScriptGenerationInput,
     LlmBillingError,
+    LlmEditableFile,
+    LlmFileEditInput,
+    LlmInvalidFileEditError,
+    LlmNoFileChangesError,
     LlmNotConfiguredError,
     estimate_build_script_tokens,
+    estimate_file_edit_tokens,
     generate_build_script,
+    generate_file_edits,
 )
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
-from core.repositories import CompileRepository, ProjectRepository, require_valid_python_filename
+from core.repositories import (
+    CompileRepository,
+    FileVersionConflictError,
+    ProjectRepository,
+    normalize_file_version,
+    require_valid_python_filename,
+)
 from workflows.intus.usage_server import router as usage_router
 
 app = FastAPI(title="Intus Compiler Server")
@@ -92,7 +110,54 @@ async def create_billing_publisher(settings):
         logger.exception("Failed to create LLM billing publisher")
         raise LlmBillingError("LLM billing failed")
 
+
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _llm_provider_from_settings(settings) -> str:
+    if "deepseek" in settings.llm_base_url.lower():
+        return "deepseek"
+    return "openai-compatible"
+
+
+async def publish_file_edit_billing_event(
+    *,
+    billing_publisher,
+    settings,
+    auth: AuthContext,
+    project_id: UUID,
+    request: LlmFileEditInput,
+    result,
+    event_id: UUID,
+) -> None:
+    usage = result.usage
+    event = LlmTokenUsageEvent(
+        event_id=event_id,
+        tenant_id=auth.tenant_id,
+        user_id=auth.user_id,
+        project_id=project_id,
+        workflow="intus",
+        operation="files.llm_edit",
+        provider=_llm_provider_from_settings(settings),
+        model=result.model,
+        prompt=request.prompt,
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        occurred_at=datetime.now(timezone.utc),
+        provider_request_id=getattr(result, "provider_request_id", None),
+        metadata=request.metadata,
+    )
+    try:
+        assert_billing_message_size(event, settings.billing_max_bytes)
+        await billing_publisher.publish_json(
+            settings.billing_llm_usage_subject,
+            event,
+            message_id=billing_usage_message_id(event),
+        )
+    except Exception as exc:
+        logger.exception("Failed to publish LLM billing usage event")
+        raise LlmBillingError("LLM billing failed") from exc
+
+
 @app.get("/health")
 def health():
     try:
@@ -158,7 +223,18 @@ def list_files(name: str, ctx: AuthContext = Depends(get_auth_context), db: Sess
         files = repo.list_files(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
-    return {"files": files}
+    metadata = repo.list_file_metadata(name)
+    return {
+        "files": files,
+        "file_metadata": [
+            {
+                "id": str(row["id"]),
+                "filename": row["filename"],
+                "updated_at": cast(datetime, row["updated_at"]).isoformat(),
+            }
+            for row in metadata
+        ],
+    }
 
 @app.get("/projects/{name}/code")
 def get_code(
@@ -471,6 +547,251 @@ async def generate_project_build_script(
         "script": result.script,
         "model": result.model,
         "usage": result.usage.model_dump(),
+    }
+
+
+@app.post("/projects/{name}/files/llm-edit")
+async def llm_edit_files(
+    name: str,
+    req: LlmFileEditInput,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+
+    try:
+        for pointer in req.files:
+            require_valid_python_filename(pointer.filename)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Invalid Python filename"})
+
+    seen_ids: set[UUID] = set()
+    for pointer in req.files:
+        if pointer.id in seen_ids:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Duplicate file id in request"},
+            )
+        seen_ids.add(pointer.id)
+
+    if req.active_file_id is not None and req.active_file_id not in seen_ids:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Active file id is not in the request"},
+        )
+
+    file_rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
+    if set(file_rows) != seen_ids:
+        return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
+
+    for pointer in req.files:
+        if file_rows[pointer.id].filename != pointer.filename:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "File pointer does not match filename"},
+            )
+        if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "success": False,
+                    "error": "Files changed while AI edit was running. Reload and try again.",
+                    "retryable": False,
+                },
+            )
+
+    editable_files = [
+        LlmEditableFile(
+            id=row.id, filename=row.filename, content=row.content
+        )
+        for row in [file_rows[pointer.id] for pointer in req.files]
+    ]
+
+    settings = get_settings()
+    billing_publisher = None
+    billing_nc = None
+    try:
+        if not settings.llm_api_key:
+            raise LlmNotConfiguredError("LLM provider is not configured")
+        assert_llm_usage_allowed(
+            db,
+            settings,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            estimated_tokens=estimate_file_edit_tokens(
+                req,
+                editable_files,
+                max_output_tokens=settings.llm_max_output_tokens,
+            ),
+        )
+        result = await generate_file_edits(
+            req,
+            files=editable_files,
+            settings=settings,
+            auth=ctx,
+            project_id=project.id,
+        )
+        if not result.files:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                content={"success": False, "error": "LLM returned no file changes", "retryable": False},
+            )
+        try:
+            requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
+            requested_files = repo.files_by_ids(name, list(requested_versions.keys()))
+            if set(requested_files) != set(requested_versions):
+                return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
+            for file_id, expected_updated_at in requested_versions.items():
+                if normalize_file_version(requested_files[file_id].updated_at) != normalize_file_version(expected_updated_at):
+                    db.rollback()
+                    return JSONResponse(
+                        status_code=status.HTTP_409_CONFLICT,
+                        content={
+                            "success": False,
+                            "error": "Files changed while AI edit was running. Reload and try again.",
+                            "retryable": False,
+                        },
+                    )
+            updates = {edit.file_id: edit.content for edit in result.files}
+            changed_versions = {file_id: requested_versions[file_id] for file_id in updates}
+            stage_result = repo.stage_file_updates(
+                name,
+                updates,
+                ctx.user_id,
+                f"LLM edit: {req.prompt[:480]}",
+                expected_updated_at=changed_versions,
+            )
+        except ValueError as exc:
+            if str(exc) == "LLM returned no file changes":
+                db.rollback()
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    content={"success": False, "error": "LLM returned no file changes", "retryable": False},
+                )
+            raise
+        except FileVersionConflictError:
+            db.rollback()
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "success": False,
+                    "error": "Files changed while AI edit was running. Reload and try again.",
+                    "retryable": False,
+                },
+            )
+        if stage_result is None:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"success": False, "error": "LLM file update failed", "retryable": True},
+            )
+        snapshot, changed_files = stage_result
+        if not changed_files:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"success": False, "error": "LLM file update failed", "retryable": True},
+            )
+        billing_publisher, billing_nc = await create_billing_publisher(settings)
+        billing_event_id = uuid4()
+        result.billing_event_id = billing_event_id
+        await publish_file_edit_billing_event(
+            billing_publisher=billing_publisher,
+            settings=settings,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            event_id=billing_event_id,
+        )
+        record_llm_usage(
+            db,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            provider_request_id=getattr(result, "provider_request_id", None),
+            event_id=getattr(result, "billing_event_id", None),
+            settings=settings,
+            operation="files.llm_edit",
+        )
+        db.commit()
+    except LlmUsageLimitExceeded as exc:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"success": False, "error": str(exc), "retryable": True},
+        )
+    except LlmNotConfiguredError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmNoFileChangesError:
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"success": False, "error": "LLM returned no file changes", "retryable": False},
+        )
+    except LlmInvalidFileEditError as exc:
+        logger.debug("LLM file edit response rejected: %s", exc)
+        logger.exception("LLM file edit returned invalid response")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"success": False, "error": "LLM returned invalid file edits", "retryable": True},
+        )
+    except LlmBillingError:
+        logger.exception("LLM billing failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "LLM billing failed", "retryable": True},
+        )
+    except Exception:
+        logger.exception("LLM file edit failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "LLM generation failed", "retryable": True},
+        )
+    finally:
+        if billing_nc is not None:
+            try:
+                await billing_nc.flush()
+            except Exception:
+                logger.exception("Failed to flush LLM billing NATS connection")
+            finally:
+                try:
+                    await billing_nc.close()
+                except Exception:
+                    logger.exception("Failed to close LLM billing NATS connection")
+
+    by_id = {row.id: row for row in changed_files}
+    return {
+        "success": True,
+        "model": result.model,
+        "usage": result.usage.model_dump(),
+        "snapshot": {
+            "id": str(snapshot.id),
+            "message": snapshot.message,
+            "content_hash": snapshot.content_hash,
+        },
+        "files": [
+            {
+                "id": str(edit.file_id),
+                "filename": by_id[edit.file_id].filename,
+                "content": edit.content,
+                "updated_at": by_id[edit.file_id].updated_at.isoformat(),
+                "changed": True,
+                "summary": edit.summary,
+            }
+            for edit in result.files
+            if edit.file_id in by_id
+        ],
     }
 
 

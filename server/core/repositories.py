@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
@@ -21,6 +21,18 @@ WORKER_LOST_ERROR_CODE = "worker_lost"
 WORKER_LOST_USER_MESSAGE = (
     "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
 )
+
+
+class FileVersionConflictError(RuntimeError):
+    pass
+
+
+def normalize_file_version(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat(timespec="microseconds")
 
 
 def require_valid_python_filename(filename: str) -> str:
@@ -131,6 +143,22 @@ class ProjectRepository:
             filenames.insert(0, "design.py")
         return filenames
 
+    def list_file_metadata(self, project_name: str) -> list[dict[str, object]]:
+        project = self.get_project(project_name)
+        if project is None:
+            return []
+        files = self.db.scalars(
+            select(ProjectFile)
+            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .order_by(ProjectFile.filename)
+        ).all()
+        rows = [
+            {"id": file.id, "filename": file.filename, "updated_at": file.updated_at}
+            for file in files
+        ]
+        rows.sort(key=lambda row: (row["filename"] != "design.py", row["filename"]))
+        return rows
+
     def get_code(self, project_name: str, filename: str) -> str | None:
         filename = require_valid_python_filename(filename)
         project = self.get_project(project_name)
@@ -176,6 +204,82 @@ class ProjectRepository:
         if saved:
             self.db.commit()
         return saved
+
+    def files_by_ids(
+        self,
+        project_name: str,
+        file_ids: list[UUID],
+        for_update: bool = False,
+    ) -> dict[UUID, ProjectFile]:
+        project = self.get_project(project_name)
+        if project is None or not file_ids:
+            return {}
+        stmt = (
+            select(ProjectFile)
+            .where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+                ProjectFile.id.in_(file_ids),
+            )
+            .execution_options(populate_existing=True)
+        )
+        if for_update:
+            # Acquire row-level locks so the version re-check and the
+            # subsequent content mutation in stage_file_updates happen
+            # atomically. A concurrent save in another transaction will
+            # either block until we commit (and then be the last writer)
+            # or, if it already committed, be visible to this query so the
+            # caller can detect the stale version.
+            stmt = stmt.with_for_update()
+        rows = self.db.scalars(stmt).all()
+        return {row.id: row for row in rows}
+
+    def stage_file_updates(
+        self,
+        project_name: str,
+        updates: dict[UUID, str],
+        user_id: UUID,
+        message: str,
+        expected_updated_at: dict[UUID, datetime] | None = None,
+    ) -> tuple[SourceSnapshot, list[ProjectFile]] | None:
+        project = self.get_project(project_name)
+        if project is None:
+            return None
+        # When an expected version is supplied, load the target rows with
+        # SELECT ... FOR UPDATE so the version re-check and the subsequent
+        # content mutation happen while holding row locks. This closes the
+        # race window between the endpoint's pre-check and the final write:
+        # a concurrent save that commits after the pre-check but before this
+        # point is already visible (-> conflict), and a concurrent save that
+        # is still in-flight blocks on these locks until we commit, so it can
+        # never be silently overwritten by the AI edit.
+        files = self.files_by_ids(
+            project_name,
+            list(updates.keys()),
+            for_update=expected_updated_at is not None,
+        )
+        if set(files) != set(updates):
+            return None
+        if expected_updated_at is not None:
+            for file_id, expected_version in expected_updated_at.items():
+                file = files.get(file_id)
+                if file is None or normalize_file_version(file.updated_at) != normalize_file_version(expected_version):
+                    raise FileVersionConflictError("Files changed while AI edit was running")
+        now = now_utc()
+        changed: list[ProjectFile] = []
+        for file_id, content in updates.items():
+            file = files[file_id]
+            if file.content != content:
+                file.content = content
+                file.updated_at = now
+                changed.append(file)
+        if not changed:
+            raise ValueError("LLM returned no file changes")
+        project.updated_at = now
+        self.db.flush()
+        truncated_message = (message or "LLM edit")[:500]
+        snapshot = self._snapshot(project, user_id, truncated_message)
+        return snapshot, changed
 
     def delete_file(self, project_name: str, filename: str) -> bool:
         filename = require_valid_python_filename(filename)
@@ -225,7 +329,7 @@ class ProjectRepository:
         ).all()
         return [f"{row.content_hash[:7]} {row.message}" for row in rows]
 
-    def _snapshot(self, project: Project, user_id: UUID, message: str) -> None:
+    def _snapshot(self, project: Project, user_id: UUID, message: str) -> SourceSnapshot:
         files = self.db.scalars(
             select(ProjectFile)
             .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
@@ -244,6 +348,7 @@ class ProjectRepository:
 
         for file in files:
             self.db.add(SourceSnapshotFile(snapshot_id=snapshot.id, filename=file.filename, content=file.content))
+        return snapshot
 
 
 class CompileRepository:

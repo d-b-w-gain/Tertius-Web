@@ -89,6 +89,7 @@ def record_llm_usage(
     settings,
     provider_request_id: str | None = None,
     event_id: UUID | None = None,
+    operation: str = "build_script.generate",
 ) -> UUID:
     usage_event_id = event_id or uuid4()
     usage = result.usage
@@ -99,7 +100,7 @@ def record_llm_usage(
             user_id=auth.user_id,
             project_id=project_id,
             workflow="intus",
-            operation="build_script.generate",
+            operation=operation,
             provider=_provider_from_settings(settings),
             model=result.model,
             prompt=request.prompt,
