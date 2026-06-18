@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import traceback
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -36,6 +36,7 @@ app.add_middleware(
 )
 
 WORKFLOW_DIR = Path(__file__).parent
+TIMUS_BUILD_TIMEOUT_SECONDS = 600
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -501,6 +502,26 @@ def _background_build_timus_views(tenant_id: UUID, user_id: UUID, project_id: UU
         db.close()
 
 
+def _expire_abandoned_timus_job(db: Session, compile_repo: CompileRepository, job: CompileJob) -> bool:
+    job_time = job.created_at
+    if job_time.tzinfo is None:
+        job_time = job_time.replace(tzinfo=timezone.utc)
+
+    if (datetime.now(timezone.utc) - job_time).total_seconds() <= TIMUS_BUILD_TIMEOUT_SECONDS:
+        return False
+
+    compile_repo.finish_job(
+        job,
+        "failed",
+        error="Timus PDF data build timed out or was abandoned by server restart",
+        error_code="timus_build_abandoned",
+        user_message="PDF data generation was interrupted. Generate PDF Data again.",
+        retryable=True,
+    )
+    db.commit()
+    return True
+
+
 @app.post("/projects/{name}/drafting/build")
 def trigger_drafting_build(
     name: str,
@@ -522,6 +543,9 @@ def trigger_drafting_build(
             CompileJob.status == "running"
         )
     )
+    if running_job:
+        if _expire_abandoned_timus_job(db, compile_repo, running_job):
+            running_job = None
     if running_job:
         return {"status": "building"}
         
@@ -553,20 +577,13 @@ def get_drafting_status(
         )
     )
     if running_job:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        job_time = running_job.created_at
-        if job_time.tzinfo is None:
-            job_time = job_time.replace(tzinfo=timezone.utc)
-            
-        if (now - job_time).total_seconds() > 600:
-            try:
-                compile_repo = CompileRepository(db, ctx.tenant_id)
-                compile_repo.finish_job(running_job, "failed", error="Job timed out or was abandoned by server restart")
-                db.commit()
-            except Exception:
-                db.rollback()
-        else:
+        compile_repo = CompileRepository(db, ctx.tenant_id)
+        try:
+            expired = _expire_abandoned_timus_job(db, compile_repo, running_job)
+        except Exception:
+            db.rollback()
+            expired = False
+        if not expired:
             return {"status": "building"}
         
     # Check latest successful artifact

@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from core.auth_types import AuthContext
 from core.compile_sandbox import run_compile_sandbox
 from core.models import Artifact, CompileJob, ProjectFile, TimusSettings
 from workflows.timus import timus_server
@@ -242,6 +243,49 @@ def test_background_build_flow_trigger_poll_retrieve(
         assert retrieve.content.startswith(b"%PDF-")
     finally:
         engine.dispose()
+
+
+def test_drafting_build_expires_abandoned_running_job(
+    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
+):
+    """A stale Timus build left running by a restart should not block a new build."""
+    stale_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="timus_views",
+    )
+    db_session.add(stale_job)
+    db_session.flush()
+    stale_job.created_at = stale_job.created_at - timedelta(seconds=timus_server.TIMUS_BUILD_TIMEOUT_SECONDS + 1)
+    db_session.commit()
+
+    scheduled = []
+
+    class FakeBackgroundTasks:
+        def add_task(self, func, *args):
+            scheduled.append((func, args))
+
+    monkeypatch.setattr(timus_server, "_background_build_timus_views", lambda *args: None)
+
+    response = timus_server.trigger_drafting_build(
+        "default_purlin",
+        FakeBackgroundTasks(),
+        AuthContext(
+            user_id=seeded_tenant.user_id,
+            tenant_id=seeded_tenant.tenant_id,
+            keycloak_subject="kc-test",
+            email="test@example.com",
+        ),
+        db_session,
+    )
+
+    assert response == {"status": "started"}
+    assert len(scheduled) == 1
+    db_session.refresh(stale_job)
+    assert stale_job.status == "failed"
+    assert stale_job.error_code == "timus_build_abandoned"
 
 
 # ---------------------------------------------------------------------------
