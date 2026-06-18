@@ -13,6 +13,7 @@ from core.llm_client import (
     LlmBillingError,
     LlmFileEditTruncatedError,
     LlmInvalidFileEditError,
+    LlmProviderAuthenticationError,
     TokenUsage,
 )
 from core.llm_usage import LlmUsageLimitExceeded
@@ -684,6 +685,43 @@ def test_llm_file_edit_truncated_response_does_not_persist(
         "success": False,
         "error": "LLM response was truncated",
         "retryable": True,
+    }
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design.id).content == original_content
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
+def test_llm_file_edit_returns_provider_authentication_failure(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        raise LlmProviderAuthenticationError("LLM provider authentication failed")
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "success": False,
+        "error": "LLM provider authentication failed",
+        "retryable": False,
     }
     db_session.expire_all()
     assert db_session.get(ProjectFile, design.id).content == original_content

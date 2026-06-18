@@ -17,6 +17,7 @@ from core.llm_client import (
     LlmFilePointer,
     LlmInvalidFileEditError,
     LlmNotConfiguredError,
+    LlmProviderAuthenticationError,
     build_file_edit_messages,
     estimate_file_edit_tokens,
     generate_build_script,
@@ -57,6 +58,15 @@ class FakeChatCompletions:
                 total_tokens=self._prompt_tokens + self._completion_tokens,
             ),
         )
+
+
+class FakeProviderErrorChatCompletions:
+    async def create(self, **kwargs):
+        raise SimpleNamespaceAuthenticationError("invalid key")
+
+
+class SimpleNamespaceAuthenticationError(Exception):
+    status_code = 401
 
 
 class FakeOpenAIClient:
@@ -688,6 +698,26 @@ async def test_generate_file_edits_rejects_truncated_response():
     )
 
     with pytest.raises(LlmFileEditTruncatedError):
+        await generate_file_edits(
+            request,
+            files=files,
+            settings=Settings(llm_api_key="secret"),
+            auth=AuthContext(
+                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+            ),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_classifies_provider_authentication_failure():
+    request, files = _file_edit_request_and_files()
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeProviderErrorChatCompletions())
+
+    with pytest.raises(LlmProviderAuthenticationError):
         await generate_file_edits(
             request,
             files=files,

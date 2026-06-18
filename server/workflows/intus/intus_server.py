@@ -30,6 +30,8 @@ from core.llm_client import (
     LlmGenerationError,
     LlmInvalidFileEditError,
     LlmNotConfiguredError,
+    LlmProviderAuthenticationError,
+    LlmProviderRateLimitError,
     estimate_build_script_tokens,
     estimate_file_edit_tokens,
     generate_build_script,
@@ -518,6 +520,27 @@ async def generate_project_build_script(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"success": False, "error": str(exc), "retryable": False},
         )
+    except LlmProviderAuthenticationError as exc:
+        logger.warning("LLM provider authentication failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmProviderRateLimitError as exc:
+        logger.warning("LLM provider rate limit exceeded")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": True},
+        )
+    except LlmGenerationError:
+        logger.exception("LLM build script generation failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": "LLM generation failed", "retryable": True},
+        )
     except LlmBillingError:
         logger.exception("LLM billing failed")
         db.rollback()
@@ -733,6 +756,20 @@ async def llm_edit_files(
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmProviderAuthenticationError as exc:
+        logger.warning("LLM provider authentication failed")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": False},
+        )
+    except LlmProviderRateLimitError as exc:
+        logger.warning("LLM provider rate limit exceeded")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"success": False, "error": str(exc), "retryable": True},
         )
     except LlmFileEditTruncatedError:
         db.rollback()
