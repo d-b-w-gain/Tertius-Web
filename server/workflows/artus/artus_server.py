@@ -247,14 +247,6 @@ def update_features(
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-class AIRequest(BaseModel):
-    prompt: str
-
-@app.post("/ai_modify")
-def ai_modify(req: AIRequest):
-    # Skeleton endpoint for Phase 2
-    return {"success": True, "message": "AI modification is not yet implemented"}
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8893)
