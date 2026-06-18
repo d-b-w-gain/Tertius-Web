@@ -14,6 +14,7 @@ from core.billing_messages import (
     assert_billing_message_size,
     billing_usage_message_id,
 )
+from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
 from core.nats_client import NatsPublisher, Publisher
 
 
@@ -257,21 +258,11 @@ async def generate_build_script(
     return result
 
 
-FILE_EDIT_SYSTEM_PROMPT = (
-    "You edit Python source files for Tertius Intus. "
-    "Return only valid JSON. Do not include markdown fences or explanation. "
-    "You may modify only files listed in the user message. "
-    "Do not create, delete, or rename files. "
-    "Each returned file must use the exact file_id supplied by the user. "
-    "Return the full final content for every changed file. "
-    "If a file does not need changes, omit it from the files array. "
-    "All code must be executable Python source suitable for build123d when geometry is involved."
-)
-
-
 def build_file_edit_messages(
     request: LlmFileEditInput,
     files: list[LlmEditableFile],
+    *,
+    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
 ) -> list[dict[str, str]]:
     available = [
         {"file_id": str(file.id), "filename": file.filename, "content": file.content}
@@ -294,7 +285,7 @@ def build_file_edit_messages(
         "}"
     )
     return [
-        {"role": "system", "content": FILE_EDIT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -304,9 +295,13 @@ def estimate_file_edit_tokens(
     files: list[LlmEditableFile],
     *,
     max_output_tokens: int,
+    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
 ) -> int:
     prompt_chars = sum(
-        len(message["content"]) for message in build_file_edit_messages(request, files)
+        len(message["content"])
+        for message in build_file_edit_messages(
+            request, files, system_prompt=system_prompt
+        )
     )
     metadata_chars = sum(len(key) + len(value) for key, value in request.metadata.items())
     return max_output_tokens + ceil((prompt_chars + metadata_chars) / 4)
@@ -384,7 +379,11 @@ async def generate_file_edits(
     client = openai_client or create_openai_client(settings)
     response = await client.chat.completions.create(
         model=settings.llm_model,
-        messages=build_file_edit_messages(request, files),
+        messages=build_file_edit_messages(
+            request,
+            files,
+            system_prompt=settings.llm_file_edit_system_prompt,
+        ),
         max_tokens=settings.llm_max_output_tokens,
         response_format={"type": "json_object"},
     )

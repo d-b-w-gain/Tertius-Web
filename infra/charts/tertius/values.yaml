@@ -49,6 +49,7 @@ app:
   llmSecret:
     create: false
     apiKey: ""
+    fileEditSystemPrompt: ""
   secretName: ""
   secret:
     create: false

@@ -25,7 +25,8 @@ render_compile_strategy_accurate() {
 render_app_secret_created() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
     --set app.llmSecret.create=true \
-    --set-string app.llmSecret.apiKey=deepseek-test-key
+    --set-string app.llmSecret.apiKey=deepseek-test-key \
+    --set-string app.llmSecret.fileEditSystemPrompt='test file edit prompt'
 }
 
 render_network_policy_enabled() {
@@ -137,22 +138,22 @@ if ! printf '%s\n' "$rendered" | rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' ||
   exit 1
 fi
 
-if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY'; then
-  echo "ConfigMap must not render LLM_API_KEY." >&2
+if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT'; then
+  echo "ConfigMap must not render LLM provider secrets or prompts." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "deepseek-test-key"'; then
-  echo "Dedicated LLM Secret must render LLM_API_KEY when app.llmSecret.create=true." >&2
+if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "deepseek-test-key"' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"'; then
+  echo "Dedicated LLM Secret must render LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT when app.llmSecret.create=true." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_API_KEY'; then
-  echo "API Deployment must reference LLM_API_KEY from the dedicated LLM Secret." >&2
+if ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_FILE_EDIT_SYSTEM_PROMPT'; then
+  echo "API Deployment must reference LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT from the dedicated LLM Secret." >&2
   exit 1
 fi
 
-if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_BASE_URL|LLM_MODEL|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
+if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_BASE_URL|LLM_MODEL|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
   echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
@@ -227,7 +228,7 @@ if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-co
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_BASE_URL|LLM_MODEL'; then
+if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_BASE_URL|LLM_MODEL'; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi

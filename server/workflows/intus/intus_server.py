@@ -628,6 +628,7 @@ async def llm_edit_files(
                 req,
                 editable_files,
                 max_output_tokens=settings.llm_max_output_tokens,
+                system_prompt=settings.llm_file_edit_system_prompt,
             ),
         )
         result = await generate_file_edits(

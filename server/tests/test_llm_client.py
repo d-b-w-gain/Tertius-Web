@@ -331,6 +331,18 @@ def test_build_file_edit_messages_includes_none_active_file_id():
     assert "none" in user_content.lower()
 
 
+def test_build_file_edit_messages_accepts_system_prompt_override():
+    request, files = _file_edit_request_and_files()
+
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt="custom system prompt",
+    )
+
+    assert messages[0] == {"role": "system", "content": "custom system prompt"}
+
+
 def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
     file_id = uuid4()
     request = LlmFileEditInput(
@@ -342,6 +354,25 @@ def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
     estimate = estimate_file_edit_tokens(request, files, max_output_tokens=2048)
 
     assert estimate > 2048
+
+
+def test_estimate_file_edit_tokens_uses_system_prompt_override():
+    request, files = _file_edit_request_and_files()
+
+    short_estimate = estimate_file_edit_tokens(
+        request,
+        files,
+        max_output_tokens=2048,
+        system_prompt="short",
+    )
+    long_estimate = estimate_file_edit_tokens(
+        request,
+        files,
+        max_output_tokens=2048,
+        system_prompt="x" * 400,
+    )
+
+    assert long_estimate > short_estimate
 
 
 def test_llm_file_edit_input_rejects_more_than_50_metadata_entries():
@@ -448,10 +479,48 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     assert call["max_tokens"] == 2048
     assert call["response_format"] == {"type": "json_object"}
     assert len(call["messages"]) == 2
+    assert call["messages"][0]["content"] == settings.llm_file_edit_system_prompt
 
     assert result.provider_request_id == "chatcmpl-test"
     assert result.billing_event_id is None
     assert publisher.published == []
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_uses_settings_system_prompt():
+    request, files = _file_edit_request_and_files()
+    payload = json.dumps(
+        {
+            "files": [
+                {
+                    "file_id": str(request.files[0].id),
+                    "content": "span = 100\n",
+                    "summary": "rename length to span",
+                }
+            ]
+        }
+    )
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
+    settings = Settings(
+        llm_api_key="secret",
+        llm_file_edit_system_prompt="custom provider system prompt",
+    )
+
+    await generate_file_edits(
+        request,
+        files=files,
+        settings=settings,
+        auth=AuthContext(
+            user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+        ),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    call = client.chat.completions.calls[0]
+    assert call["messages"][0]["content"] == "custom provider system prompt"
 
 
 @pytest.mark.asyncio

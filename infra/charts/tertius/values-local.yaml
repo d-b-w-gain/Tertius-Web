@@ -21,6 +21,7 @@ app:
   llmSecret:
     create: false
     apiKey: ""
+    fileEditSystemPrompt: ""
   secret:
     create: true
     databaseUrl: ""

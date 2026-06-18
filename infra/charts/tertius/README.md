@@ -75,13 +75,23 @@ Non-secret provider settings are rendered into the app ConfigMap:
 - `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
 - `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
 
-The provider API key is secret material:
+The provider API key and file-edit system prompt are secret material:
 
 - `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
-- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages the key out of chart values.
-- Do not put `LLM_API_KEY` in the shared app Secret selected by `app.secretName`; keep provider credentials in the dedicated LLM Secret.
+- `app.llmSecret.fileEditSystemPrompt` -> `LLM_FILE_EDIT_SYSTEM_PROMPT` when `app.llmSecret.create=true`
+- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages these values out of chart values.
+- Do not put `LLM_API_KEY` or `LLM_FILE_EDIT_SYSTEM_PROMPT` in the shared app Secret selected by `app.secretName`; keep provider credentials and prompts in the dedicated LLM Secret.
 
-Only the API Deployment receives `LLM_API_KEY`. UI and Compile Jobs do not receive the LLM configuration or key.
+Only the API Deployment receives `LLM_API_KEY` and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive the LLM configuration, key, or prompt.
+
+For production, manage the dedicated LLM Secret outside committed values:
+
+```bash
+kubectl -n tertius create secret generic tertius-llm \
+  --from-literal=LLM_API_KEY="$LLM_API_KEY" \
+  --from-literal=LLM_FILE_EDIT_SYSTEM_PROMPT="$LLM_FILE_EDIT_SYSTEM_PROMPT" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
 
 ## Secrets
 
