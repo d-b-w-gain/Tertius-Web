@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
@@ -6,11 +6,34 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { ProjectSelector } from '../../shared/ui/ProjectSelector';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 import {
+  createProjectStorage,
+  type ProjectFileMetadata,
+} from '../../shared/projectStorage';
+import {
   MODEL_STATUS_POLL_INTERVAL_MS,
   PROJECT_DATA_POLL_INTERVAL_MS,
   getPollingDelay,
   shouldRunPollingRequest,
 } from '../../shared/polling';
+
+const AI_EDIT_FILE_LIMIT = 20;
+
+type EditableFilePointer = ProjectFileMetadata & {
+  id: string;
+  updated_at: string;
+};
+
+function deriveIntusServerUrl(artusServerUrl: string): string {
+  const trimmed = artusServerUrl.replace(/\/+$/g, '');
+  if (trimmed.endsWith('/artus')) {
+    return `${trimmed.slice(0, -'/artus'.length)}/intus`;
+  }
+  return trimmed.replace('/api/artus', '/api/intus');
+}
+
+function hasEditableFilePointer(file: ProjectFileMetadata): file is EditableFilePointer {
+  return Boolean(file.id && file.updated_at);
+}
 
 // Helper component for the recursive assembly tree
 const TreeNode: React.FC<{
@@ -184,6 +207,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const [features, setFeatures] = useState<Feature[]>([]);
   const [operations, setOperations] = useState<OperationNode[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [activeProject, setActiveProject] = useState('');
+  const [, setFileMetadata] = useState<ProjectFileMetadata[]>([]);
   
   // AI State
   const [prompt, setPrompt] = useState('');
@@ -198,6 +223,15 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
+  const intusServerUrl = useMemo(() => deriveIntusServerUrl(serverUrl), [serverUrl]);
+  const storage = useMemo(
+    () => createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: intusServerUrl,
+      getAccessToken,
+    }),
+    [getAccessToken, intusServerUrl],
+  );
 
   const handleSelectNode = (node: THREE.Object3D, isDouble: boolean) => {
      const nodeName = node.name || '';
@@ -288,24 +322,35 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     };
   }, [extusUrl, getAccessToken]);
 
-  const fetchFeatures = useCallback(async () => {
-    if (!shouldRunPollingRequest()) return;
+  const loadFeatures = useCallback(async () => {
     try {
       const res = await apiFetch(`${serverUrl}/features`, getAccessToken);
       const data = await res.json();
       if (res.ok) {
+        setActiveProject(data.project_name || '');
         setFeatures(data.features || []);
         setOperations(data.operations || []);
         setError(null);
       } else {
+        setActiveProject('');
+        setFileMetadata([]);
         setError(data.error);
         setFeatures([]);
         setOperations([]);
       }
     } catch (e) {
+      setActiveProject('');
+      setFileMetadata([]);
       setError("Failed to connect to Artus server.");
+      setFeatures([]);
+      setOperations([]);
     }
   }, [serverUrl, getAccessToken]);
+
+  const fetchFeatures = useCallback(async () => {
+    if (!shouldRunPollingRequest()) return;
+    await loadFeatures();
+  }, [loadFeatures]);
 
   useEffect(() => {
     fetchFeatures();
@@ -326,29 +371,96 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     }
   }, [edits, features]);
 
+  const loadAiEditFiles = useCallback(async () => {
+    if (!activeProject) {
+      throw new Error('No active project is selected.');
+    }
+
+    const latestMetadata = await storage.listFileMetadata(activeProject);
+    setFileMetadata(latestMetadata);
+
+    const designFile = latestMetadata.find(file => file.filename === 'design.py');
+    const remainingFiles = latestMetadata.filter(file => file.filename !== 'design.py');
+    const orderedFiles = [
+      ...(designFile ? [designFile] : []),
+      ...remainingFiles,
+    ].filter(hasEditableFilePointer);
+
+    if (orderedFiles.length === 0) {
+      throw new Error('AI edit requires authenticated project file metadata. Reload the project and try again.');
+    }
+
+    const requestFiles = orderedFiles.slice(0, AI_EDIT_FILE_LIMIT);
+    const truncatedMessage = orderedFiles.length > AI_EDIT_FILE_LIMIT
+      ? `AI edit included ${AI_EDIT_FILE_LIMIT} of ${orderedFiles.length} files because the backend request limit is ${AI_EDIT_FILE_LIMIT}.`
+      : '';
+
+    return {
+      requestFiles,
+      activeFileId: designFile && hasEditableFilePointer(designFile) ? designFile.id : requestFiles[0]?.id,
+      truncatedMessage,
+    };
+  }, [activeProject, storage]);
+
   const handleAiModify = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || !activeProject) return;
     setIsProcessing(true);
     setAiMessage(null);
     try {
-      const res = await apiFetch(`${serverUrl}/ai_modify`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+      const { requestFiles, activeFileId, truncatedMessage } = await loadAiEditFiles();
+
+      const result = await storage.applyLlmFileEdit(activeProject, {
+        prompt: prompt.trim(),
+        files: requestFiles.map(file => ({
+          id: file.id,
+          filename: file.filename,
+          updated_at: file.updated_at,
+        })),
+        active_file_id: activeFileId,
+        metadata: {
+          source: 'artus_feature_tree',
+          active_panel: activePanel,
+          highlighted_node: highlightedNode || '',
+        },
       });
-      const data = await res.json();
-      if (data.success) {
-        setAiMessage(data.message);
-        setPrompt('');
-        setEdits({}); // Clear local edits on success
-        fetchFeatures();
-      } else {
-        setAiMessage(`Error: ${data.error}`);
+
+      const changedMetadata = result.files.map(file => ({
+        id: file.id,
+        filename: file.filename,
+        updated_at: file.updated_at,
+      }));
+
+      setFileMetadata(prev =>
+        prev.map(existing => changedMetadata.find(file => file.id === existing.id) || existing)
+      );
+
+      const summaries = result.files
+        .map(file => file.summary)
+        .filter(Boolean)
+        .join(' ');
+      const successMessage = summaries
+        ? `AI updated ${result.files.length} file(s). ${summaries}`
+        : `AI updated ${result.files.length} file(s).`;
+
+      setAiMessage([truncatedMessage, successMessage].filter(Boolean).join(' '));
+      setPrompt('');
+      setEdits({});
+      await loadFeatures();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI file edit failed.';
+      setAiMessage(`Error: ${message}`);
+
+      if (message.includes('Files changed while AI edit was running')) {
+        try {
+          await loadAiEditFiles();
+          await loadFeatures();
+        } catch {
+          // The original conflict message is the useful user-facing error.
+        }
       }
-    } catch (e) {
-      setAiMessage("Network error during AI request.");
+    } finally {
+      setIsProcessing(false);
     }
-    setIsProcessing(false);
   };
 
   const handleDirectApply = async () => {
@@ -364,7 +476,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
       if (data.success) {
         setEdits({});
         setPrompt('');
-        fetchFeatures();
+        await loadFeatures();
       } else {
         setError(`Failed to apply edits: ${data.error}`);
       }
@@ -549,7 +661,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
             />
             <button 
               onClick={handleAiModify}
-              disabled={isProcessing || !prompt.trim()}
+              disabled={isProcessing || !prompt.trim() || !activeProject}
+              title={!activeProject ? 'Select or load a project before using AI edit' : undefined}
               className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-semibold text-white shadow-lg shadow-emerald-900/20 transition-all"
             >
               {isProcessing ? 'Thinking...' : 'Apply AI'}

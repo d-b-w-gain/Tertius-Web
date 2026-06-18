@@ -54,7 +54,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   const [quality, setQuality] = useState<string>('sketch');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
-  const [autoCompile, setAutoCompile] = useState<boolean>(false);
+  const [autoCompile, setAutoCompile] = useState<boolean>(true);
   const [failedCompileRetry, setFailedCompileRetry] = useState<{ code: string } | null>(null);
   
   const [files, setFiles] = useState<string[]>(['design.py']);
