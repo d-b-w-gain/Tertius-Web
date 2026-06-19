@@ -233,7 +233,9 @@ describe('GenerateDesignWindow', () => {
 
     expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
     expect(screen.getAllByText('Updated 1 file.').length).toBeGreaterThan(0)
-    expect(screen.getByText('7 tokens')).toBeInTheDocument()
+    expect(screen.getByText('test-model / 7 tokens')).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=/)).toBeInTheDocument()
+    fireEvent.click(screen.getByText('make a small bracket').closest('button')!)
     expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=/)).toBeInTheDocument()
     expect(storage.listLlmEditConversation).toHaveBeenCalledWith('project_a')
   })

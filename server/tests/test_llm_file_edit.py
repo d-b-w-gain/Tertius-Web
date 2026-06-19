@@ -1141,7 +1141,7 @@ def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stal
         error="provider failed",
         user_message="LLM generation failed",
         retryable=True,
-        request_payload={"prompt": "Try a fillet", "files": []},
+        request_payload={"prompt": "Try a fillet", "files": [], "model_id": "old-requested-model"},
         created_at=created + timedelta(seconds=3),
         finished_at=created + timedelta(seconds=4),
     )
@@ -1220,6 +1220,7 @@ def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stal
         "export_format": "glb",
     }
     assert messages[1]["content"] == "LLM generation failed"
+    assert messages[1]["model"] == "old-requested-model"
     assert messages[1]["compile"] is None
     assert messages[2]["status"] == "failed"
     assert messages[2]["content"] == "AI generation stopped unexpectedly. Try again."

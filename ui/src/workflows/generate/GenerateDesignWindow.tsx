@@ -41,6 +41,7 @@ type ChatMessage = {
   createdAt: number
   files?: Array<{ filename: string; summary?: string; changed?: boolean }>
   usage?: LlmFileEditResult['usage']
+  model?: string
   artifactId?: string
   modelUrl?: string
   compileStatus?: 'queued' | 'running' | 'succeeded' | 'failed'
@@ -160,7 +161,14 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   }, [clearAllJobPolling])
 
   const selectedMessage = messages.find(message => message.id === selectedMessageId)
-  const selectedModelUrl = selectedMessage?.modelUrl || ''
+  const selectedJobAssistant = selectedMessage?.jobId
+    ? messages.find(message => (
+      message.role === 'assistant'
+      && message.jobId === selectedMessage.jobId
+      && message.modelUrl
+    ))
+    : undefined
+  const selectedModelUrl = selectedMessage?.modelUrl || selectedJobAssistant?.modelUrl || ''
   const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
 
   const updateAssistantMessage = useCallback((messageIdToUpdate: string, updater: (message: ChatMessage) => ChatMessage) => {
@@ -211,6 +219,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           role: 'user',
           content: entry.prompt || '',
           createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+          jobId: entry.job_id,
         },
         {
           id: stableAssistantId,
@@ -219,6 +228,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           createdAt: Number.isFinite(createdAt) ? createdAt + 1 : Date.now(),
           files: entry.files,
           usage: entry.usage,
+          model: entry.model,
           artifactId,
           modelUrl: artifactId ? modelUrlForArtifact(artifactId) : undefined,
           compileStatus,
@@ -482,6 +492,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         changed: file.changed,
       })),
       usage: result.usage,
+      model: result.model,
       compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
       jobId: originatingLlmEditJobId || current.jobId,
     }))
@@ -626,7 +637,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       const stableAssistantId = assistantMessageId(job.job_id)
       setMessages(prev => prev.map(message => {
         if (message.id === userMessage.id) {
-          return { ...message, id: stablePromptId }
+          return { ...message, id: stablePromptId, jobId: job.job_id }
         }
         if (message.id === assistantMessage.id) {
           return {
@@ -755,9 +766,9 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
                     )}
                   </div>
                   <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
-                  {message.usage && (
+                  {(message.model || message.usage) && (
                     <div className="mt-2 font-mono text-[10px] text-slate-500">
-                      {message.usage.total_tokens} tokens
+                      {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
                     </div>
                   )}
                 </button>
