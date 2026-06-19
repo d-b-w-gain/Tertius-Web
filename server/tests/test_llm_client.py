@@ -25,7 +25,7 @@ from core.llm_client import (
     parse_llm_file_edit_response,
     select_llm_edit_context_files,
 )
-from llm_test_helpers import make_llm_settings
+from llm_test_helpers import TEST_FILE_EDIT_SYSTEM_PROMPT, make_llm_settings
 
 
 FILE_UPDATED_AT = datetime(2026, 6, 17, tzinfo=timezone.utc)
@@ -384,14 +384,16 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
     )
     files = [LlmEditableFile(id=file_id, filename="design.py", content="length = 100\n")]
 
-    messages = build_file_edit_messages(request, files)
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt=TEST_FILE_EDIT_SYSTEM_PROMPT,
+    )
 
     assert len(messages) == 2
     system, user = messages
     assert system["role"] == "system"
-    assert "build123d" in system["content"]
-    assert "do not use code fences" in system["content"].lower()
-    assert "outcome" in system["content"]
+    assert system["content"] == TEST_FILE_EDIT_SYSTEM_PROMPT
     assert user["role"] == "user"
     user_content = user["content"]
     assert "rename length to span" in user_content
@@ -410,14 +412,25 @@ def test_build_file_edit_messages_includes_none_active_file_id():
     )
     files = [LlmEditableFile(id=request.files[0].id, filename="design.py", content="")]
 
-    messages = build_file_edit_messages(request, files)
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt=TEST_FILE_EDIT_SYSTEM_PROMPT,
+    )
 
     user_content = messages[1]["content"]
     assert "Active file id:" in user_content
     assert "none" in user_content.lower()
 
 
-def test_build_file_edit_messages_accepts_system_prompt_override():
+def test_build_file_edit_messages_requires_system_prompt():
+    request, files = _file_edit_request_and_files()
+
+    with pytest.raises(LlmNotConfiguredError, match="system prompt is not configured"):
+        build_file_edit_messages(request, files, system_prompt="")
+
+
+def test_build_file_edit_messages_uses_secret_system_prompt():
     request, files = _file_edit_request_and_files()
 
     messages = build_file_edit_messages(
@@ -437,7 +450,12 @@ def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
     )
     files = [LlmEditableFile(id=file_id, filename="design.py", content="y" * 200_000)]
 
-    estimate = estimate_file_edit_tokens(request, files, max_output_tokens=2048)
+    estimate = estimate_file_edit_tokens(
+        request,
+        files,
+        system_prompt=TEST_FILE_EDIT_SYSTEM_PROMPT,
+        max_output_tokens=2048,
+    )
 
     assert estimate > 2048
 
@@ -838,3 +856,27 @@ async def test_generate_file_edits_requires_configured_key():
             openai_client=FakeOpenAIClient(),
             billing_publisher=FakePublisher(),
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_requires_secret_system_prompt():
+    request, files = _file_edit_request_and_files()
+    client = FakeOpenAIClient()
+
+    with pytest.raises(LlmNotConfiguredError, match="system prompt is not configured"):
+        await generate_file_edits(
+            request,
+            files=files,
+            settings=make_llm_settings(
+                llm_api_key="secret",
+                llm_file_edit_system_prompt="",
+            ),
+            auth=AuthContext(
+                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+            ),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    assert client.chat.completions.calls == []

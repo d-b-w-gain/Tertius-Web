@@ -7,9 +7,6 @@ from urllib.parse import quote_plus
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
-
-
 SERVER_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
@@ -76,7 +73,7 @@ class Settings(BaseSettings):
     llm_default_model_id: str = Field(default="")
     llm_daily_budget_usd: float = Field(default=2.0, ge=0)
     llm_api_key: str = Field(default="")
-    llm_file_edit_system_prompt: str = Field(default=FILE_EDIT_SYSTEM_PROMPT)
+    llm_file_edit_system_prompt: str = Field(default="")
     llm_timeout_seconds: int = Field(default=60)
     llm_max_output_tokens: int = Field(default=2048)
     llm_file_edit_max_output_tokens: int = Field(default=65536, gt=0)

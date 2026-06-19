@@ -20,7 +20,6 @@ from core.billing_messages import (
     billing_usage_message_id,
 )
 from core.config import LlmModelConfig
-from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
 from core.nats_client import NatsPublisher, Publisher
 
 
@@ -60,6 +59,12 @@ MAX_METADATA_KEY_CHARS = 200
 MAX_METADATA_VALUE_CHARS = 200
 LLM_FILE_EDIT_MAX_FILES = 20
 LlmFileEditOutcome = Literal["changed", "no_change", "cannot_complete"]
+
+
+def require_file_edit_system_prompt(system_prompt: str) -> str:
+    if not system_prompt.strip():
+        raise LlmNotConfiguredError("LLM file edit system prompt is not configured")
+    return system_prompt
 
 
 def validate_llm_metadata(metadata: dict[str, str]) -> dict[str, str]:
@@ -474,8 +479,9 @@ def build_file_edit_messages(
     request: LlmFileEditInput,
     files: list[LlmEditableFile],
     *,
-    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
+    system_prompt: str,
 ) -> list[dict[str, str]]:
+    system_prompt = require_file_edit_system_prompt(system_prompt)
     available = [
         {"file_id": str(file.id), "filename": file.filename, "content": file.content}
         for file in files
@@ -508,14 +514,14 @@ def estimate_file_edit_tokens(
     request: LlmFileEditInput,
     files: list[LlmEditableFile],
     *,
+    system_prompt: str,
     max_output_tokens: int,
-    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
 ) -> int:
     return estimate_file_edit_usage(
         request,
         files,
-        max_output_tokens=max_output_tokens,
         system_prompt=system_prompt,
+        max_output_tokens=max_output_tokens,
     ).total_tokens
 
 
@@ -523,8 +529,8 @@ def estimate_file_edit_usage(
     request: LlmFileEditInput,
     files: list[LlmEditableFile],
     *,
+    system_prompt: str,
     max_output_tokens: int,
-    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
 ) -> TokenUsage:
     prompt_chars = sum(
         len(message["content"])
@@ -724,13 +730,14 @@ async def generate_file_edits(
     model_config = select_llm_model(settings, request.model_id)
     if not model_config.model:
         raise LlmNotConfiguredError("LLM model is not configured")
+    system_prompt = require_file_edit_system_prompt(settings.llm_file_edit_system_prompt)
 
     allowed_file_ids = {file.id for file in files}
     try:
         messages = build_file_edit_messages(
             request,
             files,
-            system_prompt=settings.llm_file_edit_system_prompt,
+            system_prompt=system_prompt,
         )
         if model_config.api == "anthropic-messages":
             response = await create_anthropic_message(

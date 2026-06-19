@@ -5,6 +5,7 @@ from core.config import Settings
 
 
 TEST_LLM_MODEL_ID = "test-openai-compatible-model"
+TEST_FILE_EDIT_SYSTEM_PROMPT = "test secret file-edit system prompt"
 TEST_LLM_MODELS_JSON = json.dumps(
     [
         {
@@ -27,6 +28,7 @@ def make_llm_settings(**overrides: Any) -> Settings:
     defaults: dict[str, Any] = {
         "llm_models_json": TEST_LLM_MODELS_JSON,
         "llm_default_model_id": TEST_LLM_MODEL_ID,
+        "llm_file_edit_system_prompt": TEST_FILE_EDIT_SYSTEM_PROMPT,
     }
     defaults.update(overrides)
     return Settings(**defaults)
