@@ -94,14 +94,16 @@ authenticated request arrives near access-token expiry. `AUTH_SESSION_IDLE_SECON
 is extended by authenticated activity up to `AUTH_SESSION_MAX_SECONDS`; Keycloak
 also enforces the configured SSO/client idle and max lifetimes.
 
-Production should use a confidential Keycloak client by setting
+The chart defaults to a public Keycloak client with PKCE so default renders do
+not create a confidential client without a usable secret. Production can use a
+confidential Keycloak client by setting
 `keycloak.realmImport.uiPublicClient=false`, setting
 `keycloak.realmImport.uiClientSecret` in the production values Secret, and
 setting the same value as `OIDC_CLIENT_SECRET` in the app Secret. Also set
 `AUTH_SESSION_SECRET` from an externally managed Secret and keep it stable
 across deploys. The local chart can run without `OIDC_CLIENT_SECRET` by using
-PKCE with the public local client, but production should not rely on
-browser-held tokens.
+PKCE with the public client; browser sessions are backed by the API session
+cookie and database-backed `auth_sessions` rows.
 
 ## LLM Model Schema
 

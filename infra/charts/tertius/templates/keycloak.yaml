@@ -1,4 +1,12 @@
 {{- if .Values.keycloak.enabled }}
+{{- $uiClientSecret := .Values.keycloak.realmImport.uiClientSecret | default "" | trim }}
+{{- $appOidcClientSecret := .Values.app.secret.oidcClientSecret | default "" | trim }}
+{{- if and .Values.keycloak.realmImport.enabled (not .Values.keycloak.realmImport.uiPublicClient) (eq $uiClientSecret "") }}
+{{- fail "keycloak.realmImport.uiClientSecret must be set when keycloak.realmImport.uiPublicClient=false" }}
+{{- end }}
+{{- if and .Values.keycloak.realmImport.enabled (not .Values.keycloak.realmImport.uiPublicClient) .Values.app.secret.create (ne $uiClientSecret $appOidcClientSecret) }}
+{{- fail "keycloak.realmImport.uiClientSecret must match app.secret.oidcClientSecret when app.secret.create=true and the UI client is confidential" }}
+{{- end }}
 apiVersion: k8s.keycloak.org/v2beta1
 kind: Keycloak
 metadata:
@@ -56,8 +64,8 @@ spec:
       - clientId: {{ .Values.keycloak.realmImport.uiClientId | quote }}
         name: Tertius UI
         publicClient: {{ .Values.keycloak.realmImport.uiPublicClient }}
-        {{- if .Values.keycloak.realmImport.uiClientSecret }}
-        secret: {{ .Values.keycloak.realmImport.uiClientSecret | quote }}
+        {{- if $uiClientSecret }}
+        secret: {{ $uiClientSecret | quote }}
         {{- end }}
         standardFlowEnabled: true
         directAccessGrantsEnabled: {{ .Values.keycloak.realmImport.uiDirectAccessGrantsEnabled }}
