@@ -42,6 +42,18 @@ export type LlmFileEditResult = {
   }>
 }
 
+export type LlmFileEditJobStatus = {
+  job_id: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  result?: LlmFileEditResult
+  error?: string
+  error_code?: string
+  user_message?: string
+  retryable?: boolean
+  created_at?: string
+  finished_at?: string | null
+}
+
 export type LlmModelOption = {
   id: string
   label: string
@@ -83,6 +95,17 @@ export type ProjectStorage = {
       metadata?: Record<string, string>
     },
   ) => Promise<LlmFileEditResult>
+  applyLlmFileEditJob: (
+    projectName: string,
+    request: {
+      prompt: string
+      files: Array<{ id: string; filename: string; updated_at: string }>
+      active_file_id?: string
+      model_id?: string
+      metadata?: Record<string, string>
+    },
+  ) => Promise<{ success: boolean; job_id: string; status: string }>
+  getLlmFileEditJob: (projectName: string, jobId: string) => Promise<LlmFileEditJobStatus>
   listLlmModels: () => Promise<LlmModelsResponse>
 }
 
@@ -137,6 +160,12 @@ function createGuestStorage(): ProjectStorage {
       return { is_git: false, label: 'Local draft' }
     },
     async applyLlmFileEdit() {
+      throw new Error('Log in to use AI file edits')
+    },
+    async applyLlmFileEditJob() {
+      throw new Error('Log in to use AI file edits')
+    },
+    async getLlmFileEditJob() {
       throw new Error('Log in to use AI file edits')
     },
     async listLlmModels() {
@@ -266,6 +295,20 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       })
       await requireOk(res, 'LLM file edit failed')
       return (await res.json()) as LlmFileEditResult
+    },
+    async applyLlmFileEditJob(projectName, request) {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit/jobs`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      })
+      await requireOk(res, 'LLM file edit failed')
+      return (await res.json()) as { success: boolean; job_id: string; status: string }
+    },
+    async getLlmFileEditJob(projectName, jobId) {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit/jobs/${jobId}`, getAccessToken)
+      await requireOk(res, 'Failed to fetch LLM edit job status')
+      return (await res.json()) as LlmFileEditJobStatus
     },
     async listLlmModels() {
       const res = await apiFetch(`${serverUrl}/llm-usage/models`, getAccessToken)
