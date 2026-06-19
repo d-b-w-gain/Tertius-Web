@@ -15,6 +15,8 @@ const storage = vi.hoisted(() => ({
   getStatus: vi.fn(),
   getHistory: vi.fn(),
   applyLlmFileEdit: vi.fn(),
+  applyLlmFileEditJob: vi.fn(),
+  getLlmFileEditJob: vi.fn(),
   listLlmModels: vi.fn(),
 }))
 
@@ -94,24 +96,33 @@ describe('GenerateDesignWindow', () => {
         },
       ],
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    storage.applyLlmFileEditJob.mockResolvedValue({
       success: true,
-      outcome: 'changed',
-      message: 'updated',
-      model: 'test-model',
-      usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
-      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'abc' },
-      files: [
-        {
-          id: 'design-id',
-          filename: 'design.py',
-          content: 'box = Box(2, 2, 2)',
-          updated_at: '2026-06-19T00:01:00Z',
-          changed: true,
-          summary: 'Made the box larger.',
-        },
-      ],
-      cost_usd: 0.01,
+      job_id: 'llm-job-1',
+      status: 'queued',
+    })
+    storage.getLlmFileEditJob.mockResolvedValue({
+      job_id: 'llm-job-1',
+      status: 'succeeded',
+      result: {
+        success: true,
+        outcome: 'changed',
+        message: 'updated',
+        model: 'test-model',
+        usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+        snapshot: { id: 'snap-1', message: 'edit', content_hash: 'abc' },
+        files: [
+          {
+            id: 'design-id',
+            filename: 'design.py',
+            content: 'box = Box(2, 2, 2)',
+            updated_at: '2026-06-19T00:01:00Z',
+            changed: true,
+            summary: 'Made the box larger.',
+          },
+        ],
+        cost_usd: 0.01,
+      },
     })
     mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
       if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
@@ -146,10 +157,10 @@ describe('GenerateDesignWindow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit).toHaveBeenCalledTimes(1)
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
     })
 
-    expect(storage.applyLlmFileEdit).toHaveBeenCalledWith('project_a', {
+    expect(storage.applyLlmFileEditJob).toHaveBeenCalledWith('project_a', {
       prompt: 'make a larger test cube',
       files: [
         { id: 'design-id', filename: 'design.py', updated_at: '2026-06-19T00:00:00Z' },
@@ -158,6 +169,14 @@ describe('GenerateDesignWindow', () => {
       active_file_id: 'design-id',
       model_id: 'kimi-k2.7-code',
       metadata: { source: 'generate_design_window' },
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    await waitFor(() => {
+      expect(storage.getLlmFileEditJob).toHaveBeenCalledWith('project_a', 'llm-job-1')
     })
 
     await waitFor(() => {
@@ -187,23 +206,37 @@ describe('GenerateDesignWindow', () => {
   })
 
   it('does not queue compile when the AI edit returns no_change', async () => {
-    storage.applyLlmFileEdit.mockResolvedValueOnce({
+    storage.applyLlmFileEditJob.mockResolvedValueOnce({
       success: true,
-      outcome: 'no_change',
-      message: 'No edits needed.',
-      model: 'test-model',
-      usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
-      snapshot: null,
-      files: [],
+      job_id: 'llm-job-2',
+      status: 'queued',
+    })
+    storage.getLlmFileEditJob.mockResolvedValueOnce({
+      job_id: 'llm-job-2',
+      status: 'succeeded',
+      result: {
+        success: true,
+        outcome: 'no_change',
+        message: 'No edits needed.',
+        model: 'test-model',
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        snapshot: null,
+        files: [],
+      },
     })
 
     render(<GenerateDesignWindow />)
 
     await screen.findByText('Latest model viewer')
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'leave it alone' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
 
     await waitFor(() => {
       expect(screen.getAllByText('No edits needed.').length).toBeGreaterThan(0)
