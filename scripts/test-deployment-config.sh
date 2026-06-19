@@ -25,14 +25,14 @@ render_compile_strategy_accurate() {
 render_app_secret_created() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
     --set app.llmSecret.create=true \
-    --set-string app.llmSecret.apiKey=deepseek-test-key \
+    --set-string app.llmSecret.apiKey=openai-compatible-test-key \
     --set-string app.llmSecret.fileEditSystemPrompt='test file edit prompt'
 }
 
 render_app_secret_created_without_prompt() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
     --set app.llmSecret.create=true \
-    --set-string app.llmSecret.apiKey=deepseek-test-key
+    --set-string app.llmSecret.apiKey=openai-compatible-test-key
 }
 
 render_network_policy_enabled() {
@@ -136,17 +136,17 @@ if ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localh
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'LLM_BASE_URL: "https://api.deepseek.com"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_MODEL: "deepseek-v4-flash"'; then
-  echo "ConfigMap must render DeepSeek LLM base URL and model." >&2
+if ! rg -q 'LLM_BASE_URL: ""' <<<"$rendered" || ! rg -q 'LLM_MODEL: ""' <<<"$rendered"; then
+  echo "ConfigMap must render provider-neutral default LLM base URL and model." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_TENANT_DAILY_TOKEN_QUOTA: "3200000"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_USER_DAILY_TOKEN_QUOTA: "3200000"'; then
+if ! rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' <<<"$rendered" || ! rg -q 'LLM_TENANT_DAILY_TOKEN_QUOTA: "3200000"' <<<"$rendered" || ! rg -q 'LLM_USER_DAILY_TOKEN_QUOTA: "3200000"' <<<"$rendered"; then
   echo "ConfigMap must render paid LLM rate and quota settings." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' || ! printf '%s\n' "$rendered" | rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"'; then
+if ! rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"' <<<"$rendered"; then
   echo "ConfigMap must render file-edit-specific LLM output and context limits." >&2
   exit 1
 fi
@@ -156,12 +156,12 @@ if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROM
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "deepseek-test-key"' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"'; then
+if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"'; then
   echo "Dedicated LLM Secret must render LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT when app.llmSecret.create=true." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_API_KEY: "deepseek-test-key"' || printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT:'; then
+if ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT:'; then
   echo "Dedicated LLM Secret must omit LLM_FILE_EDIT_SYSTEM_PROMPT when no prompt value is configured." >&2
   exit 1
 fi
@@ -301,7 +301,7 @@ if [ -n "$compile_job_network_policy_disabled" ]; then
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'jetstream'; then
+if ! rg -q 'jetstream' <<<"$rendered"; then
   echo "Local Helm render did not include JetStream configuration." >&2
   exit 1
 fi

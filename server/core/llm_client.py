@@ -33,6 +33,14 @@ class LlmGenerationError(RuntimeError):
     pass
 
 
+class LlmProviderAuthenticationError(RuntimeError):
+    pass
+
+
+class LlmProviderRateLimitError(LlmGenerationError):
+    pass
+
+
 class LlmBillingError(RuntimeError):
     pass
 
@@ -163,11 +171,13 @@ class LlmFileEditResult(BaseModel):
 def create_openai_client(settings):
     from openai import AsyncOpenAI
 
-    return AsyncOpenAI(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        timeout=settings.llm_timeout_seconds,
-    )
+    kwargs = {
+        "api_key": settings.llm_api_key,
+        "timeout": settings.llm_timeout_seconds,
+    }
+    if settings.llm_base_url:
+        kwargs["base_url"] = settings.llm_base_url
+    return AsyncOpenAI(**kwargs)
 
 
 def build_script_messages(request: BuildScriptGenerationInput) -> list[dict[str, str]]:
@@ -218,9 +228,30 @@ def extract_usage(response) -> TokenUsage:
 
 
 def _provider_from_settings(settings) -> str:
-    if "deepseek" in settings.llm_base_url.lower():
-        return "deepseek"
+    if settings.llm_base_url:
+        return "openai-compatible"
     return "openai-compatible"
+
+
+def _provider_exception_status(exc: Exception) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status
+    return None
+
+
+def _classify_provider_exception(exc: Exception) -> RuntimeError:
+    status_code = _provider_exception_status(exc)
+    exc_name = type(exc).__name__
+    if status_code in {401, 403} or exc_name in {"AuthenticationError", "PermissionDeniedError"}:
+        return LlmProviderAuthenticationError("LLM provider authentication failed")
+    if status_code == 429 or exc_name == "RateLimitError":
+        return LlmProviderRateLimitError("LLM provider rate limit exceeded")
+    return LlmGenerationError("LLM provider request failed")
 
 
 async def generate_build_script(
@@ -234,13 +265,18 @@ async def generate_build_script(
 ) -> BuildScriptGenerationResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
+    if not settings.llm_model:
+        raise LlmNotConfiguredError("LLM model is not configured")
 
     client = openai_client or create_openai_client(settings)
-    response = await client.chat.completions.create(
-        model=settings.llm_model,
-        messages=build_script_messages(request),
-        max_tokens=settings.llm_max_output_tokens,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.llm_model,
+            messages=build_script_messages(request),
+            max_tokens=settings.llm_max_output_tokens,
+        )
+    except Exception as exc:
+        raise _classify_provider_exception(exc) from exc
     content = response.choices[0].message.content or ""
     usage = extract_usage(response)
     provider_request_id = getattr(response, "id", None)
@@ -516,19 +552,24 @@ async def generate_file_edits(
 ) -> LlmFileEditResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
+    if not settings.llm_model:
+        raise LlmNotConfiguredError("LLM model is not configured")
 
     allowed_file_ids = {file.id for file in files}
     client = openai_client or create_openai_client(settings)
-    response = await client.chat.completions.create(
-        model=settings.llm_model,
-        messages=build_file_edit_messages(
-            request,
-            files,
-            system_prompt=settings.llm_file_edit_system_prompt,
-        ),
-        max_tokens=settings.llm_file_edit_max_output_tokens,
-        response_format={"type": "json_object"},
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.llm_model,
+            messages=build_file_edit_messages(
+                request,
+                files,
+                system_prompt=settings.llm_file_edit_system_prompt,
+            ),
+            max_tokens=settings.llm_file_edit_max_output_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        raise _classify_provider_exception(exc) from exc
     usage = extract_usage(response)
     provider_request_id = getattr(response, "id", None)
     choice = response.choices[0]

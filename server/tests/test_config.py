@@ -153,10 +153,14 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     ):
         monkeypatch.delenv(env_var, raising=False)
 
+    monkeypatch.setenv("LLM_BASE_URL", "")
+    monkeypatch.setenv("LLM_MODEL", "")
+    monkeypatch.setenv("LLM_API_KEY", "")
+
     settings = Settings()
 
-    assert settings.llm_base_url == "https://api.deepseek.com"
-    assert settings.llm_model == "deepseek-v4-flash"
+    assert settings.llm_base_url == ""
+    assert settings.llm_model == ""
     assert settings.llm_api_key == ""
     assert settings.llm_file_edit_system_prompt.startswith(
         "You are the Tertius Intus CAD editing agent."
@@ -176,8 +180,8 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
 
 
 def test_settings_allows_llm_and_billing_overrides(monkeypatch):
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.deepseek.com")
-    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setenv("LLM_MODEL", "test-openai-compatible-model")
     monkeypatch.setenv("LLM_API_KEY", "secret-key")
     monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", "custom file edit prompt")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
@@ -195,8 +199,8 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
 
     settings = Settings()
 
-    assert settings.llm_base_url == "https://api.deepseek.com"
-    assert settings.llm_model == "deepseek-v4-flash"
+    assert settings.llm_base_url == "https://llm.example.test/v1"
+    assert settings.llm_model == "test-openai-compatible-model"
     assert settings.llm_api_key == "secret-key"
     assert settings.llm_file_edit_system_prompt == "custom file edit prompt"
     assert settings.llm_timeout_seconds == 30

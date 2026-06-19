@@ -63,8 +63,8 @@ The API can call an OpenAI-compatible LLM provider to generate Intus build scrip
 
 Non-secret provider settings are rendered into the app ConfigMap:
 
-- `app.config.llmBaseUrl` -> `LLM_BASE_URL`, default `https://api.deepseek.com`
-- `app.config.llmModel` -> `LLM_MODEL`, default `deepseek-v4-flash`
+- `app.config.llmBaseUrl` -> `LLM_BASE_URL`, default empty; set this in cluster values for the OpenAI-compatible provider
+- `app.config.llmModel` -> `LLM_MODEL`, default empty; set this in cluster values for the OpenAI-compatible provider
 - `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
 - `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
 - `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`

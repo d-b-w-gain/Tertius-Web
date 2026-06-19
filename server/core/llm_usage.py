@@ -74,8 +74,6 @@ def assert_llm_usage_allowed(
 
 
 def _provider_from_settings(settings) -> str:
-    if "deepseek" in settings.llm_base_url.lower():
-        return "deepseek"
     return "openai-compatible"
 
 

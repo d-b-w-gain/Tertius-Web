@@ -179,6 +179,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Free runner disk before k3s
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          df -h
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          docker system prune -af --volumes || true
+          df -h
+
       # ---- Install k3s ----
 
       - name: Start k3s install timer
