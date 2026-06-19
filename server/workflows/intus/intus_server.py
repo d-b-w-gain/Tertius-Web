@@ -48,10 +48,11 @@ from core.repositories import (
     normalize_file_version,
     require_valid_python_filename,
 )
-from workflows.intus.usage_server import router as usage_router
+from workflows.intus.usage_server import llm_usage_router, router as usage_router
 
 app = FastAPI(title="Intus Compiler Server")
 app.include_router(usage_router)
+app.include_router(llm_usage_router)
 logger = logging.getLogger(__name__)
 
 app.add_middleware(

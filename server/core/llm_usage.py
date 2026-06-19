@@ -14,6 +14,11 @@ class LlmUsageLimitExceeded(RuntimeError):
     pass
 
 
+def utc_day_start(now: datetime | None = None) -> datetime:
+    current = now or now_utc()
+    return datetime.combine(current.date(), time.min, tzinfo=timezone.utc)
+
+
 def _raise_limit() -> None:
     raise LlmUsageLimitExceeded("LLM usage limit exceeded")
 
@@ -28,7 +33,7 @@ def assert_llm_usage_allowed(
 ) -> None:
     now = now_utc()
     minute_ago = now - timedelta(minutes=1)
-    day_start = datetime.combine(now.date(), time.min, tzinfo=timezone.utc)
+    day_start = utc_day_start(now)
 
     user_recent = db.scalar(
         select(func.count())
@@ -112,3 +117,50 @@ def record_llm_usage(
     )
     db.flush()
     return usage_event_id
+
+
+def today_llm_usage_summary(db: Session, settings, *, tenant_id: UUID, user_id: UUID) -> dict:
+    day_start = utc_day_start()
+    tenant_tokens = db.scalar(
+        select(func.coalesce(func.sum(LlmUsageRecord.total_tokens), 0)).where(
+            LlmUsageRecord.tenant_id == tenant_id,
+            LlmUsageRecord.created_at >= day_start,
+        )
+    ) or 0
+    user_tokens = db.scalar(
+        select(func.coalesce(func.sum(LlmUsageRecord.total_tokens), 0)).where(
+            LlmUsageRecord.tenant_id == tenant_id,
+            LlmUsageRecord.user_id == user_id,
+            LlmUsageRecord.created_at >= day_start,
+        )
+    ) or 0
+    last_edit = db.scalar(
+        select(LlmUsageRecord)
+        .where(
+            LlmUsageRecord.tenant_id == tenant_id,
+            LlmUsageRecord.user_id == user_id,
+            LlmUsageRecord.operation == "files.llm_edit",
+        )
+        .order_by(LlmUsageRecord.created_at.desc())
+        .limit(1)
+    )
+    return {
+        "tenant_daily_token_quota": settings.llm_tenant_daily_token_quota,
+        "tenant_tokens_used_today": int(tenant_tokens),
+        "tenant_tokens_remaining_today": max(0, settings.llm_tenant_daily_token_quota - int(tenant_tokens)),
+        "user_daily_token_quota": settings.llm_user_daily_token_quota,
+        "user_tokens_used_today": int(user_tokens),
+        "user_tokens_remaining_today": max(0, settings.llm_user_daily_token_quota - int(user_tokens)),
+        "last_edit": (
+            {
+                "operation": last_edit.operation,
+                "model": last_edit.model,
+                "prompt_tokens": last_edit.prompt_tokens,
+                "completion_tokens": last_edit.completion_tokens,
+                "total_tokens": last_edit.total_tokens,
+                "created_at": last_edit.created_at.isoformat(),
+            }
+            if last_edit is not None
+            else None
+        ),
+    }

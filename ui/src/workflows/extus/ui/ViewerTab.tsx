@@ -13,6 +13,14 @@ interface ViewerProps {
   isActive?: boolean;
 }
 
+interface ModelViewerCanvasProps {
+  modelUrl: string;
+  getAccessToken: () => Promise<string>;
+  statusText?: string;
+  projectName?: string;
+  isActive?: boolean;
+}
+
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 
 type ViewerBatchOptions = {
@@ -104,14 +112,78 @@ export const ViewerTab: React.FC<ViewerProps> = (props) => {
       />
     );
   }
-  return <AuthenticatedViewerTab {...props} />;
+  return <LatestModelViewer {...props} />;
 };
 
-const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
+
+  // Poll for latest active-project model changes.
+  useEffect(() => {
+    if (!isActive) return;
+
+    let mounted = true;
+    let mtime = 0;
+
+    const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
+      try {
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (projRes.ok && mounted) {
+          const pData = await projRes.json();
+          if (pData.project_name) {
+            setProjectName(pData.project_name);
+          }
+        }
+
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.mtime && data.mtime !== mtime) {
+            if (mounted) {
+              mtime = data.mtime;
+              setUrl(`${serverUrl}/model?t=${data.mtime}`);
+              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
+            }
+          }
+        } else {
+          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
+        }
+      } catch (e) {
+        if (mounted) setStatusText('Lost connection to file server.');
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [serverUrl, isActive, getAccessToken]);
+
+  return (
+    <ModelViewerCanvas
+      modelUrl={url}
+      getAccessToken={getAccessToken}
+      statusText={statusText}
+      projectName={projectName}
+      isActive={isActive}
+    />
+  );
+};
+
+export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
+  modelUrl,
+  getAccessToken,
+  statusText = 'Waiting for model...',
+  projectName = '',
+  isActive = true,
+}) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
@@ -293,59 +365,14 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     });
   }, [renderQuality]);
 
-  // 2. Poll for file changes
-  useEffect(() => {
-    if (!isActive) return;
-    
-    let mounted = true;
-    let mtime = 0;
-    
-    const checkStatus = async () => {
-      if (!shouldRunPollingRequest()) return;
-      try {
-        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-        if (projRes.ok && mounted) {
-          const pData = await projRes.json();
-          if (pData.project_name) {
-            setProjectName(pData.project_name);
-          }
-        }
-        
-        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.mtime && data.mtime !== mtime) {
-            if (mounted) {
-              mtime = data.mtime;
-              setUrl(`${serverUrl}/model?t=${data.mtime}`);
-              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
-            }
-          }
-        } else {
-          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
-        }
-      } catch (e) {
-        if (mounted) setStatusText('Lost connection to file server.');
-      }
-    };
-
-    checkStatus();
-    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
-    
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [serverUrl, isActive, getAccessToken]);
-
   // 3. Load GLTF when URL changes
   useEffect(() => {
-    if (!url || !sceneRef.current) return;
+    if (!modelUrl || !sceneRef.current) return;
     
     let isCancelled = false;
     const loader = new GLTFLoader();
     
-    apiFetch(url, getAccessToken)
+    apiFetch(modelUrl, getAccessToken)
       .then(res => res.arrayBuffer())
       .then(buffer => {
         if (isCancelled) return;
@@ -505,7 +532,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     return () => {
       isCancelled = true;
     };
-  }, [url, getAccessToken, renderQuality]);
+  }, [modelUrl, getAccessToken, renderQuality]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {

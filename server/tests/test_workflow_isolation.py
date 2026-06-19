@@ -208,6 +208,140 @@ def test_extus_model_returns_404_when_active_artifact_content_is_missing(
     assert response.status_code == 404
 
 
+def test_extus_serves_historical_model_artifact_by_id(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    now = datetime.now(timezone.utc)
+    older = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="older.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"older glb"),
+        content=b"older glb",
+        created_at=now,
+    )
+    newer = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="newer.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"newer glb"),
+        content=b"newer glb",
+        created_at=now + timedelta(minutes=1),
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+
+    latest_response = authenticated_extus_client.get("/model")
+    historical_response = authenticated_extus_client.get(f"/artifacts/{older.id}/model")
+
+    assert latest_response.status_code == 200
+    assert latest_response.content == b"newer glb"
+    assert historical_response.status_code == 200
+    assert historical_response.content == b"older glb"
+    assert historical_response.headers["content-type"] == "model/gltf-binary"
+
+
+def test_extus_historical_model_rejects_cross_tenant_artifact(
+    authenticated_extus_client,
+    db_session,
+):
+    other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
+    other_tenant = Tenant(id=uuid4(), name="Other Tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    other_project = Project(tenant_id=other_tenant.id, name="default_purlin", created_by=other_user.id)
+    db_session.add(other_project)
+    db_session.flush()
+    artifact = Artifact(
+        tenant_id=other_tenant.id,
+        project_id=other_project.id,
+        kind="glb",
+        storage_key="other.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"other glb"),
+        content=b"other glb",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_rejects_inactive_project_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    other_project = create_named_project(db_session, seeded_tenant, "inactive_project")
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=other_project.id,
+        kind="glb",
+        storage_key="inactive.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"inactive glb"),
+        content=b"inactive glb",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_rejects_non_model_artifact_kind(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="pdf",
+        storage_key="drawing.pdf",
+        content_type="application/pdf",
+        byte_size=len(b"pdf"),
+        content=b"pdf",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_returns_404_when_content_is_missing(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="missing.glb",
+        content_type="model/gltf-binary",
+        byte_size=10,
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
 def test_timus_settings_round_trip(authenticated_timus_client, db_session, seeded_tenant):
     payload = {
         "title": "PART A",

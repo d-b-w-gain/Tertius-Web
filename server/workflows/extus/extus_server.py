@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -56,6 +58,22 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
     )
 
 
+def get_model_artifact_by_id(db: Session, ctx: AuthContext, artifact_id: UUID) -> Artifact | None:
+    project = get_active_project(db, ctx)
+    if project is None:
+        return None
+    return db.scalar(
+        select(Artifact)
+        .where(
+            Artifact.tenant_id == ctx.tenant_id,
+            Artifact.project_id == project.id,
+            Artifact.id == artifact_id,
+            Artifact.kind.in_(["gltf", "glb", "stl"]),
+        )
+        .limit(1)
+    )
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -89,6 +107,18 @@ def get_status(ctx: AuthContext = Depends(get_auth_context), db: Session = Depen
 @app.get("/model")
 def get_model(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     artifact = get_latest_model_artifact(db, ctx)
+    if artifact is None or artifact.content is None:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+    return Response(content=artifact.content, media_type=artifact.content_type)
+
+
+@app.get("/artifacts/{artifact_id}/model")
+def get_model_by_artifact_id(
+    artifact_id: UUID,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    artifact = get_model_artifact_by_id(db, ctx, artifact_id)
     if artifact is None or artifact.content is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return Response(content=artifact.content, media_type=artifact.content_type)

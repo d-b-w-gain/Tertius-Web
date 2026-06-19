@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
+from datetime import timedelta
 
 import pytest
 
@@ -61,6 +62,75 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
     assert row.provider_request_id == "chatcmpl-123"
     assert row.metadata_json == {"source": "compiler_tab"}
     assert row.status == "completed"
+
+
+def test_llm_usage_today_endpoint_summarizes_current_day(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+):
+    from workflows.intus import usage_server
+
+    monkeypatch.setattr(
+        usage_server,
+        "get_settings",
+        lambda: Settings(llm_tenant_daily_token_quota=1000, llm_user_daily_token_quota=500),
+    )
+    old_event_id = record_llm_usage(
+        db_session,
+        auth=_auth(seeded_tenant),
+        project_id=seeded_tenant.project_id,
+        request=_request("old edit"),
+        result=_result(200),
+        settings=Settings(),
+        operation="files.llm_edit",
+    )
+    current_event_id = record_llm_usage(
+        db_session,
+        auth=_auth(seeded_tenant),
+        project_id=seeded_tenant.project_id,
+        request=_request("current edit"),
+        result=_result(120),
+        settings=Settings(),
+        operation="files.llm_edit",
+    )
+    other_user_id = uuid4()
+    db_session.add(AppUser(id=other_user_id, keycloak_subject="kc-tenant-peer"))
+    db_session.flush()
+    record_llm_usage(
+        db_session,
+        auth=AuthContext(
+            user_id=other_user_id,
+            tenant_id=seeded_tenant.tenant_id,
+            keycloak_subject="kc-tenant-peer",
+            email=None,
+        ),
+        project_id=seeded_tenant.project_id,
+        request=_request("peer edit"),
+        result=_result(80),
+        settings=Settings(),
+        operation="files.llm_edit",
+    )
+    old_row = db_session.query(LlmUsageRecord).filter_by(event_id=old_event_id).one()
+    old_row.created_at = old_row.created_at - timedelta(days=1)
+    current_row = db_session.query(LlmUsageRecord).filter_by(event_id=current_event_id).one()
+    db_session.commit()
+
+    response = authenticated_intus_client.get("/llm-usage/today")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tenant_daily_token_quota"] == 1000
+    assert data["tenant_tokens_used_today"] == 200
+    assert data["tenant_tokens_remaining_today"] == 800
+    assert data["user_daily_token_quota"] == 500
+    assert data["user_tokens_used_today"] == 120
+    assert data["user_tokens_remaining_today"] == 380
+    assert data["last_edit"]["operation"] == "files.llm_edit"
+    assert data["last_edit"]["model"] == "test-openai-compatible-model"
+    assert data["last_edit"]["total_tokens"] == 120
+    assert data["last_edit"]["created_at"] == current_row.created_at.isoformat()
 
 
 def test_llm_usage_project_foreign_key_preserves_tenant_on_project_delete():

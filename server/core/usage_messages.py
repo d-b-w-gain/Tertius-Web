@@ -45,3 +45,22 @@ class UsageRecordResponse(BaseModel):
     artifact_byte_size: int
     cost_cents: int
     username: str | None
+
+
+class LlmLastEditResponse(BaseModel):
+    operation: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    created_at: str
+
+
+class LlmTodayUsageResponse(BaseModel):
+    tenant_daily_token_quota: int
+    tenant_tokens_used_today: int
+    tenant_tokens_remaining_today: int
+    user_daily_token_quota: int
+    user_tokens_used_today: int
+    user_tokens_remaining_today: int
+    last_edit: LlmLastEditResponse | None

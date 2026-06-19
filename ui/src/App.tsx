@@ -3,23 +3,27 @@ import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
+import { GenerateDesignWindow } from './workflows/generate/GenerateDesignWindow'
+import { AiBudgetGauge } from './workflows/generate/AiBudgetGauge'
 import { useAuth } from './auth/AuthProvider'
 import { LoginStateWidget } from './auth/LoginStateWidget'
 import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
 import { importGuestWorkspace } from './workflows/shared/guestImport'
+import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
 
 declare const __GIT_COMMIT__: string
 declare const __GIT_COMMIT_DATE__: string
 
 function App() {
   const { authMode, getAccessToken, isLoading } = useAuth()
-  const [activeTab, setActiveTab] = useState('extus')
+  const [activeTab, setActiveTab] = useState('generate')
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
   const [showImportBanner, setShowImportBanner] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
   const previousAuthMode = useRef(authMode)
   const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
+  const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
 
   useEffect(() => {
     if (authMode === 'guest') {
@@ -130,6 +134,12 @@ function App() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
           
+          <button
+            onClick={() => setActiveTab('generate')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'generate' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+          >
+            Generate Design
+          </button>
           <button 
             onClick={() => setActiveTab('extus')}
             className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'extus' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
@@ -192,6 +202,9 @@ function App() {
         </div>
 
         <div className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
+          <div className={activeTab === 'generate' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <GenerateDesignWindow isActive={activeTab === 'generate'} />
+          </div>
           <div className={activeTab === 'extus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
             <ExtusWindow isActive={activeTab === 'extus'} />
           </div>
@@ -203,6 +216,7 @@ function App() {
           </div>
         </div>
       </div>
+      <AiBudgetGauge serverUrl={intusServerUrl} />
     </div>
   )
 }
