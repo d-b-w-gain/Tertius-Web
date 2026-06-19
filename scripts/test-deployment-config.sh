@@ -68,8 +68,23 @@ if [ "$api_url_occurrences" -ne 0 ]; then
   exit 1
 fi
 
-if ! rg -q "VITE_KEYCLOAK_CLIENT_ID \|\| 'tertius-ui'" "${ROOT_DIR}/ui/src/auth/keycloak.ts"; then
-  echo "UI Keycloak auth must default to the tertius-ui client when VITE_KEYCLOAK_CLIENT_ID is not set." >&2
+if rg -q 'oidc-client-ts|UserManager|signinSilent|signinRedirect|signinRedirectCallback|Authorization.*Bearer' "${ROOT_DIR}/ui/src/auth" "${ROOT_DIR}/ui/src/api"; then
+  echo "UI auth must not use browser OIDC clients, browser refresh flows, or bearer-token headers." >&2
+  exit 1
+fi
+
+if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfile.ui"; then
+  echo "UI image build must not bake browser Keycloak/OIDC client settings; auth is handled by the API BFF." >&2
+  exit 1
+fi
+
+if rg -q 'userStore: new WebStorageStateStore\(\{ store: window.localStorage \}\)' "${ROOT_DIR}/ui/src/auth" "${ROOT_DIR}/ui/src/api"; then
+  echo "UI auth must not persist OIDC tokens in localStorage; browser auth should use the API cookie session." >&2
+  exit 1
+fi
+
+if ! rg -q '/api/auth/login' "${ROOT_DIR}/ui/src/auth/AuthProvider.tsx" || ! rg -q '/api/auth/me' "${ROOT_DIR}/ui/src/auth/AuthProvider.tsx" || ! rg -q '/api/auth/logout' "${ROOT_DIR}/ui/src/auth/AuthProvider.tsx"; then
+  echo "UI auth must use API BFF login, me, and logout endpoints." >&2
   exit 1
 fi
 
@@ -146,6 +161,21 @@ if ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localh
   exit 1
 fi
 
+if ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS: "300"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS: "2592000"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS: "2592000"'; then
+  echo "ConfigMap must render Keycloak session lifetime settings." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_COOKIE_SECURE: "false"' || ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_SESSION_IDLE_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_SESSION_MAX_SECONDS: "2592000"'; then
+  echo "ConfigMap must render API cookie session settings." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'accessTokenLifespan: 300' || ! printf '%s\n' "$rendered" | rg -q 'ssoSessionIdleTimeout: 604800' || ! printf '%s\n' "$rendered" | rg -q 'ssoSessionMaxLifespan: 2592000' || ! printf '%s\n' "$rendered" | rg -q 'clientSessionIdleTimeout: 604800' || ! printf '%s\n' "$rendered" | rg -q 'clientSessionMaxLifespan: 2592000'; then
+  echo "Keycloak RealmImport must apply the configured rolling one-week session idle window and refresh hard cap." >&2
+  exit 1
+fi
+
 if ! rg -q 'LLM_MODELS_JSON: ".*kimi-k2.7-code.*minimax-m3' <<<"$rendered" || ! rg -q 'LLM_DEFAULT_MODEL_ID: "kimi-k2.7-code"' <<<"$rendered" || ! rg -q 'LLM_DAILY_BUDGET_USD: "2.00"' <<<"$rendered"; then
   echo "ConfigMap must render the LLM model catalog, default model, and daily dollar budget." >&2
   exit 1
@@ -161,8 +191,13 @@ if ! rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 
   exit 1
 fi
 
-if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT'; then
-  echo "ConfigMap must not render LLM provider secrets or prompts." >&2
+if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET'; then
+  echo "ConfigMap must not render LLM provider secrets, prompts, or auth client/session secrets." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$rendered" | rg -q 'AUTH_SESSION_SECRET: "local-auth-session-secret-change-me"'; then
+  echo "Local app Secret must render AUTH_SESSION_SECRET for stable cookie-backed auth sessions." >&2
   exit 1
 fi
 
@@ -196,8 +231,18 @@ if ! printf '%s\n' "$rendered" | rg -q 'directAccessGrantsEnabled: true' || ! pr
   exit 1
 fi
 
+if ! printf '%s\n' "$rendered" | rg -q 'publicClient: true'; then
+  echo "Local Helm render must keep the UI OIDC client public for local PKCE auth." >&2
+  exit 1
+fi
+
 if printf '%s\n' "$default_rendered" | rg -q 'directAccessGrantsEnabled: true|username: "demo"'; then
   echo "Default Helm render must not enable the k3s smoke user or direct access grants." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$default_rendered" | rg -q 'publicClient: false'; then
+  echo "Default Helm render must configure the UI OIDC client as confidential for API BFF auth." >&2
   exit 1
 fi
 
@@ -261,7 +306,7 @@ if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-co
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD'; then
+if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD'; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi

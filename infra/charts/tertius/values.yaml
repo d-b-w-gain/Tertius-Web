@@ -15,6 +15,9 @@ app:
     keycloakAuthorizedParty: tertius-ui
     keycloakIssuerUrl: https://tertius.johnsonyuen.com/realms/tertius
     keycloakJwksUrlOverride: auto
+    authCookieSecure: true
+    authSessionIdleSeconds: 604800
+    authSessionMaxSeconds: 2592000
     natsUrl: ""
     compileStreamName: TERTIUS_COMPILE
     compileRequestSubject: tertius.compile.request
@@ -100,6 +103,7 @@ app:
     databaseUrl: ""
     valkeyUrl: redis://tertius-valkey:6379/0
     oidcClientSecret: ""
+    authSessionSecret: ""
 api:
   replicaCount: 1
   image:
@@ -221,8 +225,15 @@ keycloak:
     enabled: true
     realm: tertius
     uiClientId: tertius-ui
+    uiPublicClient: false
+    uiClientSecret: ""
     apiClientId: tertius-api
     uiDirectAccessGrantsEnabled: false
+    accessTokenLifespanSeconds: 300
+    ssoSessionIdleTimeoutSeconds: 604800
+    ssoSessionMaxLifespanSeconds: 2592000
+    clientSessionIdleTimeoutSeconds: 604800
+    clientSessionMaxLifespanSeconds: 2592000
     smokeUser:
       enabled: false
       username: demo

@@ -5,8 +5,7 @@ function getDisplayName(user: ReturnType<typeof useAuth>['user']) {
     return 'Guest'
   }
 
-  const profile = user.profile
-  return profile.name || profile.preferred_username || profile.email || 'Account'
+  return user.email || 'Account'
 }
 
 export function LoginStateWidget() {
