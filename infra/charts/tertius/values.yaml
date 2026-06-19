@@ -72,7 +72,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-79-e5ccb55 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    tag: master-80-1a730ed # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:
