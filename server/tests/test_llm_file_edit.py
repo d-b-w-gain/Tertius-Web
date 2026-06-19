@@ -14,6 +14,7 @@ from core.db import get_db
 from core.llm_client import (
     LlmBillingError,
     LlmFileEditTruncatedError,
+    LlmGenerationError,
     LlmInvalidFileEditError,
     LlmProviderAuthenticationError,
     TokenUsage,
@@ -1042,6 +1043,66 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 
+def test_llm_file_edit_job_records_provider_generation_detail(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+    provider_message = (
+        "LLM provider request failed (APITimeoutError): request timed out"
+    )
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        raise LlmGenerationError(provider_message)
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "failed"
+    assert status_body["error"] == provider_message
+    assert status_body["user_message"] == provider_message
+    assert status_body["retryable"] is True
+
+    history_response = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs?limit=10"
+    )
+    assert history_response.status_code == 200
+    messages = history_response.json()["messages"]
+    assert messages[0]["job_id"] == str(job_id)
+    assert messages[0]["content"] == provider_message
+
+    db_session.expire_all()
+    assert db_session.get(ProjectFile, design.id).content == original_content
+    assert db_session.get(LlmEditJob, job_id).error == provider_message
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
 def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stale_jobs(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
@@ -1098,7 +1159,7 @@ def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stal
         requested_by=seeded_tenant.user_id,
         status="running",
         request_payload={"prompt": "Lost worker", "files": []},
-        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=15),
     )
     db_session.add_all([succeeded, failed, running, stale])
     db_session.flush()

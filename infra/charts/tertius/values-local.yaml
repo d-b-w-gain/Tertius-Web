@@ -51,7 +51,7 @@ app:
         cached_read_price_per_million: 0.06
         cached_write_price_per_million: null
         enabled: true
-    llmTimeoutSeconds: 60
+    llmTimeoutSeconds: 480
     llmMaxOutputTokens: 2048
     llmFileEditMaxOutputTokens: 65536
     llmFileEditMaxContextFiles: 20

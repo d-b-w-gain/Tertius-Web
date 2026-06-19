@@ -15,6 +15,7 @@ from core.llm_client import (
     LlmFileEditTruncatedError,
     LlmFileEditInput,
     LlmFilePointer,
+    LlmGenerationError,
     LlmInvalidFileEditError,
     LlmNotConfiguredError,
     LlmProviderAuthenticationError,
@@ -66,8 +67,17 @@ class FakeProviderErrorChatCompletions:
         raise SimpleNamespaceAuthenticationError("invalid key")
 
 
+class FakeGenericProviderErrorChatCompletions:
+    async def create(self, **kwargs):
+        raise SimpleNamespaceProviderError("upstream timed out while generating file edit")
+
+
 class SimpleNamespaceAuthenticationError(Exception):
     status_code = 401
+
+
+class SimpleNamespaceProviderError(Exception):
+    status_code = 502
 
 
 class FakeOpenAIClient:
@@ -745,6 +755,32 @@ async def test_generate_file_edits_classifies_provider_authentication_failure():
             openai_client=client,
             billing_publisher=FakePublisher(),
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_preserves_provider_failure_detail():
+    request, files = _file_edit_request_and_files()
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeGenericProviderErrorChatCompletions())
+
+    with pytest.raises(LlmGenerationError) as exc_info:
+        await generate_file_edits(
+            request,
+            files=files,
+            settings=make_llm_settings(llm_api_key="secret"),
+            auth=AuthContext(
+                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+            ),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    message = str(exc_info.value)
+    assert "LLM provider request failed" in message
+    assert "SimpleNamespaceProviderError" in message
+    assert "HTTP 502" in message
+    assert "upstream timed out" in message
 
 
 @pytest.mark.asyncio

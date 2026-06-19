@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     llm_daily_budget_usd: float = Field(default=2.0, ge=0)
     llm_api_key: str = Field(default="")
     llm_file_edit_system_prompt: str = Field(default="")
-    llm_timeout_seconds: int = Field(default=60)
+    llm_timeout_seconds: int = Field(default=480)
     llm_max_output_tokens: int = Field(default=2048)
     llm_file_edit_max_output_tokens: int = Field(default=65536, gt=0)
     llm_file_edit_max_context_files: int = Field(default=20, ge=1, le=20)
