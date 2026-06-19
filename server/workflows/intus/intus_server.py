@@ -86,6 +86,7 @@ class CompileRequest(BaseModel):
     export_format: str = "stl"
     quality: Optional[str] = None
     file: Optional[str] = "design.py"
+    originating_llm_edit_job_id: Optional[UUID] = None
 
 
 async def publish_compile_command(command: CompileCommand) -> None:
@@ -353,7 +354,13 @@ async def compile_project(
         if not saved:
             return JSONResponse(status_code=404, content={"error": "Project not found"})
 
-        job = compile_repo.start_job(project_id, ctx.user_id, ext, status="queued")
+        job = compile_repo.start_job(
+            project_id,
+            ctx.user_id,
+            ext,
+            status="queued",
+            originating_llm_edit_job_id=req.originating_llm_edit_job_id,
+        )
         job_id = job.id
         files = repo.files_for_runtime(name)
         if files is None:
@@ -492,6 +499,74 @@ def _serialize_llm_edit_result(
             for edit in result.files
             if edit.file_id in by_id
         ],
+    }
+
+
+def _llm_edit_job_content(job: LlmEditJob) -> str:
+    if job.status in {"queued", "running"}:
+        return ""
+    if job.result_payload:
+        message = str(job.result_payload.get("message") or "").strip()
+        if message:
+            return message
+
+        files = _llm_edit_job_files(job)
+        changed_files = [file for file in files if file.get("changed") is not False]
+        file_summary = " ".join(str(file.get("summary")) for file in files if file.get("summary"))
+        outcome = job.result_payload.get("outcome")
+        parts = [
+            f"Updated {len(changed_files) or len(files)} file(s)." if outcome == "changed" else f"AI returned {outcome}.",
+            f"Model: {job.result_payload.get('model')}." if job.result_payload.get("model") else "",
+            file_summary,
+        ]
+        return " ".join(part for part in parts if part)
+    return job.user_message or job.error or ""
+
+
+def _llm_edit_job_files(job: LlmEditJob) -> list[dict[str, Any]]:
+    if not job.result_payload:
+        return []
+    files = job.result_payload.get("files")
+    if not isinstance(files, list):
+        return []
+    projected = []
+    for file in files:
+        if not isinstance(file, dict):
+            continue
+        projected.append({key: value for key, value in file.items() if key != "content"})
+    return projected
+
+
+def _serialize_llm_edit_history_message(
+    job: LlmEditJob,
+    compile_job: CompileJob | None,
+    compile_repo: CompileRepository,
+) -> dict[str, Any]:
+    request_payload = job.request_payload or {}
+    result_payload = job.result_payload or {}
+    request_files = request_payload.get("files")
+    artifact = compile_repo.artifact_for_job(compile_job.id) if compile_job is not None else None
+    return {
+        "job_id": str(job.id),
+        "prompt": str(request_payload.get("prompt") or ""),
+        "content": _llm_edit_job_content(job),
+        "created_at": job.created_at.isoformat(),
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "status": job.status,
+        "model": result_payload.get("model"),
+        "usage": result_payload.get("usage"),
+        "files": _llm_edit_job_files(job),
+        "requested_file_count": len(request_files) if isinstance(request_files, list) else 0,
+        "compile": (
+            {
+                "job_id": str(compile_job.id),
+                "status": compile_job.status,
+                "artifact_id": str(artifact.id) if artifact else None,
+                "export_format": compile_job.export_format,
+            }
+            if compile_job is not None
+            else None
+        ),
     }
 
 
@@ -884,6 +959,42 @@ def start_llm_file_edit_job(
     )
 
 
+@app.get("/projects/{name}/files/llm-edit/jobs")
+def list_llm_file_edit_jobs(
+    name: str,
+    limit: int = 200,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    llm_edit_repo = LlmEditRepository(db, ctx.tenant_id)
+    compile_repo = CompileRepository(db, ctx.tenant_id)
+    try:
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    settings = get_settings()
+    llm_edit_repo.reconcile_stale_jobs_for_project(
+        project.id,
+        older_than_seconds=settings.llm_timeout_seconds + 30,
+    )
+    db.commit()
+
+    jobs = llm_edit_repo.list_jobs_for_project(project.id, limit=limit)
+    messages = [
+        _serialize_llm_edit_history_message(
+            job,
+            llm_edit_repo.get_compile_job_for_llm_edit(project.id, job.id),
+            compile_repo,
+        )
+        for job in jobs
+    ]
+    return {"messages": messages}
+
+
 @app.get("/projects/{name}/files/llm-edit/jobs/{job_id}")
 def get_llm_file_edit_job_status(
     name: str,
@@ -901,6 +1012,16 @@ def get_llm_file_edit_job_status(
         return JSONResponse(status_code=404, content={"error": "Project not found"})
 
     job = llm_edit_repo.get_job(project.id, job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
+
+    settings = get_settings()
+    job = llm_edit_repo.reconcile_stale_job(
+        project.id,
+        job.id,
+        older_than_seconds=settings.llm_timeout_seconds + 30,
+    )
+    db.commit()
     if job is None:
         return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
 

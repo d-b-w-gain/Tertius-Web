@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -21,6 +21,8 @@ from core.llm_client import (
 from core.llm_usage import LlmUsageLimitExceeded
 from core.models import (
     AppUser,
+    Artifact,
+    CompileJob,
     LlmEditJob,
     LlmUsageRecord,
     Project,
@@ -1038,6 +1040,165 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     assert db_session.get(LlmEditJob, job_id).attempt_count == 1
     assert db_session.scalars(select(SourceSnapshot)).all() == []
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
+def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stale_jobs(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    monkeypatch.setattr(intus_server, "get_settings", lambda: make_llm_settings(llm_timeout_seconds=1))
+    created = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    succeeded = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "Make it taller", "files": [{"id": str(uuid4()), "filename": "design.py"}]},
+        result_payload={
+            "success": True,
+            "outcome": "changed",
+            "message": "",
+            "model": "test-model",
+            "usage": {"prompt_tokens": 4, "completion_tokens": 5, "total_tokens": 9},
+            "files": [
+                {
+                    "id": str(uuid4()),
+                    "filename": "design.py",
+                    "content": "length = 200\n",
+                    "changed": True,
+                    "summary": "Increased height",
+                }
+            ],
+        },
+        created_at=created,
+        finished_at=created + timedelta(seconds=2),
+    )
+    failed = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="failed",
+        error="provider failed",
+        user_message="LLM generation failed",
+        retryable=True,
+        request_payload={"prompt": "Try a fillet", "files": []},
+        created_at=created + timedelta(seconds=3),
+        finished_at=created + timedelta(seconds=4),
+    )
+    running = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        request_payload={"prompt": "Still working", "files": [{"id": str(uuid4()), "filename": "design.py"}]},
+        created_at=datetime.now(timezone.utc),
+    )
+    stale = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        request_payload={"prompt": "Lost worker", "files": []},
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    db_session.add_all([succeeded, failed, running, stale])
+    db_session.flush()
+    compile_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+        originating_llm_edit_job_id=succeeded.id,
+        created_at=created + timedelta(seconds=5),
+        finished_at=created + timedelta(seconds=8),
+    )
+    db_session.add(compile_job)
+    db_session.flush()
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        compile_job_id=compile_job.id,
+        kind="glb",
+        storage_key="artifacts/test.glb",
+        content_type="model/gltf-binary",
+        byte_size=5,
+        content=b"model",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_intus_client.get("/projects/default_purlin/files/llm-edit/jobs?limit=200")
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    assert [message["job_id"] for message in messages] == [
+        str(succeeded.id),
+        str(failed.id),
+        str(stale.id),
+        str(running.id),
+    ]
+    first = messages[0]
+    assert first["prompt"] == "Make it taller"
+    assert first["content"] == "Updated 1 file(s). Model: test-model. Increased height"
+    assert first["model"] == "test-model"
+    assert first["usage"]["total_tokens"] == 9
+    assert first["requested_file_count"] == 1
+    assert first["files"] == [
+        {
+            "id": first["files"][0]["id"],
+            "filename": "design.py",
+            "changed": True,
+            "summary": "Increased height",
+        }
+    ]
+    assert "content" not in first["files"][0]
+    assert first["compile"] == {
+        "job_id": str(compile_job.id),
+        "status": "succeeded",
+        "artifact_id": str(artifact.id),
+        "export_format": "glb",
+    }
+    assert messages[1]["content"] == "LLM generation failed"
+    assert messages[1]["compile"] is None
+    assert messages[2]["status"] == "failed"
+    assert messages[2]["content"] == "AI generation stopped unexpectedly. Try again."
+    assert messages[3]["status"] == "running"
+    assert messages[3]["content"] == ""
+    assert messages[3]["requested_file_count"] == 1
+
+
+def test_compile_project_persists_originating_llm_edit_job_id(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    async def fake_publish_compile_command(command):
+        return None
+
+    monkeypatch.setattr(intus_server, "publish_compile_command", fake_publish_compile_command)
+    llm_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "Generate a design", "files": []},
+        result_payload={"success": True, "message": "Done"},
+    )
+    db_session.add(llm_job)
+    db_session.commit()
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/compile",
+        json={
+            "code": "import build123d as bd\nlength = 150\n",
+            "export_format": "glb",
+            "file": "design.py",
+            "originating_llm_edit_job_id": str(llm_job.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job = db_session.get(CompileJob, UUID(response.json()["job_id"]))
+    assert job is not None
+    assert job.originating_llm_edit_job_id == llm_job.id
 
 
 def test_llm_file_edit_job_public_mounted_route(
