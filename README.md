@@ -84,6 +84,8 @@ KEYCLOAK_ISSUER=http://localhost:8080/realms/tertius
 KEYCLOAK_AUDIENCE=tertius-api
 NATS_URL=nats://localhost:4222
 ALLOWED_ORIGINS=http://localhost:5173
+AUTH_SESSION_SECRET=local-auth-session-secret-change-me
+AUTH_COOKIE_SECURE=false
 ```
 
 Generated workflow artifacts are stored in Postgres; run Alembic migrations before compiling or serving artifacts.
