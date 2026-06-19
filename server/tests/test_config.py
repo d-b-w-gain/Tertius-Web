@@ -1,6 +1,6 @@
 import core.config as config
 from core.config import Settings
-from llm_test_helpers import TEST_LLM_MODEL_ID, TEST_LLM_MODELS_JSON
+from llm_test_helpers import TEST_FILE_EDIT_SYSTEM_PROMPT, TEST_LLM_MODEL_ID, TEST_LLM_MODELS_JSON
 
 
 def test_settings_parse_allowed_origins():
@@ -167,9 +167,7 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     assert settings.llm_daily_budget_usd == 2.0
     assert settings.llm_models == []
     assert settings.llm_api_key == ""
-    assert settings.llm_file_edit_system_prompt.startswith(
-        "You are the Tertius Intus CAD editing agent."
-    )
+    assert settings.llm_file_edit_system_prompt == ""
     assert settings.llm_timeout_seconds == 60
     assert settings.llm_max_output_tokens == 2048
     assert settings.llm_file_edit_max_output_tokens == 65536
@@ -189,7 +187,7 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", TEST_LLM_MODEL_ID)
     monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.50")
     monkeypatch.setenv("LLM_API_KEY", "secret-key")
-    monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", "custom file edit prompt")
+    monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", TEST_FILE_EDIT_SYSTEM_PROMPT)
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1024")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_OUTPUT_TOKENS", "4096")
@@ -210,7 +208,7 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     assert settings.get_llm_model().id == TEST_LLM_MODEL_ID
     assert settings.get_llm_model().endpoint == "https://llm.example.test/v1/chat/completions"
     assert settings.llm_api_key == "secret-key"
-    assert settings.llm_file_edit_system_prompt == "custom file edit prompt"
+    assert settings.llm_file_edit_system_prompt == TEST_FILE_EDIT_SYSTEM_PROMPT
     assert settings.llm_timeout_seconds == 30
     assert settings.llm_max_output_tokens == 1024
     assert settings.llm_file_edit_max_output_tokens == 4096

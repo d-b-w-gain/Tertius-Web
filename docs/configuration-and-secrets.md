@@ -80,6 +80,8 @@ prompts.
 
 Production should normally set `app.secretName`, `app.llmSecretName`, database
 secret names, and tunnel token secret names to externally managed Secrets.
+`LLM_FILE_EDIT_SYSTEM_PROMPT` has no Python fallback; AI file edits require this
+key in the dedicated LLM Secret.
 
 ## Browser Auth Sessions
 

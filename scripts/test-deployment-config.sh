@@ -258,8 +258,8 @@ if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT:'; then
-  echo "Dedicated LLM Secret must omit LLM_FILE_EDIT_SYSTEM_PROMPT when no prompt value is configured." >&2
+if ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: ""'; then
+  echo "Dedicated LLM Secret must render an explicit empty LLM_FILE_EDIT_SYSTEM_PROMPT when no prompt value is configured." >&2
   exit 1
 fi
 

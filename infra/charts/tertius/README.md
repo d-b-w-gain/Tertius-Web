@@ -90,6 +90,8 @@ The provider API key and file-edit system prompt are secret material:
 - `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages these values out of chart values.
 - Do not put `LLM_API_KEY` or `LLM_FILE_EDIT_SYSTEM_PROMPT` in the shared app Secret selected by `app.secretName`; keep provider credentials and prompts in the dedicated LLM Secret.
 
+The file-edit system prompt has no Python fallback. It must be supplied through the dedicated LLM Secret as `LLM_FILE_EDIT_SYSTEM_PROMPT`; otherwise AI file edits are treated as not configured.
+
 Only the API Deployment receives LLM configuration, `LLM_API_KEY`, and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive LLM configuration, keys, or prompts.
 
 For production, manage the dedicated LLM Secret outside committed values:
