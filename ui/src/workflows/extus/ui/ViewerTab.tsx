@@ -1,24 +1,206 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { MODEL_STATUS_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
+import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 
 interface ViewerProps {
   serverUrl: string;
   isActive?: boolean;
 }
 
-export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+interface ModelViewerCanvasProps {
+  modelUrl: string;
+  getAccessToken: () => Promise<string>;
+  statusText?: string;
+  projectName?: string;
+  isActive?: boolean;
+}
+
+export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
+
+type ViewerBatchOptions = {
+  createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
+  useAuthoredColors?: boolean;
+};
+
+type ViewerBatch = {
+  mesh: THREE.Mesh;
+  usesAuthoredColors: boolean;
+};
+
+function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
+  return Array.isArray(material) ? material : [material];
+}
+
+export function hasAuthoredMaterialColor(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
+  if (!material) return false;
+  return materialList(material).some((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
+}
+
+function colorFromMaterial(material: THREE.Material | THREE.Material[] | null | undefined): THREE.Color | null {
+  if (!material) return null;
+  const authored = materialList(material).find((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
+  const color = authored && 'color' in authored ? (authored as THREE.MeshStandardMaterial).color : null;
+  return color ? color.clone() : null;
+}
+
+function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+  if (geometry.getAttribute('color')) return geometry;
+  const position = geometry.getAttribute('position');
+  if (!position) return geometry;
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i += 1) {
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geometry;
+}
+
+function disposeObjectTree(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry.dispose();
+      if (mesh.material) {
+        if (Array.isArray(mesh.material)) mesh.material.forEach(mat => mat.dispose());
+        else mesh.material.dispose();
+      }
+    }
+  });
+}
+
+export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
+  if (meshes.length === 0) return null;
+
+  const usesAuthoredColors = options.useAuthoredColors ?? meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
+  const defaultColor = new THREE.Color(DEFAULT_MODEL_COLOR);
+  const geometries = meshes.map((mesh) => {
+    const geometry = mesh.geometry.clone();
+    if (usesAuthoredColors) {
+      geometryWithVertexColor(geometry, colorFromMaterial(mesh.material) ?? defaultColor);
+    }
+    return geometry;
+  });
+
+  const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
+  geometries.forEach((geometry) => geometry.dispose());
+  if (!mergedGeometry) return null;
+
+  const material = usesAuthoredColors
+    ? new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        metalness: 0.6,
+        roughness: 0.4,
+        side: THREE.FrontSide,
+      })
+    : new THREE.MeshStandardMaterial({
+        color: DEFAULT_MODEL_COLOR,
+        metalness: 0.6,
+        roughness: 0.4,
+        side: THREE.FrontSide,
+      });
+
+  return {
+    mesh: (options.createMesh ?? ((geometry, meshMaterial) => new THREE.Mesh(geometry, meshMaterial)))(mergedGeometry, material),
+    usesAuthoredColors,
+  };
+}
+
+export const ViewerTab: React.FC<ViewerProps> = (props) => {
+  const { authMode, login } = useAuth();
+  if (authMode === 'guest') {
+    return (
+      <GuestWorkflowNotice
+        title="Log in to view compiled models"
+        message="Extus loads authenticated model artifacts after Intus compilation."
+        onLogin={login}
+      />
+    );
+  }
+  return <LatestModelViewer {...props} />;
+};
+
+export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
+
+  // Poll for latest active-project model changes.
+  useEffect(() => {
+    if (!isActive) return;
+
+    let mounted = true;
+    let mtime = 0;
+
+    const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
+      try {
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (projRes.ok && mounted) {
+          const pData = await projRes.json();
+          if (pData.project_name) {
+            setProjectName(pData.project_name);
+          }
+        }
+
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.mtime && data.mtime !== mtime) {
+            if (mounted) {
+              mtime = data.mtime;
+              setUrl(`${serverUrl}/model?t=${data.mtime}`);
+              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
+            }
+          }
+        } else {
+          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
+        }
+      } catch (e) {
+        if (mounted) setStatusText('Lost connection to file server.');
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [serverUrl, isActive, getAccessToken]);
+
+  return (
+    <ModelViewerCanvas
+      modelUrl={url}
+      getAccessToken={getAccessToken}
+      statusText={statusText}
+      projectName={projectName}
+      isActive={isActive}
+    />
+  );
+};
+
+export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
+  modelUrl,
+  getAccessToken,
+  statusText = 'Waiting for model...',
+  projectName = '',
+  isActive = true,
+}) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
+  const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -36,6 +218,31 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
 
+  const clearCurrentModel = useCallback(() => {
+    const scene = sceneRef.current;
+    const current = meshRef.current;
+    if (!scene || !current) return;
+    disposeObjectTree(current);
+    scene.remove(current);
+    meshRef.current = null;
+    setSceneGraph(null);
+    setSelectedNodeId(null);
+    setIsolatedNodeId(null);
+  }, []);
+
+  const resizeRendererToContainer = useCallback(() => {
+    const container = containerRef.current;
+    const renderer = rendererRef.current;
+    const camera = cameraRef.current;
+    if (!container || !renderer || !camera) return;
+
+    const w = container.clientWidth || 1;
+    const h = container.clientHeight || 1;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }, []);
+
   // 1. Initialize Scene (run once)
   useEffect(() => {
     if (!containerRef.current || !canvasRef.current) return;
@@ -46,13 +253,15 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     scene.background = new THREE.Color(0x0f172a); // slate-900
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100000);
+    const initialWidth = container.clientWidth || 1;
+    const initialHeight = container.clientHeight || 1;
+    const camera = new THREE.PerspectiveCamera(50, initialWidth / initialHeight, 0.1, 100000);
     camera.up.set(0, 0, 1);
     camera.position.set(200, 200, 200);
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.setSize(initialWidth, initialHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -108,15 +317,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     axesHelper.name = "AxesHelper";
     scene.add(axesHelper);
 
-    const onResize = () => {
-      if (!container || !renderer || !camera) return;
-      const w = container.clientWidth || 1;
-      const h = container.clientHeight || 1;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    window.addEventListener('resize', onResize);
+    window.addEventListener('resize', resizeRendererToContainer);
 
     const animate = () => {
       animIdRef.current = requestAnimationFrame(animate);
@@ -126,25 +327,24 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     animate();
 
     return () => {
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', resizeRendererToContainer);
       controls.removeEventListener('start', handleInteraction);
       canvas.removeEventListener('mousedown', handleInteraction);
       canvas.removeEventListener('wheel', handleInteraction);
       if (resumeTimeout) clearTimeout(resumeTimeout);
       cancelAnimationFrame(animIdRef.current);
-      scene.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const m = child as THREE.Mesh;
-          m.geometry.dispose();
-          if (m.material) {
-            if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-            else m.material.dispose();
-          }
-        }
-      });
+      disposeObjectTree(scene);
       renderer.dispose();
     };
-  }, []);
+  }, [resizeRendererToContainer]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    resizeRendererToContainer();
+    const frame = requestAnimationFrame(resizeRendererToContainer);
+    return () => cancelAnimationFrame(frame);
+  }, [isActive, resizeRendererToContainer]);
 
   useEffect(() => {
     if (!sceneRef.current) return;
@@ -182,59 +382,28 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
     });
   }, [renderQuality]);
 
-  // 2. Poll for file changes
-  useEffect(() => {
-    if (!isActive) return;
-    
-    let mounted = true;
-    let mtime = 0;
-    
-    const checkStatus = async () => {
-      try {
-        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-        if (projRes.ok && mounted) {
-          const pData = await projRes.json();
-          if (pData.project_name) {
-            setProjectName(pData.project_name);
-          }
-        }
-        
-        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.mtime && data.mtime !== mtime) {
-            if (mounted) {
-              mtime = data.mtime;
-              setUrl(`${serverUrl}/model?t=${data.mtime}`);
-              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
-            }
-          }
-        } else {
-          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
-        }
-      } catch (e) {
-        if (mounted) setStatusText('Lost connection to file server.');
-      }
-    };
-
-    checkStatus();
-    const interval = setInterval(checkStatus, 3000);
-    
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [serverUrl, isActive, getAccessToken]);
-
   // 3. Load GLTF when URL changes
   useEffect(() => {
-    if (!url || !sceneRef.current) return;
+    setLoadErrorText(null);
+    if (!modelUrl || !sceneRef.current) return;
     
     let isCancelled = false;
     const loader = new GLTFLoader();
+
+    const failLoad = (message: string, err?: unknown) => {
+      if (isCancelled) return;
+      if (err) console.error(message, err);
+      setLoadErrorText(message);
+      clearCurrentModel();
+    };
     
-    apiFetch(url, getAccessToken)
-      .then(res => res.arrayBuffer())
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return res.arrayBuffer();
+      })
       .then(buffer => {
         if (isCancelled) return;
         loader.parse(buffer, '', (gltf) => {
@@ -282,7 +451,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
-        color: 0x8b9bb4, // Steel blueish
+        color: DEFAULT_MODEL_COLOR, // Steel blueish
         metalness: 0.6,
         roughness: 0.4,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
@@ -302,7 +471,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
-      const geometries: THREE.BufferGeometry[] = [];
+      const sourceMeshes: THREE.Mesh[] = [];
       
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
@@ -310,7 +479,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
            geom.applyMatrix4(relativeMatrix);
-           geometries.push(geom);
+           sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
@@ -319,26 +488,37 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
         }
       });
       
-      if (geometries.length > 0) {
+      if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
           const CHUNK_SIZE = 1000;
           const chunks: THREE.BufferGeometry[] = [];
+          const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
           
-          for (let i = 0; i < geometries.length; i += CHUNK_SIZE) {
-             const chunk = geometries.slice(i, i + CHUNK_SIZE);
-             const mergedChunk = BufferGeometryUtils.mergeGeometries(chunk, false);
-             if (mergedChunk) chunks.push(mergedChunk);
-             
-             // Free individual geometries immediately to keep heap size small
-             chunk.forEach(g => g.dispose());
+          for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
+             const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE), { useAuthoredColors: hasAuthoredColors });
+             if (batch) {
+               chunks.push(batch.mesh.geometry);
+               if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
+               else batch.mesh.material.dispose();
+             }
           }
           
           const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
           chunks.forEach(g => g.dispose()); // Free intermediate chunks
+          sourceMeshes.forEach(mesh => mesh.geometry.dispose());
           
           if (finalMergedGeom) {
-             const batchedMesh = new THREE.Mesh(finalMergedGeom, sharedMaterial);
+             const batchedMaterial = hasAuthoredColors
+               ? new THREE.MeshStandardMaterial({
+                   color: 0xffffff,
+                   vertexColors: true,
+                   metalness: 0.6,
+                   roughness: 0.4,
+                   side: THREE.FrontSide
+                 })
+               : sharedMaterial;
+             const batchedMesh = new THREE.Mesh(finalMergedGeom, batchedMaterial);
              batchedMesh.name = "TertiusBatchedMesh";
              batchedMesh.castShadow = isHigh;
              batchedMesh.receiveShadow = isHigh;
@@ -350,19 +530,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
         }
       }
       
-      if (meshRef.current) {
-        meshRef.current.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const m = child as THREE.Mesh;
-            m.geometry.dispose();
-            if (m.material) {
-              if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-              else m.material.dispose();
-            }
-          }
-        });
-        sceneRef.current!.remove(meshRef.current);
-      }
+      clearCurrentModel();
       
       sceneRef.current!.add(model);
       meshRef.current = model;
@@ -372,17 +540,17 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
       setSelectedNodeId(null);
       setIsolatedNodeId(null);
         }, (err) => {
-          if (!isCancelled) console.error("Error parsing GLTF:", err);
+          failLoad("Model artifact could not be parsed.", err);
         });
       })
       .catch(err => {
-        if (!isCancelled) console.error("Error fetching GLTF:", err);
+        failLoad(err instanceof Error ? err.message : "Model artifact could not be loaded.", err);
       });
       
     return () => {
       isCancelled = true;
     };
-  }, [url, getAccessToken, renderQuality]);
+  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -415,7 +583,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
             if (c.name !== "TertiusBatchedMesh" && (c as THREE.Mesh).isMesh) c.visible = false;
           });
           if (intersects.length > 0) {
-             let node: THREE.Object3D | null = intersects[0].object;
+             let node: THREE.Object3D | null = intersects[0]!.object;
              const rootScene = meshRef.current.children[0]; // gltf.scene
              const assemblyRoot = rootScene && rootScene.children.length === 1 ? rootScene.children[0] : rootScene;
 
@@ -569,7 +737,7 @@ export const ViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true })
           </button>
         </div>
         <div className="text-xs text-slate-400">
-          {statusText}
+          {loadErrorText || statusText}
         </div>
       </div>
       

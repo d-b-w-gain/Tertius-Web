@@ -22,7 +22,7 @@ The backend currently writes project and output state to the local filesystem. P
 - Use one merged local Helm chart: `infra/charts/tertius`.
 - Add a chart README documenting prerequisites and local k3s test steps.
 - Package the UI and API as separate container images and Kubernetes Deployments.
-- Use Python 3.12 for the API image.
+- Use Python 3.14 for the API image.
 - Use Node 24 LTS for the UI build stage.
 - Use nginx as the UI runtime image.
 - Use CloudNativePG for Postgres, with the operator installed as a prerequisite.
@@ -33,7 +33,7 @@ The backend currently writes project and output state to the local filesystem. P
 
 ## Runtime Compatibility
 
-Python 3.14 is the latest stable Python line, but Tertius should not target it yet because `build123d` declares an upper bound of `<3.14` on PyPI (current releases support 3.10 through 3.13). Python 3.12 is the conservative target for the API container; 3.13 is also supported by build123d if a newer runtime is wanted later.
+Python 3.14 is the platform runtime target for Tertius. The compile sandbox carries compatibility shims for Build123D/OCP API drift where needed, so API, worker, CI, and local development stay on the same Python line.
 
 Node 24 is the current LTS line and is suitable for the Vite build stage.
 
@@ -51,15 +51,15 @@ Create `Dockerfile.api`.
 
 Responsibilities:
 
-- Start from `python:3.12-slim`.
+- Start from `python:3.14-slim` and copy in `uv` from `ghcr.io/astral-sh/uv`.
 - Install system dependencies required by OpenCASCADE, Build123D, geometry rendering, and git-backed project history.
-- Install `server/requirements.txt`.
+- `uv sync --no-dev --locked` against the root `pyproject.toml` and `uv.lock` (this also installs the project itself).
 - Copy `server/` into the image.
 - Set `WORKDIR /app`.
 - Expose port `8000`.
 - Run `uvicorn server.main:app --host 0.0.0.0 --port 8000`.
 
-The image should keep the runtime filesystem layout compatible with the current backend code. The Helm chart will mount persistent storage so `/app/cache/tertius` exists and survives pod restarts.
+Generated artifacts are stored in Postgres. The API image should not require a persistent artifact filesystem.
 
 ### UI Image
 
@@ -92,13 +92,10 @@ The chart will render:
 - API `Service`
 - UI `Deployment`
 - UI `Service`
-- API persistent volume claim
 - shared app `ConfigMap`
 - app Secret references for future database/cache credentials
 - optional NetworkPolicies
 - optional ServiceAccount
-
-The API Deployment will mount a PVC at `/app/cache/tertius`.
 
 The UI Service will receive browser traffic for static assets and frontend routes.
 
@@ -280,7 +277,7 @@ Required smoke tests:
 - Through the UI port-forward, verify `GET /api/` reaches the FastAPI root through nginx reverse proxying.
 - Through the UI port-forward, verify `GET /api/intus/health` returns healthy JSON.
 - Port-forward the API Service directly and verify `GET /` returns the backend status JSON.
-- Verify the API PVC is bound and mounted by the API pod.
+- Verify remaining database and cache PVCs are bound, and verify the API pod does not mount an artifact PVC.
 - Run a short in-cluster Postgres check using a temporary pod or operator-provided connection secret. This should confirm connection to both the future Tertius app database and the Keycloak database.
 - Run a short in-cluster Valkey check using `valkey-cli PING` from a temporary pod or the Valkey chart's test pod if available.
 - Port-forward Keycloak and verify the well-known OIDC configuration endpoint responds for the configured realm when realm import is enabled. If realm import is disabled, verify the Keycloak root or health endpoint responds instead.
@@ -344,7 +341,7 @@ The chart should:
 - Avoid embedding real database or Valkey passwords in Git.
 - Avoid embedding real Keycloak admin credentials, realm secrets, or OIDC client secrets in Git.
 - Use Secret references for sensitive values.
-- Run containers as non-root where the base images and filesystem permissions allow it. For the API, set a pod `securityContext.fsGroup` so the non-root user can write to the PVC mounted at `/app/cache/tertius` (including git-backed project history); without `fsGroup` the mounted volume will not be writable by a non-root user.
+- Run containers as non-root where the base images and filesystem permissions allow it.
 - Set resource requests and limits.
 - Keep CloudNativePG operator installation outside the app chart.
 - Prefer same-origin API routing to avoid permissive CORS in production.
@@ -384,7 +381,7 @@ The implementation plan should include these verification commands:
 ## Implementation Defaults
 
 - UI runtime: nginx.
-- API runtime: Python 3.12.
+- API runtime: Python 3.14.
 - UI build runtime: Node 24 LTS.
 - PostgreSQL default major version: 18.
 - Valkey default image: latest stable Valkey image available when implementation begins, pinned to an exact tag in values.

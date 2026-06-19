@@ -1,4 +1,12 @@
 {{- if .Values.keycloak.enabled }}
+{{- $uiClientSecret := .Values.keycloak.realmImport.uiClientSecret | default "" | trim }}
+{{- $appOidcClientSecret := .Values.app.secret.oidcClientSecret | default "" | trim }}
+{{- if and .Values.keycloak.realmImport.enabled (not .Values.keycloak.realmImport.uiPublicClient) (eq $uiClientSecret "") }}
+{{- fail "keycloak.realmImport.uiClientSecret must be set when keycloak.realmImport.uiPublicClient=false" }}
+{{- end }}
+{{- if and .Values.keycloak.realmImport.enabled (not .Values.keycloak.realmImport.uiPublicClient) .Values.app.secret.create (ne $uiClientSecret $appOidcClientSecret) }}
+{{- fail "keycloak.realmImport.uiClientSecret must match app.secret.oidcClientSecret when app.secret.create=true and the UI client is confidential" }}
+{{- end }}
 apiVersion: k8s.keycloak.org/v2beta1
 kind: Keycloak
 metadata:
@@ -47,18 +55,48 @@ spec:
   realm:
     realm: {{ .Values.keycloak.realmImport.realm | quote }}
     enabled: true
+    accessTokenLifespan: {{ .Values.keycloak.realmImport.accessTokenLifespanSeconds | int64 }}
+    ssoSessionIdleTimeout: {{ .Values.keycloak.realmImport.ssoSessionIdleTimeoutSeconds | int64 }}
+    ssoSessionMaxLifespan: {{ .Values.keycloak.realmImport.ssoSessionMaxLifespanSeconds | int64 }}
+    clientSessionIdleTimeout: {{ .Values.keycloak.realmImport.clientSessionIdleTimeoutSeconds | int64 }}
+    clientSessionMaxLifespan: {{ .Values.keycloak.realmImport.clientSessionMaxLifespanSeconds | int64 }}
     clients:
       - clientId: {{ .Values.keycloak.realmImport.uiClientId | quote }}
         name: Tertius UI
-        publicClient: true
+        publicClient: {{ .Values.keycloak.realmImport.uiPublicClient }}
+        {{- if $uiClientSecret }}
+        secret: {{ $uiClientSecret | quote }}
+        {{- end }}
         standardFlowEnabled: true
-        directAccessGrantsEnabled: false
+        directAccessGrantsEnabled: {{ .Values.keycloak.realmImport.uiDirectAccessGrantsEnabled }}
         redirectUris:
           - "*"
         webOrigins:
           - "*"
+        protocolMappers:
+          - name: {{ printf "%s audience" .Values.app.config.keycloakAudience | quote }}
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            consentRequired: false
+            config:
+              included.client.audience: {{ .Values.app.config.keycloakAudience | quote }}
+              id.token.claim: "false"
+              access.token.claim: "true"
       - clientId: {{ .Values.keycloak.realmImport.apiClientId | quote }}
         name: Tertius API
         bearerOnly: true
+    {{- if .Values.keycloak.realmImport.smokeUser.enabled }}
+    users:
+      - username: {{ .Values.keycloak.realmImport.smokeUser.username | quote }}
+        enabled: true
+        emailVerified: true
+        firstName: {{ .Values.keycloak.realmImport.smokeUser.firstName | quote }}
+        lastName: {{ .Values.keycloak.realmImport.smokeUser.lastName | quote }}
+        email: {{ .Values.keycloak.realmImport.smokeUser.email | quote }}
+        credentials:
+          - type: password
+            value: {{ .Values.keycloak.realmImport.smokeUser.password | quote }}
+            temporary: false
+    {{- end }}
 {{- end }}
 {{- end }}

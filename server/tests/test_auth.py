@@ -1,14 +1,21 @@
 from datetime import datetime, timedelta, timezone
+from typing import cast
+from uuid import uuid4
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
+from fastapi import Response
 from fastapi.security import HTTPAuthorizationCredentials
+from starlette.requests import Request
+from sqlalchemy.orm import Session
 
 import core.auth as auth
-from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context
+from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context, get_cookie_auth_context, session_token_hash
+from core.auth_types import AuthContext
 from core.config import Settings
+from core.models import AuthSession
 
 
 def _private_key():
@@ -19,7 +26,7 @@ def _token(private_key, **overrides):
     payload = {
         "sub": "kc-user-1",
         "iss": "http://issuer.example/realms/tertius",
-        "aud": "tertius-web",
+        "aud": "tertius-api",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
     payload.update(overrides)
@@ -49,14 +56,54 @@ class _FailingJwkClient:
         raise Exception("unknown kid")
 
 
+class _Db:
+    def __init__(self, session: AuthSession | None):
+        self.session = session
+        self.committed = False
+        self.deleted = None
+
+    def scalar(self, statement):
+        return self.session
+
+    def commit(self):
+        self.committed = True
+
+    def delete(self, item):
+        self.deleted = item
+
+
+def _request(method: str = "GET", headers: list[tuple[bytes, bytes]] | None = None) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": "/",
+            "headers": headers or [],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
+
+
 def _patch_settings(monkeypatch):
     settings = Settings(
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
         keycloak_issuer="http://issuer.example/realms/tertius",
-        keycloak_audience="tertius-web",
-        artifact_root="/tmp/tertius-artifacts",
+        keycloak_audience="tertius-api",
     )
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
+
+
+def _patch_session_settings(monkeypatch):
+    settings = Settings(
+        database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",
+        keycloak_issuer="http://issuer.example/realms/tertius",
+        keycloak_audience="tertius-api",
+        auth_cookie_secure=False,
+    )
+    monkeypatch.setattr(auth, "get_settings", lambda: settings)
+    return settings
 
 
 def test_claims_to_principal_requires_subject():
@@ -93,6 +140,16 @@ def test_decode_keycloak_token_accepts_valid_rs256_token(monkeypatch):
     assert claims["sub"] == "kc-user-1"
 
 
+def test_decode_keycloak_token_accepts_trusted_ui_authorized_party(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    claims = decode_keycloak_token(_token(key, aud="account", azp="tertius-ui"))
+
+    assert claims["sub"] == "kc-user-1"
+
 
 def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
     key = _private_key()
@@ -102,6 +159,26 @@ def test_decode_keycloak_token_rejects_wrong_audience(monkeypatch):
 
     with pytest.raises(jwt.InvalidAudienceError):
         decode_keycloak_token(_token(key, aud="wrong-audience"))
+
+
+def test_decode_keycloak_token_rejects_wrong_issuer(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidIssuerError):
+        decode_keycloak_token(_token(key, iss="http://attacker.example/realms/tertius"))
+
+
+def test_decode_keycloak_token_rejects_untrusted_authorized_party(monkeypatch):
+    key = _private_key()
+    _JwkClient.public_key = key.public_key()
+    monkeypatch.setattr(auth, "PyJWKClient", _JwkClient)
+    _patch_settings(monkeypatch)
+
+    with pytest.raises(jwt.InvalidAudienceError):
+        decode_keycloak_token(_token(key, aud="account", azp="other-client"))
 
 
 def test_decode_keycloak_token_rejects_expired_token(monkeypatch):
@@ -125,13 +202,143 @@ def test_decode_keycloak_token_rejects_unknown_kid(monkeypatch):
 
 def test_get_auth_context_rejects_missing_bearer_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(credentials=None, db=None)
+        get_auth_context(request=_request(), response=Response(), credentials=None, db=cast(Session, None))
 
     assert exc.value.status_code == 401
 
 
 def test_get_auth_context_rejects_malformed_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"), db=None)
+        get_auth_context(
+            request=_request(),
+            response=Response(),
+            credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="not-a-jwt"),
+            db=cast(Session, None),
+        )
 
     assert exc.value.status_code == 401
+
+
+def test_oauth_state_secret_prefers_session_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="session-secret", oidc_client_secret="oidc-secret"),
+    )
+
+    assert app_main._auth_state_secret() == b"session-secret"
+
+
+def test_oauth_state_secret_falls_back_to_oidc_client_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="oidc-secret"),
+    )
+
+    assert app_main._auth_state_secret() == b"oidc-secret"
+
+
+def test_oauth_state_secret_requires_configured_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=False),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        app_main._auth_state_secret()
+    assert exc.value.status_code == 503
+    assert "AUTH_SESSION_SECRET" in str(exc.value.detail)
+
+
+def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=True),
+    )
+
+    assert app_main._auth_state_secret() == b"insecure-local-auth-state-secret"
+
+
+def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):
+    settings = _patch_session_settings(monkeypatch)
+    user_id = uuid4()
+    tenant_id = uuid4()
+    token = "session-token"
+    now = datetime.now(timezone.utc)
+    session = AuthSession(
+        id=uuid4(),
+        session_token_hash=session_token_hash(token),
+        user_id=user_id,
+        tenant_id=tenant_id,
+        keycloak_subject="kc-user-1",
+        email="a@example.com",
+        username="alice",
+        display_name="Alice",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        csrf_token="csrf-token",
+        access_token_expires_at=now - timedelta(seconds=1),
+        idle_expires_at=now + timedelta(days=1),
+        max_expires_at=now + timedelta(days=30),
+        created_at=now,
+        updated_at=now,
+    )
+    db = _Db(session)
+    refreshed = {"called": False}
+
+    def refresh_session_access_token(auth_session: AuthSession):
+        refreshed["called"] = True
+        auth_session.access_token = "new-access-token"
+        auth_session.access_token_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    monkeypatch.setattr(auth, "refresh_session_access_token", refresh_session_access_token)
+    monkeypatch.setattr(
+        auth,
+        "decode_keycloak_token",
+        lambda access_token: {
+            "sub": "kc-user-1",
+            "email": "a@example.com",
+            "preferred_username": "alice",
+            "name": "Alice",
+        },
+    )
+
+    import core.provisioning
+
+    monkeypatch.setattr(
+        core.provisioning,
+        "provision_user_context",
+        lambda _db, principal: AuthContext(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            keycloak_subject=principal.keycloak_subject,
+            email=principal.email,
+        ),
+    )
+    request = _request(
+        method="POST",
+        headers=[
+            (b"cookie", f"{settings.auth_session_cookie_name}={token}".encode("ascii")),
+            (b"x-csrf-token", b"csrf-token"),
+        ],
+    )
+    response = Response()
+
+    ctx = get_cookie_auth_context(request, response, cast(Session, db))
+
+    assert ctx is not None
+    assert ctx.user_id == user_id
+    assert refreshed["called"] is True
+    assert db.committed is True
+    assert "tertius_session=" in response.headers["set-cookie"]

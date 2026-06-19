@@ -5,7 +5,59 @@ services:
       - "8000:8000"
     volumes:
       - ./server:/app/server
-      - ./artifacts:/tmp/tertius-artifacts
+    environment:
+      NATS_URL: nats://nats:4222
+      COMPILE_STREAM_NAME: TERTIUS_COMPILE
+      COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_RESULT_SUBJECT: tertius.compile.result
+      COMPILE_WORKER_QUEUE: compile-workers
+      COMPILE_RESULT_CONSUMER: compile-result-api
+      COMPILE_REQUEST_MAX_BYTES: 8388608
+      COMPILE_RESULT_MAX_BYTES: 33554432
+      LLM_MODELS_JSON: ${LLM_MODELS_JSON:-[]}
+      LLM_DEFAULT_MODEL_ID: ${LLM_DEFAULT_MODEL_ID:-}
+      LLM_DAILY_BUDGET_USD: ${LLM_DAILY_BUDGET_USD:-2.00}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-2048}
+      LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: ${LLM_FILE_EDIT_MAX_OUTPUT_TOKENS:-65536}
+      LLM_FILE_EDIT_MAX_CONTEXT_FILES: ${LLM_FILE_EDIT_MAX_CONTEXT_FILES:-20}
+      LLM_FILE_EDIT_MAX_CONTEXT_CHARS: ${LLM_FILE_EDIT_MAX_CONTEXT_CHARS:-80000}
+      LLM_USER_RATE_LIMIT_PER_MINUTE: ${LLM_USER_RATE_LIMIT_PER_MINUTE:-10}
+      LLM_TENANT_RATE_LIMIT_PER_MINUTE: ${LLM_TENANT_RATE_LIMIT_PER_MINUTE:-60}
+      LLM_TENANT_DAILY_TOKEN_QUOTA: ${LLM_TENANT_DAILY_TOKEN_QUOTA:-3200000}
+      LLM_USER_DAILY_TOKEN_QUOTA: ${LLM_USER_DAILY_TOKEN_QUOTA:-3200000}
+      BILLING_STREAM_NAME: ${BILLING_STREAM_NAME:-TERTIUS_BILLING}
+      BILLING_LLM_USAGE_SUBJECT: ${BILLING_LLM_USAGE_SUBJECT:-tertius.billing.usage.llm.tokens}
+      BILLING_MAX_BYTES: ${BILLING_MAX_BYTES:-262144}
+      APP_DB_HOST: postgres
+      APP_DB_NAME: tertius
+      APP_DB_OWNER: tertius
+      APP_DB_PASSWORD: tertius
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
+      KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    depends_on:
+      - postgres
+      - nats
+
+  compile-job-runner:
+    build: .
+    command: sh -c "while true; do sh /app/server/start-compile-job.sh; sleep 2; done"
+    volumes:
+      - ./server:/app/server
+    environment:
+      NATS_URL: nats://nats:4222
+      COMPILE_STREAM_NAME: TERTIUS_COMPILE
+      COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_RESULT_SUBJECT: tertius.compile.result
+      COMPILE_WORKER_QUEUE: compile-workers
+      COMPILE_RESULT_MAX_BYTES: 33554432
+      COMPILE_JOB_MODE: nats-only
+    depends_on:
+      - nats
 
   frontend:
     image: node:20
@@ -19,18 +71,19 @@ services:
       - CHOKIDAR_USEPOLLING=true
 
   postgres:
-    image: postgres:16
+    image: postgres:18
     ports:
       - "5432:5432"
     environment:
       POSTGRES_DB: tertius
       POSTGRES_USER: tertius
       POSTGRES_PASSWORD: tertius
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - tertius-postgres:/var/lib/postgresql/data
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.6.3
     command:
       - start-dev
       - --import-realm
@@ -43,6 +96,18 @@ services:
     volumes:
       - ./infra/keycloak/tertius-realm.json:/opt/keycloak/data/import/tertius-realm.json:ro
 
+  nats:
+    image: nats:2
+    command:
+      - -c
+      - /etc/nats/nats-server.conf
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - tertius-nats:/data
+      - ./infra/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
   #   image: cloudflare/cloudflared:latest
@@ -52,3 +117,4 @@ services:
 
 volumes:
   tertius-postgres:
+  tertius-nats:

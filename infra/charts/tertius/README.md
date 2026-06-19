@@ -1,6 +1,6 @@
 # Tertius Helm Chart
 
-This chart renders the Tertius API and UI plus the Kubernetes resources needed for future Postgres, Valkey, Keycloak, and Cloudflare Tunnel integration.
+This chart renders the Tertius API and UI plus the Kubernetes resources needed for Postgres, Valkey, Keycloak, NATS JetStream, and Cloudflare Tunnel integration.
 
 ## Prerequisites
 
@@ -8,7 +8,9 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 - Helm 3.
 - CloudNativePG operator with `clusters.postgresql.cnpg.io` installed.
 - Keycloak Operator with `keycloaks.k8s.keycloak.org` installed.
-- Valkey Helm dependency resolved with `helm dependency update infra/charts/tertius`.
+- KEDA with the `ScaledJob` CRD installed when `keda.enabled=true`.
+- `RuntimeClass/gvisor` available for compile Jobs, or override `compileJobs.runtimeClassName`.
+- Valkey and NATS Helm dependencies resolved with `helm dependency update infra/charts/tertius`.
 - API and UI images already available to the cluster.
 
 ## Local k3s Flow
@@ -24,6 +26,8 @@ helm upgrade --install tertius infra/charts/tertius \
 ```
 
 For local image testing, build images as `tertius-api:local` and `tertius-ui:local`, then make them available to k3s through a local registry or `k3s ctr images import`. The local values use `IfNotPresent` so k3s can use locally loaded images.
+
+Do not run local smoke upgrades against a Flux-managed release unless that is intentional. Use an isolated namespace and release such as `NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke` when the cluster already manages `tertius/tertius` through GitOps.
 
 Port-forward smoke tests:
 
@@ -41,9 +45,67 @@ curl http://127.0.0.1:8000/
 curl http://127.0.0.1:8000/api/intus/health
 ```
 
+The chart enables NATS JetStream with file-backed PVC storage by default. The API receives `NATS_URL` through the chart ConfigMap. When `app.config.natsUrl` is empty, the value is derived from the release-local NATS service, for example `nats://tertius-nats:4222` for release `tertius`. Set `app.config.natsUrl` only for unusual deployments with a different internal service contract.
+
+The API validates Keycloak token issuers against `app.config.keycloakIssuerUrl`. When Keycloak advertises a public issuer that is not directly resolvable from inside the cluster, set `app.config.keycloakJwksUrlOverride` to the in-cluster JWKS endpoint so the API can validate signatures without weakening issuer checks. Set it to `auto` to derive the release-local Keycloak service URL. The local k3s values use this split because Keycloak issues tokens for `http://keycloak.localhost/realms/tertius` while the API reaches JWKS through the release-local Keycloak service.
+
+Keycloak realm session lifetimes are non-secret chart config and are also rendered into the shared ConfigMap for operator visibility. Defaults keep access tokens short, set SSO and client session idle timeouts to seven days, and set a thirty-day max lifespan so normal token refreshes extend the login past the initial week until the hard cap. Browser auth uses an API Backend-for-Frontend flow: the API stores access and refresh tokens in the database-backed `auth_sessions` table and sends the browser only an HttpOnly session cookie plus a CSRF cookie. Rolling API/UI deploys should not force users to sign in again as long as the database, Keycloak session, and `AUTH_SESSION_SECRET` remain stable. Defaults keep the UI OIDC client public with PKCE so the chart renders a working login flow without embedding a client secret; production can set `keycloak.realmImport.uiPublicClient=false` with matching Keycloak and API client secrets to use a confidential client.
+
+NATS is internal-only. Do not route it through Cloudflare Tunnel, UI nginx, or public ingress. The local smoke harness waits for NATS pods and runs `nats server check jetstream` from an in-cluster `natsio/nats-box` pod.
+
+Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image with `server/start-compile-job.sh`, read one compile request from JetStream, publish one result to JetStream, and exit. They intentionally receive only NATS and compile-limit environment variables. Do not add app Secret env, database env, service-account tokens, PVCs, or API/Keycloak/Postgres egress to compile Jobs.
+
+The chart does not install KEDA or its CRDs. `keda.enabled` defaults to `true` for the production and local values so compile work is rendered by default, but clusters without KEDA can render or install the rest of the chart with `--set keda.enabled=false`. Re-enable it only after the `ScaledJob` CRD is present.
+
+By default, compile Job pods get a dedicated NetworkPolicy that denies ingress and only allows egress to DNS and NATS `4222`. API/UI ingress policies remain controlled by `networkPolicy.enabled`. If API egress hardening is added later, it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required external services together.
+
+## LLM Build Script Generation
+
+The API can call configured LLM providers to generate Intus build scripts and file edits.
+
+Non-secret provider settings are rendered into the app ConfigMap:
+
+- `app.config.llmModels` -> `LLM_MODELS_JSON`
+- `app.config.llmDefaultModelId` -> `LLM_DEFAULT_MODEL_ID`
+- `app.config.llmDailyBudgetUsd` -> `LLM_DAILY_BUDGET_USD`
+- `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
+- `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
+- `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`
+- `app.config.llmFileEditMaxContextFiles` -> `LLM_FILE_EDIT_MAX_CONTEXT_FILES`
+- `app.config.llmFileEditMaxContextChars` -> `LLM_FILE_EDIT_MAX_CONTEXT_CHARS`
+- `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
+- `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`
+- `app.config.llmUserDailyTokenQuota` -> `LLM_USER_DAILY_TOKEN_QUOTA`
+- `app.config.billingStreamName` -> `BILLING_STREAM_NAME`
+- `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
+- `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
+
+See `docs/configuration-and-secrets.md` for the full ConfigMap, Secret, and LLM model schema reference.
+
+The provider API key and file-edit system prompt are secret material:
+
+- `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
+- `app.llmSecret.fileEditSystemPrompt` -> `LLM_FILE_EDIT_SYSTEM_PROMPT` when `app.llmSecret.create=true`
+- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages these values out of chart values.
+- Do not put `LLM_API_KEY` or `LLM_FILE_EDIT_SYSTEM_PROMPT` in the shared app Secret selected by `app.secretName`; keep provider credentials and prompts in the dedicated LLM Secret.
+
+The file-edit system prompt has no Python fallback. It must be supplied through the dedicated LLM Secret as `LLM_FILE_EDIT_SYSTEM_PROMPT`; otherwise AI file edits are treated as not configured.
+
+Only the API Deployment receives LLM configuration, `LLM_API_KEY`, and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive LLM configuration, keys, or prompts.
+
+For production, manage the dedicated LLM Secret outside committed values:
+
+```bash
+kubectl -n tertius create secret generic tertius-llm \
+  --from-literal=LLM_API_KEY="$LLM_API_KEY" \
+  --from-literal=LLM_FILE_EDIT_SYSTEM_PROMPT="$LLM_FILE_EDIT_SYSTEM_PROMPT" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
 ## Secrets
 
-Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.
+Production values should reference externally managed Secrets. Do not commit real database passwords, Valkey credentials, NATS credentials, Keycloak admin credentials, OIDC client secrets, or Cloudflare tunnel tokens.
 
 List the Keycloak-related Secrets in the Tertius namespace:
 
@@ -106,4 +168,4 @@ With this in place the browser can keep one origin and still reach authenticatio
 
 ## Notes
 
-This chart provisions future-facing infrastructure and environment variables. The application does not yet consume Postgres, Valkey, or Keycloak for runtime behavior.
+This chart provisions future-facing infrastructure and environment variables. NATS is available as a platform capability, but application-level streams, publishers, consumers, and authentication are deferred until a workflow needs them.

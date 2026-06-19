@@ -51,7 +51,7 @@ export interface ServerHandle {
 
 export function useServerLauncher(config: LauncherConfig): ServerHandle {
   const baseUrl = import.meta.env?.VITE_API_URL;
-  const workflowBase = config.serverName.split('-')[0];
+  const workflowBase = config.serverName.split('-')[0] ?? '';
   const serverUrl = resolveWorkflowServerUrl(workflowBase, baseUrl);
   
   return {

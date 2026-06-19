@@ -1,37 +1,58 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
+import { GenerateDesignWindow } from './workflows/generate/GenerateDesignWindow'
+import { AiBudgetGauge } from './workflows/generate/AiBudgetGauge'
 import { useAuth } from './auth/AuthProvider'
-
-declare const __GIT_COMMIT__: string
-declare const __GIT_COMMIT_DATE__: string
+import { LoginStateWidget } from './auth/LoginStateWidget'
+import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
+import { importGuestWorkspace } from './workflows/shared/guestImport'
+import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
 
 function App() {
-  const { user, isLoading, login, logout } = useAuth()
-  const [activeTab, setActiveTab] = useState('extus')
+  const { authMode, getAccessToken, isLoading } = useAuth()
+  const [activeTab, setActiveTab] = useState('generate')
   const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
+  const [showImportBanner, setShowImportBanner] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const previousAuthMode = useRef(authMode)
   const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
+  const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
 
   useEffect(() => {
-    if (!isLoading && !user) {
-      void login()
+    if (authMode === 'guest') {
+      sessionStorage.setItem('tertius_guest_seen', 'true')
     }
-  }, [isLoading, login, user])
+
+    const transitionedToAuth = previousAuthMode.current === 'guest' && authMode === 'authenticated'
+    const sawGuestThisSession = sessionStorage.getItem('tertius_guest_seen') === 'true'
+    if ((transitionedToAuth || sawGuestThisSession) && authMode === 'authenticated' && localStorage.getItem(GUEST_WORKSPACE_KEY)) {
+      setShowImportBanner(true)
+    }
+    previousAuthMode.current = authMode
+  }, [authMode])
+
+  const handleImportGuestWorkspace = async () => {
+    setIsImporting(true)
+    setImportError(null)
+    try {
+      const result = await importGuestWorkspace({ getAccessToken })
+      window.dispatchEvent(new CustomEvent('tertius:guest-imported', { detail: result }))
+      setShowImportBanner(false)
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'Failed to import guest workspace')
+    } finally {
+      setIsImporting(false)
+    }
+  }
 
   if (isLoading) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
         Loading...
-      </div>
-    )
-  }
-
-  if (!user) {
-    return (
-      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-300">
-        Redirecting to login...
       </div>
     )
   }
@@ -78,6 +99,29 @@ function App() {
       {/* Main Workflow Viewport (Tabbed) */}
       <div className="flex-1 flex flex-col min-w-0 relative">
         {/* Tab Header */}
+        {showImportBanner && (
+          <div className="flex items-center gap-3 border-b border-cyan-900/50 bg-cyan-950/40 px-4 py-2 text-sm text-cyan-100">
+            <span className="min-w-0 flex-1">
+              Import your local guest draft into this account.
+              {importError && <span className="ml-2 text-red-300">{importError}</span>}
+            </span>
+            <button
+              type="button"
+              onClick={handleImportGuestWorkspace}
+              disabled={isImporting}
+              className="rounded bg-cyan-600 px-3 py-1 font-semibold text-white hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isImporting ? 'Importing...' : 'Import'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowImportBanner(false)}
+              className="rounded px-2 py-1 text-cyan-200 hover:bg-cyan-900/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <div className="flex bg-slate-900 border-b border-slate-800 px-4 pt-4 gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -87,6 +131,12 @@ function App() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
           
+          <button
+            onClick={() => setActiveTab('generate')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'generate' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+          >
+            Generate Design
+          </button>
           <button 
             onClick={() => setActiveTab('extus')}
             className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'extus' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
@@ -128,7 +178,7 @@ function App() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Commit:</span>
-                    <span className="text-slate-200 font-mono">{typeof __COMMIT_HASH__ !== 'undefined' ? __COMMIT_HASH__ : 'dev'}</span>
+                    <span className="text-slate-200 font-mono">{__GIT_COMMIT__}</span>
                   </div>
                   <div className="pt-2 border-t border-slate-700">
                     <a 
@@ -144,16 +194,14 @@ function App() {
                 </div>
               </div>
             </div>
-            <button
-              onClick={logout}
-              className="px-3 py-2 mb-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors shrink-0"
-            >
-              Sign out
-            </button>
+            <LoginStateWidget />
           </div>
         </div>
 
         <div className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
+          <div className={activeTab === 'generate' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <GenerateDesignWindow isActive={activeTab === 'generate'} />
+          </div>
           <div className={activeTab === 'extus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
             <ExtusWindow isActive={activeTab === 'extus'} />
           </div>
@@ -165,6 +213,7 @@ function App() {
           </div>
         </div>
       </div>
+      <AiBudgetGauge serverUrl={intusServerUrl} />
     </div>
   )
 }

@@ -7,6 +7,6 @@ Purpose:
 3. Captures user changes to these features and wraps them into a prompt.
 4. Uses an LLM to rewrite `design.py` based on the user's intent.
 
-Shared Project Data: C:\Users\ben\ContextUI\default\cache\tertius
+Shared Project Data: [tertius cache root]
 - Watches: Nothing (it drives the changes).
 - Modifies: `design.py`

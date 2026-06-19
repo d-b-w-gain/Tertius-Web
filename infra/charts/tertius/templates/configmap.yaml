@@ -10,18 +10,63 @@ metadata:
 {{- $realmName := default "tertius" .Values.keycloak.realmImport.realm }}
 {{- $keycloakAudience := default .Values.app.config.oidcAudience .Values.app.config.keycloakAudience }}
 {{- $keycloakIssuer := $keycloakIssuerFromValues }}
+{{- $keycloakJwksUrlOverride := .Values.app.config.keycloakJwksUrlOverride | trim | default "" }}
+{{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
 {{- if not $keycloakIssuer }}
 {{- $keycloakIssuer = printf "http://%s:%s/realms/%s" $keycloakHost $keycloakPort $realmName }}
+{{- end }}
+{{- if eq $keycloakJwksUrlOverride "auto" }}
+{{- $keycloakJwksUrlOverride = printf "http://%s:%s/realms/%s/protocol/openid-connect/certs" $keycloakHost $keycloakPort $realmName }}
 {{- end }}
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
   API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
-  ARTIFACT_ROOT: {{ .Values.app.config.artifactRoot | quote }}
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
+  KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}
+  KEYCLOAK_JWKS_URL_OVERRIDE: {{ $keycloakJwksUrlOverride | quote }}
+  KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.accessTokenLifespanSeconds | int64) | quote }}
+  KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.ssoSessionIdleTimeoutSeconds | int64) | quote }}
+  KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.ssoSessionMaxLifespanSeconds | int64) | quote }}
+  KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.clientSessionIdleTimeoutSeconds | int64) | quote }}
+  KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.clientSessionMaxLifespanSeconds | int64) | quote }}
+  AUTH_COOKIE_SECURE: {{ .Values.app.config.authCookieSecure | quote }}
+  AUTH_SESSION_IDLE_SECONDS: {{ printf "%d" (.Values.app.config.authSessionIdleSeconds | int64) | quote }}
+  AUTH_SESSION_MAX_SECONDS: {{ printf "%d" (.Values.app.config.authSessionMaxSeconds | int64) | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}
+  NATS_URL: {{ $natsUrl | quote }}
+  COMPILE_STREAM_NAME: {{ .Values.app.config.compileStreamName | quote }}
+  COMPILE_REQUEST_SUBJECT: {{ .Values.app.config.compileRequestSubject | quote }}
+  COMPILE_RESULT_SUBJECT: {{ .Values.app.config.compileResultSubject | quote }}
+  COMPILE_WORKER_QUEUE: {{ .Values.app.config.compileWorkerQueue | quote }}
+  COMPILE_RESULT_CONSUMER: {{ .Values.app.config.compileResultConsumer | quote }}
+  COMPILE_ACK_WAIT_SECONDS: {{ .Values.app.config.compileAckWaitSeconds | quote }}
+  COMPILE_MAX_DELIVER: {{ .Values.app.config.compileMaxDeliver | quote }}
+  COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
+  COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
+  COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+  LLM_MODELS_JSON: {{ .Values.app.config.llmModels | toJson | quote }}
+  LLM_DEFAULT_MODEL_ID: {{ .Values.app.config.llmDefaultModelId | quote }}
+  LLM_DAILY_BUDGET_USD: {{ .Values.app.config.llmDailyBudgetUsd | quote }}
+  LLM_TIMEOUT_SECONDS: {{ .Values.app.config.llmTimeoutSeconds | quote }}
+  LLM_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmMaxOutputTokens | quote }}
+  LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmFileEditMaxOutputTokens | quote }}
+  LLM_FILE_EDIT_MAX_CONTEXT_FILES: {{ .Values.app.config.llmFileEditMaxContextFiles | quote }}
+  LLM_FILE_EDIT_MAX_CONTEXT_CHARS: {{ .Values.app.config.llmFileEditMaxContextChars | quote }}
+  LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
+  LLM_TENANT_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmTenantRateLimitPerMinute | quote }}
+  LLM_TENANT_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmTenantDailyTokenQuota | quote }}
+  LLM_USER_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmUserDailyTokenQuota | quote }}
+  BILLING_STREAM_NAME: {{ .Values.app.config.billingStreamName | quote }}
+  BILLING_LLM_USAGE_SUBJECT: {{ .Values.app.config.billingLlmUsageSubject | quote }}
+  BILLING_MAX_BYTES: {{ printf "%d" (.Values.app.config.billingMaxBytes | int64) | quote }}
+  BILLING_RATE_CENTS_PER_HOUR: {{ .Values.app.config.billingRateCentsPerHour | quote }}
+  BILLING_FORMAT_MULTIPLIER_STL: {{ .Values.app.config.billingFormatMultiplierStl | quote }}
+  BILLING_FORMAT_MULTIPLIER_STEP: {{ .Values.app.config.billingFormatMultiplierStep | quote }}
+  BILLING_FORMAT_MULTIPLIER_GLTF: {{ .Values.app.config.billingFormatMultiplierGltf | quote }}
+  BILLING_FORMAT_MULTIPLIER_GLB: {{ .Values.app.config.billingFormatMultiplierGlb | quote }}
   APP_DB_HOST: {{ printf "%s-rw" (include "tertius.appDbName" .) | quote }}
   APP_DB_NAME: {{ .Values.postgres.database | quote }}
   APP_DB_OWNER: {{ .Values.postgres.owner | quote }}

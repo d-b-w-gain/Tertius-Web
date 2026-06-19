@@ -13,8 +13,15 @@ ENABLE_TUNNEL="${ENABLE_TUNNEL:-false}"
 TUNNEL_TOKEN_SECRET_NAME="${TUNNEL_TOKEN_SECRET_NAME:-}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
+KEYCLOAK_SMOKE_USERNAME="${KEYCLOAK_SMOKE_USERNAME:-demo}"
+KEYCLOAK_SMOKE_PASSWORD="${KEYCLOAK_SMOKE_PASSWORD:-demo}"
 KEYCLOAK_CHECK_IMAGE="${KEYCLOAK_CHECK_IMAGE:-busybox:1.37.0}"
 VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
+NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
+KEDA_ENABLED="${KEDA_ENABLED:-false}"
+ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
+BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
+CLEAN_LOCAL_IMAGES_AFTER_LOAD="${CLEAN_LOCAL_IMAGES_AFTER_LOAD:-false}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
@@ -44,8 +51,15 @@ Environment:
   TUNNEL_TOKEN_SECRET_NAME      Required when ENABLE_TUNNEL=true
   TUNNEL_HOSTNAME               Optional external hostname to smoke test when tunnel is enabled.
   KEYCLOAK_REALM                Default: tertius
+  KEYCLOAK_SMOKE_USERNAME       Default: demo
+  KEYCLOAK_SMOKE_PASSWORD       Default: demo
   KEYCLOAK_CHECK_IMAGE          Default: busybox:1.37.0
   VALKEY_CHECK_IMAGE            Default: valkey image from values-local.yaml, then valkey/valkey:9.0.0
+  NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
+  KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
+  ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
+  BUILDX_GHA_CACHE              Default: false. Set true in GitHub Actions to use Buildx GHA cache for local image builds.
+  CLEAN_LOCAL_IMAGES_AFTER_LOAD Default: false. Set true in CI to reduce peak disk use while importing images into k3s.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
@@ -239,6 +253,10 @@ detect_k3s_container() {
   if [ -n "$K3S_CONTAINER" ]; then
     return
   fi
+  if command -v docker >/dev/null 2>&1 && docker container inspect tertius-k3s >/dev/null 2>&1; then
+    K3S_CONTAINER=tertius-k3s
+    return
+  fi
   if ! command -v podman >/dev/null 2>&1; then
     return
   fi
@@ -348,6 +366,40 @@ require_chart_files() {
   }
 }
 
+chart_lock_dependencies_present() {
+  [ -f "${CHART_DIR}/Chart.lock" ] || return 1
+  [ -d "${CHART_DIR}/charts" ] || return 1
+
+  missing=0
+  archives=$(awk '
+    /^[[:space:]]*-[[:space:]]*name:/ {
+      name = $0
+      sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", name)
+      gsub(/"/, "", name)
+      gsub(/\047/, "", name)
+      next
+    }
+    name != "" && /^[[:space:]]*version:/ {
+      version = $0
+      sub(/^[[:space:]]*version:[[:space:]]*/, "", version)
+      gsub(/"/, "", version)
+      gsub(/\047/, "", version)
+      print name "-" version ".tgz"
+      name = ""
+    }
+  ' "${CHART_DIR}/Chart.lock")
+
+  for archive in $archives; do
+    [ -n "$archive" ] || continue
+    if [ ! -f "${CHART_DIR}/charts/${archive}" ]; then
+      echo "Missing vendored Helm dependency archive: ${CHART_DIR}/charts/${archive}" >&2
+      missing=1
+    fi
+  done
+
+  [ "$missing" -eq 0 ]
+}
+
 check_preflight() {
   need kubectl
   need helm
@@ -376,16 +428,58 @@ check_preflight() {
     run kubectl get secret "$TUNNEL_TOKEN_SECRET_NAME" -n "$NAMESPACE"
   fi
 
-  if [ -d "${CHART_DIR}/charts" ] && find "${CHART_DIR}/charts" -name 'valkey-*.tgz' -print -quit | grep -q .; then
+  if ! truthy "$ALLOW_FLUX_MANAGED_RELEASE" && kubectl get helmrelease "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "Refusing to smoke test Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
+    echo "Use an isolated target, for example: NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke $0" >&2
+    echo "Or set ALLOW_FLUX_MANAGED_RELEASE=true if you intentionally want to race the GitOps controller." >&2
+    exit 1
+  fi
+
+  if chart_lock_dependencies_present; then
     echo "Using vendored Helm chart dependencies from ${CHART_DIR}/charts."
   else
     run helm dependency update "$CHART_DIR"
   fi
 }
 
+buildx_gha_cache_available() {
+  truthy "$BUILDX_GHA_CACHE" || return 1
+  [ "$DOCKER" = "docker" ] || return 1
+  "$DOCKER" buildx version >/dev/null 2>&1
+}
+
+build_image() {
+  scope=$1
+  dockerfile=$2
+  image=$3
+  shift 3
+
+  if buildx_gha_cache_available; then
+    run "$DOCKER" buildx build \
+      --load \
+      --cache-from "type=gha,scope=${scope}" \
+      --cache-to "type=gha,mode=max,scope=${scope},ignore-error=true" \
+      -f "$dockerfile" \
+      -t "$image" \
+      "$@" \
+      "$ROOT_DIR"
+    return
+  fi
+
+  run "$DOCKER" build -f "$dockerfile" -t "$image" "$@" "$ROOT_DIR"
+}
+
 build_images() {
-  run "$DOCKER" build -f "${ROOT_DIR}/Dockerfile.api" -t "$API_IMAGE" "$ROOT_DIR"
-  run "$DOCKER" build -f "${ROOT_DIR}/Dockerfile.ui" --build-arg VITE_API_URL=/api -t "$UI_IMAGE" "$ROOT_DIR"
+  build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
+}
+
+build_and_load_images() {
+  build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
+  load_image "$API_IMAGE"
+
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
+  load_image "$UI_IMAGE"
 }
 
 k3s_ctr() {
@@ -399,6 +493,13 @@ k3s_ctr() {
       return
     fi
     podman exec "$K3S_CONTAINER" ctr "$@"
+    return
+  fi
+  if [ -n "$K3S_CONTAINER" ] && command -v docker >/dev/null 2>&1 && docker container inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
+    if docker exec "$K3S_CONTAINER" k3s ctr "$@" 2>/dev/null; then
+      return
+    fi
+    docker exec "$K3S_CONTAINER" ctr "$@"
     return
   fi
   if command -v sudo >/dev/null 2>&1; then
@@ -418,6 +519,7 @@ cluster_has_image() {
 
 load_image() {
   image=$1
+  tar_file=""
   if cluster_has_image "$image"; then
     echo "Image already present in k3s containerd: ${image}"
     return
@@ -431,12 +533,27 @@ load_image() {
   tar_file=$(mktemp "${TMPDIR:-/tmp}/tertius-image.XXXXXX")
   TEMP_FILES="${TEMP_FILES} ${tar_file}"
   run "$DOCKER" save -o "$tar_file" "$image"
+  if truthy "$CLEAN_LOCAL_IMAGES_AFTER_LOAD"; then
+    run "$DOCKER" image rm -f "$image" || true
+  fi
   if [ -n "$K3S_CONTAINER" ] && command -v podman >/dev/null 2>&1 && podman container exists "$K3S_CONTAINER" >/dev/null 2>&1; then
     container_tar="/tmp/$(basename "$tar_file")"
     run podman cp "$tar_file" "${K3S_CONTAINER}:${container_tar}"
     quote_cmd podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     podman exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
     run podman exec "$K3S_CONTAINER" rm -f "$container_tar"
+    rm -f "$tar_file"
+    TEMP_FILES="${TEMP_FILES//$tar_file/}"
+    return
+  fi
+  if [ -n "$K3S_CONTAINER" ] && command -v docker >/dev/null 2>&1 && docker container inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
+    container_tar="/tmp/$(basename "$tar_file")"
+    run docker cp "$tar_file" "${K3S_CONTAINER}:${container_tar}"
+    quote_cmd docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
+    docker exec "$K3S_CONTAINER" ctr -n k8s.io images import "$container_tar"
+    run docker exec "$K3S_CONTAINER" rm -f "$container_tar"
+    rm -f "$tar_file"
+    TEMP_FILES="${TEMP_FILES//$tar_file/}"
     return
   fi
   quote_cmd k3s ctr -n k8s.io images import "$tar_file"
@@ -445,6 +562,8 @@ load_image() {
     echo "Use a local registry tag such as localhost:5000/tertius-api:local, or run this script where k3s ctr is available." >&2
     exit 1
   fi
+  rm -f "$tar_file"
+  TEMP_FILES="${TEMP_FILES//$tar_file/}"
 }
 
 load_images() {
@@ -463,6 +582,7 @@ helm_set_args() {
 --set-string api.image.tag=${api_tag}
 --set-string ui.image.repository=${ui_repo}
 --set-string ui.image.tag=${ui_tag}
+--set keda.enabled=${KEDA_ENABLED}
 "
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
@@ -495,6 +615,8 @@ wait_for_rollout() {
   [ -z "$statefulsets" ] || run kubectl rollout status -n "$NAMESPACE" $statefulsets --timeout="$TIMEOUT"
   valkey_pods=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=valkey" -o name 2>/dev/null || true)
   [ -z "$valkey_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $valkey_pods --timeout="$TIMEOUT"
+  nats_pods=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=nats" -o name 2>/dev/null || true)
+  [ -z "$nats_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $nats_pods --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready keycloaks.k8s.keycloak.org -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   if truthy "$ENABLE_TUNNEL"; then
@@ -643,7 +765,7 @@ curl_expect_same_body() {
   fi
 }
 
-check_pvc_bound_and_mounted() {
+check_release_pvcs_bound() {
   pvc_names=$(capture kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' || true)
   [ -n "$pvc_names" ] || {
     echo "No PVCs found for release ${RELEASE_NAME}." >&2
@@ -654,11 +776,14 @@ check_pvc_bound_and_mounted() {
     echo "At least one PVC is not Bound." >&2
     exit 1
   fi
+}
 
+check_api_has_no_pvc_mount() {
   api_pod=$(find_pod api)
   api_claims=$(capture kubectl get pod "$api_pod" -n "$NAMESPACE" -o jsonpath='{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{"\n"}{end}' || true)
-  if ! printf '%s\n' "$api_claims" | grep -q .; then
-    echo "API pod ${api_pod} does not mount a PVC." >&2
+  if printf '%s\n' "$api_claims" | grep -q .; then
+    echo "API pod ${api_pod} still mounts PVCs:" >&2
+    printf '%s\n' "$api_claims" >&2
     exit 1
   fi
 }
@@ -701,8 +826,13 @@ postgres_check_for_cluster() {
     exit 1
   }
 
+  sql="select 1"
+  if [ "$dbname" = "tertius" ]; then
+    sql="select count(*) from projects"
+  fi
+
   pod_name="${RELEASE_NAME}-pg-check-$(date +%s)"
-  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$image_name" --env="PGPASSWORD=${password}" --command -- psql -h "${cluster}-rw" -U "$username" -d "$dbname" -c "select 1"
+  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$image_name" --env="PGPASSWORD=${password}" --command -- psql -h "${cluster}-rw" -U "$username" -d "$dbname" -c "$sql"
 }
 
 check_postgres() {
@@ -728,6 +858,17 @@ check_valkey() {
   run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$VALKEY_CHECK_IMAGE" --command -- valkey-cli -h "$svc" PING
 }
 
+check_nats() {
+  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=nats")
+  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'nats' | head -1 || true)
+  [ -n "$svc" ] || {
+    echo "Unable to find NATS service for release ${RELEASE_NAME}." >&2
+    exit 1
+  }
+  pod_name="${RELEASE_NAME}-nats-check-$(date +%s)"
+  run kubectl run "$pod_name" -n "$NAMESPACE" --restart=Never --rm -i --image="$NATS_CHECK_IMAGE" --command -- nats server check jetstream --server "nats://${svc}:4222"
+}
+
 keycloak_probe() {
   url=$1
   pod_name="${RELEASE_NAME}-keycloak-check-$(date +%s)"
@@ -745,15 +886,21 @@ keycloak_probe() {
   return 1
 }
 
+keycloak_service() {
+  keycloak_cr=$(first_resource_by_label keycloaks.k8s.keycloak.org "app.kubernetes.io/instance=${RELEASE_NAME}")
+  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=keycloak")
+  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -i keycloak | head -1 || true)
+  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "${keycloak_cr}-service" || true)
+  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "$keycloak_cr" || true)
+  printf '%s' "$svc"
+}
+
 check_keycloak() {
   keycloak_cr=$(first_resource_by_label keycloaks.k8s.keycloak.org "app.kubernetes.io/instance=${RELEASE_NAME}")
   if [ -n "$keycloak_cr" ] && kubectl get job "${keycloak_cr}-realm" -n "$NAMESPACE" >/dev/null 2>&1; then
     run kubectl wait --for=condition=Complete "job/${keycloak_cr}-realm" -n "$NAMESPACE" --timeout="$TIMEOUT"
   fi
-  svc=$(first_resource_by_label svc "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=keycloak")
-  [ -n "$svc" ] || svc=$(capture kubectl get svc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -i keycloak | head -1 || true)
-  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "${keycloak_cr}-service" || true)
-  [ -n "$svc" ] || [ -z "$keycloak_cr" ] || svc=$(resource_named svc "$keycloak_cr" || true)
+  svc=$(keycloak_service)
   [ -n "$svc" ] || {
     echo "Unable to find Keycloak service for release ${RELEASE_NAME}." >&2
     exit 1
@@ -765,6 +912,149 @@ check_keycloak() {
     return
   fi
   keycloak_probe "$master_url"
+}
+
+keycloak_token() {
+  svc=$(keycloak_service)
+  [ -n "$svc" ] || {
+    echo "Unable to find Keycloak service for token request." >&2
+    exit 1
+  }
+  remote_port=$(service_port "$svc")
+  KEYCLOAK_LOCAL_PORT=$(start_port_forward "$svc" "$KEYCLOAK_LOCAL_PORT" "$remote_port")
+
+  token_file=$(mktemp "${TMPDIR:-/tmp}/tertius-token.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${token_file}"
+  token_url="http://127.0.0.1:${KEYCLOAK_LOCAL_PORT}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+  quote_cmd curl --fail --silent --show-error --max-time 20 \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=password" \
+    -d "client_id=tertius-ui" \
+    -d "username=${KEYCLOAK_SMOKE_USERNAME}" \
+    -d "password=${KEYCLOAK_SMOKE_PASSWORD}" \
+    "$token_url" \
+    -o "$token_file" >&2
+  token_status=$(curl --silent --show-error --max-time 20 \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=password" \
+    -d "client_id=tertius-ui" \
+    -d "username=${KEYCLOAK_SMOKE_USERNAME}" \
+    -d "password=${KEYCLOAK_SMOKE_PASSWORD}" \
+    "$token_url" \
+    -o "$token_file" \
+    --write-out "%{http_code}") || {
+    echo "Keycloak token request failed before an HTTP response." >&2
+    cat "$token_file" >&2 || true
+    exit 1
+  }
+  if [ "$token_status" -lt 200 ] || [ "$token_status" -ge 300 ]; then
+    echo "Keycloak token request returned HTTP ${token_status}." >&2
+    cat "$token_file" >&2 || true
+    exit 1
+  fi
+  COMPILE_SMOKE_TOKEN=$(python3 - "$token_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    token = json.load(f).get("access_token", "")
+if not token:
+    raise SystemExit("Keycloak token response did not include access_token")
+print(token)
+PY
+)
+}
+
+smoke_test_compile_job() {
+  if ! truthy "$KEDA_ENABLED"; then
+    echo "KEDA_ENABLED is false; skipping compile job lifecycle smoke test."
+    return
+  fi
+
+  keycloak_token
+  token=$COMPILE_SMOKE_TOKEN
+  request_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-request.XXXXXX")
+  response_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-response.XXXXXX")
+  status_file=$(mktemp "${TMPDIR:-/tmp}/tertius-compile-status.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${request_file} ${response_file} ${status_file}"
+
+  python3 - "$request_file" <<'PY'
+import json
+import sys
+
+payload = {
+    "code": "import build123d as bd\nbox = bd.Box(10, 10, 10)\n",
+    "export_format": "stl",
+    "file": "design.py",
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(payload, f)
+PY
+
+  compile_url="http://127.0.0.1:${API_LOCAL_PORT}/api/intus/projects/default_purlin/compile"
+  echo "+ curl --fail --silent --show-error --max-time 30 -H 'Authorization: Bearer <redacted>' -H 'Content-Type: application/json' -X POST --data-binary @${request_file} ${compile_url} -o ${response_file}" >&2
+  curl --fail --silent --show-error --max-time 30 \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -X POST \
+    --data-binary "@${request_file}" \
+    "$compile_url" \
+    -o "$response_file"
+
+  job_id=$(python3 - "$response_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    body = json.load(f)
+if body.get("success") is not True or body.get("status") != "queued" or body.get("format") != "stl":
+    raise SystemExit(f"Unexpected compile enqueue response: {body}")
+job_id = body.get("job_id")
+if not job_id:
+    raise SystemExit(f"Compile enqueue response did not include job_id: {body}")
+print(job_id)
+PY
+)
+
+  status_url="http://127.0.0.1:${API_LOCAL_PORT}/api/intus/projects/default_purlin/compile/jobs/${job_id}"
+  for _ in $(seq 1 60); do
+    echo "+ curl --fail --silent --show-error --max-time 20 -H 'Authorization: Bearer <redacted>' ${status_url} -o ${status_file}" >&2
+    curl --fail --silent --show-error --max-time 20 \
+      -H "Authorization: Bearer ${token}" \
+      "$status_url" \
+      -o "$status_file"
+    status=$(python3 - "$status_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("status", ""))
+PY
+)
+    if [ "$status" = "succeeded" ]; then
+      python3 - "$status_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    body = json.load(f)
+if body.get("format") != "stl" or not body.get("artifact_id") or body.get("error") is not None or body.get("error_code") is not None or body.get("retryable") is not False or not body.get("finished_at"):
+    raise SystemExit(f"Unexpected successful compile job response: {body}")
+print(f"Compile job {body['job_id']} succeeded with artifact {body['artifact_id']}")
+PY
+      return
+    fi
+    if [ "$status" = "failed" ]; then
+      echo "Compile job ${job_id} failed:" >&2
+      cat "$status_file" >&2
+      exit 1
+    fi
+    sleep 3
+  done
+
+  echo "Timed out waiting for compile job ${job_id} to succeed. Last status:" >&2
+  cat "$status_file" >&2
+  exit 1
 }
 
 smoke_test_http() {
@@ -795,15 +1085,18 @@ check_tunnel() {
 
 run_smoke_tests() {
   smoke_test_http
-  check_pvc_bound_and_mounted
+  check_release_pvcs_bound
+  check_api_has_no_pvc_mount
   check_postgres
   check_valkey
+  check_nats
   check_keycloak
+  smoke_test_compile_job
   check_tunnel
 }
 
 delete_test_pods() {
-  pods=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep -E "/${RELEASE_NAME}-(pg|valkey|keycloak)-check-" || true)
+  pods=$(kubectl get pods -n "$NAMESPACE" -o name 2>/dev/null | grep -E "/${RELEASE_NAME}-(pg|valkey|nats|keycloak)-check-" || true)
   [ -z "$pods" ] || run kubectl delete -n "$NAMESPACE" $pods --ignore-not-found=true
 }
 
@@ -841,8 +1134,12 @@ main() {
   fi
 
   check_preflight
-  build_images
-  load_images
+  if truthy "$CLEAN_LOCAL_IMAGES_AFTER_LOAD"; then
+    build_and_load_images
+  else
+    build_images
+    load_images
+  fi
   render_and_install
   wait_for_rollout
   run_smoke_tests

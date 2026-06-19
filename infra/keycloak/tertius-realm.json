@@ -5,8 +5,8 @@
   "loginWithEmailAllowed": true,
   "clients": [
     {
-      "clientId": "tertius-web",
-      "name": "Tertius Web",
+      "clientId": "tertius-ui",
+      "name": "Tertius UI",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": true,
@@ -26,17 +26,25 @@
       },
       "protocolMappers": [
         {
-          "name": "tertius-web audience",
+          "name": "tertius-api audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
           "consentRequired": false,
           "config": {
-            "included.client.audience": "tertius-web",
+            "included.client.audience": "tertius-api",
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
         }
       ]
+    },
+    {
+      "clientId": "tertius-api",
+      "name": "Tertius API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "bearerOnly": true
     }
   ],
   "users": [

@@ -1,8 +1,12 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/usr/local
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
@@ -25,16 +29,15 @@ RUN apt-get update \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY server/requirements.txt /app/server/requirements.txt
-RUN pip install --no-cache-dir -r /app/server/requirements.txt
+COPY pyproject.toml uv.lock ./
+COPY server/ ./server/
 
-COPY server/ /app/server/
+RUN uv sync --no-dev --locked
 
-RUN mkdir -p /app/cache/tertius \
-    && chown -R 1000:1000 /app/cache
+RUN chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh
 
 USER 1000:1000
 
 EXPOSE 8000
 
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "/app/server/start-api.sh"]

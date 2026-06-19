@@ -1,90 +1,376 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
+import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from '../../shared/ui/ProjectSelector';
+import { createProjectStorage, type ProjectFileMetadata } from '../../shared/projectStorage';
+import { GUEST_WORKSPACE_CHANGED_EVENT } from '../../shared/guestWorkspace';
+import {
+  ACTIVE_PROJECT_POLL_INTERVAL_MS,
+  FILE_STATUS_POLL_INTERVAL_MS,
+  getPollingDelay,
+  shouldRunPollingRequest,
+} from '../../shared/polling';
 
+const COMPILE_AUTH_TIMEOUT_MS = 15_000;
+const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
+const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
+const COMPILE_STATUS_POLL_MS = 2_000;
+const COMPILE_STATUS_RETRY_MS = 3_000;
+const AI_EDIT_FILE_LIMIT = 20;
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
 
 export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
-  const { getAccessToken } = useAuth();
+  const { authMode, getAccessToken } = useAuth();
+  const isGuest = authMode === 'guest';
+  const storage = useMemo(
+    () => createProjectStorage({ authMode, serverUrl, getAccessToken }),
+    [authMode, getAccessToken, serverUrl],
+  );
   const [activeProject, setActiveProject] = useState<string>('');
   const [code, setCode] = useState<string>('');
   const [format, setFormat] = useState<string>('glb');
-  const [quality, setQuality] = useState<string>('high');
+  const [quality, setQuality] = useState<string>('sketch');
   const [log, setLog] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [autoCompile, setAutoCompile] = useState<boolean>(true);
+  const [failedCompileRetry, setFailedCompileRetry] = useState<{ code: string } | null>(null);
   
   const [files, setFiles] = useState<string[]>(['design.py']);
   const [activeFile, setActiveFile] = useState<string>('design.py');
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+  const [fileMetadata, setFileMetadata] = useState<ProjectFileMetadata[]>([]);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isApplyingAiEdit, setIsApplyingAiEdit] = useState(false);
   
   // Git UI State
-  const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[] }>({ is_git: false });
+  const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
   const [activePane, setActivePane] = useState<'output' | 'history'>('output');
   
   const mtimeRef = useRef<number>(0);
   const isCompilingRef = useRef<boolean>(false);
+  const loadRequestRef = useRef<number>(0);
+  const pollTimerRef = useRef<number | undefined>(undefined);
+  const compileRequestRef = useRef<number>(0);
+  const startCompileRef = useRef<((nextCode: string, mode: 'manual' | 'auto') => Promise<void>) | null>(null);
+  const activeProjectRef = useRef<string>('');
+  const activeFileRef = useRef<string>('design.py');
+  const codeRef = useRef<string>('');
 
   useEffect(() => {
     isCompilingRef.current = isCompiling;
   }, [isCompiling]);
 
   useEffect(() => {
-    let isMounted = true;
-    const fetchActiveProject = async () => {
+    activeProjectRef.current = activeProject;
+  }, [activeProject]);
+
+  useEffect(() => {
+    activeFileRef.current = activeFile;
+  }, [activeFile]);
+
+  useEffect(() => {
+    codeRef.current = code;
+  }, [code]);
+
+  const setCompilingState = useCallback((value: boolean) => {
+    isCompilingRef.current = value;
+    setIsCompiling(value);
+  }, []);
+
+  const fetchGitStatus = useCallback(async (name: string) => {
+    try {
+      const data = await storage.getHistory(name);
+      setGitStatus(data);
+    } catch {
+      setGitStatus({ is_git: false });
+    }
+  }, [storage]);
+
+  const pollCompileJob = useCallback((projectName: string, jobId: string, requestId: number, mode: 'manual' | 'auto') => {
+    const pollStartedAt = Date.now();
+    const tick = async () => {
+      if (compileRequestRef.current !== requestId) return;
+
       try {
-        const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-        if (res.ok && isMounted) {
-          const data = await res.json();
-          if (data.project_name && data.project_name !== activeProject) {
-            setActiveProject(data.project_name);
-            fetchGitStatus(data.project_name);
-            mtimeRef.current = 0; // Reset baseline for new project
-            // Fetch files for the new active project
-            try {
-              const filesRes = await apiFetch(`${serverUrl}/projects/${data.project_name}/files`, getAccessToken);
-              if (filesRes.ok) {
-                const filesData = await filesRes.json();
-                setFiles(filesData.files || ['design.py']);
-                if (filesData.files && filesData.files.length > 0) {
-                  const newFile = filesData.files[0];
-                  setActiveFile(newFile);
-                  
-                  // Fetch the initial code for this file
-                  try {
-                    const codeRes = await apiFetch(`${serverUrl}/projects/${data.project_name}/code?file=${newFile}`, getAccessToken);
-                    if (codeRes.ok) {
-                      const codeData = await codeRes.json();
-                      setCode(codeData.code || '');
-                    }
-                  } catch (e) {}
-                }
-              }
-            } catch (e) {}
-          }
+        const res = await apiFetch(`${serverUrl}/projects/${projectName}/compile/jobs/${jobId}`, getAccessToken);
+        const data = await res.json();
+
+        if (!res.ok) {
+          const message = data.user_message || data.short || data.error || 'Compile job status could not be loaded.';
+          setLog(prev => `${prev}\n[ERROR] ${message}`);
+          setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
+          if (mode === 'auto') setAutoCompile(false);
+          setCompilingState(false);
+          return;
         }
+
+        if (data.status === 'succeeded') {
+          const outputFormat = data.format || data.export_format || format;
+          setLog(prev => `${prev}\n[SUCCESS] Compiled ${outputFormat} artifact ${data.artifact_id}`);
+          setFailedCompileRetry(null);
+          const postStatus = await storage.getStatus(projectName, activeFileRef.current);
+          if (postStatus.mtime) {
+            if (mtimeRef.current === 0 || postStatus.mtime <= mtimeRef.current) {
+              mtimeRef.current = postStatus.mtime;
+            } else {
+              const latestCode = await storage.loadCode(projectName, activeFileRef.current);
+              const shouldAutoCompileLatest = autoCompile && latestCode !== codeRef.current;
+              setCode(latestCode);
+              mtimeRef.current = postStatus.mtime;
+              if (shouldAutoCompileLatest) {
+                setCompilingState(false);
+                void startCompileRef.current?.(latestCode, 'auto');
+                return;
+              }
+            }
+          }
+          fetchGitStatus(projectName);
+          if (mode === 'manual') setAutoCompile(true);
+          setCompilingState(false);
+          return;
+        }
+
+        if (data.status === 'failed') {
+          const message = data.user_message || 'Compile failed. Try again.';
+          const errorCode = data.error_code ? ` (${data.error_code})` : '';
+          const details = data.error ? `\n${data.error}` : '';
+          setLog(prev => `${prev}\n[ERROR]${errorCode} ${message}${details}`);
+          setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
+          if (mode === 'auto') setAutoCompile(false);
+          setCompilingState(false);
+          return;
+        }
+
+        const createdAt = data.created_at ? Date.parse(data.created_at) : NaN;
+        const elapsedFrom = Number.isNaN(createdAt) ? pollStartedAt : createdAt;
+        const elapsed = formatElapsed(Date.now() - elapsedFrom);
+        const statusText = data.status || 'running';
+        setLog(`[INFO] Job ${jobId} is ${statusText}\n[INFO] Waiting ${elapsed} for ${projectName} ${data.format || format} compile...`);
+        pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_POLL_MS);
+      } catch {
+        const elapsed = formatElapsed(Date.now() - pollStartedAt);
+        setLog(`[WARN] Waiting ${elapsed}; temporarily could not refresh compile job ${jobId}. Retrying...`);
+        pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_RETRY_MS);
+      }
+    };
+
+    pollTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS);
+  }, [autoCompile, fetchGitStatus, format, getAccessToken, serverUrl, setCompilingState, storage]);
+
+  const startCompile = useCallback(async (nextCode: string, mode: 'manual' | 'auto') => {
+    if (!activeProjectRef.current || isGuest || isCompilingRef.current) return;
+
+    const projectName = activeProjectRef.current;
+    const requestId = compileRequestRef.current + 1;
+    compileRequestRef.current = requestId;
+    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current);
+
+    setCompilingState(true);
+    setFailedCompileRetry(null);
+    setLog(mode === 'manual' ? `Compile queued for ${projectName}...` : 'External change detected. Compile queued...');
+
+    try {
+      const token = await withTimeout(
+        getAccessToken(),
+        COMPILE_AUTH_TIMEOUT_MS,
+        'Compile could not start because authentication timed out. Please try again or sign in again.',
+      );
+      const res = await withTimeout(
+        apiFetch(`${serverUrl}/projects/${projectName}/compile`, async () => token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: nextCode, export_format: format, quality, file: activeFileRef.current })
+        }),
+        COMPILE_CREATE_JOB_TIMEOUT_MS,
+        'Compile request timed out before a job was created. Please try again.',
+      );
+      const data = await res.json();
+
+      if (!res.ok || !data.job_id) {
+        setLog(`[ERROR] ${data.user_message || data.short || data.error || 'Failed to queue compile job'}`);
+        setFailedCompileRetry(data.retryable ? { code: nextCode } : null);
+        if (mode === 'auto') setAutoCompile(false);
+        setCompilingState(false);
+        return;
+      }
+
+      setLog(prev => `${prev}\n[INFO] Job ${data.job_id} is ${data.status || 'queued'}`);
+      pollCompileJob(projectName, data.job_id, requestId, mode);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reach server during compile.';
+      setLog(`[ERROR] ${message}`);
+      setFailedCompileRetry({ code: nextCode });
+      if (mode === 'auto') setAutoCompile(false);
+      setCompilingState(false);
+    }
+  }, [format, getAccessToken, isGuest, pollCompileJob, quality, serverUrl, setCompilingState]);
+
+  useEffect(() => {
+    startCompileRef.current = startCompile;
+  }, [startCompile]);
+
+  useEffect(() => () => {
+    if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current);
+  }, []);
+
+  const loadProject = useCallback(async (
+    projectName: string,
+    preferredFile = activeFileRef.current,
+    options: { saveCurrent?: boolean } = {},
+  ) => {
+    const requestId = loadRequestRef.current + 1;
+    loadRequestRef.current = requestId;
+
+    const currentProject = activeProjectRef.current;
+    const currentFile = activeFileRef.current;
+    const currentCode = codeRef.current;
+
+    if (options.saveCurrent && currentProject && currentFile && currentProject !== projectName) {
+      try {
+        await storage.saveCode(currentProject, currentFile, currentCode);
+      } catch (e) {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[WARN] Could not save ${currentProject}/${currentFile} before switching projects.`);
+      }
+    }
+
+    setActiveProject(projectName);
+    setCode('');
+    mtimeRef.current = 0;
+    fetchGitStatus(projectName);
+
+    let metadata: ProjectFileMetadata[];
+    try {
+      metadata = await storage.listFileMetadata(projectName);
+    } catch (e) {
+      metadata = [];
+    }
+    if (loadRequestRef.current !== requestId) return;
+
+    let nextFiles: string[];
+    if (metadata.length > 0) {
+      nextFiles = metadata.map(file => file.filename);
+    } else {
+      const projectFiles = await storage.listFiles(projectName);
+      if (loadRequestRef.current !== requestId) return;
+      nextFiles = projectFiles.length > 0 ? projectFiles : ['design.py'];
+    }
+    const nextFile = nextFiles.includes(preferredFile) ? preferredFile : nextFiles.includes('design.py') ? 'design.py' : nextFiles[0]!;
+    const nextCode = await storage.loadCode(projectName, nextFile);
+    if (loadRequestRef.current !== requestId) return;
+
+    setFileMetadata(metadata);
+    setFiles(nextFiles);
+    setActiveFile(nextFile);
+    setCode(nextCode);
+  }, [fetchGitStatus, storage]);
+
+  const refreshFileMetadata = useCallback(async (projectName: string) => {
+    const metadata = await storage.listFileMetadata(projectName);
+    setFileMetadata(metadata);
+    setFiles(metadata.length > 0 ? metadata.map(file => file.filename) : ['design.py']);
+    return metadata;
+  }, [storage]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    let isMounted = true;
+    const loadActiveProject = async () => {
+      if (!shouldRunPollingRequest()) return;
+      try {
+        const projectName = await storage.getActiveProject();
+        if (!projectName || !isMounted || projectName === activeProject) {
+          return;
+        }
+
+        await loadProject(projectName);
       } catch (e) {}
     };
     
-    fetchActiveProject();
-    const interval = setInterval(fetchActiveProject, 2000);
+    loadActiveProject();
+    const interval = isGuest ? undefined : setInterval(loadActiveProject, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
+    if (isGuest) {
+      window.addEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
+    }
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
+      if (isGuest) {
+        window.removeEventListener(GUEST_WORKSPACE_CHANGED_EVENT, loadActiveProject);
+      }
     };
-  }, [serverUrl, getAccessToken, activeProject]);
+  }, [storage, activeProject, isGuest, isActive, loadProject]);
+
+  useEffect(() => {
+    if (isGuest && autoCompile) {
+      setAutoCompile(false);
+    }
+  }, [autoCompile, isGuest]);
+
+  useEffect(() => {
+    if (isGuest) return;
+    const handleImported = (event: Event) => {
+      const detail = (event as CustomEvent<{ activeProject?: string; activeFile?: string }>).detail;
+      if (!detail?.activeProject) return;
+
+      void (async () => {
+        await loadProject(detail.activeProject!, detail.activeFile || 'design.py');
+      })();
+    };
+    window.addEventListener('tertius:guest-imported', handleImported);
+    return () => window.removeEventListener('tertius:guest-imported', handleImported);
+  }, [isGuest, storage, loadProject]);
+
+  useEffect(() => {
+    const handleActiveProjectChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ activeProject?: string }>).detail;
+      if (!detail?.activeProject || detail.activeProject === activeProjectRef.current) return;
+      void loadProject(detail.activeProject, 'design.py', { saveCurrent: !isGuest });
+    };
+
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
+    return () => window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChanged);
+  }, [isGuest, storage, loadProject]);
+
+  useEffect(() => {
+    if (!isGuest || !activeProject || !activeFile) return;
+    const timeout = window.setTimeout(() => {
+      void storage.saveCode(activeProject, activeFile, code);
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [activeFile, activeProject, code, isGuest, storage]);
 
   // Poll for external file changes (e.g. from Artus)
   useEffect(() => {
-    if (!activeProject || !isActive) return;
+    if (isGuest || !activeProject || !isActive) return;
     
     const checkSync = async () => {
+      if (!shouldRunPollingRequest()) return;
       if (isCompilingRef.current) return;
       try {
-        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/status?file=${activeFile}`, getAccessToken);
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await storage.getStatus(activeProject, activeFile);
         
         if (data.mtime) {
           if (mtimeRef.current === 0) {
@@ -93,10 +379,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
              // File changed on disk! Sync it.
              mtimeRef.current = data.mtime;
              
-             const codeRes = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${activeFile}`, getAccessToken);
-             if (!codeRes.ok) return;
-             const codeData = await codeRes.json();
-             const newCode = codeData.code || '';
+             const newCode = await storage.loadCode(activeProject, activeFile);
              setCode(newCode);
 
              if (!autoCompile) {
@@ -104,35 +387,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                return;
              }
              
-             setLog('External change detected (Artus). Auto-compiling...');
-             
-             // Trigger auto-compile silently
-             setIsCompiling(true);
-             try {
-               const compRes = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
-                 method: 'POST',
-                 headers: { 'Content-Type': 'application/json' },
-                 body: JSON.stringify({ code: newCode, export_format: format, quality, file: activeFile })
-               });
-               const compData = await compRes.json();
-               if (compData.success) {
-                 setLog(prev => prev + `\n[SUCCESS] Auto-compiled to ${compData.file}`);
-                 // Update mtime to prevent loop
-                 const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
-                 if (postStatusRes.ok) {
-                   const postStatus = await postStatusRes.json();
-                   if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
-                 }
-                 fetchGitStatus(activeProject);
-               } else {
-                 setLog(prev => prev + `\n[ERROR] ${compData.short}`);
-                 setAutoCompile(false);
-               }
-             } catch (e) {
-                 setLog(prev => prev + `\n[ERROR] Auto-compile failed.`);
-                 setAutoCompile(false);
-             }
-             setIsCompiling(false);
+             void startCompile(newCode, 'auto');
           }
         }
       } catch (e) {
@@ -140,45 +395,63 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       }
     };
     
-    const interval = setInterval(checkSync, 1000);
+    const interval = setInterval(checkSync, getPollingDelay(FILE_STATUS_POLL_INTERVAL_MS));
     return () => clearInterval(interval);
-  }, [activeProject, serverUrl, format, quality, isActive, activeFile, getAccessToken, autoCompile]);
+  }, [activeProject, isActive, activeFile, autoCompile, isGuest, storage, startCompile]);
 
-  const fetchGitStatus = async (name: string) => {
-    try {
-      const res = await apiFetch(`${serverUrl}/projects/${name}/git_status`, getAccessToken);
-      if (res.ok) {
-        const data = await res.json();
-        setGitStatus(data);
-      } else {
-        setGitStatus({ is_git: false });
-      }
-    } catch {
-      setGitStatus({ is_git: false });
-    }
-  };
-
-  const switchFile = async (fileName: string) => {
+  const switchFile = async (
+    fileName: string,
+    options: { saveCurrent?: boolean } = { saveCurrent: true },
+  ) => {
     if (fileName === activeFile) return;
     
-    // Auto-save current before switching
-    try {
-      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, file: activeFile })
-      });
-    } catch(e) {}
+    if (options.saveCurrent !== false) {
+      try {
+        await storage.saveCode(activeProject, activeFile, code);
+      } catch(e) {}
+    }
 
     setActiveFile(fileName);
     mtimeRef.current = 0; // Prevent false-positive sync when switching files
     try {
-      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/code?file=${fileName}`, getAccessToken);
-      const data = await res.json();
-      setCode(data.code || '');
+      const nextCode = await storage.loadCode(activeProject, fileName);
+      setCode(nextCode || '');
     } catch (e) {
       setLog(`Failed to load file: ${fileName}`);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFiles = e.target.files;
+    if (!uploadedFiles || uploadedFiles.length === 0) return;
+
+    const newFileNames: string[] = [];
+
+    for (let i = 0; i < uploadedFiles.length; i++) {
+      const file = uploadedFiles.item(i);
+      if (!file) continue;
+      const text = await file.text();
+      try {
+        await storage.saveCode(activeProject, file.name, text);
+        newFileNames.push(file.name);
+      } catch (err) {
+        alert(`Failed to upload ${file.name}`);
+      }
+    }
+
+    if (newFileNames.length > 0) {
+      setFiles(prev => Array.from(new Set([...prev, ...newFileNames])));
+      if (newFileNames.includes('design.py')) {
+        switchFile('design.py');
+      } else {
+        const firstFile = newFileNames[0];
+        if (firstFile) {
+          switchFile(firstFile);
+        }
+      }
+    }
+
+    e.target.value = '';
   };
 
   const handleNewFileSubmit = async () => {
@@ -192,16 +465,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     }
     
     try {
-      await apiFetch(`${serverUrl}/projects/${activeProject}/save`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: "", file: name })
-      });
-      
-      setFiles([...files, name]);
+      await storage.saveCode(activeProject, name, "");
+      await refreshFileMetadata(activeProject);
       setIsCreatingFile(false);
       setNewFileName('');
-      switchFile(name);
+      await switchFile(name);
     } catch (e) {
       alert("Network error creating file");
     }
@@ -212,49 +480,96 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!window.confirm(`Are you sure you want to delete ${fileName}?`)) return;
     
     try {
-      await apiFetch(`${serverUrl}/projects/${activeProject}/file?file=${fileName}`, getAccessToken, {
-        method: 'DELETE'
-      });
-      
-      const newFiles = files.filter(f => f !== fileName);
-      setFiles(newFiles);
+      await storage.deleteFile(activeProject, fileName);
+      await refreshFileMetadata(activeProject);
       
       if (activeFile === fileName) {
-        switchFile('design.py');
+        await switchFile('design.py', { saveCurrent: false });
       }
     } catch (e) {
       alert("Network error deleting file");
     }
   };
 
-  const handleCompile = async () => {
-    if (!activeProject) return;
-    setIsCompiling(true);
-    setLog(`Compiling ${activeProject}...`);
-    try {
-      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/compile`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, export_format: format, quality, file: activeFile })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setLog(`[SUCCESS] Compiled and exported to ${data.file}`);
-        // Prevent sync loop by updating baseline
-        const postStatusRes = await apiFetch(`${serverUrl}/projects/${activeProject}/status`, getAccessToken);
-        if (postStatusRes.ok) {
-          const postStatus = await postStatusRes.json();
-          if (postStatus.mtime) mtimeRef.current = postStatus.mtime;
-        }
-        fetchGitStatus(activeProject);
-        setAutoCompile(true); // Re-enable on manual success
-      } else {
-        setLog(`[ERROR] ${data.short}\n\n${data.error}`);
-      }
-    } catch (e) {
-      setLog(`[FATAL] Failed to reach server during compile.`);
+  const handleCodeChange = (value: string) => {
+    setCode(value);
+    if (isGuest && activeProject && activeFile) {
+      void storage.saveCode(activeProject, activeFile, value);
     }
-    setIsCompiling(false);
+  };
+
+  const handleCompile = async () => {
+    if (isGuest) {
+      setLog('Log in to compile and export this local draft.');
+      return;
+    }
+    await startCompile(code, 'manual');
+  };
+
+  const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id && file.updated_at);
+
+  const applyAiEdit = async () => {
+    if (isGuest || !activeProject || !aiPrompt.trim() || !hasEditableFilePointers) return;
+    setIsApplyingAiEdit(true);
+    try {
+      await storage.saveCode(activeProject, activeFile, code);
+      const latestMetadata = await refreshFileMetadata(activeProject);
+      const activeMetadata = latestMetadata.find(file => file.filename === activeFile);
+      const remainingMetadata = latestMetadata.filter(file => file.filename !== activeFile);
+      const requestFiles = [
+        ...(activeMetadata ? [activeMetadata] : []),
+        ...remainingMetadata,
+      ]
+        .filter(file => file.id && file.updated_at)
+        .slice(0, AI_EDIT_FILE_LIMIT);
+      if (requestFiles.length === 0) return;
+      if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
+      }
+      const result = await storage.applyLlmFileEdit(activeProject, {
+        prompt: aiPrompt.trim(),
+        files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
+        active_file_id: activeMetadata?.id,
+        metadata: { source: 'compiler_tab' },
+      });
+      setAiPrompt('');
+      if (result.outcome === 'changed') {
+        const nextMetadata = result.files.map(file => ({
+          id: file.id,
+          filename: file.filename,
+          updated_at: file.updated_at,
+        }));
+        setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing));
+        setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
+        const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
+        if (activeChanged) {
+          if (activeChanged.filename === activeFile) {
+            // Staying on the current file: set code from the server response and
+            // reset the polling baseline so the next poll establishes a fresh
+            // mtime instead of treating the AI edit as a stale external change.
+            mtimeRef.current = 0;
+            setCode(activeChanged.content);
+          } else {
+            // Switching to a different changed file: route through switchFile so
+            // the baseline reset and canonical server reload path are reused.
+            // Avoid saving the current editor content (which would create an
+            // extra snapshot) since the AI edit already persisted the changes.
+            await switchFile(activeChanged.filename, { saveCurrent: false });
+          }
+        }
+        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).${result.message ? ` ${result.message}` : ''}`);
+        fetchGitStatus(activeProject);
+      } else if (result.outcome === 'no_change') {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] ${result.message || 'AI did not need to change any files.'}`);
+      } else {
+        setLog(prev => `${prev ? `${prev}\n` : ''}[WARN] ${result.message || 'AI could not complete the requested edit.'}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI file edit failed.';
+      setLog(prev => `${prev ? `${prev}\n` : ''}[ERROR] ${message}`);
+    } finally {
+      setIsApplyingAiEdit(false);
+    }
   };
 
   return (
@@ -265,9 +580,13 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         {/* Project Name Display (Selector moved to Artus) */}
         <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-indigo-300">Project:</span>
-            <span className="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 font-mono">
-                {activeProject || 'Loading...'}
-            </span>
+            {isGuest ? (
+              <ProjectSelector />
+            ) : (
+              <span className="px-3 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-slate-300 font-mono">
+                  {activeProject || 'Loading...'}
+              </span>
+            )}
         </div>
 
         <div className="flex-1" />
@@ -281,8 +600,11 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               onChange={(e) => setQuality(e.target.value)}
             >
               <option value="high">High</option>
+              <option value="normal">Normal</option>
               <option value="medium">Medium</option>
               <option value="low">Low</option>
+              <option value="rough">Rough</option>
+              <option value="sketch">Sketch</option>
             </select>
           </div>
           <div className="flex items-center gap-2">
@@ -302,6 +624,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               type="checkbox" 
               id="autoCompile" 
               checked={autoCompile} 
+              disabled={isGuest}
               onChange={(e) => setAutoCompile(e.target.checked)} 
               className="rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500"
             />
@@ -311,14 +634,14 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
         <button 
           onClick={handleCompile}
-          disabled={isCompiling}
+          disabled={isCompiling || isGuest}
           className={`px-4 py-1.5 rounded text-sm font-bold shadow-lg transition-all ${
-            isCompiling 
+            isCompiling || isGuest
               ? 'bg-indigo-600/50 text-indigo-200 cursor-not-allowed' 
               : 'bg-indigo-600 hover:bg-indigo-500 text-white'
           }`}
         >
-          {isCompiling ? 'Compiling...' : '⚙️ Compile & Export'}
+          {isGuest ? 'Log in to compile' : isCompiling ? 'Compiling...' : '⚙️ Compile & Export'}
         </button>
       </div>
 
@@ -333,7 +656,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                   f === activeFile ? 'bg-slate-900 border-b-2 border-b-indigo-500' : 'hover:bg-slate-900'
                 }`}
               >
-                <button 
+                <button
                   onClick={() => switchFile(f)}
                   className={`px-4 py-2 text-xs font-mono ${f === activeFile ? 'text-indigo-300 font-bold' : 'text-slate-500 hover:text-slate-300'}`}
                 >
@@ -363,13 +686,53 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                 />
               </form>
             ) : (
-              <button 
-                onClick={() => setIsCreatingFile(true)}
-                className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors"
-                title="New File"
+              <div className="flex items-center">
+                <button
+                  onClick={() => setIsCreatingFile(true)}
+                  className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors"
+                  title="New File"
+                >
+                  +
+                </button>
+                <label
+                  className="px-3 py-2 text-xs font-mono text-slate-500 hover:text-slate-300 hover:bg-slate-900 transition-colors cursor-pointer"
+                  title="Upload Files"
+                >
+                  Upload
+                  <input
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileUpload}
+                  />
+                </label>
+              </div>
+            )}
+
+            {!isGuest && (
+              <div className="flex-1" />
+            )}
+
+            {!isGuest && (
+              <form
+                onSubmit={(e) => { e.preventDefault(); void applyAiEdit(); }}
+                className="flex items-center gap-2 px-2 py-1"
               >
-                +
-              </button>
+                <input
+                  aria-label="AI prompt"
+                  placeholder="Ask AI to edit..."
+                  value={aiPrompt}
+                  onChange={e => setAiPrompt(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500 w-56"
+                />
+                <button
+                  type="submit"
+                  disabled={isApplyingAiEdit || !aiPrompt.trim() || !hasEditableFilePointers}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 disabled:cursor-not-allowed text-white rounded text-xs font-medium transition-colors"
+                >
+                  {isApplyingAiEdit ? 'Applying...' : 'AI Edit'}
+                </button>
+              </form>
             )}
           </div>
           <div className="flex-1 w-full relative">
@@ -378,7 +741,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               defaultLanguage="python"
               theme="vs-dark"
               value={code}
-              onChange={(val) => setCode(val || '')}
+              onChange={(val) => handleCodeChange(val || '')}
               options={{
                 minimap: { enabled: false },
                 fontSize: 14,
@@ -409,7 +772,19 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
               </button>
             </div>
             {activePane === 'output' && (
-              <button onClick={() => setLog('')} className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">Clear</button>
+              <div className="flex items-center gap-2">
+                {failedCompileRetry && (
+                  <button
+                    type="button"
+                    onClick={() => void startCompile(failedCompileRetry.code, 'manual')}
+                    disabled={isCompiling || isGuest}
+                    className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 disabled:opacity-50"
+                  >
+                    Try again
+                  </button>
+                )}
+                <button onClick={() => setLog('')} className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700">Clear</button>
+              </div>
             )}
           </div>
           
@@ -421,7 +796,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             ) : (
               <div className="p-3 flex flex-col gap-2">
                 {!gitStatus.is_git ? (
-                  <div className="text-sm text-slate-500 text-center mt-4">Not a git repository.</div>
+                  <div className="text-sm text-slate-500 text-center mt-4">{gitStatus.label || 'Not a git repository.'}</div>
                 ) : !gitStatus.history || gitStatus.history.length === 0 ? (
                   <div className="text-sm text-slate-500 text-center mt-4">No commits yet.</div>
                 ) : (

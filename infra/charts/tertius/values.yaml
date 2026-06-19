@@ -11,41 +11,116 @@ app:
   environment: production
   config:
     apiBasePath: /api
-    artifactRoot: /app/cache/tertius/artifacts
-    keycloakAudience: tertius-web
-    keycloakIssuerUrl: ""
+    keycloakAudience: tertius-api
+    keycloakAuthorizedParty: tertius-ui
+    keycloakIssuerUrl: https://tertius.johnsonyuen.com/realms/tertius
+    keycloakJwksUrlOverride: auto
+    authCookieSecure: true
+    authSessionIdleSeconds: 604800
+    authSessionMaxSeconds: 2592000
+    natsUrl: ""
+    compileStreamName: TERTIUS_COMPILE
+    compileRequestSubject: tertius.compile.request
+    compileResultSubject: tertius.compile.result
+    compileWorkerQueue: compile-workers
+    compileResultConsumer: compile-result-api
+    compileAckWaitSeconds: 900
+    compileMaxDeliver: 1
+    compileTimeoutSeconds: 300
+    compileRequestMaxBytes: 8388608
+    compileResultMaxBytes: 33554432
+    llmDefaultModelId: kimi-k2.7-code
+    llmDailyBudgetUsd: "2.00"
+    llmModels:
+      - id: glm-5.2
+        label: GLM-5.2
+        model: glm-5.2
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 1.40
+        output_price_per_million: 4.40
+        cached_read_price_per_million: 0.26
+        cached_write_price_per_million: null
+        enabled: true
+      - id: kimi-k2.7-code
+        label: Kimi K2.7 Code
+        model: kimi-k2.7-code
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 0.95
+        output_price_per_million: 4.00
+        cached_read_price_per_million: 0.19
+        cached_write_price_per_million: null
+        enabled: true
+      - id: deepseek-v4-pro
+        label: DeepSeek V4 Pro
+        model: deepseek-v4-pro
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 1.74
+        output_price_per_million: 3.48
+        cached_read_price_per_million: 0.0145
+        cached_write_price_per_million: null
+        enabled: true
+      - id: minimax-m3
+        label: MiniMax M3
+        model: minimax-m3
+        endpoint: https://opencode.ai/zen/go/v1/messages
+        api: anthropic-messages
+        input_price_per_million: 0.30
+        output_price_per_million: 1.20
+        cached_read_price_per_million: 0.06
+        cached_write_price_per_million: null
+        enabled: true
+    llmTimeoutSeconds: 480
+    llmMaxOutputTokens: 2048
+    llmFileEditMaxOutputTokens: 65536
+    llmFileEditMaxContextFiles: 20
+    llmFileEditMaxContextChars: 80000
+    llmUserRateLimitPerMinute: 10
+    llmTenantRateLimitPerMinute: 60
+    llmTenantDailyTokenQuota: "3200000"
+    llmUserDailyTokenQuota: "3200000"
+    billingStreamName: TERTIUS_BILLING
+    billingLlmUsageSubject: tertius.billing.usage.llm.tokens
+    billingMaxBytes: 262144
+    billingRateCentsPerHour: 100
+    billingFormatMultiplierStl: 1.0
+    billingFormatMultiplierStep: 1.5
+    billingFormatMultiplierGltf: 2.0
+    billingFormatMultiplierGlb: 2.0
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
+  llmSecretName: ""
+  llmSecret:
+    create: false
+    apiKey: ""
+    fileEditSystemPrompt: ""
   secretName: ""
   secret:
     create: false
     databaseUrl: ""
     valkeyUrl: redis://tertius-valkey:6379/0
     oidcClientSecret: ""
+    authSessionSecret: ""
 api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-21-866ab5d # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-84-7e859c5 # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
     type: ClusterIP
     port: 8000
-  persistence:
-    enabled: true
-    accessModes:
-      - ReadWriteOnce
-    size: 2Gi
-    storageClassName: local-path
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      cpu: "1"
-      memory: 1Gi
+      cpu: "2"
+      memory: 2Gi
   probes:
     startup:
       failureThreshold: 60
@@ -56,11 +131,32 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+compileJobs:
+  runtimeClassName: gvisor
+  maxReplicaCount: 4
+  pollingInterval: 5
+  scalingStrategy: ""
+  activeDeadlineSeconds: 720
+  ttlSecondsAfterFinished: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  tmpSizeLimit: 1Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      ephemeral-storage: 512Mi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+      ephemeral-storage: 4Gi
+keda:
+  enabled: true
 ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-21-866ab5d # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    tag: master-84-7e859c5 # {"$imagepolicy": "flux-system:tertius-ui:tag"}
     pullPolicy: IfNotPresent
   port: 80
   service:
@@ -129,7 +225,22 @@ keycloak:
     enabled: true
     realm: tertius
     uiClientId: tertius-ui
+    uiPublicClient: true
+    uiClientSecret: ""
     apiClientId: tertius-api
+    uiDirectAccessGrantsEnabled: false
+    accessTokenLifespanSeconds: 300
+    ssoSessionIdleTimeoutSeconds: 604800
+    ssoSessionMaxLifespanSeconds: 2592000
+    clientSessionIdleTimeoutSeconds: 604800
+    clientSessionMaxLifespanSeconds: 2592000
+    smokeUser:
+      enabled: false
+      username: demo
+      password: demo
+      email: demo@example.com
+      firstName: Demo
+      lastName: User
 cloudflared:
   enabled: false
   replicaCount: 1
@@ -147,7 +258,9 @@ cloudflared:
       cpu: 250m
       memory: 256Mi
 networkPolicy:
-  enabled: false
+  enabled: true
+  compileJobs:
+    enabled: true
 valkey:
   enabled: true
   image:
@@ -167,4 +280,28 @@ valkey:
       cpu: 250m
       memory: 256Mi
   metrics:
+    enabled: false
+nats:
+  enabled: true
+  config:
+    merge:
+      max_payload: 33554432
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        dir: /data
+        pvc:
+          enabled: true
+          size: 1Gi
+          storageClassName: local-path
+  container:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+  natsBox:
     enabled: false

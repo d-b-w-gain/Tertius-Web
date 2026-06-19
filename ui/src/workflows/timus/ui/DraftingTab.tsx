@@ -3,8 +3,57 @@ import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
+import {
+  ACTIVE_PROJECT_POLL_INTERVAL_MS,
+  MODEL_STATUS_POLL_INTERVAL_MS,
+  getPollingDelay,
+  shouldRunPollingRequest,
+} from '../../shared/polling';
 
-export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
+const scalePresets = [
+  { value: 10, label: '10:1 (Enlarged 10x)' },
+  { value: 5, label: '5:1 (Enlarged 5x)' },
+  { value: 2, label: '2:1 (Enlarged 2x)' },
+  { value: 1, label: '1:1 (Full Size)' },
+  { value: 0.5, label: '1:2 (Half Size)' },
+  { value: 0.25, label: '1:4' },
+  { value: 0.2, label: '1:5' },
+  { value: 0.1, label: '1:10' },
+  { value: 0.05, label: '1:20' },
+  { value: 0.02, label: '1:50' },
+  { value: 0.01, label: '1:100' },
+  { value: 0.005, label: '1:200' },
+  { value: 0.002, label: '1:500' },
+  { value: 0.001, label: '1:1000' },
+];
+
+const toSafeScale = (value: unknown): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1.0;
+  const clamped = Math.min(10, Math.max(0.001, parsed));
+  const firstPreset = scalePresets[0];
+  if (!firstPreset) return clamped;
+  return scalePresets.reduce((closest, item) =>
+    Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
+  , firstPreset).value;
+};
+
+export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = (props) => {
+  const { authMode, login } = useAuth();
+  if (authMode === 'guest') {
+    return (
+      <GuestWorkflowNotice
+        title="Log in to generate drawings"
+        message="Timus drafting sheets are generated from authenticated project artifacts."
+        onLogin={login}
+      />
+    );
+  }
+  return <AuthenticatedDraftingTab {...props} />;
+};
+
+const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [activeProject, setActiveProject] = useState<string>('');
   
@@ -22,33 +71,7 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
-  const [userRequestedBuild, setUserRequestedBuild] = useState(false);
-
-  const scalePresets = [
-    { value: 10, label: '10:1 (Enlarged 10x)' },
-    { value: 5, label: '5:1 (Enlarged 5x)' },
-    { value: 2, label: '2:1 (Enlarged 2x)' },
-    { value: 1, label: '1:1 (Full Size)' },
-    { value: 0.5, label: '1:2 (Half Size)' },
-    { value: 0.25, label: '1:4' },
-    { value: 0.2, label: '1:5' },
-    { value: 0.1, label: '1:10' },
-    { value: 0.05, label: '1:20' },
-    { value: 0.02, label: '1:50' },
-    { value: 0.01, label: '1:100' },
-    { value: 0.005, label: '1:200' },
-    { value: 0.002, label: '1:500' },
-    { value: 0.001, label: '1:1000' },
-  ];
-
-  const toSafeScale = (value: unknown): number => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return 1.0;
-    const clamped = Math.min(10, Math.max(0.001, parsed));
-    return scalePresets.reduce((closest, item) =>
-      Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
-    , scalePresets[0]).value;
-  };
+  const [buildMessage, setBuildMessage] = useState<string>('');
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -61,8 +84,10 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   }, [title]);
 
   useEffect(() => {
+    if (!isActive) return;
     let isMounted = true;
     const fetchActive = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
         if (res.ok && isMounted) {
@@ -75,12 +100,12 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     };
     
     fetchActive();
-    const interval = setInterval(fetchActive, 2000);
+    const interval = setInterval(fetchActive, getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS));
     return () => {
         isMounted = false;
         clearInterval(interval);
     };
-  }, [serverUrl, getAccessToken]);
+  }, [serverUrl, getAccessToken, isActive]);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -140,35 +165,41 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     if (!activeProject || !isActive) return;
     let mounted = true;
     const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/status`, getAccessToken);
         if (res.ok && mounted) {
           const data = await res.json();
-          if (data.status === 'building' && !userRequestedBuild) {
-            setBuildStatus('stale');
-          } else {
-            setBuildStatus(data.status);
-          }
-
-          if (userRequestedBuild && data.status !== 'building') {
-            setUserRequestedBuild(false);
-          }
+          setBuildStatus(data.status);
+          setBuildMessage(data.user_message || '');
         }
-      } catch (e) {}
+      } catch (e) {
+        setBuildMessage('Unable to check PDF Data status.');
+      }
     };
     checkStatus();
-    const interval = setInterval(checkStatus, 3000);
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
-  }, [activeProject, isActive, serverUrl, getAccessToken, userRequestedBuild]);
+  }, [activeProject, isActive, serverUrl, getAccessToken]);
 
   const triggerBuild = async () => {
     if (!activeProject) return;
     setBuildStatus('building');
-    setUserRequestedBuild(true);
+    setBuildMessage('');
     try {
-      await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
+      const res = await apiFetch(`${serverUrl}/projects/${activeProject}/drafting/build`, getAccessToken, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        setBuildStatus(data.status === 'queued' ? 'building' : data.status || 'failed');
+        setBuildMessage(data.user_message || data.error || 'PDF Data could not be started. Try again.');
+        return;
+      }
+      setBuildStatus(data.status === 'queued' ? 'building' : data.status || 'building');
+      setBuildMessage(data.user_message || '');
     } catch (e) {
       console.error(e);
+      setBuildStatus('failed');
+      setBuildMessage('PDF Data could not be started. Try again.');
     }
   };
 
@@ -177,7 +208,12 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
     try {
       const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
       const res = await apiFetch(url, getAccessToken);
-      if (!res.ok) return;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setBuildStatus('stale');
+        setBuildMessage(data.user_message || 'Generate PDF Data before downloading the drafting PDF.');
+        return;
+      }
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
       window.open(objectUrl, '_blank', 'noopener,noreferrer');
@@ -319,6 +355,16 @@ export const DraftingTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                PDF data is not current. Use Generate PDF Data to refresh.
              </div>
           )}
+          {buildStatus === 'failed' && (
+             <div className="text-[10px] text-red-400 text-center font-mono uppercase mt-1">
+               {buildMessage || 'PDF Data generation failed. Try again.'}
+             </div>
+          )}
+          {buildStatus !== 'failed' && buildMessage && (
+             <div className="text-[10px] text-slate-400 text-center font-mono uppercase mt-1">
+               {buildMessage}
+             </div>
+          )}
         </div>
       </div>
 
@@ -370,30 +416,41 @@ const DraftingCanvas: React.FC<{
 
   const svgRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const accessTokenRef = useRef(getAccessToken);
+  const modelMtimeRef = useRef<number>(0);
   
   const [modelUrl, setModelUrl] = useState<string>('');
+
+  useEffect(() => {
+    accessTokenRef.current = getAccessToken;
+  }, [getAccessToken]);
+
+  useEffect(() => {
+    modelMtimeRef.current = 0;
+    setModelUrl('');
+  }, [activeProject]);
   
   // Model Polling
   useEffect(() => {
     if (!activeProject || !isActive) return;
     let mounted = true;
-    let mtime = 0;
     const checkModel = async () => {
+      if (!shouldRunPollingRequest()) return;
       try {
-        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, getAccessToken);
+        const res = await apiFetch(`${serverUrl}/projects/${activeProject}/model_status`, accessTokenRef.current);
         if (res.ok && mounted) {
           const data = await res.json();
-          if (data.mtime && data.mtime !== mtime) {
-            mtime = data.mtime;
-            setModelUrl(`${serverUrl}/projects/${activeProject}/model?t=${mtime}`);
+          if (data.mtime && data.mtime !== modelMtimeRef.current) {
+            modelMtimeRef.current = data.mtime;
+            setModelUrl(`${serverUrl}/projects/${activeProject}/model?t=${data.mtime}`);
           }
         }
       } catch (e) {}
     };
     checkModel();
-    const interval = setInterval(checkModel, 3000);
+    const interval = setInterval(checkModel, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
     return () => { mounted = false; clearInterval(interval); };
-  }, [serverUrl, activeProject, isActive, getAccessToken]);
+  }, [serverUrl, activeProject, isActive]);
 
   const stateRef = useRef({ w, h, view_w, view_h, scale, selectedView });
   useEffect(() => {
@@ -417,7 +474,7 @@ const DraftingCanvas: React.FC<{
     let modelBounds: THREE.Box3 | null = null;
     const loader = new GLTFLoader();
     
-    apiFetch(modelUrl, getAccessToken)
+    apiFetch(modelUrl, accessTokenRef.current)
       .then(res => res.arrayBuffer())
       .then(buffer => {
         if (isCancelled) return;
@@ -562,7 +619,7 @@ const DraftingCanvas: React.FC<{
         }
     }, 200);
     
-    let resizeTimeout: any;
+    let resizeTimeout: ReturnType<typeof setTimeout> | undefined;
     const ro = new ResizeObserver(() => {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(draw, 50);
@@ -593,7 +650,7 @@ const DraftingCanvas: React.FC<{
         });
         renderer.dispose();
     };
-  }, [modelUrl, getAccessToken]);
+  }, [modelUrl]);
 
   return (
     <div className="relative w-full h-full flex items-center justify-center">
@@ -729,4 +786,3 @@ const DraftingCanvas: React.FC<{
     </div>
   );
 };
-

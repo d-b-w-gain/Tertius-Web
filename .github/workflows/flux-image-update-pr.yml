@@ -4,11 +4,22 @@ on:
   push:
     branches:
       - flux-image-updates
+  workflow_run:
+    workflows:
+      - Tests
+      - Integration Tests
+      - Deployment Chart Tests
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+
+concurrency:
+  group: flux-image-update-pr-${{ github.event.workflow_run.head_sha || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   image-update-pr:
@@ -24,7 +35,7 @@ jobs:
           set -euo pipefail
 
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::FLUX_IMAGE_UPDATE_PAT is required so this workflow can create and auto-merge image update PRs."
+            echo "::error::FLUX_IMAGE_UPDATE_PAT is required so this workflow can create and merge image update PRs."
             exit 1
           fi
 
@@ -69,10 +80,80 @@ jobs:
             pr_number="${pr_url##*/}"
           fi
 
+          echo "Flux image update PR #${pr_number} is ready for check-gated promotion."
+
+  merge-image-update-pr:
+    name: Merge image update PR
+    runs-on: ubuntu-latest
+    if: >-
+      ${{
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_branch == 'flux-image-updates' &&
+        github.event.workflow_run.conclusion == 'success'
+      }}
+    steps:
+      - name: Merge PR after checks pass
+        env:
+          GH_TOKEN: ${{ secrets.FLUX_IMAGE_UPDATE_PAT }}
+          HEAD_BRANCH: flux-image-updates
+          BASE_BRANCH: master
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::FLUX_IMAGE_UPDATE_PAT is required so this workflow can merge image update PRs."
+            exit 1
+          fi
+
+          pr_json="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${HEAD_BRANCH}" \
+            --base "${BASE_BRANCH}" \
+            --state open \
+            --json number,headRefOid,url \
+            --jq '.[0] // empty')"
+          if [ -z "${pr_json}" ]; then
+            echo "No open Flux image update PR to promote."
+            exit 0
+          fi
+
+          pr_number="$(printf '%s\n' "${pr_json}" | jq -r '.number')"
+          head_sha="$(printf '%s\n' "${pr_json}" | jq -r '.headRefOid')"
+          if [ "${head_sha}" != "${WORKFLOW_RUN_HEAD_SHA}" ]; then
+            echo "Open Flux image update PR #${pr_number} is at ${head_sha}, but this workflow_run completed for ${WORKFLOW_RUN_HEAD_SHA}; skipping stale event."
+            exit 0
+          fi
+
+          non_chart_changes="$(gh pr view "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json files \
+            --jq '.files[].path' \
+            | grep -v '^infra/charts/tertius/values.yaml$' || true)"
+          if [ -n "${non_chart_changes}" ]; then
+            echo "${non_chart_changes}" >&2
+            echo "::error::Flux image update PR #${pr_number} contains changes outside infra/charts/tertius/values.yaml; refusing to merge."
+            exit 1
+          fi
+
+          not_ready_checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
+            --jq '
+              .check_runs[]
+              | select(.name != "Create image update PR" and .name != "Merge image update PR")
+              | select(.status != "completed" or (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped"))
+              | "\(.name): \(.status)/\(.conclusion // "pending")"
+            ' || true)"
+          if [ -n "${not_ready_checks}" ]; then
+            echo "Flux image update PR #${pr_number} is not ready to merge yet:"
+            echo "${not_ready_checks}"
+            exit 0
+          fi
+
           if ! gh pr merge "${pr_number}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --auto \
-              --merge; then
-            echo "::error::Unable to enable auto-merge for Flux image update PR #${pr_number}."
+              --merge \
+              --delete-branch=false; then
+            echo "::error::Unable to merge Flux image update PR #${pr_number} after checks passed."
             exit 1
           fi

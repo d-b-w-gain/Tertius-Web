@@ -14,7 +14,14 @@ function normalizePath(pathname: string): string {
 }
 
 function getFallbackApiBase() {
-  return 'http://localhost:8000';
+  return '/api';
+}
+
+function getCurrentOrigin() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  return window.location.origin;
 }
 
 export function resolveApiBase(rawBase?: string): string {
@@ -31,7 +38,13 @@ export function resolveApiBase(rawBase?: string): string {
 
   try {
     const parsedUrl = new URL(normalizedBase);
-    return `${parsedUrl.origin}${normalizePath(parsedUrl.pathname)}`;
+    const normalizedPath = normalizePath(parsedUrl.pathname);
+    const currentOrigin = getCurrentOrigin();
+    if (!currentOrigin || parsedUrl.origin === currentOrigin) {
+      return normalizedPath;
+    }
+    console.warn('Ignoring cross-origin VITE_API_URL; cookie-backed auth requires same-origin /api routing.');
+    return getFallbackApiBase();
   } catch {
     return '/api';
   }

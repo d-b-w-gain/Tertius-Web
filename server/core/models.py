@@ -9,6 +9,10 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
+    Integer,
+    JSON,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -53,6 +57,27 @@ class TenantMembership(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    session_token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    keycloak_subject: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(320))
+    username: Mapped[Optional[str]] = mapped_column(String(255))
+    display_name: Mapped[Optional[str]] = mapped_column(String(255))
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    csrf_token: Mapped[str] = mapped_column(String(128), nullable=False)
+    access_token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    max_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
 class Project(Base):
@@ -140,6 +165,7 @@ class CompileJob(Base):
     __table_args__ = (
         UniqueConstraint("id", "project_id", "tenant_id", name="uq_compile_jobs_id_project_tenant"),
         ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        Index("ix_compile_jobs_originating_llm_edit", "originating_llm_edit_job_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -148,9 +174,118 @@ class CompileJob(Base):
     requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     export_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    originating_llm_edit_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    user_message: Mapped[Optional[str]] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    claim_token: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CompileUsageRecord(Base):
+    __tablename__ = "compile_usage_records"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_usage_records_compile_job_project_tenant",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("tenant_id", "compile_job_id", name="uq_compile_usage_records_tenant_job"),
+        Index("ix_compile_usage_records_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    compile_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    export_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    compute_duration_seconds: Mapped[float] = mapped_column(nullable=False)
+    artifact_byte_size: Mapped[int] = mapped_column(default=0, nullable=False)
+    cost_cents: Mapped[int] = mapped_column(default=0, nullable=False)
+    base_rate_cents_per_hour: Mapped[int] = mapped_column(nullable=False)
+    format_multiplier: Mapped[float] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class LlmUsageRecord(Base):
+    __tablename__ = "llm_usage_records"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="SET NULL (project_id)"),
+        UniqueConstraint("event_id", name="uq_llm_usage_records_event_id"),
+        Index("ix_llm_usage_records_tenant_created", "tenant_id", "created_at"),
+        Index("ix_llm_usage_records_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False, index=True)
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True, index=True)
+    workflow: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_request_id: Mapped[Optional[str]] = mapped_column(String(255))
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
+
+
+class LlmEditJob(Base):
+    __tablename__ = "llm_edit_jobs"
+    __table_args__ = (
+        UniqueConstraint("id", "project_id", "tenant_id", name="uq_llm_edit_jobs_id_project_tenant"),
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        Index("ix_llm_edit_jobs_created_at", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    user_message: Mapped[Optional[str]] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    request_payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class CompileJobFile(Base):
+    __tablename__ = "compile_job_files"
+    __table_args__ = (
+        UniqueConstraint("compile_job_id", "filename", name="uq_compile_job_file_name"),
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_compile_job_files_compile_job_project_tenant",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    compile_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
 class Artifact(Base):
@@ -172,6 +307,7 @@ class Artifact(Base):
     storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     byte_size: Mapped[Optional[int]] = mapped_column()
+    content: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 

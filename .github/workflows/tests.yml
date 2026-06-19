@@ -12,6 +12,7 @@ jobs:
   ui:
     name: UI lint and build
     runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -36,6 +37,10 @@ jobs:
         working-directory: ui
         run: npx tsc --noEmit
 
+      - name: Test UI
+        working-directory: ui
+        run: npm run test
+
       - name: Build UI
         working-directory: ui
         run: npm run build
@@ -43,12 +48,13 @@ jobs:
   python:
     name: Python tests
     runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
     timeout-minutes: 20
     env:
       UV_CACHE_DIR: .uv-cache
-      POSTGRES_TEST_IMAGE: postgres:16
+      POSTGRES_TEST_IMAGE: postgres:18
       TESTCONTAINERS_RYUK_DISABLED: "true"
-      TESTCONTAINERS_DOCKER_CLIENT_TIMEOUT: "300"
+      DOCKER_CLIENT_TIMEOUT: "300"
       TESTCONTAINERS_DOCKER_CONTAINER_CREATE_TIMEOUT: "300"
     steps:
       - name: Checkout
@@ -57,16 +63,19 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version-file: ".python-version"
 
       - name: Install UV
-        run: python -m pip install --upgrade pip uv
-
-      - name: Create Python virtualenv
-        run: uv venv --python python
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install Python dependencies
-        run: uv pip install -r server/requirements.txt
+        run: uv sync --group dev
+
+      - name: Run Python type checks
+        run: uv run mypy
 
       - name: Run Python tests
         run: uv run pytest

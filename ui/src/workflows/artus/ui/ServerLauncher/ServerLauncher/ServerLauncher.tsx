@@ -49,7 +49,7 @@ export const ServerLauncher: React.FC<Props> = ({
       <Panel>
         <div className="bg-[rgba(30,30,50,0.8)] rounded-lg p-4 border border-orange-500/50">
           <div className="text-orange-400 text-sm font-medium mb-2">Python Not Installed</div>
-          <p className="text-slate-400 text-xs mb-3">Python 3.12 is required. Click below to install.</p>
+          <p className="text-slate-400 text-xs mb-3">Python 3.14 is required. Click below to install.</p>
           <button
             onClick={s.installPython}
             disabled={s.installingPython}
@@ -57,7 +57,7 @@ export const ServerLauncher: React.FC<Props> = ({
               s.installingPython ? 'bg-slate-700 cursor-wait' : 'bg-orange-500 hover:bg-orange-400'
             }`}
           >
-            {s.installingPython ? 'Installing...' : 'Install Python 3.12'}
+            {s.installingPython ? 'Installing...' : 'Install Python 3.14'}
           </button>
         </div>
         <Logs logs={s.logs} />

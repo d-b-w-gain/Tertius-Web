@@ -485,7 +485,7 @@ def update_features(
         lines = content.splitlines()
         tree = ast.parse(content)
         
-        assignments = {}
+        assignments: dict[str, ast.Assign] = {}
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
@@ -498,6 +498,7 @@ def update_features(
                 node = assignments[key]
                 line_idx = node.lineno - 1
                 raw_line = lines[line_idx]
+                assert isinstance(node.value, ast.Constant)
                 old_val = node.value.value
                 
                 start_col = getattr(node.value, "col_offset", None)
@@ -532,14 +533,6 @@ def update_features(
         return {"success": True}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-class AIRequest(BaseModel):
-    prompt: str
-
-@app.post("/ai_modify")
-def ai_modify(req: AIRequest):
-    # Skeleton endpoint for Phase 2
-    return {"success": True, "message": "AI modification is not yet implemented"}
 
 if __name__ == "__main__":
     import uvicorn

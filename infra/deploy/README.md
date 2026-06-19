@@ -26,8 +26,7 @@ That keeps Flux focused on deployable configuration instead of the whole applica
 The `infra/charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
 
 - **UI Deployment and Service**: Nginx serves the built React/Vite app. Browser traffic uses one origin, with `/api/*` reverse-proxied from Nginx to the API Service.
-- **API Deployment and Service**: FastAPI serves workflow APIs, validates Keycloak tokens, uses Postgres for tenant-scoped state, and stores generated artifacts on a mounted cache volume.
-- **API PVC**: Mounted at `/app/cache/tertius` for generated workflow/cache artifacts that need to survive pod restarts.
+- **API Deployment and Service**: FastAPI serves workflow APIs, owns browser login through a Backend-for-Frontend auth flow, refreshes Keycloak tokens server-side, and uses Postgres for tenant-scoped state, auth sessions, and generated artifacts.
 - **CloudNativePG application database**: Provides the Tertius Postgres database through a `postgresql.cnpg.io/v1` `Cluster`.
 - **Valkey**: Redis-compatible cache service installed from the chart dependency.
 - **Keycloak**: Identity provider managed through the Keycloak Operator, backed by a separate CloudNativePG database.
@@ -50,7 +49,7 @@ tertius-ui Service
   +-- /api/* -> nginx reverse proxy -> tertius-api Service -> FastAPI
 ```
 
-Keycloak handles browser login and token issuance. The API validates bearer tokens against the configured Keycloak realm and audience before serving tenant-scoped project data.
+The API handles browser login through `/api/auth/*`, stores Keycloak access and refresh tokens in the database-backed `auth_sessions` table, and sends the browser only an HttpOnly session cookie plus a CSRF cookie. Browser API calls use same-origin cookies; browser code does not store or refresh OIDC tokens directly.
 
 ## Flux Layout
 
@@ -89,6 +88,11 @@ stringData:
       environment: production
       config:
         apiBasePath: /api
+        keycloakIssuerUrl: https://<public-origin>/realms/tertius
+        keycloakJwksUrlOverride: auto
+        authCookieSecure: true
+        authSessionIdleSeconds: 604800
+        authSessionMaxSeconds: 2592000
         oidcIssuerUrl: https://<keycloak-host>/realms/tertius
         oidcClientId: tertius-ui
         oidcAudience: tertius-api
@@ -106,12 +110,32 @@ stringData:
     keycloak:
       hostname: https://<keycloak-host>
       adminHostname: https://<keycloak-admin-host>
+      realmImport:
+        uiPublicClient: false
+        uiClientSecret: <same-secret-as-OIDC_CLIENT_SECRET>
     cloudflared:
       enabled: true
       tunnelTokenSecretName: cloudflared-token
 ```
 
 Create the referenced application Secret separately if `app.secretName` is set. It should provide sensitive runtime values such as `DATABASE_URL`, `VALKEY_URL`, OIDC client secrets if needed, and any environment-specific credentials.
+
+For cookie-backed browser sessions, the referenced application Secret must include a stable `AUTH_SESSION_SECRET` and should include `OIDC_CLIENT_SECRET` for a confidential Keycloak client:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tertius-app-secret
+  namespace: tertius
+stringData:
+  DATABASE_URL: ""
+  VALKEY_URL: redis://tertius-valkey:6379/0
+  OIDC_CLIENT_SECRET: <generated-keycloak-client-secret>
+  AUTH_SESSION_SECRET: <stable-random-32-byte-or-longer-secret>
+```
+
+`AUTH_SESSION_SECRET` must remain stable across API deploys, or in-progress OAuth login state cookies will stop validating. Existing logged-in sessions are stored in Postgres and continue across API/UI rollouts as long as the `auth_sessions` table, Keycloak session, and app Secret remain intact.
 
 Cloudflare tunnel tokens, database passwords, image pull credentials, and Keycloak admin credentials should be managed outside Git, then referenced by chart values.
 
@@ -123,11 +147,13 @@ The production cluster must already have:
 - Helm Controller and Source Controller from Flux.
 - CloudNativePG CRDs, including `clusters.postgresql.cnpg.io`.
 - Keycloak Operator CRDs, including `keycloaks.k8s.keycloak.org`.
-- A storage class suitable for the API cache PVC, Postgres, Keycloak Postgres, and Valkey.
+- A storage class suitable for Postgres, Keycloak Postgres, and Valkey.
 - Access to the API and UI container image registry.
 - Any required image pull Secrets.
 - The `tertius-production-values` Secret in the `tertius` namespace.
 - A Cloudflare tunnel token Secret if `cloudflared.enabled=true`.
+
+For node-level dependency setup, including k3s Cilium migration, gVisor `RuntimeClass/gvisor`, and NetworkPolicy acceptance tests for compile jobs, see `infra/cluster-dependencies.md`.
 
 ## Local k3s Validation
 
@@ -135,6 +161,77 @@ Use the local harness to test the Helm chart against an already-running k3s-comp
 
 ```bash
 scripts/test-k3s-deployment.sh
+```
+
+### Windows Docker k3s Debug Environment
+
+Use this when you want production-shaped debugging on a Windows machine without replacing the normal Docker Compose dev stack. Compose is still the fastest path for application development; local k3s is for deployment, resource, probe, PVC, service-routing, and operator issues.
+
+Prerequisites on Windows:
+
+- Docker Desktop with Linux containers enabled.
+- `kubectl` on PATH.
+- `helm` on PATH.
+- Git Bash or WSL for running `scripts/test-k3s-deployment.sh`.
+
+Start a single-node k3s cluster in Docker and install the operators required by the chart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -InstallOperators
+```
+
+The script creates a Docker container named `tertius-k3s`, writes `.kube/tertius-k3s.yaml`, and prints the `KUBECONFIG` and `K3S_CONTAINER` values needed by the Bash harness. The k3s image tag is pinned; override it with `-K3sVersion` when intentionally testing another Kubernetes version.
+
+Run the Helm deployment harness from Git Bash or WSL:
+
+```bash
+export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
+export K3S_CONTAINER=tertius-k3s
+scripts/test-k3s-deployment.sh
+```
+
+Open the local UI after the harness starts port-forwards:
+
+```text
+http://localhost:18080
+```
+
+Useful debug commands:
+
+```bash
+kubectl -n tertius get pods -o wide
+kubectl -n tertius get events --sort-by='.lastTimestamp'
+kubectl -n tertius top pods
+kubectl -n tertius describe pod -l app.kubernetes.io/component=api
+kubectl -n tertius logs deploy/tertius-api --tail=200
+kubectl -n tertius get clusters.postgresql.cnpg.io
+kubectl -n tertius get keycloaks.k8s.keycloak.org
+```
+
+Reset the local k3s container when you want a clean cluster:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -Reset -InstallOperators
+```
+
+Clean up the Tertius release but keep persistent data:
+
+```bash
+export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
+export K3S_CONTAINER=tertius-k3s
+scripts/test-k3s-deployment.sh --cleanup
+```
+
+Delete the local release, database clusters, and PVC data:
+
+```bash
+scripts/test-k3s-deployment.sh --cleanup --delete-data
+```
+
+If `helm` is missing on Windows, install it before using `-InstallOperators` or running the harness. For example:
+
+```powershell
+winget install Helm.Helm
 ```
 
 Tunnel-enabled local run:

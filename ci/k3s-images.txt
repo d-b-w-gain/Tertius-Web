@@ -1,0 +1,7 @@
+# Workload images preloaded into k3s for integration tests.
+# Lines starting with # are ignored. Blank lines are skipped.
+# Prefer immutable digests where practical.
+ghcr.io/cloudnative-pg/postgresql:18.0
+quay.io/keycloak/keycloak:26.6.3
+valkey/valkey:9.0.0
+natsio/nats-box:0.19.7

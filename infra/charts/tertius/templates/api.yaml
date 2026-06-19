@@ -40,9 +40,30 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.api.port | quote }}
-          volumeMounts:
-            - name: api-cache
-              mountPath: /app/cache/tertius
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.appUserSecretName | quote }}
+                  key: password
+                  optional: true
+            - name: APP_DB_OWNER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.appUserSecretName | quote }}
+                  key: username
+                  optional: true
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-llm" (include "tertius.fullname" .)) .Values.app.llmSecretName | quote }}
+                  key: LLM_API_KEY
+                  optional: true
+            - name: LLM_FILE_EDIT_SYSTEM_PROMPT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-llm" (include "tertius.fullname" .)) .Values.app.llmSecretName | quote }}
+                  key: LLM_FILE_EDIT_SYSTEM_PROMPT
+                  optional: true
           startupProbe:
             httpGet:
               path: /
@@ -63,14 +84,6 @@ spec:
             periodSeconds: {{ .Values.api.probes.liveness.periodSeconds }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
-      volumes:
-        - name: api-cache
-          {{- if .Values.api.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ include "tertius.apiName" . }}-cache
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
 ---
 apiVersion: v1
 kind: Service

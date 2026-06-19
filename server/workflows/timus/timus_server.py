@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Query, Response
+from fastapi import Depends, FastAPI, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, confloat, constr
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
 import json
@@ -17,13 +18,14 @@ import build123d as bd
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.db import get_db, SessionLocal
-from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project, CompileJob, Artifact
-from core.repositories import ProjectRepository, CompileRepository
+from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
-from core.artifacts import ArtifactStore
+from core.db import get_db
+from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project, CompileJob, Artifact
+from core.repositories import ProjectRepository, CompileRepository
 from core.config import get_settings
+from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream
 
 app = FastAPI(title="Timus Drafting Server")
 app.add_middleware(
@@ -35,6 +37,22 @@ app.add_middleware(
 )
 
 WORKFLOW_DIR = Path(__file__).parent
+TIMUS_BUILD_TIMEOUT_SECONDS = 600
+
+
+async def publish_timus_compile_command(command: CompileCommand) -> None:
+    settings = get_settings()
+    nc = await connect_nats(settings.nats_url)
+    try:
+        js = await ensure_compile_stream(nc, settings)
+        await NatsPublisher(js).publish_json(
+            settings.compile_request_subject,
+            command,
+            message_id=command.request_id,
+        )
+        await nc.flush()
+    finally:
+        await nc.close()
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -70,22 +88,40 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
     )
 
 
+def get_bounds_from_project_files(files: dict[str, str]) -> float:
+    with hydrate_project_files(files) as project_dir:
+        result = run_compile_sandbox(
+            project_dir,
+            "timus_bounds",
+            timeout_seconds=get_settings().compile_timeout_seconds,
+        )
+        if not result.success or result.output_path is None:
+            raise RuntimeError(result.error or "Bounds compile failed")
+
+        payload = json.loads(result.output_path.read_text(encoding="utf-8"))
+        return float(payload["max_dim"])
+
+
 def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
     env = {"bd": bd, "build123d": bd}
 
-    if project_dir is not None and project_dir not in sys.path:
-        sys.path.insert(0, project_dir)
-        remove_project_dir = True
-    else:
-        remove_project_dir = False
+    if project_dir is None:
+        exec(code, env)
+        return _collect_shapes(env)
 
+    remove_project_dir = project_dir not in sys.path
+    if remove_project_dir:
+        sys.path.insert(0, project_dir)
     try:
         exec(code, env)
+        return _collect_shapes(env)
     finally:
         if remove_project_dir:
             sys.path.remove(project_dir)
 
-    shapes = []
+
+def _collect_shapes(env: dict[str, Any]) -> bd.Compound:
+    shapes: list[bd.Shape] = []
     for val in env.values():
         if isinstance(val, bd.Shape) and hasattr(val, "volume"):
             g_type = val.geom_type() if callable(val.geom_type) else val.geom_type
@@ -100,8 +136,8 @@ def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Comp
     if not shapes:
         raise ValueError("No 3D shapes found in script.")
 
-    final_shapes = []
-    seen = set()
+    final_shapes: list[bd.Shape] = []
+    seen: set[int] = set()
     for shape in shapes:
         if id(shape) not in seen:
             seen.add(id(shape))
@@ -264,23 +300,23 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
         size_mm = size * 25.4 / 72
         scale = size_mm / baseline
         
-        ops = []
+        ops: list[tuple] = []
         current_x = 0.0
-        
+
         for char in text:
             if char == ' ':
                 current_x += space_width + tracking
                 continue
-            
+
             codepoint = ord(char)
             glyph_name = cmap.get(codepoint)
             if not glyph_name:
                 continue
-            
+
             glyph = glyph_set[glyph_name]
             pen = RecordingPen()
             glyph.draw(pen)
-            
+
             for cmd, args in pen.value:
                 if cmd == 'moveTo':
                     x, y = args[0]
@@ -290,14 +326,14 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
                     ops.append(('L', (current_x + x) * scale, (baseline - y) * scale))
                 elif cmd == 'curveTo':
                     (x1, y1), (x2, y2), (x3, y3) = args
-                    ops.append(('C', 
+                    ops.append(('C',
                                 (current_x + x1) * scale, (baseline - y1) * scale,
                                 (current_x + x2) * scale, (baseline - y2) * scale,
                                 (current_x + x3) * scale, (baseline - y3) * scale))
             current_x += glyph.width + tracking
-            
-        subpaths = []
-        current = []
+
+        subpaths: list[list[tuple]] = []
+        current: list[tuple] = []
         for op in ops:
             if op[0] == 'M' and current:
                 subpaths.append(current)
@@ -328,11 +364,11 @@ def _draw_gorton_text(pdf, text: str, ox: float, oy: float, size: float = 20):
         pdf.cell(w=110, h=7, text=text, ln=0)
 
 class TimusSettingsRequest(BaseModel):
-    title: constr(min_length=1, max_length=255)
-    stamp_text: constr(min_length=1, max_length=32)
+    title: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    stamp_text: Annotated[str, StringConstraints(min_length=1, max_length=32)]
     show_redline: bool
     show_hidden_lines: bool
-    scale: confloat(gt=0, le=1000)
+    scale: Annotated[float, Field(gt=0, le=1000)]
     sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
 
 
@@ -347,7 +383,17 @@ def serialize_timus_settings(settings: TimusSettings):
     }
 
 
-PROJECTION_CACHE = {}
+PROJECTION_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _artifact_is_current_for_design(artifact: Artifact, design_file: ProjectFile) -> bool:
+    artifact_created_at = artifact.created_at
+    design_updated_at = design_file.updated_at
+    if artifact_created_at.tzinfo is None:
+        artifact_created_at = artifact_created_at.replace(tzinfo=timezone.utc)
+    if design_updated_at.tzinfo is None:
+        design_updated_at = design_updated_at.replace(tzinfo=timezone.utc)
+    return artifact_created_at >= design_updated_at
 
 
 def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
@@ -413,90 +459,63 @@ def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
     return views
 
 
-def _background_build_timus_views(tenant_id: str, user_id: str, project_id: str, name: str):
-    db = SessionLocal()
-    try:
-        repo = ProjectRepository(db, tenant_id)
-        compile_repo = CompileRepository(db, tenant_id)
-        files = repo.files_for_runtime(name)
-        if not files:
-            return
-            
-        job = compile_repo.start_job(project_id, user_id, "timus_views")
-        job_id = job.id
-        db.commit()
-        
-        with hydrate_project_files(files) as project_dir:
-            settings_path = project_dir / "settings.json"
-            import json
-            
-            settings = db.scalar(
-                select(TimusSettings).where(
-                    TimusSettings.user_id == user_id,
-                    TimusSettings.tenant_id == tenant_id,
-                    TimusSettings.project_id == project_id,
-                )
-            )
-            settings_dict = serialize_timus_settings(settings) if settings else {
-                "title": name.upper(),
-                "stamp_text": "APPROVED",
-                "show_redline": True,
-                "show_hidden_lines": True,
-                "scale": 1.0,
-                "sheet_size": "A4",
-            }
-                
-            settings_path.write_text(json.dumps(settings_dict))
-            
-            result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=300)
-            if not result.success:
-                error = result.error or result.stderr or "Compile failed"
-                persisted_job = db.get(CompileJob, job_id)
-                if persisted_job:
-                    compile_repo.finish_job(persisted_job, "failed", error=error)
-                    db.commit()
-                return
+def _default_timus_settings(name: str) -> dict[str, Any]:
+    return {
+        "title": name.upper(),
+        "stamp_text": "APPROVED",
+        "show_redline": True,
+        "show_hidden_lines": True,
+        "scale": 1.0,
+        "sheet_size": "A4",
+    }
 
-            if result.output_path is None:
-                return
-            output_bytes = result.output_path.read_bytes()
 
-        settings = get_settings()
-        artifact_store = ArtifactStore(settings.artifact_root)
-        stored = artifact_store.write_bytes(tenant_id, project_id, "timus_views", output_bytes)
-        
-        compile_repo.record_artifact(
-            project_id,
-            job_id,
-            "timus_views",
-            stored.storage_key,
-            stored.content_type,
-            stored.byte_size,
+def _settings_for_build(db: Session, tenant_id: UUID, user_id: UUID, project_id: UUID, name: str) -> dict[str, Any]:
+    user_settings = db.scalar(
+        select(TimusSettings).where(
+            TimusSettings.user_id == user_id,
+            TimusSettings.tenant_id == tenant_id,
+            TimusSettings.project_id == project_id,
         )
-        persisted_job = db.get(CompileJob, job_id)
-        if persisted_job:
-            compile_repo.finish_job(persisted_job, "succeeded")
-            pruned_artifacts = compile_repo.prunable_artifacts(
-                project_id,
-                "timus_views",
-                max(1, settings.artifact_retention_limit),
-            )
-            for pruned_artifact in pruned_artifacts:
-                artifact_store.delete(pruned_artifact.storage_key)
-            compile_repo.delete_artifacts(pruned_artifacts)
-            db.commit()
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        db.rollback()
-    finally:
-        db.close()
+    )
+    return serialize_timus_settings(user_settings) if user_settings else _default_timus_settings(name)
+
+
+def _expire_abandoned_timus_job(db: Session, compile_repo: CompileRepository, job: CompileJob) -> bool:
+    job_time = job.created_at
+    if job_time.tzinfo is None:
+        job_time = job_time.replace(tzinfo=timezone.utc)
+
+    if (datetime.now(timezone.utc) - job_time).total_seconds() <= TIMUS_BUILD_TIMEOUT_SECONDS:
+        return False
+
+    compile_repo.finish_job(
+        job,
+        "failed",
+        error="Timus PDF data build timed out or was abandoned by server restart",
+        error_code="timus_build_abandoned",
+        user_message="PDF data generation was interrupted. Generate PDF Data again.",
+        retryable=True,
+    )
+    db.commit()
+    return True
+
+
+def _latest_timus_job(db: Session, tenant_id: UUID, project_id: UUID) -> CompileJob | None:
+    return db.scalar(
+        select(CompileJob)
+        .where(
+            CompileJob.tenant_id == tenant_id,
+            CompileJob.project_id == project_id,
+            CompileJob.export_format == "timus_views",
+        )
+        .order_by(desc(CompileJob.created_at), desc(CompileJob.id))
+    )
 
 
 @app.post("/projects/{name}/drafting/build")
-def trigger_drafting_build(
+async def trigger_drafting_build(
     name: str,
-    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db)
 ):
@@ -505,26 +524,98 @@ def trigger_drafting_build(
         return Response("Not found", 404)
         
     compile_repo = CompileRepository(db, ctx.tenant_id)
-    # Check if a build is already running
-    running_job = db.scalar(
-        select(CompileJob).where(
+    in_progress_job = db.scalar(
+        select(CompileJob)
+        .where(
             CompileJob.tenant_id == ctx.tenant_id,
             CompileJob.project_id == project.id,
             CompileJob.export_format == "timus_views",
-            CompileJob.status == "running"
+            CompileJob.status.in_(["queued", "running"]),
         )
+        .order_by(desc(CompileJob.created_at), desc(CompileJob.id))
     )
-    if running_job:
-        return {"status": "building"}
-        
-    background_tasks.add_task(
-        _background_build_timus_views,
-        ctx.tenant_id,
-        ctx.user_id,
-        project.id,
-        name
+    if in_progress_job:
+        if in_progress_job.status == "running" and _expire_abandoned_timus_job(db, compile_repo, in_progress_job):
+            in_progress_job = None
+    if in_progress_job:
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"success": True, "status": "building", "job_id": str(in_progress_job.id)},
+        )
+
+    files = ProjectRepository(db, ctx.tenant_id).files_for_runtime(name)
+    if files is None:
+        return JSONResponse(status_code=404, content={"error": "Project files not found"})
+    files = dict(files)
+    files["settings.json"] = json.dumps(_settings_for_build(db, ctx.tenant_id, ctx.user_id, project.id, name))
+
+    job = compile_repo.start_job(project.id, ctx.user_id, "timus_views", status="queued")
+    compile_repo.snapshot_job_files(job, files)
+    request_id = f"compile-request:{job.id}"
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=ctx.tenant_id,
+        project_id=project.id,
+        requested_by=ctx.user_id,
+        export_format="timus_views",
+        created_at=job.created_at,
+        files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
+        request_id=request_id,
     )
-    return {"status": "started"}
+    try:
+        assert_message_size(command, get_settings().compile_request_max_bytes, "request")
+    except ValueError as exc:
+        compile_repo.finish_job(
+            job,
+            "failed",
+            error=str(exc),
+            error_code="source_bundle_too_large",
+            user_message="PDF Data source is too large to queue. Split the model into smaller files.",
+            retryable=False,
+        )
+        db.commit()
+        return JSONResponse(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            content={
+                "success": False,
+                "status": "failed",
+                "job_id": str(job.id),
+                "error": str(exc),
+                "error_code": "source_bundle_too_large",
+                "user_message": "PDF Data source is too large to queue. Split the model into smaller files.",
+                "retryable": False,
+            },
+        )
+
+    try:
+        compile_repo.mark_job_dispatched(job, lease_seconds=get_settings().compile_ack_wait_seconds)
+        db.commit()
+        await publish_timus_compile_command(command)
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"success": True, "status": "queued", "job_id": str(job.id)},
+        )
+    except Exception as exc:
+        db.rollback()
+        persisted_job = db.get(CompileJob, job.id)
+        if persisted_job is not None:
+            compile_repo.mark_job_publish_pending(
+                persisted_job,
+                error=f"Timus PDF Data command publish failed: {exc}",
+            )
+            db.commit()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "success": False,
+                "status": "queued",
+                "job_id": str(job.id),
+                "error": str(exc),
+                "short": "PDF Data command publish failed",
+                "user_message": "PDF Data was queued but could not be published immediately. It will be retried.",
+                "retryable": True,
+            },
+        )
 
 @app.get("/projects/{name}/drafting/status")
 def get_drafting_status(
@@ -536,30 +627,33 @@ def get_drafting_status(
     if not project:
         return Response("Not found", 404)
         
-    running_job = db.scalar(
-        select(CompileJob).where(
+    in_progress_job = db.scalar(
+        select(CompileJob)
+        .where(
             CompileJob.tenant_id == ctx.tenant_id,
             CompileJob.project_id == project.id,
             CompileJob.export_format == "timus_views",
-            CompileJob.status == "running"
+            CompileJob.status.in_(["queued", "running"]),
         )
+        .order_by(desc(CompileJob.created_at), desc(CompileJob.id))
     )
-    if running_job:
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        job_time = running_job.created_at
-        if job_time.tzinfo is None:
-            job_time = job_time.replace(tzinfo=timezone.utc)
-            
-        if (now - job_time).total_seconds() > 600:
-            try:
-                compile_repo = CompileRepository(db, ctx.tenant_id)
-                compile_repo.finish_job(running_job, "failed", error="Job timed out or was abandoned by server restart")
-                db.commit()
-            except Exception:
-                db.rollback()
-        else:
-            return {"status": "building"}
+    if in_progress_job:
+        compile_repo = CompileRepository(db, ctx.tenant_id)
+        try:
+            expired = (
+                in_progress_job.status == "running"
+                and _expire_abandoned_timus_job(db, compile_repo, in_progress_job)
+            )
+        except Exception:
+            db.rollback()
+            expired = False
+        if not expired:
+            return {
+                "status": "building",
+                "job_id": str(in_progress_job.id),
+                "user_message": in_progress_job.user_message,
+                "retryable": in_progress_job.retryable,
+            }
         
     # Check latest successful artifact
     latest_artifact = db.scalar(
@@ -571,11 +665,37 @@ def get_drafting_status(
     )
     
     if not latest_artifact:
+        latest_job = _latest_timus_job(db, ctx.tenant_id, project.id)
+        if latest_job and latest_job.status == "failed":
+            return {
+                "status": "failed",
+                "job_id": str(latest_job.id),
+                "error_code": latest_job.error_code,
+                "user_message": latest_job.user_message or "PDF Data generation failed. Try again.",
+                "retryable": latest_job.retryable,
+            }
         return {"status": "none"}
         
     design_file = _get_project_design_file(name, ctx, db)
     if design_file and design_file.updated_at > latest_artifact.created_at:
         return {"status": "stale"}
+
+    latest_job = _latest_timus_job(db, ctx.tenant_id, project.id)
+    if latest_job and latest_job.status == "failed":
+        latest_job_time = latest_job.finished_at or latest_job.created_at
+        artifact_time = latest_artifact.created_at
+        if latest_job_time.tzinfo is None:
+            latest_job_time = latest_job_time.replace(tzinfo=timezone.utc)
+        if artifact_time.tzinfo is None:
+            artifact_time = artifact_time.replace(tzinfo=timezone.utc)
+        if latest_job_time > artifact_time:
+            return {
+                "status": "failed",
+                "job_id": str(latest_job.id),
+                "error_code": latest_job.error_code,
+                "user_message": latest_job.user_message or "PDF Data generation failed. Try again.",
+                "retryable": latest_job.retryable,
+            }
         
     return {"status": "ready"}
 
@@ -621,13 +741,9 @@ def get_gltf_model(name: str, ctx: AuthContext = Depends(get_auth_context), db: 
             Artifact.kind.in_(["gltf", "glb"])
         ).order_by(desc(Artifact.created_at))
     )
-    if not latest_artifact: return Response("No 3D model found", 404)
-    
-    artifact_store = ArtifactStore(get_settings().artifact_root)
-    artifact_path = artifact_store.path_for(latest_artifact.storage_key)
-    with open(artifact_path, "rb") as f:
-        data = f.read()
-    return Response(content=data, media_type=latest_artifact.content_type)
+    if not latest_artifact or latest_artifact.content is None:
+        return Response("No 3D model found", 404)
+    return Response(content=latest_artifact.content, media_type=latest_artifact.content_type)
 
 @app.get("/projects/{name}/model_status")
 def get_model_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -657,9 +773,7 @@ def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     project = get_active_project(db, ctx)
     if project is None:
-        print("TIMUS PROJECT NAME IS NONE")
         return {"project_name": ""}
-    print(f"TIMUS PROJECT NAME IS {project.name}")
     return {"project_name": project.name}
 
 
@@ -740,17 +854,12 @@ def get_project_bounds(
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
-    design_file = _get_project_design_file(name, ctx, db)
-    if design_file is None:
+    files = ProjectRepository(db, ctx.tenant_id).files_for_runtime(name)
+    if files is None or "design.py" not in files:
         return Response("Project not found", status_code=404)
 
     try:
-        compound = get_compound_from_code(design_file.content)
-        bbox = compound.bounding_box()
-        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
-        if max_dim == 0:
-            max_dim = 100
-        return {"max_dim": max_dim}
+        return {"max_dim": get_bounds_from_project_files(files)}
     except Exception as e:
         traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)
@@ -784,20 +893,18 @@ def get_drafting_pdf(
                 Artifact.kind == "timus_views"
             ).order_by(desc(Artifact.created_at))
         )
-        if latest_artifact:
-            artifact_store = ArtifactStore(get_settings().artifact_root)
-            artifact_path = artifact_store.path_for(latest_artifact.storage_key)
-
-            with open(artifact_path, "r") as f:
-                views = json.load(f)
+        if latest_artifact and _artifact_is_current_for_design(latest_artifact, design_file):
+            if latest_artifact.content is None:
+                return Response("No drafting views found", 404)
+            views = json.loads(latest_artifact.content.decode("utf-8"))
         else:
-            repo = ProjectRepository(db, ctx.tenant_id)
-            files = repo.files_for_runtime(name)
-            with hydrate_project_files(files) as project_dir:
-                compound = get_compound_from_code(design_file.content, str(project_dir))
-
-            cache_key = f"{ctx.tenant_id}:{project.id}:{name}"
-            views = get_projected_views(cache_key, compound, design_file.updated_at.timestamp())
+            return JSONResponse(
+                status_code=status.HTTP_409_CONFLICT,
+                content={
+                    "error": "PDF Data is not ready",
+                    "user_message": "Generate PDF Data before downloading the drafting PDF.",
+                },
+            )
         
         # Calculate Dimensions
         size = size.upper()

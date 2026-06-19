@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import select
 
-from core.artifacts import ArtifactStore
 from core.models import (
     Artifact,
     AppUser,
@@ -128,12 +128,7 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
-    monkeypatch,
-    tmp_path,
 ):
-    artifact_root = tmp_path / "artifacts"
-    store = ArtifactStore(artifact_root)
-
     other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
     other_tenant = Tenant(id=uuid4(), name="Other Tenant")
     db_session.add_all([other_user, other_tenant])
@@ -143,9 +138,6 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     db_session.add(other_project)
     db_session.flush()
 
-    other_stored = store.write_bytes(other_tenant.id, other_project.id, "stl", b"solid other")
-    older_stored = store.write_bytes(seeded_tenant.tenant_id, seeded_tenant.project_id, "stl", b"solid older")
-    latest_stored = store.write_bytes(seeded_tenant.tenant_id, seeded_tenant.project_id, "stl", b"solid latest")
     now = datetime.now(timezone.utc)
     db_session.add_all(
         [
@@ -153,38 +145,35 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
                 tenant_id=other_tenant.id,
                 project_id=other_project.id,
                 kind="stl",
-                storage_key=other_stored.storage_key,
-                content_type=other_stored.content_type,
-                byte_size=other_stored.byte_size,
+                storage_key="other.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid other"),
+                content=b"solid other",
                 created_at=now + timedelta(minutes=10),
             ),
             Artifact(
                 tenant_id=seeded_tenant.tenant_id,
                 project_id=seeded_tenant.project_id,
                 kind="stl",
-                storage_key=older_stored.storage_key,
-                content_type=older_stored.content_type,
-                byte_size=older_stored.byte_size,
+                storage_key="older.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid older"),
+                content=b"solid older",
                 created_at=now,
             ),
             Artifact(
                 tenant_id=seeded_tenant.tenant_id,
                 project_id=seeded_tenant.project_id,
                 kind="stl",
-                storage_key=latest_stored.storage_key,
-                content_type=latest_stored.content_type,
-                byte_size=latest_stored.byte_size,
+                storage_key="latest.stl",
+                content_type="application/octet-stream",
+                byte_size=len(b"solid latest"),
+                content=b"solid latest",
                 created_at=now + timedelta(minutes=1),
             ),
         ]
     )
     db_session.commit()
-    monkeypatch.setattr(
-        extus_server,
-        "get_settings",
-        lambda: type("Settings", (), {"artifact_root": str(artifact_root)})(),
-        raising=False,
-    )
 
     project_response = authenticated_extus_client.get("/project_name")
     status_response = authenticated_extus_client.get("/status")
@@ -198,12 +187,10 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     assert model_response.content == b"solid latest"
 
 
-def test_extus_model_returns_404_when_active_artifact_file_is_missing(
+def test_extus_model_returns_404_when_active_artifact_content_is_missing(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
-    monkeypatch,
-    tmp_path,
 ):
     db_session.add(
         Artifact(
@@ -216,14 +203,142 @@ def test_extus_model_returns_404_when_active_artifact_file_is_missing(
         )
     )
     db_session.commit()
-    monkeypatch.setattr(
-        extus_server,
-        "get_settings",
-        lambda: type("Settings", (), {"artifact_root": str(tmp_path / "artifacts")})(),
-        raising=False,
-    )
 
     response = authenticated_extus_client.get("/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_serves_historical_model_artifact_by_id(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    now = datetime.now(timezone.utc)
+    older = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="older.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"older glb"),
+        content=b"older glb",
+        created_at=now,
+    )
+    newer = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="newer.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"newer glb"),
+        content=b"newer glb",
+        created_at=now + timedelta(minutes=1),
+    )
+    db_session.add_all([older, newer])
+    db_session.commit()
+
+    latest_response = authenticated_extus_client.get("/model")
+    historical_response = authenticated_extus_client.get(f"/artifacts/{older.id}/model")
+
+    assert latest_response.status_code == 200
+    assert latest_response.content == b"newer glb"
+    assert historical_response.status_code == 200
+    assert historical_response.content == b"older glb"
+    assert historical_response.headers["content-type"] == "model/gltf-binary"
+
+
+def test_extus_historical_model_rejects_cross_tenant_artifact(
+    authenticated_extus_client,
+    db_session,
+):
+    other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
+    other_tenant = Tenant(id=uuid4(), name="Other Tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    other_project = Project(tenant_id=other_tenant.id, name="default_purlin", created_by=other_user.id)
+    db_session.add(other_project)
+    db_session.flush()
+    artifact = Artifact(
+        tenant_id=other_tenant.id,
+        project_id=other_project.id,
+        kind="glb",
+        storage_key="other.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"other glb"),
+        content=b"other glb",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_rejects_inactive_project_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    other_project = create_named_project(db_session, seeded_tenant, "inactive_project")
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=other_project.id,
+        kind="glb",
+        storage_key="inactive.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"inactive glb"),
+        content=b"inactive glb",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_rejects_non_model_artifact_kind(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="pdf",
+        storage_key="drawing.pdf",
+        content_type="application/pdf",
+        byte_size=len(b"pdf"),
+        content=b"pdf",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
+
+    assert response.status_code == 404
+
+
+def test_extus_historical_model_returns_404_when_content_is_missing(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        kind="glb",
+        storage_key="missing.glb",
+        content_type="model/gltf-binary",
+        byte_size=10,
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
 
     assert response.status_code == 404
 
@@ -290,29 +405,37 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
         )
     )
     db_design.content = tenant_code
+    db_session.add(
+        ProjectFile(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="shared.py",
+            content="SHARED_VALUE = 12",
+        )
+    )
     db_session.commit()
 
     captured = {}
 
-    class FakeBox:
-        min = type("Point", (), {"X": 0, "Y": 0, "Z": 0})()
-        max = type("Point", (), {"X": 12, "Y": 6, "Z": 3})()
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+        captured["export_format"] = export_format
+        captured["design"] = (project_dir / "design.py").read_text(encoding="utf-8")
+        captured["shared"] = (project_dir / "shared.py").read_text(encoding="utf-8")
+        output_path = project_dir / "output.timus_bounds"
+        output_path.write_text('{"max_dim": 12}', encoding="utf-8")
+        return SimpleNamespace(success=True, output_path=output_path, error=None)
 
-    class FakeCompound:
-        def bounding_box(self):
-            return FakeBox()
-
-    def fake_compound_from_code(code, project_dir=None):
-        captured["code"] = code
-        return FakeCompound()
-
-    monkeypatch.setattr(timus_server, "get_compound_from_code", fake_compound_from_code)
+    monkeypatch.setattr(timus_server, "run_compile_sandbox", fake_run_compile_sandbox)
 
     response = authenticated_timus_client.get("/projects/default_purlin/bounds")
 
     assert response.status_code == 200
     assert response.json() == {"max_dim": 12}
-    assert captured["code"] == tenant_code
+    assert captured == {
+        "export_format": "timus_bounds",
+        "design": tenant_code,
+        "shared": "SHARED_VALUE = 12",
+    }
 
 
 def test_timus_drafting_pdf_does_not_read_other_or_global_design(
@@ -385,29 +508,30 @@ def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
     timus_server.PROJECTION_CACHE.clear()
     poisoned_views = {"top": ["poison"], "front": ["poison"], "side": ["poison"], "iso": ["poison"]}
     timus_server.PROJECTION_CACHE["default_purlin"] = (db_design.updated_at.timestamp(), poisoned_views)
-
-    class FakePoint:
-        X = 0
-        Y = 0
-        Z = 0
-
-    class FakeBox:
-        min = FakePoint()
-        max = type("Point", (), {"X": 10, "Y": 10, "Z": 10})()
-
-        def center(self):
-            return FakePoint()
-
-    class FakeCompound:
-        def bounding_box(self):
-            return FakeBox()
-
-        def project_to_viewport(self, **kwargs):
-            return [], []
+    current_views = b'{"top":[[[0,0],[1,0],false]],"front":[[[0,0],[0,1],false]],"side":[[[0,0],[1,1],false]],"iso":[[[0,0],[2,2],false]]}'
+    db_session.add(
+        Artifact(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            compile_job_id=None,
+            kind="timus_views",
+            storage_key="test/current-timus-views.json",
+            content_type="application/json",
+            byte_size=len(current_views),
+            content=current_views,
+        )
+    )
+    db_session.commit()
 
     drawn_segments = []
 
-    monkeypatch.setattr(timus_server, "get_compound_from_code", lambda code, project_dir=None: FakeCompound())
+    monkeypatch.setattr(
+        timus_server,
+        "get_compound_from_code",
+        lambda code, project_dir=None: (_ for _ in ()).throw(
+            AssertionError("PDF download must use the stored timus_views artifact")
+        ),
+    )
     monkeypatch.setattr(timus_server, "_draw_drafting_sheet_background", lambda *args, **kwargs: None)
     monkeypatch.setattr(timus_server, "_draw_gorton_text", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -420,4 +544,4 @@ def test_timus_drafting_pdf_cache_is_scoped_by_tenant_and_project(
 
     assert response.status_code == 200
     assert ["poison"] not in drawn_segments
-    assert f"{seeded_tenant.tenant_id}:{seeded_tenant.project_id}:default_purlin" in timus_server.PROJECTION_CACHE
+    assert drawn_segments
