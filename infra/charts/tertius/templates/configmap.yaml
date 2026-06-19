@@ -25,6 +25,14 @@ data:
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}
   KEYCLOAK_JWKS_URL_OVERRIDE: {{ $keycloakJwksUrlOverride | quote }}
+  KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.accessTokenLifespanSeconds | int64) | quote }}
+  KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.ssoSessionIdleTimeoutSeconds | int64) | quote }}
+  KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.ssoSessionMaxLifespanSeconds | int64) | quote }}
+  KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.clientSessionIdleTimeoutSeconds | int64) | quote }}
+  KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS: {{ printf "%d" (.Values.keycloak.realmImport.clientSessionMaxLifespanSeconds | int64) | quote }}
+  AUTH_COOKIE_SECURE: {{ .Values.app.config.authCookieSecure | quote }}
+  AUTH_SESSION_IDLE_SECONDS: {{ printf "%d" (.Values.app.config.authSessionIdleSeconds | int64) | quote }}
+  AUTH_SESSION_MAX_SECONDS: {{ printf "%d" (.Values.app.config.authSessionMaxSeconds | int64) | quote }}
   OIDC_ISSUER_URL: {{ .Values.app.config.oidcIssuerUrl | quote }}
   OIDC_CLIENT_ID: {{ .Values.app.config.oidcClientId | quote }}
   OIDC_AUDIENCE: {{ .Values.app.config.oidcAudience | quote }}

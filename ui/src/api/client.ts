@@ -1,9 +1,8 @@
-import { userManager } from '../auth/keycloak'
-
 let transientFailureCount = 0
 let readonlyBackoffUntil = 0
 const readonlyInFlightRequests = new Map<string, Promise<Response>>()
 const STALE_TOKEN_REDIRECT_KEY = 'tertius:stale-token-redirecting'
+const CSRF_COOKIE_NAME = 'tertius_csrf'
 
 function isReadonlyRequest(init: RequestInit) {
   const method = (init.method || 'GET').toUpperCase()
@@ -50,11 +49,16 @@ async function forceFreshLogin() {
 
   sessionStorage.setItem(STALE_TOKEN_REDIRECT_KEY, 'true')
 
-  try {
-    await userManager.removeUser()
-  } finally {
-    await userManager.signinRedirect()
-  }
+  window.location.assign(`/api/auth/login?return_to=${encodeURIComponent(window.location.pathname + window.location.search + window.location.hash)}`)
+}
+
+function readCookie(name: string) {
+  const prefix = `${name}=`
+  return document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length)
 }
 
 function backoffResponse() {
@@ -74,7 +78,7 @@ function backoffResponse() {
 
 export async function apiFetch(
   url: string,
-  getAccessToken: () => Promise<string>,
+  _getAccessToken: () => Promise<string>,
   init: RequestInit = {},
 ) {
   const readonly = isReadonlyRequest(init)
@@ -90,14 +94,17 @@ export async function apiFetch(
 
   const request = (async () => {
     const headers = new Headers(init.headers)
-    headers.set('Authorization', `Bearer ${await getAccessToken()}`)
     if (init.body && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json')
+    }
+    if (!readonly && !headers.has('X-CSRF-Token')) {
+      const csrfToken = readCookie(CSRF_COOKIE_NAME)
+      if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
     }
 
     let response: Response
     try {
-      response = await fetch(url, { ...init, headers })
+      response = await fetch(url, { ...init, headers, credentials: 'same-origin' })
     } catch (error) {
       if (readonly) {
         recordTransientFailure()
@@ -107,7 +114,7 @@ export async function apiFetch(
 
     if (readonly && isTransientServerFailure(response.status)) {
       recordTransientFailure()
-    } else if (await isInvalidBearerToken(response)) {
+    } else if (response.status === 401 || await isInvalidBearerToken(response)) {
       void forceFreshLogin()
     } else if (response.ok) {
       recordSuccess()

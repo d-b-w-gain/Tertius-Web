@@ -4,6 +4,9 @@ app:
     keycloakAudience: tertius-api
     keycloakIssuerUrl: http://keycloak.localhost/realms/tertius
     keycloakJwksUrlOverride: auto
+    authCookieSecure: false
+    authSessionIdleSeconds: 604800
+    authSessionMaxSeconds: 2592000
     natsUrl: ""
     llmDefaultModelId: kimi-k2.7-code
     llmDailyBudgetUsd: "2.00"
@@ -70,6 +73,7 @@ app:
     create: true
     databaseUrl: ""
     valkeyUrl: redis://tertius-valkey:6379/0
+    authSessionSecret: local-auth-session-secret-change-me
 
 api:
   replicaCount: 1
@@ -136,6 +140,7 @@ keycloak:
       storageClass: local-path
   realmImport:
     enabled: true
+    uiPublicClient: true
     uiDirectAccessGrantsEnabled: true
     smokeUser:
       enabled: true

@@ -47,10 +47,18 @@ spec:
   realm:
     realm: {{ .Values.keycloak.realmImport.realm | quote }}
     enabled: true
+    accessTokenLifespan: {{ .Values.keycloak.realmImport.accessTokenLifespanSeconds | int64 }}
+    ssoSessionIdleTimeout: {{ .Values.keycloak.realmImport.ssoSessionIdleTimeoutSeconds | int64 }}
+    ssoSessionMaxLifespan: {{ .Values.keycloak.realmImport.ssoSessionMaxLifespanSeconds | int64 }}
+    clientSessionIdleTimeout: {{ .Values.keycloak.realmImport.clientSessionIdleTimeoutSeconds | int64 }}
+    clientSessionMaxLifespan: {{ .Values.keycloak.realmImport.clientSessionMaxLifespanSeconds | int64 }}
     clients:
       - clientId: {{ .Values.keycloak.realmImport.uiClientId | quote }}
         name: Tertius UI
-        publicClient: true
+        publicClient: {{ .Values.keycloak.realmImport.uiPublicClient }}
+        {{- if .Values.keycloak.realmImport.uiClientSecret }}
+        secret: {{ .Values.keycloak.realmImport.uiClientSecret | quote }}
+        {{- end }}
         standardFlowEnabled: true
         directAccessGrantsEnabled: {{ .Values.keycloak.realmImport.uiDirectAccessGrantsEnabled }}
         redirectUris:

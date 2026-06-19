@@ -8,11 +8,9 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import type { User } from 'oidc-client-ts'
-import { userManager } from './keycloak'
 
 export interface AuthState {
-  user: User | null
+  user: AuthUser | null
   token: string | null
   authMode: 'guest' | 'authenticated'
   isLoading: boolean
@@ -23,119 +21,88 @@ export interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null)
 
-const hasSigninCallbackParams = () => {
-  const params = new URLSearchParams(window.location.search)
-  return params.has('code') || params.has('error')
+interface AuthUser {
+  user_id: string
+  tenant_id: string
+  email: string | null
 }
 
-const clearSigninCallbackParams = () => {
-  window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.hash}`)
+const currentReturnTo = () => `${window.location.pathname}${window.location.search}${window.location.hash}`
+
+async function fetchCurrentUser(): Promise<AuthUser | null> {
+  const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
+  if (response.status === 401) return null
+  if (!response.ok) throw new Error(`Authentication check failed with status ${response.status}`)
+  return response.json()
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const silentSigninPromiseRef = useRef<Promise<User | null> | null>(null)
+  const refreshPromiseRef = useRef<Promise<AuthUser | null> | null>(null)
 
   useEffect(() => {
     let isMounted = true
 
     const loadUser = async () => {
       try {
-        // Handle silent renew callback in iframe
-        if (window.self !== window.top) {
-          try {
-             await userManager.signinSilentCallback()
-          } catch (e) {
-             console.error("Silent callback error:", e)
-          }
-          return
-        }
-
-        if (hasSigninCallbackParams()) {
-          try {
-            const callbackUser = await userManager.signinRedirectCallback()
-            if (isMounted) {
-              setUser(callbackUser)
-            }
-          } catch (e) {
-            console.warn("Signin callback error (likely StrictMode double-fire):", e)
-            const storedUser = await userManager.getUser()
-            if (storedUser && !storedUser.expired && isMounted) {
-               setUser(storedUser)
-            }
-          } finally {
-            clearSigninCallbackParams()
-          }
-          return
-        }
-
-        const storedUser = await userManager.getUser()
         if (isMounted) {
-          setUser(storedUser && !storedUser.expired ? storedUser : null)
+          setUser(await fetchCurrentUser())
         }
+      } catch (e) {
+        console.warn('Authentication check failed:', e)
+        if (isMounted) setUser(null)
       } finally {
-        if (isMounted && window.self === window.top) {
+        if (isMounted) {
           setIsLoading(false)
         }
       }
     }
 
-    const onUserLoaded = (loadedUser: User) => setUser(loadedUser)
-    const onUserUnloaded = () => setUser(null)
-
-    userManager.events.addUserLoaded(onUserLoaded)
-    userManager.events.addUserUnloaded(onUserUnloaded)
-    userManager.events.addAccessTokenExpired(onUserUnloaded)
     void loadUser()
 
     return () => {
       isMounted = false
-      userManager.events.removeUserLoaded(onUserLoaded)
-      userManager.events.removeUserUnloaded(onUserUnloaded)
-      userManager.events.removeAccessTokenExpired(onUserUnloaded)
     }
   }, [])
 
-  const login = useCallback(() => userManager.signinRedirect(), [])
-  const logout = useCallback(() => userManager.signoutRedirect(), [])
+  const login = useCallback(async () => {
+    window.location.assign(`/api/auth/login?return_to=${encodeURIComponent(currentReturnTo())}`)
+  }, [])
+
+  const logout = useCallback(async () => {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRF-Token': document.cookie.match(/(?:^|; )tertius_csrf=([^;]+)/)?.[1] ?? '' },
+    })
+    setUser(null)
+  }, [])
 
   const getAccessToken = useCallback(async () => {
-    const current = await userManager.getUser()
-    if (current && !current.expired) {
-      return current.access_token
+    if (user) return ''
+
+    if (refreshPromiseRef.current) {
+      const refreshed = await refreshPromiseRef.current
+      if (refreshed) return ''
+      throw new Error('Authentication required. Please sign in.')
     }
 
-    if (user) {
-      if (silentSigninPromiseRef.current) {
-        const renewed = await silentSigninPromiseRef.current
-        if (renewed) return renewed.access_token
-        throw new Error('Concurrent silent sign in failed')
-      }
-
-      try {
-        silentSigninPromiseRef.current = userManager.signinSilent()
-        const renewed = await silentSigninPromiseRef.current
-        if (!renewed) {
-          throw new Error('Silent sign-in did not return a user')
-        }
-        setUser(renewed)
-        return renewed.access_token
-      } catch (e) {
-        console.error('Silent token refresh failed:', e)
-        throw new Error('Authentication expired. Please sign in again.', { cause: e })
-      } finally {
-        silentSigninPromiseRef.current = null
-      }
+    refreshPromiseRef.current = fetchCurrentUser()
+    try {
+      const refreshed = await refreshPromiseRef.current
+      setUser(refreshed)
+      if (refreshed) return ''
+      throw new Error('Authentication required. Please sign in.')
+    } finally {
+      refreshPromiseRef.current = null
     }
-
-    throw new Error('Authentication required. Please sign in.')
   }, [user])
 
   const value = useMemo<AuthState>(
     () => ({
       user,
-      token: user?.access_token ?? null,
+      token: null,
       authMode: user ? 'authenticated' : 'guest',
       isLoading,
       getAccessToken,

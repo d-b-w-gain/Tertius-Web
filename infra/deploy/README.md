@@ -26,7 +26,7 @@ That keeps Flux focused on deployable configuration instead of the whole applica
 The `infra/charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
 
 - **UI Deployment and Service**: Nginx serves the built React/Vite app. Browser traffic uses one origin, with `/api/*` reverse-proxied from Nginx to the API Service.
-- **API Deployment and Service**: FastAPI serves workflow APIs, validates Keycloak tokens, and uses Postgres for tenant-scoped state and generated artifacts.
+- **API Deployment and Service**: FastAPI serves workflow APIs, owns browser login through a Backend-for-Frontend auth flow, refreshes Keycloak tokens server-side, and uses Postgres for tenant-scoped state, auth sessions, and generated artifacts.
 - **CloudNativePG application database**: Provides the Tertius Postgres database through a `postgresql.cnpg.io/v1` `Cluster`.
 - **Valkey**: Redis-compatible cache service installed from the chart dependency.
 - **Keycloak**: Identity provider managed through the Keycloak Operator, backed by a separate CloudNativePG database.
@@ -49,7 +49,7 @@ tertius-ui Service
   +-- /api/* -> nginx reverse proxy -> tertius-api Service -> FastAPI
 ```
 
-Keycloak handles browser login and token issuance. The API validates bearer tokens against the configured Keycloak realm and audience before serving tenant-scoped project data.
+The API handles browser login through `/api/auth/*`, stores Keycloak access and refresh tokens in the database-backed `auth_sessions` table, and sends the browser only an HttpOnly session cookie plus a CSRF cookie. Browser API calls use same-origin cookies; browser code does not store or refresh OIDC tokens directly.
 
 ## Flux Layout
 
@@ -88,6 +88,11 @@ stringData:
       environment: production
       config:
         apiBasePath: /api
+        keycloakIssuerUrl: https://<public-origin>/realms/tertius
+        keycloakJwksUrlOverride: auto
+        authCookieSecure: true
+        authSessionIdleSeconds: 604800
+        authSessionMaxSeconds: 2592000
         oidcIssuerUrl: https://<keycloak-host>/realms/tertius
         oidcClientId: tertius-ui
         oidcAudience: tertius-api
@@ -105,12 +110,32 @@ stringData:
     keycloak:
       hostname: https://<keycloak-host>
       adminHostname: https://<keycloak-admin-host>
+      realmImport:
+        uiPublicClient: false
+        uiClientSecret: <same-secret-as-OIDC_CLIENT_SECRET>
     cloudflared:
       enabled: true
       tunnelTokenSecretName: cloudflared-token
 ```
 
 Create the referenced application Secret separately if `app.secretName` is set. It should provide sensitive runtime values such as `DATABASE_URL`, `VALKEY_URL`, OIDC client secrets if needed, and any environment-specific credentials.
+
+For cookie-backed browser sessions, the referenced application Secret must include a stable `AUTH_SESSION_SECRET` and should include `OIDC_CLIENT_SECRET` for a confidential Keycloak client:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tertius-app-secret
+  namespace: tertius
+stringData:
+  DATABASE_URL: ""
+  VALKEY_URL: redis://tertius-valkey:6379/0
+  OIDC_CLIENT_SECRET: <generated-keycloak-client-secret>
+  AUTH_SESSION_SECRET: <stable-random-32-byte-or-longer-secret>
+```
+
+`AUTH_SESSION_SECRET` must remain stable across API deploys, or in-progress OAuth login state cookies will stop validating. Existing logged-in sessions are stored in Postgres and continue across API/UI rollouts as long as the `auth_sessions` table, Keycloak session, and app Secret remain intact.
 
 Cloudflare tunnel tokens, database passwords, image pull credentials, and Keycloak admin credentials should be managed outside Git, then referenced by chart values.
 

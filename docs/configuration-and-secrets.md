@@ -6,9 +6,12 @@ are the source for credentials and prompts that must not be committed.
 
 ## ConfigMap
 
-The Helm chart renders `app.config` into the `tertius-config` ConfigMap.
-Only the API receives LLM settings. UI pods and compile jobs must not receive
-LLM provider settings, API keys, or prompts.
+The Helm chart renders non-secret runtime settings into the `tertius-config`
+ConfigMap. Most entries come from `app.config`; Keycloak session lifetime
+entries mirror `keycloak.realmImport` values so operators can inspect the
+active auth lifetime contract in one place. Only the API receives LLM settings.
+UI pods and compile jobs must not receive LLM provider settings, API keys, or
+prompts.
 
 | Helm value | Environment variable | Used by | Purpose |
 | --- | --- | --- | --- |
@@ -18,9 +21,17 @@ LLM provider settings, API keys, or prompts.
 | `app.config.keycloakAudience` | `KEYCLOAK_AUDIENCE` | API | API audience claim. |
 | `app.config.keycloakAuthorizedParty` | `KEYCLOAK_AUTHORIZED_PARTY` | API | UI authorized party claim. |
 | `app.config.keycloakJwksUrlOverride` | `KEYCLOAK_JWKS_URL_OVERRIDE` | API | Optional internal JWKS URL. |
-| `app.config.oidcIssuerUrl` | `OIDC_ISSUER_URL` | UI | Browser OIDC issuer. |
-| `app.config.oidcClientId` | `OIDC_CLIENT_ID` | UI | Browser OIDC client id. |
-| `app.config.oidcAudience` | `OIDC_AUDIENCE` | UI | Browser-requested API audience. |
+| `keycloak.realmImport.accessTokenLifespanSeconds` | `KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS` | Keycloak realm import | Access token lifetime. |
+| `keycloak.realmImport.ssoSessionIdleTimeoutSeconds` | `KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS` | Keycloak realm import | Rolling SSO idle timeout; token refresh extends this window. |
+| `keycloak.realmImport.ssoSessionMaxLifespanSeconds` | `KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS` | Keycloak realm import | Hard SSO session cap. |
+| `keycloak.realmImport.clientSessionIdleTimeoutSeconds` | `KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS` | Keycloak realm import | Rolling client session idle timeout; token refresh extends this window. |
+| `keycloak.realmImport.clientSessionMaxLifespanSeconds` | `KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS` | Keycloak realm import | Hard client session cap. |
+| `app.config.authCookieSecure` | `AUTH_COOKIE_SECURE` | API | Whether auth cookies require HTTPS. Production should be `true`; local HTTP uses `false`. |
+| `app.config.authSessionIdleSeconds` | `AUTH_SESSION_IDLE_SECONDS` | API | Rolling API cookie-session idle timeout. |
+| `app.config.authSessionMaxSeconds` | `AUTH_SESSION_MAX_SECONDS` | API | Hard API cookie-session max lifetime. |
+| `app.config.oidcIssuerUrl` | `OIDC_ISSUER_URL` | API | Optional OIDC issuer metadata value for BFF auth integrations. |
+| `app.config.oidcClientId` | `OIDC_CLIENT_ID` | API | OIDC client id used by API BFF auth endpoints. |
+| `app.config.oidcAudience` | `OIDC_AUDIENCE` | API | OIDC audience metadata value. |
 | `app.config.natsUrl` | `NATS_URL` | API, compile worker | NATS connection URL. |
 | `app.config.compileStreamName` | `COMPILE_STREAM_NAME` | API, compile worker | Compile stream. |
 | `app.config.compileRequestSubject` | `COMPILE_REQUEST_SUBJECT` | API, compile worker | Compile command subject. |
@@ -61,6 +72,7 @@ LLM provider settings, API keys, or prompts.
 | `app.secret.databaseUrl` | `DATABASE_URL` | API | Optional complete database URL override. |
 | `app.secret.valkeyUrl` | `VALKEY_URL` | API | Valkey URL. |
 | `app.secret.oidcClientSecret` | `OIDC_CLIENT_SECRET` | API | OIDC confidential client secret, if enabled. |
+| `app.secret.authSessionSecret` | `AUTH_SESSION_SECRET` | API | Stable signing secret for OAuth login state cookies. |
 | `app.llmSecret.apiKey` | `LLM_API_KEY` | API | LLM provider API key. |
 | `app.llmSecret.fileEditSystemPrompt` | `LLM_FILE_EDIT_SYSTEM_PROMPT` | API | File-edit system prompt. |
 | `cloudflared.tunnelTokenSecretName` | `TUNNEL_TOKEN` | cloudflared | Cloudflare tunnel token. |
@@ -68,6 +80,28 @@ LLM provider settings, API keys, or prompts.
 
 Production should normally set `app.secretName`, `app.llmSecretName`, database
 secret names, and tunnel token secret names to externally managed Secrets.
+
+## Browser Auth Sessions
+
+Browser authentication uses a Backend-for-Frontend flow. The API performs the
+OIDC authorization-code exchange, stores access and refresh tokens in the
+database-backed `auth_sessions` table, and sends the browser only an HttpOnly
+session cookie plus a readable CSRF cookie. Browser code no longer stores or
+refreshes OIDC tokens directly.
+
+The API refreshes the stored access token with the stored refresh token when an
+authenticated request arrives near access-token expiry. `AUTH_SESSION_IDLE_SECONDS`
+is extended by authenticated activity up to `AUTH_SESSION_MAX_SECONDS`; Keycloak
+also enforces the configured SSO/client idle and max lifetimes.
+
+Production should use a confidential Keycloak client by setting
+`keycloak.realmImport.uiPublicClient=false`, setting
+`keycloak.realmImport.uiClientSecret` in the production values Secret, and
+setting the same value as `OIDC_CLIENT_SECRET` in the app Secret. Also set
+`AUTH_SESSION_SECRET` from an externally managed Secret and keep it stable
+across deploys. The local chart can run without `OIDC_CLIENT_SECRET` by using
+PKCE with the public local client, but production should not rely on
+browser-held tokens.
 
 ## LLM Model Schema
 
