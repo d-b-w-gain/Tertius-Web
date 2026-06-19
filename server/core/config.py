@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     auth_csrf_cookie_name: str = Field(default="tertius_csrf")
     auth_oauth_state_cookie_name: str = Field(default="tertius_oauth_state")
     auth_cookie_secure: bool = Field(default=True)
+    auth_allow_insecure_oauth_state_secret: bool = Field(default=False)
     auth_session_idle_seconds: int = Field(default=604800, gt=0)
     auth_session_max_seconds: int = Field(default=2592000, gt=0)
     artifact_retention_limit: int = Field(default=10)

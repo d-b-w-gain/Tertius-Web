@@ -537,6 +537,19 @@ def _llm_edit_job_files(job: LlmEditJob) -> list[dict[str, Any]]:
     return projected
 
 
+def _llm_edit_job_model(job: LlmEditJob) -> str | None:
+    result_payload = job.result_payload or {}
+    result_model = result_payload.get("model")
+    if isinstance(result_model, str) and result_model:
+        return result_model
+
+    request_payload = job.request_payload or {}
+    request_model = request_payload.get("model_id")
+    if isinstance(request_model, str) and request_model:
+        return request_model
+    return None
+
+
 def _serialize_llm_edit_history_message(
     job: LlmEditJob,
     compile_job: CompileJob | None,
@@ -553,7 +566,7 @@ def _serialize_llm_edit_history_message(
         "created_at": job.created_at.isoformat(),
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "status": job.status,
-        "model": result_payload.get("model"),
+        "model": _llm_edit_job_model(job),
         "usage": result_payload.get("usage"),
         "files": _llm_edit_job_files(job),
         "requested_file_count": len(request_files) if isinstance(request_files, list) else 0,

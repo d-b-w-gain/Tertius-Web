@@ -19,6 +19,8 @@ import build123d as bd
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
+from core.compile_runtime import hydrate_project_files
+from core.compile_sandbox import run_compile_sandbox
 from core.db import get_db
 from core.models import ProjectFile, TimusSettings, UserWorkspaceState, Project, CompileJob, Artifact
 from core.repositories import ProjectRepository, CompileRepository
@@ -84,6 +86,20 @@ def _get_project_design_file(name: str, ctx: AuthContext, db: Session) -> Projec
             ProjectFile.filename == "design.py",
         )
     )
+
+
+def get_bounds_from_project_files(files: dict[str, str]) -> float:
+    with hydrate_project_files(files) as project_dir:
+        result = run_compile_sandbox(
+            project_dir,
+            "timus_bounds",
+            timeout_seconds=get_settings().compile_timeout_seconds,
+        )
+        if not result.success or result.output_path is None:
+            raise RuntimeError(result.error or "Bounds compile failed")
+
+        payload = json.loads(result.output_path.read_text(encoding="utf-8"))
+        return float(payload["max_dim"])
 
 
 def get_compound_from_code(code: str, project_dir: str | None = None) -> bd.Compound:
@@ -757,9 +773,7 @@ def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     project = get_active_project(db, ctx)
     if project is None:
-        print("TIMUS PROJECT NAME IS NONE")
         return {"project_name": ""}
-    print(f"TIMUS PROJECT NAME IS {project.name}")
     return {"project_name": project.name}
 
 
@@ -840,17 +854,12 @@ def get_project_bounds(
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
-    design_file = _get_project_design_file(name, ctx, db)
-    if design_file is None:
+    files = ProjectRepository(db, ctx.tenant_id).files_for_runtime(name)
+    if files is None or "design.py" not in files:
         return Response("Project not found", status_code=404)
 
     try:
-        compound = get_compound_from_code(design_file.content)
-        bbox = compound.bounding_box()
-        max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
-        if max_dim == 0:
-            max_dim = 100
-        return {"max_dim": max_dim}
+        return {"max_dim": get_bounds_from_project_files(files)}
     except Exception as e:
         traceback.print_exc()
         return Response(f"Internal Server Error: {str(e)}", status_code=500)

@@ -3,6 +3,18 @@ from core.config import Settings
 from llm_test_helpers import TEST_FILE_EDIT_SYSTEM_PROMPT, TEST_LLM_MODEL_ID, TEST_LLM_MODELS_JSON
 
 
+def test_server_env_example_matches_settings_fields():
+    env_example = config.SERVER_ENV_FILE.with_name(".env.example")
+    actual = {
+        line.split("=", 1)[0]
+        for line in env_example.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    expected = {name.upper() for name in Settings.model_fields}
+
+    assert actual == expected
+
+
 def test_settings_parse_allowed_origins():
     settings = Settings(
         database_url="postgresql+psycopg://tertius:tertius@localhost:5432/tertius",

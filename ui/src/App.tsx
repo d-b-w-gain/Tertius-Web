@@ -11,9 +11,6 @@ import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
 import { importGuestWorkspace } from './workflows/shared/guestImport'
 import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
 
-declare const __GIT_COMMIT__: string
-declare const __GIT_COMMIT_DATE__: string
-
 function App() {
   const { authMode, getAccessToken, isLoading } = useAuth()
   const [activeTab, setActiveTab] = useState('generate')
@@ -181,7 +178,7 @@ function App() {
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Commit:</span>
-                    <span className="text-slate-200 font-mono">{typeof __COMMIT_HASH__ !== 'undefined' ? __COMMIT_HASH__ : 'dev'}</span>
+                    <span className="text-slate-200 font-mono">{__GIT_COMMIT__}</span>
                   </div>
                   <div className="pt-2 border-t border-slate-700">
                     <a 
