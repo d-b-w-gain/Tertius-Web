@@ -24,6 +24,7 @@ from core.nats_client import NatsPublisher, Publisher
 
 
 logger = logging.getLogger(__name__)
+MAX_PROVIDER_ERROR_MESSAGE_CHARS = 500
 
 
 class LlmNotConfiguredError(RuntimeError):
@@ -318,6 +319,22 @@ def _provider_exception_status(exc: Exception) -> int | None:
     return None
 
 
+def _provider_exception_message(exc: Exception) -> str:
+    exc_name = type(exc).__name__
+    status_code = _provider_exception_status(exc)
+    detail = " ".join(str(exc).strip().split())
+    if len(detail) > MAX_PROVIDER_ERROR_MESSAGE_CHARS:
+        detail = f"{detail[:MAX_PROVIDER_ERROR_MESSAGE_CHARS]}..."
+
+    parts = [f"LLM provider request failed ({exc_name}"]
+    if status_code is not None:
+        parts[0] += f", HTTP {status_code}"
+    parts[0] += ")"
+    if detail:
+        parts.append(detail)
+    return ": ".join(parts)
+
+
 def _classify_provider_exception(exc: Exception) -> RuntimeError:
     status_code = _provider_exception_status(exc)
     exc_name = type(exc).__name__
@@ -325,7 +342,7 @@ def _classify_provider_exception(exc: Exception) -> RuntimeError:
         return LlmProviderAuthenticationError("LLM provider authentication failed")
     if status_code == 429 or exc_name == "RateLimitError":
         return LlmProviderRateLimitError("LLM provider rate limit exceeded")
-    return LlmGenerationError("LLM provider request failed")
+    return LlmGenerationError(_provider_exception_message(exc))
 
 
 def _anthropic_parts_to_text(content) -> str:
@@ -428,6 +445,11 @@ async def generate_build_script(
                 max_tokens=settings.llm_max_output_tokens,
             )
     except Exception as exc:
+        logger.exception(
+            "LLM provider build-script request failed model_id=%s api=%s",
+            model_config.id,
+            model_config.api,
+        )
         raise _classify_provider_exception(exc) from exc
     content = response.choices[0].message.content or ""
     usage = extract_usage(response)
@@ -755,6 +777,11 @@ async def generate_file_edits(
                 response_format={"type": "json_object"},
             )
     except Exception as exc:
+        logger.exception(
+            "LLM provider file-edit request failed model_id=%s api=%s",
+            model_config.id,
+            model_config.api,
+        )
         raise _classify_provider_exception(exc) from exc
     usage = extract_usage(response)
     provider_request_id = getattr(response, "id", None)

@@ -168,7 +168,7 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     assert settings.llm_models == []
     assert settings.llm_api_key == ""
     assert settings.llm_file_edit_system_prompt == ""
-    assert settings.llm_timeout_seconds == 60
+    assert settings.llm_timeout_seconds == 480
     assert settings.llm_max_output_tokens == 2048
     assert settings.llm_file_edit_max_output_tokens == 65536
     assert settings.llm_file_edit_max_context_files == 20

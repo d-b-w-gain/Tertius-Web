@@ -570,6 +570,12 @@ def _serialize_llm_edit_history_message(
     }
 
 
+def _llm_edit_stale_after_seconds(settings) -> int:
+    # OpenAI-compatible clients retry provider timeouts by default. Keep the
+    # watchdog outside that retry window so polling cannot fail a live job.
+    return settings.llm_timeout_seconds * 4 + 30
+
+
 async def _run_llm_file_edit_core(
     *,
     db,
@@ -814,11 +820,12 @@ async def _run_llm_file_edit_job(
             user_message="LLM provider rate limit exceeded",
             retryable=True,
         )
-    except LlmGenerationError:
+    except LlmGenerationError as exc:
+        message = str(exc) or "LLM generation failed"
         fail_job(
             status="failed",
-            error="LLM generation failed",
-            user_message="LLM generation failed",
+            error=message,
+            user_message=message,
             retryable=True,
         )
     except LlmBillingError:
@@ -979,7 +986,7 @@ def list_llm_file_edit_jobs(
     settings = get_settings()
     llm_edit_repo.reconcile_stale_jobs_for_project(
         project.id,
-        older_than_seconds=settings.llm_timeout_seconds + 30,
+        older_than_seconds=_llm_edit_stale_after_seconds(settings),
     )
     db.commit()
 
@@ -1019,7 +1026,7 @@ def get_llm_file_edit_job_status(
     job = llm_edit_repo.reconcile_stale_job(
         project.id,
         job.id,
-        older_than_seconds=settings.llm_timeout_seconds + 30,
+        older_than_seconds=_llm_edit_stale_after_seconds(settings),
     )
     db.commit()
     if job is None:
@@ -1116,12 +1123,13 @@ async def generate_project_build_script(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"success": False, "error": str(exc), "retryable": True},
         )
-    except LlmGenerationError:
+    except LlmGenerationError as exc:
         logger.exception("LLM build script generation failed")
         db.rollback()
+        message = str(exc) or "LLM generation failed"
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM generation failed", "retryable": True},
+            content={"success": False, "error": message, "retryable": True},
         )
     except LlmBillingError:
         logger.exception("LLM billing failed")
@@ -1364,11 +1372,12 @@ async def llm_edit_files(
             status_code=status.HTTP_502_BAD_GATEWAY,
             content={"success": False, "error": "LLM response was truncated", "retryable": True},
         )
-    except LlmGenerationError:
+    except LlmGenerationError as exc:
         db.rollback()
+        message = str(exc) or "LLM generation failed"
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM generation failed", "retryable": True},
+            content={"success": False, "error": message, "retryable": True},
         )
     except LlmInvalidFileEditError as exc:
         logger.debug("LLM file edit response rejected: %s", exc)
