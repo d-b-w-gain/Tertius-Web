@@ -2,10 +2,10 @@
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from uuid import UUID, uuid4
 from pydantic import BaseModel
-from fastapi import Depends, FastAPI, status
+from fastapi import BackgroundTasks, Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -41,7 +41,7 @@ from core.llm_client import (
     select_llm_model,
 )
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
-from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
+from core.models import LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
 from core.repositories import (
     CompileRepository,
@@ -49,6 +49,7 @@ from core.repositories import (
     ProjectRepository,
     normalize_file_version,
     require_valid_python_filename,
+    LlmEditRepository,
 )
 from workflows.intus.usage_server import llm_usage_router, router as usage_router
 
@@ -404,56 +405,465 @@ async def compile_project(
             content={"success": True, "job_id": str(job.id), "status": "queued", "format": ext},
         )
 
-    except Exception as exc:
-        if job_id is not None:
-            db.rollback()
-            if committed:
-                persisted_job = db.get(CompileJob, job_id)
-                if persisted_job is not None:
-                    compile_repo = CompileRepository(db, persisted_job.tenant_id)
-                    compile_repo.mark_job_publish_pending(
-                        persisted_job,
-                        error=f"Compile command publish failed: {exc}",
-                    )
-                    db.commit()
+
+def _serialize_llm_edit_result(
+    result,
+    snapshot,
+    changed_files,
+):
+    by_id = {row.id: row for row in changed_files}
+    return {
+        "success": True,
+        "outcome": result.outcome,
+        "message": result.message,
+        "provider": result.provider,
+        "model": result.model,
+        "usage": result.usage.model_dump(),
+        "cost_usd": result.cost_usd,
+        "snapshot": (
+            {
+                "id": str(snapshot.id),
+                "message": snapshot.message,
+                "content_hash": snapshot.content_hash,
+            }
+            if snapshot is not None
+            else None
+        ),
+        "files": [
+            {
+                "id": str(edit.file_id),
+                "filename": by_id[edit.file_id].filename,
+                "content": edit.content,
+                "updated_at": by_id[edit.file_id].updated_at.isoformat(),
+                "changed": True,
+                "summary": edit.summary,
+            }
+            for edit in result.files
+            if edit.file_id in by_id
+        ],
+    }
+
+
+async def _run_llm_file_edit_core(
+    *,
+    db,
+    repo: ProjectRepository,
+    settings,
+    req,
+    project,
+    ctx,
+) -> tuple[Any, Any, list]:
+    request_files = req.files
+    for pointer in request_files:
+        require_valid_python_filename(pointer.filename)
+
+    seen_ids: set[UUID] = set()
+    for pointer in request_files:
+        if pointer.id in seen_ids:
+            raise ValueError("Duplicate file id in request")
+        seen_ids.add(pointer.id)
+
+    if req.active_file_id is not None and req.active_file_id not in seen_ids:
+        raise ValueError("Active file id is not in the request")
+
+    file_rows = repo.files_by_ids(project.name, [pointer.id for pointer in request_files])
+    if set(file_rows) != seen_ids:
+        raise FileNotFoundError("File not found")
+
+    for pointer in request_files:
+        if file_rows[pointer.id].filename != pointer.filename:
+            raise ValueError("File pointer does not match filename")
+        if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
+            raise FileVersionConflictError("Files changed while AI edit was running")
+
+    editable_files = [
+        LlmEditableFile(
+            id=row.id, filename=row.filename, content=row.content
+        )
+        for row in [file_rows[pointer.id] for pointer in request_files]
+    ]
+
+    if not settings.llm_api_key:
+        raise LlmNotConfiguredError("LLM provider is not configured")
+
+    model_config = select_llm_model(settings, req.model_id)
+    selected_files = select_llm_edit_context_files(
+        prompt=req.prompt,
+        active_file_id=req.active_file_id,
+        files=editable_files,
+        max_files=settings.llm_file_edit_max_context_files,
+        max_chars=settings.llm_file_edit_max_context_chars,
+    )
+    estimated_usage = estimate_file_edit_usage(
+        req,
+        selected_files,
+        max_output_tokens=settings.llm_file_edit_max_output_tokens,
+        system_prompt=settings.llm_file_edit_system_prompt,
+    )
+    assert_llm_usage_allowed(
+        db,
+        settings,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        estimated_tokens=estimated_usage.total_tokens,
+        estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
+    )
+    result = await generate_file_edits(
+        req,
+        files=selected_files,
+        settings=settings,
+        auth=ctx,
+        project_id=project.id,
+    )
+
+    changed_files: list = []
+    snapshot = None
+    if result.outcome == "changed":
+        requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
+        changed_ids = {edit.file_id for edit in result.files}
+        requested_rows = repo.files_by_ids(project.name, list(changed_ids))
+        if set(requested_rows) != changed_ids:
+            raise FileNotFoundError("File not found")
+        for file_id in changed_ids:
+            expected_updated_at = requested_versions[file_id]
+            if normalize_file_version(requested_rows[file_id].updated_at) != normalize_file_version(expected_updated_at):
+                raise FileVersionConflictError("Files changed while AI edit was running")
+
+        updates = {edit.file_id: edit.content for edit in result.files}
+        changed_versions = {file_id: requested_versions[file_id] for file_id in updates}
+        stage_result = repo.stage_file_updates(
+            project.name,
+            updates,
+            ctx.user_id,
+            f"LLM edit: {req.prompt[:480]}",
+            expected_updated_at=changed_versions,
+        )
+        if stage_result is None:
+            raise ValueError("LLM returned no file changes")
+        snapshot, changed_files = stage_result
+        if not changed_files:
+            raise LlmInvalidFileEditError("changed outcome did not change any files")
+
+    billing_publisher, billing_nc = await create_billing_publisher(settings)
+    try:
+        billing_event_id = uuid4()
+        result.billing_event_id = billing_event_id
+        await publish_file_edit_billing_event(
+            billing_publisher=billing_publisher,
+            settings=settings,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            event_id=billing_event_id,
+        )
+        record_llm_usage(
+            db,
+            auth=ctx,
+            project_id=project.id,
+            request=req,
+            result=result,
+            provider_request_id=getattr(result, "provider_request_id", None),
+            event_id=getattr(result, "billing_event_id", None),
+            settings=settings,
+            operation="files.llm_edit",
+        )
+    finally:
+        if billing_nc is not None:
+            try:
+                await billing_nc.flush()
+            except Exception:
+                logger.exception("Failed to flush LLM billing NATS connection")
+            finally:
+                try:
+                    await billing_nc.close()
+                except Exception:
+                    logger.exception("Failed to close LLM billing NATS connection")
+
+    return result, snapshot, changed_files
+
+
+async def _run_llm_file_edit_job(
+    *,
+    job_id: UUID,
+    project_name: str,
+    request_payload: dict[str, Any],
+    tenant_id: UUID,
+    user_id: UUID,
+    keycloak_subject: str,
+    email: str | None,
+) -> None:
+    db = None
+    job: LlmEditJob | None = None
+    project: Project | None = None
+    job_repo: LlmEditRepository | None = None
+
+    def fail_job(
+        status: str,
+        *,
+        error: str | None = None,
+        error_code: str | None = None,
+        user_message: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        nonlocal job, project
+        if db is None or job is None or project is None:
+            return
+        if job_repo is None:
+            return
+        db.rollback()
+        job = job_repo.get_job(project.id, job_id)
+        if job is not None:
+            job_repo.finish_job(
+                job,
+                status=status,
+                error=error,
+                error_code=error_code,
+                user_message=user_message,
+                retryable=retryable,
+            )
+            db.commit()
+
+    try:
+        from core.db import SessionLocal
+
+        db = SessionLocal()
+        settings = get_settings()
+        repo = ProjectRepository(db, tenant_id)
+        job_repo = LlmEditRepository(db, tenant_id)
+        project = repo.get_project(project_name)
+        if project is None:
+            return
+
+        job = job_repo.get_job(project.id, job_id)
+        if job is None or job.status != "queued":
+            return
+
+        job_repo.mark_job_dispatched(job)
+        db.commit()
+
+        req = LlmFileEditInput.model_validate(request_payload)
+        ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
+        result, snapshot, changed_files = await _run_llm_file_edit_core(
+            db=db,
+            repo=repo,
+            settings=settings,
+            req=req,
+            project=project,
+            ctx=ctx,
+        )
+        db.commit()
+        job_repo.finish_job(
+            job=job_repo.get_job(project.id, job_id),
+            status="succeeded",
+            result_payload=_serialize_llm_edit_result(result, snapshot, changed_files),
+        )
+        db.commit()
+    except LlmUsageLimitExceeded:
+        fail_job(
+            status="failed",
+            error="LLM usage limit exceeded",
+            error_code="usage_limit_exceeded",
+            user_message="LLM generation limit exceeded.",
+            retryable=True,
+        )
+    except LlmNotConfiguredError:
+        fail_job(
+            status="failed",
+            error="LLM provider is not configured",
+            user_message="LLM provider is not configured",
+            retryable=False,
+        )
+    except LlmProviderAuthenticationError:
+        fail_job(
+            status="failed",
+            error="LLM provider authentication failed",
+            user_message="LLM provider authentication failed",
+            retryable=False,
+        )
+    except LlmProviderRateLimitError:
+        fail_job(
+            status="failed",
+            error="LLM provider rate limit exceeded",
+            user_message="LLM provider rate limit exceeded",
+            retryable=True,
+        )
+    except LlmGenerationError:
+        fail_job(
+            status="failed",
+            error="LLM generation failed",
+            user_message="LLM generation failed",
+            retryable=True,
+        )
+    except LlmBillingError:
+        fail_job(
+            status="failed",
+            error="LLM billing failed",
+            user_message="LLM billing failed",
+            retryable=True,
+        )
+    except LlmFileEditTruncatedError:
+        fail_job(
+            status="failed",
+            error="LLM response was truncated",
+            user_message="LLM response was truncated",
+            retryable=True,
+        )
+    except LlmInvalidFileEditError:
+        fail_job(
+            status="failed",
+            error="LLM returned invalid file edits",
+            user_message="LLM returned invalid file edits",
+            retryable=True,
+        )
+    except FileVersionConflictError:
+        fail_job(
+            status="failed",
+            error="Files changed while AI edit was running. Reload and try again.",
+            user_message="Files changed while AI edit was running. Reload and try again.",
+            retryable=False,
+        )
+    except ValueError as exc:
+        fail_job(
+            status="failed",
+            error=str(exc),
+            user_message=str(exc),
+            retryable=False,
+        )
+    except Exception:
+        logger.exception("LLM file edit job failed")
+        fail_job(
+            status="failed",
+            error="LLM generation failed",
+            user_message="LLM generation failed",
+            retryable=True,
+        )
+    finally:
+        if db is not None:
+            db.close()
+
+
+@app.post("/projects/{name}/files/llm-edit/jobs")
+def start_llm_file_edit_job(
+    name: str,
+    req: LlmFileEditInput,
+    background_tasks: BackgroundTasks,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    llm_edit_repo = LlmEditRepository(db, ctx.tenant_id)
+    try:
+        project = repo.get_project(name)
+        if project is None:
+            return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+
+        seen_ids: set[UUID] = set()
+        for pointer in req.files:
+            require_valid_python_filename(pointer.filename)
+            if pointer.id in seen_ids:
                 return JSONResponse(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    status_code=400,
+                    content={"success": False, "error": "Duplicate file id in request"},
+                )
+            seen_ids.add(pointer.id)
+
+        if req.active_file_id is not None and req.active_file_id not in seen_ids:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Active file id is not in the request"},
+            )
+
+        file_rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
+        if set(file_rows) != seen_ids:
+            return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
+
+        for pointer in req.files:
+            if file_rows[pointer.id].filename != pointer.filename:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "error": "File pointer does not match filename"},
+                )
+            if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
                     content={
                         "success": False,
-                        "job_id": str(job_id),
-                        "error": str(exc),
-                        "short": "Compile command publish failed",
-                        "user_message": "Compile queued but could not be published immediately. It will be retried.",
-                        "retryable": True,
+                        "error": "Files changed while AI edit was running. Reload and try again.",
+                        "retryable": False,
                     },
                 )
-            persisted_job = db.get(CompileJob, job_id)
-            if persisted_job is not None:
-                compile_repo.finish_job(
-                    persisted_job,
-                    "failed",
-                    error=f"Failed to enqueue compile job: {exc}",
-                    error_code="enqueue_failed",
-                    user_message="Compile could not be started. Try again.",
-                    retryable=True,
-                )
-                db.commit()
-            return JSONResponse(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                content={
-                    "success": False,
-                    "job_id": str(job_id),
-                    "error": str(exc),
-                    "short": "Failed to enqueue compile job",
-                    "user_message": "Compile could not be started. Try again.",
-                    "retryable": True,
-                },
-            )
-        return JSONResponse(status_code=200, content={
-            "success": False,
-            "error": str(exc),
-            "short": str(exc)
-        })
+
+        request_payload = req.model_dump(mode="json")
+        job = llm_edit_repo.start_job(
+            project_id=project.id,
+            user_id=ctx.user_id,
+            request_payload=request_payload,
+            status="queued",
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    except Exception:
+        logger.exception("Failed to enqueue LLM file edit job")
+        db.rollback()
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "success": False,
+                "error": "Could not enqueue LLM file edit job",
+                "retryable": True,
+            },
+        )
+
+    background_tasks.add_task(
+        _run_llm_file_edit_job,
+        job_id=job.id,
+        project_name=name,
+        request_payload=request_payload,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        keycloak_subject=ctx.keycloak_subject,
+        email=ctx.email,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"success": True, "job_id": str(job.id), "status": "queued"},
+    )
+
+
+@app.get("/projects/{name}/files/llm-edit/jobs/{job_id}")
+def get_llm_file_edit_job_status(
+    name: str,
+    job_id: UUID,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    llm_edit_repo = LlmEditRepository(db, ctx.tenant_id)
+    try:
+        project = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    job = llm_edit_repo.get_job(project.id, job_id)
+    if job is None:
+        return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
+
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "result": job.result_payload,
+        "error": job.error,
+        "error_code": job.error_code,
+        "user_message": job.user_message,
+        "retryable": job.retryable,
+        "created_at": job.created_at.isoformat(),
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
 
 
 @app.post("/projects/{name}/build-script/generate")

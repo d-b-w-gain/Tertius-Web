@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
@@ -638,6 +638,59 @@ class CompileRepository:
         self.db.add(artifact)
         self.db.flush()
         return artifact
+
+
+class LlmEditRepository:
+    def __init__(self, db: Session, tenant_id: UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+
+    def start_job(self, project_id: UUID, user_id: UUID, request_payload: dict, status: str = "queued") -> LlmEditJob:
+        job = LlmEditJob(
+            tenant_id=self.tenant_id,
+            project_id=project_id,
+            requested_by=user_id,
+            status=status,
+            request_payload=request_payload,
+        )
+        self.db.add(job)
+        self.db.flush()
+        return job
+
+    def get_job(self, project_id: UUID, job_id: UUID) -> LlmEditJob | None:
+        return self.db.scalar(
+            select(LlmEditJob).where(
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == project_id,
+                LlmEditJob.id == job_id,
+            )
+        )
+
+    def mark_job_dispatched(self, job: LlmEditJob) -> None:
+        job.status = "running"
+        job.error = None
+        job.error_code = None
+        job.user_message = None
+        job.retryable = False
+        job.attempt_count += 1
+
+    def finish_job(
+        self,
+        job: LlmEditJob,
+        status: str,
+        error: str | None = None,
+        error_code: str | None = None,
+        user_message: str | None = None,
+        retryable: bool = False,
+        result_payload: dict | None = None,
+    ) -> None:
+        job.status = status
+        job.error = error
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = retryable
+        job.result_payload = result_payload
+        job.finished_at = now_utc()
 
     def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)

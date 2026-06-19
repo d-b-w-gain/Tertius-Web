@@ -24,6 +24,9 @@ const COMPILE_QUALITY = 'sketch'
 const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000
 const COMPILE_STATUS_POLL_MS = 2_000
 const COMPILE_STATUS_RETRY_MS = 3_000
+const LLM_EDIT_STATUS_INITIAL_DELAY_MS = 1_000
+const LLM_EDIT_STATUS_POLL_MS = 1_500
+const LLM_EDIT_STATUS_RETRY_MS = 2_000
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string
@@ -109,6 +112,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const activeProjectRef = useRef('')
   const compileRequestRef = useRef(0)
   const compileTimerRef = useRef<number | undefined>(undefined)
+  const llmEditRequestRef = useRef(0)
+  const llmEditTimerRef = useRef<number | undefined>(undefined)
 
   useEffect(() => {
     activeProjectRef.current = activeProject
@@ -116,6 +121,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
   useEffect(() => () => {
     if (compileTimerRef.current) window.clearTimeout(compileTimerRef.current)
+    if (llmEditTimerRef.current) window.clearTimeout(llmEditTimerRef.current)
   }, [])
 
   const selectedMessage = messages.find(message => message.id === selectedMessageId)
@@ -283,6 +289,102 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     compileTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS)
   }, [getAccessToken, intusServerUrl, modelUrlForArtifact, updateAssistantMessage])
 
+  const applyLlmEditResult = useCallback((
+    result: LlmFileEditResult,
+    projectName: string,
+    assistantMessageId: string,
+    truncatedMessage?: string,
+  ) => {
+    recordAiBudgetUsage(result.usage.total_tokens)
+    const changedFiles = result.files.filter(file => file.changed !== false)
+    const fileSummary = result.files
+      .map(file => file.summary)
+      .filter(Boolean)
+      .join(' ')
+    const content = [
+      truncatedMessage,
+      result.outcome === 'changed'
+        ? `Updated ${changedFiles.length || result.files.length} file(s).`
+        : result.message || `AI returned ${result.outcome}.`,
+      result.model ? `Model: ${result.model}.` : '',
+      fileSummary,
+    ].filter(Boolean).join(' ')
+
+    updateAssistantMessage(assistantMessageId, current => ({
+      ...current,
+      content,
+      files: result.files.map(file => ({
+        filename: file.filename,
+        summary: file.summary,
+        changed: file.changed,
+      })),
+      usage: result.usage,
+      compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
+    }))
+
+    const nextMetadata = result.files.map(file => ({
+      id: file.id,
+      filename: file.filename,
+      updated_at: file.updated_at,
+    }))
+    setFileMetadata(prev => (
+      prev
+        .map(existing => nextMetadata.find(file => file.id === existing.id) || existing)
+        .concat(nextMetadata.filter(file => !prev.some(existing => existing.id === file.id))
+      )
+    ))
+
+    if (result.outcome === 'changed') {
+      setStatusText('AI edit applied. Queueing Intus compile.')
+      void queueCompile(projectName, changedFiles.length > 0 ? changedFiles : result.files, assistantMessageId)
+    } else {
+      setStatusText(result.message || `Generation completed with ${result.outcome}.`)
+    }
+  }, [queueCompile, updateAssistantMessage, setFileMetadata, setStatusText])
+
+  const pollLlmEditJob = useCallback((projectName: string, jobId: string, requestId: number, assistantMessageId: string) => {
+    const tick = async () => {
+      if (llmEditRequestRef.current !== requestId) return
+      try {
+        const response = await storage.getLlmFileEditJob(projectName, jobId)
+        if (response.status === 'succeeded') {
+          if (!response.result) {
+            updateAssistantMessage(assistantMessageId, current => ({
+              ...current,
+              content: `${current.content}\n\nAI edit returned no result payload.`,
+              compileStatus: 'failed',
+            }))
+            setStatusText('AI edit completed but returned no result payload.')
+            return
+          }
+          applyLlmEditResult(response.result, projectName, assistantMessageId)
+          return
+        }
+
+        if (response.status === 'failed') {
+          const message = jsonMessage(response, 'AI edit failed. Try again.')
+          updateAssistantMessage(assistantMessageId, current => ({
+            ...current,
+            content: `${current.content}\n\nAI edit failed: ${message}`,
+            compileStatus: 'failed',
+          }))
+          setStatusText(message)
+          return
+        }
+
+        updateAssistantMessage(assistantMessageId, current => ({
+          ...current,
+          compileStatus: response.status === 'queued' ? 'queued' : 'running',
+        }))
+        llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_POLL_MS)
+      } catch {
+        llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_RETRY_MS)
+      }
+    }
+
+    llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_INITIAL_DELAY_MS)
+  }, [applyLlmEditResult, setStatusText, storage, updateAssistantMessage])
+
   const queueCompile = useCallback(async (
     projectName: string,
     changedFiles: LlmFileEditResult['files'],
@@ -347,7 +449,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
     try {
       const { requestFiles, activeFileId, truncatedMessage } = await buildLlmEditRequest()
-      const result = await storage.applyLlmFileEdit(activeProject, {
+      const job = await storage.applyLlmFileEditJob(activeProject, {
         prompt: submittedPrompt,
         files: requestFiles.map(file => ({
           id: file.id,
@@ -358,46 +460,22 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         model_id: selectedModel?.id,
         metadata: { source: 'generate_design_window' },
       })
-
-      recordAiBudgetUsage(result.usage.total_tokens)
-      const changedFiles = result.files.filter(file => file.changed !== false)
-      const fileSummary = result.files
-        .map(file => file.summary)
-        .filter(Boolean)
-        .join(' ')
-      const content = [
-        truncatedMessage,
-        result.outcome === 'changed'
-          ? `Updated ${changedFiles.length || result.files.length} file(s).`
-          : result.message || `AI returned ${result.outcome}.`,
-        result.model ? `Model: ${result.model}.` : '',
-        fileSummary,
-      ].filter(Boolean).join(' ')
+      const requestId = llmEditRequestRef.current + 1
+      llmEditRequestRef.current = requestId
+      if (llmEditTimerRef.current) window.clearTimeout(llmEditTimerRef.current)
 
       updateAssistantMessage(assistantMessage.id, current => ({
         ...current,
-        content,
-        files: result.files.map(file => ({
-          filename: file.filename,
-          summary: file.summary,
-          changed: file.changed,
-        })),
-        usage: result.usage,
-        compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
+        content: 'AI edit is running...',
+        compileStatus: 'running',
       }))
-
-      const nextMetadata = result.files.map(file => ({
-        id: file.id,
-        filename: file.filename,
-        updated_at: file.updated_at,
-      }))
-      setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing))
-
-      if (result.outcome === 'changed') {
-        setStatusText('AI edit applied. Queueing Intus compile.')
-        await queueCompile(activeProject, changedFiles.length > 0 ? changedFiles : result.files, assistantMessage.id)
-      } else {
-        setStatusText(result.message || `Generation completed with ${result.outcome}.`)
+      setStatusText(`AI edit job ${job.job_id} queued.`)
+      pollLlmEditJob(activeProject, job.job_id, requestId, assistantMessage.id)
+      if (truncatedMessage) {
+        updateAssistantMessage(assistantMessage.id, current => ({
+          ...current,
+          content: `${current.content}\n${truncatedMessage}`,
+        }))
       }
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : 'Generate Design failed.'

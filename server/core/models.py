@@ -241,6 +241,29 @@ class LlmUsageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False, index=True)
 
 
+class LlmEditJob(Base):
+    __tablename__ = "llm_edit_jobs"
+    __table_args__ = (
+        UniqueConstraint("id", "project_id", "tenant_id", name="uq_llm_edit_jobs_id_project_tenant"),
+        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    user_message: Mapped[Optional[str]] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    request_payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class CompileJobFile(Base):
     __tablename__ = "compile_job_files"
     __table_args__ = (
