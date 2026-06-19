@@ -91,7 +91,7 @@ NATS monitoring is available locally at `http://localhost:8222`. Intus compile r
 
 ```bash
 cd server
-PYTHONPATH=. rtk uv run python -m workflows.intus.compile_worker
+PYTHONPATH=. uv run python -m workflows.intus.compile_job
 ```
 
 For the frontend, copy `ui/.env.example` or set:

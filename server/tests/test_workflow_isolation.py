@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -404,29 +405,37 @@ def test_timus_bounds_use_authenticated_tenant_db_design(
         )
     )
     db_design.content = tenant_code
+    db_session.add(
+        ProjectFile(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="shared.py",
+            content="SHARED_VALUE = 12",
+        )
+    )
     db_session.commit()
 
     captured = {}
 
-    class FakeBox:
-        min = type("Point", (), {"X": 0, "Y": 0, "Z": 0})()
-        max = type("Point", (), {"X": 12, "Y": 6, "Z": 3})()
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+        captured["export_format"] = export_format
+        captured["design"] = (project_dir / "design.py").read_text(encoding="utf-8")
+        captured["shared"] = (project_dir / "shared.py").read_text(encoding="utf-8")
+        output_path = project_dir / "output.timus_bounds"
+        output_path.write_text('{"max_dim": 12}', encoding="utf-8")
+        return SimpleNamespace(success=True, output_path=output_path, error=None)
 
-    class FakeCompound:
-        def bounding_box(self):
-            return FakeBox()
-
-    def fake_compound_from_code(code, project_dir=None):
-        captured["code"] = code
-        return FakeCompound()
-
-    monkeypatch.setattr(timus_server, "get_compound_from_code", fake_compound_from_code)
+    monkeypatch.setattr(timus_server, "run_compile_sandbox", fake_run_compile_sandbox)
 
     response = authenticated_timus_client.get("/projects/default_purlin/bounds")
 
     assert response.status_code == 200
     assert response.json() == {"max_dim": 12}
-    assert captured["code"] == tenant_code
+    assert captured == {
+        "export_format": "timus_bounds",
+        "design": tenant_code,
+        "shared": "SHARED_VALUE = 12",
+    }
 
 
 def test_timus_drafting_pdf_does_not_read_other_or_global_design(

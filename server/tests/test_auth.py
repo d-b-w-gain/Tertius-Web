@@ -219,6 +219,55 @@ def test_get_auth_context_rejects_malformed_token():
     assert exc.value.status_code == 401
 
 
+def test_oauth_state_secret_prefers_session_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="session-secret", oidc_client_secret="oidc-secret"),
+    )
+
+    assert app_main._auth_state_secret() == b"session-secret"
+
+
+def test_oauth_state_secret_falls_back_to_oidc_client_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="oidc-secret"),
+    )
+
+    assert app_main._auth_state_secret() == b"oidc-secret"
+
+
+def test_oauth_state_secret_requires_configured_secret(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=False),
+    )
+
+    with pytest.raises(RuntimeError, match="AUTH_SESSION_SECRET or OIDC_CLIENT_SECRET"):
+        app_main._auth_state_secret()
+
+
+def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=True),
+    )
+
+    assert app_main._auth_state_secret() == b"insecure-local-auth-state-secret"
+
+
 def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):
     settings = _patch_session_settings(monkeypatch)
     user_id = uuid4()

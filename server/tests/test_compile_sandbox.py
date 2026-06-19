@@ -44,6 +44,30 @@ def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
     assert result.output_path == tmp_path / "output.timus_views"
 
 
+def test_compile_sandbox_allows_timus_bounds_export(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DB_PASSWORD", "super-secret")
+    (tmp_path / "helper.py").write_text("WIDTH = 30\n", encoding="utf-8")
+    (tmp_path / "design.py").write_text(
+        """
+from pathlib import Path
+import os
+import build123d as bd
+from helper import WIDTH
+
+Path("leaked-secret.txt").write_text(os.environ.get("APP_DB_PASSWORD", ""), encoding="utf-8")
+part = bd.Box(WIDTH, 20, 10)
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "timus_bounds", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path == tmp_path / "output.timus_bounds"
+    assert json.loads(result.output_path.read_text(encoding="utf-8")) == {"max_dim": 30.0}
+    assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
+
+
 def test_compile_sandbox_preserves_build123d_part_color_in_glb(tmp_path):
     (tmp_path / "design.py").write_text(
         """

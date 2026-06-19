@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 from datetime import timedelta
 import hashlib
 import hmac
@@ -44,11 +45,38 @@ from workflows.intus.compile_result_consumer import run_result_consumer
 from core.provisioning import provision_user_context
 
 settings = get_settings()
-
-# Create the master Monolith app
-app = FastAPI(title="Tertius Monolith API")
 _compile_result_stop_event: asyncio.Event | None = None
 _compile_result_task: asyncio.Task | None = None
+
+
+async def start_compile_result_consumer():
+    global _compile_result_stop_event, _compile_result_task
+    _compile_result_stop_event = asyncio.Event()
+    _compile_result_task = asyncio.create_task(run_result_consumer(_compile_result_stop_event))
+
+
+async def stop_compile_result_consumer():
+    if _compile_result_stop_event is not None:
+        _compile_result_stop_event.set()
+    if _compile_result_task is not None:
+        _compile_result_task.cancel()
+        try:
+            await _compile_result_task
+        except asyncio.CancelledError:
+            pass
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await start_compile_result_consumer()
+    try:
+        yield
+    finally:
+        await stop_compile_result_consumer()
+
+
+# Create the master Monolith app
+app = FastAPI(title="Tertius Monolith API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,6 +103,8 @@ def read_me(ctx: AuthContext = Depends(get_auth_context)):
 def _auth_state_secret() -> bytes:
     secret = settings.auth_session_secret or settings.oidc_client_secret
     if not secret:
+        if not settings.auth_allow_insecure_oauth_state_secret:
+            raise RuntimeError("AUTH_SESSION_SECRET or OIDC_CLIENT_SECRET must be configured to sign OAuth state")
         secret = "insecure-local-auth-state-secret"
     return secret.encode("utf-8")
 
@@ -255,25 +285,6 @@ def auth_logout(request: Request, response: Response, db=Depends(get_db)):
             db.commit()
     clear_auth_cookies(response)
     return {"ok": True}
-
-
-@app.on_event("startup")
-async def start_compile_result_consumer():
-    global _compile_result_stop_event, _compile_result_task
-    _compile_result_stop_event = asyncio.Event()
-    _compile_result_task = asyncio.create_task(run_result_consumer(_compile_result_stop_event))
-
-
-@app.on_event("shutdown")
-async def stop_compile_result_consumer():
-    if _compile_result_stop_event is not None:
-        _compile_result_stop_event.set()
-    if _compile_result_task is not None:
-        _compile_result_task.cancel()
-        try:
-            await _compile_result_task
-        except asyncio.CancelledError:
-            pass
 
 
 # Mount the workflows to sub-paths
