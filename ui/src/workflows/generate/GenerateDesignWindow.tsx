@@ -183,9 +183,11 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     return metadata
   }, [storage])
 
-  const modelUrlForArtifact = useCallback((artifactId: string) => (
-    `${extusServerUrl}/artifacts/${artifactId}/model?t=${Date.now()}`
-  ), [extusServerUrl])
+  const modelUrlForArtifact = useCallback((artifactId: string, projectName?: string) => {
+    const query = new URLSearchParams({ t: String(Date.now()) })
+    if (projectName) query.set('project', projectName)
+    return `${extusServerUrl}/artifacts/${artifactId}/model?${query.toString()}`
+  }, [extusServerUrl])
 
   const conversationEntriesToMessages = useCallback((
     entries: LlmEditConversationEntry[],
@@ -230,7 +232,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           usage: entry.usage,
           model: entry.model,
           artifactId,
-          modelUrl: artifactId ? modelUrlForArtifact(artifactId) : undefined,
+          modelUrl: artifactId ? modelUrlForArtifact(artifactId, activeProjectRef.current) : undefined,
           compileStatus,
           jobId: entry.job_id,
           compileJobId: compile?.job_id,
@@ -378,7 +380,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
               ? `${current.content}\n\nCompiled ${format} artifact ${artifactId}.`
               : `${current.content}\n\nCompile succeeded, but no artifact id was returned.`,
             artifactId,
-            modelUrl: artifactId ? modelUrlForArtifact(artifactId) : current.modelUrl,
+            modelUrl: artifactId ? modelUrlForArtifact(artifactId, projectName) : current.modelUrl,
             compileStatus: 'succeeded',
           }))
           clearCompileTimer(jobId)
