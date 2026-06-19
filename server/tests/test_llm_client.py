@@ -86,7 +86,7 @@ class FakePublisher:
 async def test_generate_build_script_calls_openai_and_publishes_billing_event():
     client = FakeOpenAIClient()
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret")
+    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -111,7 +111,7 @@ async def test_generate_build_script_calls_openai_and_publishes_billing_event():
 
     assert result.script == "import build123d as bd\npart = bd.Box(1, 2, 3)"
     assert result.usage.prompt_tokens == 11
-    assert client.chat.completions.calls[0]["model"] == "deepseek-v4-flash"
+    assert client.chat.completions.calls[0]["model"] == "test-openai-compatible-model"
     assert client.chat.completions.calls[0]["max_tokens"] == 2048
     assert publisher.published[0][0] == "tertius.billing.usage.llm.tokens"
     billing_event = publisher.published[0][1]
@@ -135,7 +135,7 @@ async def test_generate_build_script_raises_when_billing_publish_fails():
     with pytest.raises(LlmBillingError):
         await generate_build_script(
             BuildScriptGenerationInput(prompt="make a bracket"),
-            settings=Settings(llm_api_key="secret"),
+            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
             auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc-test", email=None),
             project_id=uuid4(),
             openai_client=FakeOpenAIClient(),
@@ -599,7 +599,7 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     client = FakeOpenAIClient()
     client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret")
+    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -626,7 +626,7 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     assert result.files[0].summary == "rename length to span"
 
     call = client.chat.completions.calls[0]
-    assert call["model"] == "deepseek-v4-flash"
+    assert call["model"] == "test-openai-compatible-model"
     assert call["max_tokens"] == 65536
     assert call["response_format"] == {"type": "json_object"}
     assert len(call["messages"]) == 2
@@ -657,6 +657,7 @@ async def test_generate_file_edits_uses_settings_system_prompt():
     client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
     settings = Settings(
         llm_api_key="secret",
+        llm_model="test-openai-compatible-model",
         llm_file_edit_system_prompt="custom provider system prompt",
     )
 
@@ -701,7 +702,7 @@ async def test_generate_file_edits_rejects_truncated_response():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret"),
+            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -721,7 +722,7 @@ async def test_generate_file_edits_classifies_provider_authentication_failure():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret"),
+            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -739,7 +740,7 @@ async def test_generate_file_edits_does_not_publish_when_provider_returns_invali
         completions=FakeChatCompletions(content="not json at all")
     )
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret")
+    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -781,7 +782,7 @@ async def test_generate_file_edits_does_not_publish_when_file_id_is_unknown():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret"),
+            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -813,7 +814,7 @@ async def test_generate_file_edits_does_not_publish_when_files_duplicate():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret"),
+            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),

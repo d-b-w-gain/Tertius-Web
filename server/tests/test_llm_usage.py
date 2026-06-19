@@ -25,7 +25,7 @@ def _request(prompt: str = "make a bracket"):
 
 def _result(total_tokens: int = 30):
     return SimpleNamespace(
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=SimpleNamespace(
             prompt_tokens=10,
             completion_tokens=total_tokens - 10,
@@ -52,8 +52,8 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
     assert row.project_id == seeded_tenant.project_id
     assert row.workflow == "intus"
     assert row.operation == "build_script.generate"
-    assert row.provider == "deepseek"
-    assert row.model == "deepseek-v4-flash"
+    assert row.provider == "openai-compatible"
+    assert row.model == "test-openai-compatible-model"
     assert row.prompt == "make a bracket"
     assert row.prompt_tokens == 10
     assert row.completion_tokens == 20

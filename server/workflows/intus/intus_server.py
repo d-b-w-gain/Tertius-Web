@@ -117,8 +117,6 @@ async def create_billing_publisher(settings):
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _llm_provider_from_settings(settings) -> str:
-    if "deepseek" in settings.llm_base_url.lower():
-        return "deepseek"
     return "openai-compatible"
 
 

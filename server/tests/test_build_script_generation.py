@@ -19,7 +19,11 @@ class FakeBillingPublisher:
 
 
 def enable_llm(monkeypatch):
-    monkeypatch.setattr(intus_server, "get_settings", lambda: Settings(llm_api_key="test-key"))
+    monkeypatch.setattr(
+        intus_server,
+        "get_settings",
+        lambda: Settings(llm_api_key="test-key", llm_model="test-openai-compatible-model"),
+    )
 
 
 def test_build_script_generation_requires_existing_project(authenticated_intus_client):
@@ -61,13 +65,13 @@ def test_build_script_generation_returns_generated_script(authenticated_intus_cl
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
-            model="deepseek-v4-flash",
+            model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
             provider_request_id="chatcmpl-test",
             model_dump=lambda: {
                 "success": True,
                 "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
-                "model": "deepseek-v4-flash",
+                "model": "test-openai-compatible-model",
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
             },
         )
@@ -93,7 +97,7 @@ def test_build_script_generation_returns_generated_script(authenticated_intus_cl
     assert response.json() == {
         "success": True,
         "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
-        "model": "deepseek-v4-flash",
+        "model": "test-openai-compatible-model",
         "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
     }
 
@@ -124,13 +128,13 @@ def test_build_script_generation_public_mounted_route(db_session, seeded_tenant,
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
-            model="deepseek-v4-flash",
+            model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
             provider_request_id="chatcmpl-test",
             model_dump=lambda: {
                 "success": True,
                 "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
-                "model": "deepseek-v4-flash",
+                "model": "test-openai-compatible-model",
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
             },
         )
@@ -262,7 +266,7 @@ def test_build_script_generation_estimates_prompt_and_completion_tokens_for_quot
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
-            model="deepseek-v4-flash",
+            model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=2000, completion_tokens=2, total_tokens=2002),
             provider_request_id="chatcmpl-test",
         )

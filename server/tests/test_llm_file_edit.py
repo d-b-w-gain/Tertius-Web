@@ -42,7 +42,11 @@ class FakeBillingPublisher:
 
 
 def enable_llm(monkeypatch):
-    monkeypatch.setattr(intus_server, "get_settings", lambda: Settings(llm_api_key="test-key"))
+    monkeypatch.setattr(
+        intus_server,
+        "get_settings",
+        lambda: Settings(llm_api_key="test-key", llm_model="test-openai-compatible-model"),
+    )
 
 
 def file_pointer(file: ProjectFile) -> dict[str, str]:
@@ -150,7 +154,7 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
                 file_id=helper.id, content="def make_purlin():\n    return 1\n", summary="Update helper"
             ),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=100, completion_tokens=200, total_tokens=300),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -183,7 +187,7 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
     assert body["success"] is True
     assert body["outcome"] == "changed"
     assert body["message"] == ""
-    assert body["model"] == "deepseek-v4-flash"
+    assert body["model"] == "test-openai-compatible-model"
     assert body["usage"] == {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
     assert body["snapshot"]["id"]
     assert body["snapshot"]["content_hash"]
@@ -253,7 +257,7 @@ def test_llm_file_edit_allows_provider_to_return_changed_subset(
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=100, completion_tokens=200, total_tokens=300),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -319,7 +323,7 @@ def test_llm_file_edit_returns_409_when_file_version_changes_before_persist(
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -499,7 +503,7 @@ def test_llm_file_edit_no_change_returns_200_records_usage_without_snapshot(
         outcome="no_change",
         message="Already matches the request",
         files=[],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -561,7 +565,7 @@ def test_llm_file_edit_cannot_complete_returns_200_records_usage_without_snapsho
         outcome="cannot_complete",
         message="Creating a new file is required",
         files=[],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -621,7 +625,7 @@ def test_llm_file_edit_billing_failure_on_no_change_returns_503_without_snapshot
         outcome="no_change",
         message="Already matches the request",
         files=[],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -749,7 +753,7 @@ def test_llm_file_edit_returns_503_when_billing_publisher_unavailable(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
@@ -812,7 +816,7 @@ def test_llm_file_edit_returns_503_when_billing_publish_fails_after_provider(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=uuid4(),
@@ -883,7 +887,7 @@ def test_llm_file_edit_public_mounted_route(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
-        model="deepseek-v4-flash",
+        model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         provider_request_id="chatcmpl-test",
         billing_event_id=uuid4(),
@@ -927,7 +931,7 @@ def test_llm_file_edit_public_mounted_route(
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
-    assert body["model"] == "deepseek-v4-flash"
+    assert body["model"] == "test-openai-compatible-model"
     assert body["usage"] == {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
     assert body["snapshot"]["id"]
     assert len(body["files"]) == 1

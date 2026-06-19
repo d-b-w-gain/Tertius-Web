@@ -26,8 +26,8 @@ app:
     compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
-    llmBaseUrl: https://api.deepseek.com
-    llmModel: deepseek-v4-flash
+    llmBaseUrl: ""
+    llmModel: ""
     llmTimeoutSeconds: 60
     llmMaxOutputTokens: 2048
     llmFileEditMaxOutputTokens: 65536

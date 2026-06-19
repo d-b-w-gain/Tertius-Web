@@ -171,11 +171,13 @@ class LlmFileEditResult(BaseModel):
 def create_openai_client(settings):
     from openai import AsyncOpenAI
 
-    return AsyncOpenAI(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        timeout=settings.llm_timeout_seconds,
-    )
+    kwargs = {
+        "api_key": settings.llm_api_key,
+        "timeout": settings.llm_timeout_seconds,
+    }
+    if settings.llm_base_url:
+        kwargs["base_url"] = settings.llm_base_url
+    return AsyncOpenAI(**kwargs)
 
 
 def build_script_messages(request: BuildScriptGenerationInput) -> list[dict[str, str]]:
@@ -226,8 +228,8 @@ def extract_usage(response) -> TokenUsage:
 
 
 def _provider_from_settings(settings) -> str:
-    if "deepseek" in settings.llm_base_url.lower():
-        return "deepseek"
+    if settings.llm_base_url:
+        return "openai-compatible"
     return "openai-compatible"
 
 
@@ -263,6 +265,8 @@ async def generate_build_script(
 ) -> BuildScriptGenerationResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
+    if not settings.llm_model:
+        raise LlmNotConfiguredError("LLM model is not configured")
 
     client = openai_client or create_openai_client(settings)
     try:
@@ -548,6 +552,8 @@ async def generate_file_edits(
 ) -> LlmFileEditResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
+    if not settings.llm_model:
+        raise LlmNotConfiguredError("LLM model is not configured")
 
     allowed_file_ids = {file.id for file in files}
     client = openai_client or create_openai_client(settings)
