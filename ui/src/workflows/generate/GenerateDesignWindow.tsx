@@ -289,6 +289,43 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     compileTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS)
   }, [getAccessToken, intusServerUrl, modelUrlForArtifact, updateAssistantMessage])
 
+  const queueCompile = useCallback(async (
+    projectName: string,
+    changedFiles: LlmFileEditResult['files'],
+    assistantMessageId: string,
+  ) => {
+    const designChange = changedFiles.find(file => file.filename === 'design.py')
+    const code = designChange?.content || await storage.loadCode(projectName, 'design.py')
+    if (!code) throw new Error('Compile could not start because design.py could not be loaded.')
+
+    const requestId = compileRequestRef.current + 1
+    compileRequestRef.current = requestId
+    if (compileTimerRef.current) window.clearTimeout(compileTimerRef.current)
+
+    const response = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        export_format: COMPILE_FORMAT,
+        quality: COMPILE_QUALITY,
+        file: 'design.py',
+      }),
+    })
+    const data = await response.json()
+    if (!response.ok || !data.job_id) {
+      throw new Error(jsonMessage(data, 'Compile could not start after generation.'))
+    }
+
+    updateAssistantMessage(assistantMessageId, current => ({
+      ...current,
+      content: `${current.content}\n\nCompile queued as ${COMPILE_FORMAT}/${COMPILE_QUALITY}.`,
+      compileStatus: data.status === 'queued' ? 'queued' : 'running',
+    }))
+    setStatusText(`Compile job ${data.job_id} is ${data.status || 'queued'}.`)
+    pollCompileJob(projectName, data.job_id, requestId, assistantMessageId)
+  }, [getAccessToken, intusServerUrl, pollCompileJob, storage, updateAssistantMessage])
+
   const applyLlmEditResult = useCallback((
     result: LlmFileEditResult,
     projectName: string,
@@ -384,43 +421,6 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
     llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_INITIAL_DELAY_MS)
   }, [applyLlmEditResult, setStatusText, storage, updateAssistantMessage])
-
-  const queueCompile = useCallback(async (
-    projectName: string,
-    changedFiles: LlmFileEditResult['files'],
-    assistantMessageId: string,
-  ) => {
-    const designChange = changedFiles.find(file => file.filename === 'design.py')
-    const code = designChange?.content || await storage.loadCode(projectName, 'design.py')
-    if (!code) throw new Error('Compile could not start because design.py could not be loaded.')
-
-    const requestId = compileRequestRef.current + 1
-    compileRequestRef.current = requestId
-    if (compileTimerRef.current) window.clearTimeout(compileTimerRef.current)
-
-    const response = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        export_format: COMPILE_FORMAT,
-        quality: COMPILE_QUALITY,
-        file: 'design.py',
-      }),
-    })
-    const data = await response.json()
-    if (!response.ok || !data.job_id) {
-      throw new Error(jsonMessage(data, 'Compile could not start after generation.'))
-    }
-
-    updateAssistantMessage(assistantMessageId, current => ({
-      ...current,
-      content: `${current.content}\n\nCompile queued as ${COMPILE_FORMAT}/${COMPILE_QUALITY}.`,
-      compileStatus: data.status === 'queued' ? 'queued' : 'running',
-    }))
-    setStatusText(`Compile job ${data.job_id} is ${data.status || 'queued'}.`)
-    pollCompileJob(projectName, data.job_id, requestId, assistantMessageId)
-  }, [getAccessToken, intusServerUrl, pollCompileJob, storage, updateAssistantMessage])
 
   const submitPrompt = async (event: FormEvent) => {
     event.preventDefault()

@@ -41,7 +41,7 @@ from core.llm_client import (
     select_llm_model,
 )
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
-from core.models import LlmEditJob, Project, ProjectFile, UserWorkspaceState
+from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
 from core.repositories import (
     CompileRepository,
@@ -405,6 +405,57 @@ async def compile_project(
             content={"success": True, "job_id": str(job.id), "status": "queued", "format": ext},
         )
 
+    except Exception as exc:
+        if job_id is not None:
+            db.rollback()
+            if committed:
+                persisted_job = db.get(CompileJob, job_id)
+                if persisted_job is not None:
+                    compile_repo = CompileRepository(db, persisted_job.tenant_id)
+                    compile_repo.mark_job_publish_pending(
+                        persisted_job,
+                        error=f"Compile command publish failed: {exc}",
+                    )
+                    db.commit()
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "success": False,
+                        "job_id": str(job_id),
+                        "error": str(exc),
+                        "short": "Compile command publish failed",
+                        "user_message": "Compile queued but could not be published immediately. It will be retried.",
+                        "retryable": True,
+                    },
+                )
+            persisted_job = db.get(CompileJob, job_id)
+            if persisted_job is not None:
+                compile_repo.finish_job(
+                    persisted_job,
+                    "failed",
+                    error=f"Failed to enqueue compile job: {exc}",
+                    error_code="enqueue_failed",
+                    user_message="Compile could not be started. Try again.",
+                    retryable=True,
+                )
+                db.commit()
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "success": False,
+                    "job_id": str(job_id),
+                    "error": str(exc),
+                    "short": "Failed to enqueue compile job",
+                    "user_message": "Compile could not be started. Try again.",
+                    "retryable": True,
+                },
+            )
+        return JSONResponse(status_code=200, content={
+            "success": False,
+            "error": str(exc),
+            "short": str(exc)
+        })
+
 
 def _serialize_llm_edit_result(
     result,
@@ -654,7 +705,7 @@ async def _run_llm_file_edit_job(
         )
         db.commit()
         job_repo.finish_job(
-            job=job_repo.get_job(project.id, job_id),
+            job=job,
             status="succeeded",
             result_payload=_serialize_llm_edit_result(result, snapshot, changed_files),
         )
