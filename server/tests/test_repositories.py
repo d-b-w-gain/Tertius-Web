@@ -24,6 +24,7 @@ from core.models import (
 from core.repositories import (
     CompileRepository,
     FileVersionConflictError,
+    LlmEditRepository,
     ProjectRepository,
     require_valid_project_name,
     require_valid_python_filename,
@@ -222,6 +223,30 @@ def test_compile_repository_gets_job_and_artifact_by_scope(db_session, seeded_te
     assert fetched_artifact.id == artifact.id
 
 
+def test_compile_repository_persists_originating_llm_edit_job_id(db_session, seeded_tenant):
+    llm_repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    llm_job = llm_repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {"prompt": "Make a bracket", "files": []},
+        status="succeeded",
+    )
+    compile_repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+
+    compile_job = compile_repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        "glb",
+        status="queued",
+        originating_llm_edit_job_id=llm_job.id,
+    )
+    manual_job = compile_repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
+    db_session.commit()
+
+    assert db_session.get(CompileJob, compile_job.id).originating_llm_edit_job_id == llm_job.id
+    assert db_session.get(CompileJob, manual_job.id).originating_llm_edit_job_id is None
+
+
 def test_compile_repository_returns_none_for_wrong_project(db_session, seeded_tenant):
     repo = CompileRepository(db_session, seeded_tenant.tenant_id)
     job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
@@ -249,6 +274,51 @@ def test_compile_repository_validates_command_identity(db_session, seeded_tenant
     assert matched_job is not None
     assert matched_job.id == job.id
     assert repo.get_job_for_command(mismatched) is None
+
+
+def test_llm_edit_repository_lists_jobs_for_project_ordered_and_tenant_scoped(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo_a = LlmEditRepository(db_session, seeded["tenant_a"])
+    repo_b = LlmEditRepository(db_session, seeded["tenant_b"])
+    first = repo_a.start_job(seeded["project_a"], seeded["user_a"], {"prompt": "first", "files": []})
+    second = repo_a.start_job(seeded["project_a"], seeded["user_a"], {"prompt": "second", "files": []})
+    other_tenant = repo_b.start_job(seeded["project_b"], seeded["user_b"], {"prompt": "other", "files": []})
+    first.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    second.created_at = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    other_tenant.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    db_session.commit()
+
+    jobs = repo_a.list_jobs_for_project(seeded["project_a"])
+
+    assert [job.id for job in jobs] == [first.id, second.id]
+    assert other_tenant.id not in [job.id for job in jobs]
+    assert repo_a.list_jobs_for_project(seeded["project_a"], limit=1)[0].id == first.id
+
+
+def test_llm_edit_repository_gets_compile_job_for_llm_edit(db_session, seeded_tenant):
+    llm_repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    compile_repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    llm_job = llm_repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {"prompt": "Generate a fixture", "files": []},
+        status="succeeded",
+    )
+    linked_compile = compile_repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        "glb",
+        status="succeeded",
+        originating_llm_edit_job_id=llm_job.id,
+    )
+    compile_repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl", status="queued")
+    db_session.commit()
+
+    fetched = llm_repo.get_compile_job_for_llm_edit(seeded_tenant.project_id, llm_job.id)
+
+    assert fetched is not None
+    assert fetched.id == linked_compile.id
+    assert llm_repo.get_compile_job_for_llm_edit(seeded_tenant.project_id, uuid4()) is None
 
 
 def test_compile_repository_persists_structured_failure(db_session, seeded_tenant):

@@ -54,6 +54,30 @@ export type LlmFileEditJobStatus = {
   finished_at?: string | null
 }
 
+export type LlmEditConversationEntry = {
+  job_id: string
+  role?: 'user' | 'assistant'
+  prompt?: string
+  content?: string
+  created_at?: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  model?: string
+  usage?: LlmFileEditResult['usage']
+  files?: Array<{
+    filename: string
+    summary?: string
+    changed?: boolean
+  }>
+  requested_file_count?: number
+  compile?: {
+    job_id: string
+    status: 'queued' | 'running' | 'succeeded' | 'failed'
+    artifact_id?: string
+    export_format?: string
+    format?: string
+  } | null
+}
+
 export type LlmModelOption = {
   id: string
   label: string
@@ -106,6 +130,7 @@ export type ProjectStorage = {
     },
   ) => Promise<{ success: boolean; job_id: string; status: string }>
   getLlmFileEditJob: (projectName: string, jobId: string) => Promise<LlmFileEditJobStatus>
+  listLlmEditConversation: (projectName: string) => Promise<LlmEditConversationEntry[]>
   listLlmModels: () => Promise<LlmModelsResponse>
 }
 
@@ -167,6 +192,9 @@ function createGuestStorage(): ProjectStorage {
     },
     async getLlmFileEditJob() {
       throw new Error('Log in to use AI file edits')
+    },
+    async listLlmEditConversation() {
+      return []
     },
     async listLlmModels() {
       return { default_model_id: '', daily_budget_usd: 0, models: [] }
@@ -309,6 +337,12 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit/jobs/${jobId}`, getAccessToken)
       await requireOk(res, 'Failed to fetch LLM edit job status')
       return (await res.json()) as LlmFileEditJobStatus
+    },
+    async listLlmEditConversation(projectName) {
+      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit/jobs`, getAccessToken)
+      await requireOk(res, 'Failed to fetch LLM edit conversation')
+      const data = await res.json() as { messages?: LlmEditConversationEntry[] } | LlmEditConversationEntry[]
+      return Array.isArray(data) ? data : data.messages || []
     },
     async listLlmModels() {
       const res = await apiFetch(`${serverUrl}/llm-usage/models`, getAccessToken)

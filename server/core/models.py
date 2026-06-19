@@ -165,6 +165,7 @@ class CompileJob(Base):
     __table_args__ = (
         UniqueConstraint("id", "project_id", "tenant_id", name="uq_compile_jobs_id_project_tenant"),
         ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        Index("ix_compile_jobs_originating_llm_edit", "originating_llm_edit_job_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -173,6 +174,7 @@ class CompileJob(Base):
     requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     export_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    originating_llm_edit_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text)
     error_code: Mapped[Optional[str]] = mapped_column(String(64))
     user_message: Mapped[Optional[str]] = mapped_column(Text)

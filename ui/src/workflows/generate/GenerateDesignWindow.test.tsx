@@ -17,6 +17,7 @@ const storage = vi.hoisted(() => ({
   applyLlmFileEdit: vi.fn(),
   applyLlmFileEditJob: vi.fn(),
   getLlmFileEditJob: vi.fn(),
+  listLlmEditConversation: vi.fn(),
   listLlmModels: vi.fn(),
 }))
 
@@ -101,6 +102,7 @@ describe('GenerateDesignWindow', () => {
       job_id: 'llm-job-1',
       status: 'queued',
     })
+    storage.listLlmEditConversation.mockResolvedValue([])
     storage.getLlmFileEditJob.mockResolvedValue({
       job_id: 'llm-job-1',
       status: 'succeeded',
@@ -192,6 +194,7 @@ describe('GenerateDesignWindow', () => {
       export_format: 'glb',
       quality: 'sketch',
       file: 'design.py',
+      originating_llm_edit_job_id: 'llm-job-1',
     })
 
     await act(async () => {
@@ -201,8 +204,94 @@ describe('GenerateDesignWindow', () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Compiled glb artifact artifact-1/).length).toBeGreaterThan(0)
     })
+    expect(screen.getAllByText(/Compile queued as glb\/sketch.[\s\S]*Compiled glb artifact artifact-1/).length).toBeGreaterThan(0)
     expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-1\/model\?t=/)).toBeInTheDocument()
     expect(localStorage.getItem('tertius:ai-tokens-used-today')).toBe('12')
+  })
+
+  it('hydrates persisted Generate Design conversation history on project load', async () => {
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'llm-job-old',
+        prompt: 'make a small bracket',
+        content: 'Updated 1 file.',
+        created_at: '2026-06-19T00:01:00Z',
+        status: 'succeeded',
+        model: 'test-model',
+        usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+        files: [{ filename: 'design.py', summary: 'Added bracket.', changed: true }],
+        compile: {
+          job_id: 'compile-job-old',
+          status: 'succeeded',
+          artifact_id: 'artifact-old',
+          export_format: 'glb',
+        },
+      },
+    ])
+
+    render(<GenerateDesignWindow />)
+
+    expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
+    expect(screen.getAllByText('Updated 1 file.').length).toBeGreaterThan(0)
+    expect(screen.getByText('7 tokens')).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=/)).toBeInTheDocument()
+    expect(storage.listLlmEditConversation).toHaveBeenCalledWith('project_a')
+  })
+
+  it('resumes every hydrated non-terminal LLM job and linked compile job', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'llm-job-running',
+        prompt: 'still editing',
+        content: '',
+        created_at: '2026-06-19T00:01:00Z',
+        status: 'running',
+        compile: null,
+      },
+      {
+        job_id: 'llm-job-finished',
+        prompt: 'compile still running',
+        content: 'Updated 1 file.',
+        created_at: '2026-06-19T00:02:00Z',
+        status: 'succeeded',
+        compile: {
+          job_id: 'compile-job-running',
+          status: 'running',
+          export_format: 'glb',
+        },
+      },
+    ])
+    storage.getLlmFileEditJob.mockResolvedValue({
+      job_id: 'llm-job-running',
+      status: 'running',
+    })
+    mocks.apiFetch.mockImplementation((url: string) => {
+      if (url === '/api/intus/projects/project_a/compile/jobs/compile-job-running') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'compile-job-running',
+          status: 'running',
+          format: 'glb',
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+
+    expect(await screen.findByText('still editing')).toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    await waitFor(() => {
+      expect(storage.getLlmFileEditJob).toHaveBeenCalledWith('project_a', 'llm-job-running')
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/intus/projects/project_a/compile/jobs/compile-job-running',
+        mocks.getAccessToken,
+      )
+    })
   })
 
   it('does not queue compile when the AI edit returns no_change', async () => {

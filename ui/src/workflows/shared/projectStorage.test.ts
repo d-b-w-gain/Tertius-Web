@@ -98,6 +98,49 @@ describe('projectStorage', () => {
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects/demo/files', getAccessToken)
   })
 
+  it('lists authenticated LLM edit conversation history', async () => {
+    const responseBody = {
+      messages: [
+        {
+          job_id: 'llm-job-1',
+          prompt: 'make a bracket',
+          content: 'Updated 1 file.',
+          created_at: '2026-06-19T00:00:00Z',
+          status: 'succeeded',
+          usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+          files: [{ filename: 'design.py', summary: 'Changed bracket.', changed: true }],
+          compile: {
+            job_id: 'compile-job-1',
+            status: 'succeeded',
+            artifact_id: 'artifact-1',
+            export_format: 'glb',
+          },
+        },
+      ],
+    }
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody)))
+    const getAccessToken = vi.fn()
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken,
+    })
+
+    await expect(storage.listLlmEditConversation('demo')).resolves.toEqual(responseBody.messages)
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects/demo/files/llm-edit/jobs', getAccessToken)
+  })
+
+  it('surfaces authenticated LLM edit conversation list failures', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'history unavailable' }), { status: 503 }))
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.listLlmEditConversation('demo')).rejects.toThrow('history unavailable')
+  })
+
   it('derives id-less metadata from filenames when file_metadata is missing', async () => {
     mocks.apiFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ files: ['design.py', 'helper.py'] })),
@@ -193,6 +236,17 @@ describe('projectStorage', () => {
         files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       }),
     ).rejects.toThrow('Log in to use AI file edits')
+    expect(mocks.apiFetch).not.toHaveBeenCalled()
+  })
+
+  it('returns an empty LLM edit conversation for guest projects', async () => {
+    const storage = createProjectStorage({
+      authMode: 'guest',
+      serverUrl: '/proxy/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.listLlmEditConversation('demo')).resolves.toEqual([])
     expect(mocks.apiFetch).not.toHaveBeenCalled()
   })
 })

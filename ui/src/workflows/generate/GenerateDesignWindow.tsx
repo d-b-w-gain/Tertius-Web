@@ -5,6 +5,7 @@ import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
+  type LlmEditConversationEntry,
   type LlmFileEditResult,
   type LlmModelOption,
   type ProjectFileMetadata,
@@ -43,6 +44,8 @@ type ChatMessage = {
   artifactId?: string
   modelUrl?: string
   compileStatus?: 'queued' | 'running' | 'succeeded' | 'failed'
+  jobId?: string
+  compileJobId?: string
 }
 
 type CompileJobStatus = {
@@ -84,6 +87,18 @@ function messageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function promptMessageId(jobId: string) {
+  return `prompt:${jobId}`
+}
+
+function assistantMessageId(jobId: string) {
+  return `job:${jobId}`
+}
+
+function isNonTerminalStatus(status?: string) {
+  return status === 'queued' || status === 'running'
+}
+
 function formatPrice(model: LlmModelOption) {
   return `$${model.input_price_per_million.toFixed(2)} / $${model.output_price_per_million.toFixed(2)}`
 }
@@ -110,19 +125,39 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const activeProjectRef = useRef('')
-  const compileRequestRef = useRef(0)
-  const compileTimerRef = useRef<number | undefined>(undefined)
-  const llmEditRequestRef = useRef(0)
-  const llmEditTimerRef = useRef<number | undefined>(undefined)
+  const compileRequestRef = useRef(new Map<string, number>())
+  const compileTimerRef = useRef(new Map<string, number>())
+  const llmEditRequestRef = useRef(new Map<string, number>())
+  const llmEditTimerRef = useRef(new Map<string, number>())
 
   useEffect(() => {
     activeProjectRef.current = activeProject
   }, [activeProject])
 
-  useEffect(() => () => {
-    if (compileTimerRef.current) window.clearTimeout(compileTimerRef.current)
-    if (llmEditTimerRef.current) window.clearTimeout(llmEditTimerRef.current)
+  const clearCompileTimer = useCallback((jobId: string) => {
+    const timer = compileTimerRef.current.get(jobId)
+    if (timer) window.clearTimeout(timer)
+    compileTimerRef.current.delete(jobId)
   }, [])
+
+  const clearLlmEditTimer = useCallback((jobId: string) => {
+    const timer = llmEditTimerRef.current.get(jobId)
+    if (timer) window.clearTimeout(timer)
+    llmEditTimerRef.current.delete(jobId)
+  }, [])
+
+  const clearAllJobPolling = useCallback(() => {
+    for (const timer of compileTimerRef.current.values()) window.clearTimeout(timer)
+    for (const timer of llmEditTimerRef.current.values()) window.clearTimeout(timer)
+    compileTimerRef.current.clear()
+    llmEditTimerRef.current.clear()
+    compileRequestRef.current.clear()
+    llmEditRequestRef.current.clear()
+  }, [])
+
+  useEffect(() => () => {
+    clearAllJobPolling()
+  }, [clearAllJobPolling])
 
   const selectedMessage = messages.find(message => message.id === selectedMessageId)
   const selectedModelUrl = selectedMessage?.modelUrl || ''
@@ -140,39 +175,117 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     return metadata
   }, [storage])
 
-  const loadActiveProject = useCallback(async (projectName?: string) => {
+  const modelUrlForArtifact = useCallback((artifactId: string) => (
+    `${extusServerUrl}/artifacts/${artifactId}/model?t=${Date.now()}`
+  ), [extusServerUrl])
+
+  const conversationEntriesToMessages = useCallback((
+    entries: LlmEditConversationEntry[],
+    metadata: ProjectFileMetadata[],
+  ) => {
+    const totalEditableFiles = orderEditableFiles(metadata).length
+    return entries.flatMap((entry): ChatMessage[] => {
+      const createdAt = entry.created_at ? Date.parse(entry.created_at) : Date.now()
+      const stablePromptId = promptMessageId(entry.job_id)
+      const stableAssistantId = assistantMessageId(entry.job_id)
+      const compile = entry.compile || undefined
+      const artifactId = compile?.artifact_id
+      const requestedCount = entry.requested_file_count || 0
+      const requestedFileNotice = requestedCount > 0 && totalEditableFiles > requestedCount
+        ? `Included ${requestedCount} of ${totalEditableFiles} editable files.`
+        : ''
+      const generatedContent = entry.content?.trim()
+      const nonTerminalContent = entry.status === 'queued'
+        ? 'AI edit is queued...'
+        : 'AI edit is running...'
+      const assistantContent = [
+        requestedFileNotice,
+        generatedContent || (isNonTerminalStatus(entry.status) ? nonTerminalContent : 'AI edit completed.'),
+      ].filter(Boolean).join('\n')
+      const compileStatus = compile?.status
+        || (isNonTerminalStatus(entry.status) ? entry.status : entry.status === 'failed' ? 'failed' : undefined)
+
+      return [
+        {
+          id: stablePromptId,
+          role: 'user',
+          content: entry.prompt || '',
+          createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+        },
+        {
+          id: stableAssistantId,
+          role: 'assistant',
+          content: assistantContent,
+          createdAt: Number.isFinite(createdAt) ? createdAt + 1 : Date.now(),
+          files: entry.files,
+          usage: entry.usage,
+          artifactId,
+          modelUrl: artifactId ? modelUrlForArtifact(artifactId) : undefined,
+          compileStatus,
+          jobId: entry.job_id,
+          compileJobId: compile?.job_id,
+        },
+      ]
+    })
+  }, [modelUrlForArtifact])
+
+  const resumeHydratedConversationRef = useRef((
+    _projectName: string,
+    _entries: LlmEditConversationEntry[],
+  ) => {})
+
+  const loadActiveProject = useCallback(async (
+    projectName?: string,
+    options: { hydrateConversation?: boolean } = {},
+  ) => {
     if (!shouldRunPollingRequest()) return
     try {
       const nextProject = projectName || await storage.getActiveProject()
       if (!nextProject) {
+        clearAllJobPolling()
+        activeProjectRef.current = ''
         setActiveProject('')
         setFileMetadata([])
+        setMessages([])
+        setSelectedMessageId(null)
         setStatusText('No active project selected.')
         return
       }
-      if (nextProject !== activeProjectRef.current) {
-        setMessages([])
-        setSelectedMessageId(null)
-      }
+      const projectChanged = nextProject !== activeProjectRef.current
+      const shouldHydrateConversation = options.hydrateConversation || projectChanged
+      if (projectChanged || shouldHydrateConversation) clearAllJobPolling()
+      activeProjectRef.current = nextProject
       setActiveProject(nextProject)
       const metadata = await refreshMetadata(nextProject)
+      if (shouldHydrateConversation) {
+        const entries = await storage.listLlmEditConversation(nextProject)
+        const hydratedMessages = conversationEntriesToMessages(entries, metadata)
+        setMessages(hydratedMessages)
+        const lastAssistantMessage = [...hydratedMessages].reverse().find(message => message.role === 'assistant')
+        setSelectedMessageId(current => (
+          current && hydratedMessages.some(message => message.id === current)
+            ? current
+            : lastAssistantMessage?.id || null
+        ))
+        resumeHydratedConversationRef.current(nextProject, entries)
+      }
       setStatusText(`Ready to generate against ${metadata.length} project file(s).`)
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load active project.')
     }
-  }, [refreshMetadata, storage])
+  }, [clearAllJobPolling, conversationEntriesToMessages, refreshMetadata, storage])
 
   useEffect(() => {
     if (!isActive) return
-    void loadActiveProject()
+    void loadActiveProject(undefined, { hydrateConversation: true })
     const interval = authMode === 'guest'
       ? undefined
-      : window.setInterval(() => void loadActiveProject(), getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS))
+      : window.setInterval(() => void loadActiveProject(undefined, { hydrateConversation: false }), getPollingDelay(ACTIVE_PROJECT_POLL_INTERVAL_MS))
     const handleProjectChanged = (event: Event) => {
       const detail = (event as CustomEvent<{ activeProject?: string }>).detail
-      if (detail?.activeProject) void loadActiveProject(detail.activeProject)
+      if (detail?.activeProject) void loadActiveProject(detail.activeProject, { hydrateConversation: true })
     }
-    const handleGuestChanged = () => void loadActiveProject()
+    const handleGuestChanged = () => void loadActiveProject(undefined, { hydrateConversation: true })
 
     window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleProjectChanged)
     if (authMode === 'guest') window.addEventListener(GUEST_WORKSPACE_CHANGED_EVENT, handleGuestChanged)
@@ -227,13 +340,9 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     }
   }, [activeProject, refreshMetadata])
 
-  const modelUrlForArtifact = useCallback((artifactId: string) => (
-    `${extusServerUrl}/artifacts/${artifactId}/model?t=${Date.now()}`
-  ), [extusServerUrl])
-
   const pollCompileJob = useCallback((projectName: string, jobId: string, requestId: number, assistantMessageId: string) => {
     const tick = async () => {
-      if (compileRequestRef.current !== requestId) return
+      if (compileRequestRef.current.get(jobId) !== requestId || activeProjectRef.current !== projectName) return
       try {
         const response = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile/jobs/${jobId}`, getAccessToken)
         const data = await response.json() as CompileJobStatus
@@ -244,6 +353,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             content: `${current.content}\n\nCompile failed: ${message}`,
             compileStatus: 'failed',
           }))
+          clearCompileTimer(jobId)
+          compileRequestRef.current.delete(jobId)
           setStatusText(message)
           return
         }
@@ -260,6 +371,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             modelUrl: artifactId ? modelUrlForArtifact(artifactId) : current.modelUrl,
             compileStatus: 'succeeded',
           }))
+          clearCompileTimer(jobId)
+          compileRequestRef.current.delete(jobId)
           if (artifactId) setSelectedMessageId(assistantMessageId)
           setStatusText(artifactId ? `Compiled ${format} artifact ${artifactId}.` : 'Compile succeeded.')
           return
@@ -272,6 +385,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             content: `${current.content}\n\nCompile failed: ${message}`,
             compileStatus: 'failed',
           }))
+          clearCompileTimer(jobId)
+          compileRequestRef.current.delete(jobId)
           setStatusText(message)
           return
         }
@@ -279,28 +394,33 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         updateAssistantMessage(assistantMessageId, current => ({
           ...current,
           compileStatus: data.status === 'queued' ? 'queued' : 'running',
+          compileJobId: jobId,
         }))
-        compileTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_POLL_MS)
+        compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_POLL_MS))
       } catch {
-        compileTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_RETRY_MS)
+        compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_RETRY_MS))
       }
     }
 
-    compileTimerRef.current = window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS)
-  }, [getAccessToken, intusServerUrl, modelUrlForArtifact, updateAssistantMessage])
+    clearCompileTimer(jobId)
+    compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS))
+  }, [clearCompileTimer, getAccessToken, intusServerUrl, modelUrlForArtifact, updateAssistantMessage])
+
+  const startCompilePolling = useCallback((projectName: string, jobId: string, assistantMessageId: string) => {
+    const requestId = (compileRequestRef.current.get(jobId) || 0) + 1
+    compileRequestRef.current.set(jobId, requestId)
+    pollCompileJob(projectName, jobId, requestId, assistantMessageId)
+  }, [pollCompileJob])
 
   const queueCompile = useCallback(async (
     projectName: string,
     changedFiles: LlmFileEditResult['files'],
     assistantMessageId: string,
+    originatingLlmEditJobId?: string,
   ) => {
     const designChange = changedFiles.find(file => file.filename === 'design.py')
     const code = designChange?.content || await storage.loadCode(projectName, 'design.py')
     if (!code) throw new Error('Compile could not start because design.py could not be loaded.')
-
-    const requestId = compileRequestRef.current + 1
-    compileRequestRef.current = requestId
-    if (compileTimerRef.current) window.clearTimeout(compileTimerRef.current)
 
     const response = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
       method: 'POST',
@@ -310,6 +430,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         export_format: COMPILE_FORMAT,
         quality: COMPILE_QUALITY,
         file: 'design.py',
+        originating_llm_edit_job_id: originatingLlmEditJobId,
       }),
     })
     const data = await response.json()
@@ -321,15 +442,18 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       ...current,
       content: `${current.content}\n\nCompile queued as ${COMPILE_FORMAT}/${COMPILE_QUALITY}.`,
       compileStatus: data.status === 'queued' ? 'queued' : 'running',
+      jobId: originatingLlmEditJobId || current.jobId,
+      compileJobId: data.job_id,
     }))
     setStatusText(`Compile job ${data.job_id} is ${data.status || 'queued'}.`)
-    pollCompileJob(projectName, data.job_id, requestId, assistantMessageId)
-  }, [getAccessToken, intusServerUrl, pollCompileJob, storage, updateAssistantMessage])
+    startCompilePolling(projectName, data.job_id, assistantMessageId)
+  }, [getAccessToken, intusServerUrl, startCompilePolling, storage, updateAssistantMessage])
 
   const applyLlmEditResult = useCallback((
     result: LlmFileEditResult,
     projectName: string,
     assistantMessageId: string,
+    originatingLlmEditJobId?: string,
     truncatedMessage?: string,
   ) => {
     recordAiBudgetUsage(result.usage.total_tokens)
@@ -338,18 +462,20 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       .map(file => file.summary)
       .filter(Boolean)
       .join(' ')
-    const content = [
-      truncatedMessage,
+    const resultContentParts = [
       result.outcome === 'changed'
         ? `Updated ${changedFiles.length || result.files.length} file(s).`
         : result.message || `AI returned ${result.outcome}.`,
       result.model ? `Model: ${result.model}.` : '',
       fileSummary,
-    ].filter(Boolean).join(' ')
+    ].filter(Boolean)
 
     updateAssistantMessage(assistantMessageId, current => ({
       ...current,
-      content,
+      content: [
+        truncatedMessage || current.content.match(/^Included \d+ of \d+ editable files\./m)?.[0] || '',
+        ...resultContentParts,
+      ].filter(Boolean).join(' '),
       files: result.files.map(file => ({
         filename: file.filename,
         summary: file.summary,
@@ -357,6 +483,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       })),
       usage: result.usage,
       compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
+      jobId: originatingLlmEditJobId || current.jobId,
     }))
 
     const nextMetadata = result.files.map(file => ({
@@ -373,7 +500,12 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
     if (result.outcome === 'changed') {
       setStatusText('AI edit applied. Queueing Intus compile.')
-      void queueCompile(projectName, changedFiles.length > 0 ? changedFiles : result.files, assistantMessageId)
+      void queueCompile(
+        projectName,
+        changedFiles.length > 0 ? changedFiles : result.files,
+        assistantMessageId,
+        originatingLlmEditJobId,
+      )
     } else {
       setStatusText(result.message || `Generation completed with ${result.outcome}.`)
     }
@@ -381,7 +513,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
   const pollLlmEditJob = useCallback((projectName: string, jobId: string, requestId: number, assistantMessageId: string) => {
     const tick = async () => {
-      if (llmEditRequestRef.current !== requestId) return
+      if (llmEditRequestRef.current.get(jobId) !== requestId || activeProjectRef.current !== projectName) return
       try {
         const response = await storage.getLlmFileEditJob(projectName, jobId)
         if (response.status === 'succeeded') {
@@ -390,11 +522,16 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
               ...current,
               content: `${current.content}\n\nAI edit returned no result payload.`,
               compileStatus: 'failed',
+              jobId,
             }))
+            clearLlmEditTimer(jobId)
+            llmEditRequestRef.current.delete(jobId)
             setStatusText('AI edit completed but returned no result payload.')
             return
           }
-          applyLlmEditResult(response.result, projectName, assistantMessageId)
+          clearLlmEditTimer(jobId)
+          llmEditRequestRef.current.delete(jobId)
+          applyLlmEditResult(response.result, projectName, assistantMessageId, jobId)
           return
         }
 
@@ -404,7 +541,10 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             ...current,
             content: `${current.content}\n\nAI edit failed: ${message}`,
             compileStatus: 'failed',
+            jobId,
           }))
+          clearLlmEditTimer(jobId)
+          llmEditRequestRef.current.delete(jobId)
           setStatusText(message)
           return
         }
@@ -412,15 +552,37 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         updateAssistantMessage(assistantMessageId, current => ({
           ...current,
           compileStatus: response.status === 'queued' ? 'queued' : 'running',
+          jobId,
         }))
-        llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_POLL_MS)
+        llmEditTimerRef.current.set(jobId, window.setTimeout(tick, LLM_EDIT_STATUS_POLL_MS))
       } catch {
-        llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_RETRY_MS)
+        llmEditTimerRef.current.set(jobId, window.setTimeout(tick, LLM_EDIT_STATUS_RETRY_MS))
       }
     }
 
-    llmEditTimerRef.current = window.setTimeout(tick, LLM_EDIT_STATUS_INITIAL_DELAY_MS)
-  }, [applyLlmEditResult, setStatusText, storage, updateAssistantMessage])
+    clearLlmEditTimer(jobId)
+    llmEditTimerRef.current.set(jobId, window.setTimeout(tick, LLM_EDIT_STATUS_INITIAL_DELAY_MS))
+  }, [applyLlmEditResult, clearLlmEditTimer, setStatusText, storage, updateAssistantMessage])
+
+  const startLlmEditPolling = useCallback((projectName: string, jobId: string, assistantId: string) => {
+    const requestId = (llmEditRequestRef.current.get(jobId) || 0) + 1
+    llmEditRequestRef.current.set(jobId, requestId)
+    pollLlmEditJob(projectName, jobId, requestId, assistantId)
+  }, [pollLlmEditJob])
+
+  useEffect(() => {
+    resumeHydratedConversationRef.current = (projectName: string, entries: LlmEditConversationEntry[]) => {
+      for (const entry of entries) {
+        const stableAssistantId = assistantMessageId(entry.job_id)
+        if (isNonTerminalStatus(entry.status)) {
+          startLlmEditPolling(projectName, entry.job_id, stableAssistantId)
+        }
+        if (entry.compile?.job_id && isNonTerminalStatus(entry.compile.status)) {
+          startCompilePolling(projectName, entry.compile.job_id, stableAssistantId)
+        }
+      }
+    }
+  }, [startCompilePolling, startLlmEditPolling])
 
   const submitPrompt = async (event: FormEvent) => {
     event.preventDefault()
@@ -460,19 +622,33 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         model_id: selectedModel?.id,
         metadata: { source: 'generate_design_window' },
       })
-      const requestId = llmEditRequestRef.current + 1
-      llmEditRequestRef.current = requestId
-      if (llmEditTimerRef.current) window.clearTimeout(llmEditTimerRef.current)
+      const stablePromptId = promptMessageId(job.job_id)
+      const stableAssistantId = assistantMessageId(job.job_id)
+      setMessages(prev => prev.map(message => {
+        if (message.id === userMessage.id) {
+          return { ...message, id: stablePromptId }
+        }
+        if (message.id === assistantMessage.id) {
+          return {
+            ...message,
+            id: stableAssistantId,
+            jobId: job.job_id,
+          }
+        }
+        return message
+      }))
+      setSelectedMessageId(current => current === assistantMessage.id ? stableAssistantId : current)
 
-      updateAssistantMessage(assistantMessage.id, current => ({
+      updateAssistantMessage(stableAssistantId, current => ({
         ...current,
         content: 'AI edit is running...',
         compileStatus: 'running',
+        jobId: job.job_id,
       }))
       setStatusText(`AI edit job ${job.job_id} queued.`)
-      pollLlmEditJob(activeProject, job.job_id, requestId, assistantMessage.id)
+      startLlmEditPolling(activeProject, job.job_id, stableAssistantId)
       if (truncatedMessage) {
-        updateAssistantMessage(assistantMessage.id, current => ({
+        updateAssistantMessage(stableAssistantId, current => ({
           ...current,
           content: `${current.content}\n${truncatedMessage}`,
         }))
@@ -511,7 +687,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             </div>
             <button
               type="button"
-              onClick={() => void loadActiveProject()}
+              onClick={() => void loadActiveProject(undefined, { hydrateConversation: true })}
               className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
             >
               Refresh

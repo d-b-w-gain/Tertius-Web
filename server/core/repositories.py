@@ -21,6 +21,9 @@ WORKER_LOST_ERROR_CODE = "worker_lost"
 WORKER_LOST_USER_MESSAGE = (
     "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
 )
+LLM_EDIT_WORKER_LOST_ERROR = "LLM edit worker stopped before reporting a result"
+LLM_EDIT_WORKER_LOST_ERROR_CODE = "worker_lost"
+LLM_EDIT_WORKER_LOST_USER_MESSAGE = "AI generation stopped unexpectedly. Try again."
 
 
 class FileVersionConflictError(RuntimeError):
@@ -356,13 +359,21 @@ class CompileRepository:
         self.db = db
         self.tenant_id = tenant_id
 
-    def start_job(self, project_id: UUID, user_id: UUID, export_format: str, status: str = "running") -> CompileJob:
+    def start_job(
+        self,
+        project_id: UUID,
+        user_id: UUID,
+        export_format: str,
+        status: str = "running",
+        originating_llm_edit_job_id: UUID | None = None,
+    ) -> CompileJob:
         job = CompileJob(
             tenant_id=self.tenant_id,
             project_id=project_id,
             requested_by=user_id,
             status=status,
             export_format=export_format,
+            originating_llm_edit_job_id=originating_llm_edit_job_id,
         )
         self.db.add(job)
         self.db.flush()
@@ -736,6 +747,31 @@ class LlmEditRepository:
             )
         )
 
+    def list_jobs_for_project(self, project_id: UUID, *, limit: int = 200) -> list[LlmEditJob]:
+        normalized_limit = max(1, min(limit, 200))
+        return list(
+            self.db.scalars(
+                select(LlmEditJob)
+                .where(
+                    LlmEditJob.tenant_id == self.tenant_id,
+                    LlmEditJob.project_id == project_id,
+                )
+                .order_by(LlmEditJob.created_at.asc(), LlmEditJob.id.asc())
+                .limit(normalized_limit)
+            )
+        )
+
+    def get_compile_job_for_llm_edit(self, project_id: UUID, llm_edit_job_id: UUID) -> CompileJob | None:
+        return self.db.scalar(
+            select(CompileJob)
+            .where(
+                CompileJob.tenant_id == self.tenant_id,
+                CompileJob.project_id == project_id,
+                CompileJob.originating_llm_edit_job_id == llm_edit_job_id,
+            )
+            .order_by(CompileJob.created_at.desc(), CompileJob.id.desc())
+        )
+
     def mark_job_dispatched(self, job: LlmEditJob) -> None:
         job.status = "running"
         job.error = None
@@ -761,6 +797,61 @@ class LlmEditRepository:
         job.retryable = retryable
         job.result_payload = result_payload
         job.finished_at = now_utc()
+
+    def reconcile_stale_job(
+        self,
+        project_id: UUID,
+        job_id: UUID,
+        older_than_seconds: int,
+    ) -> LlmEditJob | None:
+        cutoff = now_utc() - timedelta(seconds=older_than_seconds)
+        stmt = (
+            update(LlmEditJob)
+            .where(
+                LlmEditJob.id == job_id,
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == project_id,
+                LlmEditJob.status.in_(["queued", "running"]),
+                LlmEditJob.created_at < cutoff,
+            )
+            .values(
+                status="failed",
+                error=LLM_EDIT_WORKER_LOST_ERROR,
+                error_code=LLM_EDIT_WORKER_LOST_ERROR_CODE,
+                user_message=LLM_EDIT_WORKER_LOST_USER_MESSAGE,
+                retryable=True,
+                finished_at=now_utc(),
+            )
+            .returning(LlmEditJob.id)
+        )
+        reconciled_id = self.db.scalar(stmt)
+        if reconciled_id is not None:
+            self.db.flush()
+        return self.get_job(project_id, job_id)
+
+    def reconcile_stale_jobs_for_project(self, project_id: UUID, older_than_seconds: int) -> int:
+        now = now_utc()
+        cutoff = now - timedelta(seconds=older_than_seconds)
+        reconciled_ids = self.db.scalars(
+            update(LlmEditJob)
+            .where(
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == project_id,
+                LlmEditJob.status.in_(["queued", "running"]),
+                LlmEditJob.created_at < cutoff,
+            )
+            .values(
+                status="failed",
+                error=LLM_EDIT_WORKER_LOST_ERROR,
+                error_code=LLM_EDIT_WORKER_LOST_ERROR_CODE,
+                user_message=LLM_EDIT_WORKER_LOST_USER_MESSAGE,
+                retryable=True,
+                finished_at=now,
+            )
+            .returning(LlmEditJob.id)
+        )
+        self.db.flush()
+        return len(reconciled_ids.all())
 
 
 class UsageRepository:
