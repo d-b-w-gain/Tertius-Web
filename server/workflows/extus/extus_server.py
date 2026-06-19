@@ -58,8 +58,22 @@ def get_latest_model_artifact(db: Session, ctx: AuthContext) -> Artifact | None:
     )
 
 
-def get_model_artifact_by_id(db: Session, ctx: AuthContext, artifact_id: UUID) -> Artifact | None:
-    project = get_active_project(db, ctx)
+def get_project_by_name(db: Session, ctx: AuthContext, name: str) -> Project | None:
+    return db.scalar(
+        select(Project).where(
+            Project.tenant_id == ctx.tenant_id,
+            Project.name == name,
+        )
+    )
+
+
+def get_model_artifact_by_id(
+    db: Session,
+    ctx: AuthContext,
+    artifact_id: UUID,
+    project_name: str | None = None,
+) -> Artifact | None:
+    project = get_project_by_name(db, ctx, project_name) if project_name else get_active_project(db, ctx)
     if project is None:
         return None
     return db.scalar(
@@ -115,10 +129,11 @@ def get_model(ctx: AuthContext = Depends(get_auth_context), db: Session = Depend
 @app.get("/artifacts/{artifact_id}/model")
 def get_model_by_artifact_id(
     artifact_id: UUID,
+    project: str | None = None,
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
-    artifact = get_model_artifact_by_id(db, ctx, artifact_id)
+    artifact = get_model_artifact_by_id(db, ctx, artifact_id, project_name=project)
     if artifact is None or artifact.content is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return Response(content=artifact.content, media_type=artifact.content_type)

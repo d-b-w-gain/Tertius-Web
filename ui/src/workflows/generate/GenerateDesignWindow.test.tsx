@@ -205,7 +205,7 @@ describe('GenerateDesignWindow', () => {
       expect(screen.getAllByText(/Compiled glb artifact artifact-1/).length).toBeGreaterThan(0)
     })
     expect(screen.getAllByText(/Compile queued as glb\/sketch.[\s\S]*Compiled glb artifact artifact-1/).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-1\/model\?t=/)).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-1\/model\?t=.*&project=project_a/)).toBeInTheDocument()
     expect(localStorage.getItem('tertius:ai-tokens-used-today')).toBe('12')
   })
 
@@ -234,9 +234,9 @@ describe('GenerateDesignWindow', () => {
     expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
     expect(screen.getAllByText('Updated 1 file.').length).toBeGreaterThan(0)
     expect(screen.getByText('test-model / 7 tokens')).toBeInTheDocument()
-    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=/)).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=.*&project=project_a/)).toBeInTheDocument()
     fireEvent.click(screen.getByText('make a small bracket').closest('button')!)
-    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=/)).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=.*&project=project_a/)).toBeInTheDocument()
     expect(storage.listLlmEditConversation).toHaveBeenCalledWith('project_a')
   })
 

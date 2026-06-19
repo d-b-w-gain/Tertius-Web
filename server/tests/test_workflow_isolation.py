@@ -300,6 +300,30 @@ def test_extus_historical_model_rejects_inactive_project_artifact(
     assert response.status_code == 404
 
 
+def test_extus_historical_model_allows_named_project_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    other_project = create_named_project(db_session, seeded_tenant, "inactive_project")
+    artifact = Artifact(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=other_project.id,
+        kind="glb",
+        storage_key="inactive.glb",
+        content_type="model/gltf-binary",
+        byte_size=len(b"inactive glb"),
+        content=b"inactive glb",
+    )
+    db_session.add(artifact)
+    db_session.commit()
+
+    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model?project=inactive_project")
+
+    assert response.status_code == 200
+    assert response.content == b"inactive glb"
+
+
 def test_extus_historical_model_rejects_non_model_artifact_kind(
     authenticated_extus_client,
     db_session,
