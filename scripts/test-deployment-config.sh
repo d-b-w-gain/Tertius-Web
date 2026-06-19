@@ -35,6 +35,27 @@ render_app_secret_created_without_prompt() {
     --set-string app.llmSecret.apiKey=openai-compatible-test-key
 }
 
+render_confidential_client() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set keycloak.realmImport.uiPublicClient=false \
+    --set-string keycloak.realmImport.uiClientSecret=oidc-client-secret \
+    --set app.secret.create=true \
+    --set-string app.secret.oidcClientSecret=oidc-client-secret
+}
+
+render_invalid_confidential_client() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set keycloak.realmImport.uiPublicClient=false
+}
+
+render_mismatched_confidential_client() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set keycloak.realmImport.uiPublicClient=false \
+    --set-string keycloak.realmImport.uiClientSecret=keycloak-secret \
+    --set app.secret.create=true \
+    --set-string app.secret.oidcClientSecret=api-secret
+}
+
 render_network_policy_enabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=true
 }
@@ -78,6 +99,16 @@ if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfi
   exit 1
 fi
 
+if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
+  echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
+  exit 1
+fi
+
+if ! rg -q 'VITE_API_URL=/api' "${ROOT_DIR}/README.md" || ! rg -q 'VITE_API_URL=/api' "${ROOT_DIR}/ui/.env.example"; then
+  echo "Frontend docs and env examples must document same-origin VITE_API_URL=/api for cookie-backed auth." >&2
+  exit 1
+fi
+
 if rg -q 'userStore: new WebStorageStateStore\(\{ store: window.localStorage \}\)' "${ROOT_DIR}/ui/src/auth" "${ROOT_DIR}/ui/src/api"; then
   echo "UI auth must not persist OIDC tokens in localStorage; browser auth should use the API cookie session." >&2
   exit 1
@@ -109,6 +140,7 @@ keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
 app_secret_rendered="$(render_app_secret_created)"
 app_secret_without_prompt_rendered="$(render_app_secret_created_without_prompt)"
+confidential_client_rendered="$(render_confidential_client)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
@@ -120,6 +152,26 @@ api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_pr
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
 compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
+
+if invalid_confidential_error="$(render_invalid_confidential_client 2>&1)"; then
+  echo "Helm render must fail when the UI client is confidential but no Keycloak client secret is configured." >&2
+  exit 1
+fi
+
+if ! rg -q 'keycloak.realmImport.uiClientSecret must be set' <<<"$invalid_confidential_error"; then
+  echo "Invalid confidential-client render must explain the missing Keycloak client secret." >&2
+  exit 1
+fi
+
+if mismatched_confidential_error="$(render_mismatched_confidential_client 2>&1)"; then
+  echo "Helm render must fail when generated API and Keycloak OIDC client secrets differ." >&2
+  exit 1
+fi
+
+if ! rg -q 'keycloak.realmImport.uiClientSecret must match app.secret.oidcClientSecret' <<<"$mismatched_confidential_error"; then
+  echo "Mismatched confidential-client render must explain the secret mismatch." >&2
+  exit 1
+fi
 
 if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
   echo "Local Helm render did not include any PersistentVolumeClaim resources." >&2
@@ -241,8 +293,13 @@ if printf '%s\n' "$default_rendered" | rg -q 'directAccessGrantsEnabled: true|us
   exit 1
 fi
 
-if ! printf '%s\n' "$default_rendered" | rg -q 'publicClient: false'; then
-  echo "Default Helm render must configure the UI OIDC client as confidential for API BFF auth." >&2
+if ! printf '%s\n' "$default_rendered" | rg -q 'publicClient: true'; then
+  echo "Default Helm render must keep the UI OIDC client public unless confidential client secrets are explicitly configured." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$confidential_client_rendered" | rg -q 'publicClient: false' || ! printf '%s\n' "$confidential_client_rendered" | rg -q 'secret: "oidc-client-secret"' || ! printf '%s\n' "$confidential_client_rendered" | rg -q 'OIDC_CLIENT_SECRET: "oidc-client-secret"'; then
+  echo "Confidential-client Helm render must include matching Keycloak and API OIDC client secrets." >&2
   exit 1
 fi
 

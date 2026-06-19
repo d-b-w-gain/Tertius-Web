@@ -97,9 +97,7 @@ PYTHONPATH=. rtk uv run python -m workflows.intus.compile_worker
 For the frontend, copy `ui/.env.example` or set:
 
 ```bash
-VITE_API_URL=http://localhost:8000
-VITE_KEYCLOAK_AUTHORITY=http://localhost:8080/realms/tertius
-VITE_KEYCLOAK_CLIENT_ID=tertius-ui
+VITE_API_URL=/api
 ```
 
 ### 2. Launching the Backend (Docker)

@@ -225,7 +225,7 @@ keycloak:
     enabled: true
     realm: tertius
     uiClientId: tertius-ui
-    uiPublicClient: false
+    uiPublicClient: true
     uiClientSecret: ""
     apiClientId: tertius-api
     uiDirectAccessGrantsEnabled: false
