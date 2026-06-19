@@ -173,12 +173,12 @@ if ! rg -q 'keycloak.realmImport.uiClientSecret must match app.secret.oidcClient
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'kind: PersistentVolumeClaim'; then
+if ! rg -q 'kind: PersistentVolumeClaim' <<<"$rendered"; then
   echo "Local Helm render did not include any PersistentVolumeClaim resources." >&2
   exit 1
 fi
 
-if printf '%s\n' "$rendered" | rg -q 'name: tertius-api-cache|claimName: tertius-api-cache|mountPath: /app/cache/tertius|ARTIFACT_ROOT'; then
+if rg -q 'name: tertius-api-cache|claimName: tertius-api-cache|mountPath: /app/cache/tertius|ARTIFACT_ROOT' <<<"$rendered"; then
   echo "Local Helm render must not include the API artifact PVC, API cache mount, or ARTIFACT_ROOT." >&2
   exit 1
 fi
@@ -188,42 +188,42 @@ if rg -q 'tertius-postgres-rw' "$LOCAL_VALUES"; then
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'APP_DB_HOST: "tertius-postgres-rw"'; then
+if ! rg -q 'APP_DB_HOST: "tertius-postgres-rw"' <<<"$rendered"; then
   echo "Local Helm render must derive APP_DB_HOST from the release name." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'name: tertius-valkey'; then
+if ! rg -q 'name: tertius-valkey' <<<"$rendered"; then
   echo "Local Helm render did not include the Valkey data PVC." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/name: nats'; then
+if ! rg -q 'app.kubernetes.io/name: nats' <<<"$rendered"; then
   echo "Local Helm render did not include NATS resources." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'NATS_URL: "nats://tertius-nats:4222"'; then
+if ! rg -q 'NATS_URL: "nats://tertius-nats:4222"' <<<"$rendered"; then
   echo "Local Helm render did not derive the expected release-local NATS_URL." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localhost/realms/tertius"' || ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"'; then
+if ! rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localhost/realms/tertius"' <<<"$rendered" || ! rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"' <<<"$rendered"; then
   echo "Local ConfigMap must validate the public Keycloak issuer while fetching JWKS through the in-cluster service URL." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS: "300"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS: "2592000"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS: "2592000"'; then
+if ! rg -q 'KEYCLOAK_ACCESS_TOKEN_LIFESPAN_SECONDS: "300"' <<<"$app_configmap" || ! rg -q 'KEYCLOAK_SSO_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' <<<"$app_configmap" || ! rg -q 'KEYCLOAK_SSO_SESSION_MAX_LIFESPAN_SECONDS: "2592000"' <<<"$app_configmap" || ! rg -q 'KEYCLOAK_CLIENT_SESSION_IDLE_TIMEOUT_SECONDS: "604800"' <<<"$app_configmap" || ! rg -q 'KEYCLOAK_CLIENT_SESSION_MAX_LIFESPAN_SECONDS: "2592000"' <<<"$app_configmap"; then
   echo "ConfigMap must render Keycloak session lifetime settings." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_COOKIE_SECURE: "false"' || ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_SESSION_IDLE_SECONDS: "604800"' || ! printf '%s\n' "$app_configmap" | rg -q 'AUTH_SESSION_MAX_SECONDS: "2592000"'; then
+if ! rg -q 'AUTH_COOKIE_SECURE: "false"' <<<"$app_configmap" || ! rg -q 'AUTH_SESSION_IDLE_SECONDS: "604800"' <<<"$app_configmap" || ! rg -q 'AUTH_SESSION_MAX_SECONDS: "2592000"' <<<"$app_configmap"; then
   echo "ConfigMap must render API cookie session settings." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'accessTokenLifespan: 300' || ! printf '%s\n' "$rendered" | rg -q 'ssoSessionIdleTimeout: 604800' || ! printf '%s\n' "$rendered" | rg -q 'ssoSessionMaxLifespan: 2592000' || ! printf '%s\n' "$rendered" | rg -q 'clientSessionIdleTimeout: 604800' || ! printf '%s\n' "$rendered" | rg -q 'clientSessionMaxLifespan: 2592000'; then
+if ! rg -q 'accessTokenLifespan: 300' <<<"$rendered" || ! rg -q 'ssoSessionIdleTimeout: 604800' <<<"$rendered" || ! rg -q 'ssoSessionMaxLifespan: 2592000' <<<"$rendered" || ! rg -q 'clientSessionIdleTimeout: 604800' <<<"$rendered" || ! rg -q 'clientSessionMaxLifespan: 2592000' <<<"$rendered"; then
   echo "Keycloak RealmImport must apply the configured rolling one-week session idle window and refresh hard cap." >&2
   exit 1
 fi
@@ -243,167 +243,167 @@ if ! rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 
   exit 1
 fi
 
-if printf '%s\n' "$app_configmap" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET'; then
+if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET' <<<"$app_configmap"; then
   echo "ConfigMap must not render LLM provider secrets, prompts, or auth client/session secrets." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'AUTH_SESSION_SECRET: "local-auth-session-secret-change-me"'; then
+if ! rg -q 'AUTH_SESSION_SECRET: "local-auth-session-secret-change-me"' <<<"$rendered"; then
   echo "Local app Secret must render AUTH_SESSION_SECRET for stable cookie-backed auth sessions." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || ! printf '%s\n' "$app_secret_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"'; then
+if ! rg -q 'kind: Secret' <<<"$app_secret_rendered" || ! rg -q 'LLM_API_KEY: "openai-compatible-test-key"' <<<"$app_secret_rendered" || ! rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"' <<<"$app_secret_rendered"; then
   echo "Dedicated LLM Secret must render LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT when app.llmSecret.create=true." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'kind: Secret' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_API_KEY: "openai-compatible-test-key"' || ! printf '%s\n' "$app_secret_without_prompt_rendered" | rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: ""'; then
+if ! rg -q 'kind: Secret' <<<"$app_secret_without_prompt_rendered" || ! rg -q 'LLM_API_KEY: "openai-compatible-test-key"' <<<"$app_secret_without_prompt_rendered" || ! rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: ""' <<<"$app_secret_without_prompt_rendered"; then
   echo "Dedicated LLM Secret must render an explicit empty LLM_FILE_EDIT_SYSTEM_PROMPT when no prompt value is configured." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_API_KEY' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' || ! printf '%s\n' "$api_with_llm_secret" | rg -q 'key: LLM_FILE_EDIT_SYSTEM_PROMPT'; then
+if ! rg -q 'name: LLM_API_KEY' <<<"$api_with_llm_secret" || ! rg -q 'key: LLM_API_KEY' <<<"$api_with_llm_secret" || ! rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret" || ! rg -q 'key: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret"; then
   echo "API Deployment must reference LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT from the dedicated LLM Secret." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$api_with_llm_secret_without_prompt" | rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' || ! printf '%s\n' "$api_with_llm_secret_without_prompt" | rg -A 5 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' | rg -q 'optional: true'; then
+if ! rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret_without_prompt" || ! printf '%s\n' "$api_with_llm_secret_without_prompt" | rg -A 5 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' | rg -q 'optional: true'; then
   echo "API Deployment must keep the LLM_FILE_EDIT_SYSTEM_PROMPT secret key reference optional." >&2
   exit 1
 fi
 
-if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
+if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:' <<<"$ui_with_llm_secret"; then
   echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'directAccessGrantsEnabled: true' || ! printf '%s\n' "$rendered" | rg -q 'username: "demo"'; then
+if ! rg -q 'directAccessGrantsEnabled: true' <<<"$rendered" || ! rg -q 'username: "demo"' <<<"$rendered"; then
   echo "Local Helm render must include the k3s smoke user and direct access grant support." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'publicClient: true'; then
+if ! rg -q 'publicClient: true' <<<"$rendered"; then
   echo "Local Helm render must keep the UI OIDC client public for local PKCE auth." >&2
   exit 1
 fi
 
-if printf '%s\n' "$default_rendered" | rg -q 'directAccessGrantsEnabled: true|username: "demo"'; then
+if rg -q 'directAccessGrantsEnabled: true|username: "demo"' <<<"$default_rendered"; then
   echo "Default Helm render must not enable the k3s smoke user or direct access grants." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$default_rendered" | rg -q 'publicClient: true'; then
+if ! rg -q 'publicClient: true' <<<"$default_rendered"; then
   echo "Default Helm render must keep the UI OIDC client public unless confidential client secrets are explicitly configured." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$confidential_client_rendered" | rg -q 'publicClient: false' || ! printf '%s\n' "$confidential_client_rendered" | rg -q 'secret: "oidc-client-secret"' || ! printf '%s\n' "$confidential_client_rendered" | rg -q 'OIDC_CLIENT_SECRET: "oidc-client-secret"'; then
+if ! rg -q 'publicClient: false' <<<"$confidential_client_rendered" || ! rg -q 'secret: "oidc-client-secret"' <<<"$confidential_client_rendered" || ! rg -q 'OIDC_CLIENT_SECRET: "oidc-client-secret"' <<<"$confidential_client_rendered"; then
   echo "Confidential-client Helm render must include matching Keycloak and API OIDC client secrets." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'kind: ScaledJob'; then
+if ! rg -q 'kind: ScaledJob' <<<"$scaled_job"; then
   echo "Local Helm render did not include the compile KEDA ScaledJob." >&2
   exit 1
 fi
 
-if printf '%s\n' "$keda_disabled_rendered" | rg -q 'kind: ScaledJob'; then
+if rg -q 'kind: ScaledJob' <<<"$keda_disabled_rendered"; then
   echo "Helm render with keda.enabled=false must not include the compile KEDA ScaledJob." >&2
   exit 1
 fi
 
-if printf '%s\n' "$rendered" | rg -q 'kind: Deployment' && printf '%s\n' "$rendered" | rg -q 'app.kubernetes.io/component: compile-worker'; then
+if rg -q 'kind: Deployment' <<<"$rendered" && rg -q 'app.kubernetes.io/component: compile-worker' <<<"$rendered"; then
   echo "Local Helm render must not include the old compile-worker Deployment." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'type: nats-jetstream'; then
+if ! rg -q 'type: nats-jetstream' <<<"$scaled_job"; then
   echo "Compile ScaledJob must use the KEDA nats-jetstream scaler." >&2
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'strategy: eager|scalingStrategy:'; then
+if rg -q 'strategy: eager|scalingStrategy:' <<<"$scaled_job"; then
   echo "Compile ScaledJob must omit scalingStrategy by default so KEDA uses its non-eager default behavior for single queued compiles." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$compile_strategy_accurate_scaled_job" | rg -q 'strategy: accurate'; then
+if ! rg -q 'strategy: accurate' <<<"$compile_strategy_accurate_scaled_job"; then
   echo "Compile ScaledJob must allow overriding the KEDA scaling strategy from values." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'natsServerMonitoringEndpoint: "tertius-nats-headless.default.svc.cluster.local:8222"'; then
+if ! rg -q 'natsServerMonitoringEndpoint: "tertius-nats-headless.default.svc.cluster.local:8222"' <<<"$scaled_job"; then
   echo "Compile ScaledJob must point KEDA at the NATS headless service monitoring endpoint." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'app.kubernetes.io/component: compile-job'; then
+if ! rg -q 'app.kubernetes.io/component: compile-job' <<<"$scaled_job"; then
   echo "Compile ScaledJob must label pods with app.kubernetes.io/component: compile-job." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$default_scaled_job" | rg -q 'runtimeClassName: "gvisor"'; then
+if ! rg -q 'runtimeClassName: "gvisor"' <<<"$default_scaled_job"; then
   echo "Compile ScaledJob must use the gvisor RuntimeClass in default values." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'automountServiceAccountToken: false'; then
+if ! rg -q 'automountServiceAccountToken: false' <<<"$scaled_job"; then
   echo "Compile ScaledJob must not mount a service account token." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'backoffLimit: 0' || ! printf '%s\n' "$scaled_job" | rg -q 'activeDeadlineSeconds:'; then
+if ! rg -q 'backoffLimit: 0' <<<"$scaled_job" || ! rg -q 'activeDeadlineSeconds:' <<<"$scaled_job"; then
   echo "Compile ScaledJob must render backoffLimit: 0 and activeDeadlineSeconds." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-compile-job.sh"\]'; then
+if ! rg -q 'command: \["sh", "/app/server/start-compile-job.sh"\]' <<<"$scaled_job"; then
   echo "Compile ScaledJob must run the one-shot compile job startup script." >&2
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD'; then
+if rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD' <<<"$scaled_job"; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'COMPILE_STREAM_NAME' || ! printf '%s\n' "$scaled_job" | rg -q 'COMPILE_RESULT_SUBJECT'; then
+if ! rg -q 'COMPILE_STREAM_NAME' <<<"$scaled_job" || ! rg -q 'COMPILE_RESULT_SUBJECT' <<<"$scaled_job"; then
   echo "Local Helm render did not include compile job NATS stream/result configuration." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_ACK_WAIT_SECONDS: "900"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_ACK_WAIT_SECONDS' | rg -q 'value: "900"'; then
+if ! rg -q 'COMPILE_ACK_WAIT_SECONDS: "900"' <<<"$rendered" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_ACK_WAIT_SECONDS' | rg -q 'value: "900"'; then
   echo "Compile ack wait must render as 900 seconds so it exceeds compile timeout plus publish/ack margin." >&2
   exit 1
 fi
 
-if printf '%s\n' "$rendered" | rg -q 'COMPILE_(REQUEST|RESULT)_MAX_BYTES: "?[0-9]+e[+-]?[0-9]+"?' || printf '%s\n' "$scaled_job" | rg -q 'value: "?[0-9]+e[+-]?[0-9]+"?'; then
+if rg -q 'COMPILE_(REQUEST|RESULT)_MAX_BYTES: "?[0-9]+e[+-]?[0-9]+"?' <<<"$rendered" || rg -q 'value: "?[0-9]+e[+-]?[0-9]+"?' <<<"$scaled_job"; then
   echo "Compile byte limits must render as plain integer strings, not scientific notation." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' || ! printf '%s\n' "$rendered" | rg -q 'COMPILE_RESULT_MAX_BYTES: "33554432"'; then
+if ! rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' <<<"$rendered" || ! rg -q 'COMPILE_RESULT_MAX_BYTES: "33554432"' <<<"$rendered"; then
   echo "ConfigMap compile byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$scaled_job" | rg -q 'name: COMPILE_REQUEST_MAX_BYTES' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
+if ! rg -q 'name: COMPILE_REQUEST_MAX_BYTES' <<<"$scaled_job" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
   echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q '"max_payload": 33554432'; then
+if ! rg -q '"max_payload": 33554432' <<<"$rendered"; then
   echo "NATS must render max_payload 33554432 so it can accept larger compile result messages." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'name: tertius-compile-job' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'port: 4222'; then
+if ! rg -q 'name: tertius-compile-job' <<<"$compile_job_network_policy" || ! rg -q 'port: 4222' <<<"$compile_job_network_policy"; then
   echo "Helm render with networkPolicy.enabled=true did not include the NATS-only compile Job NetworkPolicy." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/instance: tertius' || ! printf '%s\n' "$compile_job_network_policy" | rg -q 'app.kubernetes.io/component: nats'; then
+if ! rg -q 'app.kubernetes.io/instance: tertius' <<<"$compile_job_network_policy" || ! rg -q 'app.kubernetes.io/component: nats' <<<"$compile_job_network_policy"; then
   echo "Compile Job NetworkPolicy must restrict NATS egress to release-local NATS pods." >&2
   exit 1
 fi
@@ -418,7 +418,7 @@ if ! rg -q 'jetstream' <<<"$rendered"; then
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'claimName: .*js|storageClassName: local-path'; then
+if ! rg -q 'claimName: .*js|storageClassName: local-path' <<<"$rendered"; then
   echo "Local Helm render did not include the expected NATS fileStore PVC configuration." >&2
   exit 1
 fi
@@ -492,22 +492,22 @@ fi
 
 production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
 
-if ! printf '%s\n' "$production_rendered" | rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' || ! printf '%s\n' "$production_rendered" | rg -q 'admin: "https://tertius\.johnsonyuen\.com"'; then
+if ! rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' <<<"$production_rendered" || ! rg -q 'admin: "https://tertius\.johnsonyuen\.com"' <<<"$production_rendered"; then
   echo "Production Keycloak hostname must use the public HTTPS Tertius origin." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$production_rendered" | rg -q 'KEYCLOAK_ISSUER: "https://tertius\.johnsonyuen\.com/realms/tertius"' || ! printf '%s\n' "$production_rendered" | rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"'; then
+if ! rg -q 'KEYCLOAK_ISSUER: "https://tertius\.johnsonyuen\.com/realms/tertius"' <<<"$production_rendered" || ! rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"' <<<"$production_rendered"; then
   echo "Production ConfigMap must validate the public Keycloak issuer while fetching JWKS through the in-cluster service URL." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-[0-9]+-[a-f0-9]{7}"'; then
+if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-[0-9]+-[a-f0-9]{7}"' <<<"$production_rendered"; then
   echo "Production Helm defaults do not render the expected GHCR API image." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$production_rendered" | rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:master-[0-9]+-[a-f0-9]{7}"'; then
+if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:master-[0-9]+-[a-f0-9]{7}"' <<<"$production_rendered"; then
   echo "Production Helm defaults do not render the expected GHCR UI image." >&2
   exit 1
 fi

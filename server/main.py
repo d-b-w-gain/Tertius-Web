@@ -104,7 +104,10 @@ def _auth_state_secret() -> bytes:
     secret = settings.auth_session_secret or settings.oidc_client_secret
     if not secret:
         if not settings.auth_allow_insecure_oauth_state_secret:
-            raise RuntimeError("AUTH_SESSION_SECRET or OIDC_CLIENT_SECRET must be configured to sign OAuth state")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication is not configured: set AUTH_SESSION_SECRET or OIDC_CLIENT_SECRET.",
+            )
         secret = "insecure-local-auth-state-secret"
     return secret.encode("utf-8")
 

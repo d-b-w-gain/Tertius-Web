@@ -34,6 +34,11 @@ services:
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
       APP_DB_PASSWORD: tertius
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
+      KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
     depends_on:
       - postgres
       - nats

@@ -252,8 +252,10 @@ def test_oauth_state_secret_requires_configured_secret(monkeypatch):
         Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=False),
     )
 
-    with pytest.raises(RuntimeError, match="AUTH_SESSION_SECRET or OIDC_CLIENT_SECRET"):
+    with pytest.raises(HTTPException) as exc:
         app_main._auth_state_secret()
+    assert exc.value.status_code == 503
+    assert "AUTH_SESSION_SECRET" in str(exc.value.detail)
 
 
 def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
