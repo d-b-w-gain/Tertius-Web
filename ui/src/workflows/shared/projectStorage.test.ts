@@ -158,6 +158,28 @@ describe('projectStorage', () => {
     )
   })
 
+  it('explains that a 524 LLM edit may still finish after the edge times out', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(new Response('<html>timeout</html>', {
+      status: 524,
+      statusText: '',
+      headers: { 'Content-Type': 'text/html' },
+    }))
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(
+      storage.applyLlmFileEdit('demo', {
+        prompt: 'make a bracket',
+        files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
+      }),
+    ).rejects.toThrow(
+      'LLM file edit failed: the request timed out at the edge. The edit may still be running; refresh the project before retrying.',
+    )
+  })
+
   it('rejects guest applyLlmFileEdit with a login prompt', async () => {
     const storage = createProjectStorage({
       authMode: 'guest',

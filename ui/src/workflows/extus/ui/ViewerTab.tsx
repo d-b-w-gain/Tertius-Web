@@ -63,6 +63,19 @@ function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Co
   return geometry;
 }
 
+function disposeObjectTree(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry.dispose();
+      if (mesh.material) {
+        if (Array.isArray(mesh.material)) mesh.material.forEach(mat => mat.dispose());
+        else mesh.material.dispose();
+      }
+    }
+  });
+}
+
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
   if (meshes.length === 0) return null;
 
@@ -187,6 +200,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
+  const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -203,6 +217,18 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
+
+  const clearCurrentModel = useCallback(() => {
+    const scene = sceneRef.current;
+    const current = meshRef.current;
+    if (!scene || !current) return;
+    disposeObjectTree(current);
+    scene.remove(current);
+    meshRef.current = null;
+    setSceneGraph(null);
+    setSelectedNodeId(null);
+    setIsolatedNodeId(null);
+  }, []);
 
   const resizeRendererToContainer = useCallback(() => {
     const container = containerRef.current;
@@ -307,16 +333,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       canvas.removeEventListener('wheel', handleInteraction);
       if (resumeTimeout) clearTimeout(resumeTimeout);
       cancelAnimationFrame(animIdRef.current);
-      scene.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const m = child as THREE.Mesh;
-          m.geometry.dispose();
-          if (m.material) {
-            if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-            else m.material.dispose();
-          }
-        }
-      });
+      disposeObjectTree(scene);
       renderer.dispose();
     };
   }, [resizeRendererToContainer]);
@@ -367,13 +384,26 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
   // 3. Load GLTF when URL changes
   useEffect(() => {
+    setLoadErrorText(null);
     if (!modelUrl || !sceneRef.current) return;
     
     let isCancelled = false;
     const loader = new GLTFLoader();
+
+    const failLoad = (message: string, err?: unknown) => {
+      if (isCancelled) return;
+      if (err) console.error(message, err);
+      setLoadErrorText(message);
+      clearCurrentModel();
+    };
     
     apiFetch(modelUrl, getAccessToken)
-      .then(res => res.arrayBuffer())
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return res.arrayBuffer();
+      })
       .then(buffer => {
         if (isCancelled) return;
         loader.parse(buffer, '', (gltf) => {
@@ -500,19 +530,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
       }
       
-      if (meshRef.current) {
-        meshRef.current.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const m = child as THREE.Mesh;
-            m.geometry.dispose();
-            if (m.material) {
-              if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-              else m.material.dispose();
-            }
-          }
-        });
-        sceneRef.current!.remove(meshRef.current);
-      }
+      clearCurrentModel();
       
       sceneRef.current!.add(model);
       meshRef.current = model;
@@ -522,17 +540,17 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       setSelectedNodeId(null);
       setIsolatedNodeId(null);
         }, (err) => {
-          if (!isCancelled) console.error("Error parsing GLTF:", err);
+          failLoad("Model artifact could not be parsed.", err);
         });
       })
       .catch(err => {
-        if (!isCancelled) console.error("Error fetching GLTF:", err);
+        failLoad(err instanceof Error ? err.message : "Model artifact could not be loaded.", err);
       });
       
     return () => {
       isCancelled = true;
     };
-  }, [modelUrl, getAccessToken, renderQuality]);
+  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -719,7 +737,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           </button>
         </div>
         <div className="text-xs text-slate-400">
-          {statusText}
+          {loadErrorText || statusText}
         </div>
       </div>
       
