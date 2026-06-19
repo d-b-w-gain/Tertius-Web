@@ -32,11 +32,13 @@ from core.llm_client import (
     LlmNotConfiguredError,
     LlmProviderAuthenticationError,
     LlmProviderRateLimitError,
-    estimate_build_script_tokens,
-    estimate_file_edit_tokens,
+    estimate_build_script_usage,
+    estimate_file_edit_usage,
     generate_build_script,
     generate_file_edits,
+    llm_usage_cost_usd,
     select_llm_edit_context_files,
+    select_llm_model,
 )
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, ProjectFile, UserWorkspaceState, Project
@@ -117,10 +119,6 @@ async def create_billing_publisher(settings):
 
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def _llm_provider_from_settings(settings) -> str:
-    return "openai-compatible"
-
-
 async def publish_file_edit_billing_event(
     *,
     billing_publisher,
@@ -139,7 +137,7 @@ async def publish_file_edit_billing_event(
         project_id=project_id,
         workflow="intus",
         operation="files.llm_edit",
-        provider=_llm_provider_from_settings(settings),
+        provider=result.provider,
         model=result.model,
         prompt=request.prompt,
         prompt_tokens=usage.prompt_tokens,
@@ -480,15 +478,18 @@ async def generate_project_build_script(
     try:
         if not settings.llm_api_key:
             raise LlmNotConfiguredError("LLM provider is not configured")
+        model_config = select_llm_model(settings, req.model_id)
+        estimated_usage = estimate_build_script_usage(
+            req,
+            max_output_tokens=settings.llm_max_output_tokens,
+        )
         assert_llm_usage_allowed(
             db,
             settings,
             tenant_id=ctx.tenant_id,
             user_id=ctx.user_id,
-            estimated_tokens=estimate_build_script_tokens(
-                req,
-                max_output_tokens=settings.llm_max_output_tokens,
-            ),
+            estimated_tokens=estimated_usage.total_tokens,
+            estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
         )
         billing_publisher, billing_nc = await create_billing_publisher(settings)
         result = await generate_build_script(
@@ -569,8 +570,10 @@ async def generate_project_build_script(
     return {
         "success": result.success,
         "script": result.script,
+        "provider": result.provider,
         "model": result.model,
         "usage": result.usage.model_dump(),
+        "cost_usd": result.cost_usd,
     }
 
 
@@ -646,6 +649,7 @@ async def llm_edit_files(
     try:
         if not settings.llm_api_key:
             raise LlmNotConfiguredError("LLM provider is not configured")
+        model_config = select_llm_model(settings, req.model_id)
         selected_files = select_llm_edit_context_files(
             prompt=req.prompt,
             active_file_id=req.active_file_id,
@@ -653,17 +657,19 @@ async def llm_edit_files(
             max_files=settings.llm_file_edit_max_context_files,
             max_chars=settings.llm_file_edit_max_context_chars,
         )
+        estimated_usage = estimate_file_edit_usage(
+            req,
+            selected_files,
+            max_output_tokens=settings.llm_file_edit_max_output_tokens,
+            system_prompt=settings.llm_file_edit_system_prompt,
+        )
         assert_llm_usage_allowed(
             db,
             settings,
             tenant_id=ctx.tenant_id,
             user_id=ctx.user_id,
-            estimated_tokens=estimate_file_edit_tokens(
-                req,
-                selected_files,
-                max_output_tokens=settings.llm_file_edit_max_output_tokens,
-                system_prompt=settings.llm_file_edit_system_prompt,
-            ),
+            estimated_tokens=estimated_usage.total_tokens,
+            estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
         )
         result = await generate_file_edits(
             req,
@@ -832,8 +838,10 @@ async def llm_edit_files(
         "success": True,
         "outcome": result.outcome,
         "message": result.message,
+        "provider": result.provider,
         "model": result.model,
         "usage": result.usage.model_dump(),
+        "cost_usd": result.cost_usd,
         "snapshot": (
             {
                 "id": str(snapshot.id),

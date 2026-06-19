@@ -1,5 +1,6 @@
 import core.config as config
 from core.config import Settings
+from llm_test_helpers import TEST_LLM_MODEL_ID, TEST_LLM_MODELS_JSON
 
 
 def test_settings_parse_allowed_origins():
@@ -134,8 +135,9 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
 
 def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     for env_var in (
-        "LLM_BASE_URL",
-        "LLM_MODEL",
+        "LLM_MODELS_JSON",
+        "LLM_DEFAULT_MODEL_ID",
+        "LLM_DAILY_BUDGET_USD",
         "LLM_API_KEY",
         "LLM_FILE_EDIT_SYSTEM_PROMPT",
         "LLM_TIMEOUT_SECONDS",
@@ -153,14 +155,17 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     ):
         monkeypatch.delenv(env_var, raising=False)
 
-    monkeypatch.setenv("LLM_BASE_URL", "")
-    monkeypatch.setenv("LLM_MODEL", "")
+    monkeypatch.setenv("LLM_MODELS_JSON", "[]")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", "")
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.00")
     monkeypatch.setenv("LLM_API_KEY", "")
 
     settings = Settings()
 
-    assert settings.llm_base_url == ""
-    assert settings.llm_model == ""
+    assert settings.llm_models_json == "[]"
+    assert settings.llm_default_model_id == ""
+    assert settings.llm_daily_budget_usd == 2.0
+    assert settings.llm_models == []
     assert settings.llm_api_key == ""
     assert settings.llm_file_edit_system_prompt.startswith(
         "You are the Tertius Intus CAD editing agent."
@@ -180,8 +185,9 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
 
 
 def test_settings_allows_llm_and_billing_overrides(monkeypatch):
-    monkeypatch.setenv("LLM_BASE_URL", "https://llm.example.test/v1")
-    monkeypatch.setenv("LLM_MODEL", "test-openai-compatible-model")
+    monkeypatch.setenv("LLM_MODELS_JSON", TEST_LLM_MODELS_JSON)
+    monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", TEST_LLM_MODEL_ID)
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.50")
     monkeypatch.setenv("LLM_API_KEY", "secret-key")
     monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", "custom file edit prompt")
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
@@ -199,8 +205,10 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
 
     settings = Settings()
 
-    assert settings.llm_base_url == "https://llm.example.test/v1"
-    assert settings.llm_model == "test-openai-compatible-model"
+    assert settings.llm_default_model_id == TEST_LLM_MODEL_ID
+    assert settings.llm_daily_budget_usd == 2.5
+    assert settings.get_llm_model().id == TEST_LLM_MODEL_ID
+    assert settings.get_llm_model().endpoint == "https://llm.example.test/v1/chat/completions"
     assert settings.llm_api_key == "secret-key"
     assert settings.llm_file_edit_system_prompt == "custom file edit prompt"
     assert settings.llm_timeout_seconds == 30

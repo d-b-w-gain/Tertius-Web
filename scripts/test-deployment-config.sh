@@ -146,8 +146,8 @@ if ! printf '%s\n' "$rendered" | rg -q 'KEYCLOAK_ISSUER: "http://keycloak.localh
   exit 1
 fi
 
-if ! rg -q 'LLM_BASE_URL: ""' <<<"$rendered" || ! rg -q 'LLM_MODEL: ""' <<<"$rendered"; then
-  echo "ConfigMap must render provider-neutral default LLM base URL and model." >&2
+if ! rg -q 'LLM_MODELS_JSON: ".*kimi-k2.7-code.*minimax-m3' <<<"$rendered" || ! rg -q 'LLM_DEFAULT_MODEL_ID: "kimi-k2.7-code"' <<<"$rendered" || ! rg -q 'LLM_DAILY_BUDGET_USD: "2.00"' <<<"$rendered"; then
+  echo "ConfigMap must render the LLM model catalog, default model, and daily dollar budget." >&2
   exit 1
 fi
 
@@ -186,7 +186,7 @@ if ! printf '%s\n' "$api_with_llm_secret_without_prompt" | rg -q 'name: LLM_FILE
   exit 1
 fi
 
-if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_BASE_URL|LLM_MODEL|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
+if printf '%s\n' "$ui_with_llm_secret" | rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:'; then
   echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
@@ -261,7 +261,7 @@ if ! printf '%s\n' "$scaled_job" | rg -q 'command: \["sh", "/app/server/start-co
   exit 1
 fi
 
-if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_BASE_URL|LLM_MODEL'; then
+if printf '%s\n' "$scaled_job" | rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD'; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi
@@ -358,12 +358,12 @@ if [ "$missing_dependency_archive" -ne 0 ]; then
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'requestedSize|storage: "1Gi"|storage: 1Gi'; then
+if ! rg -q 'requestedSize|storage: "1Gi"|storage: 1Gi' <<<"$rendered"; then
   echo "Local Helm render did not include the expected Valkey 1Gi storage request." >&2
   exit 1
 fi
 
-if ! printf '%s\n' "$rendered" | rg -q 'cpu: 50m'; then
+if ! rg -q 'cpu: 50m' <<<"$rendered"; then
   echo "Local Helm render did not include the expected Valkey CPU request." >&2
   exit 1
 fi

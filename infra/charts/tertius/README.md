@@ -59,12 +59,13 @@ By default, compile Job pods get a dedicated NetworkPolicy that denies ingress a
 
 ## LLM Build Script Generation
 
-The API can call an OpenAI-compatible LLM provider to generate Intus build scripts.
+The API can call configured LLM providers to generate Intus build scripts and file edits.
 
 Non-secret provider settings are rendered into the app ConfigMap:
 
-- `app.config.llmBaseUrl` -> `LLM_BASE_URL`, default empty; set this in cluster values for the OpenAI-compatible provider
-- `app.config.llmModel` -> `LLM_MODEL`, default empty; set this in cluster values for the OpenAI-compatible provider
+- `app.config.llmModels` -> `LLM_MODELS_JSON`
+- `app.config.llmDefaultModelId` -> `LLM_DEFAULT_MODEL_ID`
+- `app.config.llmDailyBudgetUsd` -> `LLM_DAILY_BUDGET_USD`
 - `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
 - `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
 - `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`
@@ -78,6 +79,8 @@ Non-secret provider settings are rendered into the app ConfigMap:
 - `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
 - `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
 
+See `docs/configuration-and-secrets.md` for the full ConfigMap, Secret, and LLM model schema reference.
+
 The provider API key and file-edit system prompt are secret material:
 
 - `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
@@ -85,7 +88,7 @@ The provider API key and file-edit system prompt are secret material:
 - `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages these values out of chart values.
 - Do not put `LLM_API_KEY` or `LLM_FILE_EDIT_SYSTEM_PROMPT` in the shared app Secret selected by `app.secretName`; keep provider credentials and prompts in the dedicated LLM Secret.
 
-Only the API Deployment receives `LLM_API_KEY` and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive the LLM configuration, key, or prompt.
+Only the API Deployment receives LLM configuration, `LLM_API_KEY`, and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive LLM configuration, keys, or prompts.
 
 For production, manage the dedicated LLM Secret outside committed values:
 

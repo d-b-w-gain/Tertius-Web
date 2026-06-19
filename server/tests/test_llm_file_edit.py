@@ -26,6 +26,7 @@ from core.models import (
     Tenant,
     TenantMembership,
 )
+from llm_test_helpers import make_llm_settings
 from workflows.intus import intus_server
 from workflows.intus.intus_server import app
 
@@ -45,7 +46,7 @@ def enable_llm(monkeypatch):
     monkeypatch.setattr(
         intus_server,
         "get_settings",
-        lambda: Settings(llm_api_key="test-key", llm_model="test-openai-compatible-model"),
+        lambda: make_llm_settings(llm_api_key="test-key"),
     )
 
 
@@ -154,8 +155,10 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
                 file_id=helper.id, content="def make_purlin():\n    return 1\n", summary="Update helper"
             ),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=100, completion_tokens=200, total_tokens=300),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -187,8 +190,10 @@ def test_llm_file_edit_returns_changed_files_and_persists_state(
     assert body["success"] is True
     assert body["outcome"] == "changed"
     assert body["message"] == ""
+    assert body["provider"] == "openai-chat-completions"
     assert body["model"] == "test-openai-compatible-model"
-    assert body["usage"] == {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
+    assert body["usage"]["total_tokens"] == 300
+    assert body["cost_usd"] == 0.0005
     assert body["snapshot"]["id"]
     assert body["snapshot"]["content_hash"]
     assert body["snapshot"]["message"]
@@ -257,8 +262,10 @@ def test_llm_file_edit_allows_provider_to_return_changed_subset(
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=100, completion_tokens=200, total_tokens=300),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -323,8 +330,10 @@ def test_llm_file_edit_returns_409_when_file_version_changes_before_persist(
         files=[
             SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -503,8 +512,10 @@ def test_llm_file_edit_no_change_returns_200_records_usage_without_snapshot(
         outcome="no_change",
         message="Already matches the request",
         files=[],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -565,8 +576,10 @@ def test_llm_file_edit_cannot_complete_returns_200_records_usage_without_snapsho
         outcome="cannot_complete",
         message="Creating a new file is required",
         files=[],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -625,8 +638,10 @@ def test_llm_file_edit_billing_failure_on_no_change_returns_503_without_snapshot
         outcome="no_change",
         message="Already matches the request",
         files=[],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -753,8 +768,10 @@ def test_llm_file_edit_returns_503_when_billing_publisher_unavailable(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=None,
     )
@@ -816,8 +833,10 @@ def test_llm_file_edit_returns_503_when_billing_publish_fails_after_provider(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=uuid4(),
     )
@@ -887,8 +906,10 @@ def test_llm_file_edit_public_mounted_route(
         files=[
             SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
         ],
+        provider="openai-chat-completions",
         model="test-openai-compatible-model",
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
         billing_event_id=uuid4(),
     )
@@ -931,8 +952,10 @@ def test_llm_file_edit_public_mounted_route(
     assert response.status_code == 200
     body = response.json()
     assert body["success"] is True
+    assert body["provider"] == "openai-chat-completions"
     assert body["model"] == "test-openai-compatible-model"
-    assert body["usage"] == {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+    assert body["usage"]["total_tokens"] == 30
+    assert body["cost_usd"] == 0.0005
     assert body["snapshot"]["id"]
     assert len(body["files"]) == 1
     assert body["files"][0]["filename"] == "design.py"

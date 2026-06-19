@@ -12,6 +12,9 @@ type LlmUsageSummary = {
   tenant_daily_token_quota?: number
   tenant_tokens_used_today?: number
   tenant_tokens_remaining_today?: number
+  tenant_daily_budget_usd?: number
+  tenant_cost_used_today_usd?: number
+  tenant_cost_remaining_today_usd?: number
   user_daily_token_quota?: number
   user_tokens_used_today?: number
   user_tokens_remaining_today?: number
@@ -31,6 +34,10 @@ function formatTokens(value: number) {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
   return String(value)
+}
+
+function formatUsd(value: number) {
+  return `$${value.toFixed(2)}`
 }
 
 export function recordAiBudgetUsage(tokens: number) {
@@ -86,12 +93,19 @@ export function AiBudgetGauge({ serverUrl }: AiBudgetGaugeProps) {
 
   const used = summary?.tenant_tokens_used_today ?? localUsage
   const quota = summary?.tenant_daily_token_quota ?? 0
+  const costUsed = summary?.tenant_cost_used_today_usd
+  const costQuota = summary?.tenant_daily_budget_usd
+  const costRemaining = summary?.tenant_cost_remaining_today_usd
+  const budgetUsed = costQuota ? costUsed ?? 0 : used
+  const budgetQuota = costQuota || quota
   const percent = useMemo(() => {
-    if (!quota) return 0
-    return Math.min(100, Math.max(0, (used / quota) * 100))
-  }, [quota, used])
+    if (!budgetQuota) return 0
+    return Math.min(100, Math.max(0, (budgetUsed / budgetQuota) * 100))
+  }, [budgetQuota, budgetUsed])
   const remaining = summary?.tenant_tokens_remaining_today
-  const title = quota
+  const title = costQuota
+    ? `${formatUsd(costRemaining ?? Math.max(0, costQuota - (costUsed ?? 0)))} AI budget remaining today`
+    : quota
     ? `${formatTokens(remaining ?? Math.max(0, quota - used))} tokens remaining today`
     : 'AI token usage for this browser session'
 
@@ -104,13 +118,17 @@ export function AiBudgetGauge({ serverUrl }: AiBudgetGaugeProps) {
       <div className="flex items-center justify-between gap-3">
         <span className="font-semibold text-slate-100">Tenant AI Budget</span>
         <span className="font-mono text-cyan-300">
-          {quota ? `${formatTokens(used)} / ${formatTokens(quota)}` : `${formatTokens(used)} used`}
+          {costQuota
+            ? `${formatUsd(costUsed ?? 0)} / ${formatUsd(costQuota)}`
+            : quota
+            ? `${formatTokens(used)} / ${formatTokens(quota)}`
+            : `${formatTokens(used)} used`}
         </span>
       </div>
       <div className="mt-2 h-2 overflow-hidden rounded bg-slate-800">
         <div
           className="h-full rounded bg-cyan-500 transition-all"
-          style={{ width: quota ? `${percent}%` : used > 0 ? '18%' : '0%' }}
+          style={{ width: budgetQuota ? `${percent}%` : used > 0 ? '18%' : '0%' }}
         />
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-slate-500">

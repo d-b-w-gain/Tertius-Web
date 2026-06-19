@@ -10,6 +10,7 @@ from core.repositories import UsageRepository
 from core.usage_messages import (
     DailyUsageItem,
     FormatUsageItem,
+    LlmModelsResponse,
     LlmTodayUsageResponse,
     MonthlyUsageItem,
     ProjectUsageItem,
@@ -83,3 +84,15 @@ def llm_usage_today(ctx: AuthContext = Depends(get_auth_context), db: Session = 
         tenant_id=ctx.tenant_id,
         user_id=ctx.user_id,
     )
+
+
+@llm_usage_router.get("/models", response_model=LlmModelsResponse)
+def llm_models(ctx: AuthContext = Depends(get_auth_context)):
+    settings = get_settings()
+    models = settings.enabled_llm_models
+    default_model_id = settings.get_llm_model().id if models else ""
+    return {
+        "default_model_id": default_model_id,
+        "daily_budget_usd": settings.llm_daily_budget_usd,
+        "models": [model.model_dump() for model in models],
+    }

@@ -9,6 +9,7 @@ from core.db import get_db
 from core.llm_client import TokenUsage
 from core.llm_usage import LlmUsageLimitExceeded
 from core.models import AppUser, Project, Tenant, TenantMembership
+from llm_test_helpers import make_llm_settings
 from workflows.intus import intus_server
 from workflows.intus.intus_server import app
 
@@ -22,7 +23,7 @@ def enable_llm(monkeypatch):
     monkeypatch.setattr(
         intus_server,
         "get_settings",
-        lambda: Settings(llm_api_key="test-key", llm_model="test-openai-compatible-model"),
+        lambda: make_llm_settings(llm_api_key="test-key"),
     )
 
 
@@ -65,14 +66,18 @@ def test_build_script_generation_returns_generated_script(authenticated_intus_cl
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
+            provider="openai-chat-completions",
             model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+            cost_usd=0.000005,
             provider_request_id="chatcmpl-test",
             model_dump=lambda: {
                 "success": True,
                 "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
+                "provider": "openai-chat-completions",
                 "model": "test-openai-compatible-model",
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                "cost_usd": 0.000005,
             },
         )
 
@@ -97,8 +102,16 @@ def test_build_script_generation_returns_generated_script(authenticated_intus_cl
     assert response.json() == {
         "success": True,
         "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
+        "provider": "openai-chat-completions",
         "model": "test-openai-compatible-model",
-        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+            "cached_prompt_tokens": 0,
+            "cache_creation_prompt_tokens": 0,
+        },
+        "cost_usd": 0.000005,
     }
 
 
@@ -128,14 +141,18 @@ def test_build_script_generation_public_mounted_route(db_session, seeded_tenant,
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
+            provider="openai-chat-completions",
             model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3),
+            cost_usd=0.000005,
             provider_request_id="chatcmpl-test",
             model_dump=lambda: {
                 "success": True,
                 "script": "import build123d as bd\npart = bd.Box(1, 2, 3)",
+                "provider": "openai-chat-completions",
                 "model": "test-openai-compatible-model",
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                "cost_usd": 0.000005,
             },
         )
 
@@ -181,6 +198,8 @@ def test_build_script_generation_rejects_invalid_active_file(authenticated_intus
 
 
 def test_build_script_generation_reports_missing_provider_key(authenticated_intus_client, monkeypatch):
+    monkeypatch.setattr(intus_server, "get_settings", lambda: make_llm_settings(llm_api_key=""))
+
     async def fake_generate_build_script(*args, **kwargs):
         from core.llm_client import LlmNotConfiguredError
 
@@ -266,8 +285,10 @@ def test_build_script_generation_estimates_prompt_and_completion_tokens_for_quot
         return SimpleNamespace(
             success=True,
             script="import build123d as bd\npart = bd.Box(1, 2, 3)",
+            provider="openai-chat-completions",
             model="test-openai-compatible-model",
             usage=TokenUsage(prompt_tokens=2000, completion_tokens=2, total_tokens=2002),
+            cost_usd=0.004,
             provider_request_id="chatcmpl-test",
         )
 
