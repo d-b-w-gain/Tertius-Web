@@ -164,6 +164,9 @@ kubectl -n "$NAMESPACE" get pods
 step "Setting local auth issuer"
 PUBLIC_BASE_URL=http://localhost:18080 NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-repair-auth-wsl.sh
 
+step "Syncing local LLM settings"
+NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-sync-llm-env-wsl.sh
+
 step "Starting localhost:18080 tunnel from inside WSL"
 pkill -f 'kubectl -n tertius port-forward pod/.*18080:80' >/dev/null 2>&1 || true
 ui_pod="$(kubectl -n "$NAMESPACE" get pod -l app.kubernetes.io/component=ui -o jsonpath='{.items[0].metadata.name}')"

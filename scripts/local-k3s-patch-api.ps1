@@ -97,6 +97,9 @@ try {
         Write-Ok "Compile ScaledJob not present; skipped"
     }
 
+    Write-Step "Syncing local LLM settings"
+    Invoke-Native { wsl.exe -d Ubuntu-24.04 -u root -- bash -lc "cd '$wslRepoRoot' && NAMESPACE='$Namespace' DEPLOYMENT='$Deployment' bash ./scripts/local-k3s-sync-llm-env-wsl.sh" } "Local LLM sync"
+
     Write-Step "Waiting for API rollout"
     Invoke-Native { wsl.exe -d Ubuntu-24.04 -u root -- kubectl -n $Namespace rollout status "deployment/$Deployment" --timeout=180s } "API rollout"
 
