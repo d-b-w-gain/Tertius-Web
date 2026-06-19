@@ -137,6 +137,10 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       if (typeof detail === 'string' && detail.trim()) return detail
     }
 
+    if (response.status === 524) {
+      return `${fallback}: the request timed out at the edge. The edit may still be running; refresh the project before retrying.`
+    }
+
     if (!response.ok) {
       return `${fallback} (${response.status} ${response.statusText || 'HTTP error'})`
     }

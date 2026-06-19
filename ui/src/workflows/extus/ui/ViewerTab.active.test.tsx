@@ -1,11 +1,12 @@
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ViewerTab } from './ViewerTab'
+import { ModelViewerCanvas, ViewerTab } from './ViewerTab'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   getAccessToken: vi.fn(),
   rendererSetSize: vi.fn(),
+  gltfParse: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({ apiFetch: mocks.apiFetch }))
@@ -25,7 +26,7 @@ vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
 }))
 vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
-    parse = vi.fn()
+    parse = mocks.gltfParse
   },
 }))
 vi.mock('three/examples/jsm/utils/BufferGeometryUtils.js', () => ({
@@ -38,6 +39,9 @@ vi.mock('three', () => {
     visible = true
     add(child: Object3D) {
       this.children.push(child)
+    }
+    remove(child: Object3D) {
+      this.children = this.children.filter((candidate) => candidate !== child)
     }
     getObjectByName(name: string): Object3D | undefined {
       return this.children.find((child) => child.name === name)
@@ -112,7 +116,16 @@ vi.mock('three', () => {
 function jsonResponse(data: unknown, ok = true) {
   return {
     ok,
+    status: ok ? 200 : 404,
     json: vi.fn().mockResolvedValue(data),
+  }
+}
+
+function binaryResponse(ok = true, status = ok ? 200 : 404) {
+  return {
+    ok,
+    status,
+    arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
   }
 }
 
@@ -148,5 +161,23 @@ describe('ViewerTab active state', () => {
 
     expect(mocks.rendererSetSize).toHaveBeenLastCalledWith(640, 480)
     expect(mocks.rendererSetSize).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a model load error and does not parse failed artifact responses', async () => {
+    mocks.apiFetch.mockReset()
+    mocks.apiFetch.mockResolvedValue(binaryResponse(false, 404))
+
+    render(
+      <ModelViewerCanvas
+        modelUrl="/api/extus/artifacts/missing/model"
+        getAccessToken={mocks.getAccessToken}
+        statusText="Selected historical model"
+      />,
+    )
+
+    expect(await screen.findByText('Model artifact unavailable (404)')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(mocks.gltfParse).not.toHaveBeenCalled()
+    })
   })
 })

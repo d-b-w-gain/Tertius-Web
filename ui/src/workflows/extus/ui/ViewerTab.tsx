@@ -13,6 +13,14 @@ interface ViewerProps {
   isActive?: boolean;
 }
 
+interface ModelViewerCanvasProps {
+  modelUrl: string;
+  getAccessToken: () => Promise<string>;
+  statusText?: string;
+  projectName?: string;
+  isActive?: boolean;
+}
+
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 
 type ViewerBatchOptions = {
@@ -53,6 +61,19 @@ function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Co
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   return geometry;
+}
+
+function disposeObjectTree(object: THREE.Object3D): void {
+  object.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry.dispose();
+      if (mesh.material) {
+        if (Array.isArray(mesh.material)) mesh.material.forEach(mat => mat.dispose());
+        else mesh.material.dispose();
+      }
+    }
+  });
 }
 
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
@@ -104,17 +125,82 @@ export const ViewerTab: React.FC<ViewerProps> = (props) => {
       />
     );
   }
-  return <AuthenticatedViewerTab {...props} />;
+  return <LatestModelViewer {...props} />;
 };
 
-const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
   const [projectName, setProjectName] = useState<string>('');
+
+  // Poll for latest active-project model changes.
+  useEffect(() => {
+    if (!isActive) return;
+
+    let mounted = true;
+    let mtime = 0;
+
+    const checkStatus = async () => {
+      if (!shouldRunPollingRequest()) return;
+      try {
+        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
+        if (projRes.ok && mounted) {
+          const pData = await projRes.json();
+          if (pData.project_name) {
+            setProjectName(pData.project_name);
+          }
+        }
+
+        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.mtime && data.mtime !== mtime) {
+            if (mounted) {
+              mtime = data.mtime;
+              setUrl(`${serverUrl}/model?t=${data.mtime}`);
+              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
+            }
+          }
+        } else {
+          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
+        }
+      } catch (e) {
+        if (mounted) setStatusText('Lost connection to file server.');
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [serverUrl, isActive, getAccessToken]);
+
+  return (
+    <ModelViewerCanvas
+      modelUrl={url}
+      getAccessToken={getAccessToken}
+      statusText={statusText}
+      projectName={projectName}
+      isActive={isActive}
+    />
+  );
+};
+
+export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
+  modelUrl,
+  getAccessToken,
+  statusText = 'Waiting for model...',
+  projectName = '',
+  isActive = true,
+}) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
+  const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -131,6 +217,18 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
+
+  const clearCurrentModel = useCallback(() => {
+    const scene = sceneRef.current;
+    const current = meshRef.current;
+    if (!scene || !current) return;
+    disposeObjectTree(current);
+    scene.remove(current);
+    meshRef.current = null;
+    setSceneGraph(null);
+    setSelectedNodeId(null);
+    setIsolatedNodeId(null);
+  }, []);
 
   const resizeRendererToContainer = useCallback(() => {
     const container = containerRef.current;
@@ -235,16 +333,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
       canvas.removeEventListener('wheel', handleInteraction);
       if (resumeTimeout) clearTimeout(resumeTimeout);
       cancelAnimationFrame(animIdRef.current);
-      scene.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const m = child as THREE.Mesh;
-          m.geometry.dispose();
-          if (m.material) {
-            if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-            else m.material.dispose();
-          }
-        }
-      });
+      disposeObjectTree(scene);
       renderer.dispose();
     };
   }, [resizeRendererToContainer]);
@@ -293,60 +382,28 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
     });
   }, [renderQuality]);
 
-  // 2. Poll for file changes
-  useEffect(() => {
-    if (!isActive) return;
-    
-    let mounted = true;
-    let mtime = 0;
-    
-    const checkStatus = async () => {
-      if (!shouldRunPollingRequest()) return;
-      try {
-        const projRes = await apiFetch(`${serverUrl}/project_name`, getAccessToken);
-        if (projRes.ok && mounted) {
-          const pData = await projRes.json();
-          if (pData.project_name) {
-            setProjectName(pData.project_name);
-          }
-        }
-        
-        const res = await apiFetch(`${serverUrl}/status`, getAccessToken);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.mtime && data.mtime !== mtime) {
-            if (mounted) {
-              mtime = data.mtime;
-              setUrl(`${serverUrl}/model?t=${data.mtime}`);
-              setStatusText(`Model updated at ${new Date(data.mtime * 1000).toLocaleTimeString()}`);
-            }
-          }
-        } else {
-          if (mounted) setStatusText('No active model artifact found yet. Compile a project in Intus!');
-        }
-      } catch (e) {
-        if (mounted) setStatusText('Lost connection to file server.');
-      }
-    };
-
-    checkStatus();
-    const interval = setInterval(checkStatus, getPollingDelay(MODEL_STATUS_POLL_INTERVAL_MS));
-    
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [serverUrl, isActive, getAccessToken]);
-
   // 3. Load GLTF when URL changes
   useEffect(() => {
-    if (!url || !sceneRef.current) return;
+    setLoadErrorText(null);
+    if (!modelUrl || !sceneRef.current) return;
     
     let isCancelled = false;
     const loader = new GLTFLoader();
+
+    const failLoad = (message: string, err?: unknown) => {
+      if (isCancelled) return;
+      if (err) console.error(message, err);
+      setLoadErrorText(message);
+      clearCurrentModel();
+    };
     
-    apiFetch(url, getAccessToken)
-      .then(res => res.arrayBuffer())
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return res.arrayBuffer();
+      })
       .then(buffer => {
         if (isCancelled) return;
         loader.parse(buffer, '', (gltf) => {
@@ -473,19 +530,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
         }
       }
       
-      if (meshRef.current) {
-        meshRef.current.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const m = child as THREE.Mesh;
-            m.geometry.dispose();
-            if (m.material) {
-              if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-              else m.material.dispose();
-            }
-          }
-        });
-        sceneRef.current!.remove(meshRef.current);
-      }
+      clearCurrentModel();
       
       sceneRef.current!.add(model);
       meshRef.current = model;
@@ -495,17 +540,17 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
       setSelectedNodeId(null);
       setIsolatedNodeId(null);
         }, (err) => {
-          if (!isCancelled) console.error("Error parsing GLTF:", err);
+          failLoad("Model artifact could not be parsed.", err);
         });
       })
       .catch(err => {
-        if (!isCancelled) console.error("Error fetching GLTF:", err);
+        failLoad(err instanceof Error ? err.message : "Model artifact could not be loaded.", err);
       });
       
     return () => {
       isCancelled = true;
     };
-  }, [url, getAccessToken, renderQuality]);
+  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -692,7 +737,7 @@ const AuthenticatedViewerTab: React.FC<ViewerProps> = ({ serverUrl, isActive = t
           </button>
         </div>
         <div className="text-xs text-slate-400">
-          {statusText}
+          {loadErrorText || statusText}
         </div>
       </div>
       

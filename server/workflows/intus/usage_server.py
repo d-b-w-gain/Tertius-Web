@@ -1,13 +1,16 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from core.auth import require_tenant_owner
+from core.auth import get_auth_context, require_tenant_owner
 from core.auth_types import AuthContext
+from core.config import get_settings
 from core.db import get_db
+from core.llm_usage import today_llm_usage_summary
 from core.repositories import UsageRepository
 from core.usage_messages import (
     DailyUsageItem,
     FormatUsageItem,
+    LlmTodayUsageResponse,
     MonthlyUsageItem,
     ProjectUsageItem,
     UsageRecordResponse,
@@ -15,6 +18,7 @@ from core.usage_messages import (
 )
 
 router = APIRouter(prefix="/usage", tags=["usage"])
+llm_usage_router = APIRouter(prefix="/llm-usage", tags=["llm-usage"])
 
 
 @router.get("/summary", response_model=UsageSummaryResponse)
@@ -69,3 +73,13 @@ def recent_jobs(
 ):
     repo = UsageRepository(db, ctx.tenant_id)
     return repo.recent_jobs(limit)
+
+
+@llm_usage_router.get("/today", response_model=LlmTodayUsageResponse)
+def llm_usage_today(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+    return today_llm_usage_summary(
+        db,
+        get_settings(),
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+    )

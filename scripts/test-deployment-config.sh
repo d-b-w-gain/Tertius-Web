@@ -73,6 +73,16 @@ if ! rg -q "VITE_KEYCLOAK_CLIENT_ID \|\| 'tertius-ui'" "${ROOT_DIR}/ui/src/auth/
   exit 1
 fi
 
+if ! rg -q 'local-k3s-sync-llm-env-wsl.sh' "${ROOT_DIR}/scripts/local-k3s-start-wsl.sh" || ! rg -q 'local-k3s-sync-llm-env-wsl.sh' "${ROOT_DIR}/scripts/local-k3s-patch-api.ps1"; then
+  echo "Local k3s start and API patch helpers must sync local API-only LLM settings automatically." >&2
+  exit 1
+fi
+
+if ! rg -q 'kubectl -n "\$NAMESPACE" set env "deployment/\$\{DEPLOYMENT\}" --containers=api' "${ROOT_DIR}/scripts/local-k3s-sync-llm-env-wsl.sh" || ! rg -q 'kubectl -n "\$NAMESPACE" create secret generic "\$LLM_SECRET_NAME"' "${ROOT_DIR}/scripts/local-k3s-sync-llm-env-wsl.sh"; then
+  echo "Local k3s LLM sync must apply model/base URL to the API deployment and credentials to the dedicated LLM Secret." >&2
+  exit 1
+fi
+
 if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'map \$http_host \$forwarded_host_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Port \$forwarded_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template"; then
   echo "Frontend nginx must preserve Cloudflare/original forwarded scheme, host, and port for proxied API and Keycloak requests." >&2
   exit 1
