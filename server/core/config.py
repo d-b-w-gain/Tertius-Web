@@ -1,8 +1,10 @@
 from functools import lru_cache
+import json
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote_plus
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
@@ -14,6 +16,28 @@ SERVER_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 def settings_config() -> SettingsConfigDict:
     return SettingsConfigDict(env_file=SERVER_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
+
+class LlmModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    label: str = Field(default="", max_length=120)
+    model: str = Field(default="", max_length=200)
+    endpoint: str = Field(min_length=1, max_length=500)
+    api: Literal["openai-chat-completions", "anthropic-messages"] = "openai-chat-completions"
+    input_price_per_million: float = Field(ge=0)
+    output_price_per_million: float = Field(ge=0)
+    cached_read_price_per_million: float | None = Field(default=None, ge=0)
+    cached_write_price_per_million: float | None = Field(default=None, ge=0)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def populate_defaults(self):
+        if not self.model:
+            self.model = self.id
+        if not self.label:
+            self.label = self.id
+        return self
 
 class Settings(BaseSettings):
     model_config = settings_config()
@@ -39,8 +63,9 @@ class Settings(BaseSettings):
     compile_timeout_seconds: int = Field(default=600)
     compile_request_max_bytes: int = Field(default=8 * 1024 * 1024)
     compile_result_max_bytes: int = Field(default=90 * 1024 * 1024)
-    llm_base_url: str = Field(default="")
-    llm_model: str = Field(default="")
+    llm_models_json: str = Field(default="[]")
+    llm_default_model_id: str = Field(default="")
+    llm_daily_budget_usd: float = Field(default=2.0, ge=0)
     llm_api_key: str = Field(default="")
     llm_file_edit_system_prompt: str = Field(default=FILE_EDIT_SYSTEM_PROMPT)
     llm_timeout_seconds: int = Field(default=60)
@@ -85,6 +110,51 @@ class Settings(BaseSettings):
     @property
     def allowed_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def llm_models(self) -> list[LlmModelConfig]:
+        raw = self.llm_models_json.strip()
+        parsed: object
+        if not raw:
+            parsed = []
+        else:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("LLM_MODELS_JSON must be valid JSON") from exc
+
+        if not isinstance(parsed, list):
+            raise ValueError("LLM_MODELS_JSON must be a JSON array")
+
+        try:
+            models = [LlmModelConfig.model_validate(item) for item in parsed]
+        except ValidationError as exc:
+            raise ValueError(f"LLM_MODELS_JSON contains an invalid model entry: {exc}") from exc
+
+        return models
+
+    @property
+    def enabled_llm_models(self) -> list[LlmModelConfig]:
+        return [model for model in self.llm_models if model.enabled]
+
+    def get_llm_model(self, model_id: str | None = None) -> LlmModelConfig:
+        models = self.enabled_llm_models
+        if not models:
+            raise ValueError("LLM models are not configured")
+
+        if model_id:
+            for model in models:
+                if model.id == model_id:
+                    return model
+            raise ValueError("Requested LLM model is not configured")
+
+        if self.llm_default_model_id:
+            for model in models:
+                if model.id == self.llm_default_model_id:
+                    return model
+            raise ValueError("Default LLM model is not configured")
+
+        return models[0]
 
 
 @lru_cache

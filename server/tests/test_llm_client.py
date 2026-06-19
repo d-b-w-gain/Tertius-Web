@@ -25,6 +25,7 @@ from core.llm_client import (
     parse_llm_file_edit_response,
     select_llm_edit_context_files,
 )
+from llm_test_helpers import make_llm_settings
 
 
 FILE_UPDATED_AT = datetime(2026, 6, 17, tzinfo=timezone.utc)
@@ -86,7 +87,7 @@ class FakePublisher:
 async def test_generate_build_script_calls_openai_and_publishes_billing_event():
     client = FakeOpenAIClient()
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
+    settings = make_llm_settings(llm_api_key="secret")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -135,7 +136,7 @@ async def test_generate_build_script_raises_when_billing_publish_fails():
     with pytest.raises(LlmBillingError):
         await generate_build_script(
             BuildScriptGenerationInput(prompt="make a bracket"),
-            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
+            settings=make_llm_settings(llm_api_key="secret"),
             auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc-test", email=None),
             project_id=uuid4(),
             openai_client=FakeOpenAIClient(),
@@ -599,7 +600,7 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     client = FakeOpenAIClient()
     client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
+    settings = make_llm_settings(llm_api_key="secret")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -655,11 +656,7 @@ async def test_generate_file_edits_uses_settings_system_prompt():
     )
     client = FakeOpenAIClient()
     client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
-    settings = Settings(
-        llm_api_key="secret",
-        llm_model="test-openai-compatible-model",
-        llm_file_edit_system_prompt="custom provider system prompt",
-    )
+    settings = make_llm_settings(llm_api_key="secret", llm_file_edit_system_prompt="custom provider system prompt")
 
     await generate_file_edits(
         request,
@@ -702,7 +699,7 @@ async def test_generate_file_edits_rejects_truncated_response():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
+            settings=make_llm_settings(llm_api_key="secret"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -722,7 +719,7 @@ async def test_generate_file_edits_classifies_provider_authentication_failure():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
+            settings=make_llm_settings(llm_api_key="secret"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -740,7 +737,7 @@ async def test_generate_file_edits_does_not_publish_when_provider_returns_invali
         completions=FakeChatCompletions(content="not json at all")
     )
     publisher = FakePublisher()
-    settings = Settings(llm_api_key="secret", llm_model="test-openai-compatible-model")
+    settings = make_llm_settings(llm_api_key="secret")
     auth = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -782,7 +779,7 @@ async def test_generate_file_edits_does_not_publish_when_file_id_is_unknown():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
+            settings=make_llm_settings(llm_api_key="secret"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),
@@ -814,7 +811,7 @@ async def test_generate_file_edits_does_not_publish_when_files_duplicate():
         await generate_file_edits(
             request,
             files=files,
-            settings=Settings(llm_api_key="secret", llm_model="test-openai-compatible-model"),
+            settings=make_llm_settings(llm_api_key="secret"),
             auth=AuthContext(
                 user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
             ),

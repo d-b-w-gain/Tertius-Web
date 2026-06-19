@@ -26,8 +26,49 @@ app:
     compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
-    llmBaseUrl: ""
-    llmModel: ""
+    llmDefaultModelId: kimi-k2.7-code
+    llmDailyBudgetUsd: "2.00"
+    llmModels:
+      - id: glm-5.2
+        label: GLM-5.2
+        model: glm-5.2
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 1.40
+        output_price_per_million: 4.40
+        cached_read_price_per_million: 0.26
+        cached_write_price_per_million: null
+        enabled: true
+      - id: kimi-k2.7-code
+        label: Kimi K2.7 Code
+        model: kimi-k2.7-code
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 0.95
+        output_price_per_million: 4.00
+        cached_read_price_per_million: 0.19
+        cached_write_price_per_million: null
+        enabled: true
+      - id: deepseek-v4-pro
+        label: DeepSeek V4 Pro
+        model: deepseek-v4-pro
+        endpoint: https://opencode.ai/zen/go/v1/chat/completions
+        api: openai-chat-completions
+        input_price_per_million: 1.74
+        output_price_per_million: 3.48
+        cached_read_price_per_million: 0.0145
+        cached_write_price_per_million: null
+        enabled: true
+      - id: minimax-m3
+        label: MiniMax M3
+        model: minimax-m3
+        endpoint: https://opencode.ai/zen/go/v1/messages
+        api: anthropic-messages
+        input_price_per_million: 0.30
+        output_price_per_million: 1.20
+        cached_read_price_per_million: 0.06
+        cached_write_price_per_million: null
+        enabled: true
     llmTimeoutSeconds: 60
     llmMaxOutputTokens: 2048
     llmFileEditMaxOutputTokens: 65536

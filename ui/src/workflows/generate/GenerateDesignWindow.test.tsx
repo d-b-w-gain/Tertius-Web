@@ -15,6 +15,7 @@ const storage = vi.hoisted(() => ({
   getStatus: vi.fn(),
   getHistory: vi.fn(),
   applyLlmFileEdit: vi.fn(),
+  listLlmModels: vi.fn(),
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -75,6 +76,24 @@ describe('GenerateDesignWindow', () => {
       { id: 'stale-id', filename: 'stale.py' },
     ])
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
+    storage.listLlmModels.mockResolvedValue({
+      default_model_id: 'kimi-k2.7-code',
+      daily_budget_usd: 2,
+      models: [
+        {
+          id: 'kimi-k2.7-code',
+          label: 'Kimi K2.7 Code',
+          model: 'kimi-k2.7-code',
+          api: 'openai-chat-completions',
+          endpoint: 'https://opencode.ai/zen/go/v1/chat/completions',
+          input_price_per_million: 0.95,
+          output_price_per_million: 4,
+          cached_read_price_per_million: 0.19,
+          cached_write_price_per_million: null,
+          enabled: true,
+        },
+      ],
+    })
     storage.applyLlmFileEdit.mockResolvedValue({
       success: true,
       outcome: 'changed',
@@ -92,6 +111,7 @@ describe('GenerateDesignWindow', () => {
           summary: 'Made the box larger.',
         },
       ],
+      cost_usd: 0.01,
     })
     mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
       if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
@@ -136,6 +156,7 @@ describe('GenerateDesignWindow', () => {
         { id: 'helpers-id', filename: 'helpers.py', updated_at: '2026-06-18T00:00:00Z' },
       ],
       active_file_id: 'design-id',
+      model_id: 'kimi-k2.7-code',
       metadata: { source: 'generate_design_window' },
     })
 

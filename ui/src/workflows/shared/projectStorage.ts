@@ -27,8 +27,10 @@ export type LlmFileEditResult = {
   success: true
   outcome: 'changed' | 'no_change' | 'cannot_complete'
   message: string
+  provider?: string
   model: string
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  cost_usd?: number
   snapshot: { id: string; message: string; content_hash: string } | null
   files: Array<{
     id: string
@@ -38,6 +40,25 @@ export type LlmFileEditResult = {
     changed: boolean
     summary?: string
   }>
+}
+
+export type LlmModelOption = {
+  id: string
+  label: string
+  model: string
+  api: string
+  endpoint: string
+  input_price_per_million: number
+  output_price_per_million: number
+  cached_read_price_per_million: number | null
+  cached_write_price_per_million: number | null
+  enabled: boolean
+}
+
+export type LlmModelsResponse = {
+  default_model_id: string
+  daily_budget_usd: number
+  models: LlmModelOption[]
 }
 
 export type ProjectStorage = {
@@ -58,9 +79,11 @@ export type ProjectStorage = {
       prompt: string
       files: Array<{ id: string; filename: string; updated_at: string }>
       active_file_id?: string
+      model_id?: string
       metadata?: Record<string, string>
     },
   ) => Promise<LlmFileEditResult>
+  listLlmModels: () => Promise<LlmModelsResponse>
 }
 
 type CreateProjectStorageOptions = {
@@ -115,6 +138,9 @@ function createGuestStorage(): ProjectStorage {
     },
     async applyLlmFileEdit() {
       throw new Error('Log in to use AI file edits')
+    },
+    async listLlmModels() {
+      return { default_model_id: '', daily_budget_usd: 0, models: [] }
     },
   }
 }
@@ -240,6 +266,11 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       })
       await requireOk(res, 'LLM file edit failed')
       return (await res.json()) as LlmFileEditResult
+    },
+    async listLlmModels() {
+      const res = await apiFetch(`${serverUrl}/llm-usage/models`, getAccessToken)
+      await requireOk(res, 'Failed to load LLM models')
+      return (await res.json()) as LlmModelsResponse
     },
   }
 }

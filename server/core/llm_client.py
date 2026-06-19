@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timezone
 from math import ceil
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -18,6 +19,7 @@ from core.billing_messages import (
     assert_billing_message_size,
     billing_usage_message_id,
 )
+from core.config import LlmModelConfig
 from core.llm_prompts import FILE_EDIT_SYSTEM_PROMPT
 from core.nats_client import NatsPublisher, Publisher
 
@@ -81,6 +83,7 @@ class BuildScriptGenerationInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     active_file: str = Field(default="design.py")
     current_code: str = Field(default="", max_length=200000)
+    model_id: str | None = Field(default=None, max_length=200)
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("metadata", mode="before")
@@ -93,13 +96,17 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_prompt_tokens: int = 0
+    cache_creation_prompt_tokens: int = 0
 
 
 class BuildScriptGenerationResult(BaseModel):
     success: bool = True
     script: str
+    provider: str
     model: str
     usage: TokenUsage
+    cost_usd: float = 0.0
     provider_request_id: str | None = None
     billing_event_id: UUID | None = None
 
@@ -120,6 +127,7 @@ class LlmFileEditInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     files: list[LlmFilePointer] = Field(min_length=1, max_length=20)
     active_file_id: UUID | None = None
+    model_id: str | None = Field(default=None, max_length=200)
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("metadata", mode="before")
@@ -162,21 +170,33 @@ class LlmFileEditResult(BaseModel):
     outcome: LlmFileEditOutcome
     message: str = ""
     files: list[LlmReturnedFileEdit]
+    provider: str
     model: str
     usage: TokenUsage
+    cost_usd: float = 0.0
     provider_request_id: str | None = None
     billing_event_id: UUID | None = None
 
 
-def create_openai_client(settings):
+def _base_url_from_endpoint(endpoint: str, suffix: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if normalized.endswith(suffix):
+        return normalized[: -len(suffix)]
+    return normalized
+
+
+def create_openai_client(settings, model_config: LlmModelConfig | None = None):
     from openai import AsyncOpenAI
 
+    if model_config is None or not model_config.endpoint:
+        raise LlmNotConfiguredError("LLM model endpoint is not configured")
     kwargs = {
         "api_key": settings.llm_api_key,
         "timeout": settings.llm_timeout_seconds,
     }
-    if settings.llm_base_url:
-        kwargs["base_url"] = settings.llm_base_url
+    base_url = _base_url_from_endpoint(model_config.endpoint, "/chat/completions")
+    if base_url:
+        kwargs["base_url"] = base_url
     return AsyncOpenAI(**kwargs)
 
 
@@ -199,9 +219,18 @@ def build_script_messages(request: BuildScriptGenerationInput) -> list[dict[str,
 
 
 def estimate_build_script_tokens(request: BuildScriptGenerationInput, *, max_output_tokens: int) -> int:
+    return estimate_build_script_usage(request, max_output_tokens=max_output_tokens).total_tokens
+
+
+def estimate_build_script_usage(request: BuildScriptGenerationInput, *, max_output_tokens: int) -> TokenUsage:
     prompt_chars = sum(len(message["content"]) for message in build_script_messages(request))
     metadata_chars = sum(len(key) + len(value) for key, value in request.metadata.items())
-    return max_output_tokens + ceil((prompt_chars + metadata_chars) / 4)
+    prompt_tokens = ceil((prompt_chars + metadata_chars) / 4)
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=max_output_tokens,
+        total_tokens=prompt_tokens + max_output_tokens,
+    )
 
 
 def strip_markdown_code_fence(content: str) -> str:
@@ -220,17 +249,57 @@ def extract_usage(response) -> TokenUsage:
     usage = getattr(response, "usage", None)
     if usage is None:
         return TokenUsage()
+    prompt_tokens = (
+        getattr(usage, "prompt_tokens", None)
+        if getattr(usage, "prompt_tokens", None) is not None
+        else getattr(usage, "input_tokens", 0)
+    ) or 0
+    completion_tokens = (
+        getattr(usage, "completion_tokens", None)
+        if getattr(usage, "completion_tokens", None) is not None
+        else getattr(usage, "output_tokens", 0)
+    ) or 0
+    total_tokens = getattr(usage, "total_tokens", None) or prompt_tokens + completion_tokens
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    cached_prompt_tokens = getattr(prompt_details, "cached_tokens", 0) if prompt_details is not None else 0
+    if isinstance(prompt_details, dict):
+        cached_prompt_tokens = prompt_details.get("cached_tokens", 0) or 0
     return TokenUsage(
-        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-        total_tokens=getattr(usage, "total_tokens", 0) or 0,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        cached_prompt_tokens=cached_prompt_tokens or getattr(usage, "cache_read_input_tokens", 0) or 0,
+        cache_creation_prompt_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
     )
 
 
-def _provider_from_settings(settings) -> str:
-    if settings.llm_base_url:
-        return "openai-compatible"
-    return "openai-compatible"
+def llm_usage_cost_usd(usage: TokenUsage, model_config: LlmModelConfig) -> float:
+    cached_read_tokens = max(0, usage.cached_prompt_tokens)
+    cache_creation_tokens = max(0, usage.cache_creation_prompt_tokens)
+    standard_input_tokens = max(0, usage.prompt_tokens - cached_read_tokens - cache_creation_tokens)
+
+    cost = standard_input_tokens * model_config.input_price_per_million / 1_000_000
+    cost += usage.completion_tokens * model_config.output_price_per_million / 1_000_000
+    if model_config.cached_read_price_per_million is not None:
+        cost += cached_read_tokens * model_config.cached_read_price_per_million / 1_000_000
+    else:
+        cost += cached_read_tokens * model_config.input_price_per_million / 1_000_000
+    if model_config.cached_write_price_per_million is not None:
+        cost += cache_creation_tokens * model_config.cached_write_price_per_million / 1_000_000
+    else:
+        cost += cache_creation_tokens * model_config.input_price_per_million / 1_000_000
+    return round(cost, 8)
+
+
+def _provider_from_model(model_config: LlmModelConfig) -> str:
+    return model_config.api
+
+
+def select_llm_model(settings, model_id: str | None) -> LlmModelConfig:
+    try:
+        return settings.get_llm_model(model_id)
+    except ValueError as exc:
+        raise LlmNotConfiguredError(str(exc)) from exc
 
 
 def _provider_exception_status(exc: Exception) -> int | None:
@@ -254,6 +323,74 @@ def _classify_provider_exception(exc: Exception) -> RuntimeError:
     return LlmGenerationError("LLM provider request failed")
 
 
+def _anthropic_parts_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts)
+    return ""
+
+
+async def create_anthropic_message(
+    *,
+    settings,
+    model_config: LlmModelConfig,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+):
+    import httpx
+
+    endpoint = model_config.endpoint.strip()
+    if not endpoint:
+        raise LlmNotConfiguredError("LLM model endpoint is not configured")
+
+    system_messages = [message["content"] for message in messages if message["role"] == "system"]
+    request_messages = [
+        {"role": message["role"], "content": message["content"]}
+        for message in messages
+        if message["role"] != "system"
+    ]
+    payload = {
+        "model": model_config.model,
+        "max_tokens": max_tokens,
+        "messages": request_messages,
+    }
+    if system_messages:
+        payload["system"] = "\n\n".join(system_messages)
+
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "x-api-key": settings.llm_api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
+        response = await client.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+
+    data = response.json()
+    usage = data.get("usage", {}) if isinstance(data, dict) else {}
+    return SimpleNamespace(
+        id=data.get("id") if isinstance(data, dict) else None,
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=_anthropic_parts_to_text(data.get("content") if isinstance(data, dict) else "")),
+                finish_reason=data.get("stop_reason") if isinstance(data, dict) else None,
+            )
+        ],
+        usage=SimpleNamespace(
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_input_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_creation_input_tokens=usage.get("cache_creation_input_tokens", 0),
+        ),
+    )
+
+
 async def generate_build_script(
     request: BuildScriptGenerationInput,
     *,
@@ -265,16 +402,26 @@ async def generate_build_script(
 ) -> BuildScriptGenerationResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
-    if not settings.llm_model:
+    model_config = select_llm_model(settings, request.model_id)
+    if not model_config.model:
         raise LlmNotConfiguredError("LLM model is not configured")
 
-    client = openai_client or create_openai_client(settings)
     try:
-        response = await client.chat.completions.create(
-            model=settings.llm_model,
-            messages=build_script_messages(request),
-            max_tokens=settings.llm_max_output_tokens,
-        )
+        messages = build_script_messages(request)
+        if model_config.api == "anthropic-messages":
+            response = await create_anthropic_message(
+                settings=settings,
+                model_config=model_config,
+                messages=messages,
+                max_tokens=settings.llm_max_output_tokens,
+            )
+        else:
+            client = openai_client or create_openai_client(settings, model_config)
+            response = await client.chat.completions.create(
+                model=model_config.model,
+                messages=messages,
+                max_tokens=settings.llm_max_output_tokens,
+            )
     except Exception as exc:
         raise _classify_provider_exception(exc) from exc
     content = response.choices[0].message.content or ""
@@ -282,8 +429,10 @@ async def generate_build_script(
     provider_request_id = getattr(response, "id", None)
     result = BuildScriptGenerationResult(
         script=strip_markdown_code_fence(content),
-        model=settings.llm_model,
+        provider=_provider_from_model(model_config),
+        model=model_config.model,
         usage=usage,
+        cost_usd=llm_usage_cost_usd(usage, model_config),
         provider_request_id=provider_request_id,
     )
 
@@ -297,8 +446,8 @@ async def generate_build_script(
             project_id=project_id,
             workflow="intus",
             operation="build_script.generate",
-            provider=_provider_from_settings(settings),
-            model=settings.llm_model,
+            provider=_provider_from_model(model_config),
+            model=model_config.model,
             prompt=request.prompt,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
@@ -362,6 +511,21 @@ def estimate_file_edit_tokens(
     max_output_tokens: int,
     system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
 ) -> int:
+    return estimate_file_edit_usage(
+        request,
+        files,
+        max_output_tokens=max_output_tokens,
+        system_prompt=system_prompt,
+    ).total_tokens
+
+
+def estimate_file_edit_usage(
+    request: LlmFileEditInput,
+    files: list[LlmEditableFile],
+    *,
+    max_output_tokens: int,
+    system_prompt: str = FILE_EDIT_SYSTEM_PROMPT,
+) -> TokenUsage:
     prompt_chars = sum(
         len(message["content"])
         for message in build_file_edit_messages(
@@ -369,7 +533,12 @@ def estimate_file_edit_tokens(
         )
     )
     metadata_chars = sum(len(key) + len(value) for key, value in request.metadata.items())
-    return max_output_tokens + ceil((prompt_chars + metadata_chars) / 4)
+    prompt_tokens = ceil((prompt_chars + metadata_chars) / 4)
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=max_output_tokens,
+        total_tokens=prompt_tokens + max_output_tokens,
+    )
 
 
 def parse_llm_file_edit_response(
@@ -552,29 +721,39 @@ async def generate_file_edits(
 ) -> LlmFileEditResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
-    if not settings.llm_model:
+    model_config = select_llm_model(settings, request.model_id)
+    if not model_config.model:
         raise LlmNotConfiguredError("LLM model is not configured")
 
     allowed_file_ids = {file.id for file in files}
-    client = openai_client or create_openai_client(settings)
     try:
-        response = await client.chat.completions.create(
-            model=settings.llm_model,
-            messages=build_file_edit_messages(
-                request,
-                files,
-                system_prompt=settings.llm_file_edit_system_prompt,
-            ),
-            max_tokens=settings.llm_file_edit_max_output_tokens,
-            response_format={"type": "json_object"},
+        messages = build_file_edit_messages(
+            request,
+            files,
+            system_prompt=settings.llm_file_edit_system_prompt,
         )
+        if model_config.api == "anthropic-messages":
+            response = await create_anthropic_message(
+                settings=settings,
+                model_config=model_config,
+                messages=messages,
+                max_tokens=settings.llm_file_edit_max_output_tokens,
+            )
+        else:
+            client = openai_client or create_openai_client(settings, model_config)
+            response = await client.chat.completions.create(
+                model=model_config.model,
+                messages=messages,
+                max_tokens=settings.llm_file_edit_max_output_tokens,
+                response_format={"type": "json_object"},
+            )
     except Exception as exc:
         raise _classify_provider_exception(exc) from exc
     usage = extract_usage(response)
     provider_request_id = getattr(response, "id", None)
     choice = response.choices[0]
     finish_reason = getattr(choice, "finish_reason", None)
-    if finish_reason == "length":
+    if finish_reason in {"length", "max_tokens"}:
         logger.warning(
             "LLM file edit response truncated provider_request_id=%s finish_reason=%s",
             provider_request_id,
@@ -590,8 +769,10 @@ async def generate_file_edits(
         outcome=parsed.outcome,
         message=parsed.message,
         files=parsed.files,
-        model=settings.llm_model,
+        provider=_provider_from_model(model_config),
+        model=model_config.model,
         usage=usage,
+        cost_usd=llm_usage_cost_usd(usage, model_config),
         provider_request_id=provider_request_id,
     )
 

@@ -15,8 +15,9 @@ Use this after rebooting, WSL restarting, or when the local stack has stale pods
 It starts k3s if needed, waits for the Tertius pods, repairs the local Keycloak
 issuer/audience settings, syncs API-only LLM settings from `.env` or
 `server/.env` into k3s, starts the `localhost:18080` tunnel, and patches the UI
-bundle from the current checkout. `LLM_MODEL` and `LLM_BASE_URL` are applied to
-the API Deployment; `LLM_API_KEY` remains in the dedicated local k3s LLM Secret.
+bundle from the current checkout. `LLM_MODELS_JSON`, `LLM_DEFAULT_MODEL_ID`, and
+`LLM_DAILY_BUDGET_USD` are applied to the API Deployment; `LLM_API_KEY` remains
+in the dedicated local k3s LLM Secret.
 
 ## Patch Frontend Changes
 

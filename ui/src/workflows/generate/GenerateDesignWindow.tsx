@@ -6,6 +6,7 @@ import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
   type LlmFileEditResult,
+  type LlmModelOption,
   type ProjectFileMetadata,
 } from '../shared/projectStorage'
 import {
@@ -80,6 +81,10 @@ function messageId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function formatPrice(model: LlmModelOption) {
+  return `$${model.input_price_per_million.toFixed(2)} / $${model.output_price_per_million.toFixed(2)}`
+}
+
 export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }) {
   const { authMode, getAccessToken, login } = useAuth()
   const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
@@ -94,6 +99,9 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const [prompt, setPrompt] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
+  const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
+  const [selectedModelId, setSelectedModelId] = useState('')
+  const [dailyBudgetUsd, setDailyBudgetUsd] = useState(0)
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -112,6 +120,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
   const selectedMessage = messages.find(message => message.id === selectedMessageId)
   const selectedModelUrl = selectedMessage?.modelUrl || ''
+  const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
 
   const updateAssistantMessage = useCallback((messageIdToUpdate: string, updater: (message: ChatMessage) => ChatMessage) => {
     setMessages(prev => prev.map(message => (
@@ -167,6 +176,31 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       if (authMode === 'guest') window.removeEventListener(GUEST_WORKSPACE_CHANGED_EVENT, handleGuestChanged)
     }
   }, [authMode, isActive, loadActiveProject])
+
+  useEffect(() => {
+    if (!isActive || authMode === 'guest') return
+    let cancelled = false
+
+    const loadModels = async () => {
+      try {
+        const response = await storage.listLlmModels()
+        if (cancelled) return
+        setLlmModels(response.models)
+        setDailyBudgetUsd(response.daily_budget_usd)
+        setSelectedModelId(current => {
+          if (current && response.models.some(model => model.id === current)) return current
+          return response.default_model_id || response.models[0]?.id || ''
+        })
+      } catch (modelError) {
+        if (!cancelled) setError(modelError instanceof Error ? modelError.message : 'Failed to load LLM models.')
+      }
+    }
+
+    void loadModels()
+    return () => {
+      cancelled = true
+    }
+  }, [authMode, isActive, storage])
 
   const buildLlmEditRequest = useCallback(async () => {
     if (!activeProject) {
@@ -321,6 +355,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           updated_at: file.updated_at,
         })),
         active_file_id: activeFileId,
+        model_id: selectedModel?.id,
         metadata: { source: 'generate_design_window' },
       })
 
@@ -335,6 +370,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         result.outcome === 'changed'
           ? `Updated ${changedFiles.length || result.files.length} file(s).`
           : result.message || `AI returned ${result.outcome}.`,
+        result.model ? `Model: ${result.model}.` : '',
         fileSummary,
       ].filter(Boolean).join(' ')
 
@@ -411,9 +447,32 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
           <span className="text-sm text-slate-300">{statusText}</span>
           <span className="rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-            {COMPILE_FORMAT}/{COMPILE_QUALITY}
+            {dailyBudgetUsd ? `$${dailyBudgetUsd.toFixed(2)}/day` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
           </span>
         </div>
+
+        {llmModels.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto border-b border-slate-800 px-4 py-3">
+            {llmModels.map(model => (
+              <button
+                key={model.id}
+                type="button"
+                onClick={() => setSelectedModelId(model.id)}
+                className={`shrink-0 rounded border px-3 py-2 text-left text-xs transition-colors ${
+                  selectedModelId === model.id
+                    ? 'border-cyan-600 bg-cyan-950/50 text-cyan-100'
+                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                }`}
+                title={`${model.model} ${formatPrice(model)} per 1M tokens`}
+              >
+                <span className="block whitespace-nowrap font-semibold">{model.label}</span>
+                <span className="block whitespace-nowrap font-mono text-[10px] text-slate-500">
+                  {formatPrice(model)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {messages.length === 0 ? (
@@ -463,7 +522,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
           <button
             type="submit"
-            disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0}
+            disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel}
             className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isSubmitting ? 'Generating...' : 'Generate Design'}
