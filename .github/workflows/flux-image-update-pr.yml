@@ -25,6 +25,7 @@ jobs:
   image-update-pr:
     name: Create image update PR
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' }}
     steps:
       - name: Create or update PR
         env:
@@ -39,22 +40,6 @@ jobs:
             exit 1
           fi
 
-          compare_json="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${HEAD_BRANCH}")"
-          ahead_by="$(printf '%s\n' "${compare_json}" | jq -r '.ahead_by')"
-          if [ "${ahead_by}" = "0" ]; then
-            echo "No image update commits to promote from ${HEAD_BRANCH}."
-            exit 0
-          fi
-
-          non_chart_changes="$(printf '%s\n' "${compare_json}" \
-            | jq -r '.files[].filename' \
-            | grep -v '^infra/charts/tertius/values.yaml$' || true)"
-          if [ -n "${non_chart_changes}" ]; then
-            echo "${non_chart_changes}" >&2
-            echo "::error::Flux image update branch contains changes outside infra/charts/tertius/values.yaml; reset ${HEAD_BRANCH} before auto-merging."
-            exit 1
-          fi
-
           pr_number="$(gh pr list \
             --repo "${GITHUB_REPOSITORY}" \
             --head "${HEAD_BRANCH}" \
@@ -62,6 +47,37 @@ jobs:
             --state open \
             --json number \
             --jq '.[0].number // ""')"
+
+          compare_json="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_BRANCH}...${HEAD_BRANCH}")"
+          ahead_by="$(printf '%s\n' "${compare_json}" | jq -r '.ahead_by')"
+          if [ "${ahead_by}" = "0" ]; then
+            if [ -n "${pr_number}" ]; then
+              gh pr close "${pr_number}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --comment "Closing stale Flux image update PR because ${HEAD_BRANCH} is no longer ahead of ${BASE_BRANCH}."
+            fi
+            echo "No image update commits to promote from ${HEAD_BRANCH}."
+            exit 0
+          fi
+
+          changed_files="$(printf '%s\n' "${compare_json}" | jq -r '.files[].filename')"
+          if [ -z "${changed_files}" ]; then
+            if [ -n "${pr_number}" ]; then
+              gh pr close "${pr_number}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --comment "Closing stale Flux image update PR because ${HEAD_BRANCH} has no file changes relative to ${BASE_BRANCH}."
+            fi
+            echo "No file changes to promote from ${HEAD_BRANCH}."
+            exit 0
+          fi
+
+          non_chart_changes="$(printf '%s\n' "${changed_files}" \
+            | grep -v '^infra/charts/tertius/values.yaml$' || true)"
+          if [ -n "${non_chart_changes}" ]; then
+            echo "${non_chart_changes}" >&2
+            echo "::error::Flux image update branch contains changes outside infra/charts/tertius/values.yaml; reset ${HEAD_BRANCH} before auto-merging."
+            exit 1
+          fi
 
           if [ -z "${pr_number}" ]; then
             create_error="$(mktemp)"
@@ -88,9 +104,12 @@ jobs:
     if: >-
       ${{
         github.event_name == 'workflow_run' &&
-        github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.head_branch == 'flux-image-updates' &&
-        github.event.workflow_run.conclusion == 'success'
+        github.event.workflow_run.conclusion == 'success' &&
+        (
+          github.event.workflow_run.event == 'pull_request' ||
+          github.event.workflow_run.event == 'push'
+        )
       }}
     steps:
       - name: Merge PR after checks pass
@@ -153,7 +172,16 @@ jobs:
           if ! gh pr merge "${pr_number}" \
               --repo "${GITHUB_REPOSITORY}" \
               --merge \
+              --match-head-commit "${head_sha}" \
               --delete-branch=false; then
             echo "::error::Unable to merge Flux image update PR #${pr_number} after checks passed."
             exit 1
           fi
+
+          base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_BRANCH}" --jq '.object.sha')"
+          gh api \
+            --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/git/refs/heads/${HEAD_BRANCH}" \
+            -f sha="${base_sha}" \
+            -F force=true
+          echo "Reset ${HEAD_BRANCH} to ${BASE_BRANCH} at ${base_sha}."
