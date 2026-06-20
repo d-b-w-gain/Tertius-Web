@@ -1,3 +1,4 @@
+{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (printf "%s-otel-collector" (include "tertius.fullname" .)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,8 +39,12 @@ spec:
               value: {{ (default (printf "%s-service" (include "tertius.keycloakName" .)) .Values.ui.keycloakServiceHost) | quote }}
             - name: KEYCLOAK_SERVICE_PORT
               value: {{ (default "8080" .Values.ui.keycloakServicePort) | quote }}
+            - name: OTEL_COLLECTOR_HTTP_HOST
+              value: {{ $otelCollectorHttpHost | quote }}
+            - name: OTEL_COLLECTOR_HTTP_PORT
+              value: {{ .Values.app.observability.collectorHttpPort | quote }}
             - name: NGINX_ENVSUBST_FILTER
-              value: "^(API_SERVICE_HOST|API_SERVICE_PORT|KEYCLOAK_SERVICE_HOST|KEYCLOAK_SERVICE_PORT)$"
+              value: "^(API_SERVICE_HOST|API_SERVICE_PORT|KEYCLOAK_SERVICE_HOST|KEYCLOAK_SERVICE_PORT|OTEL_COLLECTOR_HTTP_HOST|OTEL_COLLECTOR_HTTP_PORT)$"
           readinessProbe:
             httpGet:
               path: /

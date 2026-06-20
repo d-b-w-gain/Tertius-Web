@@ -5,6 +5,9 @@ import base64
 import gzip
 import logging
 from datetime import datetime, timezone
+from time import perf_counter
+
+from opentelemetry.trace import SpanKind
 
 from core.compile_messages import (
     CompileCommand,
@@ -16,32 +19,92 @@ from core.compile_messages import (
 from core.compile_runtime import hydrate_project_files
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
-from core.nats_client import NatsPublisher, Publisher, connect_nats, ensure_compile_stream, pull_compile_subscription
+from core.nats_client import (
+    NatsPublisher,
+    Publisher,
+    connect_nats,
+    ensure_compile_stream,
+    extract_nats_context,
+    pull_compile_subscription,
+)
+from core.telemetry import (
+    configure_telemetry,
+    counter_add,
+    elapsed_seconds,
+    get_tracer,
+    histogram_record,
+    record_exception,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 async def handle_compile_request_message(msg, publisher: Publisher, settings) -> None:
-    try:
-        command = CompileCommand.model_validate_json(msg.data)
-    except Exception:
-        logger.exception("Invalid compile command JSON")
-        await msg.term()
-        return
+    context = extract_nats_context(getattr(msg, "headers", None))
+    subject = getattr(msg, "subject", "tertius.compile.request")
+    attributes = {
+        "messaging.system": "nats",
+        "messaging.destination.name": subject,
+        "messaging.operation.name": "process",
+        "nats_subject": subject,
+    }
+    with get_tracer(__name__).start_as_current_span(
+        "NATS consume tertius.compile.request",
+        context=context,
+        kind=SpanKind.CONSUMER,
+        attributes=attributes,
+    ) as span:
+        try:
+            command = CompileCommand.model_validate_json(msg.data)
+        except Exception as exc:
+            logger.exception("Invalid compile command JSON")
+            record_exception(span, exc)
+            span.set_attribute("messaging.nats.ack_action", "term")
+            await msg.term()
+            return
 
-    try:
-        result = execute_compile_command(command, settings)
-        assert_message_size(result, settings.compile_result_max_bytes, "result")
-        await publisher.publish_json(
-            settings.compile_result_subject,
-            result,
-            message_id=compile_result_message_id(result),
-        )
-        await msg.ack()
-    except Exception:
-        logger.exception("Compile job failed before request ack")
-        await msg.nak()
+        span.set_attribute("tertius.export_format", command.export_format)
+        queue_latency = (now_utc() - command.created_at).total_seconds()
+        if queue_latency >= 0:
+            histogram_record(
+                "tertius.compile.queue.latency",
+                queue_latency,
+                {"export_format": command.export_format},
+            )
+
+        counter_add("tertius.compile.job.started.count", 1, {"export_format": command.export_format})
+        start = perf_counter()
+        try:
+            result = execute_compile_command(command, settings)
+            assert_message_size(result, settings.compile_result_max_bytes, "result")
+            await publisher.publish_json(
+                settings.compile_result_subject,
+                result,
+                message_id=compile_result_message_id(result),
+            )
+            await msg.ack()
+            span.set_attribute("messaging.nats.ack_action", "ack")
+            labels = {"export_format": command.export_format, "job_status": result.status}
+            counter_add("tertius.compile.job.finished.count", 1, labels)
+            if result.status == "failed":
+                counter_add("tertius.compile.job.failed.count", 1, labels)
+            histogram_record("tertius.compile.job.duration", elapsed_seconds(start), labels)
+        except Exception as exc:
+            logger.exception("Compile job failed before request ack")
+            record_exception(span, exc)
+            span.set_attribute("messaging.nats.ack_action", "nak")
+            counter_add(
+                "tertius.compile.job.failed.count",
+                1,
+                {"export_format": command.export_format, "job_status": "worker_error"},
+            )
+            histogram_record(
+                "tertius.compile.job.duration",
+                elapsed_seconds(start),
+                {"export_format": command.export_format, "job_status": "worker_error"},
+            )
+            await msg.nak()
 
 
 def execute_compile_command(command: CompileCommand, settings) -> CompileResultPayload:
@@ -126,6 +189,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
 
 async def run_once() -> int:
     settings = get_settings()
+    configure_telemetry(settings, "tertius-compile-job")
     nc = await connect_nats(settings.nats_url)
     try:
         js = await ensure_compile_stream(nc, settings)

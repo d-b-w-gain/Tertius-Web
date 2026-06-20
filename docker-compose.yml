@@ -30,6 +30,14 @@ services:
       BILLING_STREAM_NAME: ${BILLING_STREAM_NAME:-TERTIUS_BILLING}
       BILLING_LLM_USAGE_SUBJECT: ${BILLING_LLM_USAGE_SUBJECT:-tertius.billing.usage.llm.tokens}
       BILLING_MAX_BYTES: ${BILLING_MAX_BYTES:-262144}
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: tertius-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_RESOURCE_ATTRIBUTES: service.version=local,deployment.environment=local,container.name=backend
+      OTEL_LOG_JSON: ${OTEL_LOG_JSON:-true}
       APP_DB_HOST: postgres
       APP_DB_NAME: tertius
       APP_DB_OWNER: tertius
@@ -42,6 +50,7 @@ services:
     depends_on:
       - postgres
       - nats
+      - otel-collector
 
   compile-job-runner:
     build: .
@@ -56,8 +65,17 @@ services:
       COMPILE_WORKER_QUEUE: compile-workers
       COMPILE_RESULT_MAX_BYTES: 33554432
       COMPILE_JOB_MODE: nats-only
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: tertius-compile-job
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_RESOURCE_ATTRIBUTES: service.version=local,deployment.environment=local,container.name=compile-job-runner
+      OTEL_LOG_JSON: ${OTEL_LOG_JSON:-true}
     depends_on:
       - nats
+      - otel-collector
 
   frontend:
     image: node:20
@@ -69,6 +87,11 @@ services:
     command: /bin/sh -c "npm install && npm run dev -- --host 0.0.0.0"
     environment:
       - CHOKIDAR_USEPOLLING=true
+      - VITE_OTEL_ENABLED=${VITE_OTEL_ENABLED:-true}
+      - VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://localhost:4318/v1/traces}
+      - VITE_OTEL_SERVICE_NAME=tertius-ui
+    depends_on:
+      - otel-collector
 
   postgres:
     image: postgres:18
@@ -107,6 +130,17 @@ services:
     volumes:
       - tertius-nats:/data
       - ./infra/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+    volumes:
+      - ./infra/otel/otel-collector-local.yaml:/etc/otelcol-contrib/config.yaml:ro
 
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:

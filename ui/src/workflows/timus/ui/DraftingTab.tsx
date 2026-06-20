@@ -10,6 +10,7 @@ import {
   getPollingDelay,
   shouldRunPollingRequest,
 } from '../../shared/polling';
+import { runWithInteractionSpan } from '../../../telemetry';
 
 const scalePresets = [
   { value: 10, label: '10:1 (Enlarged 10x)' },
@@ -205,22 +206,28 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
 
   const handleDownloadPdf = async () => {
     if (!activeProject || buildStatus !== 'ready') return;
-    try {
-      const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
-      const res = await apiFetch(url, getAccessToken);
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setBuildStatus('stale');
-        setBuildMessage(data.user_message || 'Generate PDF Data before downloading the drafting PDF.');
-        return;
+    await runWithInteractionSpan('artifact_download', {
+      workflow: 'timus',
+      artifact_type: 'drafting_pdf',
+      sheet_size: sheetSize,
+    }, async () => {
+      try {
+        const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
+        const res = await apiFetch(url, getAccessToken);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setBuildStatus('stale');
+          setBuildMessage(data.user_message || 'Generate PDF Data before downloading the drafting PDF.');
+          return;
+        }
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, '_blank', 'noopener,noreferrer');
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      } catch (e) {
+        console.error("Failed to download PDF:", e);
       }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      window.open(objectUrl, '_blank', 'noopener,noreferrer');
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-    } catch (e) {
-      console.error("Failed to download PDF:", e);
-    }
+    });
   };
 
   if (!activeProject) {

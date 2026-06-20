@@ -1,5 +1,15 @@
 app:
   environment: local
+  observability:
+    enabled: true
+    otlpEndpoint: ""
+    otlpProtocol: grpc
+    tracesSampler: parentbased_traceidratio
+    tracesSamplerArg: "1.0"
+    logJson: true
+    resourceAttributes: ""
+    collectorHttpHost: ""
+    collectorHttpPort: "4318"
   config:
     keycloakAudience: tertius-api
     keycloakIssuerUrl: http://keycloak.localhost/realms/tertius

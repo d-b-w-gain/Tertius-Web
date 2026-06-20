@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { SpanStatusCode } from '@opentelemetry/api';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -7,6 +8,7 @@ import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { MODEL_STATUS_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../../shared/polling';
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
+import { startInteractionSpan } from '../../../telemetry';
 
 interface ViewerProps {
   serverUrl: string;
@@ -396,6 +398,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     }
     
     let isCancelled = false;
+    let loadSpanEnded = false;
+    const loadSpan = startInteractionSpan('3d_viewer_load', {
+      workflow: 'extus',
+      render_quality: renderQuality,
+    });
     const loader = new GLTFLoader();
     setIsModelLoading(true);
 
@@ -403,11 +410,20 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       if (!isCancelled && modelLoadRequestRef.current === requestId) {
         setIsModelLoading(false);
       }
+      if (!loadSpanEnded) {
+        loadSpan.end();
+        loadSpanEnded = true;
+      }
     };
 
     const failLoad = (message: string, err?: unknown) => {
       if (isCancelled) return;
       if (err) console.error(message, err);
+      loadSpan.setStatus({ code: SpanStatusCode.ERROR });
+      loadSpan.addEvent('exception', {
+        'exception.type': err instanceof Error ? err.name : typeof err,
+        'error.source': '3d_viewer_load',
+      });
       setLoadErrorText(message);
       clearCurrentModel();
       finishLoad();
@@ -566,6 +582,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       
     return () => {
       isCancelled = true;
+      if (!loadSpanEnded) {
+        loadSpan.end();
+        loadSpanEnded = true;
+      }
     };
   }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel]);
 

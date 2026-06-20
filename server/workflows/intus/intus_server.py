@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from fastapi import BackgroundTasks, Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from opentelemetry import propagate
+from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -43,6 +45,7 @@ from core.llm_client import (
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
+from core.telemetry import get_tracer, record_exception
 from core.repositories import (
     CompileRepository,
     FileVersionConflictError,
@@ -737,6 +740,42 @@ async def _run_llm_file_edit_job(
     user_id: UUID,
     keycloak_subject: str,
     email: str | None,
+    trace_headers: dict[str, str] | None = None,
+) -> None:
+    parent_context = propagate.extract(trace_headers or {})
+    with get_tracer(__name__).start_as_current_span(
+        "llm.file_edit.job",
+        context=parent_context,
+        kind=SpanKind.CONSUMER,
+        attributes={
+            "llm.operation": "files.llm_edit",
+            "workflow": "intus",
+        },
+    ) as span:
+        try:
+            await _run_llm_file_edit_job_inner(
+                job_id=job_id,
+                project_name=project_name,
+                request_payload=request_payload,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                keycloak_subject=keycloak_subject,
+                email=email,
+            )
+        except Exception as exc:
+            record_exception(span, exc)
+            raise
+
+
+async def _run_llm_file_edit_job_inner(
+    *,
+    job_id: UUID,
+    project_name: str,
+    request_payload: dict[str, Any],
+    tenant_id: UUID,
+    user_id: UUID,
+    keycloak_subject: str,
+    email: str | None,
 ) -> None:
     db = None
     job: LlmEditJob | None = None
@@ -963,6 +1002,9 @@ def start_llm_file_edit_job(
             },
         )
 
+    trace_headers: dict[str, str] = {}
+    propagate.inject(trace_headers)
+
     background_tasks.add_task(
         _run_llm_file_edit_job,
         job_id=job.id,
@@ -972,6 +1014,7 @@ def start_llm_file_edit_job(
         user_id=ctx.user_id,
         keycloak_subject=ctx.keycloak_subject,
         email=ctx.email,
+        trace_headers=trace_headers,
     )
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,

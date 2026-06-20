@@ -1,6 +1,14 @@
 {{- if .Values.keda.enabled }}
 {{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
 {{- $natsMonitoringEndpoint := printf "%s-nats-headless.%s.svc.cluster.local:8222" .Release.Name .Release.Namespace }}
+{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (printf "%s-otel-collector" (include "tertius.fullname" .)) }}
+{{- $otelEndpoint := .Values.app.observability.otlpEndpoint | trim | default "" }}
+{{- if and .Values.app.observability.enabled (not $otelEndpoint) (eq .Values.app.environment "local") }}
+{{- $otelEndpoint = printf "http://%s:4317" $otelCollectorHttpHost }}
+{{- end }}
+{{- if not .Values.app.observability.enabled }}
+{{- $otelEndpoint = "" }}
+{{- end }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:
@@ -79,6 +87,30 @@ spec:
                 value: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
               - name: COMPILE_RESULT_MAX_BYTES
                 value: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+              - name: OTEL_ENABLED
+                value: {{ .Values.app.observability.enabled | quote }}
+              - name: OTEL_SERVICE_NAME
+                value: "tertius-compile-job"
+              - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                value: {{ $otelEndpoint | quote }}
+              - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                value: {{ .Values.app.observability.otlpProtocol | quote }}
+              - name: OTEL_TRACES_SAMPLER
+                value: {{ .Values.app.observability.tracesSampler | quote }}
+              - name: OTEL_TRACES_SAMPLER_ARG
+                value: {{ .Values.app.observability.tracesSamplerArg | quote }}
+              - name: OTEL_LOG_JSON
+                value: {{ .Values.app.observability.logJson | quote }}
+              - name: POD_NAME
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.name
+              - name: POD_NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.namespace
+              - name: OTEL_RESOURCE_ATTRIBUTES
+                value: "service.version={{ .Chart.AppVersion }},deployment.environment={{ .Values.app.environment }},k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),container.name=compile{{ with (.Values.app.observability.resourceAttributes | trim) }},{{ . }}{{ end }}"
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
