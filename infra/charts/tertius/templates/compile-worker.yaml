@@ -3,7 +3,7 @@
 {{- $natsMonitoringEndpoint := printf "%s-nats-headless.%s.svc.cluster.local:8222" .Release.Name .Release.Namespace }}
 {{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (include "tertius.otelCollectorName" .) }}
 {{- $otelEndpoint := .Values.app.observability.otlpEndpoint | trim | default "" }}
-{{- if and .Values.app.observability.enabled (not $otelEndpoint) (eq .Values.app.environment "local") }}
+{{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled (not $otelEndpoint) }}
 {{- $otelEndpoint = printf "http://%s:4317" $otelCollectorHttpHost }}
 {{- end }}
 {{- if not .Values.app.observability.enabled }}

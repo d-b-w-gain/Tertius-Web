@@ -218,7 +218,7 @@ Expected: tests should still pass before telemetry is wired in.
 - [ ] Add corresponding Helm values under `app.observability`.
 - [ ] Render shared OTEL env vars in `configmap.yaml`, but set `OTEL_SERVICE_NAME` per workload so API pods use `tertius-api` and compile jobs use `tertius-compile-job`.
 - [ ] Add local Compose env vars pointing to the local collector endpoint once the collector is added, again with distinct `OTEL_SERVICE_NAME` values for `backend` and `compile-job-runner`.
-- [ ] Keep `OTEL_EXPORTER_OTLP_ENDPOINT` empty by default outside local/dev values so production can opt into a collector explicitly.
+- [ ] Default `OTEL_EXPORTER_OTLP_ENDPOINT` to the in-chart collector when observability and the chart collector are enabled; set `app.observability.otlpEndpoint` for an external collector.
 
 ## Task 3: Create Backend Telemetry Bootstrap
 
@@ -444,7 +444,7 @@ app:
 - [ ] Extend `NGINX_ENVSUBST_FILTER` in `ui.yaml` so the collector host/port placeholders are rendered into `default.conf`.
 - [ ] Add pod annotations for logs and metrics if the target platform expects them.
 - [ ] If bundling a collector in this chart, make it optional.
-- [ ] Prefer the OpenTelemetry Collector Helm chart for production if cluster-level observability is shared across apps.
+- [ ] Use the in-chart OpenTelemetry Collector by default; set `app.observability.collector.enabled=false` when cluster-level observability is shared across apps.
 
 ## Task 12: Add Kubernetes Platform Metrics
 

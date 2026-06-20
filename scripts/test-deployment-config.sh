@@ -82,6 +82,14 @@ render_network_policy_disabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=false
 }
 
+render_external_observability_collector() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.observability.collector.enabled=false \
+    --set-string app.observability.otlpEndpoint=http://shared-otel-collector:4317 \
+    --set-string app.observability.collectorHttpHost=shared-otel-collector \
+    --set-string app.observability.collectorHttpPort=4318
+}
+
 extract_render_doc() {
   local content="$1"
   local kind_pattern="$2"
@@ -196,6 +204,7 @@ app_secret_without_prompt_rendered="$(render_app_secret_created_without_prompt)"
 confidential_client_rendered="$(render_confidential_client)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
+external_observability_rendered="$(render_external_observability_collector)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
@@ -206,6 +215,10 @@ ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernet
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+default_otel_collector_deployment="$(extract_render_doc "$default_rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
+default_otel_collector_service="$(extract_render_doc "$default_rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+external_observability_configmap="$(extract_render_doc "$external_observability_rendered" 'kind: ConfigMap' 'name: tertius-config')"
+external_observability_ui_deployment="$(extract_render_doc "$external_observability_rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
 api_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: api')"
 api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_prompt_rendered" 'app.kubernetes.io/component: api')"
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
@@ -307,8 +320,8 @@ if ! rg -q 'OTEL_ENABLED: "true"' <<<"$app_configmap" || ! rg -q 'OTEL_EXPORTER_
   exit 1
 fi
 
-if ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: ""' <<<"$default_app_configmap" || ! rg -q 'OTEL_RESOURCE_ATTRIBUTES: "service.version=0.1.0,deployment.environment=production"' <<<"$default_app_configmap"; then
-  echo "Default production ConfigMap must leave OTLP export opt-in while still rendering shared resource attributes." >&2
+if ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://tertius-otel-collector:4317"' <<<"$default_app_configmap" || ! rg -q 'OTEL_RESOURCE_ATTRIBUTES: "service.version=0.1.0,deployment.environment=production"' <<<"$default_app_configmap"; then
+  echo "Default production ConfigMap must point OTLP at the in-chart collector while rendering shared resource attributes." >&2
   exit 1
 fi
 
@@ -337,8 +350,13 @@ if ! rg -q 'name: tertius-otel-collector' <<<"$otel_collector_service" || ! rg -
   exit 1
 fi
 
-if rg -q 'app.kubernetes.io/component: otel-collector' <<<"$default_rendered"; then
-  echo "Default production Helm render must not create the optional in-chart OpenTelemetry Collector." >&2
+if ! rg -q 'name: tertius-otel-collector' <<<"$default_otel_collector_deployment" || ! rg -q 'image: "otel/opentelemetry-collector-contrib:0.133.0"' <<<"$default_otel_collector_deployment" || ! rg -q 'name: tertius-otel-collector' <<<"$default_otel_collector_service"; then
+  echo "Default production Helm render must include the in-chart OpenTelemetry Collector Deployment and Service." >&2
+  exit 1
+fi
+
+if rg -q 'app.kubernetes.io/component: otel-collector' <<<"$external_observability_rendered" || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://shared-otel-collector:4317"' <<<"$external_observability_configmap" || ! printf '%s\n' "$external_observability_ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "shared-otel-collector"'; then
+  echo "Helm render must allow disabling the in-chart collector while pointing backend and browser telemetry at a shared collector." >&2
   exit 1
 fi
 

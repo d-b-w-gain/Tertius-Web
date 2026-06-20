@@ -26,8 +26,7 @@ data:
         send_batch_size: 1024
 
     exporters:
-      debug:
-        verbosity: basic
+{{ toYaml .Values.app.observability.collector.exporters | indent 6 }}
 
     service:
       telemetry:
@@ -46,7 +45,7 @@ data:
             - memory_limiter
             - batch
           exporters:
-            - debug
+{{ toYaml .Values.app.observability.collector.tracesExporters | indent 12 }}
         metrics:
           receivers:
             - otlp
@@ -54,7 +53,7 @@ data:
             - memory_limiter
             - batch
           exporters:
-            - debug
+{{ toYaml .Values.app.observability.collector.metricsExporters | indent 12 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
