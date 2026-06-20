@@ -270,6 +270,41 @@ def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
     assert app_main._auth_state_secret() == b"insecure-local-auth-state-secret"
 
 
+def test_keycloak_token_url_uses_jwks_override_service_url(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(
+            keycloak_issuer="http://localhost:18080/realms/tertius",
+            keycloak_jwks_url_override=(
+                "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"
+            ),
+        ),
+    )
+
+    assert (
+        app_main._keycloak_token_url()
+        == "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/token"
+    )
+
+
+def test_keycloak_token_url_falls_back_to_issuer(monkeypatch):
+    import main as app_main
+
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        Settings(
+            keycloak_issuer="http://localhost:18080/realms/tertius",
+            keycloak_jwks_url_override=None,
+        ),
+    )
+
+    assert app_main._keycloak_token_url() == "http://localhost:18080/realms/tertius/protocol/openid-connect/token"
+
+
 def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):
     settings = _patch_session_settings(monkeypatch)
     user_id = uuid4()

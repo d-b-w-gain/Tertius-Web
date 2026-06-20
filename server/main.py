@@ -154,6 +154,15 @@ def _code_challenge(verifier: str) -> str:
     return _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
 
 
+def _keycloak_token_url() -> str:
+    if settings.keycloak_jwks_url_override:
+        jwks_url = settings.keycloak_jwks_url_override.rstrip("/")
+        suffix = "/protocol/openid-connect/certs"
+        if jwks_url.endswith(suffix):
+            return f"{jwks_url[:-len(suffix)]}/protocol/openid-connect/token"
+    return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+
+
 @app.get("/api/auth/login")
 def auth_login(
     request: Request,
@@ -221,11 +230,7 @@ def auth_callback(
     if settings.oidc_client_secret:
         token_data["client_secret"] = settings.oidc_client_secret
 
-    token_response = httpx.post(
-        f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token",
-        data=token_data,
-        timeout=10,
-    )
+    token_response = httpx.post(_keycloak_token_url(), data=token_data, timeout=10)
     if token_response.status_code >= 400:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token exchange failed")
     token_payload = token_response.json()
