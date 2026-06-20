@@ -168,7 +168,7 @@ describe('GenerateDesignWindow', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
 
-    expect(await screen.findByText('Compiling updated model...')).toBeInTheDocument()
+    expect(screen.queryByText('Compiling updated model...')).not.toBeInTheDocument()
 
     await waitFor(() => {
       expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
@@ -200,6 +200,7 @@ describe('GenerateDesignWindow', () => {
         expect.objectContaining({ method: 'POST' }),
       )
     })
+    expect(await screen.findByText('Compiling updated model...')).toBeInTheDocument()
     const compileRequest = mocks.apiFetch.mock.calls.find(([url]) => url === '/api/intus/projects/project_a/compile')?.[2] as RequestInit
     expect(JSON.parse(compileRequest.body as string)).toEqual({
       code: 'box = Box(2, 2, 2)',

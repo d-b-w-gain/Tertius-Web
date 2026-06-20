@@ -170,7 +170,11 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     : undefined
   const selectedModelUrl = selectedMessage?.modelUrl || selectedJobAssistant?.modelUrl || ''
   const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
-  const selectedCompileStatus = selectedMessage?.compileStatus || selectedJobAssistant?.compileStatus
+  const selectedCompileStatus = (
+    selectedMessage?.compileJobId ? selectedMessage.compileStatus : undefined
+  ) || (
+    selectedJobAssistant?.compileJobId ? selectedJobAssistant.compileStatus : undefined
+  )
   const modelViewerStatusText = isNonTerminalStatus(selectedCompileStatus)
     ? 'Compiling updated model...'
     : undefined
