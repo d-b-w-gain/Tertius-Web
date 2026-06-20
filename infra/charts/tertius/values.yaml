@@ -9,6 +9,30 @@ podSecurityContext:
   fsGroup: 1000
 app:
   environment: production
+  observability:
+    enabled: true
+    otlpEndpoint: ""
+    otlpProtocol: grpc
+    tracesSampler: parentbased_traceidratio
+    tracesSamplerArg: "1.0"
+    logJson: true
+    resourceAttributes: ""
+    collectorHttpHost: ""
+    collectorHttpPort: "4318"
+    collector:
+      enabled: true
+      image:
+        repository: otel/opentelemetry-collector-contrib
+        tag: 0.133.0
+        pullPolicy: IfNotPresent
+      resources: {}
+      exporters:
+        debug:
+          verbosity: basic
+      tracesExporters:
+        - debug
+      metricsExporters:
+        - debug
   config:
     apiBasePath: /api
     keycloakAudience: tertius-api

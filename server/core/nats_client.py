@@ -1,21 +1,81 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any, Protocol
 
+from opentelemetry import propagate, trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
+
+from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 
 
 class Publisher(Protocol):
-    async def publish_json(self, subject: str, message: Any, message_id: str | None = None, timeout: float = 60.0) -> None: ...
+    async def publish_json(
+        self,
+        subject: str,
+        message: Any,
+        message_id: str | None = None,
+        timeout: float = 60.0,
+        headers: dict[str, str] | None = None,
+    ) -> None: ...
 
 
 class NatsPublisher:
     def __init__(self, jetstream):
         self.jetstream = jetstream
 
-    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None, timeout: float = 60.0) -> None:
-        headers = {"Nats-Msg-Id": message_id} if message_id else None
-        await self.jetstream.publish(subject, message.model_dump_json().encode("utf-8"), headers=headers, timeout=timeout)
+    async def publish_json(
+        self,
+        subject: str,
+        message: BaseModel,
+        message_id: str | None = None,
+        timeout: float = 60.0,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        span_name = f"NATS publish {subject}"
+        attributes = {
+            "messaging.system": "nats",
+            "messaging.destination.name": subject,
+            "messaging.operation.name": "publish",
+            "nats_subject": subject,
+        }
+        if message_id:
+            attributes["messaging.message.id"] = message_id
+
+        merged_headers = merge_nats_headers(headers, message_id=message_id)
+        start = perf_counter()
+        with get_tracer(__name__).start_as_current_span(span_name, kind=SpanKind.PRODUCER, attributes=attributes) as span:
+            propagate.inject(merged_headers)
+            try:
+                await self.jetstream.publish(
+                    subject,
+                    message.model_dump_json().encode("utf-8"),
+                    headers=merged_headers or None,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                counter_add("tertius.nats.publish.error.count", 1, {"nats_subject": subject})
+                record_exception(span, exc)
+                raise
+            finally:
+                histogram_record("tertius.nats.publish.duration", elapsed_seconds(start), {"nats_subject": subject})
+
+        counter_add("tertius.nats.publish.count", 1, {"nats_subject": subject})
+
+
+def merge_nats_headers(headers: dict[str, str] | None = None, *, message_id: str | None = None) -> dict[str, str]:
+    merged = dict(headers or {})
+    if message_id:
+        merged["Nats-Msg-Id"] = message_id
+    return merged
+
+
+def extract_nats_context(headers) -> Any:
+    if headers is None:
+        return trace.set_span_in_context(trace.INVALID_SPAN)
+    carrier = dict(headers)
+    return propagate.extract(carrier)
 
 
 async def connect_nats(url: str):

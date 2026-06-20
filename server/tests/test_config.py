@@ -145,6 +145,53 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     assert settings.compile_result_max_bytes == 2097152
 
 
+def test_settings_exposes_otel_defaults(monkeypatch):
+    for env_var in (
+        "OTEL_ENABLED",
+        "OTEL_SERVICE_NAME",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_TRACES_SAMPLER",
+        "OTEL_TRACES_SAMPLER_ARG",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_LOG_JSON",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    settings = Settings()
+
+    assert settings.otel_enabled is True
+    assert settings.otel_service_name == "tertius-api"
+    assert settings.otel_exporter_otlp_endpoint == ""
+    assert settings.otel_exporter_otlp_protocol == "grpc"
+    assert settings.otel_traces_sampler == "parentbased_traceidratio"
+    assert settings.otel_traces_sampler_arg == "1.0"
+    assert settings.otel_resource_attributes == ""
+    assert settings.otel_log_json is True
+
+
+def test_settings_allows_otel_overrides(monkeypatch):
+    monkeypatch.setenv("OTEL_ENABLED", "false")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "tertius-compile-job")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_on")
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER_ARG", "0.25")
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=test,k8s.namespace.name=tertius")
+    monkeypatch.setenv("OTEL_LOG_JSON", "false")
+
+    settings = Settings()
+
+    assert settings.otel_enabled is False
+    assert settings.otel_service_name == "tertius-compile-job"
+    assert settings.otel_exporter_otlp_endpoint == "http://collector:4317"
+    assert settings.otel_exporter_otlp_protocol == "grpc"
+    assert settings.otel_traces_sampler == "always_on"
+    assert settings.otel_traces_sampler_arg == "0.25"
+    assert settings.otel_resource_attributes == "deployment.environment=test,k8s.namespace.name=tertius"
+    assert settings.otel_log_json is False
+
+
 def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     for env_var in (
         "LLM_MODELS_JSON",

@@ -1,0 +1,129 @@
+{{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tertius.otelCollectorConfigName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 256
+        spike_limit_mib: 64
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+
+    exporters:
+{{ toYaml .Values.app.observability.collector.exporters | indent 6 }}
+
+    service:
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: 0.0.0.0
+                    port: 8888
+      pipelines:
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+{{ toYaml .Values.app.observability.collector.tracesExporters | indent 12 }}
+        metrics:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+{{ toYaml .Values.app.observability.collector.metricsExporters | indent 12 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.otelCollectorName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: otel-collector
+  template:
+    metadata:
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: otel-collector
+    spec:
+      serviceAccountName: {{ include "tertius.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.app.observability.collector.image.repository }}:{{ .Values.app.observability.collector.image.tag }}"
+          imagePullPolicy: {{ .Values.app.observability.collector.image.pullPolicy }}
+          args:
+            - --config=/etc/otelcol-contrib/config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8888
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          resources:
+            {{- toYaml .Values.app.observability.collector.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "tertius.otelCollectorConfigName" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tertius.otelCollectorName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: metrics
+      port: 8888
+      targetPort: metrics
+  selector:
+    {{- include "tertius.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+{{- end }}

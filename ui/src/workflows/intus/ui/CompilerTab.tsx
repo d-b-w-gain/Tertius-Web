@@ -11,6 +11,7 @@ import {
   getPollingDelay,
   shouldRunPollingRequest,
 } from '../../shared/polling';
+import { runWithInteractionSpan } from '../../../telemetry';
 
 const COMPILE_AUTH_TIMEOUT_MS = 15_000;
 const COMPILE_CREATE_JOB_TIMEOUT_MS = 20_000;
@@ -503,73 +504,101 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
       setLog('Log in to compile and export this local draft.');
       return;
     }
-    await startCompile(code, 'manual');
+    await runWithInteractionSpan('compile_submit', {
+      workflow: 'intus',
+      export_format: format,
+      quality,
+    }, () => startCompile(code, 'manual'));
+  };
+
+  const handleCompileRetry = async () => {
+    if (!failedCompileRetry) return;
+    await runWithInteractionSpan('compile_submit', {
+      workflow: 'intus',
+      export_format: format,
+      quality,
+      retry: true,
+    }, () => startCompile(failedCompileRetry.code, 'manual'));
+  };
+
+  const openHistoryPane = async () => {
+    setActivePane('history');
+    if (!activeProject) return;
+    await runWithInteractionSpan('history_explore', {
+      workflow: 'intus',
+      source: 'compiler_tab',
+    }, () => fetchGitStatus(activeProject));
   };
 
   const hasEditableFilePointers = fileMetadata.length > 0 && fileMetadata.every(file => file.id && file.updated_at);
 
   const applyAiEdit = async () => {
     if (isGuest || !activeProject || !aiPrompt.trim() || !hasEditableFilePointers) return;
-    setIsApplyingAiEdit(true);
-    try {
-      await storage.saveCode(activeProject, activeFile, code);
-      const latestMetadata = await refreshFileMetadata(activeProject);
-      const activeMetadata = latestMetadata.find(file => file.filename === activeFile);
-      const remainingMetadata = latestMetadata.filter(file => file.filename !== activeFile);
-      const requestFiles = [
-        ...(activeMetadata ? [activeMetadata] : []),
-        ...remainingMetadata,
-      ]
-        .filter(file => file.id && file.updated_at)
-        .slice(0, AI_EDIT_FILE_LIMIT);
-      if (requestFiles.length === 0) return;
-      if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
-        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
-      }
-      const result = await storage.applyLlmFileEdit(activeProject, {
-        prompt: aiPrompt.trim(),
-        files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
-        active_file_id: activeMetadata?.id,
-        metadata: { source: 'compiler_tab' },
-      });
-      setAiPrompt('');
-      if (result.outcome === 'changed') {
-        const nextMetadata = result.files.map(file => ({
-          id: file.id,
-          filename: file.filename,
-          updated_at: file.updated_at,
-        }));
-        setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing));
-        setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
-        const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
-        if (activeChanged) {
-          if (activeChanged.filename === activeFile) {
-            // Staying on the current file: set code from the server response and
-            // reset the polling baseline so the next poll establishes a fresh
-            // mtime instead of treating the AI edit as a stale external change.
-            mtimeRef.current = 0;
-            setCode(activeChanged.content);
-          } else {
-            // Switching to a different changed file: route through switchFile so
-            // the baseline reset and canonical server reload path are reused.
-            // Avoid saving the current editor content (which would create an
-            // extra snapshot) since the AI edit already persisted the changes.
-            await switchFile(activeChanged.filename, { saveCurrent: false });
-          }
+    await runWithInteractionSpan('llm_file_edit_submit', {
+      workflow: 'intus',
+      source: 'compiler_tab',
+    }, async () => {
+      setIsApplyingAiEdit(true);
+      try {
+        await storage.saveCode(activeProject, activeFile, code);
+        const latestMetadata = await refreshFileMetadata(activeProject);
+        const activeMetadata = latestMetadata.find(file => file.filename === activeFile);
+        const remainingMetadata = latestMetadata.filter(file => file.filename !== activeFile);
+        const requestFiles = [
+          ...(activeMetadata ? [activeMetadata] : []),
+          ...remainingMetadata,
+        ]
+          .filter(file => file.id && file.updated_at)
+          .slice(0, AI_EDIT_FILE_LIMIT);
+        if (requestFiles.length === 0) return;
+        if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
+          setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
         }
-        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).${result.message ? ` ${result.message}` : ''}`);
-        fetchGitStatus(activeProject);
-      } else if (result.outcome === 'no_change') {
-        setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] ${result.message || 'AI did not need to change any files.'}`);
-      } else {
-        setLog(prev => `${prev ? `${prev}\n` : ''}[WARN] ${result.message || 'AI could not complete the requested edit.'}`);
+        const result = await storage.applyLlmFileEdit(activeProject, {
+          prompt: aiPrompt.trim(),
+          files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
+          active_file_id: activeMetadata?.id,
+          metadata: { source: 'compiler_tab' },
+        });
+        setAiPrompt('');
+        if (result.outcome === 'changed') {
+          const nextMetadata = result.files.map(file => ({
+            id: file.id,
+            filename: file.filename,
+            updated_at: file.updated_at,
+          }));
+          setFileMetadata(prev => prev.map(existing => nextMetadata.find(file => file.id === existing.id) || existing));
+          setFiles(prev => Array.from(new Set([...prev, ...result.files.map(file => file.filename)])));
+          const activeChanged = result.files.find(file => file.filename === activeFile) || result.files[0];
+          if (activeChanged) {
+            if (activeChanged.filename === activeFile) {
+              // Staying on the current file: set code from the server response and
+              // reset the polling baseline so the next poll establishes a fresh
+              // mtime instead of treating the AI edit as a stale external change.
+              mtimeRef.current = 0;
+              setCode(activeChanged.content);
+            } else {
+              // Switching to a different changed file: route through switchFile so
+              // the baseline reset and canonical server reload path are reused.
+              // Avoid saving the current editor content (which would create an
+              // extra snapshot) since the AI edit already persisted the changes.
+              await switchFile(activeChanged.filename, { saveCurrent: false });
+            }
+          }
+          setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI updated ${result.files.length} file(s).${result.message ? ` ${result.message}` : ''}`);
+          fetchGitStatus(activeProject);
+        } else if (result.outcome === 'no_change') {
+          setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] ${result.message || 'AI did not need to change any files.'}`);
+        } else {
+          setLog(prev => `${prev ? `${prev}\n` : ''}[WARN] ${result.message || 'AI could not complete the requested edit.'}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'AI file edit failed.';
+        setLog(prev => `${prev ? `${prev}\n` : ''}[ERROR] ${message}`);
+      } finally {
+        setIsApplyingAiEdit(false);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI file edit failed.';
-      setLog(prev => `${prev ? `${prev}\n` : ''}[ERROR] ${message}`);
-    } finally {
-      setIsApplyingAiEdit(false);
-    }
+    });
   };
 
   return (
@@ -764,7 +793,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
                 Compiler Output
               </button>
               <button 
-                onClick={() => setActivePane('history')}
+                onClick={() => void openHistoryPane()}
                 className={`transition-colors flex items-center gap-1 ${activePane === 'history' ? 'text-indigo-400 font-bold' : 'hover:text-slate-300'}`}
               >
                 Git History
@@ -774,10 +803,10 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             {activePane === 'output' && (
               <div className="flex items-center gap-2">
                 {failedCompileRetry && (
-                  <button
-                    type="button"
-                    onClick={() => void startCompile(failedCompileRetry.code, 'manual')}
-                    disabled={isCompiling || isGuest}
+	                  <button
+	                    type="button"
+	                    onClick={() => void handleCompileRetry()}
+	                    disabled={isCompiling || isGuest}
                     className="hover:text-slate-300 px-2 py-0.5 rounded bg-slate-800 border border-slate-700 disabled:opacity-50"
                   >
                     Try again

@@ -5,7 +5,9 @@ import base64
 import gzip
 import logging
 from datetime import timedelta
+from time import perf_counter
 
+from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
 from core.compile_messages import (
@@ -22,8 +24,10 @@ from core.nats_client import (
     Publisher,
     connect_nats,
     ensure_compile_stream,
+    extract_nats_context,
     pull_compile_result_subscription,
 )
+from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 from core.repositories import CompileRepository, UsageRepository
 from core.billing import compute_cost_cents, get_format_multiplier
 
@@ -125,88 +129,121 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
 
 
 async def handle_compile_result_message(msg, db, settings) -> None:
-    try:
-        result = CompileResultPayload.model_validate_json(msg.data)
-    except Exception:
-        logger.exception("Invalid compile result JSON")
-        await msg.term()
-        return
+    context = extract_nats_context(getattr(msg, "headers", None))
+    subject = getattr(msg, "subject", "tertius.compile.result")
+    attributes = {
+        "messaging.system": "nats",
+        "messaging.destination.name": subject,
+        "messaging.operation.name": "process",
+        "nats_subject": subject,
+    }
+    with get_tracer(__name__).start_as_current_span(
+        "NATS consume tertius.compile.result",
+        context=context,
+        kind=SpanKind.CONSUMER,
+        attributes=attributes,
+    ) as span:
+        try:
+            result = CompileResultPayload.model_validate_json(msg.data)
+        except Exception as exc:
+            logger.exception("Invalid compile result JSON")
+            record_exception(span, exc)
+            span.set_attribute("messaging.nats.ack_action", "term")
+            await msg.term()
+            return
 
-    try:
-        apply_compile_result(db, result, settings)
-        await msg.ack()
-    except Exception:
-        db.rollback()
-        logger.exception("Failed to apply compile result")
-        await msg.nak()
+        span.set_attribute("tertius.export_format", result.export_format)
+        span.set_attribute("tertius.job_status", result.status)
+        labels = {"export_format": result.export_format, "job_status": result.status}
+        start = perf_counter()
+        try:
+            apply_compile_result(db, result, settings)
+            await msg.ack()
+            span.set_attribute("messaging.nats.ack_action", "ack")
+            counter_add("tertius.compile.result.processed.count", 1, labels)
+            histogram_record("tertius.compile.result.processing.duration", elapsed_seconds(start), labels)
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Failed to apply compile result")
+            record_exception(span, exc)
+            span.set_attribute("messaging.nats.ack_action", "nak")
+            counter_add("tertius.compile.result.error.count", 1, labels)
+            histogram_record("tertius.compile.result.processing.duration", elapsed_seconds(start), labels)
+            await msg.nak()
 
 
 async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_than_seconds: int = 60) -> int:
-    cutoff = now_utc() - timedelta(seconds=older_than_seconds)
-    jobs = db.scalars(
-        select(CompileJob)
-        .where(
-            CompileJob.status == "queued",
-            CompileJob.error_code == "publish_pending",
-            CompileJob.created_at < cutoff,
-        )
-        .order_by(CompileJob.created_at)
-        .limit(50)
-    ).all()
-    republished = 0
-    for job in jobs:
-        files = db.scalars(
-            select(CompileJobFile)
+    with get_tracer(__name__).start_as_current_span("compile.republish_stale_queued_jobs") as span:
+        cutoff = now_utc() - timedelta(seconds=older_than_seconds)
+        jobs = db.scalars(
+            select(CompileJob)
             .where(
-                CompileJobFile.compile_job_id == job.id,
-                CompileJobFile.tenant_id == job.tenant_id,
-                CompileJobFile.project_id == job.project_id,
+                CompileJob.status == "queued",
+                CompileJob.error_code == "publish_pending",
+                CompileJob.created_at < cutoff,
             )
-            .order_by(CompileJobFile.filename)
+            .order_by(CompileJob.created_at)
+            .limit(50)
         ).all()
-        if not files:
-            CompileRepository(db, job.tenant_id).finish_job(
-                job,
-                "failed",
-                error="Compile job source snapshot is missing",
-                error_code="missing_snapshot",
-                user_message="Compile failed because the submitted source snapshot is missing. Try again.",
-                retryable=True,
-            )
-            db.commit()
-            logger.warning("Marked stale queued compile job %s failed because it has no source snapshot", job.id)
-            continue
+        republished = 0
+        for job in jobs:
+            files = db.scalars(
+                select(CompileJobFile)
+                .where(
+                    CompileJobFile.compile_job_id == job.id,
+                    CompileJobFile.tenant_id == job.tenant_id,
+                    CompileJobFile.project_id == job.project_id,
+                )
+                .order_by(CompileJobFile.filename)
+            ).all()
+            if not files:
+                CompileRepository(db, job.tenant_id).finish_job(
+                    job,
+                    "failed",
+                    error="Compile job source snapshot is missing",
+                    error_code="missing_snapshot",
+                    user_message="Compile failed because the submitted source snapshot is missing. Try again.",
+                    retryable=True,
+                )
+                db.commit()
+                counter_add("tertius.compile.job.failed.count", 1, {"job_status": "missing_snapshot"})
+                logger.warning("Marked stale queued compile job %s failed because it has no source snapshot", job.id)
+                continue
 
-        request_id = f"compile-request:{job.id}"
-        command = CompileCommand(
-            job_id=job.id,
-            tenant_id=job.tenant_id,
-            project_id=job.project_id,
-            requested_by=job.requested_by,
-            export_format=job.export_format,
-            created_at=job.created_at,
-            files=[CompileSourceFile(filename=file.filename, content=file.content) for file in files],
-            request_id=request_id,
-        )
-        try:
-            assert_message_size(command, settings.compile_request_max_bytes, "request")
-        except ValueError as exc:
-            CompileRepository(db, job.tenant_id).finish_job(
-                job,
-                "failed",
-                error=str(exc),
-                error_code="source_bundle_too_large",
-                user_message="Compile source is too large to queue. Split the model into smaller files.",
-                retryable=False,
+            request_id = f"compile-request:{job.id}"
+            command = CompileCommand(
+                job_id=job.id,
+                tenant_id=job.tenant_id,
+                project_id=job.project_id,
+                requested_by=job.requested_by,
+                export_format=job.export_format,
+                created_at=job.created_at,
+                files=[CompileSourceFile(filename=file.filename, content=file.content) for file in files],
+                request_id=request_id,
             )
-            db.commit()
-            logger.warning("Marked stale queued compile job %s failed because its source snapshot is too large", job.id)
-            continue
+            try:
+                assert_message_size(command, settings.compile_request_max_bytes, "request")
+            except ValueError as exc:
+                CompileRepository(db, job.tenant_id).finish_job(
+                    job,
+                    "failed",
+                    error=str(exc),
+                    error_code="source_bundle_too_large",
+                    user_message="Compile source is too large to queue. Split the model into smaller files.",
+                    retryable=False,
+                )
+                db.commit()
+                counter_add("tertius.compile.job.failed.count", 1, {"job_status": "source_bundle_too_large"})
+                logger.warning("Marked stale queued compile job %s failed because its source snapshot is too large", job.id)
+                continue
 
-        await publisher.publish_json(settings.compile_request_subject, command, message_id=request_id)
-        republished += 1
-    db.rollback()
-    return republished
+            await publisher.publish_json(settings.compile_request_subject, command, message_id=request_id)
+            republished += 1
+        db.rollback()
+        span.set_attribute("tertius.compile.republished_count", republished)
+        if republished:
+            counter_add("tertius.compile.job.started.count", republished, {"job_status": "republished"})
+        return republished
 
 
 def fail_stale_running_jobs(db) -> int:

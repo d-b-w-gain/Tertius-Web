@@ -15,6 +15,7 @@ import {
   getPollingDelay,
   shouldRunPollingRequest,
 } from '../../shared/polling';
+import { runWithInteractionSpan } from '../../../telemetry';
 
 const AI_EDIT_FILE_LIMIT = 20;
 const AI_EDIT_COMPILE_FORMAT = 'glb';
@@ -430,16 +431,21 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
       throw new Error('Compile could not start because design.py could not be loaded.');
     }
 
-    const res = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        export_format: AI_EDIT_COMPILE_FORMAT,
-        quality: AI_EDIT_COMPILE_QUALITY,
-        file: 'design.py',
-      }),
-    });
+    const res = await runWithInteractionSpan('compile_submit', {
+      workflow: 'artus',
+      export_format: AI_EDIT_COMPILE_FORMAT,
+      quality: AI_EDIT_COMPILE_QUALITY,
+      source: 'artus_feature_tree',
+    }, () => apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          export_format: AI_EDIT_COMPILE_FORMAT,
+          quality: AI_EDIT_COMPILE_QUALITY,
+          file: 'design.py',
+        }),
+      }));
 
     if (!res.ok) {
       let message = 'Compile could not start after AI edit.';
@@ -460,20 +466,24 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     try {
       const { requestFiles, activeFileId, truncatedMessage } = await loadAiEditFiles();
 
-      const result = await storage.applyLlmFileEdit(activeProject, {
-        prompt: prompt.trim(),
-        files: requestFiles.map(file => ({
-          id: file.id,
-          filename: file.filename,
-          updated_at: file.updated_at,
-        })),
-        active_file_id: activeFileId,
-        metadata: {
-          source: 'artus_feature_tree',
-          active_panel: activePanel,
-          highlighted_node: highlightedNode || '',
-        },
-      });
+      const result = await runWithInteractionSpan('llm_file_edit_submit', {
+        workflow: 'artus',
+        source: 'artus_feature_tree',
+        active_panel: activePanel,
+      }, () => storage.applyLlmFileEdit(activeProject, {
+          prompt: prompt.trim(),
+          files: requestFiles.map(file => ({
+            id: file.id,
+            filename: file.filename,
+            updated_at: file.updated_at,
+          })),
+          active_file_id: activeFileId,
+          metadata: {
+            source: 'artus_feature_tree',
+            active_panel: activePanel,
+            highlighted_node: highlightedNode || '',
+          },
+        }));
 
       const changedMetadata = result.files.map(file => ({
         id: file.id,

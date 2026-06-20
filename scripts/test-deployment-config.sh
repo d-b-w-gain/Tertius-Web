@@ -82,6 +82,14 @@ render_network_policy_disabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set networkPolicy.enabled=false
 }
 
+render_external_observability_collector() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.observability.collector.enabled=false \
+    --set-string app.observability.otlpEndpoint=http://shared-otel-collector:4317 \
+    --set-string app.observability.collectorHttpHost=shared-otel-collector \
+    --set-string app.observability.collectorHttpPort=4318
+}
+
 extract_render_doc() {
   local content="$1"
   local kind_pattern="$2"
@@ -162,6 +170,31 @@ if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/infra/deploy/
   exit 1
 fi
 
+if ! rg -q 'location = /otel/v1/traces' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_pass http://\$\{OTEL_COLLECTOR_HTTP_HOST\}:\$\{OTEL_COLLECTOR_HTTP_PORT\}/v1/traces' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template"; then
+  echo "Frontend nginx must proxy same-origin browser OTLP traces to the collector /v1/traces endpoint." >&2
+  exit 1
+fi
+
+if ! rg -q '^  otel-collector:' "${ROOT_DIR}/docker-compose.yml" || ! rg -q './infra/otel/otel-collector-local.yaml:/etc/otelcol-contrib/config.yaml:ro' "${ROOT_DIR}/docker-compose.yml"; then
+  echo "Docker Compose must include the local OpenTelemetry collector service and config mount." >&2
+  exit 1
+fi
+
+if ! rg -q 'OTEL_SERVICE_NAME: tertius-api' "${ROOT_DIR}/docker-compose.yml" || ! rg -q 'OTEL_SERVICE_NAME: tertius-compile-job' "${ROOT_DIR}/docker-compose.yml" || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317' "${ROOT_DIR}/docker-compose.yml"; then
+  echo "Docker Compose must wire backend and compile job OTLP environment to the local collector with distinct service names." >&2
+  exit 1
+fi
+
+if ! rg -q 'VITE_OTEL_ENABLED=.*true' "${ROOT_DIR}/docker-compose.yml" || ! rg -q 'VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=.*http://localhost:4318/v1/traces' "${ROOT_DIR}/docker-compose.yml" || ! rg -q 'VITE_OTEL_SERVICE_NAME=tertius-ui' "${ROOT_DIR}/docker-compose.yml"; then
+  echo "Docker Compose frontend must enable browser OpenTelemetry and point Vite at the local collector HTTP endpoint." >&2
+  exit 1
+fi
+
+if ! rg -q 'endpoint: 0.0.0.0:4317' "${ROOT_DIR}/infra/otel/otel-collector-local.yaml" || ! rg -q 'endpoint: 0.0.0.0:4318' "${ROOT_DIR}/infra/otel/otel-collector-local.yaml" || ! rg -q 'host: 0.0.0.0' "${ROOT_DIR}/infra/otel/otel-collector-local.yaml" || ! rg -q 'port: 8888' "${ROOT_DIR}/infra/otel/otel-collector-local.yaml" || ! rg -q 'debug:' "${ROOT_DIR}/infra/otel/otel-collector-local.yaml"; then
+  echo "Local OpenTelemetry collector config must expose OTLP gRPC, OTLP HTTP, collector metrics, and debug export." >&2
+  exit 1
+fi
+
 rendered="$(render_local)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
@@ -171,10 +204,21 @@ app_secret_without_prompt_rendered="$(render_app_secret_created_without_prompt)"
 confidential_client_rendered="$(render_confidential_client)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
+external_observability_rendered="$(render_external_observability_collector)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
 app_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'name: tertius-config')"
+default_app_configmap="$(extract_render_doc "$default_rendered" 'kind: ConfigMap' 'name: tertius-config')"
+api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
+ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
+otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
+otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+default_otel_collector_deployment="$(extract_render_doc "$default_rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
+default_otel_collector_service="$(extract_render_doc "$default_rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+external_observability_configmap="$(extract_render_doc "$external_observability_rendered" 'kind: ConfigMap' 'name: tertius-config')"
+external_observability_ui_deployment="$(extract_render_doc "$external_observability_rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
 api_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: api')"
 api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_prompt_rendered" 'app.kubernetes.io/component: api')"
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
@@ -268,6 +312,51 @@ fi
 
 if ! rg -q 'AUTH_COOKIE_SECURE: "false"' <<<"$app_configmap" || ! rg -q 'AUTH_SESSION_IDLE_SECONDS: "604800"' <<<"$app_configmap" || ! rg -q 'AUTH_SESSION_MAX_SECONDS: "2592000"' <<<"$app_configmap"; then
   echo "ConfigMap must render API cookie session settings." >&2
+  exit 1
+fi
+
+if ! rg -q 'OTEL_ENABLED: "true"' <<<"$app_configmap" || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://tertius-otel-collector:4317"' <<<"$app_configmap" || ! rg -q 'OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"' <<<"$app_configmap" || ! rg -q 'OTEL_TRACES_SAMPLER: "parentbased_traceidratio"' <<<"$app_configmap" || ! rg -q 'OTEL_TRACES_SAMPLER_ARG: "1.0"' <<<"$app_configmap" || ! rg -q 'OTEL_LOG_JSON: "true"' <<<"$app_configmap"; then
+  echo "Local ConfigMap must render shared OpenTelemetry configuration pointing to the local collector." >&2
+  exit 1
+fi
+
+if ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://tertius-otel-collector:4317"' <<<"$default_app_configmap" || ! rg -q 'OTEL_RESOURCE_ATTRIBUTES: "service.version=0.1.0,deployment.environment=production"' <<<"$default_app_configmap"; then
+  echo "Default production ConfigMap must point OTLP at the in-chart collector while rendering shared resource attributes." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$api_deployment" | rg -A 1 'name: OTEL_SERVICE_NAME' | rg -q 'value: "tertius-api"' || ! rg -q 'container.name=api' <<<"$api_deployment" || ! rg -q 'k8s.pod.name=\$\(POD_NAME\)' <<<"$api_deployment"; then
+  echo "API Deployment must set per-workload OpenTelemetry service name and Kubernetes resource attributes." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "tertius-otel-collector"' || ! printf '%s\n' "$ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_PORT' | rg -q 'value: "4318"' || ! rg -q 'OTEL_COLLECTOR_HTTP_HOST|OTEL_COLLECTOR_HTTP_PORT' <<<"$ui_deployment"; then
+  echo "UI Deployment must provide collector HTTP env vars for nginx envsubst." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector-config' <<<"$otel_collector_configmap" || ! rg -q 'endpoint: 0.0.0.0:4317' <<<"$otel_collector_configmap" || ! rg -q 'endpoint: 0.0.0.0:4318' <<<"$otel_collector_configmap" || ! rg -q 'port: 8888' <<<"$otel_collector_configmap" || ! rg -q 'debug:' <<<"$otel_collector_configmap"; then
+  echo "Local Helm render must include an OpenTelemetry Collector config with OTLP gRPC, OTLP HTTP, metrics, and debug export." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector' <<<"$otel_collector_deployment" || ! rg -q 'image: "otel/opentelemetry-collector-contrib:0.133.0"' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 4317' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 4318' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 8888' <<<"$otel_collector_deployment"; then
+  echo "Local Helm render must include an OpenTelemetry Collector Deployment for the nginx and backend OTLP targets." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector' <<<"$otel_collector_service" || ! rg -q 'port: 4317' <<<"$otel_collector_service" || ! rg -q 'port: 4318' <<<"$otel_collector_service" || ! rg -q 'port: 8888' <<<"$otel_collector_service"; then
+  echo "Local Helm render must include an OpenTelemetry Collector Service so UI nginx can resolve the collector upstream." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector' <<<"$default_otel_collector_deployment" || ! rg -q 'image: "otel/opentelemetry-collector-contrib:0.133.0"' <<<"$default_otel_collector_deployment" || ! rg -q 'name: tertius-otel-collector' <<<"$default_otel_collector_service"; then
+  echo "Default production Helm render must include the in-chart OpenTelemetry Collector Deployment and Service." >&2
+  exit 1
+fi
+
+if rg -q 'app.kubernetes.io/component: otel-collector' <<<"$external_observability_rendered" || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://shared-otel-collector:4317"' <<<"$external_observability_configmap" || ! printf '%s\n' "$external_observability_ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "shared-otel-collector"'; then
+  echo "Helm render must allow disabling the in-chart collector while pointing backend and browser telemetry at a shared collector." >&2
   exit 1
 fi
 
@@ -423,6 +512,11 @@ fi
 
 if ! rg -q 'COMPILE_ACK_WAIT_SECONDS: "900"' <<<"$rendered" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_ACK_WAIT_SECONDS' | rg -q 'value: "900"'; then
   echo "Compile ack wait must render as 900 seconds so it exceeds compile timeout plus publish/ack margin." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -A 1 'name: OTEL_SERVICE_NAME' | rg -q 'value: "tertius-compile-job"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' | rg -q 'value: "http://tertius-otel-collector:4317"' || ! rg -q 'container.name=compile' <<<"$scaled_job"; then
+  echo "Compile ScaledJob must set compile-specific OpenTelemetry service name, endpoint, and resource attributes." >&2
   exit 1
 fi
 

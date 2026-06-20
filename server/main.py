@@ -15,10 +15,25 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from opentelemetry import trace
 from sqlalchemy import select
 
 # Ensure the workflows directory is in the Python path so we can import them
 sys.path.append(str(Path(__file__).parent))
+
+from core.config import get_settings
+from core.telemetry import (
+    configure_telemetry,
+    counter_add,
+    elapsed_seconds,
+    histogram_record,
+    instrument_fastapi_app,
+    timed,
+    workflow_from_route,
+)
+
+settings = get_settings()
+configure_telemetry(settings, "tertius-api")
 
 from core.auth import (
     AuthContext,
@@ -32,7 +47,6 @@ from core.auth import (
     set_auth_cookies,
     utc_now,
 )
-from core.config import get_settings
 from core.db import get_db
 from core.models import AuthSession
 
@@ -44,7 +58,6 @@ from workflows.timus.timus_server import app as timus_app
 from workflows.intus.compile_result_consumer import run_result_consumer
 from core.provisioning import provision_user_context
 
-settings = get_settings()
 _compile_result_stop_event: asyncio.Event | None = None
 _compile_result_task: asyncio.Task | None = None
 
@@ -77,6 +90,7 @@ async def lifespan(_app: FastAPI):
 
 # Create the master Monolith app
 app = FastAPI(title="Tertius Monolith API", lifespan=lifespan)
+instrument_fastapi_app(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,6 +99,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def telemetry_request_context(request: Request, call_next):
+    start = timed()
+    response: Response | None = None
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = getattr(request.scope.get("route"), "path", request.url.path)
+        workflow = workflow_from_route(request.url.path)
+        attributes = {
+            "route": str(route),
+            "method": request.method,
+            "status_code": status_code,
+            "workflow": workflow,
+        }
+        counter_add("tertius.api.request.count", 1, attributes)
+        histogram_record("tertius.api.request.duration", elapsed_seconds(start), attributes)
+        current_span = trace.get_current_span()
+        if current_span.is_recording():
+            current_span.set_attribute("http.route", str(route))
+            current_span.set_attribute("tertius.workflow", workflow)
+            current_span.set_attribute("http.response.status_code", status_code)
+
 
 @app.get("/")
 def read_root():

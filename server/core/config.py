@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     billing_format_multiplier_step: float = Field(default=1.5)
     billing_format_multiplier_gltf: float = Field(default=2.0)
     billing_format_multiplier_glb: float = Field(default=2.0)
+    otel_enabled: bool = Field(default=True)
+    otel_service_name: str = Field(default="tertius-api")
+    otel_exporter_otlp_endpoint: str = Field(default="")
+    otel_exporter_otlp_protocol: str = Field(default="grpc")
+    otel_traces_sampler: str = Field(default="parentbased_traceidratio")
+    otel_traces_sampler_arg: str = Field(default="1.0")
+    otel_resource_attributes: str = Field(default="")
+    otel_log_json: bool = Field(default=True)
 
     @model_validator(mode="after")
     def populate_database_url(self):

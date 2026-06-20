@@ -3,10 +3,12 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
 from core.compile_messages import CompileCommand
 from core.config import Settings
-from core.nats_client import NatsPublisher, ensure_billing_stream, ensure_compile_stream
+from core.nats_client import NatsPublisher, ensure_billing_stream, ensure_compile_stream, extract_nats_context
 
 
 class FakeJetStream:
@@ -80,7 +82,8 @@ async def test_nats_publisher_publishes_json_through_jetstream():
     assert subject == "tertius.compile.request"
     assert isinstance(payload, bytes)
     assert b'"export_format":"glb"' in payload
-    assert headers is None
+    assert headers is not None
+    assert "traceparent" in headers
     assert timeout == 60.0
 
 
@@ -102,8 +105,54 @@ async def test_nats_publisher_uses_message_id_header_for_dedupe():
     subject, payload, headers, timeout = jetstream.published[0]
     assert subject == "tertius.compile.result"
     assert isinstance(payload, bytes)
-    assert headers == {"Nats-Msg-Id": "compile-result-1"}
+    assert headers["Nats-Msg-Id"] == "compile-result-1"
+    assert "traceparent" in headers
     assert timeout == 60.0
+
+
+@pytest.mark.asyncio
+async def test_nats_publisher_injects_trace_headers_without_overwriting_message_id():
+    jetstream = FakeJetStream()
+    publisher = NatsPublisher(jetstream)
+    command = CompileCommand(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        project_id=uuid4(),
+        requested_by=uuid4(),
+        export_format="glb",
+        created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+    )
+    span_context = SpanContext(
+        trace_id=0x1234567890ABCDEF1234567890ABCDEF,
+        span_id=0x1234567890ABCDEF,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+        trace_state=TraceState(),
+    )
+
+    with use_span(NonRecordingSpan(span_context), end_on_exit=False):
+        await publisher.publish_json("tertius.compile.result", command, message_id="compile-result-1")
+
+    _, _, headers, _ = jetstream.published[0]
+    assert headers["Nats-Msg-Id"] == "compile-result-1"
+    version, trace_id, span_id, flags = headers["traceparent"].split("-")
+    assert version == "00"
+    assert trace_id == "1234567890abcdef1234567890abcdef"
+    assert span_id != "1234567890abcdef"
+    assert flags.endswith("01")
+
+
+def test_extract_nats_context_reads_trace_headers():
+    headers = {
+        "traceparent": "00-1234567890abcdef1234567890abcdef-1234567890abcdef-01",
+    }
+
+    context = extract_nats_context(headers)
+    span_context = trace.get_current_span(context).get_span_context()
+
+    assert span_context.trace_id == 0x1234567890ABCDEF1234567890ABCDEF
+    assert span_context.span_id == 0x1234567890ABCDEF
+    assert span_context.is_remote is True
 
 
 @pytest.mark.asyncio

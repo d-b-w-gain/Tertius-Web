@@ -18,6 +18,7 @@ import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../shared/polling'
 import { LatestModelViewer, ModelViewerCanvas } from '../extus/ui/ViewerTab'
 import { recordAiBudgetUsage } from './AiBudgetGauge'
+import { runWithInteractionSpan } from '../../telemetry'
 
 const AI_EDIT_FILE_LIMIT = 20
 const COMPILE_FORMAT = 'glb'
@@ -442,17 +443,22 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     const code = designChange?.content || await storage.loadCode(projectName, 'design.py')
     if (!code) throw new Error('Compile could not start because design.py could not be loaded.')
 
-    const response = await apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        export_format: COMPILE_FORMAT,
-        quality: COMPILE_QUALITY,
-        file: 'design.py',
-        originating_llm_edit_job_id: originatingLlmEditJobId,
-      }),
-    })
+    const response = await runWithInteractionSpan('compile_submit', {
+      workflow: 'generate',
+      export_format: COMPILE_FORMAT,
+      quality: COMPILE_QUALITY,
+      source: 'generate_design_window',
+    }, () => apiFetch(`${intusServerUrl}/projects/${projectName}/compile`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          export_format: COMPILE_FORMAT,
+          quality: COMPILE_QUALITY,
+          file: 'design.py',
+          originating_llm_edit_job_id: originatingLlmEditJobId,
+        }),
+      }))
     const data = await response.json()
     if (!response.ok || !data.job_id) {
       throw new Error(jsonMessage(data, 'Compile could not start after generation.'))
@@ -632,17 +638,21 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
 
     try {
       const { requestFiles, activeFileId, truncatedMessage } = await buildLlmEditRequest()
-      const job = await storage.applyLlmFileEditJob(activeProject, {
-        prompt: submittedPrompt,
-        files: requestFiles.map(file => ({
-          id: file.id,
-          filename: file.filename,
-          updated_at: file.updated_at,
-        })),
-        active_file_id: activeFileId,
-        model_id: selectedModel?.id,
-        metadata: { source: 'generate_design_window' },
-      })
+      const job = await runWithInteractionSpan('llm_file_edit_submit', {
+        workflow: 'generate',
+        source: 'generate_design_window',
+        model_id: selectedModel?.id || '',
+      }, () => storage.applyLlmFileEditJob(activeProject, {
+          prompt: submittedPrompt,
+          files: requestFiles.map(file => ({
+            id: file.id,
+            filename: file.filename,
+            updated_at: file.updated_at,
+          })),
+          active_file_id: activeFileId,
+          model_id: selectedModel?.id,
+          metadata: { source: 'generate_design_window' },
+        }))
       const stablePromptId = promptMessageId(job.job_id)
       const stableAssistantId = assistantMessageId(job.job_id)
       setMessages(prev => prev.map(message => {

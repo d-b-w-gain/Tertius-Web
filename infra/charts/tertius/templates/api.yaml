@@ -40,6 +40,18 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.api.port | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "tertius-api"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.version={{ .Chart.AppVersion }},deployment.environment={{ .Values.app.environment }},k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME),container.name=api{{ with (.Values.app.observability.resourceAttributes | trim) }},{{ . }}{{ end }}"
             - name: APP_DB_PASSWORD
               valueFrom:
                 secretKeyRef:

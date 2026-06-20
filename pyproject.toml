@@ -19,6 +19,14 @@ dependencies = [
     "httpx",
     "nats-py",
     "openai",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-httpx",
+    "opentelemetry-instrumentation-sqlalchemy",
+    "opentelemetry-instrumentation-logging",
+    "opentelemetry-instrumentation-asyncio",
 ]
 
 [dependency-groups]
