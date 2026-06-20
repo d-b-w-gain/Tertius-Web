@@ -12,7 +12,7 @@ metadata:
 {{- $keycloakIssuer := $keycloakIssuerFromValues }}
 {{- $keycloakJwksUrlOverride := .Values.app.config.keycloakJwksUrlOverride | trim | default "" }}
 {{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
-{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (printf "%s-otel-collector" (include "tertius.fullname" .)) }}
+{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (include "tertius.otelCollectorName" .) }}
 {{- $otelCollectorGrpcEndpoint := printf "http://%s:4317" $otelCollectorHttpHost }}
 {{- $otelEndpoint := .Values.app.observability.otlpEndpoint | trim | default "" }}
 {{- $otelResourceAttributes := printf "service.version=%s,deployment.environment=%s" .Chart.AppVersion .Values.app.environment }}

@@ -1,4 +1,4 @@
-{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (printf "%s-otel-collector" (include "tertius.fullname" .)) }}
+{{- $otelCollectorHttpHost := .Values.app.observability.collectorHttpHost | trim | default (include "tertius.otelCollectorName" .) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

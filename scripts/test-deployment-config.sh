@@ -203,6 +203,9 @@ app_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'name: tertius
 default_app_configmap="$(extract_render_doc "$default_rendered" 'kind: ConfigMap' 'name: tertius-config')"
 api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
+otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
+otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
 api_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: api')"
 api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_prompt_rendered" 'app.kubernetes.io/component: api')"
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
@@ -316,6 +319,26 @@ fi
 
 if ! printf '%s\n' "$ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "tertius-otel-collector"' || ! printf '%s\n' "$ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_PORT' | rg -q 'value: "4318"' || ! rg -q 'OTEL_COLLECTOR_HTTP_HOST|OTEL_COLLECTOR_HTTP_PORT' <<<"$ui_deployment"; then
   echo "UI Deployment must provide collector HTTP env vars for nginx envsubst." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector-config' <<<"$otel_collector_configmap" || ! rg -q 'endpoint: 0.0.0.0:4317' <<<"$otel_collector_configmap" || ! rg -q 'endpoint: 0.0.0.0:4318' <<<"$otel_collector_configmap" || ! rg -q 'port: 8888' <<<"$otel_collector_configmap" || ! rg -q 'debug:' <<<"$otel_collector_configmap"; then
+  echo "Local Helm render must include an OpenTelemetry Collector config with OTLP gRPC, OTLP HTTP, metrics, and debug export." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector' <<<"$otel_collector_deployment" || ! rg -q 'image: "otel/opentelemetry-collector-contrib:0.133.0"' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 4317' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 4318' <<<"$otel_collector_deployment" || ! rg -q 'containerPort: 8888' <<<"$otel_collector_deployment"; then
+  echo "Local Helm render must include an OpenTelemetry Collector Deployment for the nginx and backend OTLP targets." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-otel-collector' <<<"$otel_collector_service" || ! rg -q 'port: 4317' <<<"$otel_collector_service" || ! rg -q 'port: 4318' <<<"$otel_collector_service" || ! rg -q 'port: 8888' <<<"$otel_collector_service"; then
+  echo "Local Helm render must include an OpenTelemetry Collector Service so UI nginx can resolve the collector upstream." >&2
+  exit 1
+fi
+
+if rg -q 'app.kubernetes.io/component: otel-collector' <<<"$default_rendered"; then
+  echo "Default production Helm render must not create the optional in-chart OpenTelemetry Collector." >&2
   exit 1
 fi
 

@@ -10,6 +10,8 @@ app:
     resourceAttributes: ""
     collectorHttpHost: ""
     collectorHttpPort: "4318"
+    collector:
+      enabled: true
   config:
     keycloakAudience: tertius-api
     keycloakIssuerUrl: http://keycloak.localhost/realms/tertius

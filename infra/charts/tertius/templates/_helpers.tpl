@@ -44,6 +44,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-ui" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "tertius.otelCollectorName" -}}
+{{- printf "%s-otel-collector" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "tertius.otelCollectorConfigName" -}}
+{{- printf "%s-config" (include "tertius.otelCollectorName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "tertius.configName" -}}
 {{- printf "%s-config" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

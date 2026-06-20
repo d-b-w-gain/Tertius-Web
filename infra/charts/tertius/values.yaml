@@ -19,6 +19,13 @@ app:
     resourceAttributes: ""
     collectorHttpHost: ""
     collectorHttpPort: "4318"
+    collector:
+      enabled: false
+      image:
+        repository: otel/opentelemetry-collector-contrib
+        tag: 0.133.0
+        pullPolicy: IfNotPresent
+      resources: {}
   config:
     apiBasePath: /api
     keycloakAudience: tertius-api
