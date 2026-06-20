@@ -149,6 +149,7 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     for env_var in (
         "LLM_MODELS_JSON",
         "LLM_DEFAULT_MODEL_ID",
+        "LLM_WEEKLY_BUDGET_USD",
         "LLM_DAILY_BUDGET_USD",
         "LLM_API_KEY",
         "LLM_FILE_EDIT_SYSTEM_PROMPT",
@@ -169,14 +170,15 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
 
     monkeypatch.setenv("LLM_MODELS_JSON", "[]")
     monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", "")
-    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.00")
+    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "14.00")
     monkeypatch.setenv("LLM_API_KEY", "")
 
     settings = Settings()
 
     assert settings.llm_models_json == "[]"
     assert settings.llm_default_model_id == ""
-    assert settings.llm_daily_budget_usd == 2.0
+    assert settings.llm_weekly_budget_usd == 14.0
+    assert settings.llm_daily_budget_usd is None
     assert settings.llm_models == []
     assert settings.llm_api_key == ""
     assert settings.llm_file_edit_system_prompt == ""
@@ -197,7 +199,7 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
 def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("LLM_MODELS_JSON", TEST_LLM_MODELS_JSON)
     monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", TEST_LLM_MODEL_ID)
-    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.50")
+    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "17.50")
     monkeypatch.setenv("LLM_API_KEY", "secret-key")
     monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", TEST_FILE_EDIT_SYSTEM_PROMPT)
     monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
@@ -216,7 +218,7 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     settings = Settings()
 
     assert settings.llm_default_model_id == TEST_LLM_MODEL_ID
-    assert settings.llm_daily_budget_usd == 2.5
+    assert settings.llm_weekly_budget_usd == 17.5
     assert settings.get_llm_model().id == TEST_LLM_MODEL_ID
     assert settings.get_llm_model().endpoint == "https://llm.example.test/v1/chat/completions"
     assert settings.llm_api_key == "secret-key"
@@ -233,3 +235,13 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     assert settings.billing_stream_name == "CUSTOM_BILLING"
     assert settings.billing_llm_usage_subject == "custom.billing.llm"
     assert settings.billing_max_bytes == 65536
+
+
+def test_settings_converts_legacy_daily_llm_budget_to_weekly(monkeypatch):
+    monkeypatch.delenv("LLM_WEEKLY_BUDGET_USD", raising=False)
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.00")
+
+    settings = Settings()
+
+    assert settings.llm_daily_budget_usd == 2.0
+    assert settings.llm_weekly_budget_usd == 14.0

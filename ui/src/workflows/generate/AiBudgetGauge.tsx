@@ -12,6 +12,9 @@ type LlmUsageSummary = {
   tenant_daily_token_quota?: number
   tenant_tokens_used_today?: number
   tenant_tokens_remaining_today?: number
+  tenant_weekly_budget_usd?: number
+  tenant_cost_used_this_week_usd?: number
+  tenant_cost_remaining_this_week_usd?: number
   tenant_daily_budget_usd?: number
   tenant_cost_used_today_usd?: number
   tenant_cost_remaining_today_usd?: number
@@ -93,9 +96,12 @@ export function AiBudgetGauge({ serverUrl }: AiBudgetGaugeProps) {
 
   const used = summary?.tenant_tokens_used_today ?? localUsage
   const quota = summary?.tenant_daily_token_quota ?? 0
-  const costUsed = summary?.tenant_cost_used_today_usd
-  const costQuota = summary?.tenant_daily_budget_usd
-  const costRemaining = summary?.tenant_cost_remaining_today_usd
+  const hasWeeklyBudget = summary?.tenant_weekly_budget_usd !== undefined
+  const costUsed = hasWeeklyBudget ? summary?.tenant_cost_used_this_week_usd : summary?.tenant_cost_used_today_usd
+  const costQuota = hasWeeklyBudget ? summary?.tenant_weekly_budget_usd : summary?.tenant_daily_budget_usd
+  const costRemaining = hasWeeklyBudget
+    ? summary?.tenant_cost_remaining_this_week_usd
+    : summary?.tenant_cost_remaining_today_usd
   const budgetUsed = costQuota ? costUsed ?? 0 : used
   const budgetQuota = costQuota || quota
   const percent = useMemo(() => {
@@ -104,7 +110,9 @@ export function AiBudgetGauge({ serverUrl }: AiBudgetGaugeProps) {
   }, [budgetQuota, budgetUsed])
   const remaining = summary?.tenant_tokens_remaining_today
   const title = costQuota
-    ? `${formatUsd(costRemaining ?? Math.max(0, costQuota - (costUsed ?? 0)))} AI budget remaining today`
+    ? `${formatUsd(costRemaining ?? Math.max(0, costQuota - (costUsed ?? 0)))} AI budget remaining ${
+        hasWeeklyBudget ? 'this week' : 'today'
+      }`
     : quota
     ? `${formatTokens(remaining ?? Math.max(0, quota - used))} tokens remaining today`
     : 'AI token usage for this browser session'
@@ -132,7 +140,7 @@ export function AiBudgetGauge({ serverUrl }: AiBudgetGaugeProps) {
         />
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-slate-500">
-        <span>{authMode === 'guest' ? 'Login required' : summary ? 'Today' : 'Session'}</span>
+        <span>{authMode === 'guest' ? 'Login required' : summary ? (hasWeeklyBudget ? 'This week' : 'Today') : 'Session'}</span>
         <span>{summary?.last_edit?.model || 'LLM edits'}</span>
       </div>
     </div>

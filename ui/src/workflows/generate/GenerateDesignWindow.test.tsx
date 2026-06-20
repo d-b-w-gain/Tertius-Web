@@ -91,6 +91,7 @@ describe('GenerateDesignWindow', () => {
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
     storage.listLlmModels.mockResolvedValue({
       default_model_id: 'kimi-k2.7-code',
+      weekly_budget_usd: 14,
       daily_budget_usd: 2,
       models: [
         {

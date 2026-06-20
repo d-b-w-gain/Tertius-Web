@@ -72,7 +72,8 @@ class Settings(BaseSettings):
     compile_result_max_bytes: int = Field(default=90 * 1024 * 1024)
     llm_models_json: str = Field(default="[]")
     llm_default_model_id: str = Field(default="")
-    llm_daily_budget_usd: float = Field(default=2.0, ge=0)
+    llm_weekly_budget_usd: float = Field(default=14.0, ge=0)
+    llm_daily_budget_usd: float | None = Field(default=None, ge=0)
     llm_api_key: str = Field(default="")
     llm_file_edit_system_prompt: str = Field(default="")
     llm_timeout_seconds: int = Field(default=480)
@@ -93,6 +94,12 @@ class Settings(BaseSettings):
     billing_format_multiplier_step: float = Field(default=1.5)
     billing_format_multiplier_gltf: float = Field(default=2.0)
     billing_format_multiplier_glb: float = Field(default=2.0)
+
+    @model_validator(mode="after")
+    def populate_weekly_llm_budget(self):
+        if self.llm_daily_budget_usd is not None and self.llm_weekly_budget_usd == 14.0:
+            self.llm_weekly_budget_usd = round(self.llm_daily_budget_usd * 7, 8)
+        return self
 
     @model_validator(mode="after")
     def populate_database_url(self):

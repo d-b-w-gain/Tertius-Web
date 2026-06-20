@@ -27,7 +27,7 @@ load_env_file() {
     esac
 
     case "$line" in
-      LLM_MODELS_JSON=*|LLM_DEFAULT_MODEL_ID=*|LLM_DAILY_BUDGET_USD=*|LLM_API_KEY=*|LLM_FILE_EDIT_SYSTEM_PROMPT=*)
+      LLM_MODELS_JSON=*|LLM_DEFAULT_MODEL_ID=*|LLM_WEEKLY_BUDGET_USD=*|LLM_DAILY_BUDGET_USD=*|LLM_API_KEY=*|LLM_FILE_EDIT_SYSTEM_PROMPT=*)
         key="${line%%=*}"
         value="${line#*=}"
         value="${value%$'\r'}"
@@ -44,7 +44,15 @@ load_env_file() {
 load_env_file "$ROOT_DIR/.env"
 load_env_file "$ROOT_DIR/server/.env"
 
-if [ -z "${LLM_MODELS_JSON:-}" ] && [ -z "${LLM_DEFAULT_MODEL_ID:-}" ] && [ -z "${LLM_DAILY_BUDGET_USD:-}" ] && [ -z "${LLM_API_KEY:-}" ] && [ -z "${LLM_FILE_EDIT_SYSTEM_PROMPT:-}" ]; then
+if [ -z "${LLM_WEEKLY_BUDGET_USD:-}" ] && [ -n "${LLM_DAILY_BUDGET_USD:-}" ]; then
+  if [[ "$LLM_DAILY_BUDGET_USD" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    LLM_WEEKLY_BUDGET_USD="$(awk -v daily="$LLM_DAILY_BUDGET_USD" 'BEGIN { printf "%.2f", daily * 7 }')"
+  else
+    warn "Ignoring non-numeric legacy LLM_DAILY_BUDGET_USD."
+  fi
+fi
+
+if [ -z "${LLM_MODELS_JSON:-}" ] && [ -z "${LLM_DEFAULT_MODEL_ID:-}" ] && [ -z "${LLM_WEEKLY_BUDGET_USD:-}" ] && [ -z "${LLM_API_KEY:-}" ] && [ -z "${LLM_FILE_EDIT_SYSTEM_PROMPT:-}" ]; then
   warn "No local LLM settings found in .env or server/.env; skipping k3s LLM sync."
   exit 0
 fi
@@ -57,7 +65,7 @@ fi
 set_env_args=()
 [ -z "${LLM_MODELS_JSON:-}" ] || set_env_args+=("LLM_MODELS_JSON=${LLM_MODELS_JSON}")
 [ -z "${LLM_DEFAULT_MODEL_ID:-}" ] || set_env_args+=("LLM_DEFAULT_MODEL_ID=${LLM_DEFAULT_MODEL_ID}")
-[ -z "${LLM_DAILY_BUDGET_USD:-}" ] || set_env_args+=("LLM_DAILY_BUDGET_USD=${LLM_DAILY_BUDGET_USD}")
+[ -z "${LLM_WEEKLY_BUDGET_USD:-}" ] || set_env_args+=("LLM_WEEKLY_BUDGET_USD=${LLM_WEEKLY_BUDGET_USD}")
 
 if [ "${#set_env_args[@]}" -gt 0 ]; then
   kubectl -n "$NAMESPACE" set env "deployment/${DEPLOYMENT}" --containers=api "${set_env_args[@]}" >/dev/null

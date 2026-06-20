@@ -120,7 +120,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [dailyBudgetUsd, setDailyBudgetUsd] = useState(0)
+  const [weeklyBudgetUsd, setWeeklyBudgetUsd] = useState(0)
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -325,7 +325,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         const response = await storage.listLlmModels()
         if (cancelled) return
         setLlmModels(response.models)
-        setDailyBudgetUsd(response.daily_budget_usd)
+        setWeeklyBudgetUsd(response.weekly_budget_usd ?? response.daily_budget_usd * 7)
         setSelectedModelId(current => {
           if (current && response.models.some(model => model.id === current)) return current
           return response.default_model_id || response.models[0]?.id || ''
@@ -722,7 +722,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
           <span className="text-sm text-slate-300">{statusText}</span>
           <span className="rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-            {dailyBudgetUsd ? `$${dailyBudgetUsd.toFixed(2)}/day` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
+            {weeklyBudgetUsd ? `$${weeklyBudgetUsd.toFixed(2)}/week` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
           </span>
         </div>
 
