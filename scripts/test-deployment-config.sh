@@ -147,6 +147,16 @@ if ! rg -q 'kubectl -n "\$NAMESPACE" set env "deployment/\$\{DEPLOYMENT\}" --con
   exit 1
 fi
 
+if ! rg -q -- '--set app\.secret\.create=false' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q -- '--set-string app\.secretName=\$\{APP_SECRET_NAME\}' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "Local k3s smoke must deploy with an externally managed app Secret instead of a chart-generated app Secret." >&2
+  exit 1
+fi
+
+if ! rg -q 'kubectl -n "\$NAMESPACE" create secret generic "\$APP_SECRET_NAME"' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'AUTH_SESSION_SECRET=<redacted>' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "Local k3s smoke must create the external app Secret without printing secret values." >&2
+  exit 1
+fi
+
 if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'map \$http_host \$forwarded_host_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Port \$forwarded_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template"; then
   echo "Frontend nginx must preserve Cloudflare/original forwarded scheme, host, and port for proxied API and Keycloak requests." >&2
   exit 1

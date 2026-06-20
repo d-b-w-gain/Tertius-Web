@@ -155,7 +155,7 @@ Configuration notes: `python_version` matches `.python-version` (3.14), `mypy_pa
 
 ## Kubernetes Deployment Test
 
-The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies when vendored archives are incomplete, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, NATS, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks including a JetStream health check.
+The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies when vendored archives are incomplete, creates an external app Secret for the API session secret, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, NATS, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks including a JetStream health check.
 
 ```bash
 scripts/test-k3s-deployment.sh
@@ -167,7 +167,7 @@ Tunnel-enabled run:
 ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-deployment.sh
 ```
 
-Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, and `KEYCLOAK_REALM`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving database and cache PVCs plus CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed. The API no longer owns an artifact PVC.
+Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, `KEYCLOAK_REALM`, `APP_SECRET_NAME`, and `APP_AUTH_SESSION_SECRET`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving database and cache PVCs plus CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed. The API no longer owns an artifact PVC.
 
 If the cluster is already running a Flux-managed `tertius` release, run local smoke tests against an isolated release so Flux does not reconcile the test deployment mid-run:
 
