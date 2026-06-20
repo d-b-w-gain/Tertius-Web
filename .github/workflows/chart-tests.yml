@@ -21,6 +21,7 @@ on:
   push:
     branches:
       - master
+      - flux-image-updates
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/flux-image-update-pr.yml'
