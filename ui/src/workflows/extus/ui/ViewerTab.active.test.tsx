@@ -180,4 +180,19 @@ describe('ViewerTab active state', () => {
       expect(mocks.gltfParse).not.toHaveBeenCalled()
     })
   })
+
+  it('shows loading text while a model artifact is being fetched', async () => {
+    mocks.apiFetch.mockReset()
+    mocks.apiFetch.mockReturnValue(new Promise(() => {}))
+
+    render(
+      <ModelViewerCanvas
+        modelUrl="/api/extus/artifacts/artifact-1/model"
+        getAccessToken={mocks.getAccessToken}
+        statusText="Selected historical model"
+      />,
+    )
+
+    expect(await screen.findByText('Loading model...')).toBeInTheDocument()
+  })
 })

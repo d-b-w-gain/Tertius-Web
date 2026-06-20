@@ -170,6 +170,14 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
     : undefined
   const selectedModelUrl = selectedMessage?.modelUrl || selectedJobAssistant?.modelUrl || ''
   const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
+  const selectedCompileStatus = (
+    selectedMessage?.compileJobId ? selectedMessage.compileStatus : undefined
+  ) || (
+    selectedJobAssistant?.compileJobId ? selectedJobAssistant.compileStatus : undefined
+  )
+  const modelViewerStatusText = isNonTerminalStatus(selectedCompileStatus)
+    ? 'Compiling updated model...'
+    : undefined
 
   const updateAssistantMessage = useCallback((messageIdToUpdate: string, updater: (message: ChatMessage) => ChatMessage) => {
     setMessages(prev => prev.map(message => (
@@ -823,12 +831,16 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             <ModelViewerCanvas
               modelUrl={selectedModelUrl}
               getAccessToken={getAccessToken}
-              statusText="Selected historical model"
+              statusText={modelViewerStatusText || 'Selected historical model'}
               projectName={activeProject}
               isActive={isActive}
             />
           ) : (
-            <LatestModelViewer serverUrl={extusServerUrl} isActive={isActive} />
+            <LatestModelViewer
+              serverUrl={extusServerUrl}
+              isActive={isActive}
+              statusTextOverride={modelViewerStatusText}
+            />
           )}
         </div>
       </section>
