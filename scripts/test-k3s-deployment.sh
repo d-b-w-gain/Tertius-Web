@@ -22,6 +22,11 @@ KEDA_ENABLED="${KEDA_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
 BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
 CLEAN_LOCAL_IMAGES_AFTER_LOAD="${CLEAN_LOCAL_IMAGES_AFTER_LOAD:-false}"
+APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}"
+APP_AUTH_SESSION_SECRET="${APP_AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}"
+APP_OIDC_CLIENT_SECRET="${APP_OIDC_CLIENT_SECRET:-}"
+APP_DATABASE_URL="${APP_DATABASE_URL:-}"
+APP_VALKEY_URL="${APP_VALKEY_URL:-redis://${RELEASE_NAME}-valkey:6379/0}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
@@ -60,6 +65,11 @@ Environment:
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
   BUILDX_GHA_CACHE              Default: false. Set true in GitHub Actions to use Buildx GHA cache for local image builds.
   CLEAN_LOCAL_IMAGES_AFTER_LOAD Default: false. Set true in CI to reduce peak disk use while importing images into k3s.
+  APP_SECRET_NAME               Default: <release>-app. External app Secret consumed by the API.
+  APP_AUTH_SESSION_SECRET       Default: local-auth-session-secret-change-me.
+  APP_OIDC_CLIENT_SECRET        Default: empty.
+  APP_DATABASE_URL              Default: empty; chart DB env fields derive DATABASE_URL when unset.
+  APP_VALKEY_URL                Default: redis://<release>-valkey:6379/0.
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
@@ -583,6 +593,8 @@ helm_set_args() {
 --set-string ui.image.repository=${ui_repo}
 --set-string ui.image.tag=${ui_tag}
 --set keda.enabled=${KEDA_ENABLED}
+--set app.secret.create=false
+--set-string app.secretName=${APP_SECRET_NAME}
 "
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
@@ -600,12 +612,27 @@ helm_cmd_with_extra() {
   run "$@" $HELM_EXTRA_ARGS
 }
 
+ensure_app_secret() {
+  quote_cmd kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml '|' kubectl apply -f - >&2
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+  printf '+ kubectl -n %q create secret generic %q --from-literal=DATABASE_URL=<redacted> --from-literal=VALKEY_URL=<redacted> --from-literal=OIDC_CLIENT_SECRET=<redacted> --from-literal=AUTH_SESSION_SECRET=<redacted> --dry-run=client -o yaml | kubectl apply -f -\n' "$NAMESPACE" "$APP_SECRET_NAME" >&2
+  kubectl -n "$NAMESPACE" create secret generic "$APP_SECRET_NAME" \
+    --from-literal=DATABASE_URL="$APP_DATABASE_URL" \
+    --from-literal=VALKEY_URL="$APP_VALKEY_URL" \
+    --from-literal=OIDC_CLIENT_SECRET="$APP_OIDC_CLIENT_SECRET" \
+    --from-literal=AUTH_SESSION_SECRET="$APP_AUTH_SESSION_SECRET" \
+    --dry-run=client \
+    -o yaml | kubectl apply -f -
+}
+
 render_and_install() {
   helm_set_args
   helm_cmd_with_extra helm lint "$CHART_DIR" --values "$VALUES_FILE"
   quote_cmd helm template "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --values "$VALUES_FILE" '>/tmp/tertius-helm-template.yaml'
   # shellcheck disable=SC2086
   helm template "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --values "$VALUES_FILE" $HELM_EXTRA_ARGS >/tmp/tertius-helm-template.yaml
+  ensure_app_secret
   helm_cmd_with_extra helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" --wait --timeout "$TIMEOUT"
 }
 

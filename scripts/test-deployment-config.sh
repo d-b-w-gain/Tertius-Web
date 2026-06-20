@@ -37,10 +37,12 @@ render_app_secret_created_without_prompt() {
 
 render_confidential_client() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.environment=local \
     --set keycloak.realmImport.uiPublicClient=false \
     --set-string keycloak.realmImport.uiClientSecret=oidc-client-secret \
     --set app.secret.create=true \
-    --set-string app.secret.oidcClientSecret=oidc-client-secret
+    --set-string app.secret.oidcClientSecret=oidc-client-secret \
+    --set-string app.secret.authSessionSecret=auth-session-secret
 }
 
 render_invalid_confidential_client() {
@@ -50,10 +52,26 @@ render_invalid_confidential_client() {
 
 render_mismatched_confidential_client() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.environment=local \
     --set keycloak.realmImport.uiPublicClient=false \
     --set-string keycloak.realmImport.uiClientSecret=keycloak-secret \
     --set app.secret.create=true \
-    --set-string app.secret.oidcClientSecret=api-secret
+    --set-string app.secret.oidcClientSecret=api-secret \
+    --set-string app.secret.authSessionSecret=auth-session-secret
+}
+
+render_missing_auth_session_secret() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.environment=local \
+    --set app.secret.create=true \
+    --set-string app.secret.databaseUrl=postgresql://example
+}
+
+render_production_app_secret_created() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set app.environment=production \
+    --set app.secret.create=true \
+    --set-string app.secret.authSessionSecret=auth-session-secret
 }
 
 render_network_policy_enabled() {
@@ -129,6 +147,16 @@ if ! rg -q 'kubectl -n "\$NAMESPACE" set env "deployment/\$\{DEPLOYMENT\}" --con
   exit 1
 fi
 
+if ! rg -q -- '--set app\.secret\.create=false' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q -- '--set-string app\.secretName=\$\{APP_SECRET_NAME\}' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "Local k3s smoke must deploy with an externally managed app Secret instead of a chart-generated app Secret." >&2
+  exit 1
+fi
+
+if ! rg -q 'kubectl -n "\$NAMESPACE" create secret generic "\$APP_SECRET_NAME"' "${ROOT_DIR}/scripts/test-k3s-deployment.sh" || ! rg -q 'AUTH_SESSION_SECRET=<redacted>' "${ROOT_DIR}/scripts/test-k3s-deployment.sh"; then
+  echo "Local k3s smoke must create the external app Secret without printing secret values." >&2
+  exit 1
+fi
+
 if ! rg -q 'map \$http_cf_visitor \$cloudflare_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'map \$http_host \$forwarded_host_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Proto \$forwarded_proto' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Host \$http_host' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template" || ! rg -q 'proxy_set_header X-Forwarded-Port \$forwarded_port' "${ROOT_DIR}/infra/deploy/nginx/default.conf.template"; then
   echo "Frontend nginx must preserve Cloudflare/original forwarded scheme, host, and port for proxied API and Keycloak requests." >&2
   exit 1
@@ -170,6 +198,26 @@ fi
 
 if ! rg -q 'keycloak.realmImport.uiClientSecret must match app.secret.oidcClientSecret' <<<"$mismatched_confidential_error"; then
   echo "Mismatched confidential-client render must explain the secret mismatch." >&2
+  exit 1
+fi
+
+if missing_auth_session_secret_error="$(render_missing_auth_session_secret 2>&1)"; then
+  echo "Helm render must fail when a generated app Secret would have an empty AUTH_SESSION_SECRET." >&2
+  exit 1
+fi
+
+if ! rg -q 'app.secret.authSessionSecret must be set when app.secret.create=true' <<<"$missing_auth_session_secret_error"; then
+  echo "Missing auth session secret render must explain the empty AUTH_SESSION_SECRET." >&2
+  exit 1
+fi
+
+if production_app_secret_created_error="$(render_production_app_secret_created 2>&1)"; then
+  echo "Helm render must fail when production values ask the chart to generate the app Secret." >&2
+  exit 1
+fi
+
+if ! rg -q 'app.secret.create must be false in production' <<<"$production_app_secret_created_error"; then
+  echo "Production generated app Secret render must explain that production uses an externally managed Secret." >&2
   exit 1
 fi
 
