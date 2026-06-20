@@ -11,6 +11,7 @@ import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 interface ViewerProps {
   serverUrl: string;
   isActive?: boolean;
+  statusTextOverride?: string;
 }
 
 interface ModelViewerCanvasProps {
@@ -128,7 +129,7 @@ export const ViewerTab: React.FC<ViewerProps> = (props) => {
   return <LatestModelViewer {...props} />;
 };
 
-export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true }) => {
+export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true, statusTextOverride }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
@@ -183,7 +184,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive =
     <ModelViewerCanvas
       modelUrl={url}
       getAccessToken={getAccessToken}
-      statusText={statusText}
+      statusText={statusTextOverride || statusText}
       projectName={projectName}
       isActive={isActive}
     />
@@ -201,6 +202,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
+  const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -217,6 +219,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
+  const modelLoadRequestRef = useRef<number>(0);
 
   const clearCurrentModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -384,17 +387,30 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
   // 3. Load GLTF when URL changes
   useEffect(() => {
+    const requestId = modelLoadRequestRef.current + 1;
+    modelLoadRequestRef.current = requestId;
     setLoadErrorText(null);
-    if (!modelUrl || !sceneRef.current) return;
+    if (!modelUrl || !sceneRef.current) {
+      setIsModelLoading(false);
+      return;
+    }
     
     let isCancelled = false;
     const loader = new GLTFLoader();
+    setIsModelLoading(true);
+
+    const finishLoad = () => {
+      if (!isCancelled && modelLoadRequestRef.current === requestId) {
+        setIsModelLoading(false);
+      }
+    };
 
     const failLoad = (message: string, err?: unknown) => {
       if (isCancelled) return;
       if (err) console.error(message, err);
       setLoadErrorText(message);
       clearCurrentModel();
+      finishLoad();
     };
     
     apiFetch(modelUrl, getAccessToken)
@@ -539,6 +555,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       setSceneGraph(model);
       setSelectedNodeId(null);
       setIsolatedNodeId(null);
+      finishLoad();
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });
@@ -736,8 +753,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
             Rotate: {autoRotate ? 'ON' : 'OFF'}
           </button>
         </div>
-        <div className="text-xs text-slate-400">
-          {loadErrorText || statusText}
+        <div className="text-xs text-slate-400" aria-live="polite">
+          {loadErrorText || (isModelLoading ? 'Loading model...' : statusText)}
         </div>
       </div>
       

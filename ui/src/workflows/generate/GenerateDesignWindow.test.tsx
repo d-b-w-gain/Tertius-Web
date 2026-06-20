@@ -53,8 +53,18 @@ vi.mock('../shared/ui/ProjectSelector', () => ({
 }))
 
 vi.mock('../extus/ui/ViewerTab', () => ({
-  LatestModelViewer: () => <div>Latest model viewer</div>,
-  ModelViewerCanvas: ({ modelUrl }: { modelUrl: string }) => <div>Model viewer {modelUrl}</div>,
+  LatestModelViewer: ({ statusTextOverride }: { statusTextOverride?: string }) => (
+    <div>
+      <span>Latest model viewer</span>
+      {statusTextOverride && <span>{statusTextOverride}</span>}
+    </div>
+  ),
+  ModelViewerCanvas: ({ modelUrl, statusText }: { modelUrl: string; statusText?: string }) => (
+    <div>
+      Model viewer {modelUrl}
+      {statusText && <span>{statusText}</span>}
+    </div>
+  ),
 }))
 
 function jsonResponse(data: unknown, ok = true) {
@@ -157,6 +167,8 @@ describe('GenerateDesignWindow', () => {
       target: { value: 'make a larger test cube' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    expect(await screen.findByText('Compiling updated model...')).toBeInTheDocument()
 
     await waitFor(() => {
       expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
