@@ -25,6 +25,9 @@ spec:
           args:
             - -storageDataPath=/storage
             - -httpListenAddr=:{{ .Values.app.observability.metricsBackend.port }}
+            {{- range .Values.app.observability.metricsBackend.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.app.observability.metricsBackend.port }}

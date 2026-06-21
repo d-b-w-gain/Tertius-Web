@@ -7,6 +7,7 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 METRICS_LOCAL_PORT="${METRICS_LOCAL_PORT:-8428}"
+TRACES_LOCAL_PORT="${TRACES_LOCAL_PORT:-10428}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
 STATUS_FILE="${ROOT_DIR}/.tmp/harness/k3s.env"
@@ -25,7 +26,11 @@ import sys
 
 port = int(sys.argv[1])
 for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-    with socket.socket(family) as s:
+    try:
+        s = socket.socket(family)
+    except OSError:
+        continue
+    with s:
         s.settimeout(0.25)
         try:
             s.connect((host, port))
@@ -42,7 +47,11 @@ import sys
 
 port = int(sys.argv[1])
 for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-  with socket.socket(family) as s:
+  try:
+    s = socket.socket(family)
+  except OSError:
+    continue
+  with s:
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         s.bind((host, port))
@@ -52,11 +61,11 @@ PY
 }
 
 preflight_ports() {
-  for port in "$UI_LOCAL_PORT" "$API_LOCAL_PORT" "$METRICS_LOCAL_PORT" "$KEYCLOAK_LOCAL_PORT"; do
+  for port in "$UI_LOCAL_PORT" "$API_LOCAL_PORT" "$METRICS_LOCAL_PORT" "$TRACES_LOCAL_PORT" "$KEYCLOAK_LOCAL_PORT"; do
     [ "$port" = "0" ] && continue
     if ! port_free "$port"; then
       echo "Port ${port} is already in use. k3s and Compose parity share default ports." >&2
-      echo "Set UI_LOCAL_PORT/API_LOCAL_PORT/METRICS_LOCAL_PORT or stop the conflicting runtime." >&2
+      echo "Set UI_LOCAL_PORT/API_LOCAL_PORT/METRICS_LOCAL_PORT/TRACES_LOCAL_PORT or stop the conflicting runtime." >&2
       exit 1
     fi
   done
@@ -65,7 +74,7 @@ preflight_ports() {
 wait_for_ports_free() {
   for _ in $(seq 1 10); do
     all_free=true
-    for port in "$UI_LOCAL_PORT" "$API_LOCAL_PORT" "$METRICS_LOCAL_PORT" "$KEYCLOAK_LOCAL_PORT"; do
+    for port in "$UI_LOCAL_PORT" "$API_LOCAL_PORT" "$METRICS_LOCAL_PORT" "$TRACES_LOCAL_PORT" "$KEYCLOAK_LOCAL_PORT"; do
       [ "$port" = "0" ] && continue
       if ! port_free "$port"; then
         all_free=false
@@ -95,6 +104,7 @@ status() {
   echo "UI URL: http://localhost:${UI_LOCAL_PORT}"
   echo "API URL: http://localhost:${API_LOCAL_PORT}"
   echo "Metrics URL: http://localhost:${METRICS_LOCAL_PORT}"
+  echo "Traces URL: http://localhost:${TRACES_LOCAL_PORT}"
   if [ "${KEYCLOAK_LOCAL_PORT:-0}" != "0" ]; then
     echo "Keycloak URL: http://localhost:${KEYCLOAK_LOCAL_PORT}"
   fi
@@ -185,6 +195,7 @@ write_status_file() {
     printf 'UI_BASE_URL=%q\n' "http://127.0.0.1:${UI_LOCAL_PORT}"
     printf 'API_BASE_URL=%q\n' "http://127.0.0.1:${API_LOCAL_PORT}"
     printf 'METRICS_BASE_URL=%q\n' "http://127.0.0.1:${METRICS_LOCAL_PORT}"
+    printf 'TRACES_BASE_URL=%q\n' "http://127.0.0.1:${TRACES_LOCAL_PORT}"
     if [ "${KEYCLOAK_LOCAL_PORT:-0}" != "0" ]; then
       printf 'KEYCLOAK_TOKEN_URL=%q\n' "http://127.0.0.1:${KEYCLOAK_LOCAL_PORT}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
     fi
@@ -197,15 +208,20 @@ start_port_forwards() {
   ui_svc=$(first_service_by_component ui)
   api_svc=$(first_service_by_component api)
   metrics_svc=$(first_service_by_component metrics-backend)
+  traces_svc=$(first_service_by_component traces-backend)
   [ -n "$ui_svc" ] || ui_svc="${RELEASE_NAME}-ui"
   [ -n "$api_svc" ] || api_svc="${RELEASE_NAME}-api"
   [ -n "$metrics_svc" ] || metrics_svc="${RELEASE_NAME}-victoriametrics"
+  [ -n "$traces_svc" ] || traces_svc="${RELEASE_NAME}-victoriatraces"
   keycloak_svc=$(keycloak_service)
 
   start_one_port_forward UI "$ui_svc" "$UI_LOCAL_PORT" "$(service_port "$ui_svc" http)" UI_LOCAL_PORT
   start_one_port_forward API "$api_svc" "$API_LOCAL_PORT" "$(service_port "$api_svc" http)" API_LOCAL_PORT
   if kubectl get svc "$metrics_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
     start_one_port_forward METRICS "$metrics_svc" "$METRICS_LOCAL_PORT" "$(service_port "$metrics_svc" http)" METRICS_LOCAL_PORT
+  fi
+  if kubectl get svc "$traces_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
+    start_one_port_forward TRACES "$traces_svc" "$TRACES_LOCAL_PORT" "$(service_port "$traces_svc" http)" TRACES_LOCAL_PORT
   fi
   if [ -n "$keycloak_svc" ] && kubectl get svc "$keycloak_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
     start_one_port_forward KEYCLOAK "$keycloak_svc" "$KEYCLOAK_LOCAL_PORT" "$(service_port "$keycloak_svc" http)" KEYCLOAK_LOCAL_PORT
@@ -214,6 +230,7 @@ start_port_forwards() {
   echo "UI URL: http://127.0.0.1:${UI_LOCAL_PORT}"
   echo "API URL: http://127.0.0.1:${API_LOCAL_PORT}"
   echo "Metrics URL: http://127.0.0.1:${METRICS_LOCAL_PORT}"
+  echo "Traces URL: http://127.0.0.1:${TRACES_LOCAL_PORT}"
   if [ "${KEYCLOAK_LOCAL_PORT:-0}" != "0" ]; then
     echo "Keycloak URL: http://127.0.0.1:${KEYCLOAK_LOCAL_PORT}"
   fi

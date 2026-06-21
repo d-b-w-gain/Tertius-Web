@@ -32,6 +32,10 @@ The `infra/charts/tertius` Helm chart renders the Tertius application and its su
 - **Keycloak**: Identity provider managed through the Keycloak Operator, backed by a separate CloudNativePG database.
 - **Cloudflare Tunnel**: Optional `cloudflared` Deployment for exposing the UI Service through a single public hostname.
 - **ConfigMap and Secret references**: Shared app configuration is rendered into a ConfigMap; sensitive values come from Kubernetes Secrets.
+- **OpenTelemetry Collector and optional Victoria backends**: Applications send
+  OTLP to the collector. Small installs can enable bundled VictoriaMetrics and
+  VictoriaTraces; production-style shared backends should be configured as
+  collector exporters while keeping Victoria services internal.
 
 ## Request Flow
 

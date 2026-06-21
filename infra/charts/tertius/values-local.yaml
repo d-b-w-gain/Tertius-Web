@@ -16,11 +16,19 @@ app:
           verbosity: basic
       tracesExporters:
         - debug
+        - otlphttp/victoriatraces
       metricsExporters:
         - debug
         - prometheusremotewrite
     metricsBackend:
       enabled: true
+      storage:
+        enabled: true
+        size: 1Gi
+        storageClassName: local-path
+    tracesBackend:
+      enabled: true
+      retentionPeriod: 7d
       storage:
         enabled: true
         size: 1Gi

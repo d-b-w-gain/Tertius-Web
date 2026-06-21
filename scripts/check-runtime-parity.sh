@@ -44,6 +44,10 @@ contains "$ROOT_DIR/docker-compose.yml" 'LLM_WEEKLY_BUDGET_USD' "Compose dev mus
 contains "$ROOT_DIR/docker-compose.parity.yml" 'LLM_WEEKLY_BUDGET_USD' "Compose parity must include LLM_WEEKLY_BUDGET_USD"
 not_contains "$ROOT_DIR/docker-compose.parity.yml" 'LLM_DAILY_BUDGET_USD' "Compose parity must not use legacy LLM_DAILY_BUDGET_USD"
 contains "$CHART_DIR/templates/configmap.yaml" 'LLM_WEEKLY_BUDGET_USD' "Helm ConfigMap must include LLM_WEEKLY_BUDGET_USD"
+contains "$CHART_DIR/values.yaml" 'tracesBackend:' "Helm values must define tracesBackend"
+contains "$CHART_DIR/templates/otel-collector.yaml" 'otlphttp/victoriatraces' "Helm collector must define VictoriaTraces exporter"
+contains "$ROOT_DIR/infra/otel/otel-collector-local.yaml" 'otlphttp/victoriatraces' "Local collector must define VictoriaTraces exporter"
+contains "$ROOT_DIR/docker-compose.yml" 'victoriatraces' "Compose dev must include VictoriaTraces"
 
 if [ "$failures" -ne 0 ]; then
   echo "Runtime parity static check failed with ${failures} issue(s)." >&2
@@ -76,6 +80,9 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'tertius-api' "${file} must include API service name"
   contains "$file" 'tertius-ui' "${file} must include UI service name"
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
+  contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
+  contains "$file" '10428' "${file} must include VictoriaTraces port"
+  contains "$file" 'insert/opentelemetry/v1/traces' "${file} must include VictoriaTraces OTLP HTTP ingest path"
 done
 
 contains "$TMP_DIR/helm.yaml" 'API_BASE_PATH: "/api"|API_BASE_PATH[^[:alnum:]_/.-]*/api' "Helm local runtime must use API_BASE_PATH=/api"
@@ -89,7 +96,9 @@ contains "$TMP_DIR/compose-parity.yaml" '18000|published: "18000"' "Compose pari
 
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18080' "Harness docs must document UI port 18080"
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18000' "Harness docs must document API port 18000"
+contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:10428' "Harness docs must document traces port 10428"
 contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'Compose dev' "Runtime parity docs must describe Compose dev differences"
+contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'traces backend' "Runtime parity docs must describe traces backend differences"
 
 if [ "$failures" -ne 0 ]; then
   echo "Runtime parity check failed with ${failures} issue(s)." >&2

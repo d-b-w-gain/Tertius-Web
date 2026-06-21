@@ -51,12 +51,12 @@ preflight_parity_ports() {
 
 case "${1:-}" in
   dev-up)
-    compose up -d postgres keycloak nats otel-collector victoriametrics
+    compose up -d postgres keycloak nats otel-collector victoriametrics victoriatraces
     compose up backend compile-job-runner frontend
     ;;
   parity-up)
     preflight_parity_ports
-    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics backend compile-job-runner frontend
+    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics victoriatraces backend compile-job-runner frontend
     ;;
   smoke)
     "${ROOT_DIR}/scripts/smoke-http.sh" \
@@ -78,6 +78,8 @@ case "${1:-}" in
     fi
     echo "Compose dev UI: http://localhost:5173"
     echo "Compose dev API: http://localhost:8000"
+    echo "Compose dev Metrics: http://localhost:8428"
+    echo "Compose dev Traces: http://localhost:10428"
     echo "Compose parity UI: http://localhost:${COMPOSE_PARITY_UI_PORT}"
     echo "Compose parity API: http://localhost:${COMPOSE_PARITY_API_PORT}"
     echo "k3s uses the same default parity ports; override with COMPOSE_PARITY_UI_PORT and COMPOSE_PARITY_API_PORT."

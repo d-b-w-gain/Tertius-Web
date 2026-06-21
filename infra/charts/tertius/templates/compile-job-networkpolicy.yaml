@@ -32,4 +32,14 @@ spec:
       ports:
         - protocol: TCP
           port: 4222
+    {{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "tertius.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    {{- end }}
 {{- end }}

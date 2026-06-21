@@ -16,6 +16,8 @@ evidence in final notes or PR notes.
   live-flow` or `scripts/harness-compose.sh live-flow`.
 - AI edit changes: full `live-flow`; compile-only mode is not sufficient final
   evidence.
+- Observability backend changes: full `live-flow`, metrics queries, and
+  `scripts/harness-query-traces.sh`.
 - UI-facing changes: browser console and network inspection.
 - Performance, compile, telemetry, or startup claims: metrics query evidence.
 

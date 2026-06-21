@@ -28,6 +28,15 @@ exporters:
     endpoint: http://victoriametrics:8428/api/v1/write
     resource_to_telemetry_conversion:
       enabled: true
+  otlphttp/victoriatraces:
+    compression: gzip
+    encoding: proto
+    traces_endpoint: http://victoriatraces:10428/insert/opentelemetry/v1/traces
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      queue_size: 2048
 
 service:
   telemetry:
@@ -47,6 +56,7 @@ service:
         - batch
       exporters:
         - debug
+        - otlphttp/victoriatraces
     metrics:
       receivers:
         - otlp

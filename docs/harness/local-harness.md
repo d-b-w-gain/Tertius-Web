@@ -28,6 +28,7 @@ Default URLs:
 - UI: `http://localhost:5173`
 - API: `http://localhost:8000`
 - Metrics query endpoint: `http://localhost:8428`
+- Traces query endpoint: `http://localhost:10428`
 - OTLP HTTP endpoint: `http://localhost:4318`
 
 Stop without deleting named volumes:
@@ -62,6 +63,8 @@ Defaults:
 - API direct port-forward: `http://localhost:18000`
 - Keycloak: dynamic local port unless `KEYCLOAK_LOCAL_PORT` is set
 - Metrics: `http://localhost:8428` after the metrics backend is enabled and
+  port-forwarded
+- Traces: `http://localhost:10428` after the traces backend is enabled and
   port-forwarded
 
 Cleanup commands:
@@ -115,6 +118,7 @@ Defaults:
 - UI: `http://localhost:18080`
 - API direct: `http://localhost:18000`
 - Metrics query endpoint: `http://localhost:8428`
+- Traces query endpoint: `http://localhost:10428`
 
 Override ports when running beside k3s:
 
@@ -161,6 +165,18 @@ For AI-facing changes, do not use compile-only mode as final evidence. The full
 flow must show: auth token acquired, seed code saved through the UI origin,
 pre-edit compile succeeded, AI edit job succeeded, and post-edit compile
 succeeded.
+
+For observability backend changes, run the live flow and then query both
+signals:
+
+```bash
+scripts/harness-query-metrics.sh --file docs/harness/queries/api.promql
+scripts/harness-query-metrics.sh --file docs/harness/queries/collector.promql
+scripts/harness-query-traces.sh
+scripts/harness-query-traces.sh --require-cross-service \
+  --cross-service tertius-api \
+  --cross-service tertius-compile-job
+```
 
 Fast path for AI edit validation: deploy or reuse an isolated local-values k3s
 smoke release instead of a shared or Flux-managed production-style release. The

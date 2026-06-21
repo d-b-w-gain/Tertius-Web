@@ -21,6 +21,7 @@ image behavior, and environment contracts.
 | NetworkPolicy | chart policies | not present | not present | k3s required |
 | OTEL collector | chart collector | local collector | local collector | protocol/name parity required |
 | metrics backend | optional local chart backend | VictoriaMetrics | VictoriaMetrics | local-only unless enabled |
+| traces backend | optional local chart backend | VictoriaTraces | VictoriaTraces | local-only unless enabled |
 | environment variables | chart ConfigMap/Secrets | Compose env | production-shaped Compose env | parity-required |
 | image build path | deployable images | dev image or bind mount | deployable images | parity-required |
 
