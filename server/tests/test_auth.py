@@ -377,3 +377,87 @@ def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monke
     assert refreshed["called"] is True
     assert db.committed is True
     assert "tertius_session=" in response.headers["set-cookie"]
+
+
+def test_cookie_auth_context_keeps_session_when_refresh_service_is_unavailable(monkeypatch):
+    settings = _patch_session_settings(monkeypatch)
+    user_id = uuid4()
+    tenant_id = uuid4()
+    token = "session-token"
+    now = datetime.now(timezone.utc)
+    session = AuthSession(
+        id=uuid4(),
+        session_token_hash=session_token_hash(token),
+        user_id=user_id,
+        tenant_id=tenant_id,
+        keycloak_subject="kc-user-1",
+        email="a@example.com",
+        username="alice",
+        display_name="Alice",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        csrf_token="csrf-token",
+        access_token_expires_at=now - timedelta(seconds=1),
+        idle_expires_at=now + timedelta(days=1),
+        max_expires_at=now + timedelta(days=30),
+        created_at=now,
+        updated_at=now,
+    )
+    db = _Db(session)
+
+    def refresh_session_access_token(_auth_session: AuthSession):
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
+
+    monkeypatch.setattr(auth, "refresh_session_access_token", refresh_session_access_token)
+    request = _request(headers=[(b"cookie", f"{settings.auth_session_cookie_name}={token}".encode("ascii"))])
+    response = Response()
+
+    with pytest.raises(HTTPException) as exc:
+        get_cookie_auth_context(request, response, cast(Session, db))
+
+    assert exc.value.status_code == 503
+    assert db.deleted is None
+    assert db.committed is False
+    assert "set-cookie" not in response.headers
+
+
+def test_cookie_auth_context_clears_session_when_refresh_is_rejected(monkeypatch):
+    settings = _patch_session_settings(monkeypatch)
+    user_id = uuid4()
+    tenant_id = uuid4()
+    token = "session-token"
+    now = datetime.now(timezone.utc)
+    session = AuthSession(
+        id=uuid4(),
+        session_token_hash=session_token_hash(token),
+        user_id=user_id,
+        tenant_id=tenant_id,
+        keycloak_subject="kc-user-1",
+        email="a@example.com",
+        username="alice",
+        display_name="Alice",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        csrf_token="csrf-token",
+        access_token_expires_at=now - timedelta(seconds=1),
+        idle_expires_at=now + timedelta(days=1),
+        max_expires_at=now + timedelta(days=30),
+        created_at=now,
+        updated_at=now,
+    )
+    db = _Db(session)
+
+    def refresh_session_access_token(_auth_session: AuthSession):
+        raise HTTPException(status_code=401, detail="Authentication expired")
+
+    monkeypatch.setattr(auth, "refresh_session_access_token", refresh_session_access_token)
+    request = _request(headers=[(b"cookie", f"{settings.auth_session_cookie_name}={token}".encode("ascii"))])
+    response = Response()
+
+    with pytest.raises(HTTPException) as exc:
+        get_cookie_auth_context(request, response, cast(Session, db))
+
+    assert exc.value.status_code == 401
+    assert db.deleted is session
+    assert db.committed is True
+    assert "tertius_session=" in response.headers["set-cookie"]

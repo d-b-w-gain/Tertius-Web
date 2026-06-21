@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import Optional
 
@@ -24,6 +25,7 @@ from core.models import AuthSession, TenantMembership
 bearer = HTTPBearer(auto_error=False)
 REFRESH_SKEW_SECONDS = 30
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
+logger = logging.getLogger(__name__)
 
 
 def claims_to_principal(claims: dict) -> Principal:
@@ -143,10 +145,32 @@ def refresh_session_access_token(session: AuthSession) -> None:
 
     try:
         response = httpx.post(token_url, data=data, timeout=10)
-        response.raise_for_status()
+    except httpx.RequestError as exc:
+        logger.warning("Keycloak token refresh request failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
+
+    if response.status_code >= 500:
+        logger.warning("Keycloak token refresh returned %s", response.status_code)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        )
+
+    if response.status_code >= 400:
+        logger.info("Keycloak token refresh rejected stored session with status %s", response.status_code)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired")
+
+    try:
         payload = response.json()
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired") from exc
+    except ValueError as exc:
+        logger.warning("Keycloak token refresh returned invalid JSON")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
 
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
@@ -169,10 +193,12 @@ def get_cookie_auth_context(request: Request, response: Response, db: Session) -
 
     session = db.scalar(select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token)))
     if session is None:
+        logger.info("Authentication cookie did not match any stored session")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session")
 
     now = utc_now()
     if coerce_aware(session.idle_expires_at) <= now or coerce_aware(session.max_expires_at) <= now:
+        logger.info("Stored auth session expired")
         db.delete(session)
         db.commit()
         clear_auth_cookies(response)
@@ -181,7 +207,14 @@ def get_cookie_auth_context(request: Request, response: Response, db: Session) -
     require_csrf(request, session)
 
     if coerce_aware(session.access_token_expires_at) <= now + timedelta(seconds=REFRESH_SKEW_SECONDS):
-        refresh_session_access_token(session)
+        try:
+            refresh_session_access_token(session)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+                db.delete(session)
+                db.commit()
+                clear_auth_cookies(response)
+            raise
 
     principal = claims_to_principal(decode_keycloak_token(session.access_token))
     from core.provisioning import provision_user_context

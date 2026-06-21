@@ -147,6 +147,22 @@ UV_CACHE_DIR=.uv-cache uv run mypy
 
 The integration tests use testcontainers and require Docker socket access.
 
+### AI smoke coverage
+
+Run AI smoke coverage whenever a change crosses more than one component boundary, especially frontend plus auth, frontend plus API, API plus deployment config, or any auth/session change that can affect AI workflows. At minimum, include the mocked provider AI endpoint and workflow UI coverage:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_llm_file_edit.py server/tests/test_build_script_generation.py
+cd ui && npm test -- GenerateDesignWindow.test.tsx AiBudgetGauge.test.tsx FeatureTreeTab.authenticated.test.tsx
+```
+
+If the change also touches Kubernetes wiring, cookie/session deployment behavior, or LLM secret/config delivery, run the deployment config checks and an isolated k3s smoke release from the current checkout:
+
+```bash
+scripts/test-deployment-config.sh
+NAMESPACE=tertius RELEASE_NAME=tertius-smoke scripts/test-k3s-deployment.sh
+```
+
 ### Type checking (mypy)
 
 A baseline `mypy` configuration lives at the repo root in `pyproject.toml` (`[tool.mypy]`). It is intentionally permissive — the goal is visibility into typing gaps, not strict enforcement. Run it from the repo root via `uv run mypy`.
@@ -198,10 +214,10 @@ ENABLE_TUNNEL=true TUNNEL_TOKEN_SECRET_NAME=cloudflared-token scripts/test-k3s-d
 
 Useful overrides include `NAMESPACE`, `RELEASE_NAME`, `API_IMAGE`, `UI_IMAGE`, `TUNNEL_HOSTNAME`, `KEYCLOAK_REALM`, `APP_SECRET_NAME`, and `APP_AUTH_SESSION_SECRET`. Use `scripts/test-k3s-deployment.sh --cleanup` to uninstall the Helm release while preserving database and cache PVCs plus CloudNativePG data; add `--delete-data` only when those PVCs and database clusters should also be removed. The API no longer owns an artifact PVC.
 
-If the cluster is already running a Flux-managed `tertius` release, run local smoke tests against an isolated release so Flux does not reconcile the test deployment mid-run:
+If the cluster is already running a Flux-managed `tertius` release and the Keycloak Operator is namespace-scoped to `tertius`, run local smoke tests with an isolated release name in that namespace so Flux does not reconcile the test deployment mid-run:
 
 ```bash
-NAMESPACE=tertius-smoke RELEASE_NAME=tertius-smoke scripts/test-k3s-deployment.sh
+NAMESPACE=tertius RELEASE_NAME=tertius-smoke scripts/test-k3s-deployment.sh
 ```
 
 ## License
