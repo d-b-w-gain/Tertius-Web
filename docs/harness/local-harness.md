@@ -74,9 +74,14 @@ scripts/harness-k3s.sh delete-data
 `delete-data` prompts before removing database clusters and PVCs unless
 `HARNESS_ASSUME_YES=true`.
 
-After `up` completes, the wrapper starts local port-forwards and writes
-`.tmp/harness/k3s.env` with `UI_BASE_URL`, `API_BASE_URL`, and
-`METRICS_BASE_URL`. `down` stops those wrapper-owned port-forwards.
+After `up` completes, the wrapper starts local port-forwards when the deploy
+smoke forwards have fully released their ports, and writes `.tmp/harness/k3s.env`
+with `UI_BASE_URL`, `API_BASE_URL`, `METRICS_BASE_URL`, and
+`KEYCLOAK_TOKEN_URL` when a release-local Keycloak service is available. If the
+deploy smoke forwards are still draining, `up` leaves the release deployed and
+prints a prompt to run `scripts/harness-k3s.sh ports` or
+`scripts/harness-k3s.sh live-flow` in a fresh command. `down` stops
+wrapper-owned port-forwards.
 
 Use `scripts/harness-k3s.sh ports` to validate an already-running release
 without redeploying it. This is the right entry point for Flux-managed or shared
@@ -135,6 +140,13 @@ KEYCLOAK_SMOKE_USERNAME=demo
 KEYCLOAK_SMOKE_PASSWORD=demo
 ```
 
+When using `scripts/harness-k3s.sh live-flow`, the wrapper sources
+`.tmp/harness/k3s.env` and exports `KEYCLOAK_TOKEN_URL` automatically after it
+starts the Keycloak port-forward. Direct calls to `scripts/smoke-live-flow.sh`
+still need `KEYCLOAK_TOKEN_URL` in the environment. The smoke script tries the
+password grant first for local smoke clients and falls back to a
+non-interactive authorization-code login when direct access grants are disabled.
+
 Full compile plus live AI edit validation also requires the runtime API to have
 `LLM_API_KEY` and a file edit system prompt configured. k3s live-flow requires a
 compile worker; deploy validation releases with `KEDA_ENABLED=true` so the
@@ -149,3 +161,22 @@ For AI-facing changes, do not use compile-only mode as final evidence. The full
 flow must show: auth token acquired, seed code saved through the UI origin,
 pre-edit compile succeeded, AI edit job succeeded, and post-edit compile
 succeeded.
+
+Fast path for AI edit validation: deploy or reuse an isolated local-values k3s
+smoke release instead of a shared or Flux-managed production-style release. The
+local-values release provides the `demo / demo` smoke user, direct-grant-friendly
+Keycloak settings, KEDA compile workers, and release-local LLM secrets when
+configured. A typical isolated run uses separate ports:
+
+```bash
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 METRICS_LOCAL_PORT=8430 \
+KEDA_ENABLED=true scripts/harness-k3s.sh up
+
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 METRICS_LOCAL_PORT=8430 \
+scripts/harness-k3s.sh live-flow
+```
+
+Use a shared or Flux-managed release for live-flow only when that release's auth,
+routing, or production-shaped behavior is the thing being validated.

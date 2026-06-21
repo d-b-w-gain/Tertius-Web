@@ -222,6 +222,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const meshRef = useRef<THREE.Object3D | null>(null);
   const animIdRef = useRef<number>(0);
   const modelLoadRequestRef = useRef<number>(0);
+  const loadedModelUrlRef = useRef<string>('');
 
   const clearCurrentModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -393,21 +394,31 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     modelLoadRequestRef.current = requestId;
     setLoadErrorText(null);
     if (!modelUrl || !sceneRef.current) {
+      if (!modelUrl) {
+        loadedModelUrlRef.current = '';
+        clearCurrentModel();
+      }
       setIsModelLoading(false);
       return;
     }
+
+    const isNewModelUrl = modelUrl !== loadedModelUrlRef.current;
+    if (isNewModelUrl) {
+      clearCurrentModel();
+    }
+    setIsModelLoading(true);
     
     let isCancelled = false;
     let loadSpanEnded = false;
+    const isCurrentRequest = () => !isCancelled && modelLoadRequestRef.current === requestId;
     const loadSpan = startInteractionSpan('3d_viewer_load', {
       workflow: 'extus',
       render_quality: renderQuality,
     });
     const loader = new GLTFLoader();
-    setIsModelLoading(true);
 
     const finishLoad = () => {
-      if (!isCancelled && modelLoadRequestRef.current === requestId) {
+      if (isCurrentRequest()) {
         setIsModelLoading(false);
       }
       if (!loadSpanEnded) {
@@ -417,7 +428,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     };
 
     const failLoad = (message: string, err?: unknown) => {
-      if (isCancelled) return;
+      if (!isCurrentRequest()) return;
       if (err) console.error(message, err);
       loadSpan.setStatus({ code: SpanStatusCode.ERROR });
       loadSpan.addEvent('exception', {
@@ -425,6 +436,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         'error.source': '3d_viewer_load',
       });
       setLoadErrorText(message);
+      loadedModelUrlRef.current = '';
       clearCurrentModel();
       finishLoad();
     };
@@ -437,9 +449,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         return res.arrayBuffer();
       })
       .then(buffer => {
-        if (isCancelled) return;
+        if (!isCurrentRequest()) return;
         loader.parse(buffer, '', (gltf) => {
-          if (isCancelled) return;
+          if (!isCurrentRequest()) return;
       
           const model = gltf.scene;
       
@@ -566,6 +578,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       
       sceneRef.current!.add(model);
       meshRef.current = model;
+      loadedModelUrlRef.current = modelUrl;
       
       // Unpack the hierarchy
       setSceneGraph(model);
