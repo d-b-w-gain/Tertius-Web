@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def populate_weekly_llm_budget(self):
-        if self.llm_daily_budget_usd is not None and self.llm_weekly_budget_usd == 14.0:
+        if self.llm_daily_budget_usd is not None and "llm_weekly_budget_usd" not in self.model_fields_set:
             self.llm_weekly_budget_usd = round(self.llm_daily_budget_usd * 7, 8)
         return self
 

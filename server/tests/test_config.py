@@ -292,3 +292,13 @@ def test_settings_converts_legacy_daily_llm_budget_to_weekly(monkeypatch):
 
     assert settings.llm_daily_budget_usd == 2.0
     assert settings.llm_weekly_budget_usd == 14.0
+
+
+def test_settings_prefers_explicit_weekly_llm_budget_over_legacy_daily(monkeypatch):
+    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "14.00")
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "1.00")
+
+    settings = Settings()
+
+    assert settings.llm_daily_budget_usd == 1.0
+    assert settings.llm_weekly_budget_usd == 14.0

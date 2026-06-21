@@ -56,7 +56,7 @@ case "${1:-}" in
     ;;
   parity-up)
     preflight_parity_ports
-    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics backend frontend
+    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics backend compile-job-runner frontend
     ;;
   smoke)
     "${ROOT_DIR}/scripts/smoke-http.sh" \
