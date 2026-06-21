@@ -19,7 +19,7 @@ app:
     authSessionMaxSeconds: 2592000
     natsUrl: ""
     llmDefaultModelId: kimi-k2.7-code
-    llmDailyBudgetUsd: "2.00"
+    llmWeeklyBudgetUsd: "14.00"
     llmModels:
       - id: glm-5.2
         label: GLM-5.2

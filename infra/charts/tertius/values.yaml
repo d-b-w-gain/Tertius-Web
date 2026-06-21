@@ -54,7 +54,7 @@ app:
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
     llmDefaultModelId: kimi-k2.7-code
-    llmDailyBudgetUsd: "2.00"
+    llmWeeklyBudgetUsd: "14.00"
     llmModels:
       - id: glm-5.2
         label: GLM-5.2

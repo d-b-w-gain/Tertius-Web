@@ -40,6 +40,9 @@ describe('AiBudgetGauge', () => {
       tenant_daily_token_quota: 1000,
       tenant_tokens_used_today: 250,
       tenant_tokens_remaining_today: 750,
+      tenant_weekly_budget_usd: 14,
+      tenant_cost_used_this_week_usd: 3,
+      tenant_cost_remaining_this_week_usd: 11,
       user_daily_token_quota: 500,
       user_tokens_used_today: 100,
       user_tokens_remaining_today: 400,
@@ -48,7 +51,8 @@ describe('AiBudgetGauge', () => {
 
     render(<AiBudgetGauge serverUrl="/api/intus" />)
 
-    expect(await screen.findByText('250 / 1.0k')).toBeInTheDocument()
+    expect(await screen.findByText('$3.00 / $14.00')).toBeInTheDocument()
+    expect(screen.getByText('This week')).toBeInTheDocument()
     expect(screen.getByText('test-model')).toBeInTheDocument()
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/llm-usage/today', mocks.getAccessToken)
   })

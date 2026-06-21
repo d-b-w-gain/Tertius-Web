@@ -67,7 +67,7 @@ Non-secret provider settings are rendered into the app ConfigMap:
 
 - `app.config.llmModels` -> `LLM_MODELS_JSON`
 - `app.config.llmDefaultModelId` -> `LLM_DEFAULT_MODEL_ID`
-- `app.config.llmDailyBudgetUsd` -> `LLM_DAILY_BUDGET_USD`
+- `app.config.llmWeeklyBudgetUsd` -> `LLM_WEEKLY_BUDGET_USD`
 - `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
 - `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
 - `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`

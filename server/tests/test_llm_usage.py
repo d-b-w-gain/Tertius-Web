@@ -75,7 +75,11 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
     monkeypatch.setattr(
         usage_server,
         "get_settings",
-        lambda: Settings(llm_tenant_daily_token_quota=1000, llm_user_daily_token_quota=500),
+        lambda: Settings(
+            llm_weekly_budget_usd=14.0,
+            llm_tenant_daily_token_quota=1000,
+            llm_user_daily_token_quota=500,
+        ),
     )
     old_event_id = record_llm_usage(
         db_session,
@@ -124,6 +128,10 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
     assert data["tenant_daily_token_quota"] == 1000
     assert data["tenant_tokens_used_today"] == 200
     assert data["tenant_tokens_remaining_today"] == 800
+    assert data["tenant_weekly_budget_usd"] == 14.0
+    assert data["tenant_cost_used_this_week_usd"] == 0.0
+    assert data["tenant_cost_remaining_this_week_usd"] == 14.0
+    assert data["tenant_daily_budget_usd"] == 2.0
     assert data["user_daily_token_quota"] == 500
     assert data["user_tokens_used_today"] == 120
     assert data["user_tokens_remaining_today"] == 380
@@ -218,6 +226,20 @@ def test_llm_usage_guard_rejects_user_daily_token_quota(db_session, seeded_tenan
             tenant_id=seeded_tenant.tenant_id,
             user_id=seeded_tenant.user_id,
             estimated_tokens=1,
+        )
+
+
+def test_llm_usage_guard_rejects_tenant_weekly_budget(db_session, seeded_tenant):
+    settings = Settings(llm_weekly_budget_usd=1.0)
+
+    with pytest.raises(LlmUsageLimitExceeded, match="LLM usage limit exceeded"):
+        assert_llm_usage_allowed(
+            db_session,
+            settings,
+            tenant_id=seeded_tenant.tenant_id,
+            user_id=seeded_tenant.user_id,
+            estimated_tokens=1,
+            estimated_cost_usd=1.01,
         )
 
 
