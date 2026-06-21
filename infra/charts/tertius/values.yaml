@@ -144,7 +144,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-91-6ea2582 # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    tag: master-92-a43ac51 # {"$imagepolicy": "flux-system:tertius-api:tag"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
