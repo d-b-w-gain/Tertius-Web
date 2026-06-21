@@ -79,3 +79,9 @@ services:
       - backend
       - keycloak
       - otel-collector
+
+  compile-job-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    volumes: !override []

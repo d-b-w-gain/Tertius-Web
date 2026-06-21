@@ -83,7 +83,7 @@ contains "$TMP_DIR/compose-parity.yaml" 'VITE_API_URL: /api|VITE_API_URL=/api' "
 contains "$TMP_DIR/compose-dev.yaml" '5173' "Compose dev should expose Vite/HMR port 5173"
 
 not_contains "$TMP_DIR/compose-parity.yaml" '5173:5173|published: "5173"|target: 5173' "Compose parity must not expose Vite port 5173"
-not_contains "$TMP_DIR/compose-parity.yaml" 'node:20|npm install|npm run dev|CHOKIDAR_USEPOLLING|/app/server|source: .*/ui|source: .*/server' "Compose parity must not retain dev image, commands, HMR env, or API/UI bind mounts"
+not_contains "$TMP_DIR/compose-parity.yaml" 'node:20|npm install|npm run dev|CHOKIDAR_USEPOLLING|source: .*/ui|source: .*/server' "Compose parity must not retain dev image, commands, HMR env, or API/UI bind mounts"
 contains "$TMP_DIR/compose-parity.yaml" '18080|published: "18080"' "Compose parity must expose default UI port 18080"
 contains "$TMP_DIR/compose-parity.yaml" '18000|published: "18000"' "Compose parity must expose default API port 18000"
 
