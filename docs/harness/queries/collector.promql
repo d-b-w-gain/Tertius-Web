@@ -1,0 +1,11 @@
+# Collector refused spans/metrics/logs. Should be zero during local smoke.
+# name: collector_refused_telemetry
+sum(rate(otelcol_receiver_refused_spans[5m])) + sum(rate(otelcol_receiver_refused_metric_points[5m])) + sum(rate(otelcol_receiver_refused_log_records[5m]))
+
+# Collector dropped telemetry. Should be zero.
+# name: collector_dropped_telemetry
+sum(rate(otelcol_processor_dropped_spans[5m])) + sum(rate(otelcol_processor_dropped_metric_points[5m])) + sum(rate(otelcol_processor_dropped_log_records[5m]))
+
+# Collector exporter send failures. Should be zero when the metrics backend is reachable.
+# name: collector_export_failures
+sum(rate(otelcol_exporter_send_failed_spans[5m])) + sum(rate(otelcol_exporter_send_failed_metric_points[5m])) + sum(rate(otelcol_exporter_send_failed_log_records[5m]))

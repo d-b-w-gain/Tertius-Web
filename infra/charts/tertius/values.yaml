@@ -33,6 +33,18 @@ app:
         - debug
       metricsExporters:
         - debug
+    metricsBackend:
+      enabled: false
+      image:
+        repository: victoriametrics/victoria-metrics
+        tag: v1.129.1
+        pullPolicy: IfNotPresent
+      port: 8428
+      storage:
+        enabled: false
+        size: 1Gi
+        storageClassName: ""
+      resources: {}
   config:
     apiBasePath: /api
     keycloakAudience: tertius-api

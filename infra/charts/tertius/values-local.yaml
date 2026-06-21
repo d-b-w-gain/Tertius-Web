@@ -10,6 +10,21 @@ app:
     resourceAttributes: ""
     collectorHttpHost: ""
     collectorHttpPort: "4318"
+    collector:
+      exporters:
+        debug:
+          verbosity: basic
+      tracesExporters:
+        - debug
+      metricsExporters:
+        - debug
+        - prometheusremotewrite
+    metricsBackend:
+      enabled: true
+      storage:
+        enabled: true
+        size: 1Gi
+        storageClassName: local-path
   config:
     keycloakAudience: tertius-api
     keycloakIssuerUrl: http://keycloak.localhost/realms/tertius

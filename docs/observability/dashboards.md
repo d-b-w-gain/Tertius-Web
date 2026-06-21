@@ -2,6 +2,10 @@
 
 These dashboards assume OpenTelemetry metrics and traces are exported through the configured collector. Names are intentionally vendor-neutral; translate them into PromQL, TraceQL, SQL, or the target backend query language at deployment time.
 
+Harness query references live under `docs/harness/queries/` and can be run with
+`scripts/harness-query-metrics.sh`. Use those files as the starting point for
+dashboard panels so agent validation and dashboards stay aligned.
+
 ## API
 
 - Request rate by `route`, `method`, and `status_code`: `tertius.api.request.count`

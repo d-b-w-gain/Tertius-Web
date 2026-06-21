@@ -6,6 +6,8 @@ CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 
+"${ROOT_DIR}/scripts/check-runtime-parity.sh"
+
 render_local() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES"
 }

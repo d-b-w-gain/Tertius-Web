@@ -14,6 +14,14 @@ on:
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/check-runtime-parity.sh'
+      - 'scripts/harness-*.sh'
+      - 'scripts/smoke-http.sh'
+      - 'docker-compose.yml'
+      - 'docker-compose.parity.yml'
+      - 'infra/otel/**'
+      - 'infra/deploy/nginx/**'
+      - 'docs/harness/**'
       - 'scripts/bundle.py'
       - 'Dockerfile.api'
       - 'Dockerfile.ui'
@@ -34,6 +42,14 @@ on:
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/check-runtime-parity.sh'
+      - 'scripts/harness-*.sh'
+      - 'scripts/smoke-http.sh'
+      - 'docker-compose.yml'
+      - 'docker-compose.parity.yml'
+      - 'infra/otel/**'
+      - 'infra/deploy/nginx/**'
+      - 'docs/harness/**'
       - 'scripts/bundle.py'
       - 'Dockerfile.api'
       - 'Dockerfile.ui'
@@ -62,7 +78,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Make scripts executable
-        run: chmod +x scripts/test-deployment-config.sh scripts/test-k3s-deployment.sh
+        run: chmod +x scripts/test-deployment-config.sh scripts/test-k3s-deployment.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
       - name: Run config test script
         run: ./scripts/test-deployment-config.sh
 
@@ -268,7 +284,7 @@ jobs:
       # ---- Chart test ----
 
       - name: Make scripts executable
-        run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh
+        run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
 
       - name: Start chart test timer
         shell: bash

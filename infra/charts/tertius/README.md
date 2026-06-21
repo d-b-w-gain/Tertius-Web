@@ -15,6 +15,18 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 
 ## Local k3s Flow
 
+For the agent/human harness entry point, prefer:
+
+```bash
+scripts/harness-k3s.sh up
+```
+
+The wrapper uses the same chart and smoke implementation as CI. Use the manual
+Helm commands below when debugging chart rendering directly. Runtime drift rules
+are documented in `docs/harness/runtime-parity.md`, and local metrics can be
+queried through `scripts/harness-query-metrics.sh` when the local metrics backend
+is enabled.
+
 ```bash
 helm dependency update infra/charts/tertius
 helm lint infra/charts/tertius

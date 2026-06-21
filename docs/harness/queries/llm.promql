@@ -1,0 +1,15 @@
+# LLM request rate.
+# name: llm_request_rate
+sum(rate(tertius_llm_request_count[5m]))
+
+# LLM failure rate. Should stay near zero for configured providers.
+# name: llm_failure_rate
+sum(rate(tertius_llm_failure_count[5m]))
+
+# LLM token usage rate.
+# name: llm_token_rate
+sum(rate(tertius_llm_token_count[5m]))
+
+# LLM estimated spend rate.
+# name: llm_cost_usd_rate
+sum(rate(tertius_llm_cost_usd_total[5m]))

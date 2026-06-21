@@ -52,3 +52,4 @@ cache/
 .serena/
 .uv-cache/
 .kubectl/
+.tmp/

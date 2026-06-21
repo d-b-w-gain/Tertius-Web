@@ -142,6 +142,16 @@ services:
     volumes:
       - ./infra/otel/otel-collector-local.yaml:/etc/otelcol-contrib/config.yaml:ro
 
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.129.1
+    command:
+      - -storageDataPath=/storage
+      - -httpListenAddr=:8428
+    ports:
+      - "8428:8428"
+    volumes:
+      - tertius-victoriametrics:/storage
+
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
   #   image: cloudflare/cloudflared:latest
@@ -152,3 +162,4 @@ services:
 volumes:
   tertius-postgres:
   tertius-nats:
+  tertius-victoriametrics:

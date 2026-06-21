@@ -107,7 +107,7 @@ VITE_API_URL=/api
 The server relies on several internal X11 dependencies (like `libxrender1`) to render geometry headlessly in `OCP`. To prevent cluttering your local machine, run it in Docker:
 
 ```bash
-docker compose up -d postgres keycloak nats backend compile-worker frontend
+docker compose up -d postgres keycloak nats backend compile-job-runner frontend
 ```
 *The API will be available at `http://localhost:8000/docs`.*
 
@@ -153,9 +153,38 @@ A baseline `mypy` configuration lives at the repo root in `pyproject.toml` (`[to
 
 Configuration notes: `python_version` matches `.python-version` (3.14), `mypy_path` mirrors `pytest.ini` (`server`), `ignore_missing_imports = true` keeps third-party libs like `build123d` and `py-lib3mf` quiet, and `migrations/versions/` is excluded. See `pyproject.toml` for the full policy.
 
+### Agent Harness and Validation
+
+See `docs/harness/index.md` for the local validation harness. The short version:
+
+- Compose dev is the fast inner loop: `scripts/harness-compose.sh dev-up`.
+- k3s is canonical full-stack validation: `scripts/harness-k3s.sh up`.
+- Compose parity checks production-shaped API/UI images without k3s:
+  `scripts/harness-compose.sh parity-up`.
+
+Install the repo-owned Codex skill with:
+
+```bash
+bash scripts/install-tertius-harness-skill.sh
+```
+
+The skill source stays in `tools/codex/skills/tertius-harness`; durable runtime
+docs stay in `docs/harness`.
+
 ## Kubernetes Deployment Test
 
 The local k3s deployment harness expects an already-running k3s-compatible cluster, Helm, Docker, the CloudNativePG CRD `clusters.postgresql.cnpg.io`, and the Keycloak Operator CRD `keycloaks.k8s.keycloak.org`. It builds the API and UI images, makes them available to k3s, updates chart dependencies when vendored archives are incomplete, creates an external app Secret for the API session secret, installs or upgrades the `infra/charts/tertius` Helm release, waits for app, Postgres, Valkey, NATS, Keycloak, and optional tunnel resources, then runs HTTP and in-cluster smoke checks including a JetStream health check.
+
+For the friendly local entry point, use:
+
+```bash
+scripts/harness-k3s.sh up
+scripts/harness-k3s.sh status
+scripts/harness-k3s.sh smoke
+```
+
+Use the CI-compatible implementation directly when debugging the underlying
+deployment script:
 
 ```bash
 scripts/test-k3s-deployment.sh

@@ -20,6 +20,7 @@ VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
 NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
 KEDA_ENABLED="${KEDA_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
+ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH="${ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH:-false}"
 BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
 CLEAN_LOCAL_IMAGES_AFTER_LOAD="${CLEAN_LOCAL_IMAGES_AFTER_LOAD:-false}"
 APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}"
@@ -30,6 +31,7 @@ APP_VALKEY_URL="${APP_VALKEY_URL:-redis://${RELEASE_NAME}-valkey:6379/0}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
+METRICS_LOCAL_PORT="${METRICS_LOCAL_PORT:-8428}"
 TIMEOUT="${TIMEOUT:-10m}"
 DOCKER="${DOCKER:-}"
 K3S_CONTAINER="${K3S_CONTAINER:-}"
@@ -63,6 +65,8 @@ Environment:
   NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
   KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
+  ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH
+                                Default: false. Set true only when an external Keycloak operator is known to watch NAMESPACE.
   BUILDX_GHA_CACHE              Default: false. Set true in GitHub Actions to use Buildx GHA cache for local image builds.
   CLEAN_LOCAL_IMAGES_AFTER_LOAD Default: false. Set true in CI to reduce peak disk use while importing images into k3s.
   APP_SECRET_NAME               Default: <release>-app. External app Secret consumed by the API.
@@ -73,6 +77,7 @@ Environment:
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
+  METRICS_LOCAL_PORT            Default: 8428
   TIMEOUT                       Default: 10m
   DOCKER                        Default: docker when available, otherwise podman.
   K3S_CONTAINER                 Optional k3s Podman/Docker container name for image imports.
@@ -410,6 +415,44 @@ chart_lock_dependencies_present() {
   [ "$missing" -eq 0 ]
 }
 
+check_keycloak_operator_scope() {
+  if truthy "$ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH"; then
+    return
+  fi
+
+  operator_lines=$(kubectl get deployments -A \
+    -l app.kubernetes.io/name=keycloak-operator \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{range .spec.template.spec.containers[*].env[*]}{.name}{"="}{.value}{";"}{end}{"\n"}{end}' 2>/dev/null || true)
+
+  if [ -z "$operator_lines" ]; then
+    echo "No Keycloak operator deployment was found with label app.kubernetes.io/name=keycloak-operator." >&2
+    echo "Install the operator before running full-stack k3s validation, or set ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH=true only when another operator watches ${NAMESPACE}." >&2
+    exit 1
+  fi
+
+  target_namespace_operator=false
+  current_namespace_only_operator=false
+  while IFS='|' read -r operator_namespace _operator_name operator_env; do
+    [ -n "$operator_namespace" ] || continue
+    if [ "$operator_namespace" = "$NAMESPACE" ]; then
+      target_namespace_operator=true
+    fi
+    case "$operator_env" in
+      *QUARKUS_OPERATOR_SDK_CONTROLLERS_KEYCLOAKCONTROLLER_NAMESPACES=JOSDK_WATCH_CURRENT*|*QUARKUS_OPERATOR_SDK_CONTROLLERS_KEYCLOAKREALMIMPORTCONTROLLER_NAMESPACES=JOSDK_WATCH_CURRENT*)
+        current_namespace_only_operator=true
+        ;;
+    esac
+  done <<EOF
+$operator_lines
+EOF
+
+  if [ "$target_namespace_operator" = false ] && [ "$current_namespace_only_operator" = true ]; then
+    echo "Keycloak operator appears namespace-scoped and no operator is running in target namespace ${NAMESPACE}." >&2
+    echo "Use NAMESPACE matching the operator namespace, install a cluster-wide/target-namespace operator, or set ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH=true only when another reconciler is known to handle Keycloak CRs." >&2
+    exit 1
+  fi
+}
+
 check_preflight() {
   need kubectl
   need helm
@@ -428,6 +471,7 @@ check_preflight() {
   run helm version
   run kubectl get crd clusters.postgresql.cnpg.io
   run kubectl get crd keycloaks.k8s.keycloak.org
+  check_keycloak_operator_scope
 
   if truthy "$ENABLE_TUNNEL"; then
     [ -n "$TUNNEL_TOKEN_SECRET_NAME" ] || {
@@ -481,14 +525,14 @@ build_image() {
 
 build_images() {
   build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
-  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api --build-arg VITE_OTEL_ENABLED=true --build-arg VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=/otel/v1/traces
 }
 
 build_and_load_images() {
   build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
   load_image "$API_IMAGE"
 
-  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api
+  build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api --build-arg VITE_OTEL_ENABLED=true --build-arg VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=/otel/v1/traces
   load_image "$UI_IMAGE"
 }
 
@@ -595,6 +639,8 @@ helm_set_args() {
 --set keda.enabled=${KEDA_ENABLED}
 --set app.secret.create=false
 --set-string app.secretName=${APP_SECRET_NAME}
+--set-string postgres.appUserSecretName=${RELEASE_NAME}-app-db
+--set-string keycloak.database.appUserSecretName=${RELEASE_NAME}-keycloak-db
 "
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
@@ -1093,9 +1139,26 @@ smoke_test_http() {
   UI_LOCAL_PORT=$(start_port_forward "$ui_svc" "$UI_LOCAL_PORT" "$ui_remote_port")
   API_LOCAL_PORT=$(start_port_forward "$api_svc" "$API_LOCAL_PORT" "$api_remote_port")
 
-  curl_expect "http://127.0.0.1:${UI_LOCAL_PORT}/" '<html|<!doctype html'
-  curl_expect_same_body "http://127.0.0.1:${UI_LOCAL_PORT}/api/" "http://127.0.0.1:${API_LOCAL_PORT}/" "Frontend /api/ proxy"
-  curl_expect_same_body "http://127.0.0.1:${UI_LOCAL_PORT}/api/intus/health" "http://127.0.0.1:${API_LOCAL_PORT}/api/intus/health" "Frontend /api/intus/health proxy"
+  "${ROOT_DIR}/scripts/smoke-http.sh" "http://127.0.0.1:${UI_LOCAL_PORT}" "http://127.0.0.1:${API_LOCAL_PORT}"
+  write_harness_status
+  echo "UI URL: http://127.0.0.1:${UI_LOCAL_PORT}"
+  echo "API URL: http://127.0.0.1:${API_LOCAL_PORT}"
+}
+
+write_harness_status() {
+  status_dir="${ROOT_DIR}/.tmp/harness"
+  mkdir -p "$status_dir"
+  {
+    printf 'NAMESPACE=%q\n' "$NAMESPACE"
+    printf 'RELEASE_NAME=%q\n' "$RELEASE_NAME"
+    printf 'UI_BASE_URL=%q\n' "http://127.0.0.1:${UI_LOCAL_PORT}"
+    printf 'API_BASE_URL=%q\n' "http://127.0.0.1:${API_LOCAL_PORT}"
+    if [ "${KEYCLOAK_LOCAL_PORT:-0}" != "0" ]; then
+      printf 'KEYCLOAK_BASE_URL=%q\n' "http://127.0.0.1:${KEYCLOAK_LOCAL_PORT}"
+    fi
+    printf 'METRICS_BASE_URL=%q\n' "http://127.0.0.1:${METRICS_LOCAL_PORT}"
+  } >"${status_dir}/k3s.env"
+  echo "Wrote harness status: ${status_dir}/k3s.env"
 }
 
 check_tunnel() {

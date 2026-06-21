@@ -5,6 +5,16 @@ at `http://localhost:18080/`. They are intentionally small wrappers around the
 same chart/images used by the cloud deployment, so local fixes stay close to
 production behavior.
 
+For the full agent harness, including Compose dev, Compose parity, browser
+validation, metrics queries, and quality gates, see
+`docs/harness/local-harness.md`.
+
+Canonical full-stack validation entry point:
+
+```bash
+scripts/harness-k3s.sh up
+```
+
 ## Start or Recover Local Dev
 
 ```powershell

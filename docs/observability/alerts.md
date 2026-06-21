@@ -2,6 +2,10 @@
 
 Tune thresholds per environment after baseline traffic is known. Production alerts should page only on sustained user impact or data loss risk; lower-severity conditions can notify the owning channel.
 
+Harness query references live under `docs/harness/queries/`. Promote a harness
+query into an alert only after choosing production thresholds and cardinality-safe
+labels.
+
 ## API
 
 - API 5xx rate: page when `tertius.api.request.count{status_code=~"5.."}` is above 2% of requests for 10 minutes.
