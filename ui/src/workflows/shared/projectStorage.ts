@@ -93,6 +93,7 @@ export type LlmModelOption = {
 
 export type LlmModelsResponse = {
   default_model_id: string
+  weekly_budget_usd?: number
   daily_budget_usd: number
   models: LlmModelOption[]
 }

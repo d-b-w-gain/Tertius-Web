@@ -27,6 +27,12 @@ data:
 
     exporters:
 {{ toYaml .Values.app.observability.collector.exporters | indent 6 }}
+{{- if .Values.app.observability.metricsBackend.enabled }}
+      prometheusremotewrite:
+        endpoint: http://{{ include "tertius.metricsBackendName" . }}:{{ .Values.app.observability.metricsBackend.port }}/api/v1/write
+        resource_to_telemetry_conversion:
+          enabled: true
+{{- end }}
 
     service:
       telemetry:

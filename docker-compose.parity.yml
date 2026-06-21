@@ -1,0 +1,87 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports: !override
+      - "${COMPOSE_PARITY_API_PORT:-18000}:8000"
+    volumes: !override []
+    environment:
+      NATS_URL: nats://nats:4222
+      COMPILE_STREAM_NAME: TERTIUS_COMPILE
+      COMPILE_REQUEST_SUBJECT: tertius.compile.request
+      COMPILE_RESULT_SUBJECT: tertius.compile.result
+      COMPILE_WORKER_QUEUE: compile-workers
+      COMPILE_RESULT_CONSUMER: compile-result-api
+      COMPILE_REQUEST_MAX_BYTES: 8388608
+      COMPILE_RESULT_MAX_BYTES: 33554432
+      LLM_MODELS_JSON: ${LLM_MODELS_JSON:-[]}
+      LLM_DEFAULT_MODEL_ID: ${LLM_DEFAULT_MODEL_ID:-}
+      LLM_WEEKLY_BUDGET_USD: ${LLM_WEEKLY_BUDGET_USD:-14.00}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-2048}
+      LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: ${LLM_FILE_EDIT_MAX_OUTPUT_TOKENS:-65536}
+      LLM_FILE_EDIT_MAX_CONTEXT_FILES: ${LLM_FILE_EDIT_MAX_CONTEXT_FILES:-20}
+      LLM_FILE_EDIT_MAX_CONTEXT_CHARS: ${LLM_FILE_EDIT_MAX_CONTEXT_CHARS:-80000}
+      LLM_USER_RATE_LIMIT_PER_MINUTE: ${LLM_USER_RATE_LIMIT_PER_MINUTE:-10}
+      LLM_TENANT_RATE_LIMIT_PER_MINUTE: ${LLM_TENANT_RATE_LIMIT_PER_MINUTE:-60}
+      LLM_TENANT_DAILY_TOKEN_QUOTA: ${LLM_TENANT_DAILY_TOKEN_QUOTA:-3200000}
+      LLM_USER_DAILY_TOKEN_QUOTA: ${LLM_USER_DAILY_TOKEN_QUOTA:-3200000}
+      BILLING_STREAM_NAME: ${BILLING_STREAM_NAME:-TERTIUS_BILLING}
+      BILLING_LLM_USAGE_SUBJECT: ${BILLING_LLM_USAGE_SUBJECT:-tertius.billing.usage.llm.tokens}
+      BILLING_MAX_BYTES: ${BILLING_MAX_BYTES:-262144}
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: tertius-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_RESOURCE_ATTRIBUTES: service.version=local,deployment.environment=compose-parity,container.name=backend
+      OTEL_LOG_JSON: ${OTEL_LOG_JSON:-true}
+      APP_DB_HOST: postgres
+      APP_DB_NAME: tertius
+      APP_DB_OWNER: tertius
+      APP_DB_PASSWORD: tertius
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-auth-session-secret-change-me}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
+      KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:${COMPOSE_PARITY_UI_PORT:-18080}}
+    depends_on:
+      - postgres
+      - nats
+      - otel-collector
+
+  frontend:
+    image: !reset null
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+      args:
+        VITE_API_URL: /api
+        VITE_OTEL_ENABLED: ${VITE_OTEL_ENABLED:-true}
+        VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: /otel/v1/traces
+        VITE_OTEL_SERVICE_NAME: tertius-ui
+    working_dir: !reset null
+    command: !reset null
+    volumes: !override []
+    ports: !override
+      - "${COMPOSE_PARITY_UI_PORT:-18080}:80"
+    environment: !override
+      API_SERVICE_HOST: backend
+      API_SERVICE_PORT: 8000
+      KEYCLOAK_SERVICE_HOST: keycloak
+      KEYCLOAK_SERVICE_PORT: 8080
+      OTEL_COLLECTOR_HTTP_HOST: otel-collector
+      OTEL_COLLECTOR_HTTP_PORT: 4318
+    depends_on:
+      - backend
+      - keycloak
+      - otel-collector
+
+  compile-job-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    volumes: !override []

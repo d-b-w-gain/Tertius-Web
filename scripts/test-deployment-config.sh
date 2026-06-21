@@ -6,6 +6,8 @@ CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 
+"${ROOT_DIR}/scripts/check-runtime-parity.sh"
+
 render_local() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES"
 }
@@ -365,8 +367,8 @@ if ! rg -q 'accessTokenLifespan: 300' <<<"$rendered" || ! rg -q 'ssoSessionIdleT
   exit 1
 fi
 
-if ! rg -q 'LLM_MODELS_JSON: ".*kimi-k2.7-code.*minimax-m3' <<<"$rendered" || ! rg -q 'LLM_DEFAULT_MODEL_ID: "kimi-k2.7-code"' <<<"$rendered" || ! rg -q 'LLM_DAILY_BUDGET_USD: "2.00"' <<<"$rendered"; then
-  echo "ConfigMap must render the LLM model catalog, default model, and daily dollar budget." >&2
+if ! rg -q 'LLM_MODELS_JSON: ".*kimi-k2.7-code.*minimax-m3' <<<"$rendered" || ! rg -q 'LLM_DEFAULT_MODEL_ID: "kimi-k2.7-code"' <<<"$rendered" || ! rg -q 'LLM_WEEKLY_BUDGET_USD: "14.00"' <<<"$rendered"; then
+  echo "ConfigMap must render the LLM model catalog, default model, and weekly dollar budget." >&2
   exit 1
 fi
 
@@ -410,7 +412,7 @@ if ! rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret_without_
   exit 1
 fi
 
-if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:' <<<"$ui_with_llm_secret"; then
+if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:' <<<"$ui_with_llm_secret"; then
   echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
@@ -500,7 +502,7 @@ if ! rg -q 'command: \["sh", "/app/server/start-compile-job.sh"\]' <<<"$scaled_j
   exit 1
 fi
 
-if rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_DAILY_BUDGET_USD' <<<"$scaled_job"; then
+if rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD' <<<"$scaled_job"; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi

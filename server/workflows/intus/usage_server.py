@@ -93,6 +93,7 @@ def llm_models(ctx: AuthContext = Depends(get_auth_context)):
     default_model_id = settings.get_llm_model().id if models else ""
     return {
         "default_model_id": default_model_id,
-        "daily_budget_usd": settings.llm_daily_budget_usd,
+        "weekly_budget_usd": settings.llm_weekly_budget_usd,
+        "daily_budget_usd": round(settings.llm_weekly_budget_usd / 7, 8),
         "models": [model.model_dump() for model in models],
     }

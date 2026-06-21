@@ -24,6 +24,10 @@ processors:
 exporters:
   debug:
     verbosity: detailed
+  prometheusremotewrite:
+    endpoint: http://victoriametrics:8428/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
 
 service:
   telemetry:
@@ -51,6 +55,7 @@ service:
         - batch
       exporters:
         - debug
+        - prometheusremotewrite
     logs:
       receivers:
         - otlp

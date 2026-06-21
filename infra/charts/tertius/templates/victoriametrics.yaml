@@ -1,0 +1,80 @@
+{{- if and .Values.app.observability.enabled .Values.app.observability.metricsBackend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.metricsBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics-backend
+  template:
+    metadata:
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: metrics-backend
+    spec:
+      containers:
+        - name: victoriametrics
+          image: "{{ .Values.app.observability.metricsBackend.image.repository }}:{{ .Values.app.observability.metricsBackend.image.tag }}"
+          imagePullPolicy: {{ .Values.app.observability.metricsBackend.image.pullPolicy }}
+          args:
+            - -storageDataPath=/storage
+            - -httpListenAddr=:{{ .Values.app.observability.metricsBackend.port }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.observability.metricsBackend.port }}
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+          resources:
+            {{- toYaml .Values.app.observability.metricsBackend.resources | nindent 12 }}
+      volumes:
+        - name: storage
+          {{- if .Values.app.observability.metricsBackend.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tertius.metricsBackendName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tertius.metricsBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-backend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.app.observability.metricsBackend.port }}
+      targetPort: http
+  selector:
+    {{- include "tertius.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-backend
+{{- if .Values.app.observability.metricsBackend.storage.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tertius.metricsBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics-backend
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.app.observability.metricsBackend.storage.size }}
+  {{- with .Values.app.observability.metricsBackend.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

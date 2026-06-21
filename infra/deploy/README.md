@@ -159,6 +159,19 @@ For node-level dependency setup, including k3s Cilium migration, gVisor `Runtime
 
 Use the local harness to test the Helm chart against an already-running k3s-compatible cluster. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the release, waits for app and platform resources, then runs smoke checks.
 
+The friendly local wrapper is:
+
+```bash
+scripts/harness-k3s.sh up
+scripts/harness-k3s.sh status
+scripts/harness-k3s.sh smoke
+```
+
+It delegates deploy and cleanup to `scripts/test-k3s-deployment.sh`, which
+remains the CI-compatible implementation used by the GitHub k3s smoke workflow.
+See `docs/harness/local-harness.md` for runtime choices and
+`docs/harness/runtime-parity.md` for Compose/Helm drift policy.
+
 ```bash
 scripts/test-k3s-deployment.sh
 ```

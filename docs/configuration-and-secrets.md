@@ -45,7 +45,7 @@ prompts.
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
 | `app.config.llmModels` | `LLM_MODELS_JSON` | API | Full selectable LLM model catalog. |
 | `app.config.llmDefaultModelId` | `LLM_DEFAULT_MODEL_ID` | API | Default selected model id. |
-| `app.config.llmDailyBudgetUsd` | `LLM_DAILY_BUDGET_USD` | API | Tenant daily AI spend limit in USD. |
+| `app.config.llmWeeklyBudgetUsd` | `LLM_WEEKLY_BUDGET_USD` | API | Tenant weekly AI spend limit in USD. |
 | `app.config.llmTimeoutSeconds` | `LLM_TIMEOUT_SECONDS` | API | Provider HTTP timeout. |
 | `app.config.llmMaxOutputTokens` | `LLM_MAX_OUTPUT_TOKENS` | API | Build-script generation output cap. |
 | `app.config.llmFileEditMaxOutputTokens` | `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS` | API | File-edit output cap. |
@@ -133,7 +133,7 @@ Example:
 app:
   config:
     llmDefaultModelId: kimi-k2.7-code
-    llmDailyBudgetUsd: "2.00"
+    llmWeeklyBudgetUsd: "14.00"
     llmModels:
       - id: kimi-k2.7-code
         label: Kimi K2.7 Code

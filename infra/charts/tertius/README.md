@@ -15,6 +15,18 @@ This chart renders the Tertius API and UI plus the Kubernetes resources needed f
 
 ## Local k3s Flow
 
+For the agent/human harness entry point, prefer:
+
+```bash
+scripts/harness-k3s.sh up
+```
+
+The wrapper uses the same chart and smoke implementation as CI. Use the manual
+Helm commands below when debugging chart rendering directly. Runtime drift rules
+are documented in `docs/harness/runtime-parity.md`, and local metrics can be
+queried through `scripts/harness-query-metrics.sh` when the local metrics backend
+is enabled.
+
 ```bash
 helm dependency update infra/charts/tertius
 helm lint infra/charts/tertius
@@ -67,7 +79,7 @@ Non-secret provider settings are rendered into the app ConfigMap:
 
 - `app.config.llmModels` -> `LLM_MODELS_JSON`
 - `app.config.llmDefaultModelId` -> `LLM_DEFAULT_MODEL_ID`
-- `app.config.llmDailyBudgetUsd` -> `LLM_DAILY_BUDGET_USD`
+- `app.config.llmWeeklyBudgetUsd` -> `LLM_WEEKLY_BUDGET_USD`
 - `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
 - `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
 - `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`

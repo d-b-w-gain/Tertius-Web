@@ -1,5 +1,10 @@
 # OpenTelemetry Collector Deployment
 
+Local harness metrics are queryable through the PromQL-compatible endpoint
+documented in `docs/harness/observability-validation.md`. Compose exposes
+VictoriaMetrics on `http://localhost:8428`; local k3s enables the bundled
+metrics backend through `values-local.yaml`.
+
 The Helm chart deploys an OpenTelemetry Collector by default when `app.observability.enabled=true`. API, compile-worker, and browser telemetry default to the in-chart collector service:
 
 ```yaml

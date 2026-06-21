@@ -62,7 +62,7 @@ data:
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
   LLM_MODELS_JSON: {{ .Values.app.config.llmModels | toJson | quote }}
   LLM_DEFAULT_MODEL_ID: {{ .Values.app.config.llmDefaultModelId | quote }}
-  LLM_DAILY_BUDGET_USD: {{ .Values.app.config.llmDailyBudgetUsd | quote }}
+  LLM_WEEKLY_BUDGET_USD: {{ .Values.app.config.llmWeeklyBudgetUsd | quote }}
   LLM_TIMEOUT_SECONDS: {{ .Values.app.config.llmTimeoutSeconds | quote }}
   LLM_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmMaxOutputTokens | quote }}
   LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmFileEditMaxOutputTokens | quote }}

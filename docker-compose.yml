@@ -16,7 +16,7 @@ services:
       COMPILE_RESULT_MAX_BYTES: 33554432
       LLM_MODELS_JSON: ${LLM_MODELS_JSON:-[]}
       LLM_DEFAULT_MODEL_ID: ${LLM_DEFAULT_MODEL_ID:-}
-      LLM_DAILY_BUDGET_USD: ${LLM_DAILY_BUDGET_USD:-2.00}
+      LLM_WEEKLY_BUDGET_USD: ${LLM_WEEKLY_BUDGET_USD:-14.00}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
       LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-2048}
@@ -142,6 +142,16 @@ services:
     volumes:
       - ./infra/otel/otel-collector-local.yaml:/etc/otelcol-contrib/config.yaml:ro
 
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.129.1
+    command:
+      - -storageDataPath=/storage
+      - -httpListenAddr=:8428
+    ports:
+      - "8428:8428"
+    volumes:
+      - tertius-victoriametrics:/storage
+
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
   #   image: cloudflare/cloudflared:latest
@@ -152,3 +162,4 @@ services:
 volumes:
   tertius-postgres:
   tertius-nats:
+  tertius-victoriametrics:
