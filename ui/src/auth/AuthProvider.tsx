@@ -27,13 +27,28 @@ interface AuthUser {
   email: string | null
 }
 
+const AUTH_CHECK_RETRY_DELAYS_MS = [500, 1500, 3000]
+
 const currentReturnTo = () => `${window.location.pathname}${window.location.search}${window.location.hash}`
 
+const wait = (delayMs: number) => new Promise((resolve) => window.setTimeout(resolve, delayMs))
+
+function isTransientAuthCheckFailure(status: number) {
+  return status === 500 || status === 502 || status === 503 || status === 504
+}
+
 async function fetchCurrentUser(): Promise<AuthUser | null> {
-  const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
-  if (response.status === 401) return null
-  if (!response.ok) throw new Error(`Authentication check failed with status ${response.status}`)
-  return response.json()
+  for (let attempt = 0; attempt <= AUTH_CHECK_RETRY_DELAYS_MS.length; attempt += 1) {
+    const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
+    if (response.status === 401) return null
+    if (response.ok) return response.json()
+    if (!isTransientAuthCheckFailure(response.status) || attempt === AUTH_CHECK_RETRY_DELAYS_MS.length) {
+      throw new Error(`Authentication check failed with status ${response.status}`)
+    }
+    await wait(AUTH_CHECK_RETRY_DELAYS_MS[attempt]!)
+  }
+
+  return null
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -51,7 +66,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch (e) {
         console.warn('Authentication check failed:', e)
-        if (isMounted) setUser(null)
       } finally {
         if (isMounted) {
           setIsLoading(false)

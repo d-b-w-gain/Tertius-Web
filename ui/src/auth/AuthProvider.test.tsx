@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuth } from './AuthProvider'
 
@@ -29,6 +29,7 @@ describe('AuthProvider', () => {
     cleanup()
     vi.clearAllMocks()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
     delete document.body.dataset.tokenError
   })
 
@@ -65,6 +66,34 @@ describe('AuthProvider', () => {
     screen.getByText('token').click()
 
     await waitFor(() => expect(document.body.dataset.tokenError).toBe('Authentication required. Please sign in.'))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries transient auth checks before falling back to guest mode', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        user_id: 'user-1',
+        tenant_id: 'tenant-1',
+        email: 'alice@example.com',
+      })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <AuthProvider>
+        <AuthProbe />
+      </AuthProvider>,
+    )
+
+    expect(screen.getByTestId('loading')).toHaveTextContent('true')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
+
+    expect(screen.getByTestId('loading')).toHaveTextContent('false')
+    expect(screen.getByTestId('mode')).toHaveTextContent('authenticated')
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

@@ -42,6 +42,25 @@ async function isInvalidBearerToken(response: Response) {
   }
 }
 
+async function isSessionInvalid() {
+  try {
+    const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
+    return response.status === 401
+  } catch {
+    return false
+  }
+}
+
+async function shouldForceFreshLogin(response: Response) {
+  if (await isInvalidBearerToken(response)) {
+    return true
+  }
+  if (response.status !== 401) {
+    return false
+  }
+  return isSessionInvalid()
+}
+
 async function forceFreshLogin() {
   if (sessionStorage.getItem(STALE_TOKEN_REDIRECT_KEY) === 'true') {
     return
@@ -114,7 +133,7 @@ export async function apiFetch(
 
     if (readonly && isTransientServerFailure(response.status)) {
       recordTransientFailure()
-    } else if (response.status === 401 || await isInvalidBearerToken(response)) {
+    } else if (await shouldForceFreshLogin(response)) {
       void forceFreshLogin()
     } else if (response.ok) {
       recordSuccess()
