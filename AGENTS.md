@@ -31,6 +31,16 @@ runtime-specific validation.
   live-flow` for authenticated frontend-origin compile/AI edit validation.
   `LIVE_FLOW_COMPILE_ONLY=true` is only acceptable when the change does not
   touch AI edit behavior.
+- Treat Generate Design, AI edit tab, AI edit conversation history, and
+  AI-edit-linked model viewer changes as AI edit behavior even when the patch is
+  frontend-only. Before finalizing those changes, run full `live-flow`; if the
+  local runtime, auth, provider credentials, or port-forwarding are unavailable,
+  report the exact blocker and the focused validation that did run.
+- For fastest AI edit validation, use an isolated local-values k3s smoke
+  release, not a shared or Flux-managed production-style release. The smoke
+  release should provide demo auth, direct-grant-friendly Keycloak config, KEDA,
+  and LLM secrets; only validate against a shared/Flux release when that release
+  behavior is the subject of the change.
 
 ## Validation Entry Points
 

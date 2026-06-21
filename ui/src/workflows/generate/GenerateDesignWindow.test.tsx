@@ -254,6 +254,53 @@ describe('GenerateDesignWindow', () => {
     expect(storage.listLlmEditConversation).toHaveBeenCalledWith('project_a')
   })
 
+  it('switches the model viewer when an older hydrated prompt is selected', async () => {
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'llm-job-old',
+        prompt: 'make a small bracket',
+        content: 'Updated old file.',
+        created_at: '2026-06-19T00:01:00Z',
+        status: 'succeeded',
+        model: 'test-model',
+        usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+        files: [{ filename: 'design.py', summary: 'Added bracket.', changed: true }],
+        compile: {
+          job_id: 'compile-job-old',
+          status: 'succeeded',
+          artifact_id: 'artifact-old',
+          export_format: 'glb',
+        },
+      },
+      {
+        job_id: 'llm-job-new',
+        prompt: 'make it taller',
+        content: 'Updated new file.',
+        created_at: '2026-06-19T00:02:00Z',
+        status: 'succeeded',
+        model: 'test-model',
+        usage: { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11 },
+        files: [{ filename: 'design.py', summary: 'Made taller.', changed: true }],
+        compile: {
+          job_id: 'compile-job-new',
+          status: 'succeeded',
+          artifact_id: 'artifact-new',
+          export_format: 'glb',
+        },
+      },
+    ])
+
+    render(<GenerateDesignWindow />)
+
+    expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
+    expect(screen.getByText('make it taller')).toBeInTheDocument()
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-new\/model\?t=.*&project=project_a/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('make a small bracket').closest('button')!)
+
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-old\/model\?t=.*&project=project_a/)).toBeInTheDocument()
+  })
+
   it('resumes every hydrated non-terminal LLM job and linked compile job', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     storage.listLlmEditConversation.mockResolvedValueOnce([

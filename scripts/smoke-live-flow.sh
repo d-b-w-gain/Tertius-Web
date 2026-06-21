@@ -17,6 +17,10 @@ Required environment:
   KEYCLOAK_SMOKE_PASSWORD (default: demo)
   KEYCLOAK_CLIENT_ID      (default: tertius-ui)
 
+The token request first tries the password grant for local smoke clients. When
+Keycloak rejects that grant because direct access grants are disabled, it falls
+back to a non-interactive authorization-code login against the same realm.
+
 Optional environment:
   LIVE_FLOW_PROJECT
   LIVE_FLOW_MODEL_ID
@@ -88,6 +92,183 @@ elif value is not None:
 PY
 }
 
+request_token_with_auth_code() {
+  token_body=$1
+  KEYCLOAK_TOKEN_URL="$KEYCLOAK_TOKEN_URL" \
+  KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-tertius-ui}" \
+  KEYCLOAK_SMOKE_USERNAME="${KEYCLOAK_SMOKE_USERNAME:-demo}" \
+  KEYCLOAK_SMOKE_PASSWORD="${KEYCLOAK_SMOKE_PASSWORD:-demo}" \
+  python3 - "$token_body" <<'PY'
+import json
+import os
+import sys
+from http.cookies import SimpleCookie
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+token_body = sys.argv[1]
+token_url = os.environ["KEYCLOAK_TOKEN_URL"]
+client_id = os.environ.get("KEYCLOAK_CLIENT_ID", "tertius-ui")
+username = os.environ.get("KEYCLOAK_SMOKE_USERNAME", "demo")
+password = os.environ.get("KEYCLOAK_SMOKE_PASSWORD", "demo")
+redirect_uri = "http://127.0.0.1/tertius-live-flow-callback"
+
+suffix = "/protocol/openid-connect/token"
+if not token_url.endswith(suffix):
+    raise SystemExit(f"KEYCLOAK_TOKEN_URL must end with {suffix}")
+realm_base = token_url[: -len(suffix)]
+auth_url = f"{realm_base}/protocol/openid-connect/auth?{urllib.parse.urlencode({
+    'client_id': client_id,
+    'redirect_uri': redirect_uri,
+    'response_type': 'code',
+    'scope': 'openid',
+    'state': 'tertius-live-flow',
+})}"
+
+
+class LoginFormParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.forms = []
+        self._current = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "form":
+            self._current = {"attrs": attrs, "inputs": {}}
+            return
+        if tag == "input" and self._current is not None:
+            name = attrs.get("name")
+            if name:
+                self._current["inputs"][name] = attrs.get("value", "")
+
+    def handle_endtag(self, tag):
+        if tag == "form" and self._current is not None:
+            self.forms.append(self._current)
+            self._current = None
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(),
+    NoRedirect(),
+)
+manual_cookies = {}
+
+
+def remember_cookies(response):
+    for header in response.headers.get_all("Set-Cookie", []):
+        parsed = SimpleCookie()
+        parsed.load(header)
+        for name, morsel in parsed.items():
+            manual_cookies[name] = morsel.value
+
+
+def manual_cookie_header():
+    return "; ".join(f"{name}={value}" for name, value in manual_cookies.items())
+
+
+def open_no_redirect(request):
+    try:
+        return opener.open(request, timeout=20)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (301, 302, 303, 307, 308):
+            return exc
+        raise
+
+
+def redirect_code(location):
+    if not location:
+        return ""
+    parsed = urllib.parse.urlparse(location)
+    values = urllib.parse.parse_qs(parsed.query)
+    return (values.get("code") or [""])[0]
+
+
+try:
+    auth_response = open_no_redirect(urllib.request.Request(auth_url))
+    remember_cookies(auth_response)
+    code = redirect_code(auth_response.headers.get("Location", ""))
+    if not code:
+        login_html = auth_response.read().decode("utf-8", errors="replace")
+        parser = LoginFormParser()
+        parser.feed(login_html)
+        login_form = next(
+            (
+                form for form in parser.forms
+                if form["attrs"].get("id") == "kc-form-login"
+                or "login-actions/authenticate" in form["attrs"].get("action", "")
+            ),
+            parser.forms[0] if parser.forms else None,
+        )
+        if not login_form:
+            raise RuntimeError("Keycloak login form was not found")
+
+        raw_action = urllib.parse.urljoin(auth_url, login_form["attrs"].get("action", ""))
+        action_parts = urllib.parse.urlparse(raw_action)
+        local_realm_parts = urllib.parse.urlparse(realm_base)
+        action = urllib.parse.urlunparse((
+            local_realm_parts.scheme,
+            local_realm_parts.netloc,
+            action_parts.path,
+            action_parts.params,
+            action_parts.query,
+            action_parts.fragment,
+        ))
+        fields = dict(login_form["inputs"])
+        fields["username"] = username
+        fields["password"] = password
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        cookie_header = manual_cookie_header()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        login_request = urllib.request.Request(
+            action,
+            data=urllib.parse.urlencode(fields).encode("utf-8"),
+            headers=headers,
+        )
+        login_response = open_no_redirect(login_request)
+        remember_cookies(login_response)
+        code = redirect_code(login_response.headers.get("Location", ""))
+        if not code:
+            body = login_response.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Keycloak login did not return an authorization code: {body[:500]}")
+
+    token_request = urllib.request.Request(
+        token_url,
+        data=urllib.parse.urlencode({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    token_response = opener.open(token_request, timeout=20)
+    payload = token_response.read()
+    parsed = json.loads(payload.decode("utf-8"))
+    if not parsed.get("access_token"):
+        raise RuntimeError("authorization-code token response did not include access_token")
+    with open(token_body, "wb") as f:
+        f.write(payload)
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace")
+    with open(token_body, "w", encoding="utf-8") as f:
+        f.write(body or str(exc))
+    raise SystemExit(1)
+except Exception as exc:
+    with open(token_body, "w", encoding="utf-8") as f:
+        f.write(str(exc))
+    raise SystemExit(1)
+PY
+}
+
 request_token() {
   [ -n "${KEYCLOAK_TOKEN_URL:-}" ] || {
     echo "FAIL KEYCLOAK_TOKEN_URL is required for live-flow validation" >&2
@@ -108,6 +289,21 @@ request_token() {
     exit 1
   }
   if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    if grep -q "unauthorized_client" "$token_body"; then
+      if request_token_with_auth_code "$token_body"; then
+        TOKEN=$(json_get "$token_body" access_token)
+        [ -n "$TOKEN" ] || {
+          echo "FAIL authorization-code token response did not include access_token" >&2
+          cat "$token_body" >&2
+          exit 1
+        }
+        echo "PASS auth token request"
+        return
+      fi
+      echo "FAIL authorization-code auth token fallback failed" >&2
+      cat "$token_body" >&2
+      exit 1
+    fi
     echo "FAIL auth token request returned HTTP ${status}" >&2
     cat "$token_body" >&2
     exit 1

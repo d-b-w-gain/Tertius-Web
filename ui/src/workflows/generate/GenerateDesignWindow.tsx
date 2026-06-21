@@ -839,6 +839,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         <div className="min-h-0 flex-1">
           {selectedModelUrl ? (
             <ModelViewerCanvas
+              key={selectedModelUrl}
               modelUrl={selectedModelUrl}
               getAccessToken={getAccessToken}
               statusText={modelViewerStatusText || 'Selected historical model'}
