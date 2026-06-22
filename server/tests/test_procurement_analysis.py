@@ -105,6 +105,22 @@ left = make_member(900)
     assert requirement["resolution_trace"]["part_number"]["resolution"] == "function_default"
 
 
+def test_keyword_only_default_part_number_is_used_when_argument_is_omitted():
+    requirement = first_requirement({
+        "design.py": """
+def make_member(length, *, part_number="TEST-KW-DEFAULT", quantity=3):
+    return None
+
+left = make_member(900)
+""",
+    })
+
+    assert requirement["part_number"] == "TEST-KW-DEFAULT"
+    assert requirement["quantity"] == 3
+    assert requirement["dimensions"] == {"length_mm": 900}
+    assert requirement["resolution_trace"]["part_number"]["resolution"] == "function_default"
+
+
 def test_supplied_argument_overrides_function_default():
     requirement = first_requirement({
         "design.py": """
@@ -165,6 +181,35 @@ left = make_member(1200, part_number="TEST-NOISE")
     assert [item["part_number"] for item in analysis["requirements"]] == ["TEST-NOISE"]
     assert analysis["components"][0]["visual_node_ids"] == []
     assert any(diagnostic["code"] == "source_only_components_no_visual_tree" for diagnostic in analysis["diagnostics"])
+
+
+def test_imported_opaque_helper_expands_internal_bom_component_calls():
+    source = analyze_design_sources({
+        "design.py": """
+from foundation import make_foundation
+
+foundation = make_foundation()
+""",
+        "foundation.py": """
+def make_blocks(*, part_number="BLOCK-A", quantity=80, unit="each"):
+    return None
+
+def make_concrete(*, part_number="CONCRETE-A", quantity=0.288, unit="m3"):
+    return None
+
+def make_foundation():
+    blocks = make_blocks()
+    concrete = make_concrete()
+    return [blocks, concrete]
+""",
+    })
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+
+    requirements = {item["part_number"]: item for item in analysis["requirements"]}
+    assert set(requirements) == {"BLOCK-A", "CONCRETE-A"}
+    assert requirements["BLOCK-A"]["quantity"] == 80
+    assert requirements["CONCRETE-A"]["quantity"] == 0.288
+    assert [assembly["label"] for assembly in analysis["assemblies"]] == ["Foundation"]
 
 
 def test_partial_gltf_labels_are_supplemented_with_unmatched_source_components():
@@ -396,6 +441,83 @@ def test_explicit_manifest_requirements_receive_quantity_evidence_defaults():
     assert requirement["quantity_confidence"] == "verified"
     assert requirement["source_call_count"] == 1
     assert requirement["count_trace"]["explicit_quantity"] == 4
+
+
+def test_explicit_manifest_fallback_rows_do_not_replace_deterministic_source_requirements():
+    source = analyze_design_sources({
+        "design.py": """
+def make_member(length, part_number):
+    return None
+
+def portal_frame():
+    left = make_member(1200, part_number="TEST-A")
+    return left
+
+portal = portal_frame()
+""",
+    })
+
+    analysis = build_procurement_analysis(
+        source,
+        {"assemblies": [], "components": [], "diagnostics": []},
+        explicit_manifest={
+            "scopes": [
+                {"id": "portal-frame-pf01", "label": "Portal_Frame_PF01"},
+                {"id": "portal-frame-pf02", "label": "Portal_Frame_PF02"},
+            ],
+            "components": [{
+                "id": "pf01-left-column",
+                "scope_id": "portal-frame-pf01",
+                "label": "PF01_Left_Column",
+                "role": "component",
+                "visual_node_ids": ["pf01-left-column"],
+            }],
+            "requirements": [{
+                "id": "pf01-left-column.requirement",
+                "component_id": "pf01-left-column",
+                "scope_id": "portal-frame-pf01",
+                "part_number": None,
+                "quantity": 1,
+                "unit": "each",
+                "dimensions": {"component_label": "PF01_Left_Column"},
+            }],
+            "diagnostics": [],
+        },
+    )
+
+    assert analysis["source"] == "source_only_analysis"
+    assert [assembly["label"] for assembly in analysis["assemblies"]] == ["Portal Frame"]
+    assert [requirement["part_number"] for requirement in analysis["requirements"]] == ["TEST-A"]
+
+
+def test_component_label_only_explicit_manifest_rows_are_not_procurement_requirements():
+    analysis = build_procurement_analysis(
+        {"calls": []},
+        {"assemblies": [], "components": [], "diagnostics": []},
+        explicit_manifest={
+            "scopes": [{"id": "portal-frame-pf01", "label": "Portal_Frame_PF01-31-24-20"}],
+            "components": [{
+                "id": "pf01-left-column",
+                "scope_id": "portal-frame-pf01",
+                "label": "PF01_Left_Column",
+                "role": "component",
+                "visual_node_ids": ["pf01-left-column"],
+            }],
+            "requirements": [{
+                "id": "pf01-left-column.requirement",
+                "component_id": "pf01-left-column",
+                "scope_id": "portal-frame-pf01",
+                "part_number": None,
+                "quantity": 1,
+                "unit": "each",
+                "dimensions": {"component_label": "PF01_Left_Column"},
+            }],
+            "diagnostics": [],
+        },
+    )
+
+    assert analysis["requirements"] == []
+    assert any(diagnostic["code"] == "explicit_manifest_visual_rows_ignored" for diagnostic in analysis["diagnostics"])
 
 
 def test_non_geometry_lookup_function_with_part_number_is_not_a_requirement():
@@ -1048,3 +1170,56 @@ second = make_member(bad_method_length, part_number="BAD-METHOD")
     assert requirements["BAD-HELPER"]["dimensions"] == {}
     assert requirements["BAD-METHOD"]["dimensions"] == {}
     assert any(diagnostic["code"] == "unresolved_formula_dependency" for diagnostic in analysis["diagnostics"])
+
+
+def test_direct_labelled_geometry_without_bom_inputs_emits_repair_diagnostic():
+    source = analyze_design_sources({
+        "design.py": """
+import build123d as bd
+
+def make_foundation():
+    pads = []
+    with bd.BuildPart() as pad:
+        bd.Box(400, 600, 300)
+    pads.append(pad.part)
+
+    rebar = []
+    with bd.BuildPart() as bar:
+        bd.Cylinder(radius=8, height=3200)
+    rebar.append(bar.part)
+
+    return bd.Compound(children=[
+        bd.Compound(children=pads, label="Concrete Pads"),
+        bd.Compound(children=rebar, label="Rebar"),
+    ], label="Foundation Assembly")
+
+foundation = make_foundation()
+""",
+    })
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+
+    diagnostic = next(item for item in analysis["diagnostics"] if item["code"] == "unrepresented_geometry_source")
+    assert diagnostic["function"] == "make_foundation"
+    assert diagnostic["source_file"] == "design.py"
+    assert diagnostic["labels"] == ["Concrete Pads", "Foundation Assembly", "Rebar"]
+    assert diagnostic["primitive_counts"] == {"Box": 1, "Cylinder": 1}
+    assert analysis["requirements"] == []
+
+
+def test_direct_geometry_with_bom_arguments_does_not_emit_unrepresented_warning():
+    source = analyze_design_sources({
+        "design.py": """
+import build123d as bd
+
+def make_rebar(length, part_number):
+    with bd.BuildPart() as bar:
+        bd.Cylinder(radius=8, height=length)
+    return bar.part
+
+bar = make_rebar(3200, part_number="REBAR-D16")
+""",
+    })
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+
+    assert [requirement["part_number"] for requirement in analysis["requirements"]] == ["REBAR-D16"]
+    assert not any(diagnostic["code"] == "unrepresented_geometry_source" for diagnostic in analysis["diagnostics"])

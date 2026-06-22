@@ -6,7 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 
 STANDARD_BOM_FIELDS = {
@@ -1108,13 +1108,17 @@ def _collect_signatures(files: dict[str, str], source_files: list[str]) -> dict[
             if not isinstance(node, ast.FunctionDef):
                 continue
             params = [arg.arg for arg in node.args.args]
+            keyword_only_params = [arg.arg for arg in node.args.kwonlyargs]
             defaults: dict[str, ast.AST] = {}
             if node.args.defaults:
                 default_params = params[-len(node.args.defaults):]
                 defaults.update(zip(default_params, node.args.defaults, strict=True))
+            for param, default in zip(keyword_only_params, node.args.kw_defaults, strict=True):
+                if default is not None:
+                    defaults[param] = default
             signatures[node.name] = FunctionSignature(
                 name=node.name,
-                params=params,
+                params=[*params, *keyword_only_params],
                 defaults=defaults,
                 filename=filename,
                 line=node.lineno,
@@ -1349,6 +1353,130 @@ def _should_record_call(
     if signature and set(parameters) & STANDARD_BOM_FIELDS:
         return True
     return any(_standard_key(key) in STANDARD_BOM_FIELDS for key in parameters)
+
+
+GEOMETRY_PRIMITIVE_CALLS = {
+    "Box",
+    "Cone",
+    "Cylinder",
+    "Sphere",
+    "Torus",
+    "Wedge",
+}
+
+
+def _function_declares_procurement_inputs(function: ast.FunctionDef, signature: FunctionSignature | None) -> bool:
+    params = signature.params if signature else [arg.arg for arg in function.args.args]
+    return any(_standard_key(param) in STANDARD_BOM_FIELDS for param in params)
+
+
+def _walk_function_body(function: ast.FunctionDef) -> Iterator[ast.AST]:
+    for statement in function.body:
+        for node in ast.walk(statement):
+            if node is function:
+                continue
+            if isinstance(node, ast.FunctionDef):
+                continue
+            yield node
+
+
+def _call_label(
+    node: ast.Call,
+    *,
+    filename: str,
+    known: dict[str, Any],
+    static_resolver: StaticValueResolver,
+) -> str | None:
+    for keyword in node.keywords:
+        if keyword.arg != "label":
+            continue
+        if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            return keyword.value.value.strip() or None
+        try:
+            value = static_resolver.resolve(keyword.value, known, filename=filename).value
+        except ValueError:
+            return None
+        if isinstance(value, str):
+            return value.strip() or None
+    return None
+
+
+def _collect_unrepresented_geometry_diagnostics(
+    files: dict[str, str],
+    source_files: Iterable[str],
+    signatures: dict[str, FunctionSignature],
+    calls: list[dict[str, Any]],
+    static_resolver: StaticValueResolver,
+) -> list[dict[str, Any]]:
+    useful_call_scopes = {
+        str(call.get("source_scope") or "")
+        for call in calls
+        if call.get("standard_inputs")
+    }
+    covered_dependency_functions = {
+        str(dependency)
+        for call in calls
+        for value in (call.get("standard_inputs") or {}).values()
+        if isinstance(value, dict)
+        for dependency in value.get("dependencies", [])
+    }
+    diagnostics: list[dict[str, Any]] = []
+
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+        known = static_resolver.known_for(filename)
+        for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+            if function.name.startswith("_"):
+                continue
+            signature = signatures.get(function.name)
+            if _function_declares_procurement_inputs(function, signature):
+                continue
+            if function.name in covered_dependency_functions:
+                continue
+            if any(scope == function.name or scope.startswith(f"{function.name}::") for scope in useful_call_scopes):
+                continue
+
+            labels: list[str] = []
+            primitive_counts: dict[str, int] = {}
+            build_part_count = 0
+            for node in _walk_function_body(function):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = _call_name(node.func)
+                short_name = name.rsplit(".", 1)[-1] if name else ""
+                if short_name == "BuildPart":
+                    build_part_count += 1
+                if short_name == "Compound":
+                    label = _call_label(node, filename=filename, known=known, static_resolver=static_resolver)
+                    if label:
+                        labels.append(label)
+                if short_name in GEOMETRY_PRIMITIVE_CALLS:
+                    primitive_counts[short_name] = primitive_counts.get(short_name, 0) + 1
+
+            if not labels and not primitive_counts:
+                continue
+            diagnostic_labels = sorted(set(labels))
+            primary = ", ".join(diagnostic_labels[:4]) or ", ".join(sorted(primitive_counts))
+            diagnostics.append({
+                "code": "unrepresented_geometry_source",
+                "severity": "warning",
+                "message": (
+                    f"{function.name} builds labelled/direct geometry ({primary}) but no procurement-readable "
+                    "metadata was found. Add part_number/product_key, quantity, unit, dimensions, or tertius_bom metadata."
+                ),
+                "function": function.name,
+                "source_file": filename,
+                "source_line": function.lineno,
+                "labels": diagnostic_labels,
+                "primitive_counts": primitive_counts,
+                "build_part_count": build_part_count,
+                "suggested_action": "Add BoM arguments or explicit tertius_bom requirements for this geometry.",
+            })
+
+    return diagnostics
 
 
 def _iterable_values(
@@ -2281,6 +2409,14 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
 
         visit(tree)
 
+    diagnostics.extend(_collect_unrepresented_geometry_diagnostics(
+        files,
+        source_files,
+        signatures,
+        calls,
+        static_resolver,
+    ))
+
     return {
         "entrypoint": entrypoint,
         "source_files": source_files,
@@ -2542,25 +2678,34 @@ def _source_scope_assemblies_and_components(source_analysis: dict[str, Any]) -> 
     assembly_ids: dict[str, str | None] = {"<module>": None}
     used_ids: set[str] = set()
     entrypoint = str(source_analysis.get("entrypoint") or "design.py")
+    calls = [call for call in source_analysis.get("calls", []) if isinstance(call, dict) and not call.get("diagnostic")]
 
-    for call in source_analysis.get("calls", []):
-        if not isinstance(call, dict):
-            continue
-        if call.get("diagnostic"):
-            continue
-        if call.get("source_file") != entrypoint:
-            continue
+    def is_procurement_component_call(call: dict[str, Any]) -> bool:
         standard_inputs = call.get("standard_inputs") if isinstance(call.get("standard_inputs"), dict) else {}
         if not standard_inputs and call.get("bom_kind") == "component":
-            continue
-        if (
+            return False
+        return not (
             _resolved_input(call, "part_number") is None
             and call.get("bom_kind") != "bracket"
             and not _is_decomposable_fastener_assembly(call)
-        ):
+        )
+
+    opaque_entrypoint_helpers = {
+        str(call.get("function"))
+        for call in calls
+        if call.get("source_file") == entrypoint
+        and call.get("function")
+        and not is_procurement_component_call(call)
+    }
+
+    for call in calls:
+        source_scope = str(call.get("source_scope") or "<module>")
+        source_root = source_scope.split("::", 1)[0]
+        if call.get("source_file") != entrypoint and source_root not in opaque_entrypoint_helpers:
+            continue
+        if not is_procurement_component_call(call):
             continue
 
-        source_scope = str(call.get("source_scope") or "<module>")
         assembly_id = None
         if source_scope != "<module>":
             scope_parts = source_scope.split("::")
@@ -2945,6 +3090,9 @@ def _normalize_explicit_manifest_requirements(requirements: list[dict[str, Any]]
     for requirement in requirements:
         if not isinstance(requirement, dict):
             continue
+        dimensions = requirement.get("dimensions") if isinstance(requirement.get("dimensions"), dict) else {}
+        if not requirement.get("part_number") and dimensions.get("component_label"):
+            continue
         quantity = _positive_number(requirement.get("quantity")) or 1
         visual_count = _positive_number(requirement.get("visual_instance_count"))
         source_call_count = int(_positive_number(requirement.get("source_call_count")) or 1)
@@ -2976,22 +3124,14 @@ def build_procurement_analysis(
         *list(tree_analysis.get("diagnostics", [])),
         *list(source_analysis.get("diagnostics", [])),
     ]
-    if explicit_manifest and explicit_manifest.get("requirements"):
-        return {
-            "version": 1,
-            "source": "explicit_manifest",
-            "assemblies": explicit_manifest.get("scopes", []),
-            "components": explicit_manifest.get("components", []),
-            "requirements": _normalize_explicit_manifest_requirements(explicit_manifest.get("requirements", [])),
-            "diagnostics": explicit_manifest.get("diagnostics", []),
-        }
+
+    source_assemblies, source_components = _source_scope_assemblies_and_components(source_analysis)
 
     source_only = False
     tree_components = list(tree_analysis.get("components", []))
     assemblies = list(tree_analysis.get("assemblies", []))
-    if not assemblies:
+    if not assemblies and not source_assemblies:
         assemblies = _manifest_scopes_to_assemblies(explicit_manifest)
-    source_assemblies, source_components = _source_scope_assemblies_and_components(source_analysis)
     if not tree_components and source_components:
         assemblies, tree_components = _merge_source_scopes(assemblies, [], source_assemblies, source_components)
         source_only = True
@@ -3120,6 +3260,23 @@ def build_procurement_analysis(
             })
 
     _annotate_source_call_counts(requirements)
+
+    if not requirements and explicit_manifest and explicit_manifest.get("requirements"):
+        explicit_requirements = _normalize_explicit_manifest_requirements(explicit_manifest.get("requirements", []))
+        if explicit_requirements:
+            return {
+                "version": 1,
+                "source": "explicit_manifest",
+                "assemblies": explicit_manifest.get("scopes", []),
+                "components": explicit_manifest.get("components", []),
+                "requirements": explicit_requirements,
+                "diagnostics": explicit_manifest.get("diagnostics", []),
+            }
+        diagnostics.append({
+            "code": "explicit_manifest_visual_rows_ignored",
+            "severity": "info",
+            "message": "Explicit manifest requirements without part numbers were treated as visual/component coverage diagnostics, not procurement rows.",
+        })
 
     return {
         "version": 1,
