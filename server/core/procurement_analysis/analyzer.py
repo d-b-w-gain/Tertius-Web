@@ -1267,11 +1267,12 @@ def _resolve_expr(
 
 def _infer_kind(function_name: str) -> str:
     name = function_name.lower()
+    name_tokens = {token for token in re.split(r"[^a-z0-9]+", name) if token}
     if "fastener" in name:
         return "fastener_assembly"
     if any(token in name for token in ("purlin", "fascia", "column", "rafter", "member")):
         return "structural_member"
-    if any(token in name for token in ("bracket", "gpb", "cp", "apex", "plate")):
+    if "bracket" in name or any(token in name_tokens for token in ("gpb", "cp", "apex", "plate")):
         return "bracket"
     if "block" in name:
         return "block"

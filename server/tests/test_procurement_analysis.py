@@ -1223,3 +1223,21 @@ bar = make_rebar(3200, part_number="REBAR-D16")
 
     assert [requirement["part_number"] for requirement in analysis["requirements"]] == ["REBAR-D16"]
     assert not any(diagnostic["code"] == "unrepresented_geometry_source" for diagnostic in analysis["diagnostics"])
+
+
+def test_ocp_compatibility_helper_is_not_misclassified_as_cp_bracket():
+    source = analyze_design_sources({
+        "design.py": """
+from ocp_compat import ensure_ocp_hashcode
+
+ensure_ocp_hashcode()
+""",
+        "ocp_compat.py": """
+def ensure_ocp_hashcode():
+    return None
+""",
+    })
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+
+    assert analysis["components"] == []
+    assert analysis["requirements"] == []
