@@ -82,8 +82,10 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"
-  contains "$file" 'insert/opentelemetry/v1/traces' "${file} must include VictoriaTraces OTLP HTTP ingest path"
 done
+
+contains "$TMP_DIR/helm.yaml" 'insert/opentelemetry/v1/traces' "Helm collector render must include VictoriaTraces OTLP HTTP ingest path"
+contains "$ROOT_DIR/infra/otel/otel-collector-local.yaml" 'insert/opentelemetry/v1/traces' "Compose collector config must include VictoriaTraces OTLP HTTP ingest path"
 
 contains "$TMP_DIR/helm.yaml" 'API_BASE_PATH: "/api"|API_BASE_PATH[^[:alnum:]_/.-]*/api' "Helm local runtime must use API_BASE_PATH=/api"
 contains "$TMP_DIR/compose-parity.yaml" 'VITE_API_URL: /api|VITE_API_URL=/api' "Compose parity UI must use VITE_API_URL=/api"
