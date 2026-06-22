@@ -217,10 +217,20 @@ ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernet
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+default_otel_collector_configmap="$(extract_render_doc "$default_rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 default_otel_collector_deployment="$(extract_render_doc "$default_rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 default_otel_collector_service="$(extract_render_doc "$default_rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
+default_victoriametrics_deployment="$(extract_render_doc "$default_rendered" 'kind: Deployment' 'app.kubernetes.io/component: metrics-backend')"
+default_victoriametrics_service="$(extract_render_doc "$default_rendered" 'kind: Service' 'app.kubernetes.io/component: metrics-backend')"
+default_victoriametrics_pvc="$(extract_render_doc "$default_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: metrics-backend')"
+default_victoriatraces_deployment="$(extract_render_doc "$default_rendered" 'kind: Deployment' 'app.kubernetes.io/component: traces-backend')"
+default_victoriatraces_service="$(extract_render_doc "$default_rendered" 'kind: Service' 'app.kubernetes.io/component: traces-backend')"
+default_victoriatraces_pvc="$(extract_render_doc "$default_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: traces-backend')"
 external_observability_configmap="$(extract_render_doc "$external_observability_rendered" 'kind: ConfigMap' 'name: tertius-config')"
 external_observability_ui_deployment="$(extract_render_doc "$external_observability_rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+external_observability_collector_configmap="$(extract_render_doc "$external_observability_rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
+external_observability_collector_deployment="$(extract_render_doc "$external_observability_rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
+external_observability_collector_service="$(extract_render_doc "$external_observability_rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
 api_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: api')"
 api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_prompt_rendered" 'app.kubernetes.io/component: api')"
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
@@ -357,7 +367,27 @@ if ! rg -q 'name: tertius-otel-collector' <<<"$default_otel_collector_deployment
   exit 1
 fi
 
-if rg -q 'app.kubernetes.io/component: otel-collector' <<<"$external_observability_rendered" || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://shared-otel-collector:4317"' <<<"$external_observability_configmap" || ! printf '%s\n' "$external_observability_ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "shared-otel-collector"'; then
+if ! rg -q 'prometheusremotewrite:' <<<"$default_otel_collector_configmap" || ! rg -q 'endpoint: http://tertius-victoriametrics:8428/api/v1/write' <<<"$default_otel_collector_configmap" || ! rg -q -- '- prometheusremotewrite' <<<"$default_otel_collector_configmap"; then
+  echo "Default production collector must export metrics to bundled VictoriaMetrics." >&2
+  exit 1
+fi
+
+if ! rg -q 'otlphttp/victoriatraces:' <<<"$default_otel_collector_configmap" || ! rg -q 'traces_endpoint: http://tertius-victoriatraces:10428/insert/opentelemetry/v1/traces' <<<"$default_otel_collector_configmap" || ! rg -q -- '- otlphttp/victoriatraces' <<<"$default_otel_collector_configmap"; then
+  echo "Default production collector must export traces to bundled VictoriaTraces." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-victoriametrics' <<<"$default_victoriametrics_deployment" || ! rg -q 'image: "victoriametrics/victoria-metrics:v1.129.1"' <<<"$default_victoriametrics_deployment" || ! rg -q 'port: 8428' <<<"$default_victoriametrics_service" || ! rg -q 'name: tertius-victoriametrics' <<<"$default_victoriametrics_pvc"; then
+  echo "Default production Helm render must deploy bundled VictoriaMetrics." >&2
+  exit 1
+fi
+
+if ! rg -q 'name: tertius-victoriatraces' <<<"$default_victoriatraces_deployment" || ! rg -q 'image: "victoriametrics/victoria-traces:v0.9.2"' <<<"$default_victoriatraces_deployment" || ! rg -q 'port: 10428' <<<"$default_victoriatraces_service" || ! rg -q 'name: tertius-victoriatraces' <<<"$default_victoriatraces_pvc"; then
+  echo "Default production Helm render must deploy bundled VictoriaTraces." >&2
+  exit 1
+fi
+
+if [ -n "$external_observability_collector_configmap" ] || [ -n "$external_observability_collector_deployment" ] || [ -n "$external_observability_collector_service" ] || ! rg -q 'OTEL_EXPORTER_OTLP_ENDPOINT: "http://shared-otel-collector:4317"' <<<"$external_observability_configmap" || ! printf '%s\n' "$external_observability_ui_deployment" | rg -A 1 'name: OTEL_COLLECTOR_HTTP_HOST' | rg -q 'value: "shared-otel-collector"'; then
   echo "Helm render must allow disabling the in-chart collector while pointing backend and browser telemetry at a shared collector." >&2
   exit 1
 fi

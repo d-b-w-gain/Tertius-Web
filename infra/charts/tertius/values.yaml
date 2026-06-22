@@ -31,10 +31,12 @@ app:
           verbosity: basic
       tracesExporters:
         - debug
+        - otlphttp/victoriatraces
       metricsExporters:
         - debug
+        - prometheusremotewrite
     metricsBackend:
-      enabled: false
+      enabled: true
       image:
         repository: victoriametrics/victoria-metrics
         tag: v1.129.1
@@ -42,12 +44,12 @@ app:
       port: 8428
       extraArgs: []
       storage:
-        enabled: false
+        enabled: true
         size: 1Gi
         storageClassName: ""
       resources: {}
     tracesBackend:
-      enabled: false
+      enabled: true
       image:
         repository: victoriametrics/victoria-traces
         tag: v0.9.2
@@ -55,7 +57,7 @@ app:
       port: 10428
       retentionPeriod: 7d
       storage:
-        enabled: false
+        enabled: true
         size: 1Gi
         storageClassName: ""
       resources: {}
