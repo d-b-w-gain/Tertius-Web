@@ -148,7 +148,7 @@ def _literal_value(node: ast.AST) -> Any:
 
 
 def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple[Any, str]:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str | int | float | bool):
+    if isinstance(node, ast.Constant) and (node.value is None or isinstance(node.value, str | int | float | bool)):
         return node.value, "literal_assignment"
     if isinstance(node, ast.List | ast.Tuple):
         values: list[Any] = []
@@ -196,10 +196,44 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
             value, _value_resolution = _static_value_with_resolution(value_node, known)
             result[key] = value
         return result, "literal_assignment"
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        value, _resolution = _static_value_with_resolution(node.operand, known)
+        return not bool(value), "static_bool"
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         value, _resolution = _static_value_with_resolution(node.operand, known)
         if isinstance(value, int | float):
             return -value, "static_numeric"
+    if isinstance(node, ast.BoolOp):
+        values = [_static_value_with_resolution(value, known)[0] for value in node.values]
+        if isinstance(node.op, ast.And):
+            return all(bool(value) for value in values), "static_bool"
+        if isinstance(node.op, ast.Or):
+            return any(bool(value) for value in values), "static_bool"
+    if isinstance(node, ast.Compare):
+        left = _static_value_with_resolution(node.left, known)[0]
+        comparisons: list[bool] = []
+        for operator, comparator in zip(node.ops, node.comparators, strict=True):
+            right = _static_value_with_resolution(comparator, known)[0]
+            if isinstance(operator, ast.Eq):
+                comparisons.append(left == right)
+            elif isinstance(operator, ast.NotEq):
+                comparisons.append(left != right)
+            elif isinstance(operator, ast.Is):
+                comparisons.append(left is right)
+            elif isinstance(operator, ast.IsNot):
+                comparisons.append(left is not right)
+            elif isinstance(operator, ast.Lt):
+                comparisons.append(left < right)
+            elif isinstance(operator, ast.LtE):
+                comparisons.append(left <= right)
+            elif isinstance(operator, ast.Gt):
+                comparisons.append(left > right)
+            elif isinstance(operator, ast.GtE):
+                comparisons.append(left >= right)
+            else:
+                raise ValueError("not a static value")
+            left = right
+        return all(comparisons), "static_bool"
     if isinstance(node, ast.BinOp):
         left, _left_resolution = _static_value_with_resolution(node.left, known)
         right, _right_resolution = _static_value_with_resolution(node.right, known)
@@ -434,6 +468,10 @@ class StaticValueResolver:
         except ValueError:
             pass
 
+        container_value = self._resolve_container(node, known, filename=filename, call_stack=call_stack)
+        if container_value is not None:
+            return container_value
+
         if isinstance(node, ast.Call):
             name = _call_name(node.func)
             if name:
@@ -447,6 +485,42 @@ class StaticValueResolver:
                 if helper_value is not None:
                     return helper_value
         raise ValueError("not a static value")
+
+    def _resolve_container(
+        self,
+        node: ast.AST,
+        known: dict[str, Any],
+        *,
+        filename: str | None,
+        call_stack: tuple[str, ...],
+    ) -> StaticResolution | None:
+        if isinstance(node, ast.List | ast.Tuple):
+            values: list[Any] = []
+            dependencies: list[str] = []
+            for item in node.elts:
+                try:
+                    resolved = self.resolve(item, known, filename=filename, call_stack=call_stack)
+                except ValueError:
+                    return None
+                values.append(resolved.value)
+                dependencies.extend(resolved.dependencies)
+            return StaticResolution(value=values, resolution="static_container", dependencies=tuple(dependencies))
+        if isinstance(node, ast.Dict):
+            result: dict[Any, Any] = {}
+            dependencies: list[str] = []
+            for key_node, value_node in zip(node.keys, node.values, strict=True):
+                if key_node is None:
+                    return None
+                try:
+                    key = self.resolve(key_node, known, filename=filename, call_stack=call_stack)
+                    value = self.resolve(value_node, known, filename=filename, call_stack=call_stack)
+                except ValueError:
+                    return None
+                result[key.value] = value.value
+                dependencies.extend(key.dependencies)
+                dependencies.extend(value.dependencies)
+            return StaticResolution(value=result, resolution="static_container", dependencies=tuple(dependencies))
+        return None
 
     def _all_attr_aliases(self) -> dict[str, str]:
         aliases: dict[str, str] = {}
@@ -577,39 +651,319 @@ class StaticValueResolver:
         for statement in function.body:
             if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
                 continue
-            if isinstance(statement, ast.Assign):
-                try:
-                    assigned = self.resolve(
-                        statement.value,
-                        local_known,
-                        filename=function_file,
-                        call_stack=(*call_stack, short_name),
-                    )
-                except ValueError:
-                    return None
-                for target in statement.targets:
-                    if not isinstance(target, ast.Name):
-                        return None
-                    local_known[target.id] = assigned.value
-                continue
-            if isinstance(statement, ast.Return):
-                if statement.value is None:
-                    return None
-                try:
-                    returned = self.resolve(
-                        statement.value,
-                        local_known,
-                        filename=function_file,
-                        call_stack=(*call_stack, short_name),
-                    )
-                except ValueError:
-                    return None
+            returned = self._execute_static_statement(
+                statement,
+                local_known,
+                filename=function_file,
+                call_stack=(*call_stack, short_name),
+            )
+            if returned is not None:
                 return StaticResolution(
                     value=returned.value,
                     resolution="static_helper_call",
                     dependencies=(short_name,),
                 )
+            if getattr(statement, "_static_not_supported", False):
+                return None
+            continue
+        return None
+
+    def _execute_static_statement(
+        self,
+        statement: ast.stmt,
+        local_known: dict[str, Any],
+        *,
+        filename: str,
+        call_stack: tuple[str, ...],
+    ) -> StaticResolution | None:
+        if isinstance(statement, ast.Assign):
+            try:
+                assigned = self.resolve(statement.value, local_known, filename=filename, call_stack=call_stack)
+            except ValueError:
+                setattr(statement, "_static_not_supported", True)
+                return None
+            for target in statement.targets:
+                if not isinstance(target, ast.Name):
+                    setattr(statement, "_static_not_supported", True)
+                    return None
+                local_known[target.id] = assigned.value
             return None
+        if isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+            current = local_known.get(statement.target.id)
+            try:
+                increment = self.resolve(statement.value, local_known, filename=filename, call_stack=call_stack).value
+            except ValueError:
+                setattr(statement, "_static_not_supported", True)
+                return None
+            if not isinstance(current, int | float) or not isinstance(increment, int | float):
+                setattr(statement, "_static_not_supported", True)
+                return None
+            if isinstance(statement.op, ast.Add):
+                local_known[statement.target.id] = current + increment
+                return None
+            if isinstance(statement.op, ast.Sub):
+                local_known[statement.target.id] = current - increment
+                return None
+            setattr(statement, "_static_not_supported", True)
+            return None
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+            call = statement.value
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "append" and isinstance(call.func.value, ast.Name) and len(call.args) == 1:
+                target = local_known.get(call.func.value.id)
+                if not isinstance(target, list):
+                    setattr(statement, "_static_not_supported", True)
+                    return None
+                try:
+                    target.append(self.resolve(call.args[0], local_known, filename=filename, call_stack=call_stack).value)
+                except ValueError:
+                    setattr(statement, "_static_not_supported", True)
+                return None
+        if isinstance(statement, ast.If):
+            try:
+                condition = self.resolve(statement.test, local_known, filename=filename, call_stack=call_stack).value
+            except ValueError:
+                setattr(statement, "_static_not_supported", True)
+                return None
+            branch = statement.body if bool(condition) else statement.orelse
+            for child in branch:
+                returned = self._execute_static_statement(child, local_known, filename=filename, call_stack=call_stack)
+                if returned is not None:
+                    return returned
+                if getattr(child, "_static_not_supported", False):
+                    setattr(statement, "_static_not_supported", True)
+                    return None
+            return None
+        if isinstance(statement, ast.While):
+            for _iteration in range(1000):
+                try:
+                    condition = self.resolve(statement.test, local_known, filename=filename, call_stack=call_stack).value
+                except ValueError:
+                    setattr(statement, "_static_not_supported", True)
+                    return None
+                if not bool(condition):
+                    return None
+                for child in statement.body:
+                    returned = self._execute_static_statement(child, local_known, filename=filename, call_stack=call_stack)
+                    if returned is not None:
+                        return returned
+                    if getattr(child, "_static_not_supported", False):
+                        setattr(statement, "_static_not_supported", True)
+                        return None
+            setattr(statement, "_static_not_supported", True)
+            return None
+        if isinstance(statement, ast.Return):
+            if statement.value is None:
+                setattr(statement, "_static_not_supported", True)
+                return None
+            try:
+                return self.resolve(statement.value, local_known, filename=filename, call_stack=call_stack)
+            except ValueError:
+                setattr(statement, "_static_not_supported", True)
+                return None
+        setattr(statement, "_static_not_supported", True)
+        return None
+
+    def procurement_inputs_for_call(
+        self,
+        function_name: str,
+        parameters: dict[str, dict[str, Any]],
+        *,
+        filename: str,
+        call_stack: tuple[str, ...] = (),
+    ) -> dict[str, dict[str, Any]]:
+        short_name = function_name.rsplit(".", 1)[-1]
+        direct = self._procurement_inputs_from_product_table(parameters, filename=filename, source_function=short_name)
+        if direct:
+            return direct
+        if short_name in call_stack or short_name not in self.function_defs:
+            return {}
+
+        function_file, function = self.function_defs[short_name]
+        local_known = self.known_for(function_file)
+        for param in function.args.args:
+            trace = parameters.get(param.arg)
+            if isinstance(trace, dict) and "resolved" in trace:
+                local_known[param.arg] = trace.get("resolved")
+
+        for statement in function.body:
+            if not isinstance(statement, ast.Return) or statement.value is None:
+                continue
+            return_call = self._unwrap_factory_return_call(statement.value)
+            if return_call is None:
+                continue
+            target_name = _call_name(return_call.func)
+            if not target_name:
+                continue
+            target_short = target_name.rsplit(".", 1)[-1]
+            target_parameters = self._parameters_for_static_call(
+                return_call,
+                target_short,
+                local_known,
+                filename=function_file,
+                dependencies=(*call_stack, short_name, target_short),
+            )
+            if target_parameters is None:
+                continue
+            return self.procurement_inputs_for_call(
+                target_short,
+                target_parameters,
+                filename=function_file,
+                call_stack=(*call_stack, short_name),
+            )
+        return {}
+
+    def _unwrap_factory_return_call(self, node: ast.AST) -> ast.Call | None:
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name and name.rsplit(".", 1)[-1].startswith("make_"):
+                return node
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "moved":
+                return self._unwrap_factory_return_call(node.func.value)
+        return None
+
+    def _parameters_for_static_call(
+        self,
+        call: ast.Call,
+        short_name: str,
+        known: dict[str, Any],
+        *,
+        filename: str,
+        dependencies: tuple[str, ...],
+    ) -> dict[str, dict[str, Any]] | None:
+        parameters: dict[str, dict[str, Any]] = {}
+        target = self.function_defs.get(short_name)
+        params = [arg.arg for arg in target[1].args.args] if target else []
+        if target and target[1].args.defaults:
+            default_params = params[-len(target[1].args.defaults):]
+            for param, default in zip(default_params, target[1].args.defaults, strict=True):
+                try:
+                    resolved = self.resolve(default, self.known_for(target[0]), filename=target[0])
+                except ValueError:
+                    continue
+                parameters[param] = self._static_trace(
+                    value=resolved.value,
+                    resolution="function_default",
+                    source_file=target[0],
+                    source_line=getattr(default, "lineno", target[1].lineno),
+                    raw=_compact_expr(default),
+                    dependencies=dependencies,
+                )
+        for index, arg in enumerate(call.args):
+            param = params[index] if index < len(params) else f"arg_{index}"
+            try:
+                resolved = self.resolve(arg, known, filename=filename)
+            except ValueError:
+                return None
+            parameters[param] = self._static_trace(
+                value=resolved.value,
+                resolution=f"factory_return_{resolved.resolution}",
+                source_file=filename,
+                source_line=getattr(arg, "lineno", call.lineno),
+                raw=_compact_expr(arg),
+                dependencies=dependencies,
+            )
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return None
+            try:
+                resolved = self.resolve(keyword.value, known, filename=filename)
+            except ValueError:
+                return None
+            parameters[keyword.arg] = self._static_trace(
+                value=resolved.value,
+                resolution=f"factory_return_{resolved.resolution}",
+                source_file=filename,
+                source_line=getattr(keyword.value, "lineno", call.lineno),
+                raw=_compact_expr(keyword.value),
+                dependencies=dependencies,
+            )
+        return parameters
+
+    def _procurement_inputs_from_product_table(
+        self,
+        parameters: dict[str, dict[str, Any]],
+        *,
+        filename: str,
+        source_function: str,
+    ) -> dict[str, dict[str, Any]]:
+        product_key_trace = next(
+            (
+                parameters[key]
+                for key in ("product_key", "key", "arg_0")
+                if isinstance(parameters.get(key), dict) and parameters[key].get("resolved") is not None
+            ),
+            None,
+        )
+        if product_key_trace is None:
+            return {}
+        product_key = product_key_trace.get("resolved")
+        known = self.known_for(filename)
+        product: StaticObject | None = None
+        for value in known.values():
+            constant_value = value.value if isinstance(value, ConstantValue) else value
+            if not isinstance(constant_value, dict) or product_key not in constant_value:
+                continue
+            candidate = constant_value[product_key]
+            if isinstance(candidate, StaticObject) and candidate.attrs.get("part_number"):
+                product = candidate
+                break
+        if product is None:
+            return {}
+
+        attrs = product.attrs
+        dependencies = (source_function,)
+        inferred: dict[str, dict[str, Any]] = {}
+        for field in ("part_number", "manufacturer", "standard", "material", "finish", "unit"):
+            if attrs.get(field) is not None:
+                inferred[field] = self._static_trace(
+                    value=attrs[field],
+                    resolution="static_product_table",
+                    source_file=filename,
+                    source_line=product_key_trace.get("source_line"),
+                    raw={"kind": "catalog_product", "key": product_key, "field": field},
+                    dependencies=dependencies,
+                )
+
+        length_trace = parameters.get("length_mm") or parameters.get("length")
+        if isinstance(length_trace, dict) and length_trace.get("resolved") is not None:
+            inferred["length_mm"] = {
+                **length_trace,
+                "resolution": f"product_parameter_{length_trace.get('resolution', 'resolved')}",
+            }
+        else:
+            for field in ("model_length", "length_mm", "length_max", "length"):
+                if attrs.get(field) is not None:
+                    inferred["length_mm"] = self._static_trace(
+                        value=attrs[field],
+                        resolution="static_product_table",
+                        source_file=filename,
+                        source_line=product_key_trace.get("source_line"),
+                        raw={"kind": "catalog_product", "key": product_key, "field": field},
+                        dependencies=dependencies,
+                    )
+                    break
+        return inferred
+
+    def _static_trace(
+        self,
+        *,
+        value: Any,
+        resolution: str,
+        source_file: str,
+        source_line: int | None,
+        raw: dict[str, Any],
+        dependencies: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        trace: dict[str, Any] = {
+            "raw": raw,
+            "resolved": value,
+            "resolution": resolution,
+            "source_file": source_file,
+            "source_line": source_line,
+        }
+        if dependencies:
+            trace["dependencies"] = list(dict.fromkeys(dependencies))
+        return trace
         return None
 
 
@@ -978,16 +1332,52 @@ def _should_record_call(
     return any(_standard_key(key) in STANDARD_BOM_FIELDS for key in parameters)
 
 
-def _iterable_count(node: ast.AST, known: dict[str, Any]) -> int | None:
+def _iterable_values(
+    node: ast.AST,
+    known: dict[str, Any],
+    *,
+    static_resolver: StaticValueResolver | None = None,
+    filename: str | None = None,
+) -> list[Any] | None:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "enumerate" and node.args:
-        return _iterable_count(node.args[0], known)
+        values = _iterable_values(node.args[0], known, static_resolver=static_resolver, filename=filename)
+        return list(enumerate(values)) if values is not None else None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "range":
+        try:
+            args = [
+                (static_resolver.resolve(arg, known, filename=filename).value if static_resolver else _static_value(arg, known))
+                for arg in node.args
+            ]
+        except ValueError:
+            return None
+        if not all(isinstance(arg, int | float) for arg in args):
+            return None
+        int_args = [int(arg) for arg in args]
+        if len(int_args) == 1:
+            return list(range(int_args[0]))
+        if len(int_args) == 2:
+            return list(range(int_args[0], int_args[1]))
+        if len(int_args) == 3 and int_args[2] != 0:
+            return list(range(int_args[0], int_args[1], int_args[2]))
+        return None
     try:
-        value = _static_value(node, known)
+        value = static_resolver.resolve(node, known, filename=filename).value if static_resolver else _static_value(node, known)
     except ValueError:
         return None
     if isinstance(value, list | tuple):
-        return len(value)
+        return list(value)
     return None
+
+
+def _iterable_count(
+    node: ast.AST,
+    known: dict[str, Any],
+    *,
+    static_resolver: StaticValueResolver | None = None,
+    filename: str | None = None,
+) -> int | None:
+    values = _iterable_values(node, known, static_resolver=static_resolver, filename=filename)
+    return len(values) if values is not None else None
 
 
 def _collect_function_instance_counts(
@@ -1034,9 +1424,18 @@ def _collect_function_instance_counts(
     return counts
 
 
-def _static_count(node: ast.AST, known: dict[str, Any], local_counts: dict[str, int]) -> int | None:
+def _static_count(
+    node: ast.AST,
+    known: dict[str, Any],
+    local_counts: dict[str, int],
+    *,
+    static_resolver: StaticValueResolver | None = None,
+    filename: str | None = None,
+) -> int | None:
     if isinstance(node, ast.Name):
-        return local_counts.get(node.id)
+        count = local_counts.get(node.id)
+        if count is not None:
+            return count
     if isinstance(node, ast.List | ast.Tuple):
         return len(node.elts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
@@ -1047,12 +1446,18 @@ def _static_count(node: ast.AST, known: dict[str, Any], local_counts: dict[str, 
     if isinstance(node, ast.ListComp) and node.generators:
         count = 1
         for generator in node.generators:
-            generator_count = _static_count(generator.iter, known, local_counts)
+            generator_count = _static_count(
+                generator.iter,
+                known,
+                local_counts,
+                static_resolver=static_resolver,
+                filename=filename,
+            )
             if generator_count is None:
                 return None
             count *= generator_count
         return count
-    return _iterable_count(node, known)
+    return _iterable_count(node, known, static_resolver=static_resolver, filename=filename)
 
 
 def _collect_return_item_counts(
@@ -1120,6 +1525,33 @@ def _collect_return_item_counts(
     return return_counts
 
 
+def _return_item_is_metadata(node: ast.AST) -> bool:
+    name = _unparse(node).lower()
+    return any(token in name for token in ("hole", "holes", "point", "points", "offset", "offsets"))
+
+
+def _collect_return_product_counts(files: dict[str, str], source_files: list[str]) -> dict[str, int]:
+    product_counts: dict[str, int] = {}
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            for statement in function.body:
+                if not isinstance(statement, ast.Return) or not isinstance(statement.value, ast.Tuple):
+                    continue
+                count = 0
+                for item in statement.value.elts:
+                    if _return_item_is_metadata(item):
+                        break
+                    count += 1
+                if count > 1:
+                    product_counts[function.name] = count
+                break
+    return product_counts
+
+
 def _moved_prototype_name(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Call):
         return None
@@ -1134,6 +1566,7 @@ def _collect_fastener_call_placement_counts(
     files: dict[str, str],
     source_files: list[str],
     constants: dict[tuple[str, str], ConstantValue],
+    static_resolver: StaticValueResolver,
 ) -> dict[tuple[str, int], int]:
     return_counts = _collect_return_item_counts(files, source_files, constants)
     placement_counts: dict[tuple[str, int], int] = {}
@@ -1143,49 +1576,118 @@ def _collect_fastener_call_placement_counts(
             tree = ast.parse(files[filename], filename=filename)
         except SyntaxError:
             continue
-        known = {
-            name: value.value
-            for (constant_file, name), value in constants.items()
-            if constant_file == filename
-        }
+        known = static_resolver.known_for(filename)
 
         for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
             local_counts: dict[str, int] = {}
-            prototypes: dict[str, int] = {}
+            prototypes: dict[str, dict[int, int]] = {}
+
+            def add_counts(target: dict[int, int], source: dict[int, int], multiplier: int = 1) -> None:
+                for source_line, count in source.items():
+                    target[source_line] = target.get(source_line, 0) + count * multiplier
 
             def count_proto_moves(node: ast.AST, multiplier: int) -> None:
-                moved_name = _moved_prototype_name(node)
-                if moved_name and moved_name in prototypes:
-                    source_line = prototypes[moved_name]
-                    placement_counts[(filename, source_line)] = placement_counts.get((filename, source_line), 0) + multiplier
+                sources = prototype_sources(node)
+                if sources:
+                    for source_line, count in sources.items():
+                        placement_counts[(filename, source_line)] = placement_counts.get((filename, source_line), 0) + count * multiplier
                     return
                 for child in ast.iter_child_nodes(node):
                     count_proto_moves(child, multiplier)
 
-            def visit_statements(statements: list[ast.stmt], multiplier: int = 1) -> None:
+            def prototype_source_line(node: ast.AST) -> int | None:
+                if not isinstance(node, ast.Call):
+                    return None
+                name = _call_name(node.func)
+                short_name = name.rsplit(".", 1)[-1] if name else ""
+                if short_name.startswith("make_") or _infer_kind(short_name) != "component":
+                    return node.lineno
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "moved":
+                    return prototype_source_line(node.func.value)
+                return None
+
+            def prototype_sources(node: ast.AST) -> dict[int, int]:
+                source_line = prototype_source_line(node)
+                if source_line is not None:
+                    return {source_line: 1}
+                if isinstance(node, ast.Name) and node.id in prototypes:
+                    return dict(prototypes[node.id])
+                moved_name = _moved_prototype_name(node)
+                if moved_name and moved_name in prototypes:
+                    return dict(prototypes[moved_name])
+                if isinstance(node, ast.List | ast.Tuple):
+                    result: dict[int, int] = {}
+                    for item in node.elts:
+                        add_counts(result, prototype_sources(item))
+                    return result
+                if isinstance(node, ast.Call):
+                    name = _call_name(node.func)
+                    short_name = name.rsplit(".", 1)[-1] if name else ""
+                    if short_name == "Compound":
+                        for keyword in node.keywords:
+                            if keyword.arg == "children":
+                                return prototype_sources(keyword.value)
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "moved":
+                        return prototype_sources(node.func.value)
+                return {}
+
+            def assign_loop_target(target: ast.AST, value: Any, local_known: dict[str, Any]) -> None:
+                if isinstance(target, ast.Name):
+                    local_known[target.id] = value
+                elif isinstance(target, ast.Tuple) and isinstance(value, tuple | list):
+                    for item, element in zip(target.elts, value, strict=False):
+                        if isinstance(item, ast.Name):
+                            local_known[item.id] = element
+
+            def eval_bool(node: ast.AST, local_known: dict[str, Any]) -> bool | None:
+                try:
+                    value = static_resolver.resolve(node, local_known, filename=filename).value
+                except ValueError:
+                    return None
+                return bool(value)
+
+            def visit_statements(statements: list[ast.stmt], multiplier: int = 1, local_known: dict[str, Any] | None = None) -> bool:
+                if local_known is None:
+                    local_known = dict(known)
                 for statement in statements:
                     if isinstance(statement, ast.Assign):
                         assigned_call = statement.value if isinstance(statement.value, ast.Call) else None
                         assigned_name = _call_name(assigned_call.func) if assigned_call else None
                         assigned_short_name = assigned_name.rsplit(".", 1)[-1] if assigned_name else ""
+                        source_line = prototype_source_line(statement.value)
                         moved_name = _moved_prototype_name(statement.value)
+                        source_map = prototype_sources(statement.value)
 
-                        if assigned_short_name == "make_fastener_assembly":
+                        if source_map and any(isinstance(target, ast.Name) for target in statement.targets):
                             for target in statement.targets:
                                 if isinstance(target, ast.Name):
-                                    prototypes[target.id] = statement.lineno
+                                    prototypes[target.id] = source_map
                             continue
 
                         if moved_name and moved_name in prototypes:
                             for target in statement.targets:
                                 if isinstance(target, ast.Name):
-                                    prototypes[target.id] = prototypes[moved_name]
+                                    prototypes[target.id] = dict(prototypes[moved_name])
                             continue
+
+                        try:
+                            resolved_value = static_resolver.resolve(statement.value, local_known, filename=filename).value
+                        except ValueError:
+                            resolved_value = None
+                        else:
+                            for target in statement.targets:
+                                assign_loop_target(target, resolved_value, local_known)
 
                         if isinstance(statement.value, ast.List | ast.Tuple):
                             count = len(statement.value.elts)
                         elif isinstance(statement.value, ast.ListComp):
-                            count = _static_count(statement.value, known, local_counts)
+                            count = _static_count(
+                                statement.value,
+                                local_known,
+                                local_counts,
+                                static_resolver=static_resolver,
+                                filename=filename,
+                            )
                         else:
                             count = None
                         if count is not None:
@@ -1202,7 +1704,8 @@ def _collect_fastener_call_placement_counts(
                                             if returned_count is not None:
                                                 local_counts[item.id] = returned_count
 
-                        count_proto_moves(statement.value, multiplier)
+                        if not source_map:
+                            count_proto_moves(statement.value, multiplier)
                         continue
 
                     if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
@@ -1210,6 +1713,12 @@ def _collect_fastener_call_placement_counts(
                         if isinstance(call.func, ast.Attribute) and call.func.attr == "append" and isinstance(call.func.value, ast.Name):
                             list_name = call.func.value.id
                             local_counts[list_name] = local_counts.get(list_name, 0) + multiplier
+                            target_list = local_known.get(list_name)
+                            if isinstance(target_list, list) and call.args:
+                                try:
+                                    target_list.append(static_resolver.resolve(call.args[0], local_known, filename=filename).value)
+                                except ValueError:
+                                    pass
                             if call.args:
                                 count_proto_moves(call.args[0], multiplier)
                             continue
@@ -1217,14 +1726,47 @@ def _collect_fastener_call_placement_counts(
                         continue
 
                     if isinstance(statement, ast.For):
-                        loop_count = _static_count(statement.iter, known, local_counts)
-                        if loop_count is not None:
-                            visit_statements(statement.body, multiplier * loop_count)
+                        values = _iterable_values(
+                            statement.iter,
+                            local_known,
+                            static_resolver=static_resolver,
+                            filename=filename,
+                        )
+                        if values is not None and len(values) <= 1000:
+                            for value in values:
+                                child_known = dict(local_known)
+                                assign_loop_target(statement.target, value, child_known)
+                                visit_statements(statement.body, multiplier, child_known)
+                        else:
+                            loop_count = _static_count(
+                                statement.iter,
+                                local_known,
+                                local_counts,
+                                static_resolver=static_resolver,
+                                filename=filename,
+                            )
+                            if loop_count is not None:
+                                visit_statements(statement.body, multiplier * loop_count, dict(local_known))
+                        continue
+
+                    if isinstance(statement, ast.If):
+                        condition = eval_bool(statement.test, local_known)
+                        if condition is True:
+                            if len(statement.body) == 1 and isinstance(statement.body[0], ast.Continue):
+                                return True
+                            should_continue = visit_statements(statement.body, multiplier, dict(local_known))
+                            if should_continue:
+                                return True
+                        elif condition is False:
+                            should_continue = visit_statements(statement.orelse, multiplier, dict(local_known))
+                            if should_continue:
+                                return True
                         continue
 
                     count_proto_moves(statement, multiplier)
+                return False
 
-            visit_statements(function.body)
+            visit_statements(function.body, local_known=dict(known))
 
     return placement_counts
 
@@ -1238,7 +1780,8 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
     static_resolver = StaticValueResolver(files, source_files, import_aliases, constants)
     signatures = _collect_signatures(files, source_files)
     function_instance_counts = _collect_function_instance_counts(files, source_files, constants)
-    fastener_call_placement_counts = _collect_fastener_call_placement_counts(files, source_files, constants)
+    fastener_call_placement_counts = _collect_fastener_call_placement_counts(files, source_files, constants, static_resolver)
+    return_product_counts = _collect_return_product_counts(files, source_files)
     calls: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
 
@@ -1366,6 +1909,15 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                             for param, value in parameters.items()
                             if _standard_key(param) in STANDARD_BOM_FIELDS
                         }
+                        inferred_inputs = static_resolver.procurement_inputs_for_call(
+                            short_name,
+                            parameters,
+                            filename=filename,
+                        )
+                        for standard_key, value in inferred_inputs.items():
+                            existing = standard_inputs.get(standard_key)
+                            if not isinstance(existing, dict) or existing.get("resolved") is None:
+                                standard_inputs[standard_key] = value
                         for standard_key, value in standard_inputs.items():
                             if isinstance(value, dict) and value.get("resolved") is None and str(value.get("resolution", "")).startswith("unresolved"):
                                 diagnostics.append({
@@ -1391,7 +1943,10 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                             "bom_kind": kind,
                             "bom_readiness": readiness["level"],
                             "bom_missing_fields": readiness["missing"],
-                            "source_instance_count": fastener_call_placement_counts.get((filename, node.lineno)),
+                            "source_instance_count": (
+                                fastener_call_placement_counts.get((filename, node.lineno))
+                                or return_product_counts.get(short_name)
+                            ),
                             "signature_source": {
                                 "filename": signature.filename,
                                 "line": signature.line,
@@ -1605,14 +2160,23 @@ def _source_scope_assemblies_and_components(source_analysis: dict[str, Any]) -> 
     components: list[dict[str, Any]] = []
     assembly_ids: dict[str, str | None] = {"<module>": None}
     used_ids: set[str] = set()
+    entrypoint = str(source_analysis.get("entrypoint") or "design.py")
 
     for call in source_analysis.get("calls", []):
         if not isinstance(call, dict):
             continue
         if call.get("diagnostic"):
             continue
+        if call.get("source_file") != entrypoint:
+            continue
         standard_inputs = call.get("standard_inputs") if isinstance(call.get("standard_inputs"), dict) else {}
         if not standard_inputs and call.get("bom_kind") == "component":
+            continue
+        if (
+            _resolved_input(call, "part_number") is None
+            and call.get("bom_kind") != "bracket"
+            and not _is_decomposable_fastener_assembly(call)
+        ):
             continue
 
         source_scope = str(call.get("source_scope") or "<module>")
@@ -1775,6 +2339,13 @@ def _stock_number(part_number: Any, dimensions: dict[str, Any]) -> str | None:
     return f"{part_number}-{compact}"
 
 
+def _requirement_stock_number(part_number: Any, dimensions: dict[str, Any], resolution_trace: dict[str, Any]) -> str | None:
+    part_trace = resolution_trace.get("part_number")
+    if isinstance(part_trace, dict) and part_trace.get("resolution") == "static_product_table":
+        return None
+    return _stock_number(part_number, dimensions)
+
+
 def _positive_number(value: Any) -> int | float | None:
     if isinstance(value, bool):
         return None
@@ -1814,7 +2385,11 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
     assembly_multiplier = _assembly_multiplier(call, source_analysis)
     source_instance_count = int(_positive_number(call.get("source_instance_count")) or 1) if call else 1
 
-    if explicit_quantity is not None:
+    if explicit_quantity == 1 and source_instance_count != 1:
+        quantity = source_instance_count
+        source = "explicit_source_calls"
+        confidence = "probable"
+    elif explicit_quantity is not None:
         quantity = explicit_quantity
         source = "explicit"
         confidence = "verified"
@@ -1827,7 +2402,7 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
         source = "source_calls"
         confidence = "probable"
 
-    rolled_up_quantity = quantity * assembly_multiplier if source == "source_calls" else quantity
+    rolled_up_quantity = quantity * assembly_multiplier if source in {"source_calls", "explicit_source_calls"} else quantity
 
     trace = {
         "explicit_quantity": explicit_quantity,
@@ -2107,7 +2682,7 @@ def build_procurement_analysis(
             "component_id": component["id"],
             "assembly_id": component.get("assembly_id"),
             "part_number": part_number,
-            "stock_number": _stock_number(part_number, dimensions),
+            "stock_number": _requirement_stock_number(part_number, dimensions, resolution_trace),
             **quantity_evidence,
             "unit": _resolved_input(call, "unit") if call and _resolved_input(call, "unit") else "each",
             "dimensions": dimensions,

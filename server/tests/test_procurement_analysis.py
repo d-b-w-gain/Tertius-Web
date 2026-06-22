@@ -506,6 +506,184 @@ model = building()
     assert next(item for item in fasteners if item["source_trace"]["procurement_item"] == "nut")["dimensions"] == {"size": "M12"}
 
 
+def test_catalog_backed_factory_wrapper_resolves_procurement_identity():
+    source = analyze_design_sources({
+        "design.py": """
+from roofing_fasteners import make_wall_cladding_screw
+
+def wall_fasteners():
+    screw = make_wall_cladding_screw()
+    return screw
+
+model = wall_fasteners()
+""",
+        "roofing_fasteners.py": """
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class FastenerSpec:
+    part_number: str
+    length_max: float
+    standard: str = "AS 3566.1"
+    finish: str = "Climaseal 4"
+
+FASTENERS = {
+    "wall": FastenerSpec(
+        part_number="6-310-3117-5C4",
+        length_max=15.5,
+    ),
+}
+
+def make_roofing_fastener(key="wall", length=None):
+    return None
+
+def make_wall_cladding_screw(length=None):
+    return make_roofing_fastener("wall", length=length)
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    requirements = [item for item in analysis["requirements"] if item["part_number"] == "6-310-3117-5C4"]
+
+    assert len(requirements) == 1
+    assert requirements[0]["dimensions"] == {"length_mm": 15.5}
+    assert requirements[0]["finish"] == "Climaseal 4"
+    assert requirements[0]["resolution_trace"]["part_number"]["resolution"] == "static_product_table"
+    assert all(item["source_trace"]["source_file"] == "design.py" for item in analysis["requirements"])
+
+
+def test_source_placement_counts_generic_make_prototypes_with_range_and_continue():
+    source = analyze_design_sources({
+        "design.py": """
+sheet_count = 3
+offsets = [0, 10]
+
+def make_screw(part_number):
+    return None
+
+def fasteners():
+    screw = make_screw("SCR-001").moved(None)
+    placed = []
+    for i in range(sheet_count):
+        for offset in offsets:
+            y = i * 10 + offset
+            if not (0 <= y <= 20):
+                continue
+            placed.append(screw.moved(y))
+    return placed
+
+model = fasteners()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    requirements = [item for item in analysis["requirements"] if item["part_number"] == "SCR-001"]
+
+    assert len(requirements) == 1
+    assert requirements[0]["quantity"] == 5
+    assert requirements[0]["rolled_up_quantity"] == 5
+    assert requirements[0]["count_trace"]["source_instance_count"] == 5
+
+
+def test_explicit_quantity_one_inside_static_loop_counts_each_source_instance():
+    source = analyze_design_sources({
+        "design.py": """
+positions = [0, 1, 2]
+
+def make_batten(part_number, quantity=1):
+    return None
+
+def battens():
+    rows = []
+    for position in positions:
+        proto = make_batten("BATTEN", quantity=1)
+        rows.append(proto.moved(position))
+    return rows
+
+model = battens()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    battens = [item for item in analysis["requirements"] if item["part_number"] == "BATTEN"]
+
+    assert len(battens) == 1
+    assert battens[0]["quantity"] == 3
+    assert battens[0]["quantity_source"] == "explicit_source_calls"
+    assert battens[0]["rolled_up_quantity"] == 3
+
+
+def test_source_placement_counts_nested_compound_prototypes():
+    source = analyze_design_sources({
+        "design.py": """
+positions = [0, 1, 2]
+
+class bd:
+    class Compound:
+        pass
+
+def lysaght_zc_cp(part_number):
+    return None
+
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+def fascia_brackets():
+    cp_base = lysaght_zc_cp("100CP").moved(None)
+    fastener_base = make_fastener_assembly("M12", 25.0, 4.9)
+    fastener_base = fastener_base.moved(None)
+    cp_assembly = bd.Compound(children=[
+        cp_base,
+        fastener_base.moved(15),
+        fastener_base.moved(-15),
+    ])
+    brackets = []
+    for y in positions:
+        brackets.append(cp_assembly.moved(("left", y)))
+        brackets.append(cp_assembly.moved(("right", y)))
+    return bd.Compound(children=brackets)
+
+model = fascia_brackets()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    cp = [item for item in analysis["requirements"] if item["part_number"] == "100CP"]
+    fasteners = [
+        item for item in analysis["requirements"]
+        if item["source_trace"].get("decomposed_from") == "fastener_assembly"
+    ]
+
+    assert len(cp) == 1
+    assert cp[0]["quantity"] == 6
+    assert {item["quantity"] for item in fasteners} == {12}
+
+
+def test_tuple_returned_bracket_pair_counts_leading_products_before_metadata():
+    source = analyze_design_sources({
+        "design.py": """
+def knee_bracket_pair(mark="KB01"):
+    left = object()
+    right = object()
+    holes = []
+    holes_r = []
+    return left, right, holes, holes_r
+
+def portal_frame():
+    knee_l, knee_r, knee_holes_l, knee_holes_r = knee_bracket_pair(mark="KB01")
+    return knee_l, knee_r
+
+model = portal_frame()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    knees = [item for item in analysis["requirements"] if item["source_trace"]["function"] == "knee_bracket_pair"]
+
+    assert len(knees) == 1
+    assert knees[0]["quantity"] == 2
+
+
 def test_catalog_class_attributes_and_local_quantity_are_resolved_generically():
     source = analyze_design_sources({
         "design.py": """
