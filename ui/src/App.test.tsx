@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 
 const mocks = vi.hoisted(() => ({
@@ -26,7 +26,24 @@ vi.mock('./workflows/timus/TimusWindow', () => ({ TimusWindow: () => <div>Timus 
 vi.mock('./workflows/generate/GenerateDesignWindow', () => ({ GenerateDesignWindow: () => <div>Generate mock</div> }))
 vi.mock('./workflows/generate/AiBudgetGauge', () => ({ AiBudgetGauge: () => <div>Budget mock</div> }))
 
+afterEach(() => {
+  cleanup()
+})
+
 describe('App guest mode', () => {
+  it('starts with the sidebar collapsed on desktop', () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1024,
+    })
+
+    render(<App />)
+
+    const sidebar = screen.getByText('Artus mock').closest('.absolute')
+    expect(sidebar).not.toBeNull()
+    expect(sidebar?.className).toContain('md:w-0')
+  })
+
   it('renders the app shell for anonymous users instead of redirecting to login', () => {
     render(<App />)
 
