@@ -136,13 +136,13 @@ bracket = make_apex_bracket(roof_pitch=20, material="G250")
         "design.py": files["design.py"].replace("roof_pitch=20", "roof_pitch=25"),
     }, deepcopy(tree))
 
-    assert requirement["part_number"].startswith("BRACKET-APEX-BRACKET-20DEG-")
+    assert requirement["part_number"] == "AB-20"
     assert repeat["part_number"] == requirement["part_number"]
     assert changed["part_number"] != requirement["part_number"]
-    assert requirement["resolution_trace"]["part_number"]["resolution"] == "generated_deterministic"
+    assert requirement["resolution_trace"]["part_number"]["resolution"] == "generated_compact_identity"
 
 
-def test_mesh_only_noise_never_becomes_component_or_requirement():
+def test_mesh_only_noise_uses_source_components_without_mesh_requirements():
     source = analyze_design_sources({
         "design.py": """
 def make_member(length, part_number):
@@ -162,7 +162,30 @@ left = make_member(1200, part_number="TEST-NOISE")
 
     assert tree["assemblies"] == []
     assert tree["components"] == []
-    assert analysis["requirements"] == []
+    assert [item["part_number"] for item in analysis["requirements"]] == ["TEST-NOISE"]
+    assert analysis["components"][0]["visual_node_ids"] == []
+    assert any(diagnostic["code"] == "source_only_components_no_visual_tree" for diagnostic in analysis["diagnostics"])
+
+
+def test_partial_gltf_labels_are_supplemented_with_unmatched_source_components():
+    source = analyze_design_sources({
+        "design.py": """
+def make_member(length, part_number):
+    return None
+
+left = make_member(1200, part_number="LEFT")
+right = make_member(1200, part_number="RIGHT")
+""",
+    })
+    tree = analyze_gltf_tree(component_tree("Left"))
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert [item["part_number"] for item in analysis["requirements"]] == ["LEFT", "RIGHT"]
+    assert analysis["components"][0]["visual_node_ids"]
+    assert analysis["components"][1]["visual_node_ids"] == []
+    assert analysis["requirements"][1]["source_trace"]["match_reason"] == "source-only component candidate"
+    assert any(diagnostic["code"] == "hybrid_source_components_added" for diagnostic in analysis["diagnostics"])
 
 
 def test_parent_named_group_is_assembly_and_leaf_named_group_is_component():
@@ -230,7 +253,7 @@ left = make_member(column_height, part_number=PURLIN_PART_NUMBER)
                 "source_file": "design.py",
                 "source_scope": "<module>",
                 "source_line": 8,
-                "match_reason": "single candidate source call",
+                "match_reason": "token overlap: left",
             },
             "resolution_trace": {
                 "part_number": {
@@ -682,6 +705,88 @@ model = portal_frame()
 
     assert len(knees) == 1
     assert knees[0]["quantity"] == 2
+
+
+def test_structural_member_section_identity_and_static_loop_count():
+    source = analyze_design_sources({
+        "design.py": """
+def make_member(p1, p2, section, pitch=50.0):
+    return None
+
+def tower(n_panels=3, belt="90x90x8"):
+    levels = n_panels + 1
+    rows = []
+    for i in range(1, levels):
+        for side in range(4):
+            rows.append(make_member((0, 0, 0), (0, 0, 1000), belt))
+    return rows
+
+model = tower()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    belts = [item for item in analysis["requirements"] if item["part_number"] == "90x90x8"]
+
+    assert len(belts) == 1
+    assert belts[0]["quantity"] == 12
+    assert belts[0]["dimensions"] == {"length_mm": 1000.0}
+    assert "angle_deg" not in belts[0]["dimensions"]
+
+
+def test_plate_factory_dimensions_and_static_loop_count_are_source_derived():
+    source = analyze_design_sources({
+        "design.py": """
+def make_plate(ctr, normal, w, h, t, label="plate"):
+    return None
+
+def plates():
+    made = []
+    for side in range(4):
+        made.append(make_plate((0, 0, 0), (0, 0, 1), 250.0, 250.0, 10.0))
+    return made
+
+model = plates()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    plates = [item for item in analysis["requirements"] if item["source_trace"]["function"] == "make_plate"]
+
+    assert len(plates) == 1
+    assert plates[0]["quantity"] == 4
+    assert plates[0]["dimensions"] == {"width_mm": 250.0, "height_mm": 250.0, "thickness_mm": 10.0}
+    assert plates[0]["part_number"] == "P-2P5-2P5-0P1"
+
+
+def test_fastener_assembly_counts_hole_bearing_member_calls_in_same_scope():
+    source = analyze_design_sources({
+        "design.py": """
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+def make_member(section, holes_start=(0, 0), holes_end=(0, 0)):
+    return None
+
+def frame():
+    fb = make_fastener_assembly("M16", 50.0, 30.0)
+    members = []
+    for side in range(4):
+        members.append(make_member("ANGLE", holes_start=(0, 1), holes_end=(0, 2)))
+    return members
+
+model = frame()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    fasteners = [
+        item for item in analysis["requirements"]
+        if item["source_trace"].get("decomposed_from") == "fastener_assembly"
+    ]
+
+    assert [item["source_trace"]["procurement_item"] for item in fasteners] == ["bolt", "nut"]
+    assert {item["quantity"] for item in fasteners} == {12}
 
 
 def test_catalog_class_attributes_and_local_quantity_are_resolved_generically():

@@ -106,6 +106,8 @@ SAFE_BUILTIN_NUMERIC_FUNCTIONS = {
     "max": max,
     "round": round,
     "sum": sum,
+    "ceil": math.ceil,
+    "floor": math.floor,
 }
 
 SAFE_MATH_NUMERIC_FUNCTIONS = {
@@ -297,6 +299,23 @@ def _compact_expr(node: ast.AST) -> dict[str, Any]:
     if isinstance(node, ast.Attribute):
         return {"kind": "reference", "name": _unparse(node)}
     return {"kind": "expression", "source": _unparse(node)}
+
+
+def _assignment_target_names(targets: list[ast.AST]) -> list[str]:
+    names: list[str] = []
+
+    def collect(target: ast.AST) -> None:
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, ast.Tuple | ast.List):
+            for item in target.elts:
+                collect(item)
+        elif isinstance(target, ast.Attribute):
+            names.append(_unparse(target))
+
+    for target in targets:
+        collect(target)
+    return names
 
 
 def _normalize_file_name(module_name: str) -> str:
@@ -1248,7 +1267,7 @@ def _infer_kind(function_name: str) -> str:
         return "fastener_assembly"
     if any(token in name for token in ("purlin", "fascia", "column", "rafter", "member")):
         return "structural_member"
-    if any(token in name for token in ("bracket", "gpb", "cp", "apex")):
+    if any(token in name for token in ("bracket", "gpb", "cp", "apex", "plate")):
         return "bracket"
     if "block" in name:
         return "block"
@@ -1264,7 +1283,7 @@ def _standard_key(key: str) -> str:
         return "part_number"
     if key in {"span", "span_mm"}:
         return "width_mm"
-    if key in {"pitch", "roof_pitch", "roof_pitch_degrees"}:
+    if key in {"roof_pitch", "roof_pitch_degrees"}:
         return "angle_deg"
     if key in {"column_height", "column_height_mm"}:
         return "height_mm"
@@ -1422,6 +1441,284 @@ def _collect_function_instance_counts(
                         if factory:
                             counts[factory] = max(counts.get(factory, 1), loop_count)
     return counts
+
+
+def _assign_static_target(target: ast.AST, value: Any, known: dict[str, Any]) -> None:
+    if isinstance(target, ast.Name):
+        known[target.id] = value
+    elif isinstance(target, ast.Tuple | ast.List) and isinstance(value, list | tuple):
+        for item, element in zip(target.elts, value, strict=False):
+            _assign_static_target(item, element, known)
+
+
+def _is_procurement_factory_call(short_name: str) -> bool:
+    if not short_name:
+        return False
+    if short_name.startswith("make_"):
+        return True
+    if short_name[:1].isupper():
+        return False
+    return _infer_kind(short_name) != "component"
+
+
+def _collect_source_call_instance_counts(
+    files: dict[str, str],
+    source_files: list[str],
+    static_resolver: StaticValueResolver,
+) -> tuple[dict[tuple[str, int], int], dict[tuple[str, str], int]]:
+    counts: dict[tuple[str, int], int] = {}
+    scope_hole_counts: dict[tuple[str, str], int] = {}
+
+    def resolved_hole_count(call: ast.Call, local_known: dict[str, Any], filename: str) -> int:
+        count = 0
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                continue
+            key = keyword.arg.lower()
+            if not (key.startswith("holes_") or key.endswith("_holes") or key in {"holes", "bolt_holes"}):
+                continue
+            try:
+                value = static_resolver.resolve(keyword.value, local_known, filename=filename).value
+            except ValueError:
+                continue
+            if isinstance(value, int | float) and value > 0:
+                count += int(value)
+            elif isinstance(value, list | tuple):
+                count += sum(int(item) for item in value if isinstance(item, int | float) and item > 0)
+        return count
+
+    def count_expr_calls(filename: str, node: ast.AST, multiplier: int, local_known: dict[str, Any], scope_key: str) -> None:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            name = _call_name(child.func)
+            short_name = name.rsplit(".", 1)[-1] if name else ""
+            if _is_procurement_factory_call(short_name):
+                key = (filename, child.lineno)
+                counts[key] = counts.get(key, 0) + multiplier
+                hole_count = resolved_hole_count(child, local_known, filename)
+                if hole_count:
+                    scope_key_tuple = (filename, scope_key)
+                    scope_hole_counts[scope_key_tuple] = scope_hole_counts.get(scope_key_tuple, 0) + hole_count * multiplier
+
+    def infer_segment_count(target: ast.AST, local_known: dict[str, Any]) -> int | None:
+        if not isinstance(target, ast.Name):
+            return None
+        target_name = target.id.lower()
+        if target_name not in {"nseg", "n_seg", "n_segments", "segment_count", "segments"}:
+            return None
+        total = next(
+            (
+                local_known.get(key)
+                for key in ("height", "total_length", "member_length", "length")
+                if isinstance(local_known.get(key), int | float)
+            ),
+            None,
+        )
+        segment = next(
+            (
+                local_known.get(key)
+                for key in ("leg_segment_length", "segment_length", "stock_length", "max_segment_length")
+                if isinstance(local_known.get(key), int | float)
+            ),
+            None,
+        )
+        if not isinstance(total, int | float) or not isinstance(segment, int | float) or segment <= 0:
+            return None
+        return max(1, int(math.ceil(total / segment)))
+
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            function_known = static_resolver.known_for(filename)
+            params = [arg.arg for arg in function.args.args]
+            defaults = list(function.args.defaults)
+            default_params = params[-len(defaults):] if defaults else []
+            for param, default in zip(default_params, defaults, strict=True):
+                try:
+                    function_known[param] = static_resolver.resolve(default, function_known, filename=filename).value
+                except ValueError:
+                    pass
+
+            scope_key = function.name
+
+            def visit_statements(statements: list[ast.stmt], multiplier: int, local_known: dict[str, Any]) -> None:
+                for statement in statements:
+                    if isinstance(statement, ast.Assign):
+                        count_expr_calls(filename, statement.value, multiplier, local_known, scope_key)
+                        try:
+                            value = static_resolver.resolve(statement.value, local_known, filename=filename).value
+                        except ValueError:
+                            for target in statement.targets:
+                                inferred = infer_segment_count(target, local_known)
+                                if inferred is not None:
+                                    _assign_static_target(target, inferred, local_known)
+                            continue
+                        for target in statement.targets:
+                            _assign_static_target(target, value, local_known)
+                        continue
+
+                    if isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+                        count_expr_calls(filename, statement.value, multiplier, local_known, scope_key)
+                        try:
+                            current = local_known.get(statement.target.id)
+                            value = static_resolver.resolve(statement.value, local_known, filename=filename).value
+                        except ValueError:
+                            continue
+                        if isinstance(current, int | float) and isinstance(value, int | float):
+                            if isinstance(statement.op, ast.Add):
+                                local_known[statement.target.id] = current + value
+                            elif isinstance(statement.op, ast.Sub):
+                                local_known[statement.target.id] = current - value
+                        continue
+
+                    if isinstance(statement, ast.Expr):
+                        count_expr_calls(filename, statement.value, multiplier, local_known, scope_key)
+                        continue
+
+                    if isinstance(statement, ast.Return):
+                        if statement.value is not None:
+                            count_expr_calls(filename, statement.value, multiplier, local_known, scope_key)
+                        continue
+
+                    if isinstance(statement, ast.For):
+                        values = _iterable_values(
+                            statement.iter,
+                            local_known,
+                            static_resolver=static_resolver,
+                            filename=filename,
+                        )
+                        if values is not None and len(values) <= 1000:
+                            for value in values:
+                                child_known = dict(local_known)
+                                _assign_static_target(statement.target, value, child_known)
+                                visit_statements(statement.body, multiplier, child_known)
+                            continue
+                        loop_count = _static_count(
+                            statement.iter,
+                            local_known,
+                            {},
+                            static_resolver=static_resolver,
+                            filename=filename,
+                        )
+                        if loop_count is not None:
+                            visit_statements(statement.body, multiplier * loop_count, dict(local_known))
+                        else:
+                            visit_statements(statement.body, multiplier, dict(local_known))
+                        continue
+
+                    if isinstance(statement, ast.If):
+                        try:
+                            condition = static_resolver.resolve(statement.test, local_known, filename=filename).value
+                        except ValueError:
+                            visit_statements(statement.body, multiplier, dict(local_known))
+                            visit_statements(statement.orelse, multiplier, dict(local_known))
+                            continue
+                        visit_statements(statement.body if bool(condition) else statement.orelse, multiplier, dict(local_known))
+                        continue
+
+                    for child in ast.iter_child_nodes(statement):
+                        count_expr_calls(filename, child, multiplier, local_known, scope_key)
+
+            visit_statements(function.body, 1, dict(function_known))
+
+    return counts, scope_hole_counts
+
+
+def _trace_with_value(source: dict[str, Any], value: Any, resolution: str) -> dict[str, Any]:
+    return {
+        **source,
+        "resolved": value,
+        "resolution": resolution,
+    }
+
+
+def _function_initial_mark(function_name: str) -> str | None:
+    tokens = [token for token in re.split(r"[^A-Za-z0-9]+", function_name) if token]
+    if len(tokens) > 1 and tokens[0].lower() in {"make", "build", "create"}:
+        tokens = tokens[1:]
+    if not tokens:
+        return None
+    mark = "".join(token[0] for token in tokens).upper()
+    return mark or None
+
+
+def _resolved_parameter(parameters: dict[str, dict[str, Any]], key: str) -> Any:
+    value = parameters.get(key)
+    if isinstance(value, dict):
+        return value.get("resolved")
+    return None
+
+
+def _infer_standard_inputs_from_parameters(
+    function_name: str,
+    kind: str,
+    parameters: dict[str, dict[str, Any]],
+    standard_inputs: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    inferred: dict[str, dict[str, Any]] = {}
+
+    if "mark" not in standard_inputs and kind in {"bracket", "component"}:
+        mark = _function_initial_mark(function_name)
+        if mark:
+            inferred["mark"] = {
+                "raw": {"kind": "generated", "source": "function_initials", "function": function_name},
+                "resolved": mark,
+                "resolution": "inferred_function_mark",
+                "source_file": None,
+                "source_line": None,
+            }
+
+    if "part_number" not in standard_inputs and kind == "structural_member":
+        for key in ("section", "profile"):
+            trace = parameters.get(key)
+            if not isinstance(trace, dict):
+                continue
+            value = trace.get("resolved")
+            if isinstance(value, StaticObject):
+                value = value.attrs.get("part_number") or value.attrs.get("product_key") or value.attrs.get("name")
+            if value is not None:
+                inferred["part_number"] = _trace_with_value(trace, value, "inferred_section_identity")
+                break
+
+    if "length_mm" not in standard_inputs:
+        p1 = _resolved_parameter(parameters, "p1")
+        p2 = _resolved_parameter(parameters, "p2")
+        if isinstance(p1, list | tuple) and isinstance(p2, list | tuple) and len(p1) == len(p2):
+            try:
+                length = math.sqrt(sum((float(b) - float(a)) ** 2 for a, b in zip(p1, p2, strict=True)))
+            except (TypeError, ValueError):
+                length = None
+            if length is not None:
+                source = parameters.get("p2") if isinstance(parameters.get("p2"), dict) else {}
+                inferred["length_mm"] = {
+                    **source,
+                    "raw": {"kind": "expression", "source": "distance(p1, p2)"},
+                    "resolved": length,
+                    "resolution": "inferred_endpoint_distance",
+                }
+
+    if "plate" in function_name.lower():
+        dimension_keys = {
+            "w": "width_mm",
+            "width": "width_mm",
+            "h": "height_mm",
+            "height": "height_mm",
+            "t": "thickness_mm",
+            "thickness": "thickness_mm",
+        }
+        for param, standard_key in dimension_keys.items():
+            if standard_key in standard_inputs:
+                continue
+            trace = parameters.get(param)
+            if isinstance(trace, dict) and trace.get("resolved") is not None:
+                inferred[standard_key] = _trace_with_value(trace, trace["resolved"], "inferred_plate_dimension")
+
+    return inferred
 
 
 def _static_count(
@@ -1780,6 +2077,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
     static_resolver = StaticValueResolver(files, source_files, import_aliases, constants)
     signatures = _collect_signatures(files, source_files)
     function_instance_counts = _collect_function_instance_counts(files, source_files, constants)
+    source_call_instance_counts, source_scope_hole_counts = _collect_source_call_instance_counts(files, source_files, static_resolver)
     fastener_call_placement_counts = _collect_fastener_call_placement_counts(files, source_files, constants, static_resolver)
     return_product_counts = _collect_return_product_counts(files, source_files)
     calls: list[dict[str, Any]] = []
@@ -1799,6 +2097,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
 
         scope: list[str] = []
         parameter_scope: list[dict[str, dict[str, Any]]] = []
+        assignment_target_scope: list[list[str]] = []
         seen_calls: set[tuple[int, int, int | None, int | None, str]] = set()
 
         def visit(node: ast.AST) -> None:
@@ -1824,21 +2123,26 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                 scope.pop()
                 return
 
-            if isinstance(node, ast.Assign) and parameter_scope:
-                scoped_parameters = parameter_scope[-1]
-                resolved_assignment = _resolve_expr(
-                    node.value,
-                    filename=filename,
-                    constants=constants,
-                    import_aliases=import_aliases,
-                    method_hint="local_assignment",
-                    scoped_parameters=scoped_parameters,
-                    static_resolver=static_resolver,
-                )
-                if resolved_assignment.get("resolved") is not None:
-                    for target in node.targets:
-                        if isinstance(target, ast.Name):
-                            scoped_parameters[target.id] = resolved_assignment
+            if isinstance(node, ast.Assign):
+                if parameter_scope:
+                    scoped_parameters = parameter_scope[-1]
+                    resolved_assignment = _resolve_expr(
+                        node.value,
+                        filename=filename,
+                        constants=constants,
+                        import_aliases=import_aliases,
+                        method_hint="local_assignment",
+                        scoped_parameters=scoped_parameters,
+                        static_resolver=static_resolver,
+                    )
+                    if resolved_assignment.get("resolved") is not None:
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                scoped_parameters[target.id] = resolved_assignment
+                assignment_target_scope.append(_assignment_target_names(node.targets))
+                visit(node.value)
+                assignment_target_scope.pop()
+                return
 
             if isinstance(node, ast.Call):
                 name = _call_name(node.func)
@@ -1918,6 +2222,16 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                             existing = standard_inputs.get(standard_key)
                             if not isinstance(existing, dict) or existing.get("resolved") is None:
                                 standard_inputs[standard_key] = value
+                        parameter_inferred_inputs = _infer_standard_inputs_from_parameters(
+                            short_name,
+                            kind,
+                            parameters,
+                            standard_inputs,
+                        )
+                        for standard_key, value in parameter_inferred_inputs.items():
+                            existing = standard_inputs.get(standard_key)
+                            if not isinstance(existing, dict) or existing.get("resolved") is None:
+                                standard_inputs[standard_key] = value
                         for standard_key, value in standard_inputs.items():
                             if isinstance(value, dict) and value.get("resolved") is None and str(value.get("resolution", "")).startswith("unresolved"):
                                 diagnostics.append({
@@ -1932,21 +2246,30 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                     "source_line": value.get("source_line") or node.lineno,
                                 })
                         readiness = _readiness(kind, standard_inputs)
+                        scope_key = "::".join(scope) or "<module>"
+                        instance_count_candidates = [
+                            value
+                            for value in [
+                                fastener_call_placement_counts.get((filename, node.lineno)),
+                                source_call_instance_counts.get((filename, node.lineno)),
+                                source_scope_hole_counts.get((filename, scope_key)) if kind == "fastener_assembly" else None,
+                                return_product_counts.get(short_name),
+                            ]
+                            if _positive_number(value) is not None
+                        ]
                         calls.append({
                             "function": short_name,
                             "qualified_function": name or "",
                             "source_file": filename,
                             "source_scope": "::".join(scope) or "<module>",
                             "source_line": node.lineno,
+                            "assignment_targets": list(assignment_target_scope[-1]) if assignment_target_scope else [],
                             "parameters": parameters,
                             "standard_inputs": standard_inputs,
                             "bom_kind": kind,
                             "bom_readiness": readiness["level"],
                             "bom_missing_fields": readiness["missing"],
-                            "source_instance_count": (
-                                fastener_call_placement_counts.get((filename, node.lineno))
-                                or return_product_counts.get(short_name)
-                            ),
+                            "source_instance_count": max(instance_count_candidates) if instance_count_candidates else None,
                             "signature_source": {
                                 "filename": signature.filename,
                                 "line": signature.line,
@@ -2101,7 +2424,8 @@ def _tokens(value: str) -> set[str]:
 
 def _source_match_score(component: dict[str, Any], call: dict[str, Any]) -> tuple[int, str]:
     component_text = f"{component.get('label', '')} {component.get('path', '')}"
-    call_text = f"{call.get('function', '')} {call.get('source_scope', '')} {call.get('bom_kind', '')}"
+    assignment_text = " ".join(str(target) for target in call.get("assignment_targets", []) if target)
+    call_text = f"{call.get('function', '')} {call.get('source_scope', '')} {call.get('bom_kind', '')} {assignment_text}"
     overlap = _tokens(component_text) & _tokens(call_text)
     score = len(overlap) * 3
     reasons = [f"token overlap: {', '.join(sorted(overlap))}"] if overlap else []
@@ -2134,6 +2458,63 @@ def _best_source_call(component: dict[str, Any], source_analysis: dict[str, Any]
     if best is None or best[1] < 3:
         return None, "no source match"
     return best[0], best[2] or "best source match"
+
+
+def _source_call_key(call: dict[str, Any] | None) -> tuple[Any, ...] | None:
+    if not isinstance(call, dict):
+        return None
+    return (
+        call.get("source_file"),
+        call.get("source_line"),
+        call.get("function"),
+        call.get("source_scope"),
+    )
+
+
+def _merge_source_scopes(
+    assemblies: list[dict[str, Any]],
+    components: list[dict[str, Any]],
+    source_assemblies: list[dict[str, Any]],
+    source_components: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    used_assembly_ids = {
+        str(assembly.get("id"))
+        for assembly in assemblies
+        if assembly.get("id") is not None
+    }
+    used_component_ids = {
+        str(component.get("id"))
+        for component in components
+        if component.get("id") is not None
+    }
+    id_map: dict[str, str] = {}
+    merged_assemblies = list(assemblies)
+    merged_components = list(components)
+
+    for assembly in source_assemblies:
+        old_id = str(assembly.get("id") or _slug(str(assembly.get("label") or "source-scope"), "source-scope"))
+        new_id = old_id if old_id not in used_assembly_ids else _unique_id(old_id, used_assembly_ids)
+        used_assembly_ids.add(new_id)
+        id_map[old_id] = new_id
+        merged = dict(assembly)
+        merged["id"] = new_id
+        parent_id = merged.get("parent_id")
+        if isinstance(parent_id, str) and parent_id in id_map:
+            merged["parent_id"] = id_map[parent_id]
+        merged_assemblies.append(merged)
+
+    for component in source_components:
+        old_id = str(component.get("id") or _slug(str(component.get("label") or "source-component"), "source-component"))
+        new_id = old_id if old_id not in used_component_ids else _unique_id(old_id, used_component_ids)
+        used_component_ids.add(new_id)
+        merged = dict(component)
+        merged["id"] = new_id
+        assembly_id = merged.get("assembly_id")
+        if isinstance(assembly_id, str) and assembly_id in id_map:
+            merged["assembly_id"] = id_map[assembly_id]
+        merged_components.append(merged)
+
+    return merged_assemblies, merged_components
 
 
 def _manifest_scopes_to_assemblies(explicit_manifest: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -2317,13 +2698,15 @@ def _compact_identity_key(resolved_inputs: dict[str, Any]) -> str | None:
     if not mark:
         return None
     parts = [str(mark).strip().upper()]
-    for key in ["length_mm", "width_mm", "height_mm"]:
+    for key in ["length_mm", "width_mm", "height_mm", "thickness_mm"]:
         compact = _compact_dimension(resolved_inputs.get(key))
         if compact is not None:
             parts.append(compact)
     angle = _compact_angle(resolved_inputs.get("angle_deg") or resolved_inputs.get("roof_pitch_deg"))
     if angle is not None:
         parts.append(angle)
+    if len(parts) == 1:
+        return None
     return "-".join(part for part in parts if part)
 
 
@@ -2608,15 +2991,43 @@ def build_procurement_analysis(
     assemblies = list(tree_analysis.get("assemblies", []))
     if not assemblies:
         assemblies = _manifest_scopes_to_assemblies(explicit_manifest)
-    if not tree_components and explicit_manifest is not None:
-        source_assemblies, tree_components = _source_scope_assemblies_and_components(source_analysis)
-        if source_assemblies:
-            assemblies = source_assemblies
-        source_only = bool(tree_components)
-        if source_only:
+    source_assemblies, source_components = _source_scope_assemblies_and_components(source_analysis)
+    if not tree_components and source_components:
+        assemblies, tree_components = _merge_source_scopes(assemblies, [], source_assemblies, source_components)
+        source_only = True
+        diagnostics.append({
+            "code": "source_only_components_no_visual_tree",
+            "message": "GLTF hierarchy did not expose named component groups; requirements are source-derived and not visually linked.",
+        })
+    elif tree_components and source_components:
+        matched_call_keys: set[tuple[Any, ...]] = set()
+        for component in tree_components:
+            call, _match_reason = _best_source_call(component, source_analysis)
+            call_key = _source_call_key(call)
+            if call_key is not None:
+                matched_call_keys.add(call_key)
+        source_supplements = [
+            component
+            for component in source_components
+            if _source_call_key(component.get("_source_call")) not in matched_call_keys
+        ]
+        if source_supplements:
+            visual_component_count = len(tree_components)
+            assemblies, tree_components = _merge_source_scopes(
+                assemblies,
+                tree_components,
+                source_assemblies,
+                source_supplements,
+            )
             diagnostics.append({
-                "code": "source_only_components_no_visual_tree",
-                "message": "GLTF hierarchy did not expose named component groups; requirements are source-derived and not visually linked.",
+                "code": "hybrid_source_components_added",
+                "message": (
+                    f"GLTF exposed {visual_component_count} named component groups; "
+                    f"{len(source_supplements)} source-derived procurement components were added for unmatched calls."
+                ),
+                "visual_component_count": visual_component_count,
+                "source_component_count": len(source_components),
+                "added_source_component_count": len(source_supplements),
             })
 
     requirements: list[dict[str, Any]] = []
