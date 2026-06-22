@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from core.auth_types import AuthContext
 from core.billing_messages import (
@@ -147,7 +147,7 @@ class LlmFileEditInput(BaseModel):
 class LlmReturnedFileEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    file_id: UUID
+    file_id: UUID = Field(validation_alias=AliasChoices("file_id", "id"))
     content: str = Field(max_length=200000)
     summary: str = Field(default="", max_length=500)
 

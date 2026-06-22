@@ -200,6 +200,29 @@ def test_parse_llm_file_edit_response_accepts_valid_json():
     assert result.files[0].summary == "initial scaffold"
 
 
+def test_parse_llm_file_edit_response_accepts_id_alias_for_file_id():
+    file_id = uuid4()
+    payload = json.dumps(
+        {
+            "files": [
+                {
+                    "id": str(file_id),
+                    "content": "import build123d as bd\n",
+                    "summary": "updated beam color",
+                }
+            ]
+        }
+    )
+
+    result = parse_llm_file_edit_response(payload, _allowed_file_ids(file_id))
+
+    assert result.outcome == "changed"
+    assert len(result.files) == 1
+    assert result.files[0].file_id == file_id
+    assert result.files[0].content == "import build123d as bd\n"
+    assert result.files[0].summary == "updated beam color"
+
+
 def test_parse_llm_file_edit_response_strips_markdown_code_fence():
     file_id = uuid4()
     inner = json.dumps(
@@ -664,6 +687,46 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     assert result.provider_request_id == "chatcmpl-test"
     assert result.billing_event_id is None
     assert publisher.published == []
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_accepts_provider_id_alias():
+    request, files = _file_edit_request_and_files()
+    payload = json.dumps(
+        {
+            "outcome": "changed",
+            "message": "",
+            "files": [
+                {
+                    "id": str(request.files[0].id),
+                    "content": "span = 100\n",
+                    "summary": "rename length to span",
+                }
+            ],
+        }
+    )
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeChatCompletions(content=payload))
+
+    result = await generate_file_edits(
+        request,
+        files=files,
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(
+            user_id=uuid4(),
+            tenant_id=uuid4(),
+            keycloak_subject="kc-test",
+            email="test@example.com",
+        ),
+        project_id=uuid4(),
+        openai_client=client,
+    )
+
+    assert result.outcome == "changed"
+    assert len(result.files) == 1
+    assert result.files[0].file_id == request.files[0].id
+    assert result.files[0].content == "span = 100\n"
+    assert result.files[0].summary == "rename length to span"
 
 
 @pytest.mark.asyncio
