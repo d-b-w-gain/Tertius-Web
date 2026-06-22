@@ -74,6 +74,10 @@ function jsonResponse(data: unknown, ok = true) {
   }
 }
 
+function openGenerateDesignConversation() {
+  fireEvent.click(screen.getByRole('button', { name: 'Open Generate Design conversation' }))
+}
+
 describe('GenerateDesignWindow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -158,10 +162,26 @@ describe('GenerateDesignWindow', () => {
     vi.useRealTimers()
   })
 
+  it('starts viewer-first with the Generate Design conversation collapsed into a floating panel', async () => {
+    render(<GenerateDesignWindow />)
+
+    await screen.findByText('Latest model viewer')
+
+    expect(screen.getByRole('button', { name: 'Open Generate Design conversation' })).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Describe the CAD design or modification...')).not.toBeInTheDocument()
+
+    openGenerateDesignConversation()
+
+    expect(screen.getByRole('complementary', { name: 'Generate Design conversation' })).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Describe the CAD design or modification...')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close Generate Design conversation' })).toBeInTheDocument()
+  })
+
   it('sends design.py first, omits files missing concurrency metadata, compiles changed output, and selects the artifact URL', async () => {
     render(<GenerateDesignWindow />)
 
     await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
@@ -244,6 +264,7 @@ describe('GenerateDesignWindow', () => {
     ])
 
     render(<GenerateDesignWindow />)
+    openGenerateDesignConversation()
 
     expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
     expect(screen.getAllByText('Updated 1 file.').length).toBeGreaterThan(0)
@@ -291,6 +312,7 @@ describe('GenerateDesignWindow', () => {
     ])
 
     render(<GenerateDesignWindow />)
+    openGenerateDesignConversation()
 
     expect(await screen.findByText('make a small bracket')).toBeInTheDocument()
     expect(screen.getByText('make it taller')).toBeInTheDocument()
@@ -341,6 +363,7 @@ describe('GenerateDesignWindow', () => {
     })
 
     render(<GenerateDesignWindow />)
+    openGenerateDesignConversation()
 
     expect(await screen.findByText('still editing')).toBeInTheDocument()
 
@@ -380,6 +403,7 @@ describe('GenerateDesignWindow', () => {
     render(<GenerateDesignWindow />)
 
     await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
     vi.useFakeTimers({ shouldAdvanceTime: true })
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'leave it alone' },

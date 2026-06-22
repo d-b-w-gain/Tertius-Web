@@ -35,6 +35,7 @@ dev = [
     "pytest-asyncio",
     "testcontainers[postgres]",
     "mypy==2.1.0",
+    "ruff>=0.15.18",
 ]
 
 [build-system]
