@@ -430,6 +430,252 @@ model = building()
     assert {item["source_call_count"] for item in requirements} == {2}
 
 
+def test_fastener_assembly_decomposes_into_bolt_and_nut_requirements_with_placements():
+    source = analyze_design_sources({
+        "design.py": """
+positions = [0, 1, 2]
+
+def apex_bracket():
+    holes = []
+    for dist in [1, 2]:
+        for side in [-1, 1]:
+            holes.append((dist, side))
+            holes.append((-dist, side))
+    return None, holes
+
+def knee_bracket_pair():
+    holes = []
+    for dist in [1, 2]:
+        for side in [-1, 1]:
+            holes.append((dist, side))
+            holes.append((dist, -side))
+    holes_r = [(-h[0], h[1]) for h in holes]
+    return None, None, holes, holes_r
+
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+def portal_frame():
+    _apex, apex_holes = apex_bracket()
+    _knee_l, _knee_r, knee_holes_l, knee_holes_r = knee_bracket_pair()
+    fastener_base = make_fastener_assembly("M12", 25.0, 4.9)
+    fastener_base = fastener_base.moved(None)
+    fasteners = []
+    for h in apex_holes:
+        fasteners.append(fastener_base.moved(h))
+    for h in knee_holes_l + knee_holes_r:
+        fasteners.append(fastener_base.moved(h))
+    base_holes = []
+    for bx in [-1, 1]:
+        for hx in [-1, 1]:
+            base_holes.append((bx, hx))
+    for h in base_holes:
+        fasteners.append(fastener_base.moved(h))
+    return fasteners
+
+def building():
+    prototype = portal_frame()
+    placed = []
+    for position in positions:
+        placed.append(prototype.children)
+    return placed
+
+model = building()
+""",
+    })
+
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    fasteners = [
+        item for item in analysis["requirements"]
+        if item["source_trace"].get("decomposed_from") == "fastener_assembly"
+        and item["source_trace"].get("source_scope") == "portal_frame"
+    ]
+
+    assert [item["source_trace"]["procurement_item"] for item in fasteners] == ["bolt", "nut"]
+    assert {item["quantity"] for item in fasteners} == {28}
+    assert {item["rolled_up_quantity"] for item in fasteners} == {84}
+    assert {item["count_trace"]["source_instance_count"] for item in fasteners} == {28}
+    assert {item["count_trace"]["assembly_instance_multiplier"] for item in fasteners} == {3}
+    assert {item["unit"] for item in fasteners} == {"each"}
+    assert {item["part_number"] for item in fasteners} == {"DIN-6921-M12X25", "DIN-6923-M12"}
+    assert next(item for item in fasteners if item["source_trace"]["procurement_item"] == "bolt")["dimensions"] == {
+        "size": "M12",
+        "length_mm": 25.0,
+        "grip_length_mm": 4.9,
+    }
+    assert next(item for item in fasteners if item["source_trace"]["procurement_item"] == "nut")["dimensions"] == {"size": "M12"}
+
+
+def test_catalog_class_attributes_and_local_quantity_are_resolved_generically():
+    source = analyze_design_sources({
+        "design.py": """
+import math
+from products import SheetProduct
+
+portal_y_positions = [0, 5100]
+column_height = 2400
+finish = "zincalume"
+
+def make_sheet(length, quantity=1, part_number=None, material=None, unit="each", finish=None):
+    return None
+
+def wall_cladding():
+    wall_height = column_height
+    y_min = portal_y_positions[0]
+    y_max = portal_y_positions[-1] + 100
+    wall_length = y_max - y_min
+    sheet_spacing = SheetProduct.cover_width
+    sheet_count = math.ceil(wall_length / sheet_spacing)
+    sheet = make_sheet(
+        length=wall_height,
+        quantity=sheet_count * 2,
+        part_number=SheetProduct.part_number,
+        material=SheetProduct.material,
+        unit=SheetProduct.unit,
+        finish=finish,
+    )
+    return sheet
+
+model = wall_cladding()
+""",
+        "products.py": """
+class SheetProduct:
+    part_number = "SHEET-001"
+    material = "steel"
+    unit = "sheet"
+    cover_width = 762.0
+""",
+    })
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    requirement = next(item for item in analysis["requirements"] if item["part_number"] == "SHEET-001")
+
+    assert requirement["quantity"] == 14
+    assert requirement["rolled_up_quantity"] == 14
+    assert requirement["unit"] == "sheet"
+    assert requirement["dimensions"] == {"length_mm": 2400}
+    assert requirement["material"] == "steel"
+    assert requirement["finish"] == "zincalume"
+    assert requirement["resolution_trace"]["part_number"]["resolution"] == "imported_class_attribute"
+    assert all(item["source_trace"]["function"] != "build" for item in analysis["requirements"])
+
+
+def test_catalog_objects_trig_formulas_and_pure_helpers_resolve_generically():
+    files = {
+        "design.py": """
+import math
+from sections import section_tables
+from products import TopHat50, SheetProduct
+
+PURLIN_PART_NUMBER = "C10019"
+portal_span = 3100.0
+column_height = 2400.0
+roof_pitch = 20.0
+roof_sheet_order_increment = 100.0
+roof_sheet_min_eave_overhang = 30.0
+roof_sheet_apex_gap_half = 30.0
+
+spec = section_tables(PURLIN_PART_NUMBER)
+D = float(spec.D)
+B = float(spec.B)
+roof_batten_depth = TopHat50.height
+span_center = portal_span - D
+col_inner_x = (span_center / 2) - (D / 2)
+apex_gap_half = 5.0
+_roof_pitch_rad = math.radians(roof_pitch)
+_roof_cos = math.cos(_roof_pitch_rad)
+_roof_sin = math.sin(_roof_pitch_rad)
+roof_stack_top_offset = D / 2 + roof_batten_depth
+_ROOF_M = math.tan(math.radians(roof_pitch))
+eave_outer_x = portal_span / 2 + B
+_roof_support_c = column_height + _ROOF_M * eave_outer_x
+_rafter_ref_c = _roof_support_c - roof_stack_top_offset / _roof_cos
+_left_column_inner_top = (-col_inner_x, column_height)
+left_rafter_start_x = _roof_cos * (
+    _roof_cos * _left_column_inner_top[0]
+    + _roof_sin * _left_column_inner_top[1]
+    - _roof_sin * _rafter_ref_c
+)
+rafter_start_x = -left_rafter_start_x
+rafter_length = (rafter_start_x - apex_gap_half) / _roof_cos
+
+def round_up_to_increment(value, increment):
+    return math.ceil(value / increment) * increment
+
+def roof_sheet_length():
+    eave_to_apex = (eave_outer_x - roof_sheet_apex_gap_half) / _roof_cos
+    return round_up_to_increment(
+        eave_to_apex + roof_sheet_min_eave_overhang,
+        roof_sheet_order_increment,
+    )
+
+def make_member(length, part_number):
+    return None
+
+def make_sheet(length, quantity=1, part_number=None, material=None, unit="sheet"):
+    return None
+
+left_rafter = make_member(rafter_length, part_number=PURLIN_PART_NUMBER)
+roof_sheet = make_sheet(
+    length=roof_sheet_length(),
+    quantity=14,
+    part_number=SheetProduct.part_number,
+    material=SheetProduct.material,
+    unit=SheetProduct.unit,
+)
+""",
+        "sections.py": """
+ATTR_ALIAS = {"D": "depth_mm", "B": "flange_mm"}
+
+def section_tables(part_number):
+    return None
+""",
+        "products.py": """
+class TopHat50:
+    height = 50.0
+
+class SheetProduct:
+    part_number = "CUSTOM-ORB"
+    material = "steel"
+    unit = "sheet"
+""",
+        "catalog.json.py": """
+{
+  "sections": [
+    {"key": "C10015 (100x1.5)", "part_number_alias": "C10019", "depth_mm": 102, "flange_mm": 51}
+  ]
+}
+""",
+    }
+    source = analyze_design_sources(files)
+    analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
+    requirements = {item["part_number"]: item for item in analysis["requirements"]}
+
+    d = 102
+    b = 51
+    roof_cos = math.cos(math.radians(20.0))
+    roof_sin = math.sin(math.radians(20.0))
+    roof_m = math.tan(math.radians(20.0))
+    span_center = 3100.0 - d
+    col_inner_x = (span_center / 2) - (d / 2)
+    roof_stack_top_offset = d / 2 + 50.0
+    eave_outer_x = 3100.0 / 2 + b
+    roof_support_c = 2400.0 + roof_m * eave_outer_x
+    rafter_ref_c = roof_support_c - roof_stack_top_offset / roof_cos
+    left_rafter_start_x = roof_cos * (
+        roof_cos * (-col_inner_x)
+        + roof_sin * 2400.0
+        - roof_sin * rafter_ref_c
+    )
+    expected_rafter_length = (-left_rafter_start_x - 5.0) / roof_cos
+    expected_sheet_length = math.ceil(((eave_outer_x - 30.0) / roof_cos + 30.0) / 100.0) * 100.0
+
+    assert requirements["C10019"]["dimensions"]["length_mm"] == expected_rafter_length
+    assert requirements["CUSTOM-ORB"]["dimensions"]["length_mm"] == expected_sheet_length
+    assert requirements["CUSTOM-ORB"]["quantity"] == 14
+    assert requirements["CUSTOM-ORB"]["unit"] == "sheet"
+    assert requirements["CUSTOM-ORB"]["material"] == "steel"
+
+
 def test_static_numeric_resolves_chained_trigonometry_length():
     requirement = first_requirement({
         "design.py": """
@@ -497,7 +743,7 @@ def test_static_numeric_refuses_unknown_helpers_and_methods():
     source = analyze_design_sources({
         "design.py": """
 def unknown(value):
-    return value
+    return external(value)
 
 class Wrapper:
     def value(self):
@@ -518,3 +764,4 @@ second = make_member(bad_method_length, part_number="BAD-METHOD")
 
     assert requirements["BAD-HELPER"]["dimensions"] == {}
     assert requirements["BAD-METHOD"]["dimensions"] == {}
+    assert any(diagnostic["code"] == "unresolved_formula_dependency" for diagnostic in analysis["diagnostics"])

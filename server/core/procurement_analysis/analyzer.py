@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -87,6 +88,18 @@ class ConstantValue:
     resolution: str = "literal_assignment"
 
 
+@dataclass(frozen=True)
+class StaticObject:
+    attrs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class StaticResolution:
+    value: Any
+    resolution: str
+    dependencies: tuple[str, ...] = ()
+
+
 SAFE_BUILTIN_NUMERIC_FUNCTIONS = {
     "abs": abs,
     "min": min,
@@ -154,6 +167,35 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
         if isinstance(value, ConstantValue):
             return value.value, value.resolution
         return value, "literal_assignment"
+    if isinstance(node, ast.Attribute):
+        name = _unparse(node)
+        if name in known:
+            value = known[name]
+            if isinstance(value, ConstantValue):
+                return value.value, value.resolution
+            return value, "literal_assignment"
+        owner, _owner_resolution = _static_value_with_resolution(node.value, known)
+        if isinstance(owner, StaticObject) and node.attr in owner.attrs:
+            return owner.attrs[node.attr], "static_object_attribute"
+    if isinstance(node, ast.Subscript):
+        value, _value_resolution = _static_value_with_resolution(node.value, known)
+        index, _index_resolution = _static_value_with_resolution(node.slice, known)
+        if isinstance(value, list | tuple) and isinstance(index, int):
+            try:
+                return value[index], "static_numeric"
+            except IndexError as exc:
+                raise ValueError("not a static value") from exc
+        if isinstance(value, dict) and index in value:
+            return value[index], "static_lookup"
+    if isinstance(node, ast.Dict):
+        result: dict[Any, Any] = {}
+        for key_node, value_node in zip(node.keys, node.values, strict=True):
+            if key_node is None:
+                raise ValueError("not a static value")
+            key, _key_resolution = _static_value_with_resolution(key_node, known)
+            value, _value_resolution = _static_value_with_resolution(value_node, known)
+            result[key] = value
+        return result, "literal_assignment"
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         value, _resolution = _static_value_with_resolution(node.operand, known)
         if isinstance(value, int | float):
@@ -172,8 +214,22 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
                 return left / right, "static_numeric"
             if isinstance(node.op, ast.Pow):
                 return left ** right, "static_numeric"
+    if isinstance(node, ast.IfExp):
+        condition, _condition_resolution = _static_value_with_resolution(node.test, known)
+        if isinstance(condition, bool):
+            return _static_value_with_resolution(node.body if condition else node.orelse, known)
     if isinstance(node, ast.Call):
         name = _call_name(node.func)
+        if name in {"float", "int", "str"} and len(node.args) == 1 and not node.keywords:
+            value, _value_resolution = _static_value_with_resolution(node.args[0], known)
+            try:
+                if name == "float":
+                    return float(value), "static_cast"
+                if name == "int":
+                    return int(value), "static_cast"
+                return str(value), "static_cast"
+            except (TypeError, ValueError) as exc:
+                raise ValueError("not a static value") from exc
         if name == "round_up_to_increment" and len(node.args) == 2 and not node.keywords:
             value, _value_resolution = _static_value_with_resolution(node.args[0], known)
             increment, _increment_resolution = _static_value_with_resolution(node.args[1], known)
@@ -204,6 +260,8 @@ def _compact_expr(node: ast.AST) -> dict[str, Any]:
         return {"kind": "literal", "value": node.value}
     if isinstance(node, ast.Name):
         return {"kind": "reference", "name": node.id}
+    if isinstance(node, ast.Attribute):
+        return {"kind": "reference", "name": _unparse(node)}
     return {"kind": "expression", "source": _unparse(node)}
 
 
@@ -256,8 +314,310 @@ def _collect_import_aliases(files: dict[str, str], source_files: list[str]) -> d
     return aliases
 
 
+class StaticValueResolver:
+    def __init__(
+        self,
+        files: dict[str, str],
+        source_files: list[str],
+        import_aliases: dict[tuple[str, str], tuple[str, str]],
+        constants: dict[tuple[str, str], ConstantValue],
+    ) -> None:
+        self.files = files
+        self.source_files = source_files
+        self.import_aliases = import_aliases
+        self.constants = constants
+        self.catalog_sections = self._collect_catalog_sections()
+        self.function_defs = self._collect_function_defs()
+        self.constructor_fields = self._collect_constructor_fields()
+        self.constructor_defaults = self._collect_constructor_defaults()
+
+    def _collect_catalog_sections(self) -> list[dict[str, Any]]:
+        sections: list[dict[str, Any]] = []
+        for text in self.files.values():
+            try:
+                payload = json.loads(text)
+            except (TypeError, ValueError):
+                continue
+            payload_sections = payload.get("sections") if isinstance(payload, dict) else None
+            if isinstance(payload_sections, list):
+                sections.extend(section for section in payload_sections if isinstance(section, dict))
+        return sections
+
+    def _collect_function_defs(self) -> dict[str, tuple[str, ast.FunctionDef]]:
+        function_defs: dict[str, tuple[str, ast.FunctionDef]] = {}
+        for filename in self.source_files:
+            try:
+                tree = ast.parse(self.files[filename], filename=filename)
+            except SyntaxError:
+                continue
+            for node in tree.body:
+                if isinstance(node, ast.FunctionDef):
+                    function_defs.setdefault(node.name, (filename, node))
+        return function_defs
+
+    def _collect_constructor_fields(self) -> dict[str, list[str]]:
+        constructor_fields: dict[str, list[str]] = {}
+        for filename in self.source_files:
+            try:
+                tree = ast.parse(self.files[filename], filename=filename)
+            except SyntaxError:
+                continue
+            for node in tree.body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                fields: list[str] = []
+                for child in node.body:
+                    if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                        fields.append(child.target.id)
+                    elif isinstance(child, ast.Assign):
+                        for target in child.targets:
+                            if isinstance(target, ast.Name):
+                                fields.append(target.id)
+                constructor_fields[node.name] = fields
+        return constructor_fields
+
+    def _collect_constructor_defaults(self) -> dict[str, dict[str, Any]]:
+        constructor_defaults: dict[str, dict[str, Any]] = {}
+        for filename in self.source_files:
+            try:
+                tree = ast.parse(self.files[filename], filename=filename)
+            except SyntaxError:
+                continue
+            for node in tree.body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                defaults: dict[str, Any] = {}
+                for child in node.body:
+                    if not isinstance(child, ast.AnnAssign) or child.value is None or not isinstance(child.target, ast.Name):
+                        continue
+                    try:
+                        defaults[child.target.id] = _static_value(child.value, {})
+                    except ValueError:
+                        continue
+                constructor_defaults[node.name] = defaults
+        return constructor_defaults
+
+    def known_for(self, filename: str) -> dict[str, Any]:
+        known: dict[str, Any] = {
+            name: value
+            for (constant_file, name), value in self.constants.items()
+            if constant_file == filename
+        }
+        for (alias_file, local_name), (imported_file, imported_name) in self.import_aliases.items():
+            if alias_file != filename:
+                continue
+            imported_value = self.constants.get((imported_file, imported_name))
+            if imported_value is not None:
+                known[local_name] = imported_value
+            for (constant_file, constant_name), value in self.constants.items():
+                if constant_file != imported_file:
+                    continue
+                if constant_name == imported_name or constant_name.startswith(f"{imported_name}."):
+                    known[f"{local_name}{constant_name[len(imported_name):]}"] = value
+        return known
+
+    def value_tuple(self, node: ast.AST, known: dict[str, Any], *, filename: str | None = None) -> tuple[Any, str]:
+        resolution = self.resolve(node, known, filename=filename)
+        return resolution.value, resolution.resolution
+
+    def resolve(
+        self,
+        node: ast.AST,
+        known: dict[str, Any],
+        *,
+        filename: str | None = None,
+        call_stack: tuple[str, ...] = (),
+    ) -> StaticResolution:
+        try:
+            value, resolution = _static_value_with_resolution(node, known)
+            return StaticResolution(value=value, resolution=resolution)
+        except ValueError:
+            pass
+
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name:
+                catalog_value = self._resolve_catalog_lookup(node, known, name)
+                if catalog_value is not None:
+                    return catalog_value
+                constructor_value = self._resolve_constructor(node, known, name, filename=filename)
+                if constructor_value is not None:
+                    return constructor_value
+                helper_value = self._resolve_helper_call(node, known, name, filename=filename, call_stack=call_stack)
+                if helper_value is not None:
+                    return helper_value
+        raise ValueError("not a static value")
+
+    def _all_attr_aliases(self) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for (_filename, name), constant in self.constants.items():
+            if name == "ATTR_ALIAS" and isinstance(constant.value, dict):
+                aliases.update({str(key): str(value) for key, value in constant.value.items()})
+        return aliases
+
+    def _resolve_catalog_lookup(self, node: ast.Call, known: dict[str, Any], name: str) -> StaticResolution | None:
+        if not name.endswith("_tables") or not node.args:
+            return None
+        try:
+            part_number, _resolution = self.value_tuple(node.args[0], known)
+        except ValueError:
+            return None
+        normalized = str(part_number).strip().upper().replace(" ", "").replace("-", "").replace("/", "")
+        for section in self.catalog_sections:
+            aliases = [section.get("key"), section.get("part_number"), section.get("part_number_alias")]
+            for alias in aliases:
+                if not alias:
+                    continue
+                alias_text = str(alias).split(" ", 1)[0].strip().upper().replace(" ", "").replace("-", "").replace("/", "")
+                if alias_text != normalized:
+                    continue
+                attrs = dict(section)
+                for public_name, data_key in self._all_attr_aliases().items():
+                    if data_key in section:
+                        attrs[str(public_name)] = section[data_key]
+                for key, value in list(section.items()):
+                    if key.endswith("_mm") and key[:-3] not in attrs:
+                        attrs[key[:-3]] = value
+                if "B" not in attrs:
+                    for key in ("flange_mean_mm", "flange_mm"):
+                        if key in section:
+                            attrs["B"] = section[key]
+                            break
+                return StaticResolution(value=StaticObject(attrs), resolution="static_catalog_lookup")
+        return None
+
+    def _resolve_constructor(
+        self,
+        node: ast.Call,
+        known: dict[str, Any],
+        name: str,
+        *,
+        filename: str | None,
+    ) -> StaticResolution | None:
+        short_name = name.rsplit(".", 1)[-1]
+        if not short_name[:1].isupper():
+            return None
+        fields = self.constructor_fields.get(short_name, [])
+        if not fields and not node.keywords:
+            return None
+        attrs: dict[str, Any] = dict(self.constructor_defaults.get(short_name, {}))
+        for index, arg in enumerate(node.args):
+            if index >= len(fields):
+                return None
+            try:
+                attrs[fields[index]], _resolution = self.value_tuple(arg, known, filename=filename)
+            except ValueError:
+                return None
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                return None
+            try:
+                attrs[keyword.arg], _resolution = self.value_tuple(keyword.value, known, filename=filename)
+            except ValueError:
+                return None
+        return StaticResolution(value=StaticObject(attrs), resolution="static_constructor")
+
+    def _resolve_helper_call(
+        self,
+        node: ast.Call,
+        known: dict[str, Any],
+        name: str,
+        *,
+        filename: str | None,
+        call_stack: tuple[str, ...],
+    ) -> StaticResolution | None:
+        short_name = name.rsplit(".", 1)[-1]
+        if "." in name or short_name in call_stack or short_name not in self.function_defs:
+            return None
+        function_file, function = self.function_defs[short_name]
+        function_known = self.known_for(function_file)
+        if filename == function_file:
+            function_known.update(known)
+        local_known = dict(function_known)
+        params = [arg.arg for arg in function.args.args]
+        if len(node.args) > len(params):
+            return None
+        for index, arg in enumerate(node.args):
+            try:
+                local_known[params[index]] = self.resolve(
+                    arg,
+                    known,
+                    filename=filename,
+                    call_stack=call_stack,
+                ).value
+            except ValueError:
+                return None
+        defaults = list(function.args.defaults)
+        default_params = params[-len(defaults):] if defaults else []
+        for param, default in zip(default_params, defaults, strict=True):
+            if param in local_known:
+                continue
+            try:
+                local_known[param] = self.resolve(
+                    default,
+                    function_known,
+                    filename=function_file,
+                    call_stack=call_stack,
+                ).value
+            except ValueError:
+                return None
+        for keyword in node.keywords:
+            if keyword.arg is None or keyword.arg not in params:
+                return None
+            try:
+                local_known[keyword.arg] = self.resolve(
+                    keyword.value,
+                    known,
+                    filename=filename,
+                    call_stack=call_stack,
+                ).value
+            except ValueError:
+                return None
+
+        for statement in function.body:
+            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
+                continue
+            if isinstance(statement, ast.Assign):
+                try:
+                    assigned = self.resolve(
+                        statement.value,
+                        local_known,
+                        filename=function_file,
+                        call_stack=(*call_stack, short_name),
+                    )
+                except ValueError:
+                    return None
+                for target in statement.targets:
+                    if not isinstance(target, ast.Name):
+                        return None
+                    local_known[target.id] = assigned.value
+                continue
+            if isinstance(statement, ast.Return):
+                if statement.value is None:
+                    return None
+                try:
+                    returned = self.resolve(
+                        statement.value,
+                        local_known,
+                        filename=function_file,
+                        call_stack=(*call_stack, short_name),
+                    )
+                except ValueError:
+                    return None
+                return StaticResolution(
+                    value=returned.value,
+                    resolution="static_helper_call",
+                    dependencies=(short_name,),
+                )
+            return None
+        return None
+
+
 def _collect_constants(files: dict[str, str], source_files: list[str]) -> dict[tuple[str, str], ConstantValue]:
     constants: dict[tuple[str, str], ConstantValue] = {}
+    import_aliases = _collect_import_aliases(files, source_files)
+    resolver = StaticValueResolver(files, source_files, import_aliases, constants)
+
     for filename in source_files:
         try:
             tree = ast.parse(files[filename], filename=filename)
@@ -278,12 +638,27 @@ def _collect_constants(files: dict[str, str], source_files: list[str]) -> dict[t
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 try:
-                    value, resolution = _static_value_with_resolution(node.value, known)
+                    value, resolution = resolver.value_tuple(node.value, known, filename=filename)
                 except ValueError:
                     continue
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         remember(target.id, value, node.lineno, resolution)
+                continue
+
+            if isinstance(node, ast.ClassDef):
+                class_known: dict[str, Any] = {**known}
+                for child in node.body:
+                    if not isinstance(child, ast.Assign):
+                        continue
+                    try:
+                        value, resolution = resolver.value_tuple(child.value, class_known, filename=filename)
+                    except ValueError:
+                        continue
+                    for target in child.targets:
+                        if isinstance(target, ast.Name):
+                            class_known[target.id] = value
+                            remember(f"{node.name}.{target.id}", value, child.lineno, f"class_attribute_{resolution}")
                 continue
 
             if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
@@ -314,6 +689,38 @@ def _collect_constants(files: dict[str, str], source_files: list[str]) -> dict[t
                             appended = None
                         current.append(appended)
                         remember(list_name, current, child.lineno, "static_numeric")
+
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+        known = resolver.known_for(filename)
+
+        def remember(name: str, value: Any, line: int, resolution: str) -> None:
+            existing = constants.get((filename, name))
+            if existing is not None and existing.line > line:
+                known[name] = existing
+                return
+            constants[(filename, name)] = ConstantValue(
+                name=name,
+                value=value,
+                filename=filename,
+                line=line,
+                resolution=resolution,
+            )
+            known[name] = constants[(filename, name)]
+
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            try:
+                value, resolution = resolver.value_tuple(node.value, known, filename=filename)
+            except ValueError:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    remember(target.id, value, node.lineno, resolution)
     return constants
 
 
@@ -358,13 +765,23 @@ def _resolve_expr(
     import_aliases: dict[tuple[str, str], tuple[str, str]],
     method_hint: str,
     scoped_parameters: dict[str, dict[str, Any]] | None = None,
+    static_resolver: StaticValueResolver | None = None,
 ) -> dict[str, Any]:
     raw = _compact_expr(node)
-    static_known = {
-        name: value
-        for (constant_file, name), value in constants.items()
-        if constant_file == filename
-    }
+    if static_resolver is not None:
+        static_known = static_resolver.known_for(filename)
+    else:
+        static_known = {
+            name: value
+            for (constant_file, name), value in constants.items()
+            if constant_file == filename
+        }
+    if scoped_parameters:
+        static_known.update({
+            name: value.get("resolved")
+            for name, value in scoped_parameters.items()
+            if isinstance(value, dict) and value.get("resolved") is not None
+        })
     if isinstance(node, ast.Constant):
         return {
             "raw": raw,
@@ -402,20 +819,70 @@ def _resolve_expr(
             "source_file": filename,
             "source_line": getattr(node, "lineno", None),
         }
-    try:
-        value, resolution = _static_value_with_resolution(node, static_known)
+    if isinstance(node, ast.Attribute):
+        name = _unparse(node)
+        constant = constants.get((filename, name))
+        resolution = "class_attribute"
+        if constant is None:
+            root = name.split(".", 1)[0]
+            imported = import_aliases.get((filename, root))
+            if imported and "." in name:
+                imported_file, imported_name = imported
+                constant = constants.get((imported_file, f"{imported_name}.{name.split('.', 1)[1]}"))
+                resolution = "imported_class_attribute"
+        if constant is not None:
+            return {
+                "raw": raw,
+                "resolved": constant.value,
+                "resolution": resolution if method_hint != "function_default" else "function_default",
+                "source_file": constant.filename,
+                "source_line": constant.line,
+            }
+        if static_resolver is not None:
+            try:
+                static_resolution = static_resolver.resolve(node, static_known, filename=filename)
+                return {
+                    "raw": raw,
+                    "resolved": static_resolution.value,
+                    "resolution": static_resolution.resolution,
+                    "source_file": filename,
+                    "source_line": getattr(node, "lineno", None),
+                }
+            except ValueError:
+                pass
         return {
+            "raw": raw,
+            "resolved": None,
+            "resolution": "unresolved_attribute",
+            "unresolved_reason": "attribute_not_in_static_context",
+            "source_file": filename,
+            "source_line": getattr(node, "lineno", None),
+        }
+    try:
+        if static_resolver is not None:
+            static_resolution = static_resolver.resolve(node, static_known, filename=filename)
+            value = static_resolution.value
+            resolution = static_resolution.resolution
+            dependencies = static_resolution.dependencies
+        else:
+            value, resolution = _static_value_with_resolution(node, static_known)
+            dependencies = ()
+        result = {
             "raw": raw,
             "resolved": value,
             "resolution": method_hint if method_hint == "function_default" else resolution,
             "source_file": filename,
             "source_line": getattr(node, "lineno", None),
         }
+        if dependencies:
+            result["dependencies"] = list(dependencies)
+        return result
     except ValueError:
         return {
             "raw": raw,
             "resolved": None,
             "resolution": "unresolved_expression",
+            "unresolved_reason": "unsupported_or_unresolved_static_expression",
             "source_file": filename,
             "source_line": getattr(node, "lineno", None),
         }
@@ -486,12 +953,21 @@ def _readiness(kind: str, standard_inputs: dict[str, dict[str, Any]]) -> dict[st
     return {"level": level, "missing": missing}
 
 
-def _should_record_call(function_name: str, parameters: dict[str, dict[str, Any]], signature: FunctionSignature | None) -> bool:
+def _should_record_call(
+    function_name: str,
+    parameters: dict[str, dict[str, Any]],
+    signature: FunctionSignature | None,
+    qualified_function_name: str | None = None,
+) -> bool:
     if function_name in PROCUREMENT_HELPER_FUNCTIONS:
+        return False
+    if function_name.startswith("_"):
         return False
     if signature is not None and signature.return_annotation is not None and not _returns_build_geometry(signature):
         return False
     if function_name[:1].isupper() and signature is None:
+        return False
+    if qualified_function_name and "." in qualified_function_name and not function_name.startswith("make_") and _infer_kind(function_name) == "component":
         return False
     if function_name.startswith("make_"):
         return True
@@ -558,15 +1034,213 @@ def _collect_function_instance_counts(
     return counts
 
 
+def _static_count(node: ast.AST, known: dict[str, Any], local_counts: dict[str, int]) -> int | None:
+    if isinstance(node, ast.Name):
+        return local_counts.get(node.id)
+    if isinstance(node, ast.List | ast.Tuple):
+        return len(node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_count(node.left, known, local_counts)
+        right = _static_count(node.right, known, local_counts)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.ListComp) and node.generators:
+        count = 1
+        for generator in node.generators:
+            generator_count = _static_count(generator.iter, known, local_counts)
+            if generator_count is None:
+                return None
+            count *= generator_count
+        return count
+    return _iterable_count(node, known)
+
+
+def _collect_return_item_counts(
+    files: dict[str, str],
+    source_files: list[str],
+    constants: dict[tuple[str, str], ConstantValue],
+) -> dict[tuple[str, int], int]:
+    return_counts: dict[tuple[str, int], int] = {}
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+        known = {
+            name: value.value
+            for (constant_file, name), value in constants.items()
+            if constant_file == filename
+        }
+
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            local_counts: dict[str, int] = {}
+
+            def visit_statements(statements: list[ast.stmt], multiplier: int = 1) -> None:
+                for statement in statements:
+                    if isinstance(statement, ast.Assign):
+                        if isinstance(statement.value, ast.List | ast.Tuple):
+                            count = len(statement.value.elts)
+                        elif isinstance(statement.value, ast.ListComp):
+                            count = _static_count(statement.value, known, local_counts)
+                        else:
+                            count = None
+                        if count is not None:
+                            for target in statement.targets:
+                                if isinstance(target, ast.Name):
+                                    local_counts[target.id] = count
+
+                        if isinstance(statement.value, ast.Call):
+                            call_name = _call_name(statement.value.func)
+                            short_name = call_name.rsplit(".", 1)[-1] if call_name else ""
+                            for target in statement.targets:
+                                if isinstance(target, ast.Tuple):
+                                    for index, item in enumerate(target.elts):
+                                        if isinstance(item, ast.Name):
+                                            returned_count = return_counts.get((short_name, index))
+                                            if returned_count is not None:
+                                                local_counts[item.id] = returned_count
+
+                    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+                        call = statement.value
+                        if isinstance(call.func, ast.Attribute) and call.func.attr == "append" and isinstance(call.func.value, ast.Name):
+                            list_name = call.func.value.id
+                            local_counts[list_name] = local_counts.get(list_name, 0) + multiplier
+
+                    if isinstance(statement, ast.For):
+                        loop_count = _static_count(statement.iter, known, local_counts)
+                        if loop_count is not None:
+                            visit_statements(statement.body, multiplier * loop_count)
+
+            visit_statements(function.body)
+            for statement in function.body:
+                if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Tuple):
+                    for index, item in enumerate(statement.value.elts):
+                        if isinstance(item, ast.Name) and item.id in local_counts:
+                            return_counts[(function.name, index)] = local_counts[item.id]
+    return return_counts
+
+
+def _moved_prototype_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "moved":
+        return None
+    if isinstance(node.func.value, ast.Name):
+        return node.func.value.id
+    return None
+
+
+def _collect_fastener_call_placement_counts(
+    files: dict[str, str],
+    source_files: list[str],
+    constants: dict[tuple[str, str], ConstantValue],
+) -> dict[tuple[str, int], int]:
+    return_counts = _collect_return_item_counts(files, source_files, constants)
+    placement_counts: dict[tuple[str, int], int] = {}
+
+    for filename in source_files:
+        try:
+            tree = ast.parse(files[filename], filename=filename)
+        except SyntaxError:
+            continue
+        known = {
+            name: value.value
+            for (constant_file, name), value in constants.items()
+            if constant_file == filename
+        }
+
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            local_counts: dict[str, int] = {}
+            prototypes: dict[str, int] = {}
+
+            def count_proto_moves(node: ast.AST, multiplier: int) -> None:
+                moved_name = _moved_prototype_name(node)
+                if moved_name and moved_name in prototypes:
+                    source_line = prototypes[moved_name]
+                    placement_counts[(filename, source_line)] = placement_counts.get((filename, source_line), 0) + multiplier
+                    return
+                for child in ast.iter_child_nodes(node):
+                    count_proto_moves(child, multiplier)
+
+            def visit_statements(statements: list[ast.stmt], multiplier: int = 1) -> None:
+                for statement in statements:
+                    if isinstance(statement, ast.Assign):
+                        assigned_call = statement.value if isinstance(statement.value, ast.Call) else None
+                        assigned_name = _call_name(assigned_call.func) if assigned_call else None
+                        assigned_short_name = assigned_name.rsplit(".", 1)[-1] if assigned_name else ""
+                        moved_name = _moved_prototype_name(statement.value)
+
+                        if assigned_short_name == "make_fastener_assembly":
+                            for target in statement.targets:
+                                if isinstance(target, ast.Name):
+                                    prototypes[target.id] = statement.lineno
+                            continue
+
+                        if moved_name and moved_name in prototypes:
+                            for target in statement.targets:
+                                if isinstance(target, ast.Name):
+                                    prototypes[target.id] = prototypes[moved_name]
+                            continue
+
+                        if isinstance(statement.value, ast.List | ast.Tuple):
+                            count = len(statement.value.elts)
+                        elif isinstance(statement.value, ast.ListComp):
+                            count = _static_count(statement.value, known, local_counts)
+                        else:
+                            count = None
+                        if count is not None:
+                            for target in statement.targets:
+                                if isinstance(target, ast.Name):
+                                    local_counts[target.id] = count
+
+                        if assigned_call:
+                            for target in statement.targets:
+                                if isinstance(target, ast.Tuple):
+                                    for index, item in enumerate(target.elts):
+                                        if isinstance(item, ast.Name):
+                                            returned_count = return_counts.get((assigned_short_name, index))
+                                            if returned_count is not None:
+                                                local_counts[item.id] = returned_count
+
+                        count_proto_moves(statement.value, multiplier)
+                        continue
+
+                    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+                        call = statement.value
+                        if isinstance(call.func, ast.Attribute) and call.func.attr == "append" and isinstance(call.func.value, ast.Name):
+                            list_name = call.func.value.id
+                            local_counts[list_name] = local_counts.get(list_name, 0) + multiplier
+                            if call.args:
+                                count_proto_moves(call.args[0], multiplier)
+                            continue
+                        count_proto_moves(statement.value, multiplier)
+                        continue
+
+                    if isinstance(statement, ast.For):
+                        loop_count = _static_count(statement.iter, known, local_counts)
+                        if loop_count is not None:
+                            visit_statements(statement.body, multiplier * loop_count)
+                        continue
+
+                    count_proto_moves(statement, multiplier)
+
+            visit_statements(function.body)
+
+    return placement_counts
+
+
 def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py") -> dict[str, Any]:
     """Analyze Python source files without executing design.py."""
 
     source_files = _collect_import_closure(files, entrypoint)
     import_aliases = _collect_import_aliases(files, source_files)
     constants = _collect_constants(files, source_files)
+    static_resolver = StaticValueResolver(files, source_files, import_aliases, constants)
     signatures = _collect_signatures(files, source_files)
     function_instance_counts = _collect_function_instance_counts(files, source_files, constants)
+    fastener_call_placement_counts = _collect_fastener_call_placement_counts(files, source_files, constants)
     calls: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
 
     for filename in source_files:
         try:
@@ -598,6 +1272,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                             import_aliases=import_aliases,
                             method_hint="function_default",
                             scoped_parameters=parameter_scope[-1] if parameter_scope else None,
+                            static_resolver=static_resolver,
                         )
                 parameter_scope.append(defaults)
                 for child in ast.iter_child_nodes(node):
@@ -605,6 +1280,22 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                 parameter_scope.pop()
                 scope.pop()
                 return
+
+            if isinstance(node, ast.Assign) and parameter_scope:
+                scoped_parameters = parameter_scope[-1]
+                resolved_assignment = _resolve_expr(
+                    node.value,
+                    filename=filename,
+                    constants=constants,
+                    import_aliases=import_aliases,
+                    method_hint="local_assignment",
+                    scoped_parameters=scoped_parameters,
+                    static_resolver=static_resolver,
+                )
+                if resolved_assignment.get("resolved") is not None:
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            scoped_parameters[target.id] = resolved_assignment
 
             if isinstance(node, ast.Call):
                 name = _call_name(node.func)
@@ -631,6 +1322,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 import_aliases=import_aliases,
                                 method_hint="function_default",
                                 scoped_parameters=scoped_parameters,
+                                static_resolver=static_resolver,
                             )
                         for index, arg in enumerate(node.args):
                             param = signature.params[index] if index < len(signature.params) else f"arg_{index}"
@@ -641,6 +1333,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 import_aliases=import_aliases,
                                 method_hint="argument",
                                 scoped_parameters=scoped_parameters,
+                                static_resolver=static_resolver,
                             )
                     else:
                         for index, arg in enumerate(node.args):
@@ -651,6 +1344,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 import_aliases=import_aliases,
                                 method_hint="argument",
                                 scoped_parameters=scoped_parameters,
+                                static_resolver=static_resolver,
                             )
 
                     for keyword in node.keywords:
@@ -662,15 +1356,29 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 import_aliases=import_aliases,
                                 method_hint="argument",
                                 scoped_parameters=scoped_parameters,
+                                static_resolver=static_resolver,
                             )
 
-                    if _should_record_call(short_name, parameters, signature):
+                    if _should_record_call(short_name, parameters, signature, name):
                         kind = _infer_kind(short_name)
                         standard_inputs = {
                             _standard_key(param): value
                             for param, value in parameters.items()
                             if _standard_key(param) in STANDARD_BOM_FIELDS
                         }
+                        for standard_key, value in standard_inputs.items():
+                            if isinstance(value, dict) and value.get("resolved") is None and str(value.get("resolution", "")).startswith("unresolved"):
+                                diagnostics.append({
+                                    "code": "unresolved_formula_dependency",
+                                    "severity": "warning",
+                                    "message": f"{short_name}.{standard_key} could not be resolved from deterministic source analysis.",
+                                    "function": short_name,
+                                    "input": standard_key,
+                                    "raw": value.get("raw"),
+                                    "unresolved_reason": value.get("unresolved_reason"),
+                                    "source_file": value.get("source_file") or filename,
+                                    "source_line": value.get("source_line") or node.lineno,
+                                })
                         readiness = _readiness(kind, standard_inputs)
                         calls.append({
                             "function": short_name,
@@ -683,6 +1391,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                             "bom_kind": kind,
                             "bom_readiness": readiness["level"],
                             "bom_missing_fields": readiness["missing"],
+                            "source_instance_count": fastener_call_placement_counts.get((filename, node.lineno)),
                             "signature_source": {
                                 "filename": signature.filename,
                                 "line": signature.line,
@@ -708,6 +1417,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
             for value in constants.values()
         ],
         "function_instance_counts": function_instance_counts,
+        "diagnostics": diagnostics,
     }
 
 
@@ -951,6 +1661,27 @@ def _resolved_input(call: dict[str, Any], key: str) -> Any:
     return None
 
 
+def _input_trace(call: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
+    if not call:
+        return None
+    value = call.get("standard_inputs", {}).get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _notable_input_trace(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    if value.get("dependencies") or value.get("unresolved_reason"):
+        return value
+    return None
+
+
+def _is_decomposable_fastener_assembly(call: dict[str, Any] | None) -> bool:
+    if not call or call.get("bom_kind") != "fastener_assembly":
+        return False
+    return _resolved_input(call, "size") is not None and _resolved_input(call, "length_mm") is not None
+
+
 def _make_generated_part_key(component: dict[str, Any], call: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
     label = str(component.get("label") or "component")
     kind = str(call.get("bom_kind") if call else "component").upper().replace("_", "-")
@@ -1081,6 +1812,7 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
     explicit_quantity = _positive_number(_resolved_input(call, "quantity")) if call else None
     visual_count = _visual_instance_count(component)
     assembly_multiplier = _assembly_multiplier(call, source_analysis)
+    source_instance_count = int(_positive_number(call.get("source_instance_count")) or 1) if call else 1
 
     if explicit_quantity is not None:
         quantity = explicit_quantity
@@ -1091,7 +1823,7 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
         source = "visual_instances"
         confidence = "verified"
     else:
-        quantity = 1
+        quantity = source_instance_count
         source = "source_calls"
         confidence = "probable"
 
@@ -1103,6 +1835,8 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
         "assembly_instance_multiplier": assembly_multiplier,
         "source_call_count": 1,
     }
+    if source_instance_count != 1:
+        trace["source_instance_count"] = source_instance_count
     if explicit_quantity is not None and visual_count is not None and explicit_quantity != visual_count:
         confidence = "diagnostic"
         trace["mismatch"] = {
@@ -1120,6 +1854,106 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
         "source_call_count": 1,
         "count_trace": trace,
     }
+
+
+def _generated_fastener_part_trace(
+    *,
+    part_number: str,
+    standard: str,
+    call: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "raw": {"kind": "generated", "standard": standard},
+        "resolved": part_number,
+        "resolution": "generated_standard_fastener",
+        "source_file": call.get("source_file") if call else None,
+        "source_line": call.get("source_line") if call else None,
+    }
+
+
+def _fastener_assembly_requirements(
+    *,
+    component: dict[str, Any],
+    call: dict[str, Any],
+    component_record: dict[str, Any],
+    quantity_evidence: dict[str, Any],
+) -> list[dict[str, Any]]:
+    size = _resolved_input(call, "size")
+    length = _resolved_input(call, "length_mm")
+    grip_length = _resolved_input(call, "grip_length_mm")
+    size_text = str(size).strip().upper() if size is not None else None
+    length_text = _compact_angle(length)
+
+    bolt_part = f"DIN-6921-{size_text}X{length_text}" if size_text and length_text else None
+    nut_part = f"DIN-6923-{size_text}" if size_text else None
+    base_dimensions = {"size": size_text} if size_text else {}
+
+    bolt_dimensions = dict(base_dimensions)
+    if length is not None:
+        bolt_dimensions["length_mm"] = length
+    if grip_length is not None:
+        bolt_dimensions["grip_length_mm"] = grip_length
+
+    nut_dimensions = dict(base_dimensions)
+    bolt_quantity = {
+        **quantity_evidence,
+        "count_trace": dict(quantity_evidence.get("count_trace", {})),
+    }
+    nut_quantity = {
+        **quantity_evidence,
+        "count_trace": dict(quantity_evidence.get("count_trace", {})),
+    }
+
+    return [
+        {
+            "id": f"{component['id']}.bolt.requirement",
+            "component_id": component["id"],
+            "assembly_id": component.get("assembly_id"),
+            "part_number": bolt_part,
+            "stock_number": None,
+            **bolt_quantity,
+            "unit": "each",
+            "dimensions": bolt_dimensions,
+            "material": _resolved_input(call, "material"),
+            "finish": _resolved_input(call, "finish"),
+            "source_trace": {
+                **component_record["source_trace"],
+                "decomposed_from": "fastener_assembly",
+                "procurement_item": "bolt",
+            },
+            "resolution_trace": {
+                "part_number": _generated_fastener_part_trace(
+                    part_number=bolt_part,
+                    standard="DIN 6921 hex flange bolt",
+                    call=call,
+                ) if bolt_part else None,
+            },
+        },
+        {
+            "id": f"{component['id']}.nut.requirement",
+            "component_id": component["id"],
+            "assembly_id": component.get("assembly_id"),
+            "part_number": nut_part,
+            "stock_number": None,
+            **nut_quantity,
+            "unit": "each",
+            "dimensions": nut_dimensions,
+            "material": _resolved_input(call, "material"),
+            "finish": _resolved_input(call, "finish"),
+            "source_trace": {
+                **component_record["source_trace"],
+                "decomposed_from": "fastener_assembly",
+                "procurement_item": "nut",
+            },
+            "resolution_trace": {
+                "part_number": _generated_fastener_part_trace(
+                    part_number=nut_part,
+                    standard="DIN 6923 hex flange nut",
+                    call=call,
+                ) if nut_part else None,
+            },
+        },
+    ]
 
 
 def _requirement_group_key(requirement: dict[str, Any]) -> tuple[Any, ...]:
@@ -1180,7 +2014,10 @@ def build_procurement_analysis(
 ) -> dict[str, Any]:
     """Build a deterministic procurement analysis artifact."""
 
-    diagnostics = list(tree_analysis.get("diagnostics", []))
+    diagnostics = [
+        *list(tree_analysis.get("diagnostics", [])),
+        *list(source_analysis.get("diagnostics", [])),
+    ]
     if explicit_manifest and explicit_manifest.get("requirements"):
         return {
             "version": 1,
@@ -1234,7 +2071,37 @@ def build_procurement_analysis(
             for key in ["length_mm", "width_mm", "height_mm", "thickness_mm", "diameter_mm", "grip_length_mm", "roof_pitch_deg", "angle_deg"]
             if call and _resolved_input(call, key) is not None
         }
+        dimension_trace = {
+            key: trace
+            for key in dimensions
+            if (trace := _notable_input_trace(_input_trace(call, key))) is not None
+        }
+        quantity_trace = _notable_input_trace(_input_trace(call, "quantity"))
+        resolution_trace = {
+            "part_number": generated_trace or (call.get("standard_inputs", {}).get("part_number") if call else None),
+        }
+        if dimension_trace:
+            resolution_trace["dimensions"] = dimension_trace
+        if quantity_trace:
+            resolution_trace["quantity"] = quantity_trace
         quantity_evidence = _quantity_evidence(call, component, source_analysis)
+        if _is_decomposable_fastener_assembly(call):
+            fastener_requirements = _fastener_assembly_requirements(
+                component=component,
+                call=call,
+                component_record=component_record,
+                quantity_evidence=quantity_evidence,
+            )
+            requirements.extend(fastener_requirements)
+            for fastener_requirement in fastener_requirements:
+                if not fastener_requirement.get("part_number"):
+                    diagnostics.append({
+                        "code": "requirement_missing_part_number",
+                        "message": f"{component.get('label')} {fastener_requirement['source_trace']['procurement_item']} has no resolved part number.",
+                        "component_id": component["id"],
+                    })
+            continue
+
         requirement = {
             "id": f"{component['id']}.requirement",
             "component_id": component["id"],
@@ -1247,9 +2114,7 @@ def build_procurement_analysis(
             "material": _resolved_input(call, "material") if call else None,
             "finish": _resolved_input(call, "finish") if call else None,
             "source_trace": component_record["source_trace"],
-            "resolution_trace": {
-                "part_number": generated_trace or (call.get("standard_inputs", {}).get("part_number") if call else None),
-            },
+            "resolution_trace": resolution_trace,
         }
         requirements.append(requirement)
 

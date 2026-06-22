@@ -12,6 +12,11 @@ Examples:
       --project-dir C:\path\to\project \
       --gltf C:\path\to\model.gltf \
       --out C:\tmp\procurement_analysis.json
+
+  python scripts/spikes/procurement_analysis_playground.py \
+      --project-dir C:\path\to\project \
+      --source-only \
+      --out C:\tmp\procurement_analysis.json
 """
 
 from __future__ import annotations
@@ -95,7 +100,7 @@ def read_python_files(project_dir: Path) -> dict[str, str]:
     return {
         path.name: path.read_text(encoding="utf-8-sig")
         for path in sorted(project_dir.glob("*.py"))
-        if path.is_file() and not path.name.endswith(".json.py")
+        if path.is_file()
     }
 
 
@@ -222,6 +227,7 @@ def main() -> int:
     parser.add_argument("--entrypoint", default="design.py", help="Entrypoint filename inside --project-dir.")
     parser.add_argument("--tree-json", type=Path, help="Simplified scene-tree JSON fixture.")
     parser.add_argument("--gltf", type=Path, help="Text .gltf JSON file to convert into a scene tree.")
+    parser.add_argument("--source-only", action="store_true", help="Skip GLTF compile and build from deterministic source evidence.")
     parser.add_argument("--quality", default="sketch", help="GLTF compile quality when no tree/GLTF is supplied.")
     parser.add_argument("--compile-timeout", type=int, default=240, help="Seconds to wait for temporary GLTF compile.")
     parser.add_argument(
@@ -241,7 +247,11 @@ def main() -> int:
         raise FileNotFoundError(f"{entrypoint} was not found in {project_dir}")
 
     source_analysis = analyze_design_sources(files, entrypoint=entrypoint)
-    tree_analysis = analyze_gltf_tree(load_tree(args))
+    if args.source_only:
+        tree_analysis = {"assemblies": [], "components": [], "diagnostics": []}
+        args.explicit_manifest = {}
+    else:
+        tree_analysis = analyze_gltf_tree(load_tree(args))
     procurement_analysis = build_procurement_analysis(
         source_analysis,
         tree_analysis,
