@@ -152,6 +152,17 @@ services:
     volumes:
       - tertius-victoriametrics:/storage
 
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.9.2
+    command:
+      - -storageDataPath=/storage
+      - -httpListenAddr=:10428
+      - -retentionPeriod=7d
+    ports:
+      - "10428:10428"
+    volumes:
+      - tertius-victoriatraces:/storage
+
   # Uncomment and configure the below block if you use a named Cloudflare tunnel with a token
   # tunnel:
   #   image: cloudflare/cloudflared:latest
@@ -163,3 +174,4 @@ volumes:
   tertius-postgres:
   tertius-nats:
   tertius-victoriametrics:
+  tertius-victoriatraces:

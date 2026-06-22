@@ -48,3 +48,9 @@ dashboard panels so agent validation and dashboards stay aligned.
 - Postgres connections, transaction rate, and query latency from CloudNativePG or platform metrics
 - NATS connections, JetStream messages, publish errors, and consumer lag from the monitoring endpoint
 - Collector accepted, refused, dropped, and export-failed telemetry from collector self-metrics
+- VictoriaMetrics ingestion rate, active series, slow queries, disk usage, and
+  retention pressure
+- VictoriaTraces ingestion rate, dropped rows, query latency, disk usage, and
+  retention pressure
+- Trace drilldowns by service, route, compile operation, LLM provider call, and
+  NATS publish/consume boundary

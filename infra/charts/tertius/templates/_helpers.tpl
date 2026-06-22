@@ -56,6 +56,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-victoriametrics" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "tertius.tracesBackendName" -}}
+{{- printf "%s-victoriatraces" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "tertius.configName" -}}
 {{- printf "%s-config" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

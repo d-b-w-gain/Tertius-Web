@@ -25,7 +25,8 @@ The wrapper uses the same chart and smoke implementation as CI. Use the manual
 Helm commands below when debugging chart rendering directly. Runtime drift rules
 are documented in `docs/harness/runtime-parity.md`, and local metrics can be
 queried through `scripts/harness-query-metrics.sh` when the local metrics backend
-is enabled.
+is enabled. Local traces can be queried with `scripts/harness-query-traces.sh`
+when the bundled traces backend is enabled.
 
 ```bash
 helm dependency update infra/charts/tertius
@@ -69,7 +70,28 @@ Compile work runs as KEDA-created `ScaledJob` pods. Those pods use the API image
 
 The chart does not install KEDA or its CRDs. `keda.enabled` defaults to `true` for the production and local values so compile work is rendered by default, but clusters without KEDA can render or install the rest of the chart with `--set keda.enabled=false`. Re-enable it only after the `ScaledJob` CRD is present.
 
-By default, compile Job pods get a dedicated NetworkPolicy that denies ingress and only allows egress to DNS and NATS `4222`. API/UI ingress policies remain controlled by `networkPolicy.enabled`. If API egress hardening is added later, it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required external services together.
+By default, compile Job pods get a dedicated NetworkPolicy that denies ingress
+and only allows egress to DNS, NATS `4222`, and the in-release collector OTLP
+gRPC port when observability is enabled. API/UI ingress policies remain
+controlled by `networkPolicy.enabled`. If API egress hardening is added later,
+it must account for NATS, Postgres, Valkey, Keycloak, DNS, and any required
+external services together.
+
+## Observability Backends
+
+Applications export only OTLP to the OpenTelemetry Collector. The collector
+routes metrics to VictoriaMetrics with Prometheus remote write and routes traces
+to VictoriaTraces with OTLP/HTTP when the bundled backends are enabled.
+
+Local values enable PVC-backed single-node VictoriaMetrics and VictoriaTraces.
+Production can either enable these small bundled backends or disable them and
+configure collector exporters for shared Victoria services. The bundled
+VictoriaTraces Service is `ClusterIP`; use port-forwarding or Grafana/Jaeger UI
+integration for reads instead of exposing it publicly.
+
+Default local storage is intentionally small. Set explicit storage sizes,
+storage classes, retention, and resource requests before using bundled backends
+outside smoke or small installs.
 
 ## LLM Build Script Generation
 

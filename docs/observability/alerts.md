@@ -34,5 +34,8 @@ labels.
 - Postgres connection saturation: page when active connections exceed 85% of the configured limit for 10 minutes.
 - Postgres latency: notify when query latency or transaction duration exceeds baseline by 3x for 15 minutes.
 - Pod crash loops: page on repeated restarts for API, UI, NATS, Keycloak, Postgres, or compile jobs.
-- Collector export failures: page when collector export failures or dropped telemetry are non-zero for 10 minutes.
+- Collector export failures: page when export failures to VictoriaMetrics or
+  VictoriaTraces, or dropped telemetry, are non-zero for 10 minutes.
 - Collector backpressure: notify when collector memory limiter drops data or queue length remains high for 10 minutes.
+- VictoriaTraces dropped rows: page when dropped rows are non-zero for 10
+  minutes, especially timestamp-out-of-retention drops.

@@ -33,6 +33,17 @@ data:
         resource_to_telemetry_conversion:
           enabled: true
 {{- end }}
+{{- if .Values.app.observability.tracesBackend.enabled }}
+      otlphttp/victoriatraces:
+        compression: gzip
+        encoding: proto
+        traces_endpoint: http://{{ include "tertius.tracesBackendName" . }}:{{ .Values.app.observability.tracesBackend.port }}/insert/opentelemetry/v1/traces
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 2048
+{{- end }}
 
     service:
       telemetry:
@@ -76,6 +87,8 @@ spec:
       app.kubernetes.io/component: otel-collector
   template:
     metadata:
+      annotations:
+        checksum/config: {{ printf "%s-%t-%t-%s-%s-%v-%v" (toYaml .Values.app.observability.collector) .Values.app.observability.metricsBackend.enabled .Values.app.observability.tracesBackend.enabled (include "tertius.metricsBackendName" .) (include "tertius.tracesBackendName" .) .Values.app.observability.metricsBackend.port .Values.app.observability.tracesBackend.port | sha256sum }}
       labels:
         {{- include "tertius.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: otel-collector

@@ -22,6 +22,28 @@ scripts/harness-query-metrics.sh --file docs/harness/queries/api.promql --name a
 
 Set `METRICS_BASE_URL` for a different endpoint.
 
+## Local Traces
+
+Compose exposes VictoriaTraces at:
+
+```text
+http://localhost:10428
+```
+
+Local k3s exposes the same endpoint after port-forwarding the bundled traces
+backend service. Set `TRACES_BASE_URL` for a different endpoint.
+
+Query recent services and traces with:
+
+```bash
+scripts/harness-query-traces.sh
+scripts/harness-query-traces.sh --service tertius-api --window-minutes 30
+scripts/harness-query-traces.sh --service tertius-ui --window-minutes 30
+scripts/harness-query-traces.sh --require-cross-service \
+  --cross-service tertius-api \
+  --cross-service tertius-compile-job
+```
+
 ## Query Files
 
 Query files use single-line PromQL expressions:
@@ -41,3 +63,8 @@ lines separate entries.
 - LLM changes: request count, failure count, token and cost metrics. Never add
   prompts or generated source to telemetry.
 - Collector changes: refused, dropped, and export-failed telemetry.
+- Trace backend changes: spans for `tertius-api` and `tertius-compile-job`,
+  plus at least one trace connecting those services after an authenticated live
+  flow. `tertius-ui` spans require browser execution because
+  `scripts/smoke-live-flow.sh` calls the UI origin with curl and does not run
+  frontend JavaScript.

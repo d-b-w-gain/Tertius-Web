@@ -1,0 +1,107 @@
+{{- if and .Values.app.observability.enabled .Values.app.observability.tracesBackend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.tracesBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: traces-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: traces-backend
+  template:
+    metadata:
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: traces-backend
+    spec:
+      containers:
+        - name: victoriatraces
+          image: "{{ .Values.app.observability.tracesBackend.image.repository }}:{{ .Values.app.observability.tracesBackend.image.tag }}"
+          imagePullPolicy: {{ .Values.app.observability.tracesBackend.image.pullPolicy }}
+          args:
+            - -storageDataPath=/storage
+            - -httpListenAddr=:{{ .Values.app.observability.tracesBackend.port }}
+            - -retentionPeriod={{ .Values.app.observability.tracesBackend.retentionPeriod }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.observability.tracesBackend.port }}
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+          resources:
+            {{- toYaml .Values.app.observability.tracesBackend.resources | nindent 12 }}
+      volumes:
+        - name: storage
+          {{- if .Values.app.observability.tracesBackend.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tertius.tracesBackendName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tertius.tracesBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: traces-backend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.app.observability.tracesBackend.port }}
+      targetPort: http
+  selector:
+    {{- include "tertius.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: traces-backend
+{{- if .Values.app.observability.tracesBackend.storage.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tertius.tracesBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: traces-backend
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.app.observability.tracesBackend.storage.size }}
+  {{- with .Values.app.observability.tracesBackend.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tertius.tracesBackendName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: traces-backend
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: traces-backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tertius.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: otel-collector
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.observability.tracesBackend.port }}
+{{- end }}
+{{- end }}
