@@ -23,6 +23,7 @@ vi.mock('./workflows/intus/IntusWindow', () => ({ IntusWindow: () => <div>Intus 
 vi.mock('./workflows/extus/ExtusWindow', () => ({ ExtusWindow: () => <div>Extus mock</div> }))
 vi.mock('./workflows/artus/ArtusWindow', () => ({ ArtusWindow: () => <div>Artus mock</div> }))
 vi.mock('./workflows/timus/TimusWindow', () => ({ TimusWindow: () => <div>Timus mock</div> }))
+vi.mock('./workflows/octavus/OctavusWindow', () => ({ OctavusWindow: () => <div>Octavus mock</div> }))
 vi.mock('./workflows/generate/GenerateDesignWindow', () => ({ GenerateDesignWindow: () => <div>Generate mock</div> }))
 vi.mock('./workflows/generate/AiBudgetGauge', () => ({ AiBudgetGauge: () => <div>Budget mock</div> }))
 

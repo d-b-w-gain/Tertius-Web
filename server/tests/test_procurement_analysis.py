@@ -361,6 +361,58 @@ prototype = make_member("VISUAL-COUNT")
     assert requirement["source_call_count"] == 1
 
 
+def test_generated_render_children_count_as_visual_instances_on_source_component():
+    source = analyze_design_sources({
+        "design.py": """
+def make_blocks(*, part_number="BLOCK-A", unit="each"):
+    return None
+
+blocks = make_blocks()
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Wall",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "Blocks",
+                        "type": "Object3D",
+                        "children": [
+                            {
+                                "name": "=>[0:1]",
+                                "type": "Object3D",
+                                "children": [{"name": "mesh_1", "type": "Mesh", "isMesh": True}],
+                            },
+                            {
+                                "name": "=>[0:2]",
+                                "type": "Object3D",
+                                "children": [{"name": "mesh_2", "type": "Mesh", "isMesh": True}],
+                            },
+                            {
+                                "name": "=>[0:3]",
+                                "type": "Object3D",
+                                "children": [{"name": "mesh_3", "type": "Mesh", "isMesh": True}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    assert [component["label"] for component in analysis["components"]] == ["Blocks"]
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] == "BLOCK-A"
+    assert requirement["quantity"] == 3
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["visual_instance_count"] == 3
+    assert not any(diagnostic["code"] == "requirement_missing_part_number" for diagnostic in analysis["diagnostics"])
+
+
 def test_source_call_only_analysis_marks_quantity_probable_and_counts_grouped_calls():
     source = analyze_design_sources({
         "design.py": """
