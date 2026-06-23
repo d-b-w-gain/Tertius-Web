@@ -494,6 +494,48 @@ describe('CompilerTab compile jobs', () => {
     })
   })
 
+  it('keeps polling AI edit jobs past the old fixed attempt limit', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    let statusCalls = 0
+    storage.getLlmFileEditJob.mockImplementation(() => {
+      statusCalls += 1
+      if (statusCalls <= 120) {
+        return Promise.resolve({ job_id: 'llm-job-1', status: 'queued' })
+      }
+      return Promise.resolve({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: '',
+          model: 'test-model',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+          files: [
+            { id: 'file-design-id', filename: 'design.py', content: 'design after long edit', changed: true },
+          ],
+        },
+      })
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a long edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(245_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design after long edit')
+    })
+    expect(statusCalls).toBeGreaterThan(120)
+    expect(screen.queryByText(/AI file edit timed out/)).not.toBeInTheDocument()
+  }, 10000)
+
   it('saves the active editor before submitting an AI edit', async () => {
     storage.listFileMetadata
       .mockResolvedValueOnce([

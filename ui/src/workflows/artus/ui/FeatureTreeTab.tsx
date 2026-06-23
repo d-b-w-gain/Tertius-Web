@@ -1087,7 +1087,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
             highlighted_node: highlightedNode || '',
           },
         });
-        for (let attempt = 0; attempt < 120; attempt += 1) {
+        let isFirstPoll = true;
+        while (true) {
           const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
           if (status.status === 'succeeded' && status.result) {
             return status.result;
@@ -1095,9 +1096,9 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
           if (status.status === 'failed') {
             throw new Error(status.user_message || status.error || 'AI file edit failed.');
           }
-          await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 500 : 2000));
+          await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+          isFirstPoll = false;
         }
-        throw new Error('AI file edit timed out.');
       });
 
       const changedMetadata = result.files.map(file => ({

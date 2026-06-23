@@ -561,7 +561,8 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           metadata: { source: 'compiler_tab' },
         });
         let result = null;
-        for (let attempt = 0; attempt < 120; attempt += 1) {
+        let isFirstPoll = true;
+        while (!result) {
           const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
           if (status.status === 'succeeded' && status.result) {
             result = status.result;
@@ -570,10 +571,8 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
           if (status.status === 'failed') {
             throw new Error(status.user_message || status.error || 'AI file edit failed.');
           }
-          await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 500 : 2000));
-        }
-        if (!result) {
-          throw new Error('AI file edit timed out.');
+          await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+          isFirstPoll = false;
         }
         setAiPrompt('');
         if (result.outcome === 'changed') {
