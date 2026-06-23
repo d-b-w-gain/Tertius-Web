@@ -6,7 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 
 STANDARD_BOM_FIELDS = {
@@ -100,7 +100,7 @@ class StaticResolution:
     dependencies: tuple[str, ...] = ()
 
 
-SAFE_BUILTIN_NUMERIC_FUNCTIONS = {
+SAFE_BUILTIN_NUMERIC_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "abs": abs,
     "min": min,
     "max": max,
@@ -110,7 +110,7 @@ SAFE_BUILTIN_NUMERIC_FUNCTIONS = {
     "floor": math.floor,
 }
 
-SAFE_MATH_NUMERIC_FUNCTIONS = {
+SAFE_MATH_NUMERIC_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "radians": math.radians,
     "degrees": math.degrees,
     "sin": math.sin,
@@ -255,18 +255,18 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
         if isinstance(condition, bool):
             return _static_value_with_resolution(node.body if condition else node.orelse, known)
     if isinstance(node, ast.Call):
-        name = _call_name(node.func)
-        if name in {"float", "int", "str"} and len(node.args) == 1 and not node.keywords:
+        call_name = _call_name(node.func)
+        if call_name in {"float", "int", "str"} and len(node.args) == 1 and not node.keywords:
             value, _value_resolution = _static_value_with_resolution(node.args[0], known)
             try:
-                if name == "float":
+                if call_name == "float":
                     return float(value), "static_cast"
-                if name == "int":
+                if call_name == "int":
                     return int(value), "static_cast"
                 return str(value), "static_cast"
             except (TypeError, ValueError) as exc:
                 raise ValueError("not a static value") from exc
-        if name == "round_up_to_increment" and len(node.args) == 2 and not node.keywords:
+        if call_name == "round_up_to_increment" and len(node.args) == 2 and not node.keywords:
             value, _value_resolution = _static_value_with_resolution(node.args[0], known)
             increment, _increment_resolution = _static_value_with_resolution(node.args[1], known)
             if isinstance(value, int | float) and isinstance(increment, int | float):
@@ -301,7 +301,7 @@ def _compact_expr(node: ast.AST) -> dict[str, Any]:
     return {"kind": "expression", "source": _unparse(node)}
 
 
-def _assignment_target_names(targets: list[ast.AST]) -> list[str]:
+def _assignment_target_names(targets: Sequence[ast.AST]) -> list[str]:
     names: list[str] = []
 
     def collect(target: ast.AST) -> None:
@@ -526,7 +526,7 @@ class StaticValueResolver:
             return StaticResolution(value=values, resolution="static_container", dependencies=tuple(dependencies))
         if isinstance(node, ast.Dict):
             result: dict[Any, Any] = {}
-            dependencies: list[str] = []
+            dict_dependencies: list[str] = []
             for key_node, value_node in zip(node.keys, node.values, strict=True):
                 if key_node is None:
                     return None
@@ -536,9 +536,9 @@ class StaticValueResolver:
                 except ValueError:
                     return None
                 result[key.value] = value.value
-                dependencies.extend(key.dependencies)
-                dependencies.extend(value.dependencies)
-            return StaticResolution(value=result, resolution="static_container", dependencies=tuple(dependencies))
+                dict_dependencies.extend(key.dependencies)
+                dict_dependencies.extend(value.dependencies)
+            return StaticResolution(value=result, resolution="static_container", dependencies=tuple(dict_dependencies))
         return None
 
     def _all_attr_aliases(self) -> dict[str, str]:
@@ -728,12 +728,12 @@ class StaticValueResolver:
         if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
             call = statement.value
             if isinstance(call.func, ast.Attribute) and call.func.attr == "append" and isinstance(call.func.value, ast.Name) and len(call.args) == 1:
-                target = local_known.get(call.func.value.id)
-                if not isinstance(target, list):
+                target_list = local_known.get(call.func.value.id)
+                if not isinstance(target_list, list):
                     setattr(statement, "_static_not_supported", True)
                     return None
                 try:
-                    target.append(self.resolve(call.args[0], local_known, filename=filename, call_stack=call_stack).value)
+                    target_list.append(self.resolve(call.args[0], local_known, filename=filename, call_stack=call_stack).value)
                 except ValueError:
                     setattr(statement, "_static_not_supported", True)
                 return None
@@ -1070,7 +1070,7 @@ def _collect_constants(files: dict[str, str], source_files: list[str]) -> dict[t
             continue
         known = resolver.known_for(filename)
 
-        def remember(name: str, value: Any, line: int, resolution: str) -> None:
+        def remember_file_constant(name: str, value: Any, line: int, resolution: str) -> None:
             existing = constants.get((filename, name))
             if existing is not None and existing.line > line:
                 known[name] = existing
@@ -1093,7 +1093,7 @@ def _collect_constants(files: dict[str, str], source_files: list[str]) -> dict[t
                 continue
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    remember(target.id, value, node.lineno, resolution)
+                    remember_file_constant(target.id, value, node.lineno, resolution)
     return constants
 
 
@@ -1823,7 +1823,8 @@ def _infer_standard_inputs_from_parameters(
             except (TypeError, ValueError):
                 length = None
             if length is not None:
-                source = parameters.get("p2") if isinstance(parameters.get("p2"), dict) else {}
+                source_value = parameters.get("p2")
+                source = source_value if isinstance(source_value, dict) else {}
                 inferred["length_mm"] = {
                     **source,
                     "raw": {"kind": "expression", "source": "distance(p1, p2)"},
@@ -1909,6 +1910,7 @@ def _collect_return_item_counts(
             def visit_statements(statements: list[ast.stmt], multiplier: int = 1) -> None:
                 for statement in statements:
                     if isinstance(statement, ast.Assign):
+                        count: int | None
                         if isinstance(statement.value, ast.List | ast.Tuple):
                             count = len(statement.value.elts)
                         elif isinstance(statement.value, ast.ListComp):
@@ -2104,6 +2106,7 @@ def _collect_fastener_call_placement_counts(
                             for target in statement.targets:
                                 assign_loop_target(target, resolved_value, local_known)
 
+                        count: int | None
                         if isinstance(statement.value, ast.List | ast.Tuple):
                             count = len(statement.value.elts)
                         elif isinstance(statement.value, ast.ListComp):
@@ -2254,20 +2257,20 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
 
             if isinstance(node, ast.Assign):
                 if parameter_scope:
-                    scoped_parameters = parameter_scope[-1]
+                    assignment_scoped_parameters = parameter_scope[-1]
                     resolved_assignment = _resolve_expr(
                         node.value,
                         filename=filename,
                         constants=constants,
                         import_aliases=import_aliases,
                         method_hint="local_assignment",
-                        scoped_parameters=scoped_parameters,
+                        scoped_parameters=assignment_scoped_parameters,
                         static_resolver=static_resolver,
                     )
                     if resolved_assignment.get("resolved") is not None:
                         for target in node.targets:
                             if isinstance(target, ast.Name):
-                                scoped_parameters[target.id] = resolved_assignment
+                                assignment_scoped_parameters[target.id] = resolved_assignment
                 assignment_target_scope.append(_assignment_target_names(node.targets))
                 visit(node.value)
                 assignment_target_scope.pop()
@@ -2286,7 +2289,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                     seen_calls.add(key)
                     short_name = name.rsplit(".", 1)[-1] if name else ""
                     signature = signatures.get(short_name)
-                    scoped_parameters = parameter_scope[-1] if parameter_scope else None
+                    call_scoped_parameters = parameter_scope[-1] if parameter_scope else None
                     parameters: dict[str, dict[str, Any]] = {}
 
                     if signature:
@@ -2297,7 +2300,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 constants=constants,
                                 import_aliases=import_aliases,
                                 method_hint="function_default",
-                                scoped_parameters=scoped_parameters,
+                                scoped_parameters=call_scoped_parameters,
                                 static_resolver=static_resolver,
                             )
                         for index, arg in enumerate(node.args):
@@ -2308,7 +2311,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 constants=constants,
                                 import_aliases=import_aliases,
                                 method_hint="argument",
-                                scoped_parameters=scoped_parameters,
+                                scoped_parameters=call_scoped_parameters,
                                 static_resolver=static_resolver,
                             )
                     else:
@@ -2319,7 +2322,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 constants=constants,
                                 import_aliases=import_aliases,
                                 method_hint="argument",
-                                scoped_parameters=scoped_parameters,
+                                scoped_parameters=call_scoped_parameters,
                                 static_resolver=static_resolver,
                             )
 
@@ -2331,7 +2334,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 constants=constants,
                                 import_aliases=import_aliases,
                                 method_hint="argument",
-                                scoped_parameters=scoped_parameters,
+                                scoped_parameters=call_scoped_parameters,
                                 static_resolver=static_resolver,
                             )
 
@@ -2376,16 +2379,16 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 })
                         readiness = _readiness(kind, standard_inputs)
                         scope_key = "::".join(scope) or "<module>"
-                        instance_count_candidates = [
-                            value
-                            for value in [
-                                fastener_call_placement_counts.get((filename, node.lineno)),
-                                source_call_instance_counts.get((filename, node.lineno)),
-                                source_scope_hole_counts.get((filename, scope_key)) if kind == "fastener_assembly" else None,
-                                return_product_counts.get(short_name),
-                            ]
-                            if _positive_number(value) is not None
-                        ]
+                        instance_count_candidates: list[int] = []
+                        for count_candidate in [
+                            fastener_call_placement_counts.get((filename, node.lineno)),
+                            source_call_instance_counts.get((filename, node.lineno)),
+                            source_scope_hole_counts.get((filename, scope_key)) if kind == "fastener_assembly" else None,
+                            return_product_counts.get(short_name),
+                        ]:
+                            positive_value = _positive_number(count_candidate)
+                            if positive_value is not None:
+                                instance_count_candidates.append(int(positive_value))
                         calls.append({
                             "function": short_name,
                             "qualified_function": name or "",
@@ -2914,6 +2917,7 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
     assembly_multiplier = _assembly_multiplier(call, source_analysis)
     source_instance_count = int(_positive_number(call.get("source_instance_count")) or 1) if call else 1
 
+    quantity: int | float
     if explicit_quantity == 1 and source_instance_count != 1:
         quantity = source_instance_count
         source = "explicit_source_calls"
@@ -2933,7 +2937,7 @@ def _quantity_evidence(call: dict[str, Any] | None, component: dict[str, Any], s
 
     rolled_up_quantity = quantity * assembly_multiplier if source in {"source_calls", "explicit_source_calls"} else quantity
 
-    trace = {
+    trace: dict[str, Any] = {
         "explicit_quantity": explicit_quantity,
         "visual_instance_count": visual_count,
         "assembly_instance_multiplier": assembly_multiplier,
@@ -3061,7 +3065,8 @@ def _fastener_assembly_requirements(
 
 
 def _requirement_group_key(requirement: dict[str, Any]) -> tuple[Any, ...]:
-    dimensions = requirement.get("dimensions") if isinstance(requirement.get("dimensions"), dict) else {}
+    dimensions_value = requirement.get("dimensions")
+    dimensions = dimensions_value if isinstance(dimensions_value, dict) else {}
     return (
         requirement.get("assembly_id"),
         requirement.get("part_number"),
@@ -3091,7 +3096,8 @@ def _normalize_explicit_manifest_requirements(requirements: list[dict[str, Any]]
     for requirement in requirements:
         if not isinstance(requirement, dict):
             continue
-        dimensions = requirement.get("dimensions") if isinstance(requirement.get("dimensions"), dict) else {}
+        dimensions_value = requirement.get("dimensions")
+        dimensions = dimensions_value if isinstance(dimensions_value, dict) else {}
         if not requirement.get("part_number") and dimensions.get("component_label"):
             continue
         quantity = _positive_number(requirement.get("quantity")) or 1
@@ -3212,7 +3218,7 @@ def build_procurement_analysis(
         if quantity_trace:
             resolution_trace["quantity"] = quantity_trace
         quantity_evidence = _quantity_evidence(call, component, source_analysis)
-        if _is_decomposable_fastener_assembly(call):
+        if call is not None and _is_decomposable_fastener_assembly(call):
             fastener_requirements = _fastener_assembly_requirements(
                 component=component,
                 call=call,
