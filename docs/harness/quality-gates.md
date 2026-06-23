@@ -14,6 +14,9 @@ evidence in final notes or PR notes.
 - Runtime integration changes: shared HTTP smoke against the relevant runtime.
 - Authenticated frontend/API workflow changes: `scripts/harness-k3s.sh
   live-flow` or `scripts/harness-compose.sh live-flow`.
+- Frontend PR review runtime: use the disposable `tertius-live-flow-smoke`
+  k3s release on UI port `18083` when reviewers need a real backend and smoke
+  Keycloak rather than Compose dev.
 - AI edit changes: full `live-flow`; compile-only mode is not sufficient final
   evidence.
 - Observability backend changes: full `live-flow`, metrics queries, and

@@ -14,7 +14,7 @@ import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
 function App() {
   const { authMode, getAccessToken, isLoading } = useAuth()
   const [activeTab, setActiveTab] = useState('generate')
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth >= 768)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [showImportBanner, setShowImportBanner] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
