@@ -570,6 +570,9 @@ describe('GenerateDesignWindow', () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Compiled glb artifact artifact-repaired/).length).toBeGreaterThan(0)
     })
+
+    fireEvent.click(screen.getByText('Generate a door handle for 3d printing').closest('button')!)
+    expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-repaired\/model\?t=.*&project=project_a/)).toBeInTheDocument()
   })
 
   it('does not auto-repair non-sandbox compile failures', async () => {
@@ -680,5 +683,52 @@ describe('GenerateDesignWindow', () => {
     })
     expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
     expect(screen.getAllByText(/Compile failed: Compile failed. Fix the model source/).length).toBeGreaterThan(0)
+  })
+
+  it('does not run another automatic repair after hydrating a repaired edit job', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'repair-job-1',
+        prompt: 'The previous generated design failed to compile in the Tertius build123d sandbox.',
+        content: 'Updated 1 file.',
+        created_at: '2026-06-19T00:03:00Z',
+        status: 'succeeded',
+        model: 'test-model',
+        usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+        metadata: { source: 'generate_design_compile_repair' },
+        files: [{ filename: 'design.py', summary: 'Removed unavailable RoundedPolygon API.', changed: true }],
+        compile: {
+          job_id: 'job-2',
+          status: 'running',
+          export_format: 'glb',
+        },
+      },
+    ])
+    mocks.apiFetch.mockImplementation((url: string) => {
+      if (url === '/api/intus/projects/project_a/compile/jobs/job-2') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'job-2',
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: "Traceback:\nAttributeError: module 'build123d' has no attribute 'RoundedPolygon'",
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Compile failed: Compile failed. Fix the model source/).length).toBeGreaterThan(0)
+    })
+    expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
   })
 })

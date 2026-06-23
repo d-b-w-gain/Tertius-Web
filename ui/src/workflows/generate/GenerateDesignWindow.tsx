@@ -47,6 +47,7 @@ type ChatMessage = {
   modelUrl?: string
   compileStatus?: 'queued' | 'running' | 'succeeded' | 'failed'
   jobId?: string
+  repairJobId?: string
   compileJobId?: string
   repairAttempted?: boolean
   repairForCompileJobId?: string
@@ -131,6 +132,10 @@ function buildCompileRepairPrompt(originalPrompt: string, data: CompileJobStatus
     '',
     failure,
   ].join('\n')
+}
+
+function isCompileRepairEntry(entry: LlmEditConversationEntry) {
+  return entry.metadata?.source === 'generate_design_compile_repair'
 }
 
 function formatPrice(model: LlmModelOption) {
@@ -283,7 +288,9 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           modelUrl: artifactId ? modelUrlForArtifact(artifactId, activeProjectRef.current) : undefined,
           compileStatus,
           jobId: entry.job_id,
+          repairJobId: isCompileRepairEntry(entry) ? entry.job_id : undefined,
           compileJobId: compile?.job_id,
+          repairAttempted: isCompileRepairEntry(entry),
         },
       ]
     })
@@ -465,7 +472,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
                   compileStatus: 'running',
                   repairAttempted: true,
                   repairForCompileJobId: jobId,
-                  jobId: repairJob.job_id,
+                  repairJobId: repairJob.job_id,
                 }))
                 clearCompileTimer(jobId)
                 compileRequestRef.current.delete(jobId)
@@ -555,7 +562,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       ...current,
       content: `${current.content}\n\nCompile queued as ${COMPILE_FORMAT}/${COMPILE_QUALITY}.`,
       compileStatus: data.status === 'queued' ? 'queued' : 'running',
-      jobId: originatingLlmEditJobId || current.jobId,
+      jobId: current.repairAttempted ? current.jobId : originatingLlmEditJobId || current.jobId,
+      repairJobId: current.repairAttempted ? originatingLlmEditJobId || current.repairJobId : current.repairJobId,
       compileJobId: data.job_id,
     }))
     setStatusText(`Compile job ${data.job_id} is ${data.status || 'queued'}.`)
@@ -597,7 +605,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
       usage: result.usage,
       model: result.model,
       compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
-      jobId: originatingLlmEditJobId || current.jobId,
+      jobId: current.repairAttempted ? current.jobId : originatingLlmEditJobId || current.jobId,
+      repairJobId: current.repairAttempted ? originatingLlmEditJobId || current.repairJobId : current.repairJobId,
     }))
 
     const nextMetadata = result.files.map(file => ({
@@ -634,10 +643,11 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           if (!response.result) {
             updateAssistantMessage(assistantMessageId, current => ({
               ...current,
-              content: `${current.content}\n\nAI edit returned no result payload.`,
-              compileStatus: 'failed',
-              jobId,
-            }))
+                content: `${current.content}\n\nAI edit returned no result payload.`,
+                compileStatus: 'failed',
+                jobId: current.repairAttempted ? current.jobId : jobId,
+                repairJobId: current.repairAttempted ? jobId : current.repairJobId,
+              }))
             clearLlmEditTimer(jobId)
             llmEditRequestRef.current.delete(jobId)
             setStatusText('AI edit completed but returned no result payload.')
@@ -655,7 +665,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             ...current,
             content: `${current.content}\n\nAI edit failed: ${message}`,
             compileStatus: 'failed',
-            jobId,
+            jobId: current.repairAttempted ? current.jobId : jobId,
+            repairJobId: current.repairAttempted ? jobId : current.repairJobId,
           }))
           clearLlmEditTimer(jobId)
           llmEditRequestRef.current.delete(jobId)
@@ -666,7 +677,8 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         updateAssistantMessage(assistantMessageId, current => ({
           ...current,
           compileStatus: response.status === 'queued' ? 'queued' : 'running',
-          jobId,
+          jobId: current.repairAttempted ? current.jobId : jobId,
+          repairJobId: current.repairAttempted ? jobId : current.repairJobId,
         }))
         llmEditTimerRef.current.set(jobId, window.setTimeout(tick, LLM_EDIT_STATUS_POLL_MS))
       } catch {

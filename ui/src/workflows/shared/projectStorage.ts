@@ -62,6 +62,7 @@ export type LlmEditConversationEntry = {
   created_at?: string
   status: 'queued' | 'running' | 'succeeded' | 'failed'
   model?: string
+  metadata?: Record<string, string>
   usage?: LlmFileEditResult['usage']
   files?: Array<{
     filename: string
