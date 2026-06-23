@@ -102,6 +102,79 @@ Keycloak operator or use a namespace already watched by the operator. Set
 `ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH=true` only when another reconciler is
 known to handle the target namespace.
 
+## Frontend PR Flow
+
+Use this flow when a frontend PR needs a browser-reviewable UI connected to real
+Tertius backend services, release-local smoke Keycloak, NATS/KEDA compile
+workers, and the nginx/API paths used by production. It is intentionally
+disposable and should not reuse the Flux-managed `tertius` release.
+
+Bring up or refresh the PR runtime:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+KEDA_ENABLED=true scripts/harness-k3s.sh up
+```
+
+Open the frontend at `http://127.0.0.1:18083`. The wrapper writes
+`.tmp/harness/k3s.env` with the UI, API, metrics, traces, and Keycloak token
+URLs. The smoke user is `demo / demo`.
+
+For subsequent review sessions, reuse the deployed release without rebuilding:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+scripts/harness-k3s.sh ports
+```
+
+Run PR evidence through the UI origin before asking for review:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+scripts/harness-k3s.sh smoke
+
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+scripts/harness-k3s.sh live-flow
+```
+
+`LIVE_FLOW_COMPILE_ONLY=true` is acceptable only for frontend changes that do
+not touch Generate Design, AI edit, conversation history, or viewer behavior
+linked to AI edit output.
+
+Stop only the local port-forwards when the deployed runtime should remain
+available for reviewers:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+scripts/harness-k3s.sh stop-ports
+```
+
+Remove the disposable release after review. Use `delete-data` when the PR
+runtime should leave no database, NATS, Valkey, or telemetry PVCs behind:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+HARNESS_ASSUME_YES=true scripts/harness-k3s.sh delete-data
+```
+
 ## Compose Parity
 
 Use Compose parity for image-level and nginx-routing sanity without k3s:
@@ -182,15 +255,18 @@ Fast path for AI edit validation: deploy or reuse an isolated local-values k3s
 smoke release instead of a shared or Flux-managed production-style release. The
 local-values release provides the `demo / demo` smoke user, direct-grant-friendly
 Keycloak settings, KEDA compile workers, and release-local LLM secrets when
-configured. A typical isolated run uses separate ports:
+configured. The frontend PR flow above is the standard reusable instance on
+port `18083`; a typical isolated run uses separate ports:
 
 ```bash
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
-UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 METRICS_LOCAL_PORT=8430 \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 KEDA_ENABLED=true scripts/harness-k3s.sh up
 
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
-UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 METRICS_LOCAL_PORT=8430 \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 scripts/harness-k3s.sh live-flow
 ```
 
