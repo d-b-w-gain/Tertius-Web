@@ -3,6 +3,7 @@ import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
+import { OctavusWindow } from './workflows/octavus/OctavusWindow'
 import { GenerateDesignWindow } from './workflows/generate/GenerateDesignWindow'
 import { AiBudgetGauge } from './workflows/generate/AiBudgetGauge'
 import { useAuth } from './auth/AuthProvider'
@@ -155,6 +156,12 @@ function App() {
           >
             📐 Timus Drafting
           </button>
+          <button
+            onClick={() => setActiveTab('octavus')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'octavus' ? 'bg-slate-950 text-amber-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+          >
+            🛒 Procurement
+          </button>
           <div className="ml-auto flex items-center space-x-2 mr-4">
             <div className="relative">
               <button 
@@ -210,6 +217,9 @@ function App() {
           </div>
           <div className={activeTab === 'timus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
             <TimusWindow isActive={activeTab === 'timus'} />
+          </div>
+          <div className={activeTab === 'octavus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <OctavusWindow isActive={activeTab === 'octavus'} onOpenCompiler={() => setActiveTab('intus')} />
           </div>
         </div>
       </div>
