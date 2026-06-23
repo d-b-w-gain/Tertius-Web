@@ -424,4 +424,261 @@ describe('GenerateDesignWindow', () => {
       expect.anything(),
     )
   })
+
+  it('runs one automatic repair when generated design compile fails with sandbox_error', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'llm-job-1',
+        status: 'queued',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'repair-job-1',
+        status: 'queued',
+      })
+    storage.getLlmFileEditJob.mockImplementation((_projectName: string, jobId: string) => {
+      if (jobId === 'repair-job-1') {
+        return Promise.resolve({
+          job_id: 'repair-job-1',
+          status: 'succeeded',
+          result: {
+            success: true,
+            outcome: 'changed',
+            message: 'repaired',
+            model: 'test-model',
+            usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+            snapshot: { id: 'snap-repair', message: 'repair', content_hash: 'def' },
+            files: [
+              {
+                id: 'design-id',
+                filename: 'design.py',
+                content: 'box = Box(3, 3, 3)',
+                updated_at: '2026-06-19T00:02:00Z',
+                changed: true,
+                summary: 'Removed unavailable RoundedPolygon API.',
+              },
+            ],
+            cost_usd: 0.02,
+          },
+        })
+      }
+      return Promise.resolve({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: 'updated',
+          model: 'test-model',
+          usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'abc' },
+          files: [
+            {
+              id: 'design-id',
+              filename: 'design.py',
+              content: 'lever = bd.RoundedPolygon([])',
+              updated_at: '2026-06-19T00:01:00Z',
+              changed: true,
+              summary: 'Generated a lever.',
+            },
+          ],
+          cost_usd: 0.01,
+        },
+      })
+    })
+
+    let compilePostCount = 0
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
+      if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
+        compilePostCount += 1
+        return Promise.resolve(jsonResponse({
+          success: true,
+          job_id: compilePostCount === 1 ? 'job-1' : 'job-2',
+          status: 'queued',
+        }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/job-1') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'job-1',
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: "Traceback:\nAttributeError: module 'build123d' has no attribute 'RoundedPolygon'",
+        }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/job-2') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'job-2',
+          status: 'succeeded',
+          format: 'glb',
+          artifact_id: 'artifact-repaired',
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'Generate a door handle for 3d printing' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await waitFor(() => {
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/intus/projects/project_a/compile',
+        mocks.getAccessToken,
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await waitFor(() => {
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
+    })
+
+    const repairRequest = storage.applyLlmFileEditJob.mock.calls[1]?.[1]
+    expect(repairRequest).toBeDefined()
+    if (!repairRequest) throw new Error('repair request was not captured')
+    expect(repairRequest.prompt).toContain('Generate a door handle for 3d printing')
+    expect(repairRequest.prompt).toContain("AttributeError: module 'build123d' has no attribute 'RoundedPolygon'")
+    expect(repairRequest.metadata).toEqual({ source: 'generate_design_compile_repair' })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await waitFor(() => {
+      expect(compilePostCount).toBe(2)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await waitFor(() => {
+      expect(screen.getAllByText(/Compiled glb artifact artifact-repaired/).length).toBeGreaterThan(0)
+    })
+  })
+
+  it('does not auto-repair non-sandbox compile failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
+      if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, job_id: 'job-1', status: 'queued' }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/job-1') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'job-1',
+          status: 'failed',
+          error_code: 'source_bundle_too_large',
+          retryable: false,
+          user_message: 'Compile source is too large to queue. Split the model into smaller files.',
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'make a larger test cube' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Compile failed: Compile source is too large/).length).toBeGreaterThan(0)
+    })
+    expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not run more than one automatic repair for the same assistant message', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob
+      .mockResolvedValueOnce({ success: true, job_id: 'llm-job-1', status: 'queued' })
+      .mockResolvedValueOnce({ success: true, job_id: 'repair-job-1', status: 'queued' })
+    storage.getLlmFileEditJob.mockImplementation((_projectName: string, jobId: string) => Promise.resolve({
+      job_id: jobId,
+      status: 'succeeded',
+      result: {
+        success: true,
+        outcome: 'changed',
+        message: jobId === 'repair-job-1' ? 'repaired' : 'updated',
+        model: 'test-model',
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        snapshot: { id: `snap-${jobId}`, message: 'edit', content_hash: 'abc' },
+        files: [
+          {
+            id: 'design-id',
+            filename: 'design.py',
+            content: 'lever = bd.RoundedPolygon([])',
+            updated_at: jobId === 'repair-job-1' ? '2026-06-19T00:02:00Z' : '2026-06-19T00:01:00Z',
+            changed: true,
+            summary: 'Generated a lever.',
+          },
+        ],
+      },
+    }))
+
+    let compilePostCount = 0
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
+      if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
+        compilePostCount += 1
+        return Promise.resolve(jsonResponse({
+          success: true,
+          job_id: compilePostCount === 1 ? 'job-1' : 'job-2',
+          status: 'queued',
+        }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/job-1' || url === '/api/intus/projects/project_a/compile/jobs/job-2') {
+        return Promise.resolve(jsonResponse({
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: "Traceback:\nAttributeError: module 'build123d' has no attribute 'RoundedPolygon'",
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'Generate a door handle for 3d printing' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+    }
+
+    await waitFor(() => {
+      expect(compilePostCount).toBe(2)
+    })
+    expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
+    expect(screen.getAllByText(/Compile failed: Compile failed. Fix the model source/).length).toBeGreaterThan(0)
+  })
 })

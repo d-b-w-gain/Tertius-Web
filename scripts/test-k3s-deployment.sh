@@ -31,6 +31,7 @@ APP_VALKEY_URL="${APP_VALKEY_URL:-redis://${RELEASE_NAME}-valkey:6379/0}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
+PORT_FORWARD_ADDRESS="${PORT_FORWARD_ADDRESS:-127.0.0.1}"
 METRICS_LOCAL_PORT="${METRICS_LOCAL_PORT:-8428}"
 TIMEOUT="${TIMEOUT:-10m}"
 DOCKER="${DOCKER:-}"
@@ -77,6 +78,7 @@ Environment:
   UI_LOCAL_PORT                 Default: 18080
   API_LOCAL_PORT                Default: 18000
   KEYCLOAK_LOCAL_PORT           Default: 0, meaning kubectl chooses a free local port.
+  PORT_FORWARD_ADDRESS          Default: 127.0.0.1. Set to 0.0.0.0 only for explicit shared previews.
   METRICS_LOCAL_PORT            Default: 8428
   TIMEOUT                       Default: 10m
   DOCKER                        Default: docker when available, otherwise podman.
@@ -768,16 +770,16 @@ start_port_forward() {
   else
     port_spec="${local_port}:${remote_port}"
   fi
-  quote_cmd kubectl port-forward -n "$NAMESPACE" "svc/${svc}" "$port_spec" >&2
-  kubectl port-forward -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 &
+  quote_cmd kubectl port-forward --address "$PORT_FORWARD_ADDRESS" -n "$NAMESPACE" "svc/${svc}" "$port_spec" >&2
+  kubectl port-forward --address "$PORT_FORWARD_ADDRESS" -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 &
   pid=$!
   PORT_FORWARD_PIDS="${PORT_FORWARD_PIDS} ${pid}"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if grep -q 'Forwarding from' "$log_file"; then
       if [ "$local_port" = "0" ]; then
         awk '
-          /^Forwarding from 127\.0\.0\.1:[0-9][0-9]* -> / {
-            sub(/^Forwarding from 127\.0\.0\.1:/, "")
+          /^Forwarding from [^:]+:[0-9][0-9]* -> / {
+            sub(/^Forwarding from [^:]+:/, "")
             sub(/ -> .*$/, "")
             print
             exit

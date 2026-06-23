@@ -123,6 +123,19 @@ Open the frontend at `http://127.0.0.1:18083`. The wrapper writes
 `.tmp/harness/k3s.env` with the UI, API, metrics, traces, and Keycloak token
 URLs. The smoke user is `demo / demo`.
 
+To share the preview from another device on the network, bind the review
+port-forwards to all interfaces and open `http://<host-ip>:18083`:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+PORT_FORWARD_ADDRESS=0.0.0.0 scripts/harness-k3s.sh ports
+```
+
+Use the wildcard bind only for intentional short-lived previews.
+
 For subsequent review sessions, reuse the deployed release without rebuilding:
 
 ```bash
