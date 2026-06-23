@@ -14,7 +14,6 @@ const storage = vi.hoisted(() => ({
   deleteFile: vi.fn(),
   getStatus: vi.fn(),
   getHistory: vi.fn(),
-  applyLlmFileEdit: vi.fn(),
   applyLlmFileEditJob: vi.fn(),
   getLlmFileEditJob: vi.fn(),
   listLlmEditConversation: vi.fn(),

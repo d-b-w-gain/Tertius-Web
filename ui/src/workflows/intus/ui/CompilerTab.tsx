@@ -554,12 +554,27 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
           setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
         }
-        const result = await storage.applyLlmFileEdit(activeProject, {
+        const job = await storage.applyLlmFileEditJob(activeProject, {
           prompt: aiPrompt.trim(),
           files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
           active_file_id: activeMetadata?.id,
           metadata: { source: 'compiler_tab' },
         });
+        let result = null;
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          if (status.status === 'succeeded' && status.result) {
+            result = status.result;
+            break;
+          }
+          if (status.status === 'failed') {
+            throw new Error(status.user_message || status.error || 'AI file edit failed.');
+          }
+          await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 500 : 2000));
+        }
+        if (!result) {
+          throw new Error('AI file edit timed out.');
+        }
         setAiPrompt('');
         if (result.outcome === 'changed') {
           const nextMetadata = result.files.map(file => ({

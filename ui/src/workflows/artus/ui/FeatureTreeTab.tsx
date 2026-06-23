@@ -1072,7 +1072,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
         workflow: 'artus',
         source: 'artus_feature_tree',
         active_panel: activePanel,
-      }, () => storage.applyLlmFileEdit(activeProject, {
+      }, async () => {
+        const job = await storage.applyLlmFileEditJob(activeProject, {
           prompt: prompt.trim(),
           files: requestFiles.map(file => ({
             id: file.id,
@@ -1085,7 +1086,19 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
             active_panel: activePanel,
             highlighted_node: highlightedNode || '',
           },
-        }));
+        });
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          if (status.status === 'succeeded' && status.result) {
+            return status.result;
+          }
+          if (status.status === 'failed') {
+            throw new Error(status.user_message || status.error || 'AI file edit failed.');
+          }
+          await new Promise(resolve => window.setTimeout(resolve, attempt === 0 ? 500 : 2000));
+        }
+        throw new Error('AI file edit timed out.');
+      });
 
       const changedMetadata = result.files.map(file => ({
         id: file.id,

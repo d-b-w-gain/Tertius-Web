@@ -111,16 +111,6 @@ export type ProjectStorage = {
   deleteFile: (projectName: string, filename: string) => Promise<void>
   getStatus: (projectName: string, filename?: string) => Promise<{ mtime?: number }>
   getHistory: (projectName: string) => Promise<ProjectGitStatus>
-  applyLlmFileEdit: (
-    projectName: string,
-    request: {
-      prompt: string
-      files: Array<{ id: string; filename: string; updated_at: string }>
-      active_file_id?: string
-      model_id?: string
-      metadata?: Record<string, string>
-    },
-  ) => Promise<LlmFileEditResult>
   applyLlmFileEditJob: (
     projectName: string,
     request: {
@@ -185,9 +175,6 @@ function createGuestStorage(): ProjectStorage {
     },
     async getHistory() {
       return { is_git: false, label: 'Local draft' }
-    },
-    async applyLlmFileEdit() {
-      throw new Error('Log in to use AI file edits')
     },
     async applyLlmFileEditJob() {
       throw new Error('Log in to use AI file edits')
@@ -316,15 +303,6 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
       const res = await apiFetch(`${serverUrl}/projects/${projectName}/git_status`, getAccessToken)
       if (!res.ok) return { is_git: false }
       return res.json()
-    },
-    async applyLlmFileEdit(projectName, request) {
-      const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-      })
-      await requireOk(res, 'LLM file edit failed')
-      return (await res.json()) as LlmFileEditResult
     },
     async applyLlmFileEditJob(projectName, request) {
       const res = await apiFetch(`${serverUrl}/projects/${projectName}/files/llm-edit/jobs`, getAccessToken, {

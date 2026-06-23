@@ -87,9 +87,20 @@ function setupRoutes(state: MockRouteState = {}) {
         file_metadata: routeState.metadata,
       }))
     }
-    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit` && options?.method === 'POST') {
+    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit/jobs` && options?.method === 'POST') {
       const ok = routeState.editStatus >= 200 && routeState.editStatus < 300
-      return Promise.resolve(jsonResponse(routeState.editBody, ok, routeState.editStatus))
+      return Promise.resolve(jsonResponse(
+        ok ? { success: true, job_id: 'llm-job-1', status: 'queued' } : routeState.editBody,
+        ok,
+        routeState.editStatus,
+      ))
+    }
+    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit/jobs/llm-job-1`) {
+      return Promise.resolve(jsonResponse({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: routeState.editBody,
+      }))
     }
     if (url === `/api/intus/projects/${routeState.projectName}/compile` && options?.method === 'POST') {
       return Promise.resolve(jsonResponse({
@@ -114,7 +125,7 @@ async function renderAuthenticatedFeatureTree() {
 
 function editRequests() {
   return mocks.apiFetch.mock.calls.filter(([url, , options]) => (
-    url === '/api/intus/projects/default_purlin/files/llm-edit' && options?.method === 'POST'
+    url === '/api/intus/projects/default_purlin/files/llm-edit/jobs' && options?.method === 'POST'
   ))
 }
 
@@ -308,17 +319,24 @@ describe('FeatureTreeTab authenticated AI edit', () => {
           ],
         }))
       }
-      if (url === '/api/intus/projects/project_b/files/llm-edit' && options?.method === 'POST') {
+      if (url === '/api/intus/projects/project_b/files/llm-edit/jobs' && options?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, job_id: 'job-b-edit', status: 'queued' }, true, 202))
+      }
+      if (url === '/api/intus/projects/project_b/files/llm-edit/jobs/job-b-edit') {
         return Promise.resolve(jsonResponse({
-          success: true,
-          outcome: 'changed',
-          message: '',
-          model: 'test-model',
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
-          files: [
-            { id: 'file-design-b', filename: 'design.py', content: 'project b design', changed: true },
-          ],
+          job_id: 'job-b-edit',
+          status: 'succeeded',
+          result: {
+            success: true,
+            outcome: 'changed',
+            message: '',
+            model: 'test-model',
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+            files: [
+              { id: 'file-design-b', filename: 'design.py', content: 'project b design', changed: true },
+            ],
+          },
         }))
       }
       if (url === '/api/intus/projects/project_b/compile' && options?.method === 'POST') {
@@ -344,8 +362,8 @@ describe('FeatureTreeTab authenticated AI edit', () => {
 
     fireEvent.click(applyButton)
     await waitFor(() => {
-      expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/project_b/files/llm-edit')).toBe(true)
+      expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/project_b/files/llm-edit/jobs')).toBe(true)
     })
-    expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/default_purlin/files/llm-edit')).toBe(false)
+    expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/default_purlin/files/llm-edit/jobs')).toBe(false)
   })
 })
