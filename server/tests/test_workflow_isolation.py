@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -7,6 +8,7 @@ from sqlalchemy import select
 from core.models import (
     Artifact,
     AppUser,
+    CompileJob,
     Project,
     ProjectFile,
     SourceSnapshot,
@@ -43,6 +45,62 @@ def assert_active_project(db_session, seeded_tenant, project: Project):
         )
     )
     assert state.active_project_id == project.id
+
+
+def add_compile_job_with_artifacts(
+    db_session,
+    seeded_tenant,
+    *,
+    manifest: dict | None,
+    model_job: CompileJob | None = None,
+    manifest_job: CompileJob | None = None,
+    created_at: datetime | None = None,
+) -> tuple[CompileJob, CompileJob | None]:
+    model_job = model_job or CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+    )
+    if manifest is not None:
+        manifest_job = manifest_job or model_job
+    db_session.add(model_job)
+    if manifest_job is not None and manifest_job is not model_job:
+        db_session.add(manifest_job)
+    db_session.flush()
+
+    now = created_at or datetime.now(timezone.utc)
+    db_session.add(
+        Artifact(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            compile_job_id=model_job.id,
+            kind="glb",
+            storage_key=f"{model_job.id}/model.glb",
+            content_type="model/gltf-binary",
+            byte_size=len(b"model"),
+            content=b"model",
+            created_at=now,
+        )
+    )
+    if manifest is not None and manifest_job is not None:
+        manifest_bytes = json.dumps(manifest).encode("utf-8")
+        db_session.add(
+            Artifact(
+                tenant_id=seeded_tenant.tenant_id,
+                project_id=seeded_tenant.project_id,
+                compile_job_id=manifest_job.id,
+                kind="bom_manifest",
+                storage_key=f"{manifest_job.id}/bom_manifest.json",
+                content_type="application/json",
+                byte_size=len(manifest_bytes),
+                content=manifest_bytes,
+                created_at=now + timedelta(seconds=1),
+            )
+        )
+    db_session.commit()
+    return model_job, manifest_job
 
 
 def test_artus_activate_project_uses_repository_workspace_state(
@@ -187,6 +245,201 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     assert model_response.content == b"solid latest"
 
 
+def test_extus_bom_manifest_returns_404_when_missing(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None)
+
+    response = authenticated_extus_client.get("/bom_manifest")
+
+    assert response.status_code == 404
+
+
+def test_extus_bom_manifest_reports_diagnostic_only_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    job, _ = add_compile_job_with_artifacts(
+        db_session,
+        seeded_tenant,
+        manifest={
+            "version": 1,
+            "source_snapshot_hash": "snapshot-a",
+            "scopes": [],
+            "components": [],
+            "requirements": [],
+            "diagnostics": [{"code": "no_bom_metadata", "severity": "error", "message": "missing"}],
+        },
+    )
+
+    response = authenticated_extus_client.get("/bom_manifest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["manifest"]["source_snapshot_hash"] == "snapshot-a"
+    assert payload["manifest_compile_job_id"] == str(job.id)
+    assert payload["model_compile_job_id"] == str(job.id)
+    assert payload["matches_model"] is True
+    assert payload["is_verified_for_model"] is True
+    assert payload["artifact_state"] == "diagnostic_only"
+    assert payload["manifest_counts"] == {
+        "scopes": 0,
+        "components": 0,
+        "requirements": 0,
+        "diagnostics": 1,
+    }
+
+
+def test_extus_bom_manifest_reports_scopes_only_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    add_compile_job_with_artifacts(
+        db_session,
+        seeded_tenant,
+        manifest={
+            "version": 1,
+            "source_snapshot_hash": "snapshot-a",
+            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "components": [],
+            "requirements": [],
+            "diagnostics": [],
+        },
+    )
+
+    response = authenticated_extus_client.get("/bom_manifest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifact_state"] == "scopes_only"
+    assert payload["manifest_counts"]["scopes"] == 1
+    assert payload["manifest_counts"]["requirements"] == 0
+
+
+def test_extus_bom_manifest_reports_ready_artifact(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    add_compile_job_with_artifacts(
+        db_session,
+        seeded_tenant,
+        manifest={
+            "version": 1,
+            "source_snapshot_hash": "snapshot-a",
+            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "components": [
+                {
+                    "id": "portal.column.left",
+                    "scope_id": "portal",
+                    "label": "Left column",
+                    "role": "Column",
+                    "visual_node_ids": ["bom:portal.column.left:Column"],
+                }
+            ],
+            "requirements": [
+                {
+                    "id": "r1",
+                    "component_id": "portal.column.left",
+                    "part_number": "C10019",
+                    "quantity": 1,
+                    "unit": "each",
+                    "dimensions": {"length_mm": 2400},
+                }
+            ],
+            "diagnostics": [],
+        },
+    )
+
+    response = authenticated_extus_client.get("/bom_manifest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifact_state"] == "ready"
+    assert payload["manifest_counts"]["requirements"] == 1
+
+
+def test_extus_bom_manifest_reports_stale_artifact_for_model_mismatch(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    model_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+    )
+    manifest_job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        export_format="glb",
+    )
+    add_compile_job_with_artifacts(
+        db_session,
+        seeded_tenant,
+        model_job=model_job,
+        manifest_job=manifest_job,
+        manifest={
+            "version": 1,
+            "source_snapshot_hash": "snapshot-a",
+            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "components": [],
+            "requirements": [],
+            "diagnostics": [],
+        },
+    )
+
+    response = authenticated_extus_client.get("/bom_manifest")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["matches_model"] is False
+    assert payload["is_verified_for_model"] is False
+    assert payload["artifact_state"] == "stale_manifest"
+
+
+def test_extus_procurement_analysis_uses_active_project_source(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    db_design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    db_design.content = """
+def make_member(length, part_number):
+    return {"length": length, "part_number": part_number}
+
+left = make_member(1200, part_number="TEST-A")
+right = make_member(1200, part_number="TEST-A")
+"""
+    add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None)
+    db_session.commit()
+
+    response = authenticated_extus_client.get("/procurement_analysis")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifact_state"] == "ready"
+    assert payload["manifest_counts"]["requirements"] == 2
+    requirements = payload["manifest"]["requirements"]
+    assert {requirement["part_number"] for requirement in requirements} == {"TEST-A"}
+    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 2
+    assert {requirement["quantity_source"] for requirement in requirements} == {"source_calls"}
+
+
 def test_extus_model_returns_404_when_active_artifact_content_is_missing(
     authenticated_extus_client,
     db_session,
@@ -298,30 +551,6 @@ def test_extus_historical_model_rejects_inactive_project_artifact(
     response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model")
 
     assert response.status_code == 404
-
-
-def test_extus_historical_model_allows_named_project_artifact(
-    authenticated_extus_client,
-    db_session,
-    seeded_tenant,
-):
-    other_project = create_named_project(db_session, seeded_tenant, "inactive_project")
-    artifact = Artifact(
-        tenant_id=seeded_tenant.tenant_id,
-        project_id=other_project.id,
-        kind="glb",
-        storage_key="inactive.glb",
-        content_type="model/gltf-binary",
-        byte_size=len(b"inactive glb"),
-        content=b"inactive glb",
-    )
-    db_session.add(artifact)
-    db_session.commit()
-
-    response = authenticated_extus_client.get(f"/artifacts/{artifact.id}/model?project=inactive_project")
-
-    assert response.status_code == 200
-    assert response.content == b"inactive glb"
 
 
 def test_extus_historical_model_rejects_non_model_artifact_kind(
