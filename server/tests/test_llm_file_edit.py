@@ -975,6 +975,17 @@ def test_llm_file_edit_job_completes_and_status_returns_result(
     assert status_body["result"]["files"][0]["changed"] is True
     assert status_body["result"]["files"][0]["summary"] == "Use helper"
 
+    history_response = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs"
+    )
+    assert history_response.status_code == 200
+    history_message = next(
+        message
+        for message in history_response.json()["messages"]
+        if message["job_id"] == str(job_id)
+    )
+    assert history_message["metadata"] == {"source": "generate_design_window"}
+
     db_session.expire_all()
     assert db_session.get(ProjectFile, design_id).content == "import helper\n"
     job = db_session.get(LlmEditJob, job_id)

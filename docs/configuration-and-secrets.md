@@ -83,6 +83,11 @@ secret names, and tunnel token secret names to externally managed Secrets.
 `LLM_FILE_EDIT_SYSTEM_PROMPT` has no Python fallback; AI file edits require this
 key in the dedicated LLM Secret.
 
+The configured file-edit system prompt is augmented at runtime with repo-owned
+build123d compatibility guardrails. The Secret remains required; the guardrails
+only add runtime-specific API constraints such as avoiding unavailable build123d
+helpers.
+
 ## Browser Auth Sessions
 
 Browser authentication uses a Backend-for-Frontend flow. The API performs the

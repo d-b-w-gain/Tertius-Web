@@ -426,7 +426,7 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
     assert len(messages) == 2
     system, user = messages
     assert system["role"] == "system"
-    assert system["content"] == TEST_FILE_EDIT_SYSTEM_PROMPT
+    assert system["content"].startswith(TEST_FILE_EDIT_SYSTEM_PROMPT)
     assert user["role"] == "user"
     user_content = user["content"]
     assert "rename length to span" in user_content
@@ -472,7 +472,25 @@ def test_build_file_edit_messages_uses_secret_system_prompt():
         system_prompt="custom system prompt",
     )
 
-    assert messages[0] == {"role": "system", "content": "custom system prompt"}
+    assert messages[0]["role"] == "system"
+    assert messages[0]["content"].startswith("custom system prompt")
+
+
+def test_build_file_edit_messages_appends_build123d_runtime_guardrails():
+    request, files = _file_edit_request_and_files()
+
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt="custom system prompt",
+    )
+
+    system_content = messages[0]["content"]
+    assert system_content.startswith("custom system prompt")
+    assert "build123d runtime guardrails" in system_content
+    assert "Do not use bd.RoundedPolygon" in system_content
+    assert "bd.Box" in system_content
+    assert "bd.Cylinder" in system_content
 
 
 def test_estimate_file_edit_tokens_exceeds_max_output_tokens_for_large_prompt():
@@ -682,7 +700,7 @@ async def test_generate_file_edits_returns_provider_result_without_publishing_bi
     assert call["max_tokens"] == 65536
     assert call["response_format"] == {"type": "json_object"}
     assert len(call["messages"]) == 2
-    assert call["messages"][0]["content"] == settings.llm_file_edit_system_prompt
+    assert call["messages"][0]["content"].startswith(settings.llm_file_edit_system_prompt)
 
     assert result.provider_request_id == "chatcmpl-test"
     assert result.billing_event_id is None
@@ -762,7 +780,7 @@ async def test_generate_file_edits_uses_settings_system_prompt():
     )
 
     call = client.chat.completions.calls[0]
-    assert call["messages"][0]["content"] == "custom provider system prompt"
+    assert call["messages"][0]["content"].startswith("custom provider system prompt")
 
 
 @pytest.mark.asyncio

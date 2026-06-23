@@ -61,6 +61,14 @@ MAX_METADATA_ENTRIES = 50
 MAX_METADATA_KEY_CHARS = 200
 MAX_METADATA_VALUE_CHARS = 200
 LLM_FILE_EDIT_MAX_FILES = 20
+BUILD123D_RUNTIME_GUARDRAILS = """\
+build123d runtime guardrails:
+- Use only build123d APIs known to exist in this runtime; do not invent helpers, classes, or functions.
+- Do not use bd.RoundedPolygon; it is not available.
+- For rounded rectangular or handle-like geometry, prefer bd.Box, bd.Cylinder, bd.Sphere, bd.Cone, boolean operations, and fillets on resulting solids.
+- Always produce code that can run with `import build123d as bd`.
+- Avoid advanced builder-mode APIs unless they already appear in the supplied project files.
+"""
 LlmFileEditOutcome = Literal["changed", "no_change", "cannot_complete"]
 
 
@@ -68,6 +76,11 @@ def require_file_edit_system_prompt(system_prompt: str) -> str:
     if not system_prompt.strip():
         raise LlmNotConfiguredError("LLM file edit system prompt is not configured")
     return system_prompt
+
+
+def file_edit_system_prompt_with_runtime_guardrails(system_prompt: str) -> str:
+    configured = require_file_edit_system_prompt(system_prompt)
+    return f"{configured.rstrip()}\n\n{BUILD123D_RUNTIME_GUARDRAILS.strip()}"
 
 
 def validate_llm_metadata(metadata: dict[str, str]) -> dict[str, str]:
@@ -528,7 +541,7 @@ def build_file_edit_messages(
     *,
     system_prompt: str,
 ) -> list[dict[str, str]]:
-    system_prompt = require_file_edit_system_prompt(system_prompt)
+    system_prompt = file_edit_system_prompt_with_runtime_guardrails(system_prompt)
     available = [
         {"file_id": str(file.id), "filename": file.filename, "content": file.content}
         for file in files

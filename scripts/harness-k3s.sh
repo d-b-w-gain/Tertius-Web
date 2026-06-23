@@ -10,6 +10,7 @@ METRICS_LOCAL_PORT="${METRICS_LOCAL_PORT:-8428}"
 TRACES_LOCAL_PORT="${TRACES_LOCAL_PORT:-10428}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
+PORT_FORWARD_ADDRESS="${PORT_FORWARD_ADDRESS:-127.0.0.1}"
 STATUS_FILE="${ROOT_DIR}/.tmp/harness/k3s.env"
 PID_FILE="${ROOT_DIR}/.tmp/harness/k3s-port-forwards.env"
 
@@ -156,15 +157,15 @@ start_one_port_forward() {
     port_spec="${local_port}:${remote_port}"
   fi
 
-  nohup kubectl port-forward -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 < /dev/null &
+  nohup kubectl port-forward --address "$PORT_FORWARD_ADDRESS" -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 < /dev/null &
   pid=$!
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if grep -q 'Forwarding from' "$log_file"; then
       printf '%s_PID=%s\n' "$name" "$pid" >>"$PID_FILE"
       if [ "$local_port" = "0" ]; then
         selected_port=$(awk '
-          /^Forwarding from 127\.0\.0\.1:[0-9][0-9]* -> / {
-            sub(/^Forwarding from 127\.0\.0\.1:/, "")
+          /^Forwarding from [^:]+:[0-9][0-9]* -> / {
+            sub(/^Forwarding from [^:]+:/, "")
             sub(/ -> .*$/, "")
             print
             exit
