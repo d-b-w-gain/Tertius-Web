@@ -125,6 +125,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isConversationOpen, setIsConversationOpen] = useState(false)
 
   const activeProjectRef = useRef('')
   const compileRequestRef = useRef(new Map<string, number>())
@@ -709,114 +710,9 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-950 text-slate-100 md:flex-row">
-      <section className="flex min-h-0 w-full flex-col border-b border-slate-800 bg-slate-900/40 md:w-1/2 md:border-b-0 md:border-r">
-        <div className="border-b border-slate-800 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-base font-semibold text-slate-100">Generate Design</h2>
-            </div>
-            <button
-              type="button"
-              onClick={() => void loadActiveProject(undefined, { hydrateConversation: true })}
-              className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-            >
-              Refresh
-            </button>
-          </div>
-          <div className="mt-4">
-            <ProjectSelector />
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-          <span className="text-sm text-slate-300">{statusText}</span>
-          <span className="rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-            {weeklyBudgetUsd ? `$${weeklyBudgetUsd.toFixed(2)}/week` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
-          </span>
-        </div>
-
-        {llmModels.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto border-b border-slate-800 px-4 py-3">
-            {llmModels.map(model => (
-              <button
-                key={model.id}
-                type="button"
-                onClick={() => setSelectedModelId(model.id)}
-                className={`shrink-0 rounded border px-3 py-2 text-left text-xs transition-colors ${
-                  selectedModelId === model.id
-                    ? 'border-cyan-600 bg-cyan-950/50 text-cyan-100'
-                    : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                }`}
-                title={`${model.model} ${formatPrice(model)} per 1M tokens`}
-              >
-                <span className="block whitespace-nowrap font-semibold">{model.label}</span>
-                <span className="block whitespace-nowrap font-mono text-[10px] text-slate-500">
-                  {formatPrice(model)}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="min-h-0 flex-1 overflow-auto p-4">
-          {messages.length === 0 ? (
-            <div className="rounded border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-500">
-              Generated design messages will appear here.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {messages.map(message => (
-                <button
-                  key={message.id}
-                  type="button"
-                  onClick={() => setSelectedMessageId(message.id)}
-                  className={`block w-full rounded border p-3 text-left transition-colors ${
-                    selectedMessageId === message.id
-                      ? 'border-cyan-700 bg-cyan-950/30'
-                      : 'border-slate-800 bg-slate-900/50 hover:bg-slate-900'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
-                      {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
-                    </span>
-                    {message.compileStatus && (
-                      <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
-                    )}
-                  </div>
-                  <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
-                  {(message.model || message.usage) && (
-                    <div className="mt-2 font-mono text-[10px] text-slate-500">
-                      {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <form onSubmit={submitPrompt} className="border-t border-slate-800 p-4">
-          <textarea
-            value={prompt}
-            onChange={event => setPrompt(event.currentTarget.value)}
-            placeholder="Describe the CAD design or modification..."
-            className="h-28 w-full resize-none rounded border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500"
-          />
-          {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
-          <button
-            type="submit"
-            disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel}
-            className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isSubmitting ? 'Generating...' : 'Generate Design'}
-          </button>
-        </form>
-      </section>
-
-      <section className="flex min-h-0 w-full flex-col md:w-1/2">
-        <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+    <div className="relative flex h-full min-h-0 overflow-hidden bg-slate-950 text-slate-100">
+      <section className="flex min-h-0 w-full flex-col">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/95 px-4 py-3">
           <div className="min-w-0">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               {selectedModelUrl ? 'Historical Model' : 'Latest Model'}
@@ -855,6 +751,140 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
           )}
         </div>
       </section>
+
+      {!isConversationOpen && (
+        <div className="pointer-events-none absolute right-4 top-16 z-20">
+          <button
+            type="button"
+            aria-expanded="false"
+            onClick={() => setIsConversationOpen(true)}
+            className="pointer-events-auto rounded border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs font-semibold text-slate-100 shadow-xl shadow-slate-950/40 transition-colors hover:bg-slate-800"
+          >
+            Open Generate Design conversation
+          </button>
+        </div>
+      )}
+
+      {isConversationOpen && (
+        <aside
+          role="complementary"
+          aria-label="Generate Design conversation"
+          className="absolute inset-x-3 bottom-3 top-16 z-20 flex min-h-0 flex-col rounded border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/60 backdrop-blur md:left-auto md:right-4 md:w-[28rem]"
+        >
+          <div className="border-b border-slate-800 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-slate-100">Generate Design</h2>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadActiveProject(undefined, { hydrateConversation: true })}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  aria-expanded="true"
+                  onClick={() => setIsConversationOpen(false)}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                >
+                  Close Generate Design conversation
+                </button>
+              </div>
+            </div>
+            <div className="mt-4">
+              <ProjectSelector />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+            <span className="min-w-0 text-sm text-slate-300">{statusText}</span>
+            <span className="shrink-0 rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
+              {weeklyBudgetUsd ? `$${weeklyBudgetUsd.toFixed(2)}/week` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
+            </span>
+          </div>
+
+          {llmModels.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto border-b border-slate-800 px-4 py-3">
+              {llmModels.map(model => (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => setSelectedModelId(model.id)}
+                  className={`shrink-0 rounded border px-3 py-2 text-left text-xs transition-colors ${
+                    selectedModelId === model.id
+                      ? 'border-cyan-600 bg-cyan-950/50 text-cyan-100'
+                      : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
+                  }`}
+                  title={`${model.model} ${formatPrice(model)} per 1M tokens`}
+                >
+                  <span className="block whitespace-nowrap font-semibold">{model.label}</span>
+                  <span className="block whitespace-nowrap font-mono text-[10px] text-slate-500">
+                    {formatPrice(model)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="min-h-0 flex-1 overflow-auto p-4">
+            {messages.length === 0 ? (
+              <div className="rounded border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-500">
+                Generated design messages will appear here.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {messages.map(message => (
+                  <button
+                    key={message.id}
+                    type="button"
+                    onClick={() => setSelectedMessageId(message.id)}
+                    className={`block w-full rounded border p-3 text-left transition-colors ${
+                      selectedMessageId === message.id
+                        ? 'border-cyan-700 bg-cyan-950/30'
+                        : 'border-slate-800 bg-slate-900/50 hover:bg-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
+                        {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
+                      </span>
+                      {message.compileStatus && (
+                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
+                      )}
+                    </div>
+                    <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
+                    {(message.model || message.usage) && (
+                      <div className="mt-2 font-mono text-[10px] text-slate-500">
+                        {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <form onSubmit={submitPrompt} className="border-t border-slate-800 p-4">
+            <textarea
+              value={prompt}
+              onChange={event => setPrompt(event.currentTarget.value)}
+              placeholder="Describe the CAD design or modification..."
+              className="h-28 w-full resize-none rounded border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500"
+            />
+            {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
+            <button
+              type="submit"
+              disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel}
+              className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSubmitting ? 'Generating...' : 'Generate Design'}
+            </button>
+          </form>
+        </aside>
+      )}
     </div>
   )
 }
