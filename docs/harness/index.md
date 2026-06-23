@@ -12,6 +12,7 @@ Procedural Codex behavior lives in the repo-owned skill under
 | Fast React/Python iteration | Compose dev | `scripts/harness-compose.sh dev-up` |
 | Full-stack agent validation | k3s | `scripts/harness-k3s.sh up` |
 | Existing k3s release validation | k3s port-forwards | `scripts/harness-k3s.sh ports` |
+| Frontend PR review with real auth/API/compile | disposable k3s release | `RELEASE_NAME=tertius-live-flow-smoke UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 KEDA_ENABLED=true scripts/harness-k3s.sh up` |
 | Image/nginx sanity without k3s | Compose parity | `scripts/harness-compose.sh parity-up` |
 | CI deploy smoke | GitHub k3s workflow | `.github/workflows/chart-tests.yml` |
 | Live authenticated compile/AI edit flow | active k3s or Compose parity runtime | `scripts/harness-k3s.sh live-flow` or `scripts/harness-compose.sh live-flow` |
