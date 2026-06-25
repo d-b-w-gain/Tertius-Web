@@ -116,7 +116,10 @@ left = make_member(900)
     })
 
     assert requirement["part_number"] == "TEST-KW-DEFAULT"
-    assert requirement["quantity"] == 3
+    assert requirement["quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["orderable"] is True
+    assert requirement["count_trace"]["explicit_quantity"] == 3
     assert requirement["dimensions"] == {"length_mm": 900}
     assert requirement["resolution_trace"]["part_number"]["resolution"] == "function_default"
 
@@ -179,6 +182,10 @@ left = make_member(1200, part_number="TEST-NOISE")
     assert tree["assemblies"] == []
     assert tree["components"] == []
     assert [item["part_number"] for item in analysis["requirements"]] == ["TEST-NOISE"]
+    assert {item["orderable"] for item in analysis["requirements"]} == {False}
+    assert {item["quantity_source"] for item in analysis["requirements"]} == {"diagnostic_placeholder"}
+    assert analysis["analysis_mode"] == "source_diagnostic"
+    assert analysis["quantity_authority"] == "diagnostic_only"
     assert analysis["components"][0]["visual_node_ids"] == []
     assert any(diagnostic["code"] == "source_only_components_no_visual_tree" for diagnostic in analysis["diagnostics"])
 
@@ -207,8 +214,12 @@ def make_foundation():
 
     requirements = {item["part_number"]: item for item in analysis["requirements"]}
     assert set(requirements) == {"BLOCK-A", "CONCRETE-A"}
-    assert requirements["BLOCK-A"]["quantity"] == 80
-    assert requirements["CONCRETE-A"]["quantity"] == 0.288
+    assert requirements["BLOCK-A"]["quantity"] == 1
+    assert requirements["CONCRETE-A"]["quantity"] == 1
+    assert {item["quantity_source"] for item in requirements.values()} == {"diagnostic_placeholder"}
+    assert {item["orderable"] for item in requirements.values()} == {False}
+    assert requirements["BLOCK-A"]["count_trace"]["explicit_quantity"] == 80
+    assert requirements["CONCRETE-A"]["count_trace"]["explicit_quantity"] == 0.288
     assert [assembly["label"] for assembly in analysis["assemblies"]] == ["Foundation"]
 
 
@@ -226,11 +237,9 @@ right = make_member(1200, part_number="RIGHT")
 
     analysis = build_procurement_analysis(source, tree)
 
-    assert [item["part_number"] for item in analysis["requirements"]] == ["LEFT", "RIGHT"]
+    assert [item["part_number"] for item in analysis["requirements"]] == ["LEFT"]
     assert analysis["components"][0]["visual_node_ids"]
-    assert analysis["components"][1]["visual_node_ids"] == []
-    assert analysis["requirements"][1]["source_trace"]["match_reason"] == "source-only component candidate"
-    assert any(diagnostic["code"] == "hybrid_source_components_added" for diagnostic in analysis["diagnostics"])
+    assert any(diagnostic["code"] == "source_metadata_without_visual_component" for diagnostic in analysis["diagnostics"])
 
 
 def test_parent_named_group_is_assembly_and_leaf_named_group_is_component():
@@ -269,48 +278,15 @@ left = make_member(column_height, part_number=PURLIN_PART_NUMBER)
         }
     ]
     assert analysis["components"][0]["label"] == "Left_Column"
-    assert analysis["requirements"] == [
-        {
-            "id": "portal-left-column.requirement",
-            "component_id": "portal-left-column",
-            "assembly_id": "portal",
-            "part_number": "TEST-GOLDEN",
-            "stock_number": "TEST-GOLDEN-21",
-            "quantity": 1,
-            "rolled_up_quantity": 1,
-            "quantity_source": "source_calls",
-            "quantity_confidence": "probable",
-            "visual_instance_count": None,
-            "assembly_instance_multiplier": 1,
-            "source_call_count": 1,
-            "count_trace": {
-                "explicit_quantity": None,
-                "visual_instance_count": None,
-                "assembly_instance_multiplier": 1,
-                "source_call_count": 1,
-            },
-            "unit": "each",
-            "dimensions": {"length_mm": 2100},
-            "material": None,
-            "finish": None,
-            "source_trace": {
-                "function": "make_member",
-                "source_file": "design.py",
-                "source_scope": "<module>",
-                "source_line": 8,
-                "match_reason": "token overlap: left",
-            },
-            "resolution_trace": {
-                "part_number": {
-                    "raw": {"kind": "reference", "name": "PURLIN_PART_NUMBER"},
-                    "resolved": "TEST-GOLDEN",
-                    "resolution": "literal_assignment",
-                    "source_file": "design.py",
-                    "source_line": 2,
-                },
-            },
-        }
-    ]
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] == "TEST-GOLDEN"
+    assert requirement["stock_number"] == "TEST-GOLDEN-21"
+    assert requirement["quantity"] == 1
+    assert requirement["rolled_up_quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["orderable"] is True
+    assert requirement["dimensions"] == {"length_mm": 2100}
+    assert requirement["resolution_trace"]["part_number"]["resolution"] == "literal_assignment"
 
 
 def test_varied_part_numbers_prove_identity_is_data_driven():
@@ -327,7 +303,7 @@ left = make_member(1000, part_number="{part_number}")
         assert requirement["part_number"] == part_number
 
 
-def test_visual_instance_count_provides_verified_quantity_without_extra_source_calls():
+def test_visual_components_provide_verified_quantity_without_extra_source_calls():
     source = analyze_design_sources({
         "design.py": """
 def make_member(part_number):
@@ -338,11 +314,204 @@ prototype = make_member("VISUAL-COUNT")
     })
     tree = {
         "assemblies": [{"id": "assembly", "label": "Assembly", "path": "Assembly", "parent_id": None}],
+        "components": [
+            {
+                "id": f"assembly-member-{index}",
+                "label": "Member",
+                "path": "Assembly/Member",
+                "assembly_id": "assembly",
+                "visual_node_ids": [f"node-{index}"],
+            }
+            for index in range(3)
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirements = analysis["requirements"]
+
+    assert [requirement["part_number"] for requirement in requirements] == ["VISUAL-COUNT"] * 3
+    assert sum(requirement["quantity"] for requirement in requirements) == 3
+    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 3
+    assert {requirement["quantity_source"] for requirement in requirements} == {"visual_instances"}
+    assert {requirement["quantity_confidence"] for requirement in requirements} == {"verified"}
+    assert {requirement["visual_instance_count"] for requirement in requirements} == {1}
+    assert {requirement["source_call_count"] for requirement in requirements} == {1}
+
+
+def test_countable_visual_quantity_is_not_multiplied_by_source_assembly_count():
+    source = analyze_design_sources({
+        "design.py": """
+positions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+
+def make_screw(*, part_number="6-310-3117-5C4", quantity=1, unit="each"):
+    return None
+
+def roof_battens():
+    screw = make_screw()
+    return screw
+
+def building():
+    proto = roof_battens()
+    placed = []
+    for position in positions:
+        placed.append(proto)
+    return placed
+
+model = building()
+""",
+    })
+    tree = {
+        "assemblies": [],
+        "components": [
+            {
+                "id": f"roof-batten-tek-screw-{index}",
+                "label": "Roof Batten Tek Screw",
+                "path": "Roof Battens/Roof Batten Tek Screws/6-310-3117-5C4",
+                "assembly_id": None,
+                "visual_node_ids": [f"node-{index}"],
+            }
+            for index in range(42)
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirements = analysis["requirements"]
+
+    assert {requirement["part_number"] for requirement in requirements} == {"6-310-3117-5C4"}
+    assert sum(requirement["quantity"] for requirement in requirements) == 42
+    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 42
+    assert {requirement["quantity_source"] for requirement in requirements} == {"visual_instances"}
+    assert {requirement["quantity_confidence"] for requirement in requirements} == {"verified"}
+    assert {requirement["count_trace"]["assembly_instance_multiplier"] for requirement in requirements} == {1}
+    assert {requirement["count_trace"]["visual_instance_count"] for requirement in requirements} == {1}
+    assert {requirement["count_trace"]["source_call_count"] for requirement in requirements} == {1}
+
+
+def test_sheet_visual_quantity_is_not_multiplied_by_explicit_source_count():
+    source = analyze_design_sources({
+        "design.py": """
+def make_sheet(*, part_number="CUSTOM-ORB", quantity=14, unit="sheet"):
+    return None
+
+sheet_proto = make_sheet()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "roof-cladding", "label": "Roof Cladding", "path": "Roof Cladding", "parent_id": None}],
+        "components": [
+            {
+                "id": f"roof-sheet-{index}",
+                "label": f"Roof Sheet {index}",
+                "path": f"Roof Cladding/Roof Sheet {index}",
+                "assembly_id": "roof-cladding",
+                "visual_node_ids": [f"node-{index}"],
+            }
+            for index in range(4)
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirements = analysis["requirements"]
+
+    assert {requirement["part_number"] for requirement in requirements} == {"CUSTOM-ORB"}
+    assert sum(requirement["quantity"] for requirement in requirements) == 4
+    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 4
+    assert {requirement["unit"] for requirement in requirements} == {"sheet"}
+    assert {requirement["quantity_source"] for requirement in requirements} == {"visual_instances"}
+    assert {requirement["count_trace"]["visual_count_is_quantity"] for requirement in requirements} == {True}
+
+
+def test_length_visual_quantity_is_not_multiplied_by_source_placements():
+    source = analyze_design_sources({
+        "design.py": """
+def make_gutter(*, part_number="QUAD-GUTTER-115", quantity=2, unit="length"):
+    return None
+
+gutter = make_gutter()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "gutters", "label": "Gutters", "path": "Gutters", "parent_id": None}],
+        "components": [
+            {
+                "id": f"gutter-{index}",
+                "label": f"Long Wall Gutter {index}",
+                "path": f"Gutters/Long Wall Gutter {index}",
+                "assembly_id": "gutters",
+                "visual_node_ids": [f"node-{index}"],
+            }
+            for index in range(2)
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirements = analysis["requirements"]
+
+    assert {requirement["part_number"] for requirement in requirements} == {"QUAD-GUTTER-115"}
+    assert sum(requirement["quantity"] for requirement in requirements) == 2
+    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 2
+    assert {requirement["unit"] for requirement in requirements} == {"length"}
+    assert {requirement["quantity_source"] for requirement in requirements} == {"visual_instances"}
+    assert {requirement["count_trace"]["visual_count_is_quantity"] for requirement in requirements} == {True}
+
+
+def test_visual_source_match_prefers_scope_tokens_over_generic_sheet_overlap():
+    source = analyze_design_sources({
+        "design.py": """
+def make_sheet(length, *, part_number="CUSTOM-ORB", quantity=14, unit="sheet"):
+    return None
+
+def long_wall_cladding():
+    return make_sheet(2400)
+
+def roof_cladding():
+    return make_sheet(1800)
+
+wall = long_wall_cladding()
+roof = roof_cladding()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "roof-cladding", "label": "Roof Cladding", "path": "Roof Cladding", "parent_id": None}],
         "components": [{
-            "id": "assembly-member",
-            "label": "Member",
-            "path": "Assembly/Member",
-            "assembly_id": "assembly",
+            "id": "roof-sheet",
+            "label": "Left Roof Sheet 1",
+            "path": "Roof Cladding/Left Roof Sheet 1",
+            "assembly_id": "roof-cladding",
+            "visual_node_ids": ["node-a"],
+        }],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirement = analysis["requirements"][0]
+
+    assert requirement["source_trace"]["source_scope"] == "roof_cladding"
+    assert requirement["dimensions"] == {"length_mm": 1800}
+    assert requirement["quantity"] == 1
+    assert requirement["unit"] == "sheet"
+
+
+def test_bulk_quantity_uses_explicit_source_quantity_not_visual_instances():
+    source = analyze_design_sources({
+        "design.py": """
+def make_concrete(*, part_number="CONCRETE-A", quantity=0.288, unit="m3"):
+    return None
+
+footing = make_concrete()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "foundation", "label": "Foundation", "path": "Foundation", "parent_id": None}],
+        "components": [{
+            "id": "foundation-concrete",
+            "label": "Concrete",
+            "path": "Foundation/Concrete",
+            "assembly_id": "foundation",
             "visual_node_ids": ["node-a", "node-b", "node-c"],
             "visual_instance_count": 3,
         }],
@@ -352,16 +521,54 @@ prototype = make_member("VISUAL-COUNT")
     analysis = build_procurement_analysis(source, tree)
     requirement = analysis["requirements"][0]
 
-    assert requirement["part_number"] == "VISUAL-COUNT"
-    assert requirement["quantity"] == 3
-    assert requirement["rolled_up_quantity"] == 3
-    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["part_number"] == "CONCRETE-A"
+    assert requirement["quantity"] == 0.288
+    assert requirement["rolled_up_quantity"] == 0.288
+    assert requirement["quantity_source"] == "metadata_quantity_non_discrete"
     assert requirement["quantity_confidence"] == "verified"
-    assert requirement["visual_instance_count"] == 3
-    assert requirement["source_call_count"] == 1
+    assert requirement["orderable"] is True
+    assert requirement["visual_instance_count"] == 1
+    assert requirement["count_trace"]["visual_count_not_quantity"] is True
+    assert requirement["count_trace"]["quantity_unit"] == "m3"
+    assert not any(diagnostic["code"] == "quantity_evidence_mismatch" for diagnostic in analysis["diagnostics"])
 
 
-def test_generated_render_children_count_as_visual_instances_on_source_component():
+def test_linear_unit_does_not_use_visual_instance_count_as_quantity():
+    source = analyze_design_sources({
+        "design.py": """
+def make_drain(*, part_number="AGPIPE-100-SOCKED", unit="m"):
+    return None
+
+drain = make_drain()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "drainage", "label": "Drainage", "path": "Drainage", "parent_id": None}],
+        "components": [{
+            "id": "drainage-agpipe",
+            "label": "Drain",
+            "path": "Drainage/Drain",
+            "assembly_id": "drainage",
+            "visual_node_ids": ["node-a", "node-b", "node-c"],
+            "visual_instance_count": 3,
+        }],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirement = analysis["requirements"][0]
+
+    assert requirement["part_number"] == "AGPIPE-100-SOCKED"
+    assert requirement["quantity"] == 1
+    assert requirement["quantity_source"] == "diagnostic_placeholder"
+    assert requirement["quantity_confidence"] == "diagnostic"
+    assert requirement["orderable"] is False
+    assert requirement["visual_instance_count"] == 1
+    assert requirement["count_trace"]["visual_count_not_quantity"] is True
+    assert requirement["count_trace"]["quantity_unit"] == "m"
+
+
+def test_generated_render_children_are_visual_components_not_parent_quantity():
     source = analyze_design_sources({
         "design.py": """
 def make_blocks(*, part_number="BLOCK-A", unit="each"):
@@ -404,13 +611,175 @@ blocks = make_blocks()
     })
     analysis = build_procurement_analysis(source, tree)
 
-    assert [component["label"] for component in analysis["components"]] == ["Blocks"]
-    requirement = analysis["requirements"][0]
-    assert requirement["part_number"] == "BLOCK-A"
-    assert requirement["quantity"] == 3
-    assert requirement["quantity_source"] == "visual_instances"
-    assert requirement["visual_instance_count"] == 3
+    assert [component["label"] for component in analysis["components"]] == ["=>[0:1]", "=>[0:2]", "=>[0:3]"]
+    assert {requirement["part_number"] for requirement in analysis["requirements"]} == {"BLOCK-A"}
+    assert [requirement["quantity"] for requirement in analysis["requirements"]] == [1, 1, 1]
+    assert {requirement["quantity_source"] for requirement in analysis["requirements"]} == {"visual_instances"}
+    assert {requirement["visual_instance_count"] for requirement in analysis["requirements"]} == {1}
     assert not any(diagnostic["code"] == "requirement_missing_part_number" for diagnostic in analysis["diagnostics"])
+
+
+def test_generated_component_identity_groups_repeated_visual_instances_by_source_function():
+    source = analyze_design_sources({
+        "design.py": """
+def make_floor_joist(y):
+    return None
+
+joists = [
+    make_floor_joist(1185.6),
+    make_floor_joist(1214.4),
+    make_floor_joist(14.4),
+]
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "floor", "label": "Floor", "path": "Floor", "parent_id": None}],
+        "components": [
+            {
+                "id": "floor-joist-y-1185-6",
+                "label": "Floor_Joist_Y_1185.6",
+                "path": "Floor/Floor_Joist_Y_1185.6",
+                "assembly_id": "floor",
+                "visual_node_ids": ["node-a"],
+            },
+            {
+                "id": "floor-joist-y-1214-4",
+                "label": "Floor_Joist_Y_1214.4",
+                "path": "Floor/Floor_Joist_Y_1214.4",
+                "assembly_id": "floor",
+                "visual_node_ids": ["node-b"],
+            },
+            {
+                "id": "floor-joist-y-14-4",
+                "label": "Floor_Joist_Y_14.4",
+                "path": "Floor/Floor_Joist_Y_14.4",
+                "assembly_id": "floor",
+                "visual_node_ids": ["node-c"],
+            },
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    part_numbers = [requirement["part_number"] for requirement in analysis["requirements"]]
+
+    assert len(set(part_numbers)) == 1
+    assert part_numbers[0].startswith("COMPONENT-FLOOR-JOIST-")
+    assert "1185" not in part_numbers[0]
+    assert "1214" not in part_numbers[0]
+    assert "14-4" not in part_numbers[0]
+
+
+def test_visual_assembly_container_without_identity_is_diagnostic_not_bom_line():
+    source = analyze_design_sources({
+        "design.py": """
+def make_floor_assembly():
+    return None
+
+floor = make_floor_assembly()
+""",
+    })
+    tree = {
+        "assemblies": [],
+        "components": [{
+            "id": "floor-assembly",
+            "label": "Floor_Assembly",
+            "path": "Floor_Assembly",
+            "assembly_id": None,
+            "visual_node_ids": [f"node-{index}" for index in range(69)],
+            "visual_instance_count": 69,
+        }],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert analysis["requirements"] == []
+    diagnostic = next(
+        item
+        for item in analysis["diagnostics"]
+        if item["code"] == "visual_container_without_procurement_identity"
+    )
+    assert diagnostic["component_id"] == "floor-assembly"
+    assert diagnostic["source_line"] == 5
+
+
+def test_foundation_semantic_visual_aggregates_remain_visible_as_missing_identity_rows():
+    source = analyze_design_sources({
+        "design.py": """
+def make_foundation():
+    return None
+
+foundation = make_foundation()
+""",
+    })
+    tree = {
+        "assemblies": [{"id": "foundation", "label": "Foundation Assembly", "path": "Foundation Assembly", "parent_id": None}],
+        "components": [
+            {
+                "id": "foundation-concrete-pads",
+                "label": "Concrete Pads",
+                "path": "Foundation Assembly/Concrete Pads",
+                "assembly_id": "foundation",
+                "visual_node_ids": ["pad-a", "pad-b", "pad-c", "pad-d"],
+                "visual_instance_count": 4,
+            },
+            {
+                "id": "foundation-rebar",
+                "label": "Rebar",
+                "path": "Foundation Assembly/Rebar",
+                "assembly_id": "foundation",
+                "visual_node_ids": [f"bar-{index}" for index in range(12)],
+                "visual_instance_count": 12,
+            },
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    rows_by_label = {
+        item["dimensions"].get("component_label"): item
+        for item in analysis["requirements"]
+    }
+
+    assert set(rows_by_label) == {"Concrete Pads", "Rebar"}
+    assert rows_by_label["Concrete Pads"]["part_number"] is None
+    assert rows_by_label["Rebar"]["part_number"] is None
+    assert not any(diagnostic["code"] == "visual_container_without_procurement_identity" for diagnostic in analysis["diagnostics"])
+
+
+def test_dimensioned_visual_aggregate_mark_is_not_generated_bom_line():
+    source = analyze_design_sources({
+        "design.py": """
+def portal_frame(mark, width_mm, height_mm, angle_deg):
+    return None
+
+single_portal = portal_frame(mark="PF01", width_mm=3100, height_mm=2400, angle_deg=20)
+""",
+    })
+    tree = {
+        "assemblies": [],
+        "components": [{
+            "id": "pf01",
+            "label": "PF01-31-24-20",
+            "path": "Shed/PF01-31-24-20",
+            "assembly_id": None,
+            "visual_node_ids": [f"node-{index}" for index in range(12)],
+            "visual_instance_count": 12,
+        }],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert analysis["requirements"] == []
+    diagnostic = next(
+        item
+        for item in analysis["diagnostics"]
+        if item["code"] == "visual_container_without_procurement_identity"
+    )
+    assert diagnostic["component_id"] == "pf01"
+    assert diagnostic["message"]
 
 
 def test_source_call_only_analysis_marks_quantity_probable_and_counts_grouped_calls():
@@ -430,8 +799,9 @@ right = make_member("SOURCE-COUNT")
     assert len(requirements) == 2
     assert {item["quantity"] for item in requirements} == {1}
     assert {item["rolled_up_quantity"] for item in requirements} == {1}
-    assert {item["quantity_source"] for item in requirements} == {"source_calls"}
-    assert {item["quantity_confidence"] for item in requirements} == {"probable"}
+    assert {item["quantity_source"] for item in requirements} == {"diagnostic_placeholder"}
+    assert {item["quantity_confidence"] for item in requirements} == {"diagnostic"}
+    assert {item["orderable"] for item in requirements} == {False}
     assert {item["source_call_count"] for item in requirements} == {2}
 
 
@@ -460,9 +830,9 @@ prototype = make_member("COUNT-MISMATCH", quantity=2)
     analysis = build_procurement_analysis(source, tree)
     requirement = analysis["requirements"][0]
 
-    assert requirement["quantity"] == 2
-    assert requirement["rolled_up_quantity"] == 2
-    assert requirement["quantity_source"] == "explicit"
+    assert requirement["quantity"] == 1
+    assert requirement["rolled_up_quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
     assert requirement["quantity_confidence"] == "diagnostic"
     assert any(diagnostic["code"] == "quantity_evidence_mismatch" for diagnostic in analysis["diagnostics"])
 
@@ -489,10 +859,48 @@ def test_explicit_manifest_requirements_receive_quantity_evidence_defaults():
     requirement = analysis["requirements"][0]
     assert requirement["quantity"] == 4
     assert requirement["rolled_up_quantity"] == 4
-    assert requirement["quantity_source"] == "explicit"
+    assert requirement["quantity_source"] == "explicit_manifest"
     assert requirement["quantity_confidence"] == "verified"
+    assert requirement["orderable"] is True
     assert requirement["source_call_count"] == 1
     assert requirement["count_trace"]["explicit_quantity"] == 4
+
+
+def test_visual_tree_ignores_explicit_manifest_requirement_quantities():
+    source = analyze_design_sources({
+        "design.py": """
+def make_member(part_number):
+    return None
+
+member = make_member("VISUAL-WINS")
+""",
+    })
+    analysis = build_procurement_analysis(
+        source,
+        analyze_gltf_tree(component_tree("Member")),
+        explicit_manifest={
+            "scopes": [],
+            "components": [],
+            "requirements": [{
+                "id": "manifest.requirement",
+                "component_id": "manifest-component",
+                "part_number": "MANIFEST-SHOULD-NOT-WIN",
+                "quantity": 99,
+                "unit": "each",
+                "dimensions": {},
+            }],
+            "diagnostics": [],
+        },
+    )
+
+    requirement = analysis["requirements"][0]
+    assert analysis["analysis_mode"] == "visual_verified"
+    assert analysis["quantity_authority"] == "visual_tree"
+    assert requirement["part_number"] == "VISUAL-WINS"
+    assert requirement["quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["orderable"] is True
+    assert any(diagnostic["code"] == "explicit_manifest_ignored_for_visual_authority" for diagnostic in analysis["diagnostics"])
 
 
 def test_explicit_manifest_fallback_rows_do_not_replace_deterministic_source_requirements():
@@ -537,9 +945,11 @@ portal = portal_frame()
         },
     )
 
-    assert analysis["source"] == "source_only_analysis"
+    assert analysis["source"] == "diagnostic_source_analysis"
+    assert analysis["analysis_mode"] == "source_diagnostic"
     assert [assembly["label"] for assembly in analysis["assemblies"]] == ["Portal Frame"]
     assert [requirement["part_number"] for requirement in analysis["requirements"]] == ["TEST-A"]
+    assert {requirement["orderable"] for requirement in analysis["requirements"]} == {False}
 
 
 def test_component_label_only_explicit_manifest_rows_are_not_procurement_requirements():
@@ -622,7 +1032,9 @@ model = building()
 
     assert len(requirements) == 2
     assert {item["quantity"] for item in requirements} == {1}
-    assert {item["rolled_up_quantity"] for item in requirements} == {3}
+    assert {item["rolled_up_quantity"] for item in requirements} == {1}
+    assert {item["quantity_source"] for item in requirements} == {"diagnostic_placeholder"}
+    assert {item["orderable"] for item in requirements} == {False}
     assert {item["count_trace"]["assembly_instance_multiplier"] for item in requirements} == {3}
     assert {item["source_call_count"] for item in requirements} == {2}
 
@@ -689,8 +1101,10 @@ model = building()
     ]
 
     assert [item["source_trace"]["procurement_item"] for item in fasteners] == ["bolt", "nut"]
-    assert {item["quantity"] for item in fasteners} == {28}
-    assert {item["rolled_up_quantity"] for item in fasteners} == {84}
+    assert {item["quantity"] for item in fasteners} == {1}
+    assert {item["rolled_up_quantity"] for item in fasteners} == {1}
+    assert {item["quantity_source"] for item in fasteners} == {"diagnostic_placeholder"}
+    assert {item["orderable"] for item in fasteners} == {False}
     assert {item["count_trace"]["source_instance_count"] for item in fasteners} == {28}
     assert {item["count_trace"]["assembly_instance_multiplier"] for item in fasteners} == {3}
     assert {item["unit"] for item in fasteners} == {"each"}
@@ -777,8 +1191,10 @@ model = fasteners()
     requirements = [item for item in analysis["requirements"] if item["part_number"] == "SCR-001"]
 
     assert len(requirements) == 1
-    assert requirements[0]["quantity"] == 5
-    assert requirements[0]["rolled_up_quantity"] == 5
+    assert requirements[0]["quantity"] == 1
+    assert requirements[0]["rolled_up_quantity"] == 1
+    assert requirements[0]["quantity_source"] == "diagnostic_placeholder"
+    assert requirements[0]["orderable"] is False
     assert requirements[0]["count_trace"]["source_instance_count"] == 5
 
 
@@ -805,9 +1221,11 @@ model = battens()
     battens = [item for item in analysis["requirements"] if item["part_number"] == "BATTEN"]
 
     assert len(battens) == 1
-    assert battens[0]["quantity"] == 3
-    assert battens[0]["quantity_source"] == "explicit_source_calls"
-    assert battens[0]["rolled_up_quantity"] == 3
+    assert battens[0]["quantity"] == 1
+    assert battens[0]["quantity_source"] == "diagnostic_placeholder"
+    assert battens[0]["orderable"] is False
+    assert battens[0]["rolled_up_quantity"] == 1
+    assert battens[0]["count_trace"]["source_instance_count"] == 3
 
 
 def test_source_placement_counts_nested_compound_prototypes():
@@ -852,8 +1270,54 @@ model = fascia_brackets()
     ]
 
     assert len(cp) == 1
-    assert cp[0]["quantity"] == 6
-    assert {item["quantity"] for item in fasteners} == {12}
+    assert cp[0]["quantity"] == 1
+    assert cp[0]["quantity_source"] == "diagnostic_placeholder"
+    assert cp[0]["orderable"] is False
+    assert cp[0]["count_trace"]["source_instance_count"] == 6
+    assert {item["quantity"] for item in fasteners} == {1}
+    assert {item["quantity_source"] for item in fasteners} == {"diagnostic_placeholder"}
+
+
+def test_visual_quantity_does_not_fall_back_to_larger_source_instance_count():
+    source = analyze_design_sources({
+        "design.py": """
+positions = [0, 1, 2]
+
+def lysaght_zc_cp(part_number):
+    return None
+
+def fascia_brackets():
+    cp_base = lysaght_zc_cp("100CP").moved(None)
+    brackets = []
+    for y in positions:
+        brackets.append(cp_base.moved(("left", y)))
+        brackets.append(cp_base.moved(("right", y)))
+    return brackets
+
+model = fascia_brackets()
+""",
+    })
+    tree = {
+        "assemblies": [],
+        "components": [{
+            "id": "fascia-bracket-assembly",
+            "label": "Fascia Bracket Assembly FBA01-51",
+            "path": "Shed Building/Fascia Bracket Assembly FBA01-51",
+            "assembly_id": None,
+            "visual_node_ids": [f"node-{index}" for index in range(30)],
+            "visual_instance_count": 30,
+        }],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    requirement = next(item for item in analysis["requirements"] if item["part_number"] == "100CP")
+
+    assert requirement["quantity"] == 1
+    assert requirement["rolled_up_quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["visual_instance_count"] == 1
+    assert requirement["count_trace"]["source_instance_count"] == 6
 
 
 def test_tuple_returned_bracket_pair_counts_leading_products_before_metadata():
@@ -878,7 +1342,10 @@ model = portal_frame()
     knees = [item for item in analysis["requirements"] if item["source_trace"]["function"] == "knee_bracket_pair"]
 
     assert len(knees) == 1
-    assert knees[0]["quantity"] == 2
+    assert knees[0]["quantity"] == 1
+    assert knees[0]["quantity_source"] == "diagnostic_placeholder"
+    assert knees[0]["orderable"] is False
+    assert knees[0]["count_trace"]["source_instance_count"] == 2
 
 
 def test_structural_member_section_identity_and_static_loop_count():
@@ -903,7 +1370,10 @@ model = tower()
     belts = [item for item in analysis["requirements"] if item["part_number"] == "90x90x8"]
 
     assert len(belts) == 1
-    assert belts[0]["quantity"] == 12
+    assert belts[0]["quantity"] == 1
+    assert belts[0]["quantity_source"] == "diagnostic_placeholder"
+    assert belts[0]["orderable"] is False
+    assert belts[0]["count_trace"]["source_instance_count"] == 12
     assert belts[0]["dimensions"] == {"length_mm": 1000.0}
     assert "angle_deg" not in belts[0]["dimensions"]
 
@@ -928,7 +1398,10 @@ model = plates()
     plates = [item for item in analysis["requirements"] if item["source_trace"]["function"] == "make_plate"]
 
     assert len(plates) == 1
-    assert plates[0]["quantity"] == 4
+    assert plates[0]["quantity"] == 1
+    assert plates[0]["quantity_source"] == "diagnostic_placeholder"
+    assert plates[0]["orderable"] is False
+    assert plates[0]["count_trace"]["source_instance_count"] == 4
     assert plates[0]["dimensions"] == {"width_mm": 250.0, "height_mm": 250.0, "thickness_mm": 10.0}
     assert plates[0]["part_number"] == "P-2P5-2P5-0P1"
 
@@ -960,7 +1433,10 @@ model = frame()
     ]
 
     assert [item["source_trace"]["procurement_item"] for item in fasteners] == ["bolt", "nut"]
-    assert {item["quantity"] for item in fasteners} == {12}
+    assert {item["quantity"] for item in fasteners} == {1}
+    assert {item["quantity_source"] for item in fasteners} == {"diagnostic_placeholder"}
+    assert {item["orderable"] for item in fasteners} == {False}
+    assert {item["count_trace"]["source_instance_count"] for item in fasteners} == {12}
 
 
 def test_catalog_class_attributes_and_local_quantity_are_resolved_generically():
@@ -1006,8 +1482,11 @@ class SheetProduct:
     analysis = build_procurement_analysis(source, {"assemblies": [], "components": [], "diagnostics": []}, explicit_manifest={})
     requirement = next(item for item in analysis["requirements"] if item["part_number"] == "SHEET-001")
 
-    assert requirement["quantity"] == 14
-    assert requirement["rolled_up_quantity"] == 14
+    assert requirement["quantity"] == 1
+    assert requirement["rolled_up_quantity"] == 1
+    assert requirement["quantity_source"] == "diagnostic_placeholder"
+    assert requirement["orderable"] is False
+    assert requirement["count_trace"]["explicit_quantity"] == 14
     assert requirement["unit"] == "sheet"
     assert requirement["dimensions"] == {"length_mm": 2400}
     assert requirement["material"] == "steel"
@@ -1128,7 +1607,10 @@ class SheetProduct:
 
     assert requirements["C10019"]["dimensions"]["length_mm"] == expected_rafter_length
     assert requirements["CUSTOM-ORB"]["dimensions"]["length_mm"] == expected_sheet_length
-    assert requirements["CUSTOM-ORB"]["quantity"] == 14
+    assert requirements["CUSTOM-ORB"]["quantity"] == 1
+    assert requirements["CUSTOM-ORB"]["quantity_source"] == "diagnostic_placeholder"
+    assert requirements["CUSTOM-ORB"]["orderable"] is False
+    assert requirements["CUSTOM-ORB"]["count_trace"]["explicit_quantity"] == 14
     assert requirements["CUSTOM-ORB"]["unit"] == "sheet"
     assert requirements["CUSTOM-ORB"]["material"] == "steel"
 
@@ -1293,3 +1775,39 @@ def ensure_ocp_hashcode():
 
     assert analysis["components"] == []
     assert analysis["requirements"] == []
+
+
+def test_visual_placeholder_rows_keep_label_identity_and_do_not_borrow_generic_source_dimensions():
+    source = analyze_design_sources({
+        "design.py": """
+def fascia_bracket_assembly(mark="FBA01", length_mm=5100):
+    return None
+
+cp_brackets = fascia_bracket_assembly(mark="FBA01", length_mm=5100)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Shed Building SH01-51-31-24-20",
+        "children": [
+            {
+                "name": "Foundation Assembly",
+                "children": [
+                    {
+                        "name": "Versaloc Blocks",
+                        "children": [
+                            {
+                                "name": "Versaloc Block Envelope",
+                                "children": [{"name": "mesh_1", "type": "Mesh", "isMesh": True}],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] is None
+    assert requirement["source_trace"]["function"] is None
+    assert requirement["dimensions"] == {"component_label": "Versaloc Block Envelope"}

@@ -21,7 +21,7 @@ const DIMMED_SELECTION_OPACITY = 0.3;
 const SELECTION_EMISSIVE = 0xf59e0b;
 const SELECTION_UPDATE_CHUNK_SIZE = 350;
 const SELECTION_LAYER = 1;
-const ENABLE_PROCUREMENT_3D_SELECTION = false;
+const ENABLE_PROCUREMENT_3D_SELECTION = true;
 const PACKAGE_TYPES: PackageType[] = ['each', 'box', 'pack', 'stock_length', 'roll', 'reel', 'bulk_volume', 'bulk_mass'];
 const BOM_RECOVERY_POLL_MS = 2_000;
 const BOM_RECOVERY_MAX_POLLS = 90;
@@ -94,6 +94,7 @@ export interface ManifestRequirement {
   rolled_up_quantity?: number | string | null;
   quantity_source?: string | null;
   quantity_confidence?: string | null;
+  orderable?: boolean | null;
   visual_instance_count?: number | string | null;
   assembly_id?: string | null;
   unit?: string | null;
@@ -402,6 +403,7 @@ export const normalizeProcurementManifest = (rawManifest: BomManifest | Procurem
       rolled_up_quantity: asQuantityValue(requirement.rolled_up_quantity),
       quantity_source: asNullableString(requirement.quantity_source),
       quantity_confidence: asNullableString(requirement.quantity_confidence),
+      orderable: typeof requirement.orderable === 'boolean' ? requirement.orderable : null,
       visual_instance_count: requirement.visual_instance_count as ManifestRequirement['visual_instance_count'],
       unit: asString(requirement.unit).trim() || 'each',
       dimensions: asRecord(requirement.dimensions),
@@ -687,6 +689,7 @@ export const deriveAssemblyTreeManifest = (
 
     const standardInputs = sourceCall?.standardInputs || {};
     const partNumber = resolveCompactValue(standardInputs.part_number ?? standardInputs.product_key, featureValues);
+    const resolvedPartNumber = asString(partNumber).trim();
     const lengthMm = resolveCompactValue(standardInputs.length_mm, featureValues);
     const dimensions: Record<string, unknown> = {};
     if (lengthMm !== undefined && lengthMm !== '') dimensions.length_mm = lengthMm;
@@ -695,14 +698,18 @@ export const deriveAssemblyTreeManifest = (
       const resolved = resolveCompactValue(standardInputs[key], featureValues);
       if (resolved !== undefined && resolved !== '') dimensions[key] = resolved;
     }
-    if (!asString(partNumber).trim()) dimensions.component_label = node.name || componentId;
+    if (!resolvedPartNumber) dimensions.component_label = node.name || componentId;
 
     requirements.push({
       id: `${componentId}.requirement`,
       component_id: componentId,
       scope_id: parentScope?.id || null,
-      part_number: asString(partNumber).trim() || null,
+      part_number: resolvedPartNumber || null,
       quantity: 1,
+      rolled_up_quantity: 1,
+      quantity_source: 'visual_instances',
+      quantity_confidence: 'verified',
+      orderable: Boolean(resolvedPartNumber),
       unit: asString(resolveCompactValue(standardInputs.unit, featureValues) || 'each'),
       dimensions,
       material: asString(resolveCompactValue(standardInputs.material, featureValues)) || null,
@@ -805,6 +812,7 @@ export const canonicalRequirementKey = (requirement: ManifestRequirement) => [
 ].join('::');
 
 const requirementQuantity = (requirement: ManifestRequirement, selectedScopeId = '__all__') => {
+  if (requirement.orderable === false) return 0;
   const value = selectedScopeId === '__all__'
     ? requirement.rolled_up_quantity ?? requirement.quantity
     : requirement.quantity;

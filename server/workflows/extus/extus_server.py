@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 import json
+import struct
 from threading import RLock
 from typing import Any
 from uuid import UUID
@@ -240,6 +241,47 @@ def gltf_to_scene_tree(gltf: dict) -> dict:
     }
 
 
+def glb_to_gltf_json(data: bytes) -> dict:
+    if len(data) < 20:
+        raise ValueError("GLB payload is too short.")
+    magic, version, length = struct.unpack("<4sII", data[:12])
+    if magic != b"glTF" or version != 2:
+        raise ValueError("GLB header is invalid.")
+    if length > len(data):
+        raise ValueError("GLB payload is truncated.")
+
+    offset = 12
+    while offset + 8 <= length:
+        chunk_length, chunk_type = struct.unpack("<I4s", data[offset:offset + 8])
+        offset += 8
+        chunk_end = offset + chunk_length
+        if chunk_end > length:
+            raise ValueError("GLB chunk is truncated.")
+        chunk = data[offset:chunk_end]
+        offset = chunk_end
+        if chunk_type == b"JSON":
+            parsed = json.loads(chunk.rstrip(b" \t\r\n\x00").decode("utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("GLB JSON chunk must contain an object.")
+            return parsed
+
+    raise ValueError("GLB payload does not contain a JSON chunk.")
+
+
+def model_artifact_to_scene_tree(artifact: Artifact) -> dict:
+    if artifact.content is None:
+        raise ValueError("Latest model artifact has no stored content.")
+    if artifact.kind == "gltf":
+        gltf = json.loads(artifact.content.decode("utf-8"))
+    elif artifact.kind == "glb":
+        gltf = glb_to_gltf_json(artifact.content)
+    else:
+        raise ValueError(f"Unsupported model artifact kind {artifact.kind!r}.")
+    if not isinstance(gltf, dict):
+        raise ValueError("GLTF artifact must contain a JSON object.")
+    return gltf_to_scene_tree(gltf)
+
+
 def procurement_analysis_counts(analysis: dict) -> dict[str, int]:
     return {
         "scopes": _manifest_list_count(analysis, "assemblies"),
@@ -251,7 +293,13 @@ def procurement_analysis_counts(analysis: dict) -> dict[str, int]:
 
 def procurement_analysis_artifact_state(analysis: dict) -> str:
     counts = procurement_analysis_counts(analysis)
-    if counts["requirements"] > 0:
+    requirements = analysis.get("requirements")
+    orderable_requirements = [
+        requirement
+        for requirement in requirements
+        if isinstance(requirement, dict) and requirement.get("orderable") is not False
+    ] if isinstance(requirements, list) else []
+    if orderable_requirements:
         return "ready"
     if counts["scopes"] > 0 or counts["components"] > 0:
         return "scopes_only"
@@ -366,26 +414,19 @@ def get_procurement_analysis(ctx: AuthContext = Depends(get_auth_context), db: S
             })
 
     tree_analysis: dict[str, Any] = {"assemblies": [], "components": [], "diagnostics": []}
-    if model_artifact is not None and model_artifact.kind == "gltf":
+    visual_analysis_loaded = False
+    if model_artifact is not None and model_artifact.kind in {"gltf", "glb"}:
         try:
             model_content_artifact = get_model_artifact_by_id(db, ctx, model_artifact.id)
-            gltf_bytes = model_content_artifact.content if model_content_artifact else None
-            if gltf_bytes is None:
-                raise ValueError("Latest GLTF artifact has no stored content.")
-            gltf = json.loads(gltf_bytes.decode("utf-8"))
-            if isinstance(gltf, dict):
-                tree_analysis = analyze_gltf_tree(gltf_to_scene_tree(gltf))
-            else:
-                diagnostics.append({
-                    "code": "invalid_gltf_json",
-                    "severity": "warning",
-                    "message": "Latest GLTF artifact was not a JSON object, so procurement analysis used source evidence only.",
-                })
+            if model_content_artifact is None:
+                raise ValueError("Latest model artifact could not be loaded.")
+            tree_analysis = analyze_gltf_tree(model_artifact_to_scene_tree(model_content_artifact))
+            visual_analysis_loaded = True
         except Exception:
             diagnostics.append({
                 "code": "invalid_gltf_json",
                 "severity": "warning",
-                "message": "Latest GLTF artifact could not be parsed, so procurement analysis used source evidence only.",
+                "message": "Latest GLTF/GLB artifact could not be parsed, so procurement analysis used source evidence only.",
             })
     elif model_artifact is not None:
         diagnostics.append({
@@ -418,7 +459,7 @@ def get_procurement_analysis(ctx: AuthContext = Depends(get_auth_context), db: S
         "model_artifact_id": str(model_artifact.id) if model_artifact else None,
         "model_compile_job_id": str(model_artifact.compile_job_id) if model_artifact and model_artifact.compile_job_id else None,
         "matches_model": True,
-        "is_verified_for_model": model_artifact is not None and model_artifact.kind == "gltf",
+        "is_verified_for_model": visual_analysis_loaded,
         "artifact_state": procurement_analysis_artifact_state(analysis),
         "manifest_counts": counts,
         "mtime": mtime,

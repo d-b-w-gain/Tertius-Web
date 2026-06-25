@@ -63,6 +63,38 @@ describe('Procurement manifest grouping', () => {
     expect(groupManifestRequirements(manifest, '__all__')).toEqual([]);
   });
 
+  it('keeps non-orderable diagnostic rows out of grouped purchase quantities', () => {
+    const manifest: BomManifest = {
+      version: 1,
+      source_snapshot_hash: 'snapshot-a',
+      scopes: [{ id: 'foundation', label: 'Foundation', parent_id: null }],
+      components: [
+        { id: 'foundation.rebar', scope_id: 'foundation', label: 'Rebar', role: 'component', visual_node_ids: ['rebar-node'] },
+      ],
+      requirements: [
+        {
+          id: 'foundation.rebar.requirement',
+          component_id: 'foundation.rebar',
+          part_number: 'REBAR-D16',
+          quantity: 1,
+          rolled_up_quantity: 12,
+          quantity_source: 'diagnostic_placeholder',
+          orderable: false,
+          unit: 'each',
+          dimensions: {},
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const grouped = groupManifestRequirements(manifest, 'foundation');
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.partNumber).toBe('REBAR-D16');
+    expect(grouped[0]?.quantity).toBe(0);
+    expect(grouped[0]?.status).toBe('incomplete');
+  });
+
   it('classifies missing and diagnostic-only manifests as not ready', () => {
     const manifest: BomManifest = {
       version: 1,
