@@ -1,6 +1,6 @@
 {
   "fixture": "3x5shed",
-  "status": "manual_expected_values_pending",
+  "status": "manual_quantities_checked_product_metadata_pending",
   "created_from_commit": "6053282",
   "cad_project": "C:\\Users\\dbwga\\Documents\\Projects\\CAD\\3x5shed",
   "expected_summary": {
@@ -16,20 +16,414 @@
     "Candidate baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
     "Rendered visual components are procurement-required by default; missing part numbers remain order-required rows until explicitly marked reference/NTBO/excluded.",
     "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
-    "This fixture is not an acceptance oracle until line_items are replaced or confirmed by a manual takeoff and status is set to manually_verified."
+    "This fixture is not an acceptance oracle until line_items are replaced or confirmed by a manual takeoff and status is set to manually_verified.",
+    "Manual reference checks now record source-derived quantities line by line; rows marked missing_product_metadata are visible rendered items that still need orderable product identity."
   ],
   "manual_reference_checks": [
     {
-      "part_number": "100CP",
+      "part_number": "RIDGE-CAPPING-140",
+      "component_label": null,
+      "unit": "length",
+      "expected_quantity": 1,
+      "dimensions": {
+        "angle_deg": 20.0,
+        "length_mm": 5151.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:549-572",
+        "flashings.py:71-78"
+      ],
+      "reasoning": "ridge_flashing creates one RidgeCapping140 over y_max - y_min = 5151 mm."
+    },
+    {
+      "part_number": "APB01-20",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 3,
+      "dimensions": {
+        "angle_deg": 20.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:173-213",
+        "design.py:327-330",
+        "design.py:1004-1012"
+      ],
+      "reasoning": "portal_frame creates one apex bracket per portal frame; bay_spacings creates three portal positions."
+    },
+    {
+      "part_number": "KB01-20",
+      "component_label": null,
       "unit": "each",
       "expected_quantity": 6,
+      "dimensions": {
+        "angle_deg": 20.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:216-280",
+        "design.py:332-334",
+        "design.py:1004-1012"
+      ],
+      "reasoning": "knee_bracket_pair creates left and right knee brackets per portal; three portals gives 6."
+    },
+    {
+      "part_number": null,
+      "component_label": "Concrete Pads",
+      "unit": "each",
+      "expected_quantity": 4,
+      "dimensions": {
+        "component_label": "Concrete Pads"
+      },
+      "status": "missing_product_metadata",
+      "source_files": [
+        "foundation.py:50-57"
+      ],
+      "reasoning": "foundation creates pads at 2 x positions and 2 y positions, so 4 visible concrete pads."
+    },
+    {
+      "part_number": "C10019",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 2,
+      "dimensions": {
+        "length_mm": 5100.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:283-311",
+        "design.py:1018-1035",
+        "design.py:889-937",
+        "lysaght_zc.py:265-424"
+      ],
+      "reasoning": "shed_building creates left_fascia and right_fascia from lysaght_zc_purlin(C10019, length=portal_depth), so 2 pieces at 5100 mm."
+    },
+    {
+      "part_number": null,
+      "component_label": "Rebar",
+      "unit": "each",
+      "expected_quantity": 12,
+      "dimensions": {
+        "component_label": "Rebar"
+      },
+      "status": "missing_product_metadata",
+      "source_files": [
+        "foundation.py:59-87"
+      ],
+      "reasoning": "foundation creates 8 horizontal rods plus 4 vertical starter rods, so 12 visible rebar pieces."
+    },
+    {
+      "part_number": null,
+      "component_label": "Versaloc Block Envelope",
+      "unit": "each",
+      "expected_quantity": 80,
+      "dimensions": {
+        "component_label": "Versaloc Block Envelope"
+      },
+      "status": "missing_product_metadata",
+      "source_files": [
+        "foundation.py:24-49"
+      ],
+      "reasoning": "foundation block loops create 16 + 24 + 26 + 14 blocks across two courses, total 80."
+    },
+    {
+      "part_number": "DIN-6921-M12X25",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 96,
+      "dimensions": {
+        "grip_length_mm": 4.9,
+        "length_mm": 25.0,
+        "size": "M12"
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:343-364",
+        "design.py:841-850",
+        "fasteners.py:127-136"
+      ],
+      "reasoning": "per portal: 8 apex, 16 knee, and 4 base M12x25 fastener assemblies = 28; three portals = 84. Fascia brackets add 6 assemblies * 2 fasteners = 12. Total bolts = 96."
+    },
+    {
+      "part_number": "RAMSET-ANKASCREW-M12X100-GAL",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 12,
+      "dimensions": {
+        "length_mm": 100.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:70-85",
+        "design.py:371-378"
+      ],
+      "reasoning": "portal_frame creates 4 masonry anchors per portal frame at base bracket holes; three portals gives 12."
+    },
+    {
+      "part_number": "6-310-3117-5C4",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 40,
+      "dimensions": {
+        "length_mm": 15.5
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:718-781",
+        "design.py:784-831",
+        "roofing_fasteners.py:62-75",
+        "roofing_fasteners.py:239-257"
+      ],
+      "reasoning": "wall_cladding_fascia_fasteners: 7 sheet positions per side and three valley offsets, with boundary checks, yields 40 visible wall screws."
+    },
+    {
+      "part_number": "6-310-3117-5C4",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 36,
+      "dimensions": {
+        "length_mm": 16.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:718-781",
+        "design.py:784-831",
+        "roofing_fasteners.py:62-75",
+        "roofing_fasteners.py:239-257"
+      ],
+      "reasoning": "roof_battens creates 3 batten rows per side; each row fixes at 3 portal supports with two foot screws per side, so 3 * 3 * 2 * 2 = 36 batten Tek screws."
+    },
+    {
+      "part_number": "CORNER-CAP-90",
+      "component_label": null,
+      "unit": "length",
+      "expected_quantity": 4,
+      "dimensions": {
+        "length_mm": 1800.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:575-645",
+        "flashings.py:81-88"
+      ],
+      "reasoning": "roof_end_flashings creates one cap at each roof side and y end, so 2 * 2 = 4 roof end caps at roof_sheet_length 1800 mm."
+    },
+    {
+      "part_number": "CUSTOM-ORB",
+      "component_label": null,
+      "unit": "sheet",
+      "expected_quantity": 14,
+      "dimensions": {
+        "length_mm": 1800.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:386-433",
+        "design.py:449-498",
+        "custom_orb.py:38-50"
+      ],
+      "reasoning": "roof_cladding uses ceil(5151 / 762) = 7 sheets per roof side; two roof sides gives 14 sheets at ordered length 1800 mm."
+    },
+    {
+      "part_number": "CORNER-CAP-90",
+      "component_label": null,
+      "unit": "length",
+      "expected_quantity": 4,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:575-645",
+        "flashings.py:81-88"
+      ],
+      "reasoning": "wall_corner_flashings creates one vertical cap at each x side and y end, so 2 * 2 = 4 wall corner caps at column_height 2400 mm."
+    },
+    {
+      "part_number": "CUSTOM-ORB",
+      "component_label": null,
+      "unit": "sheet",
+      "expected_quantity": 14,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:386-433",
+        "design.py:449-498",
+        "custom_orb.py:38-50"
+      ],
+      "reasoning": "long_wall_cladding uses ceil(5151 / 762) = 7 sheets per long wall; two walls gives 14 sheets at column_height 2400 mm."
+    },
+    {
+      "part_number": "C10019",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 6,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:283-311",
+        "design.py:1018-1035",
+        "design.py:889-937",
+        "lysaght_zc.py:265-424"
+      ],
+      "reasoning": "portal_frame creates two C10019 columns per portal at column_height 2400 mm; three portals gives 6."
+    },
+    {
+      "part_number": "C10019",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 6,
+      "dimensions": {
+        "length_mm": 1517.8937602304254
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:283-311",
+        "design.py:1018-1035",
+        "design.py:889-937",
+        "lysaght_zc.py:265-424"
+      ],
+      "reasoning": "portal_frame creates two C10019 rafters per portal at computed rafter_length 1517.8937602304254 mm; three portals gives 6."
+    },
+    {
+      "part_number": "C10019",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 13,
+      "dimensions": {
+        "length_mm": 2785.6000000000004
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:283-311",
+        "design.py:1018-1035",
+        "design.py:889-937",
+        "lysaght_zc.py:265-424"
+      ],
+      "reasoning": "floor_assembly computes floor_y_span 4785.6 mm at 400 mm spacing, so ceil(4785.6/400)+1 = 13 joists; each joist length is floor_x_span 2785.6 mm."
+    },
+    {
+      "part_number": null,
+      "component_label": "Particleboard Sheet",
+      "unit": "each",
+      "expected_quantity": 4,
+      "dimensions": {
+        "component_label": "Particleboard Sheet"
+      },
+      "status": "missing_product_metadata",
+      "source_files": [
+        "design.py:939-971"
+      ],
+      "reasoning": "floor_assembly computes floor_x_span 2785.6 mm and sheet width 800 mm, so ceil(2785.6/800) = 4 particleboard sheets."
+    },
+    {
+      "part_number": "QUAD-GUTTER-115",
+      "component_label": null,
+      "unit": "length",
+      "expected_quantity": 2,
+      "dimensions": {
+        "length_mm": 5151.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:648-691",
+        "quad_gutter.py:48-57"
+      ],
+      "reasoning": "long_wall_gutters creates left and mirrored right QuadGutter115, both length y_max - y_min = 5151 mm."
+    },
+    {
+      "part_number": "TOPHAT50",
+      "component_label": null,
+      "unit": "length",
+      "expected_quantity": 6,
+      "dimensions": {
+        "length_mm": 5151.0
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:694-781",
+        "tophat.py:46-55"
+      ],
+      "reasoning": "roof_battens creates 3 slope-distance rows per roof side and two roof sides, so 6 top-hat battens at 5151 mm."
+    },
+    {
+      "part_number": "6-310-3326-6C4",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 126,
+      "dimensions": {
+        "length_mm": 67.5
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:501-546",
+        "roofing_fasteners.py:89-105",
+        "roofing_fasteners.py:260-262"
+      ],
+      "reasoning": "roof_cladding_crest_fasteners uses 3 batten rows, 7 sheet positions, 3 crest offsets, and two roof sides; boundary checks keep all 126 screws."
+    },
+    {
+      "part_number": "DIN-6923-M12",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 96,
+      "dimensions": {
+        "size": "M12"
+      },
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:343-364",
+        "design.py:841-850",
+        "fasteners.py:127-136"
+      ],
+      "reasoning": "Each M12x25 fastener assembly includes one DIN-6923 M12 flange nut; expected nut count matches the 96 DIN-6921 M12x25 bolts."
+    },
+    {
+      "part_number": "100CP",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 6,
+      "dimensions": {},
       "status": "manually_checked",
       "source_files": [
         "design.py:88-94",
         "design.py:836-871",
         "design.py:1036"
       ],
-      "reasoning": "bay_spacings has two bays, creating three portal_y_positions. fascia_bracket_assembly places one left and one right cp_assembly at each portal position. Each cp_assembly contains exactly one lysaght_zc_cp(\"100CP\") part, so 3 portal positions * 2 sides * 1 bracket = 6."
+      "reasoning": "fascia_bracket_assembly places one left and one right cp_assembly at each of three portal positions; each cp_assembly contains one 100CP, so 6."
+    },
+    {
+      "part_number": "100GPB",
+      "component_label": null,
+      "unit": "each",
+      "expected_quantity": 6,
+      "dimensions": {},
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:336-341",
+        "design.py:1004-1012"
+      ],
+      "reasoning": "portal_frame creates left and right 100GPB base brackets per portal; three portals gives 6."
+    },
+    {
+      "part_number": null,
+      "component_label": "Floor Screw",
+      "unit": "each",
+      "expected_quantity": 52,
+      "dimensions": {
+        "component_label": "Floor Screw"
+      },
+      "status": "missing_product_metadata",
+      "source_files": [
+        "design.py:874-886",
+        "design.py:973-985"
+      ],
+      "reasoning": "floor_assembly places one screw at each joist/sheet intersection: 13 joists * 4 particleboard sheet centres = 52 screws. The design still needs a real screw part number."
     }
   ],
   "line_items": [
@@ -43,7 +437,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "ridge_flashing creates one RidgeCapping140 over y_max - y_min = 5151 mm."
     },
     {
       "part_number": "APB01-20",
@@ -54,7 +450,9 @@
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "portal_frame creates one apex bracket per portal frame; bay_spacings creates three portal positions."
     },
     {
       "part_number": "KB01-20",
@@ -65,53 +463,48 @@
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "knee_bracket_pair creates left and right knee brackets per portal; three portals gives 6."
     },
     {
       "part_number": null,
       "unit": "each",
-      "quantity": 1,
+      "quantity": 4,
       "dimensions": {
         "component_label": "Concrete Pads"
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "missing_product_metadata",
+      "manual_reference_note": "foundation creates pads at 2 x positions and 2 y positions, so 4 visible concrete pads."
     },
     {
-      "part_number": null,
+      "part_number": "C10019",
       "unit": "each",
-      "quantity": 1,
+      "quantity": 2,
       "dimensions": {
-        "component_label": "Fascia Member FM01-51",
         "length_mm": 5100.0
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "shed_building creates left_fascia and right_fascia from lysaght_zc_purlin(C10019, length=portal_depth), so 2 pieces at 5100 mm."
     },
     {
       "part_number": null,
       "unit": "each",
-      "quantity": 1,
-      "dimensions": {
-        "component_label": "Fascia Member FM02-51",
-        "length_mm": 5100.0
-      },
-      "material": null,
-      "finish": null,
-      "standard": null
-    },
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 1,
+      "quantity": 12,
       "dimensions": {
         "component_label": "Rebar"
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "missing_product_metadata",
+      "manual_reference_note": "foundation creates 8 horizontal rods plus 4 vertical starter rods, so 12 visible rebar pieces."
     },
     {
       "part_number": null,
@@ -122,12 +515,14 @@
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "missing_product_metadata",
+      "manual_reference_note": "foundation block loops create 16 + 24 + 26 + 14 blocks across two courses, total 80."
     },
     {
       "part_number": "DIN-6921-M12X25",
       "unit": "each",
-      "quantity": 324,
+      "quantity": 96,
       "dimensions": {
         "grip_length_mm": 4.9,
         "length_mm": 25.0,
@@ -135,18 +530,22 @@
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "per portal: 8 apex, 16 knee, and 4 base M12x25 fastener assemblies = 28; three portals = 84. Fascia brackets add 6 assemblies * 2 fasteners = 12. Total bolts = 96."
     },
     {
       "part_number": "RAMSET-ANKASCREW-M12X100-GAL",
       "unit": "each",
-      "quantity": 36,
+      "quantity": 12,
       "dimensions": {
         "length_mm": 100.0
       },
       "material": null,
       "finish": "galvanised",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "portal_frame creates 4 masonry anchors per portal frame at base bracket holes; three portals gives 12."
     },
     {
       "part_number": "6-310-3117-5C4",
@@ -157,7 +556,9 @@
       },
       "material": null,
       "finish": "Climaseal 4",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "wall_cladding_fascia_fasteners: 7 sheet positions per side and three valley offsets, with boundary checks, yields 40 visible wall screws."
     },
     {
       "part_number": "6-310-3117-5C4",
@@ -168,7 +569,9 @@
       },
       "material": null,
       "finish": "Climaseal 4",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "roof_battens creates 3 batten rows per side; each row fixes at 3 portal supports with two foot screws per side, so 3 * 3 * 2 * 2 = 36 batten Tek screws."
     },
     {
       "part_number": "CORNER-CAP-90",
@@ -179,7 +582,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "roof_end_flashings creates one cap at each roof side and y end, so 2 * 2 = 4 roof end caps at roof_sheet_length 1800 mm."
     },
     {
       "part_number": "CUSTOM-ORB",
@@ -190,7 +595,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "roof_cladding uses ceil(5151 / 762) = 7 sheets per roof side; two roof sides gives 14 sheets at ordered length 1800 mm."
     },
     {
       "part_number": "CORNER-CAP-90",
@@ -201,7 +608,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "wall_corner_flashings creates one vertical cap at each x side and y end, so 2 * 2 = 4 wall corner caps at column_height 2400 mm."
     },
     {
       "part_number": "CUSTOM-ORB",
@@ -212,29 +621,61 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "long_wall_cladding uses ceil(5151 / 762) = 7 sheets per long wall; two walls gives 14 sheets at column_height 2400 mm."
     },
     {
       "part_number": "C10019",
       "unit": "each",
-      "quantity": 12,
+      "quantity": 6,
       "dimensions": {
         "length_mm": 2400.0
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "portal_frame creates two C10019 columns per portal at column_height 2400 mm; three portals gives 6."
     },
     {
       "part_number": "C10019",
       "unit": "each",
-      "quantity": 17,
+      "quantity": 6,
+      "dimensions": {
+        "length_mm": 1517.8937602304254
+      },
+      "material": null,
+      "finish": null,
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "portal_frame creates two C10019 rafters per portal at computed rafter_length 1517.8937602304254 mm; three portals gives 6."
+    },
+    {
+      "part_number": "C10019",
+      "unit": "each",
+      "quantity": 13,
       "dimensions": {
         "length_mm": 2785.6000000000004
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "floor_assembly computes floor_y_span 4785.6 mm at 400 mm spacing, so ceil(4785.6/400)+1 = 13 joists; each joist length is floor_x_span 2785.6 mm."
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 4,
+      "dimensions": {
+        "component_label": "Particleboard Sheet"
+      },
+      "material": null,
+      "finish": null,
+      "standard": null,
+      "manual_reference_status": "missing_product_metadata",
+      "manual_reference_note": "floor_assembly computes floor_x_span 2785.6 mm and sheet width 800 mm, so ceil(2785.6/800) = 4 particleboard sheets."
     },
     {
       "part_number": "QUAD-GUTTER-115",
@@ -245,7 +686,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "long_wall_gutters creates left and mirrored right QuadGutter115, both length y_max - y_min = 5151 mm."
     },
     {
       "part_number": "TOPHAT50",
@@ -256,7 +699,9 @@
       },
       "material": "steel",
       "finish": "zincalume",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "roof_battens creates 3 slope-distance rows per roof side and two roof sides, so 6 top-hat battens at 5151 mm."
     },
     {
       "part_number": "6-310-3326-6C4",
@@ -267,18 +712,22 @@
       },
       "material": null,
       "finish": "Climaseal 4",
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "roof_cladding_crest_fasteners uses 3 batten rows, 7 sheet positions, 3 crest offsets, and two roof sides; boundary checks keep all 126 screws."
     },
     {
       "part_number": "DIN-6923-M12",
       "unit": "each",
-      "quantity": 324,
+      "quantity": 96,
       "dimensions": {
         "size": "M12"
       },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "Each M12x25 fastener assembly includes one DIN-6923 M12 flange nut; expected nut count matches the 96 DIN-6921 M12x25 bolts."
     },
     {
       "part_number": "100CP",
@@ -289,7 +738,7 @@
       "finish": null,
       "standard": null,
       "manual_reference_status": "manually_checked",
-      "manual_reference_note": "Expected from design.py: 3 portal_y_positions * 2 fascia sides * 1 100CP per cp_assembly = 6."
+      "manual_reference_note": "fascia_bracket_assembly places one left and one right cp_assembly at each of three portal positions; each cp_assembly contains one 100CP, so 6."
     },
     {
       "part_number": "100GPB",
@@ -298,16 +747,22 @@
       "dimensions": {},
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "portal_frame creates left and right 100GPB base brackets per portal; three portals gives 6."
     },
     {
-      "part_number": "COMPONENT-FLOOR-SCREW-AA381B54",
+      "part_number": null,
       "unit": "each",
       "quantity": 52,
-      "dimensions": {},
+      "dimensions": {
+        "component_label": "Floor Screw"
+      },
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "missing_product_metadata",
+      "manual_reference_note": "floor_assembly places one screw at each joist/sheet intersection: 13 joists * 4 particleboard sheet centres = 52 screws. The design still needs a real screw part number."
     }
   ],
   "non_orderable_line_items": []
