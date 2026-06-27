@@ -21,6 +21,10 @@ from core.procurement_analysis import (
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "procurement" / "3x5shed_expected_bom.json"
 DEFAULT_SHED_DIR = Path(r"C:\Users\dbwga\Documents\Projects\CAD\3x5shed")
 NON_DISCRETE_UNITS = {"m", "m2", "m3", "kg", "l", "litre", "liter", "litres", "liters"}
+COMPARABLE_REFERENCE_STATUSES = {
+    "manual_quantities_checked_product_metadata_pending",
+    "manually_verified",
+}
 
 
 def _read_python_files(project_dir: Path) -> dict[str, str]:
@@ -250,12 +254,11 @@ def test_3x5shed_visual_bom_matches_manual_expected_fixture():
         return
 
     expected = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    if expected.get("status") != "manually_verified":
+    if expected.get("status") not in COMPARABLE_REFERENCE_STATUSES:
         pytest.skip(
             "3x5shed expected BoM fixture is not manually verified yet. "
             "Fill server/tests/fixtures/procurement/3x5shed_expected_bom.json "
-            "with manually calculated line_items, then set status to manually_verified "
-            "before treating this as an acceptance test."
+            "with manually calculated line_items before running this comparison."
         )
 
     assert actual.get("analysis_mode") == "visual_verified"
