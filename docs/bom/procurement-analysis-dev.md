@@ -99,6 +99,44 @@ This executes the design in a temporary directory, exports GLTF, analyzes the
 scene tree, and combines it with AST/source metadata. Use this mode before
 trusting assembly/component filters.
 
+## 3x5 Shed Golden BoM
+
+The regression suite includes an opt-in whole-shed golden comparison at:
+
+```text
+server/tests/test_procurement_shed_golden.py
+server/tests/fixtures/procurement/3x5shed_expected_bom.json
+```
+
+The expected fixture records the repo commit it was created from, but it starts
+with `status: manual_expected_values_pending`. Do not populate it by copying
+analyzer output. Fill `line_items` from a manually calculated BoM, then change
+the status to `verified`.
+
+Run the shed through the visual playground first:
+
+```powershell
+.\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
+  --design-py C:\Users\dbwga\Documents\Projects\CAD\3x5shed\design.py `
+  --quality sketch `
+  --compile-timeout 300 `
+  --out C:\tmp\3x5shed-procurement_analysis.json
+```
+
+Then run the golden comparison against that visual-verified artifact:
+
+```powershell
+$env:PYTHONPATH = "server"
+$env:TERTIUS_PROCUREMENT_SHED_ANALYSIS_JSON = "C:\tmp\3x5shed-procurement_analysis.json"
+.\temp_env\Scripts\python.exe -m pytest server\tests\test_procurement_shed_golden.py -q
+```
+
+The test requires `analysis_mode: visual_verified` and
+`quantity_authority: visual_tree`. For orderable discrete parts, each visual
+component row must have quantity `1` with `quantity_source: visual_instances`.
+Non-discrete materials such as concrete volume may use
+`quantity_source: metadata_quantity_non_discrete`.
+
 ## Existing GLTF Or Tree Fixture
 
 Use an existing text `.gltf` file:

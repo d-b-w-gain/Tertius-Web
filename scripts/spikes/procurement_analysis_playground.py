@@ -190,7 +190,6 @@ def load_tree(args: argparse.Namespace) -> dict[str, Any]:
         "gltf",
         quality=args.quality,
         timeout_seconds=args.compile_timeout,
-        source_snapshot_hash="procurement-playground",
     )
     if not result.success or result.output_path is None:
         raise RuntimeError(

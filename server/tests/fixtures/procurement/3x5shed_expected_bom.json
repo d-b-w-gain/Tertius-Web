@@ -1,0 +1,12 @@
+{
+  "fixture": "3x5shed",
+  "status": "manual_expected_values_pending",
+  "created_from_commit": "ceac25d0f2871abfe3d7b43b9b42495ed959bb3c",
+  "cad_project": "C:\\Users\\dbwga\\Documents\\Projects\\CAD\\3x5shed",
+  "notes": [
+    "This fixture is intentionally not generated from procurement analyzer output.",
+    "Set status to verified only after line_items has been manually calculated from the shed design and supplier/order intent.",
+    "The opt-in golden test compares every orderable analyzer line against line_items when a visual-verified analysis artifact or visual tree fixture is supplied."
+  ],
+  "line_items": []
+}
