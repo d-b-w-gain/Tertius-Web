@@ -188,6 +188,60 @@
       "'": "&#039;",
     }[char]));
 
+    function normaliseAnalysis(raw) {
+      if (Array.isArray(raw?.requirements)) return raw;
+      if (!Array.isArray(raw?.line_items)) return raw;
+
+      const assemblyId = "grouped-bom";
+      const requirements = raw.line_items.map((line, index) => {
+        const id = `grouped-${index + 1}`;
+        return {
+          id: `${id}.requirement`,
+          component_id: id,
+          assembly_id: assemblyId,
+          part_number: line.part_number || null,
+          stock_number: line.stock_number || null,
+          quantity: Number(line.quantity || 0),
+          rolled_up_quantity: Number(line.quantity || 0),
+          quantity_source: line.quantity_source || "visual_instances",
+          quantity_confidence: line.quantity_confidence || "verified",
+          orderable: line.orderable !== false,
+          visual_instance_count: Number(line.quantity || 0),
+          source_call_count: line.visual_rows || line.source_call_count || 1,
+          count_trace: { grouped_from_visual_rows: line.visual_rows || line.source_call_count || null },
+          unit: line.unit || "each",
+          dimensions: line.dimensions || {},
+          material: line.material || null,
+          finish: line.finish || null,
+          source_trace: { source: raw.source || "grouped_line_items" },
+          resolution_trace: {},
+        };
+      });
+      const components = requirements.map((requirement) => ({
+        id: requirement.component_id,
+        label: requirement.part_number || "(missing part number)",
+        path: `Grouped BoM/${requirement.part_number || "(missing part number)"}`,
+        assembly_id: assemblyId,
+        visual_node_ids: [],
+        visual_instance_count: requirement.visual_instance_count,
+      }));
+      const diagnosticItems = Array.isArray(raw.diagnostics)
+        ? raw.diagnostics
+        : Object.entries(raw.diagnostics || {}).map(([code, value]) => ({
+            code,
+            severity: "info",
+            message: String(value),
+          }));
+
+      return {
+        ...raw,
+        assemblies: [{ id: assemblyId, label: "Grouped BoM", path: "Grouped BoM", parent_id: null }],
+        components,
+        requirements,
+        diagnostics: diagnosticItems,
+      };
+    }
+
     function requirementKey(requirement) {
       const dims = Object.entries(requirement.dimensions || {})
         .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "")
@@ -382,7 +436,7 @@
       const file = event.target.files?.[0];
       if (!file) return;
       const text = await file.text();
-      state.analysis = JSON.parse(text);
+      state.analysis = normaliseAnalysis(JSON.parse(text));
       state.selectedAssemblyId = "__all__";
       render();
     });
