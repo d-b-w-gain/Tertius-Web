@@ -675,7 +675,7 @@ anchors = make_anchor()
     assert {requirement["visual_instance_count"] for requirement in analysis["requirements"]} == {1}
 
 
-def test_named_mesh_leaf_part_number_is_counted_without_parent_name_hack():
+def test_repeated_named_mesh_leaves_under_generated_holder_are_one_component():
     source = analyze_design_sources({
         "design.py": """
 def lysaght_zc_cp(part_number):
@@ -698,6 +698,14 @@ cp = lysaght_zc_cp("100CP")
                             {"name": "100CP", "type": "Mesh", "isMesh": True},
                             {"name": "100CP", "type": "Mesh", "isMesh": True},
                         ],
+                    },
+                    {
+                        "name": "=>011333",
+                        "type": "Object3D",
+                        "children": [
+                            {"name": "100CP", "type": "Mesh", "isMesh": True},
+                            {"name": "100CP", "type": "Mesh", "isMesh": True},
+                        ],
                     }
                 ],
             }
@@ -708,6 +716,7 @@ cp = lysaght_zc_cp("100CP")
     requirements = [item for item in analysis["requirements"] if item["part_number"] == "100CP"]
     assert len(requirements) == 2
     assert sum(item["quantity"] for item in requirements) == 2
+    assert {item["count_trace"]["visual_leaf_count"] for item in requirements} == {2}
     assert {item["quantity_source"] for item in requirements} == {"visual_instances"}
 
 

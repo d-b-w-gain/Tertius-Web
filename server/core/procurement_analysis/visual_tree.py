@@ -111,23 +111,74 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         collect(node, ancestors)
         return visual_ids or [str(node.get("id") or path_for(ancestors, node))]
 
+    def add_component(
+        *,
+        label: str,
+        path: str,
+        assembly_id: str | None,
+        visual_node_ids: list[str],
+    ) -> None:
+        component_id = _unique_id(_slug(path, "component"), used_ids)
+        components.append({
+            "id": component_id,
+            "label": label,
+            "path": path,
+            "assembly_id": assembly_id,
+            "visual_node_ids": visual_node_ids,
+            "visual_instance_count": None,
+        })
+
+    def direct_named_mesh_children_by_label(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for child in _children(node):
+            child_name = _node_name(child)
+            if _is_mesh(child) and child_name and not _is_generated_or_default(child_name):
+                grouped.setdefault(child_name, []).append(child)
+        return grouped
+
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         name = _node_name(node)
         if _is_mesh(node):
             if name and not _is_generated_or_default(name):
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
-                component_id = _unique_id(_slug(path, "component"), used_ids)
-                components.append({
-                    "id": component_id,
-                    "label": name,
-                    "path": path,
-                    "assembly_id": parent_id,
-                    "visual_node_ids": [str(node.get("id") or path)],
-                    "visual_instance_count": None,
-                })
+                add_component(
+                    label=name,
+                    path=path,
+                    assembly_id=parent_id,
+                    visual_node_ids=[str(node.get("id") or path)],
+                )
             return
         if _is_group(node) and _has_mesh_descendant(node):
+            grouped_mesh_children = direct_named_mesh_children_by_label(node)
+            repeated_named_mesh_children = {
+                label: children
+                for label, children in grouped_mesh_children.items()
+                if len(children) > 1
+            }
+            if _is_generated_or_default(name) and repeated_named_mesh_children:
+                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                current_path = path_for(ancestors, node)
+                grouped_child_ids = {
+                    id(child)
+                    for children in repeated_named_mesh_children.values()
+                    for child in children
+                }
+                for label, children in repeated_named_mesh_children.items():
+                    add_component(
+                        label=label,
+                        path=f"{current_path}/{label}",
+                        assembly_id=parent_id,
+                        visual_node_ids=[
+                            str(child.get("id") or path_for([*ancestors, node], child))
+                            for child in children
+                        ],
+                    )
+                for child in _children(node):
+                    if id(child) not in grouped_child_ids:
+                        visit(child, [*ancestors, node])
+                return
+
             if _has_group_child_with_meshes(node) or _has_named_mesh_child(node):
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
@@ -142,16 +193,13 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             else:
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
-                component_id = _unique_id(_slug(path, "component"), used_ids)
                 visual_node_ids = visual_node_ids_for(node, ancestors)
-                components.append({
-                    "id": component_id,
-                    "label": name,
-                    "path": path,
-                    "assembly_id": parent_id,
-                    "visual_node_ids": visual_node_ids,
-                    "visual_instance_count": None,
-                })
+                add_component(
+                    label=name,
+                    path=path,
+                    assembly_id=parent_id,
+                    visual_node_ids=visual_node_ids,
+                )
         elif name and not _is_generated_or_default(name):
             diagnostics.append({
                 "code": "ignored_named_node_without_meshes",

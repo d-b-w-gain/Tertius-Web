@@ -116,7 +116,7 @@ server/tests/fixtures/procurement/3x5shed_expected_bom.json
 The expected fixture records the repo commit it was created from, but it starts
 with `status: manual_expected_values_pending`. Do not populate it by copying
 analyzer output. Fill `line_items` from a manually calculated BoM, then change
-the status to `verified`.
+the status to `manually_verified`.
 
 Run the shed through the visual playground first:
 

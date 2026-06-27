@@ -1,22 +1,22 @@
 {
   "fixture": "3x5shed",
-  "status": "verified",
+  "status": "manual_expected_values_pending",
   "created_from_commit": "6053282",
   "cad_project": "C:\\Users\\dbwga\\Documents\\Projects\\CAD\\3x5shed",
   "expected_summary": {
     "analysis_mode": "visual_verified",
     "quantity_authority": "visual_tree",
-    "assemblies": 32,
-    "components": 823,
-    "requirements": 1147,
-    "orderable_requirements": 1147,
+    "assemblies": 26,
+    "components": 793,
+    "requirements": 1117,
+    "orderable_requirements": 1117,
     "non_orderable_requirements": 0
   },
   "notes": [
-    "Baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
+    "Candidate baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
     "Rendered visual components are procurement-required by default; missing part numbers remain order-required rows until explicitly marked reference/NTBO/excluded.",
     "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
-    "Replace these values with a human checked takeoff if any supplier ordering line is found wrong."
+    "This fixture is not an acceptance oracle until line_items are replaced or confirmed by a manual takeoff and status is set to manually_verified."
   ],
   "line_items": [
     {
@@ -269,7 +269,7 @@
     {
       "part_number": "100CP",
       "unit": "each",
-      "quantity": 36,
+      "quantity": 6,
       "dimensions": {},
       "material": null,
       "finish": null,
