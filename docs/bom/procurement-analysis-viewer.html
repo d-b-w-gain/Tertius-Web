@@ -189,12 +189,14 @@
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
+      table-layout: fixed;
     }
     th, td {
       border-bottom: 1px solid #1e293b;
       padding: 9px;
       text-align: left;
       vertical-align: top;
+      overflow-wrap: anywhere;
     }
     th {
       position: sticky;
@@ -202,6 +204,55 @@
       background: #0f172a;
       color: #93c5fd;
       z-index: 1;
+      user-select: none;
+    }
+    .table-wrap {
+      overflow: auto;
+      max-width: 100%;
+    }
+    .column-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      background: #020617;
+      padding: 10px;
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .column-toolbar strong {
+      color: #93c5fd;
+      margin-right: 4px;
+    }
+    .column-toggle {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+      white-space: nowrap;
+    }
+    .column-toggle input {
+      width: auto;
+      margin: 0;
+    }
+    .th-content {
+      position: relative;
+      min-height: 18px;
+      padding-right: 9px;
+    }
+    .resize-handle {
+      position: absolute;
+      top: -9px;
+      right: -9px;
+      width: 8px;
+      height: calc(100% + 18px);
+      cursor: col-resize;
+      border-right: 1px solid transparent;
+    }
+    .resize-handle:hover {
+      border-right-color: #f59e0b;
     }
     code {
       color: #fde68a;
@@ -289,7 +340,6 @@
   </main>
 
   <script>
-    const state = { analysis: null, selectedAssemblyId: "__all__", viewMode: "assemblies" };
     const runDefaults = {
       python: String.raw`C:\Users\dbwga\Documents\Codex\2026-06-24\i-just-tried-to-upgrade-my\Tertius-Web\.tmp\procurement-build123d-venv\Scripts\python.exe`,
       repo: String.raw`C:\Users\dbwga\Documents\Codex\2026-06-24\i-just-tried-to-upgrade-my\Tertius-Web`,
@@ -300,6 +350,17 @@
       format: "glb",
       compat: false,
     };
+    const columnDefinitions = [
+      { id: "requirement", label: "Requirement", defaultWidth: 330, defaultVisible: true },
+      { id: "qty", label: "Qty", defaultWidth: 125, defaultVisible: true },
+      { id: "assemblies", label: "Assemblies", defaultWidth: 220, defaultVisible: true, condition: ({ isFlat, selectedAssemblyId }) => isFlat && selectedAssemblyId === "__all__" },
+      { id: "dimensions", label: "Dimensions", defaultWidth: 260, defaultVisible: true },
+      { id: "components", label: "Components", defaultWidth: 420, defaultVisible: false },
+      { id: "source", label: "Source", defaultWidth: 180, defaultVisible: true },
+      { id: "resolution", label: "Resolution", defaultWidth: 260, defaultVisible: false },
+    ];
+    const defaultColumnVisibility = Object.fromEntries(columnDefinitions.map((column) => [column.id, column.defaultVisible]));
+    const defaultColumnWidths = Object.fromEntries(columnDefinitions.map((column) => [column.id, column.defaultWidth]));
 
     const byId = (id) => document.getElementById(id);
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -310,6 +371,30 @@
       "'": "&#039;",
     }[char]));
     const psQuote = (value) => `'${String(value ?? "").replace(/'/g, "''")}'`;
+
+    function readJsonState(key, fallback) {
+      try {
+        return { ...fallback, ...JSON.parse(localStorage.getItem(key) || "{}") };
+      } catch (_error) {
+        return { ...fallback };
+      }
+    }
+
+    function writeJsonState(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (_error) {
+        // Local storage is optional for file:// use.
+      }
+    }
+
+    const state = {
+      analysis: null,
+      selectedAssemblyId: "__all__",
+      viewMode: "assemblies",
+      columnVisibility: readJsonState("procurement-viewer-column-visibility", defaultColumnVisibility),
+      columnWidths: readJsonState("procurement-viewer-column-widths", defaultColumnWidths),
+    };
 
     function readRunSettings() {
       return {
@@ -586,6 +671,114 @@
         .sort((left, right) => left.display.localeCompare(right.display));
     }
 
+    function availableColumns(isFlat) {
+      return columnDefinitions.filter((column) => (
+        !column.condition || column.condition({ isFlat, selectedAssemblyId: state.selectedAssemblyId })
+      ));
+    }
+
+    function visibleColumns(isFlat) {
+      const columns = availableColumns(isFlat).filter((column) => state.columnVisibility[column.id] !== false);
+      return columns.length ? columns : [columnDefinitions[0]];
+    }
+
+    function columnWidth(columnId) {
+      return Math.max(72, Number(state.columnWidths[columnId] || defaultColumnWidths[columnId] || 160));
+    }
+
+    function saveColumnState() {
+      writeJsonState("procurement-viewer-column-visibility", state.columnVisibility);
+      writeJsonState("procurement-viewer-column-widths", state.columnWidths);
+    }
+
+    function renderColumnToolbar(isFlat) {
+      return `
+        <div class="column-toolbar">
+          <strong>Columns</strong>
+          ${availableColumns(isFlat).map((column) => `
+            <label class="column-toggle">
+              <input type="checkbox" data-column-toggle="${escapeHtml(column.id)}" ${state.columnVisibility[column.id] !== false ? "checked" : ""}>
+              ${escapeHtml(column.label)}
+            </label>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function renderHeader(column) {
+      return `
+        <th data-col="${escapeHtml(column.id)}" style="width:${columnWidth(column.id)}px">
+          <div class="th-content">
+            ${escapeHtml(column.label)}
+            <span class="resize-handle" data-resize-column="${escapeHtml(column.id)}"></span>
+          </div>
+        </th>
+      `;
+    }
+
+    function renderCell(column, line) {
+      if (column.id === "requirement") {
+        return `<td data-col="${escapeHtml(column.id)}"><strong>${escapeHtml(line.display)}</strong><br><code>${escapeHtml(line.key)}</code></td>`;
+      }
+      if (column.id === "qty") {
+        return `<td data-col="${escapeHtml(column.id)}">${escapeHtml(line.quantity)} ${escapeHtml(line.unit)}<br><code>${escapeHtml(quantityEvidenceLabel(line))}</code></td>`;
+      }
+      if (column.id === "assemblies") {
+        return `<td data-col="${escapeHtml(column.id)}">${escapeHtml(line.assemblyLabels.join(", ") || "Unassigned")}</td>`;
+      }
+      if (column.id === "dimensions") {
+        return `<td data-col="${escapeHtml(column.id)}"><code>${escapeHtml(JSON.stringify(line.dimensions))}</code></td>`;
+      }
+      if (column.id === "components") {
+        return `<td data-col="${escapeHtml(column.id)}">${escapeHtml(line.components.join(", "))}</td>`;
+      }
+      if (column.id === "source") {
+        return `
+          <td data-col="${escapeHtml(column.id)}">
+            ${escapeHtml(line.source.function || "")}<br>
+            <code>${escapeHtml([line.source.source_file, line.source.source_line].filter(Boolean).join(":"))}</code>
+          </td>
+        `;
+      }
+      if (column.id === "resolution") {
+        return `<td data-col="${escapeHtml(column.id)}"><code>${escapeHtml(JSON.stringify(line.resolution.part_number || null))}</code></td>`;
+      }
+      return `<td data-col="${escapeHtml(column.id)}"></td>`;
+    }
+
+    function attachColumnControls() {
+      for (const toggle of document.querySelectorAll("[data-column-toggle]")) {
+        toggle.addEventListener("change", () => {
+          state.columnVisibility[toggle.dataset.columnToggle] = toggle.checked;
+          saveColumnState();
+          render();
+        });
+      }
+
+      for (const handle of document.querySelectorAll("[data-resize-column]")) {
+        handle.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          const columnId = handle.dataset.resizeColumn;
+          const startX = event.clientX;
+          const startWidth = columnWidth(columnId);
+          const updateWidth = (width) => {
+            state.columnWidths[columnId] = Math.max(72, width);
+            for (const cell of document.querySelectorAll(`[data-col="${CSS.escape(columnId)}"]`)) {
+              cell.style.width = `${state.columnWidths[columnId]}px`;
+            }
+          };
+          const onMove = (moveEvent) => updateWidth(startWidth + moveEvent.clientX - startX);
+          const onUp = () => {
+            saveColumnState();
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+          };
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+        });
+      }
+    }
+
     function render() {
       const analysis = state.analysis;
       if (!analysis) return;
@@ -617,18 +810,11 @@
       }
 
       const grouped = groupedRequirements(analysis, state.selectedAssemblyId, isFlat);
+      const columns = visibleColumns(isFlat);
+      const tableMinWidth = columns.reduce((total, column) => total + columnWidth(column.id), 0);
       const rows = grouped.map((line) => `
         <tr>
-          <td><strong>${escapeHtml(line.display)}</strong><br><code>${escapeHtml(line.key)}</code></td>
-          <td>${escapeHtml(line.quantity)} ${escapeHtml(line.unit)}<br><code>${escapeHtml(quantityEvidenceLabel(line))}</code></td>
-          ${isFlat && state.selectedAssemblyId === "__all__" ? `<td>${escapeHtml(line.assemblyLabels.join(", ") || "Unassigned")}</td>` : ""}
-          <td><code>${escapeHtml(JSON.stringify(line.dimensions))}</code></td>
-          <td>${escapeHtml(line.components.join(", "))}</td>
-          <td>
-            ${escapeHtml(line.source.function || "")}<br>
-            <code>${escapeHtml([line.source.source_file, line.source.source_line].filter(Boolean).join(":"))}</code>
-          </td>
-          <td><code>${escapeHtml(JSON.stringify(line.resolution.part_number || null))}</code></td>
+          ${columns.map((column) => renderCell(column, line)).join("")}
         </tr>
       `).join("");
 
@@ -645,22 +831,21 @@
 
       byId("content").className = "";
       byId("content").innerHTML = grouped.length ? `
-        <table>
-          <thead>
-            <tr>
-              <th>Requirement</th>
-              <th>Qty</th>
-              ${isFlat && state.selectedAssemblyId === "__all__" ? "<th>Assemblies</th>" : ""}
-              <th>Dimensions</th>
-              <th>Components</th>
-              <th>Source</th>
-              <th>Resolution</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+        ${renderColumnToolbar(isFlat)}
+        <div class="table-wrap">
+          <table class="procurement-table" style="min-width:${tableMinWidth}px">
+            <colgroup>
+              ${columns.map((column) => `<col data-col="${escapeHtml(column.id)}" style="width:${columnWidth(column.id)}px">`).join("")}
+            </colgroup>
+            <thead>
+              <tr>${columns.map(renderHeader).join("")}</tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
         ${diagnosticsHtml}
-      ` : `<div class="empty">No grouped requirements for this ${isFlat ? "design" : "assembly"}.</div>${diagnosticsHtml}`;
+      ` : `${renderColumnToolbar(isFlat)}<div class="empty">No grouped requirements for this ${isFlat ? "design" : "assembly"}.</div>${diagnosticsHtml}`;
+      attachColumnControls();
     }
 
     byId("assembly-view-button").addEventListener("click", () => {
