@@ -619,6 +619,135 @@ blocks = make_blocks()
     assert not any(diagnostic["code"] == "requirement_missing_part_number" for diagnostic in analysis["diagnostics"])
 
 
+def test_named_mesh_leaves_are_visual_components_under_bucket_assembly():
+    source = analyze_design_sources({
+        "design.py": """
+def make_anchor(*, part_number="RAMSET-ANKASCREW-M12X100-GAL", unit="each"):
+    return None
+
+anchors = make_anchor()
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Portal Frame",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "Masonry Anchors",
+                        "type": "Object3D",
+                        "children": [
+                            {
+                                "name": "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+                                "type": "Mesh",
+                                "isMesh": True,
+                            },
+                            {
+                                "name": "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+                                "type": "Mesh",
+                                "isMesh": True,
+                            },
+                            {
+                                "name": "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+                                "type": "Mesh",
+                                "isMesh": True,
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    assert [component["label"] for component in analysis["components"]] == [
+        "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+        "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+        "Ramset M12x100 Galvanised AnkaScrew Masonry Anchor",
+    ]
+    assert {requirement["part_number"] for requirement in analysis["requirements"]} == {
+        "RAMSET-ANKASCREW-M12X100-GAL",
+    }
+    assert sum(requirement["quantity"] for requirement in analysis["requirements"]) == 3
+    assert {requirement["quantity_source"] for requirement in analysis["requirements"]} == {"visual_instances"}
+    assert {requirement["visual_instance_count"] for requirement in analysis["requirements"]} == {1}
+
+
+def test_named_mesh_leaf_part_number_is_counted_without_parent_name_hack():
+    source = analyze_design_sources({
+        "design.py": """
+def lysaght_zc_cp(part_number):
+    return None
+
+cp = lysaght_zc_cp("100CP")
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Fascia Bracket Assembly FBA01-51",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "=>011332",
+                        "type": "Object3D",
+                        "children": [
+                            {"name": "100CP", "type": "Mesh", "isMesh": True},
+                            {"name": "100CP", "type": "Mesh", "isMesh": True},
+                        ],
+                    }
+                ],
+            }
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    requirements = [item for item in analysis["requirements"] if item["part_number"] == "100CP"]
+    assert len(requirements) == 2
+    assert sum(item["quantity"] for item in requirements) == 2
+    assert {item["quantity_source"] for item in requirements} == {"visual_instances"}
+
+
+def test_visual_fastener_assembly_uses_visual_instances_for_decomposed_bolt_and_nut():
+    source = analyze_design_sources({
+        "design.py": """
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+assembly = make_fastener_assembly("M12", 25.0, 4.9)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Fastener Assembly",
+                "type": "Object3D",
+                "children": [
+                    {"name": "mesh_1", "type": "Mesh", "isMesh": True},
+                    {"name": "mesh_2", "type": "Mesh", "isMesh": True},
+                ],
+            }
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+    requirements = {item["source_trace"]["procurement_item"]: item for item in analysis["requirements"]}
+
+    assert set(requirements) == {"bolt", "nut"}
+    assert requirements["bolt"]["part_number"] == "DIN-6921-M12X25"
+    assert requirements["nut"]["part_number"] == "DIN-6923-M12"
+    assert {item["quantity"] for item in requirements.values()} == {1}
+    assert {item["quantity_source"] for item in requirements.values()} == {"visual_instances"}
+    assert {item["count_trace"]["visual_instance_count"] for item in requirements.values()} == {1}
+    assert not any(
+        diagnostic["code"] == "visual_container_without_procurement_identity"
+        for diagnostic in analysis["diagnostics"]
+    )
+
+
 def test_generated_component_identity_groups_repeated_visual_instances_by_source_function():
     source = analyze_design_sources({
         "design.py": """

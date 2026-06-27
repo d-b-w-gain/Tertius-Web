@@ -25,6 +25,7 @@ import argparse
 import json
 import re
 import shutil
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -170,6 +171,29 @@ def gltf_to_scene_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def read_gltf_artifact(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    if data[:4] != b"glTF":
+        return json.loads(data.decode("utf-8-sig"))
+
+    if len(data) < 20:
+        raise ValueError(f"{path} is not a valid GLB file.")
+    magic, version, _length = struct.unpack("<4sII", data[:12])
+    if magic != b"glTF" or version != 2:
+        raise ValueError(f"{path} is not a GLB v2 file.")
+
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_length, chunk_type = struct.unpack("<I4s", data[offset:offset + 8])
+        offset += 8
+        chunk_data = data[offset:offset + chunk_length]
+        offset += chunk_length
+        if chunk_type == b"JSON":
+            return json.loads(chunk_data.decode("utf-8").rstrip(" \t\r\n\0"))
+
+    raise ValueError(f"{path} does not contain a GLB JSON chunk.")
+
+
 def load_tree(args: argparse.Namespace) -> dict[str, Any]:
     if args.tree_json:
         return json.loads(Path(args.tree_json).read_text(encoding="utf-8-sig"))
@@ -184,10 +208,10 @@ def load_tree(args: argparse.Namespace) -> dict[str, Any]:
         entrypoint,
         compat_build123d_compound=args.compat_build123d_compound,
     )
-    print(f"Compiling temporary GLTF in {compile_dir}")
+    print(f"Compiling temporary {args.export_format.upper()} in {compile_dir}")
     result = run_compile_sandbox(
         compile_dir,
-        "gltf",
+        args.export_format,
         quality=args.quality,
         timeout_seconds=args.compile_timeout,
     )
@@ -201,7 +225,7 @@ def load_tree(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = compile_dir / "bom_manifest.json"
     if manifest_path.exists():
         args.explicit_manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    gltf = json.loads(result.output_path.read_text(encoding="utf-8-sig"))
+    gltf = read_gltf_artifact(result.output_path)
     return gltf_to_scene_tree(gltf)
 
 
@@ -227,13 +251,19 @@ def main() -> int:
     parser.add_argument("--tree-json", type=Path, help="Simplified scene-tree JSON fixture.")
     parser.add_argument("--gltf", type=Path, help="Text .gltf JSON file to convert into a scene tree.")
     parser.add_argument("--source-only", action="store_true", help="Skip GLTF compile and build from deterministic source evidence.")
-    parser.add_argument("--quality", default="sketch", help="GLTF compile quality when no tree/GLTF is supplied.")
+    parser.add_argument(
+        "--export-format",
+        choices=["glb", "gltf"],
+        default="glb",
+        help="Visual artifact format to compile when no tree/GLTF is supplied. GLB preserves patched Build123D labels.",
+    )
+    parser.add_argument("--quality", default="sketch", help="Visual compile quality when no tree/GLTF is supplied.")
     parser.add_argument("--compile-timeout", type=int, default=240, help="Seconds to wait for temporary GLTF compile.")
     parser.add_argument(
-        "--no-compat-build123d-compound",
-        action="store_false",
+        "--compat-build123d-compound",
+        action="store_true",
         dest="compat_build123d_compound",
-        help="Disable temp-only rewrite from Compound(children=...) to Compound(...).",
+        help="Enable temp-only rewrite from Compound(children=...) to Compound(...). This can help old runtimes but flattens visual hierarchy.",
     )
     parser.add_argument("--out", required=True, type=Path, help="Output procurement_analysis.json path.")
     args = parser.parse_args()

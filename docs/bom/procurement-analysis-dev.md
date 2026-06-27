@@ -85,7 +85,7 @@ tree, the artifact should be treated as source-derived and unverified.
 
 ## Full Compile Mode
 
-For visual/build-tree evidence, let the playground compile a temporary GLTF:
+For visual/build-tree evidence, let the playground compile a temporary GLB:
 
 ```powershell
 .\temp_env\Scripts\python.exe scripts\spikes\procurement_analysis_playground.py `
@@ -95,9 +95,14 @@ For visual/build-tree evidence, let the playground compile a temporary GLTF:
   --out C:\tmp\3x5shed-procurement_analysis.json
 ```
 
-This executes the design in a temporary directory, exports GLTF, analyzes the
+This executes the design in a temporary directory, exports GLB, analyzes the
 scene tree, and combines it with AST/source metadata. Use this mode before
 trusting assembly/component filters.
+
+Do not pass `--compat-build123d-compound` for current Build123D runtimes unless
+you are specifically debugging an old compatibility problem. That rewrite can
+flatten the GLB hierarchy and turn a visual-verified run back into diagnostic
+source-only evidence.
 
 ## 3x5 Shed Golden BoM
 

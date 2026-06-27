@@ -38,6 +38,13 @@ def _has_group_child_with_meshes(node: dict[str, Any]) -> bool:
     return any(_is_group(child) and _has_mesh_descendant(child) for child in _children(node))
 
 
+def _has_named_mesh_child(node: dict[str, Any]) -> bool:
+    return any(
+        _is_mesh(child) and not _is_generated_or_default(_node_name(child))
+        for child in _children(node)
+    )
+
+
 def _slug(value: str, fallback: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or fallback
@@ -107,9 +114,21 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         name = _node_name(node)
         if _is_mesh(node):
+            if name and not _is_generated_or_default(name):
+                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                path = path_for(ancestors, node)
+                component_id = _unique_id(_slug(path, "component"), used_ids)
+                components.append({
+                    "id": component_id,
+                    "label": name,
+                    "path": path,
+                    "assembly_id": parent_id,
+                    "visual_node_ids": [str(node.get("id") or path)],
+                    "visual_instance_count": None,
+                })
             return
         if _is_group(node) and _has_mesh_descendant(node):
-            if _has_group_child_with_meshes(node):
+            if _has_group_child_with_meshes(node) or _has_named_mesh_child(node):
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
                 assembly_id = _unique_id(_slug(path, "assembly"), used_ids)

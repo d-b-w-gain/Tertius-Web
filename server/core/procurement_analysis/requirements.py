@@ -845,6 +845,23 @@ def build_procurement_analysis(
         visual_part_number, visual_part_trace = _visual_label_part_number(component)
         part_number = (_resolved_input(call, "part_number") if call else None) or visual_part_number
         generated_trace = None
+        quantity_evidence = _quantity_evidence(call, component, source_analysis, analysis_mode=analysis_mode)
+        if call is not None and _is_decomposable_fastener_assembly(call):
+            fastener_requirements = _fastener_assembly_requirements(
+                component=component,
+                call=call,
+                component_record=component_record,
+                quantity_evidence=quantity_evidence,
+            )
+            requirements.extend(fastener_requirements)
+            for fastener_requirement in fastener_requirements:
+                if not fastener_requirement.get("part_number"):
+                    diagnostics.append({
+                        "code": "requirement_missing_part_number",
+                        "message": f"{component.get('label')} {fastener_requirement['source_trace']['procurement_item']} has no resolved part number.",
+                        "component_id": component["id"],
+                    })
+            continue
         if (
             (not part_number or (part_number == visual_part_number and (call is None or _resolved_input(call, "part_number") is None)))
             and _is_visual_container_without_procurement_identity(component, call)
@@ -883,29 +900,12 @@ def build_procurement_analysis(
             resolution_trace["dimensions"] = dimension_trace
         if quantity_trace:
             resolution_trace["quantity"] = quantity_trace
-        quantity_evidence = _quantity_evidence(call, component, source_analysis, analysis_mode=analysis_mode)
         if not part_number and quantity_evidence.get("quantity_source") in {"visual_instances", "diagnostic_placeholder"}:
             label = str(component.get("label") or component.get("path") or component.get("id") or "").strip()
             if label:
                 dimensions.setdefault("component_label", label)
         if not part_number:
             quantity_evidence = {**quantity_evidence, "orderable": False}
-        if call is not None and _is_decomposable_fastener_assembly(call):
-            fastener_requirements = _fastener_assembly_requirements(
-                component=component,
-                call=call,
-                component_record=component_record,
-                quantity_evidence=quantity_evidence,
-            )
-            requirements.extend(fastener_requirements)
-            for fastener_requirement in fastener_requirements:
-                if not fastener_requirement.get("part_number"):
-                    diagnostics.append({
-                        "code": "requirement_missing_part_number",
-                        "message": f"{component.get('label')} {fastener_requirement['source_trace']['procurement_item']} has no resolved part number.",
-                        "component_id": component["id"],
-                    })
-            continue
 
         requirement = {
             "id": f"{component['id']}.requirement",
