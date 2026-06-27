@@ -18,6 +18,20 @@
     "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
     "This fixture is not an acceptance oracle until line_items are replaced or confirmed by a manual takeoff and status is set to manually_verified."
   ],
+  "manual_reference_checks": [
+    {
+      "part_number": "100CP",
+      "unit": "each",
+      "expected_quantity": 6,
+      "status": "manually_checked",
+      "source_files": [
+        "design.py:88-94",
+        "design.py:836-871",
+        "design.py:1036"
+      ],
+      "reasoning": "bay_spacings has two bays, creating three portal_y_positions. fascia_bracket_assembly places one left and one right cp_assembly at each portal position. Each cp_assembly contains exactly one lysaght_zc_cp(\"100CP\") part, so 3 portal positions * 2 sides * 1 bracket = 6."
+    }
+  ],
   "line_items": [
     {
       "part_number": "RIDGE-CAPPING-140",
@@ -273,7 +287,9 @@
       "dimensions": {},
       "material": null,
       "finish": null,
-      "standard": null
+      "standard": null,
+      "manual_reference_status": "manually_checked",
+      "manual_reference_note": "Expected from design.py: 3 portal_y_positions * 2 fascia sides * 1 100CP per cp_assembly = 6."
     },
     {
       "part_number": "100GPB",
