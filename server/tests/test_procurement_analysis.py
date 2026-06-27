@@ -562,7 +562,7 @@ drain = make_drain()
     assert requirement["quantity"] == 1
     assert requirement["quantity_source"] == "diagnostic_placeholder"
     assert requirement["quantity_confidence"] == "diagnostic"
-    assert requirement["orderable"] is False
+    assert requirement["orderable"] is True
     assert requirement["visual_instance_count"] == 1
     assert requirement["count_trace"]["visual_count_not_quantity"] is True
     assert requirement["count_trace"]["quantity_unit"] == "m"
@@ -799,7 +799,7 @@ joists = [
     assert "14-4" not in part_numbers[0]
 
 
-def test_visual_assembly_container_without_identity_is_diagnostic_not_bom_line():
+def test_visual_assembly_container_without_identity_is_procurement_required_diagnostic_row():
     source = analyze_design_sources({
         "design.py": """
 def make_floor_assembly():
@@ -823,7 +823,13 @@ floor = make_floor_assembly()
 
     analysis = build_procurement_analysis(source, tree)
 
-    assert analysis["requirements"] == []
+    assert len(analysis["requirements"]) == 1
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] is None
+    assert requirement["quantity"] == 1
+    assert requirement["count_trace"]["visual_leaf_count"] == 69
+    assert requirement["orderable"] is True
+    assert requirement["dimensions"] == {"component_label": "Floor_Assembly"}
     diagnostic = next(
         item
         for item in analysis["diagnostics"]
@@ -874,10 +880,12 @@ foundation = make_foundation()
     assert set(rows_by_label) == {"Concrete Pads", "Rebar"}
     assert rows_by_label["Concrete Pads"]["part_number"] is None
     assert rows_by_label["Rebar"]["part_number"] is None
+    assert rows_by_label["Concrete Pads"]["orderable"] is True
+    assert rows_by_label["Rebar"]["orderable"] is True
     assert not any(diagnostic["code"] == "visual_container_without_procurement_identity" for diagnostic in analysis["diagnostics"])
 
 
-def test_dimensioned_visual_aggregate_mark_is_not_generated_bom_line():
+def test_dimensioned_visual_aggregate_mark_is_procurement_required_without_identity():
     source = analyze_design_sources({
         "design.py": """
 def portal_frame(mark, width_mm, height_mm, angle_deg):
@@ -901,7 +909,13 @@ single_portal = portal_frame(mark="PF01", width_mm=3100, height_mm=2400, angle_d
 
     analysis = build_procurement_analysis(source, tree)
 
-    assert analysis["requirements"] == []
+    assert len(analysis["requirements"]) == 1
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] is None
+    assert requirement["quantity"] == 1
+    assert requirement["count_trace"]["visual_leaf_count"] == 12
+    assert requirement["orderable"] is True
+    assert requirement["dimensions"] == {"component_label": "PF01-31-24-20"}
     diagnostic = next(
         item
         for item in analysis["diagnostics"]

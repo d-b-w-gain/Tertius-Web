@@ -288,7 +288,7 @@ def _is_visual_container_without_procurement_identity(component: dict[str, Any],
         return False
     visual_part_number, _trace = _visual_label_part_number(component)
     visual_leaf_count = _visual_leaf_count(component)
-    if visual_part_number and not (call is None and visual_leaf_count is not None and visual_leaf_count > 1):
+    if visual_part_number and not (visual_leaf_count is not None and visual_leaf_count > 1):
         return False
     label_tokens = _tokens(str(component.get("label") or ""))
     if label_tokens & {"concrete", "rebar"}:
@@ -531,7 +531,7 @@ def _quantity_evidence(
         quantity = 1
         source = "diagnostic_placeholder"
         confidence = "diagnostic"
-        orderable = False
+        orderable = analysis_mode == "visual_verified" and visual_count is not None
 
     rolled_up_quantity = quantity
 
@@ -860,26 +860,28 @@ def build_procurement_analysis(
                         "code": "requirement_missing_part_number",
                         "message": f"{component.get('label')} {fastener_requirement['source_trace']['procurement_item']} has no resolved part number.",
                         "component_id": component["id"],
-                    })
+            })
             continue
-        if (
+        visual_container_without_identity = (
             (not part_number or (part_number == visual_part_number and (call is None or _resolved_input(call, "part_number") is None)))
             and _is_visual_container_without_procurement_identity(component, call)
-        ):
+        )
+        if visual_container_without_identity:
+            part_number = None
+            visual_part_trace = None
             diagnostics.append({
                 "code": "visual_container_without_procurement_identity",
                 "severity": "warning",
                 "message": (
                     f"{component.get('label')} aggregates "
                     f"{len(component.get('visual_node_ids') or []) or 1} visual leaf node(s), but it has no procurement-readable "
-                    "product identity. Add explicit requirements to the orderable visual components instead of treating the aggregate as a BoM line."
+                    "product identity. It remains a procurement-required visual row unless marked reference/NTBO."
                 ),
                 "component_id": component["id"],
                 "source_file": call.get("source_file") if call else None,
                 "source_line": call.get("source_line") if call else None,
             })
-            continue
-        if not part_number and call and call.get("bom_kind") in {"bracket", "component"}:
+        if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
             part_number, generated_trace = _make_generated_part_key(component, call)
 
         dimensions = {
@@ -904,8 +906,6 @@ def build_procurement_analysis(
             label = str(component.get("label") or component.get("path") or component.get("id") or "").strip()
             if label:
                 dimensions.setdefault("component_label", label)
-        if not part_number:
-            quantity_evidence = {**quantity_evidence, "orderable": False}
 
         requirement = {
             "id": f"{component['id']}.requirement",

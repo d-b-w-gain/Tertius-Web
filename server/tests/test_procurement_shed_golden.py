@@ -148,10 +148,11 @@ def _canonical_bom_rows(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     for requirement in analysis.get("requirements", []):
         if requirement.get("orderable") is False:
             continue
+        part_number = requirement.get("part_number")
         key = (
-            requirement.get("part_number"),
+            part_number,
             requirement.get("unit") or "each",
-            _canonical_dimensions(requirement.get("dimensions")),
+            _canonical_dimensions(requirement.get("dimensions")) if part_number else _canonical_all_dimensions(requirement.get("dimensions")),
             requirement.get("material"),
             requirement.get("finish"),
             requirement.get("standard"),
@@ -198,11 +199,12 @@ def _canonical_non_orderable_rows(analysis: dict[str, Any]) -> list[dict[str, An
 def _canonical_fixture_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalised = []
     for row in rows:
+        part_number = row.get("part_number")
         normalised.append({
-            "part_number": row.get("part_number"),
+            "part_number": part_number,
             "unit": row.get("unit") or "each",
             "quantity": row.get("quantity"),
-            "dimensions": dict(_canonical_dimensions(row.get("dimensions"))),
+            "dimensions": dict(_canonical_dimensions(row.get("dimensions")) if part_number else _canonical_all_dimensions(row.get("dimensions"))),
             "material": row.get("material"),
             "finish": row.get("finish"),
             "standard": row.get("standard"),

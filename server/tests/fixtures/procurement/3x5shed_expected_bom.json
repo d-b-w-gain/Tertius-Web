@@ -9,11 +9,12 @@
     "assemblies": 32,
     "components": 823,
     "requirements": 1147,
-    "orderable_requirements": 1063,
-    "non_orderable_requirements": 84
+    "orderable_requirements": 1147,
+    "non_orderable_requirements": 0
   },
   "notes": [
     "Baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
+    "Rendered visual components are procurement-required by default; missing part numbers remain order-required rows until explicitly marked reference/NTBO/excluded.",
     "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
     "Replace these values with a human checked takeoff if any supplier ordering line is found wrong."
   ],
@@ -47,6 +48,63 @@
       "quantity": 6,
       "dimensions": {
         "angle_deg": 20.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Concrete Pads"
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Fascia Member FM01-51",
+        "length_mm": 5100.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Fascia Member FM02-51",
+        "length_mm": 5100.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Rebar"
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 80,
+      "dimensions": {
+        "component_label": "Versaloc Block Envelope"
       },
       "material": null,
       "finish": null,
@@ -236,48 +294,5 @@
       "standard": null
     }
   ],
-  "non_orderable_line_items": [
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 80,
-      "dimensions": {
-        "component_label": "Versaloc Block Envelope"
-      }
-    },
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 1,
-      "dimensions": {
-        "component_label": "Fascia Member FM01-51",
-        "length_mm": 5100.0
-      }
-    },
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 1,
-      "dimensions": {
-        "component_label": "Fascia Member FM02-51",
-        "length_mm": 5100.0
-      }
-    },
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 1,
-      "dimensions": {
-        "component_label": "Concrete Pads"
-      }
-    },
-    {
-      "part_number": null,
-      "unit": "each",
-      "quantity": 1,
-      "dimensions": {
-        "component_label": "Rebar"
-      }
-    }
-  ]
+  "non_orderable_line_items": []
 }

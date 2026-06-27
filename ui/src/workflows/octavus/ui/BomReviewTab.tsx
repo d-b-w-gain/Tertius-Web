@@ -709,7 +709,7 @@ export const deriveAssemblyTreeManifest = (
       rolled_up_quantity: 1,
       quantity_source: 'visual_instances',
       quantity_confidence: 'verified',
-      orderable: Boolean(resolvedPartNumber),
+      orderable: true,
       unit: asString(resolveCompactValue(standardInputs.unit, featureValues) || 'each'),
       dimensions,
       material: asString(resolveCompactValue(standardInputs.material, featureValues)) || null,
