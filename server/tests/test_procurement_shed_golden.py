@@ -2,17 +2,23 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import struct
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from core.compile_sandbox import run_compile_sandbox
 from core.procurement_analysis import (
     analyze_design_sources,
+    analyze_gltf_tree,
     build_procurement_analysis,
 )
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "procurement" / "3x5shed_expected_bom.json"
+DEFAULT_SHED_DIR = Path(r"C:\Users\dbwga\Documents\Projects\CAD\3x5shed")
 NON_DISCRETE_UNITS = {"m", "m2", "m3", "kg", "l", "litre", "liter", "litres", "liters"}
 
 
@@ -22,6 +28,101 @@ def _read_python_files(project_dir: Path) -> dict[str, str]:
         for path in sorted(project_dir.glob("*.py"))
         if path.is_file()
     }
+
+
+def _copy_project_for_compile(project_dir: Path) -> Path:
+    temp_dir = Path(tempfile.mkdtemp(prefix="tertius-shed-golden-"))
+    for path in sorted(project_dir.iterdir()):
+        if path.is_file() and path.suffix.lower() in {".py", ".json", ".csv"}:
+            shutil.copy2(path, temp_dir / path.name)
+    return temp_dir
+
+
+def _read_gltf_artifact(path: Path) -> dict[str, Any]:
+    data = path.read_bytes()
+    if data[:4] != b"glTF":
+        return json.loads(data.decode("utf-8-sig"))
+
+    if len(data) < 20:
+        raise ValueError(f"{path} is not a valid GLB file.")
+    magic, version, length = struct.unpack("<4sII", data[:12])
+    if magic != b"glTF" or version != 2:
+        raise ValueError(f"{path} is not a GLB v2 file.")
+
+    offset = 12
+    while offset + 8 <= length:
+        chunk_length, chunk_type = struct.unpack("<I4s", data[offset:offset + 8])
+        offset += 8
+        chunk_end = offset + chunk_length
+        if chunk_end > length:
+            raise ValueError("GLB chunk is truncated.")
+        chunk = data[offset:chunk_end]
+        offset = chunk_end
+        if chunk_type == b"JSON":
+            return json.loads(chunk.rstrip(b" \t\r\n\x00").decode("utf-8"))
+
+    raise ValueError(f"{path} does not contain a GLB JSON chunk.")
+
+
+def _gltf_to_scene_tree(gltf: dict[str, Any]) -> dict[str, Any]:
+    nodes = gltf.get("nodes", [])
+    if not isinstance(nodes, list):
+        raise ValueError("GLTF JSON must contain a nodes list.")
+
+    def convert_node(index: int) -> dict[str, Any]:
+        node = nodes[index]
+        if not isinstance(node, dict):
+            raise ValueError(f"GLTF node {index} is not an object.")
+        child_indexes = node.get("children") if isinstance(node.get("children"), list) else []
+        has_mesh = isinstance(node.get("mesh"), int)
+        return {
+            "id": str(index),
+            "name": str(node.get("name") or ("Mesh" if has_mesh else f"node_{index}")),
+            "type": "Mesh" if has_mesh else "Object3D",
+            "isMesh": has_mesh,
+            "children": [convert_node(child_index) for child_index in child_indexes if isinstance(child_index, int)],
+        }
+
+    scene_indexes: list[int] = []
+    scene_id = gltf.get("scene")
+    scenes = gltf.get("scenes")
+    if isinstance(scene_id, int) and isinstance(scenes, list) and 0 <= scene_id < len(scenes):
+        scene = scenes[scene_id]
+        if isinstance(scene, dict) and isinstance(scene.get("nodes"), list):
+            scene_indexes = [index for index in scene["nodes"] if isinstance(index, int)]
+
+    if not scene_indexes:
+        referenced = {
+            child_index
+            for node in nodes
+            if isinstance(node, dict)
+            for child_index in (node.get("children") or [])
+            if isinstance(child_index, int)
+        }
+        scene_indexes = [index for index in range(len(nodes)) if index not in referenced]
+
+    return {
+        "name": "Scene",
+        "type": "Scene",
+        "children": [convert_node(index) for index in scene_indexes],
+    }
+
+
+def _compile_shed_analysis(project_dir: Path) -> dict[str, Any]:
+    compile_dir = _copy_project_for_compile(project_dir)
+    result = run_compile_sandbox(compile_dir, "glb", quality="sketch", timeout_seconds=300)
+    if not result.success or result.output_path is None:
+        raise AssertionError(
+            "3x5shed GLB compile failed.\n"
+            f"compile_dir={compile_dir}\n"
+            f"stdout={result.stdout}\n"
+            f"stderr={result.stderr}\n"
+            f"error={result.error}"
+        )
+
+    source = analyze_design_sources(_read_python_files(project_dir), entrypoint="design.py")
+    tree = analyze_gltf_tree(_gltf_to_scene_tree(_read_gltf_artifact(result.output_path)))
+    return build_procurement_analysis(source, tree)
 
 
 def _canonical_dimensions(dimensions: Any) -> tuple[tuple[str, str], ...]:
@@ -127,11 +228,14 @@ def _load_actual_analysis() -> dict[str, Any] | None:
         return json.loads(Path(analysis_json).read_text(encoding="utf-8-sig"))
 
     project_dir_raw = os.environ.get("TERTIUS_PROCUREMENT_SHED_DIR")
+    project_dir = Path(project_dir_raw) if project_dir_raw else DEFAULT_SHED_DIR
+    if project_dir.exists():
+        return _compile_shed_analysis(project_dir)
+
     tree_json = os.environ.get("TERTIUS_PROCUREMENT_SHED_TREE_JSON")
     if not project_dir_raw or not tree_json:
         return None
 
-    project_dir = Path(project_dir_raw)
     source = analyze_design_sources(_read_python_files(project_dir), entrypoint="design.py")
     tree = json.loads(Path(tree_json).read_text(encoding="utf-8-sig"))
     return build_procurement_analysis(source, tree)
