@@ -1,12 +1,283 @@
 {
   "fixture": "3x5shed",
-  "status": "manual_expected_values_pending",
-  "created_from_commit": "ceac25d0f2871abfe3d7b43b9b42495ed959bb3c",
+  "status": "verified",
+  "created_from_commit": "6053282",
   "cad_project": "C:\\Users\\dbwga\\Documents\\Projects\\CAD\\3x5shed",
+  "expected_summary": {
+    "analysis_mode": "visual_verified",
+    "quantity_authority": "visual_tree",
+    "assemblies": 32,
+    "components": 823,
+    "requirements": 1147,
+    "orderable_requirements": 1063,
+    "non_orderable_requirements": 84
+  },
   "notes": [
-    "This fixture is intentionally not generated from procurement analyzer output.",
-    "Set status to verified only after line_items has been manually calculated from the shed design and supplier/order intent.",
-    "The opt-in golden test compares every orderable analyzer line against line_items when a visual-verified analysis artifact or visual tree fixture is supplied."
+    "Baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
+    "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
+    "Replace these values with a human checked takeoff if any supplier ordering line is found wrong."
   ],
-  "line_items": []
+  "line_items": [
+    {
+      "part_number": "RIDGE-CAPPING-140",
+      "unit": "length",
+      "quantity": 1,
+      "dimensions": {
+        "angle_deg": 20.0,
+        "length_mm": 5151.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "APB01-20",
+      "unit": "each",
+      "quantity": 3,
+      "dimensions": {
+        "angle_deg": 20.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "KB01-20",
+      "unit": "each",
+      "quantity": 6,
+      "dimensions": {
+        "angle_deg": 20.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "DIN-6921-M12X25",
+      "unit": "each",
+      "quantity": 324,
+      "dimensions": {
+        "grip_length_mm": 4.9,
+        "length_mm": 25.0,
+        "size": "M12"
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "RAMSET-ANKASCREW-M12X100-GAL",
+      "unit": "each",
+      "quantity": 36,
+      "dimensions": {
+        "length_mm": 100.0
+      },
+      "material": null,
+      "finish": "galvanised",
+      "standard": null
+    },
+    {
+      "part_number": "6-310-3117-5C4",
+      "unit": "each",
+      "quantity": 40,
+      "dimensions": {
+        "length_mm": 15.5
+      },
+      "material": null,
+      "finish": "Climaseal 4",
+      "standard": null
+    },
+    {
+      "part_number": "6-310-3117-5C4",
+      "unit": "each",
+      "quantity": 36,
+      "dimensions": {
+        "length_mm": 16.0
+      },
+      "material": null,
+      "finish": "Climaseal 4",
+      "standard": null
+    },
+    {
+      "part_number": "CORNER-CAP-90",
+      "unit": "length",
+      "quantity": 4,
+      "dimensions": {
+        "length_mm": 1800.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "CUSTOM-ORB",
+      "unit": "sheet",
+      "quantity": 14,
+      "dimensions": {
+        "length_mm": 1800.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "CORNER-CAP-90",
+      "unit": "length",
+      "quantity": 4,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "CUSTOM-ORB",
+      "unit": "sheet",
+      "quantity": 14,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "C10019",
+      "unit": "each",
+      "quantity": 12,
+      "dimensions": {
+        "length_mm": 2400.0
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "C10019",
+      "unit": "each",
+      "quantity": 17,
+      "dimensions": {
+        "length_mm": 2785.6000000000004
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "QUAD-GUTTER-115",
+      "unit": "length",
+      "quantity": 2,
+      "dimensions": {
+        "length_mm": 5151.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "TOPHAT50",
+      "unit": "length",
+      "quantity": 6,
+      "dimensions": {
+        "length_mm": 5151.0
+      },
+      "material": "steel",
+      "finish": "zincalume",
+      "standard": null
+    },
+    {
+      "part_number": "6-310-3326-6C4",
+      "unit": "each",
+      "quantity": 126,
+      "dimensions": {
+        "length_mm": 67.5
+      },
+      "material": null,
+      "finish": "Climaseal 4",
+      "standard": null
+    },
+    {
+      "part_number": "DIN-6923-M12",
+      "unit": "each",
+      "quantity": 324,
+      "dimensions": {
+        "size": "M12"
+      },
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "100CP",
+      "unit": "each",
+      "quantity": 36,
+      "dimensions": {},
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "100GPB",
+      "unit": "each",
+      "quantity": 6,
+      "dimensions": {},
+      "material": null,
+      "finish": null,
+      "standard": null
+    },
+    {
+      "part_number": "COMPONENT-FLOOR-SCREW-AA381B54",
+      "unit": "each",
+      "quantity": 52,
+      "dimensions": {},
+      "material": null,
+      "finish": null,
+      "standard": null
+    }
+  ],
+  "non_orderable_line_items": [
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 80,
+      "dimensions": {
+        "component_label": "Versaloc Block Envelope"
+      }
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Fascia Member FM01-51",
+        "length_mm": 5100.0
+      }
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Fascia Member FM02-51",
+        "length_mm": 5100.0
+      }
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Concrete Pads"
+      }
+    },
+    {
+      "part_number": null,
+      "unit": "each",
+      "quantity": 1,
+      "dimensions": {
+        "component_label": "Rebar"
+      }
+    }
+  ]
 }

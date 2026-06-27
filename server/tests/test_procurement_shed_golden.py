@@ -36,6 +36,12 @@ def _canonical_dimensions(dimensions: Any) -> tuple[tuple[str, str], ...]:
     )
 
 
+def _canonical_all_dimensions(dimensions: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(dimensions, dict):
+        return ()
+    return tuple(sorted((str(key), str(value)) for key, value in dimensions.items()))
+
+
 def _canonical_bom_rows(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     grouped: dict[tuple[Any, ...], float] = defaultdict(float)
     for requirement in analysis.get("requirements", []):
@@ -65,6 +71,29 @@ def _canonical_bom_rows(analysis: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
 
 
+def _canonical_non_orderable_rows(analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, ...], float] = defaultdict(float)
+    for requirement in analysis.get("requirements", []):
+        if requirement.get("orderable") is not False:
+            continue
+        key = (
+            requirement.get("part_number"),
+            requirement.get("unit") or "each",
+            _canonical_all_dimensions(requirement.get("dimensions")),
+        )
+        grouped[key] += float(requirement.get("quantity") or 0)
+
+    rows = []
+    for (part_number, unit, dimensions), quantity in grouped.items():
+        rows.append({
+            "part_number": part_number,
+            "unit": unit,
+            "quantity": int(quantity) if quantity.is_integer() else quantity,
+            "dimensions": dict(dimensions),
+        })
+    return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+
+
 def _canonical_fixture_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalised = []
     for row in rows:
@@ -76,6 +105,18 @@ def _canonical_fixture_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "material": row.get("material"),
             "finish": row.get("finish"),
             "standard": row.get("standard"),
+        })
+    return sorted(normalised, key=lambda row: json.dumps(row, sort_keys=True))
+
+
+def _canonical_fixture_non_orderable_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalised = []
+    for row in rows:
+        normalised.append({
+            "part_number": row.get("part_number"),
+            "unit": row.get("unit") or "each",
+            "quantity": row.get("quantity"),
+            "dimensions": dict(_canonical_all_dimensions(row.get("dimensions"))),
         })
     return sorted(normalised, key=lambda row: json.dumps(row, sort_keys=True))
 
@@ -111,6 +152,12 @@ def test_3x5shed_visual_bom_matches_manual_expected_fixture():
 
     assert actual.get("analysis_mode") == "visual_verified"
     assert actual.get("quantity_authority") == "visual_tree"
+    summary = expected.get("expected_summary", {})
+    assert len(actual.get("assemblies", [])) == summary.get("assemblies")
+    assert len(actual.get("components", [])) == summary.get("components")
+    assert len(actual.get("requirements", [])) == summary.get("requirements")
+    assert sum(1 for item in actual.get("requirements", []) if item.get("orderable") is not False) == summary.get("orderable_requirements")
+    assert sum(1 for item in actual.get("requirements", []) if item.get("orderable") is False) == summary.get("non_orderable_requirements")
 
     for requirement in actual.get("requirements", []):
         if requirement.get("orderable") is False:
@@ -125,3 +172,6 @@ def test_3x5shed_visual_bom_matches_manual_expected_fixture():
             assert requirement.get("visual_instance_count") == 1
 
     assert _canonical_bom_rows(actual) == _canonical_fixture_rows(expected.get("line_items", []))
+    assert _canonical_non_orderable_rows(actual) == _canonical_fixture_non_orderable_rows(
+        expected.get("non_orderable_line_items", [])
+    )
