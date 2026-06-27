@@ -28,12 +28,21 @@
       margin: 0;
       font-size: 16px;
     }
-    input {
+    input, select, textarea {
       color: #cbd5e1;
       border: 1px solid #334155;
       background: #111827;
       border-radius: 6px;
       padding: 8px;
+    }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 124px;
+      resize: vertical;
+      font-family: "Cascadia Code", "Consolas", monospace;
+      font-size: 12px;
+      line-height: 1.45;
     }
     .view-toggle {
       display: inline-flex;
@@ -112,6 +121,70 @@
       background: #451a03;
       color: white;
     }
+    button.secondary {
+      text-align: center;
+      color: #bfdbfe;
+    }
+    .runner {
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      background: #020617;
+      padding: 12px;
+      margin-bottom: 14px;
+    }
+    .runner h2 {
+      margin: 0 0 10px;
+      color: #bfdbfe;
+      font-size: 13px;
+    }
+    .runner label {
+      display: block;
+      margin-top: 10px;
+      color: #94a3b8;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .runner input,
+    .runner select {
+      box-sizing: border-box;
+      width: 100%;
+      margin-top: 5px;
+      font-size: 12px;
+    }
+    .runner-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .runner-check {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 10px 0;
+      color: #cbd5e1;
+      font-size: 12px;
+    }
+    .runner-check input {
+      width: auto;
+      margin: 0;
+    }
+    .hint {
+      margin-top: 8px;
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .copy-status {
+      min-height: 16px;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .copy-status.ok {
+      color: #86efac;
+    }
+    .copy-status.error {
+      color: #fca5a5;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -163,6 +236,45 @@
   </header>
   <main>
     <aside>
+      <div class="runner">
+        <h2>Run Analysis</h2>
+        <label for="runner-python">Python</label>
+        <input id="runner-python" spellcheck="false">
+        <label for="runner-repo">Repo root</label>
+        <input id="runner-repo" spellcheck="false">
+        <label for="runner-design">Design.py</label>
+        <input id="runner-design" spellcheck="false">
+        <label for="runner-output">Output JSON</label>
+        <input id="runner-output" spellcheck="false">
+        <div class="runner-grid">
+          <label for="runner-quality">Quality
+            <select id="runner-quality">
+              <option value="sketch">sketch</option>
+              <option value="preview">preview</option>
+              <option value="production">production</option>
+            </select>
+          </label>
+          <label for="runner-timeout">Timeout
+            <input id="runner-timeout" type="number" min="30" step="30" value="300">
+          </label>
+        </div>
+        <label for="runner-format">Visual artifact</label>
+        <select id="runner-format">
+          <option value="glb">GLB visual tree</option>
+          <option value="gltf">GLTF text tree</option>
+          <option value="source-only">Source-only diagnostic</option>
+        </select>
+        <label class="runner-check">
+          <input id="runner-compat" type="checkbox">
+          temp Compound compatibility rewrite
+        </label>
+        <label for="runner-command">PowerShell command</label>
+        <textarea id="runner-command" readonly></textarea>
+        <button id="copy-run-command" class="secondary" type="button">Copy command</button>
+        <button id="run-local-command" class="secondary" type="button">Run with local runner</button>
+        <div id="copy-status" class="copy-status"></div>
+        <div class="hint">Static pages cannot start Python directly. Run the copied command in PowerShell, then open the generated JSON with the file picker above. For one-click runs, start the local runner first:<br><code id="runner-start-command"></code></div>
+      </div>
       <div class="metric-grid">
         <div class="metric"><span>Assemblies</span><strong id="assembly-count">0</strong></div>
         <div class="metric"><span>Components</span><strong id="component-count">0</strong></div>
@@ -178,6 +290,16 @@
 
   <script>
     const state = { analysis: null, selectedAssemblyId: "__all__", viewMode: "assemblies" };
+    const runDefaults = {
+      python: String.raw`C:\Users\dbwga\Documents\Codex\2026-06-24\i-just-tried-to-upgrade-my\Tertius-Web\.tmp\procurement-build123d-venv\Scripts\python.exe`,
+      repo: String.raw`C:\Users\dbwga\Documents\Codex\2026-06-24\i-just-tried-to-upgrade-my\Tertius-Web`,
+      design: String.raw`C:\Users\dbwga\Documents\Projects\CAD\3x5shed\design.py`,
+      output: String.raw`C:\Users\dbwga\Documents\Codex\2026-06-24\i-just-tried-to-upgrade-my\Tertius-Web\.tmp\procurement-analysis-viewer-run.json`,
+      quality: "sketch",
+      timeout: "300",
+      format: "glb",
+      compat: false,
+    };
 
     const byId = (id) => document.getElementById(id);
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -187,6 +309,125 @@
       '"': "&quot;",
       "'": "&#039;",
     }[char]));
+    const psQuote = (value) => `'${String(value ?? "").replace(/'/g, "''")}'`;
+
+    function readRunSettings() {
+      return {
+        python: byId("runner-python").value.trim(),
+        repo: byId("runner-repo").value.trim(),
+        design: byId("runner-design").value.trim(),
+        output: byId("runner-output").value.trim(),
+        quality: byId("runner-quality").value,
+        timeout: byId("runner-timeout").value || "300",
+        format: byId("runner-format").value,
+        compat: byId("runner-compat").checked,
+      };
+    }
+
+    function saveRunSettings(settings) {
+      try {
+        localStorage.setItem("procurement-viewer-run-settings", JSON.stringify(settings));
+      } catch (_error) {
+        // Local storage is optional for file:// use.
+      }
+    }
+
+    function loadRunSettings() {
+      try {
+        return { ...runDefaults, ...JSON.parse(localStorage.getItem("procurement-viewer-run-settings") || "{}") };
+      } catch (_error) {
+        return { ...runDefaults };
+      }
+    }
+
+    function buildRunCommand(settings) {
+      const lines = [
+        `$repo = ${psQuote(settings.repo)}`,
+        `Set-Location -LiteralPath $repo`,
+        `& ${psQuote(settings.python)} scripts\\spikes\\procurement_analysis_playground.py \``,
+        `  --design-py ${psQuote(settings.design)} \``,
+      ];
+      if (settings.format === "source-only") {
+        lines.push("  --source-only `");
+      } else {
+        lines.push(`  --export-format ${settings.format} \``);
+        lines.push(`  --quality ${settings.quality || "sketch"} \``);
+        lines.push(`  --compile-timeout ${Number(settings.timeout || 300)} \``);
+      }
+      if (settings.compat) {
+        lines.push("  --compat-build123d-compound `");
+      }
+      lines.push(`  --out ${psQuote(settings.output)}`);
+      lines.push(`Write-Host ""`);
+      lines.push(`Write-Host "Open this JSON in the viewer:"`);
+      lines.push(`Write-Host ${psQuote(settings.output)}`);
+      return lines.join("\n");
+    }
+
+    function buildRunnerStartCommand(settings) {
+      return [
+        `$repo = ${psQuote(settings.repo)}`,
+        `Set-Location -LiteralPath $repo`,
+        `& ${psQuote(settings.python)} scripts\\spikes\\procurement_analysis_runner.py`,
+      ].join("\n");
+    }
+
+    function updateRunCommand() {
+      const settings = readRunSettings();
+      saveRunSettings(settings);
+      byId("runner-command").value = buildRunCommand(settings);
+      byId("runner-start-command").textContent = buildRunnerStartCommand(settings);
+      setRunnerStatus("", "");
+    }
+
+    function setRunnerStatus(message, kind = "ok") {
+      byId("copy-status").className = `copy-status ${kind}`;
+      byId("copy-status").textContent = message;
+    }
+
+    async function copyRunCommand() {
+      const command = byId("runner-command").value;
+      try {
+        await navigator.clipboard.writeText(command);
+        setRunnerStatus("Copied.", "ok");
+      } catch (_error) {
+        byId("runner-command").focus();
+        byId("runner-command").select();
+        document.execCommand("copy");
+        setRunnerStatus("Selected and copied.", "ok");
+      }
+    }
+
+    async function runWithLocalRunner() {
+      const settings = readRunSettings();
+      setRunnerStatus("Running local procurement analysis...", "ok");
+      try {
+        const response = await fetch("http://127.0.0.1:8765/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(settings),
+        });
+        const payload = await response.json();
+        const output = [
+          payload.stdout ? payload.stdout.trim() : "",
+          payload.stderr ? payload.stderr.trim() : "",
+          payload.error ? payload.error : "",
+        ].filter(Boolean).join("\n");
+        if (!response.ok || !payload.ok || !payload.analysis) {
+          setRunnerStatus(output || "Local runner failed.", "error");
+          return;
+        }
+        state.analysis = normaliseAnalysis(payload.analysis);
+        state.selectedAssemblyId = "__all__";
+        render();
+        setRunnerStatus(`${output}\nLoaded ${payload.output}`.trim(), "ok");
+      } catch (error) {
+        setRunnerStatus(
+          `Could not reach local runner at http://127.0.0.1:8765.\nStart it with the command shown above.\n${error.message || error}`,
+          "error",
+        );
+      }
+    }
 
     function normaliseAnalysis(raw) {
       if (Array.isArray(raw?.requirements)) return raw;
@@ -432,6 +673,34 @@
       render();
     });
 
+    function initialiseRunner() {
+      const settings = loadRunSettings();
+      byId("runner-python").value = settings.python;
+      byId("runner-repo").value = settings.repo;
+      byId("runner-design").value = settings.design;
+      byId("runner-output").value = settings.output;
+      byId("runner-quality").value = settings.quality;
+      byId("runner-timeout").value = settings.timeout;
+      byId("runner-format").value = settings.format;
+      byId("runner-compat").checked = Boolean(settings.compat);
+      for (const id of [
+        "runner-python",
+        "runner-repo",
+        "runner-design",
+        "runner-output",
+        "runner-quality",
+        "runner-timeout",
+        "runner-format",
+        "runner-compat",
+      ]) {
+        byId(id).addEventListener("input", updateRunCommand);
+        byId(id).addEventListener("change", updateRunCommand);
+      }
+      byId("copy-run-command").addEventListener("click", copyRunCommand);
+      byId("run-local-command").addEventListener("click", runWithLocalRunner);
+      updateRunCommand();
+    }
+
     byId("file-input").addEventListener("change", async (event) => {
       const file = event.target.files?.[0];
       if (!file) return;
@@ -440,6 +709,8 @@
       state.selectedAssemblyId = "__all__";
       render();
     });
+
+    initialiseRunner();
   </script>
 </body>
 </html>
