@@ -27,6 +27,20 @@ COMPARABLE_REFERENCE_STATUSES = {
 }
 
 
+def _load_expected_fixture() -> dict[str, Any]:
+    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _reference_line_id(row: dict[str, Any]) -> str:
+    part_number = row.get("part_number") or row.get("dimensions", {}).get("component_label") or "(missing)"
+    dimensions = row.get("dimensions") if isinstance(row.get("dimensions"), dict) else {}
+    dimension_text = ",".join(f"{key}={value}" for key, value in sorted(dimensions.items()))
+    return f"{part_number}:{row.get('quantity')} {row.get('unit') or 'each'}:{dimension_text}"
+
+
+REFERENCE_LINE_ITEMS = _load_expected_fixture().get("line_items", [])
+
+
 def _read_python_files(project_dir: Path) -> dict[str, str]:
     return {
         path.name: path.read_text(encoding="utf-8-sig")
@@ -217,6 +231,24 @@ def _canonical_fixture_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(normalised, key=lambda row: json.dumps(row, sort_keys=True))
 
 
+def _canonical_fixture_row(row: dict[str, Any]) -> dict[str, Any]:
+    rows = _canonical_fixture_rows([row])
+    if not rows:
+        raise AssertionError("Expected fixture row did not canonicalise to a BoM row.")
+    return rows[0]
+
+
+def _row_identity(row: dict[str, Any]) -> str:
+    return json.dumps({
+        "part_number": row.get("part_number"),
+        "unit": row.get("unit") or "each",
+        "dimensions": row.get("dimensions") or {},
+        "material": row.get("material"),
+        "finish": row.get("finish"),
+        "standard": row.get("standard"),
+    }, sort_keys=True)
+
+
 def _canonical_fixture_non_orderable_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalised = []
     for row in rows:
@@ -248,29 +280,44 @@ def _load_actual_analysis() -> dict[str, Any] | None:
     return build_procurement_analysis(source, tree)
 
 
-def test_3x5shed_visual_bom_matches_manual_expected_fixture():
-    actual = _load_actual_analysis()
-    if actual is None:
-        return
-
-    expected = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+@pytest.fixture(scope="session")
+def expected_fixture() -> dict[str, Any]:
+    expected = _load_expected_fixture()
     if expected.get("status") not in COMPARABLE_REFERENCE_STATUSES:
         pytest.skip(
-            "3x5shed expected BoM fixture is not manually verified yet. "
+            "3x5shed expected BoM fixture is not ready for comparison. "
             "Fill server/tests/fixtures/procurement/3x5shed_expected_bom.json "
             "with manually calculated line_items before running this comparison."
         )
+    return expected
 
-    assert actual.get("analysis_mode") == "visual_verified"
-    assert actual.get("quantity_authority") == "visual_tree"
-    summary = expected.get("expected_summary", {})
-    assert len(actual.get("assemblies", [])) == summary.get("assemblies")
-    assert len(actual.get("components", [])) == summary.get("components")
-    assert len(actual.get("requirements", [])) == summary.get("requirements")
-    assert sum(1 for item in actual.get("requirements", []) if item.get("orderable") is not False) == summary.get("orderable_requirements")
-    assert sum(1 for item in actual.get("requirements", []) if item.get("orderable") is False) == summary.get("non_orderable_requirements")
 
-    for requirement in actual.get("requirements", []):
+@pytest.fixture(scope="session")
+def actual_analysis() -> dict[str, Any]:
+    actual = _load_actual_analysis()
+    if actual is None:
+        pytest.skip(
+            "3x5shed CAD project or analysis artifact is not available for the golden comparison."
+        )
+    return actual
+
+
+@pytest.fixture(scope="session")
+def actual_bom_by_identity(actual_analysis: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {_row_identity(row): row for row in _canonical_bom_rows(actual_analysis)}
+
+
+def test_3x5shed_visual_analysis_contract(actual_analysis: dict[str, Any], expected_fixture: dict[str, Any]):
+    assert actual_analysis.get("analysis_mode") == "visual_verified"
+    assert actual_analysis.get("quantity_authority") == "visual_tree"
+    summary = expected_fixture.get("expected_summary", {})
+    assert len(actual_analysis.get("assemblies", [])) == summary.get("assemblies")
+    assert len(actual_analysis.get("components", [])) == summary.get("components")
+    assert len(actual_analysis.get("requirements", [])) == summary.get("requirements")
+    assert sum(1 for item in actual_analysis.get("requirements", []) if item.get("orderable") is not False) == summary.get("orderable_requirements")
+    assert sum(1 for item in actual_analysis.get("requirements", []) if item.get("orderable") is False) == summary.get("non_orderable_requirements")
+
+    for requirement in actual_analysis.get("requirements", []):
         if requirement.get("orderable") is False:
             continue
         quantity_source = requirement.get("quantity_source")
@@ -282,7 +329,33 @@ def test_3x5shed_visual_bom_matches_manual_expected_fixture():
             assert requirement.get("quantity") == 1
             assert requirement.get("visual_instance_count") == 1
 
-    assert _canonical_bom_rows(actual) == _canonical_fixture_rows(expected.get("line_items", []))
-    assert _canonical_non_orderable_rows(actual) == _canonical_fixture_non_orderable_rows(
-        expected.get("non_orderable_line_items", [])
+
+@pytest.mark.parametrize("expected_line", REFERENCE_LINE_ITEMS, ids=_reference_line_id)
+def test_3x5shed_reference_bom_line_matches_actual(
+    expected_line: dict[str, Any],
+    actual_bom_by_identity: dict[str, dict[str, Any]],
+    expected_fixture: dict[str, Any],
+):
+    expected_row = _canonical_fixture_row(expected_line)
+    actual_row = actual_bom_by_identity.get(_row_identity(expected_row))
+    assert actual_row == expected_row
+
+
+def test_3x5shed_has_no_unexpected_orderable_bom_lines(
+    actual_bom_by_identity: dict[str, dict[str, Any]],
+    expected_fixture: dict[str, Any],
+):
+    expected_rows = _canonical_fixture_rows(expected_fixture.get("line_items", []))
+    expected_identities = {_row_identity(row) for row in expected_rows}
+    unexpected_rows = [
+        row
+        for identity, row in sorted(actual_bom_by_identity.items())
+        if identity not in expected_identities
+    ]
+    assert unexpected_rows == []
+
+
+def test_3x5shed_non_orderable_rows_match_expected(actual_analysis: dict[str, Any], expected_fixture: dict[str, Any]):
+    assert _canonical_non_orderable_rows(actual_analysis) == _canonical_fixture_non_orderable_rows(
+        expected_fixture.get("non_orderable_line_items", [])
     )
