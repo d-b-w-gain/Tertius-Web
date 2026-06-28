@@ -95,6 +95,50 @@ describe('Procurement manifest grouping', () => {
     expect(grouped[0]?.status).toBe('incomplete');
   });
 
+  it('keeps placeholder part numbers in grouped totals but marks them incomplete', () => {
+    const manifest: BomManifest = {
+      version: 1,
+      source_snapshot_hash: 'snapshot-a',
+      scopes: [{ id: 'floor', label: 'Floor', parent_id: null }],
+      components: [
+        { id: 'floor.screw.a', scope_id: 'floor', label: 'Floor Screw', role: 'component', visual_node_ids: ['screw-a'] },
+        { id: 'floor.screw.b', scope_id: 'floor', label: 'Floor Screw', role: 'component', visual_node_ids: ['screw-b'] },
+      ],
+      requirements: [
+        {
+          id: 'floor.screw.a.requirement',
+          component_id: 'floor.screw.a',
+          part_number: 'FS-FLOOR-SCREW-A',
+          part_number_placeholder: true,
+          quantity: 1,
+          quantity_source: 'visual_instances',
+          orderable: true,
+          unit: 'each',
+          dimensions: {},
+        },
+        {
+          id: 'floor.screw.b.requirement',
+          component_id: 'floor.screw.b',
+          part_number: 'FS-FLOOR-SCREW-A',
+          part_number_placeholder: true,
+          quantity: 1,
+          quantity_source: 'visual_instances',
+          orderable: true,
+          unit: 'each',
+          dimensions: {},
+        },
+      ],
+      diagnostics: [],
+    };
+
+    const grouped = groupManifestRequirements(manifest, 'floor');
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]?.partNumber).toBe('FS-FLOOR-SCREW-A');
+    expect(grouped[0]?.quantity).toBe(2);
+    expect(grouped[0]?.status).toBe('incomplete');
+  });
+
   it('classifies missing and diagnostic-only manifests as not ready', () => {
     const manifest: BomManifest = {
       version: 1,

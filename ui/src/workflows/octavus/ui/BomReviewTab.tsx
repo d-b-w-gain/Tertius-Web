@@ -95,6 +95,7 @@ export interface ManifestRequirement {
   quantity_source?: string | null;
   quantity_confidence?: string | null;
   orderable?: boolean | null;
+  part_number_placeholder?: boolean | null;
   visual_instance_count?: number | string | null;
   assembly_id?: string | null;
   unit?: string | null;
@@ -404,6 +405,7 @@ export const normalizeProcurementManifest = (rawManifest: BomManifest | Procurem
       quantity_source: asNullableString(requirement.quantity_source),
       quantity_confidence: asNullableString(requirement.quantity_confidence),
       orderable: typeof requirement.orderable === 'boolean' ? requirement.orderable : null,
+      part_number_placeholder: typeof requirement.part_number_placeholder === 'boolean' ? requirement.part_number_placeholder : null,
       visual_instance_count: requirement.visual_instance_count as ManifestRequirement['visual_instance_count'],
       unit: asString(requirement.unit).trim() || 'each',
       dimensions: asRecord(requirement.dimensions),
@@ -822,6 +824,7 @@ const requirementQuantity = (requirement: ManifestRequirement, selectedScopeId =
 
 const requirementComplete = (requirement: ManifestRequirement) => (
   Boolean(asString(requirement.part_number).trim())
+  && requirement.part_number_placeholder !== true
   && requirementQuantity(requirement) > 0
   && Boolean(asString(requirement.unit || 'each').trim())
 );

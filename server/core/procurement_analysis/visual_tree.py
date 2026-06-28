@@ -45,6 +45,31 @@ def _has_named_mesh_child(node: dict[str, Any]) -> bool:
     )
 
 
+def _is_plural_bucket_name(name: str) -> bool:
+    words = [word.lower() for word in re.split(r"[^A-Za-z0-9]+", name.strip()) if word]
+    if not words:
+        return False
+    last = words[-1]
+    return len(last) > 3 and last.endswith("s") and not last.endswith("ss")
+
+
+def _normalize_transform_number(value: Any) -> float:
+    number = round(float(value), 6)
+    return 0.0 if number == -0.0 else number
+
+
+def _transform_signature(node: dict[str, Any]) -> tuple[tuple[str, tuple[float, ...]], ...] | None:
+    signature: list[tuple[str, tuple[float, ...]]] = []
+    for key in ("translation", "rotation", "scale", "matrix"):
+        value = node.get(key)
+        if isinstance(value, list):
+            try:
+                signature.append((key, tuple(_normalize_transform_number(item) for item in value)))
+            except (TypeError, ValueError):
+                continue
+    return tuple(signature) or None
+
+
 def _slug(value: str, fallback: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
     return slug or fallback
@@ -111,6 +136,16 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         collect(node, ancestors)
         return visual_ids or [str(node.get("id") or path_for(ancestors, node))]
 
+    def visual_node_ids_for_children(
+        children: list[dict[str, Any]],
+        ancestors: list[dict[str, Any]],
+        parent: dict[str, Any],
+    ) -> list[str]:
+        visual_ids: list[str] = []
+        for child in children:
+            visual_ids.extend(visual_node_ids_for(child, [*ancestors, parent]))
+        return visual_ids
+
     def add_component(
         *,
         label: str,
@@ -136,6 +171,25 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 grouped.setdefault(child_name, []).append(child)
         return grouped
 
+    def direct_generated_mesh_children(node: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            child
+            for child in _children(node)
+            if _is_mesh(child) and _is_generated_or_default(_node_name(child))
+        ]
+
+    def direct_named_fragments_by_label_and_transform(node: dict[str, Any]) -> dict[tuple[str, tuple[tuple[str, tuple[float, ...]], ...]], list[dict[str, Any]]]:
+        grouped: dict[tuple[str, tuple[tuple[str, tuple[float, ...]], ...]], list[dict[str, Any]]] = {}
+        for child in _children(node):
+            child_name = _node_name(child)
+            signature = _transform_signature(child)
+            if not child_name or _is_generated_or_default(child_name) or signature is None:
+                continue
+            if not (_is_mesh(child) or (_is_group(child) and _has_mesh_descendant(child))):
+                continue
+            grouped.setdefault((child_name, signature), []).append(child)
+        return grouped
+
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         name = _node_name(node)
         if _is_mesh(node):
@@ -150,6 +204,70 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 )
             return
         if _is_group(node) and _has_mesh_descendant(node):
+            generated_mesh_children = direct_generated_mesh_children(node)
+            if (
+                name
+                and not _is_generated_or_default(name)
+                and _is_plural_bucket_name(name)
+                and len(generated_mesh_children) > 1
+                and len(generated_mesh_children) == len(_children(node))
+            ):
+                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                path = path_for(ancestors, node)
+                assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
+                object_to_assembly[id(node)] = assembly_id
+                assemblies.append({
+                    "id": assembly_id,
+                    "label": name,
+                    "path": path,
+                    "parent_id": parent_id,
+                })
+                for child in generated_mesh_children:
+                    child_path = path_for([*ancestors, node], child)
+                    add_component(
+                        label=name,
+                        path=child_path,
+                        assembly_id=assembly_id,
+                        visual_node_ids=[str(child.get("id") or child_path)],
+                    )
+                return
+
+            grouped_fragments = {
+                key: children
+                for key, children in direct_named_fragments_by_label_and_transform(node).items()
+                if len(children) > 1
+            }
+            if grouped_fragments:
+                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                path = path_for(ancestors, node)
+                if _has_group_child_with_meshes(node) or _has_named_mesh_child(node):
+                    assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
+                    object_to_assembly[id(node)] = assembly_id
+                    assemblies.append({
+                        "id": assembly_id,
+                        "label": name,
+                        "path": path,
+                        "parent_id": parent_id,
+                    })
+                    parent_id = assembly_id
+
+                grouped_child_ids = {
+                    id(child)
+                    for children in grouped_fragments.values()
+                    for child in children
+                }
+                for (label, _signature), children in grouped_fragments.items():
+                    add_component(
+                        label=label,
+                        path=f"{path}/{label}",
+                        assembly_id=parent_id,
+                        visual_node_ids=visual_node_ids_for_children(children, ancestors, node),
+                    )
+                for child in _children(node):
+                    if id(child) not in grouped_child_ids:
+                        visit(child, [*ancestors, node])
+                return
+
             grouped_mesh_children = direct_named_mesh_children_by_label(node)
             repeated_named_mesh_children = {
                 label: children
@@ -210,8 +328,34 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         for child in _children(node):
             visit(child, [*ancestors, node])
 
+    def collect_mesh_fallbacks(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        if _is_mesh(node):
+            path = path_for(ancestors, node)
+            label = _node_name(node)
+            if not label or _is_generated_or_default(label):
+                label = "Visual Component"
+            add_component(
+                label=label,
+                path=path,
+                assembly_id=None,
+                visual_node_ids=[str(node.get("id") or path)],
+            )
+            return
+        for child in _children(node):
+            collect_mesh_fallbacks(child, [*ancestors, node])
+
     for root in roots:
         visit(root, [])
+
+    if not components and any(_has_mesh_descendant(root) for root in roots):
+        for root in roots:
+            collect_mesh_fallbacks(root, [])
+        diagnostics.append({
+            "code": "visual_tree_without_named_component_groups",
+            "severity": "warning",
+            "message": "GLB contains visible mesh geometry but no named component groups; generated mesh leaves were emitted as placeholder visual components.",
+            "component_count": len(components),
+        })
 
     return {
         "assemblies": assemblies,

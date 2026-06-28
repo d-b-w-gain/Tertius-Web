@@ -50,17 +50,39 @@ def _source_match_score(component: dict[str, Any], call: dict[str, Any]) -> tupl
             score -= len(missing_scope_tokens) * 3
             reasons.append(f"scope mismatch: {', '.join(sorted(missing_scope_tokens))}")
     label_tokens = _tokens(label_text)
+    component_tokens = _tokens(component_text)
+    visual_leaf_count = _visual_leaf_count(component)
     visual_part_number, _trace = _visual_label_part_number(component)
     function_name = str(call.get("function") or "").lower()
     if (
         any(token in function_name for token in ("screw", "fastener", "bolt", "nut"))
         and not visual_part_number
-        and not (label_tokens & {"screw", "screws", "fastener", "fasteners", "bolt", "bolts", "nut", "nuts"})
+        and not (component_tokens & {"screw", "screws", "fastener", "fasteners", "bolt", "bolts", "nut", "nuts"})
+        and not (_is_generated_or_default(label_text) and visual_leaf_count is not None and visual_leaf_count > 1)
     ):
         score -= 8
         reasons.append("fastener source rejected for non-fastener visual label")
     label = str(component.get("label", "")).lower()
     kind = str(call.get("bom_kind", "")).lower()
+    if component_tokens & {"screw", "screws", "fastener", "fasteners", "bolt", "bolts", "nut", "nuts"}:
+        if kind == "fastener_assembly" or any(token in function_name for token in ("screw", "fastener", "bolt", "nut")):
+            score += 8
+            reasons.append("fastener visual bucket match")
+    if component_tokens & {"anchor", "anchors", "masonry"}:
+        if "anchor" in function_name:
+            score += 8
+            reasons.append("anchor visual bucket match")
+    if _is_generated_or_default(label_text):
+        if kind == "fastener_assembly" and visual_leaf_count is not None:
+            if visual_leaf_count > 1:
+                score += 6
+                reasons.append("multi-leaf generated component matches fastener assembly")
+            else:
+                score -= 6
+                reasons.append("single-leaf generated component rejected for fastener assembly")
+        elif kind != "fastener_assembly" and visual_leaf_count == 1:
+            score += 3
+            reasons.append("single-leaf generated component matches discrete source component")
     if "bracket" in label and kind == "bracket":
         score += 4
         reasons.append("bracket kind match")
@@ -302,17 +324,72 @@ def _is_decomposable_fastener_assembly(call: dict[str, Any] | None) -> bool:
     return _resolved_input(call, "size") is not None and _resolved_input(call, "length_mm") is not None
 
 
-def _make_generated_part_key(component: dict[str, Any], call: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
-    kind = str(call.get("bom_kind") if call else "component").upper().replace("_", "-")
-    function_name = str(call.get("function") if call else component.get("label") or "component")
+def _function_initials(value: str) -> str:
+    text = re.sub(r"^(make|build|create)[_\-\s]+", "", value.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    tokens = [token for token in re.split(r"[^A-Za-z0-9]+", text) if token]
+    initials = "".join(token[0].upper() for token in tokens if token[0].isalnum())
+    return initials or "P"
+
+
+def _placeholder_token(value: Any) -> str | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        if abs(float(value) - round(float(value))) < 0.000001:
+            return str(int(round(float(value))))
+        return f"{float(value):.3f}".rstrip("0").rstrip(".").replace(".", "P")
+    text = str(value).strip()
+    if not text:
+        return None
+    parts = [part.upper() for part in re.split(r"[^A-Za-z0-9]+", text) if part]
+    return "-".join(parts) or None
+
+
+def _placeholder_label_token(component: dict[str, Any], call: dict[str, Any] | None) -> str | None:
+    label = str(component.get("label") or "").strip()
+    if not label or _is_generated_or_default(label):
+        label = str(call.get("function") if call else component.get("path") or component.get("id") or "part")
+    label = re.sub(r"^(make|build|create)[_\-\s]+", "", label, flags=re.IGNORECASE)
+    tokens = [token for token in re.split(r"[^A-Za-z0-9]+", label) if token]
+    clean_tokens = [
+        token
+        for token in tokens
+        if not re.fullmatch(r"\d+(?:\.\d+)?", token)
+        and token.lower() not in {"x", "y", "z", "node", "mesh", "solid"}
+    ]
+    return _placeholder_token(" ".join(clean_tokens or tokens))
+
+
+def _placeholder_prefix(component: dict[str, Any], call: dict[str, Any] | None) -> str:
+    label = str(component.get("label") or "").strip()
+    if label and not _is_generated_or_default(label):
+        tokens = [token for token in re.split(r"[^A-Za-z0-9]+", label) if token]
+        clean_tokens = [
+            token
+            for token in tokens
+            if not any(character.isdigit() for character in token)
+            and token.lower() not in {"x", "y", "z", "node", "mesh", "solid"}
+        ]
+        if clean_tokens:
+            return "".join(token[0].upper() for token in clean_tokens)
+    return _function_initials(str(call.get("function") if call else component.get("path") or component.get("id") or "part"))
+
+
+def _resolved_standard_inputs(call: dict[str, Any] | None) -> dict[str, Any]:
     standard_inputs = call.get("standard_inputs", {}) if call else {}
-    resolved_inputs = {
+    return {
         key: value.get("resolved")
         for key, value in standard_inputs.items()
         if isinstance(value, dict) and value.get("resolved") is not None
     }
-    angle = resolved_inputs.get("roof_pitch_deg") or resolved_inputs.get("angle_deg")
-    compact_key = _compact_identity_key(resolved_inputs)
+
+
+def _make_generated_part_key(component: dict[str, Any], call: dict[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
+    resolved_inputs = _resolved_standard_inputs(call)
+    mark_trace = call.get("standard_inputs", {}).get("mark") if call else None
+    inferred_mark = isinstance(mark_trace, dict) and mark_trace.get("resolution") == "inferred_function_mark"
+    compact_key = None if inferred_mark and call and call.get("bom_kind") != "bracket" else _compact_identity_key(resolved_inputs)
     if compact_key:
         return compact_key, {
             "raw": {"kind": "generated", "fields": resolved_inputs},
@@ -321,20 +398,68 @@ def _make_generated_part_key(component: dict[str, Any], call: dict[str, Any] | N
             "source_file": call.get("source_file") if call else None,
             "source_line": call.get("source_line") if call else None,
         }
-    function_label = re.sub(r"^(make|build|create)[_\-\s]+", "", function_name, flags=re.IGNORECASE)
-    prefix_parts = [kind, re.sub(r"[^A-Z0-9]+", "-", function_label.upper()).strip("-") or "COMPONENT"]
-    if angle is not None:
-        prefix_parts.append(f"{str(angle).replace('.', 'P')}DEG")
-    seed = repr({
-        "kind": kind,
-        "function": call.get("function") if call else "",
-        "inputs": sorted(resolved_inputs.items()),
-    })
-    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8].upper()
-    return "-".join(prefix_parts + [digest]), {
-        "raw": {"kind": "generated", "seed": seed},
-        "resolved": "-".join(prefix_parts + [digest]),
-        "resolution": "generated_deterministic",
+    return None, None
+
+
+def _make_placeholder_part_key(
+    component: dict[str, Any],
+    call: dict[str, Any] | None,
+    dimensions: dict[str, Any],
+    unit: Any,
+    material: Any,
+    finish: Any,
+) -> tuple[str, dict[str, Any]]:
+    prefix = _placeholder_prefix(component, call)
+    resolved_inputs = _resolved_standard_inputs(call)
+    token_values: list[Any] = [
+        dimensions.get(key)
+        for key in ("length_mm", "width_mm", "height_mm", "thickness_mm", "diameter_mm", "grip_length_mm", "roof_pitch_deg", "angle_deg")
+        if dimensions.get(key) is not None
+    ]
+    if material is not None:
+        token_values.append(material)
+    if finish is not None:
+        token_values.append(finish)
+    if unit is not None and str(unit).strip().lower() not in {"", "each", "ea"}:
+        token_values.append(unit)
+
+    tokens = [token for value in token_values if (token := _placeholder_token(value))]
+    if not tokens:
+        label_token = _placeholder_label_token(component, call)
+        if label_token:
+            tokens.append(label_token)
+    if not tokens:
+        seed = repr({
+            "function": call.get("function") if call else "",
+            "component": component.get("id") or component.get("path") or component.get("label"),
+        })
+        tokens.append(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:4].upper())
+
+    part_number = "-".join([prefix, *tokens, "A"])
+    raw = {
+        "kind": "generated_placeholder",
+        "function": call.get("function") if call else None,
+        "fields": {
+            key: value
+            for key, value in {
+                "dimensions": dimensions,
+                "unit": unit,
+                "material": material,
+                "finish": finish,
+            }.items()
+            if value is not None and value != "" and value != {}
+        },
+    }
+    if resolved_inputs:
+        raw["resolved_inputs"] = {
+            key: value
+            for key, value in resolved_inputs.items()
+            if key not in {"quantity", "part_number", "product_key"}
+        }
+    return part_number, {
+        "raw": raw,
+        "resolved": part_number,
+        "resolution": "generated_placeholder_identity",
         "source_file": call.get("source_file") if call else None,
         "source_line": call.get("source_line") if call else None,
     }
@@ -843,8 +968,16 @@ def build_procurement_analysis(
         components.append(component_record)
 
         visual_part_number, visual_part_trace = _visual_label_part_number(component)
-        part_number = (_resolved_input(call, "part_number") if call else None) or visual_part_number
+        source_part_trace = call.get("standard_inputs", {}).get("part_number") if call and _resolved_input(call, "part_number") else None
+        product_key_trace = call.get("standard_inputs", {}).get("product_key") if call and _resolved_input(call, "product_key") else None
+        part_number = (
+            (_resolved_input(call, "part_number") if call else None)
+            or (_resolved_input(call, "product_key") if call else None)
+            or visual_part_number
+        )
         generated_trace = None
+        placeholder_trace = None
+        part_number_placeholder = False
         quantity_evidence = _quantity_evidence(call, component, source_analysis, analysis_mode=analysis_mode)
         if call is not None and _is_decomposable_fastener_assembly(call):
             fastener_requirements = _fastener_assembly_requirements(
@@ -881,14 +1014,34 @@ def build_procurement_analysis(
                 "source_file": call.get("source_file") if call else None,
                 "source_line": call.get("source_line") if call else None,
             })
-        if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
-            part_number, generated_trace = _make_generated_part_key(component, call)
 
         dimensions = {
             key: _resolved_input(call, key)
             for key in ["length_mm", "width_mm", "height_mm", "thickness_mm", "diameter_mm", "grip_length_mm", "roof_pitch_deg", "angle_deg"]
             if call and _resolved_input(call, key) is not None
         }
+        unit = _resolved_input(call, "unit") if call and _resolved_input(call, "unit") else "each"
+        material = _resolved_input(call, "material") if call else None
+        finish = _resolved_input(call, "finish") if call else None
+        if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
+            generated_part_number, generated_part_trace = _make_generated_part_key(component, call)
+            if generated_part_number:
+                part_number = generated_part_number
+                generated_trace = generated_part_trace
+        if (
+            not part_number
+            and not visual_container_without_identity
+            and quantity_evidence.get("orderable") is True
+        ):
+            part_number, placeholder_trace = _make_placeholder_part_key(
+                component,
+                call,
+                dimensions,
+                unit,
+                material,
+                finish,
+            )
+            part_number_placeholder = True
         dimension_trace = {
             key: trace
             for key in dimensions
@@ -896,7 +1049,7 @@ def build_procurement_analysis(
         }
         quantity_trace = _notable_input_trace(_input_trace(call, "quantity"))
         resolution_trace = {
-            "part_number": generated_trace or (call.get("standard_inputs", {}).get("part_number") if call and _resolved_input(call, "part_number") else None) or visual_part_trace,
+            "part_number": generated_trace or placeholder_trace or source_part_trace or product_key_trace or visual_part_trace,
         }
         if dimension_trace:
             resolution_trace["dimensions"] = dimension_trace
@@ -913,15 +1066,33 @@ def build_procurement_analysis(
             "assembly_id": component.get("assembly_id"),
             "part_number": part_number,
             "stock_number": _requirement_stock_number(part_number, dimensions, resolution_trace),
+            **({"part_number_placeholder": True} if part_number_placeholder else {}),
             **quantity_evidence,
-            "unit": _resolved_input(call, "unit") if call and _resolved_input(call, "unit") else "each",
+            "unit": unit,
             "dimensions": dimensions,
-            "material": _resolved_input(call, "material") if call else None,
-            "finish": _resolved_input(call, "finish") if call else None,
+            "material": material,
+            "finish": finish,
             "source_trace": component_record["source_trace"],
             "resolution_trace": resolution_trace,
         }
         requirements.append(requirement)
+
+        if part_number_placeholder:
+            placeholder_inputs = placeholder_trace.get("raw", {}).get("fields", {}) if isinstance(placeholder_trace, dict) else {}
+            diagnostics.append({
+                "code": "auto_placeholder_part_number",
+                "severity": "warning",
+                "message": "Generated placeholder part number because no explicit part_number/product_key was resolved.",
+                "component_id": component["id"],
+                "requirement_id": requirement["id"],
+                "part_number": part_number,
+                "function": call.get("function") if call else None,
+                "source_file": call.get("source_file") if call else None,
+                "source_line": call.get("source_line") if call else None,
+                "visual_label": component.get("label"),
+                "visual_path": component.get("path"),
+                "resolved_inputs": placeholder_inputs,
+            })
 
         if quantity_evidence["quantity_confidence"] == "diagnostic":
             diagnostics.append({

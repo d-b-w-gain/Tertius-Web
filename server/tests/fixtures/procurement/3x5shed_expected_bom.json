@@ -6,15 +6,15 @@
   "expected_summary": {
     "analysis_mode": "visual_verified",
     "quantity_authority": "visual_tree",
-    "assemblies": 26,
-    "components": 793,
-    "requirements": 1117,
-    "orderable_requirements": 1117,
+    "assemblies": 32,
+    "components": 541,
+    "requirements": 637,
+    "orderable_requirements": 637,
     "non_orderable_requirements": 0
   },
   "notes": [
     "Candidate baseline generated from the full GLB visual tree run for the 3x5shed design on the procurement visual-tree branch.",
-    "Rendered visual components are procurement-required by default; missing part numbers remain order-required rows until explicitly marked reference/NTBO/excluded.",
+    "Rendered visual components are procurement-required by default; unresolved product identities receive generated placeholder part numbers until explicitly authored or marked reference/NTBO/excluded.",
     "Quantities are expected to come from visual component instances; source quantities are metadata/evidence only.",
     "This fixture is not an acceptance oracle until line_items are replaced or confirmed by a manual takeoff and status is set to manually_verified.",
     "Manual reference checks now record source-derived quantities line by line; rows marked missing_product_metadata are visible rendered items that still need orderable product identity."
@@ -69,12 +69,11 @@
       "reasoning": "knee_bracket_pair creates left and right knee brackets per portal; three portals gives 6."
     },
     {
-      "part_number": null,
-      "component_label": "Concrete Pads",
+      "part_number": "CP-CONCRETE-PADS-A",
+      "component_label": null,
       "unit": "each",
       "expected_quantity": 4,
       "dimensions": {
-        "component_label": "Concrete Pads"
       },
       "status": "missing_product_metadata",
       "source_files": [
@@ -100,12 +99,11 @@
       "reasoning": "shed_building creates left_fascia and right_fascia from lysaght_zc_purlin(C10019, length=portal_depth), so 2 pieces at 5100 mm."
     },
     {
-      "part_number": null,
-      "component_label": "Rebar",
+      "part_number": "R-REBAR-A",
+      "component_label": null,
       "unit": "each",
       "expected_quantity": 12,
       "dimensions": {
-        "component_label": "Rebar"
       },
       "status": "missing_product_metadata",
       "source_files": [
@@ -114,12 +112,11 @@
       "reasoning": "foundation creates 8 horizontal rods plus 4 vertical starter rods, so 12 visible rebar pieces."
     },
     {
-      "part_number": null,
-      "component_label": "Versaloc Block Envelope",
+      "part_number": "VBE-VERSALOC-BLOCK-ENVELOPE-A",
+      "component_label": null,
       "unit": "each",
       "expected_quantity": 80,
       "dimensions": {
-        "component_label": "Versaloc Block Envelope"
       },
       "status": "missing_product_metadata",
       "source_files": [
@@ -411,12 +408,11 @@
       "reasoning": "portal_frame creates left and right 100GPB base brackets per portal; three portals gives 6."
     },
     {
-      "part_number": null,
-      "component_label": "Floor Screw",
+      "part_number": "FS-FLOOR-SCREW-A",
+      "component_label": null,
       "unit": "each",
       "expected_quantity": 52,
       "dimensions": {
-        "component_label": "Floor Screw"
       },
       "status": "missing_product_metadata",
       "source_files": [
@@ -468,12 +464,10 @@
       "manual_reference_note": "knee_bracket_pair creates left and right knee brackets per portal; three portals gives 6."
     },
     {
-      "part_number": null,
+      "part_number": "CP-CONCRETE-PADS-A",
       "unit": "each",
       "quantity": 4,
-      "dimensions": {
-        "component_label": "Concrete Pads"
-      },
+      "dimensions": {},
       "material": null,
       "finish": null,
       "standard": null,
@@ -494,12 +488,10 @@
       "manual_reference_note": "shed_building creates left_fascia and right_fascia from lysaght_zc_purlin(C10019, length=portal_depth), so 2 pieces at 5100 mm."
     },
     {
-      "part_number": null,
+      "part_number": "R-REBAR-A",
       "unit": "each",
       "quantity": 12,
-      "dimensions": {
-        "component_label": "Rebar"
-      },
+      "dimensions": {},
       "material": null,
       "finish": null,
       "standard": null,
@@ -507,12 +499,10 @@
       "manual_reference_note": "foundation creates 8 horizontal rods plus 4 vertical starter rods, so 12 visible rebar pieces."
     },
     {
-      "part_number": null,
+      "part_number": "VBE-VERSALOC-BLOCK-ENVELOPE-A",
       "unit": "each",
       "quantity": 80,
-      "dimensions": {
-        "component_label": "Versaloc Block Envelope"
-      },
+      "dimensions": {},
       "material": null,
       "finish": null,
       "standard": null,
@@ -752,12 +742,10 @@
       "manual_reference_note": "portal_frame creates left and right 100GPB base brackets per portal; three portals gives 6."
     },
     {
-      "part_number": null,
+      "part_number": "FS-FLOOR-SCREW-A",
       "unit": "each",
       "quantity": 52,
-      "dimensions": {
-        "component_label": "Floor Screw"
-      },
+      "dimensions": {},
       "material": null,
       "finish": null,
       "standard": null,
