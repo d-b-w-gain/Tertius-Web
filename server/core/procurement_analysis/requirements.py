@@ -930,12 +930,16 @@ def build_procurement_analysis(
             part_number = (_resolved_input(call, "part_number") if call else None) or visual_part_number
             if part_number:
                 visual_part_numbers.add(str(part_number))
-        source_supplements = [
-            component
-            for component in source_components
-            if _source_call_key(component.get("_source_call")) not in matched_call_keys
-            and str(_resolved_input(component.get("_source_call"), "part_number") or "") not in visual_part_numbers
-        ]
+        source_supplements = []
+        for component in source_components:
+            source_call = component.get("_source_call")
+            if not isinstance(source_call, dict):
+                continue
+            if _source_call_key(source_call) in matched_call_keys:
+                continue
+            if str(_resolved_input(source_call, "part_number") or "") in visual_part_numbers:
+                continue
+            source_supplements.append(component)
         if source_supplements:
             diagnostics.append({
                 "code": "source_metadata_without_visual_component",

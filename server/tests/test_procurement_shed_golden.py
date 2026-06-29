@@ -32,8 +32,9 @@ def _load_expected_fixture() -> dict[str, Any]:
 
 
 def _reference_line_id(row: dict[str, Any]) -> str:
-    part_number = row.get("part_number") or row.get("dimensions", {}).get("component_label") or "(missing)"
-    dimensions = row.get("dimensions") if isinstance(row.get("dimensions"), dict) else {}
+    raw_dimensions = row.get("dimensions")
+    dimensions = raw_dimensions if isinstance(raw_dimensions, dict) else {}
+    part_number = row.get("part_number") or dimensions.get("component_label") or "(missing)"
     dimension_text = ",".join(f"{key}={value}" for key, value in sorted(dimensions.items()))
     return f"{part_number}:{row.get('quantity')} {row.get('unit') or 'each'}:{dimension_text}"
 
@@ -92,7 +93,8 @@ def _gltf_to_scene_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         node = nodes[index]
         if not isinstance(node, dict):
             raise ValueError(f"GLTF node {index} is not an object.")
-        child_indexes = node.get("children") if isinstance(node.get("children"), list) else []
+        raw_child_indexes = node.get("children")
+        child_indexes: list[Any] = raw_child_indexes if isinstance(raw_child_indexes, list) else []
         has_mesh = isinstance(node.get("mesh"), int)
         converted = {
             "id": str(index),
