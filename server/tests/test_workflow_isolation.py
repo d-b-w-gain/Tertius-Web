@@ -1,4 +1,5 @@
 import json
+import struct
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -55,6 +56,7 @@ def add_compile_job_with_artifacts(
     model_job: CompileJob | None = None,
     manifest_job: CompileJob | None = None,
     created_at: datetime | None = None,
+    model_content: bytes = b"model",
 ) -> tuple[CompileJob, CompileJob | None]:
     model_job = model_job or CompileJob(
         tenant_id=seeded_tenant.tenant_id,
@@ -79,8 +81,8 @@ def add_compile_job_with_artifacts(
             kind="glb",
             storage_key=f"{model_job.id}/model.glb",
             content_type="model/gltf-binary",
-            byte_size=len(b"model"),
-            content=b"model",
+            byte_size=len(model_content),
+            content=model_content,
             created_at=now,
         )
     )
@@ -101,6 +103,20 @@ def add_compile_job_with_artifacts(
         )
     db_session.commit()
     return model_job, manifest_job
+
+
+def make_test_glb(gltf: dict) -> bytes:
+    json_data = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    json_data += b" " * ((4 - len(json_data) % 4) % 4)
+    bin_data = b"\0\0\0\0"
+    length = 12 + 8 + len(json_data) + 8 + len(bin_data)
+    return (
+        struct.pack("<4sII", b"glTF", 2, length)
+        + struct.pack("<I4s", len(json_data), b"JSON")
+        + json_data
+        + struct.pack("<I4s", len(bin_data), b"BIN\0")
+        + bin_data
+    )
 
 
 def test_artus_activate_project_uses_repository_workspace_state(
@@ -432,12 +448,67 @@ right = make_member(1200, part_number="TEST-A")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["artifact_state"] == "ready"
+    assert payload["artifact_state"] == "scopes_only"
     assert payload["manifest_counts"]["requirements"] == 2
+    assert payload["manifest"]["analysis_mode"] == "source_diagnostic"
+    assert payload["manifest"]["quantity_authority"] == "diagnostic_only"
     requirements = payload["manifest"]["requirements"]
     assert {requirement["part_number"] for requirement in requirements} == {"TEST-A"}
     assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 2
-    assert {requirement["quantity_source"] for requirement in requirements} == {"source_calls"}
+    assert {requirement["quantity_source"] for requirement in requirements} == {"diagnostic_placeholder"}
+    assert {requirement["orderable"] for requirement in requirements} == {False}
+
+
+def test_extus_procurement_analysis_uses_glb_visual_tree(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+):
+    db_design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    db_design.content = """
+def make_member(part_number):
+    return {"part_number": part_number}
+
+left = make_member("VISUAL-A")
+"""
+    model_content = make_test_glb({
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [
+            {"name": "Portal", "children": [1]},
+            {"name": "Left_Member", "children": [2, 3, 4]},
+            {"name": "mesh_1", "mesh": 0},
+            {"name": "mesh_2", "mesh": 0},
+            {"name": "mesh_3", "mesh": 0},
+        ],
+        "meshes": [{"primitives": []}],
+    })
+    add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None, model_content=model_content)
+    db_session.commit()
+
+    response = authenticated_extus_client.get("/procurement_analysis")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_verified_for_model"] is True
+    assert payload["manifest"]["analysis_mode"] == "visual_verified"
+    assert payload["manifest"]["quantity_authority"] == "visual_tree"
+    diagnostic_codes = {diagnostic["code"] for diagnostic in payload["manifest"]["diagnostics"]}
+    assert "unsupported_visual_artifact_for_analysis" not in diagnostic_codes
+    assert "invalid_gltf_json" not in diagnostic_codes
+    requirement = payload["manifest"]["requirements"][0]
+    assert requirement["part_number"] == "VISUAL-A"
+    assert requirement["quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["orderable"] is True
+    assert requirement["visual_instance_count"] == 1
 
 
 def test_extus_model_returns_404_when_active_artifact_content_is_missing(
