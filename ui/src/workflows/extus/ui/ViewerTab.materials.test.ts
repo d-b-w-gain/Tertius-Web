@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import {
   DEFAULT_MODEL_COLOR,
   buildViewerBatch,
+  createViewerMeshMaterials,
   hasAuthoredMaterialColor,
 } from './ViewerTab'
 
@@ -61,5 +62,19 @@ describe('ViewerTab material batching', () => {
     expect(batch.usesAuthoredColors).toBe(true)
     expect((batch.mesh.material as THREE.MeshStandardMaterial).vertexColors).toBe(true)
     expect(batch.mesh.geometry.getAttribute('color')).toBeDefined()
+  })
+
+  it('preserves authored part colours in selection and transparency overlay materials', () => {
+    const fallbackMaterial = new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })
+    const redMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 })
+    redMaterial.userData.tertiusAuthoredColor = true
+
+    const materials = createViewerMeshMaterials(redMaterial, fallbackMaterial)
+
+    expect((materials.base as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
+    expect((materials.highlight as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
+    expect((materials.transparent as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
+    expect((materials.transparent as THREE.MeshStandardMaterial).transparent).toBe(true)
+    expect((materials.transparentHighlight as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
   })
 })
