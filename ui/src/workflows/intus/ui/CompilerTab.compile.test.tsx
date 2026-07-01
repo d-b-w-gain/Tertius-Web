@@ -14,7 +14,8 @@ const storage = vi.hoisted(() => ({
   deleteFile: vi.fn(),
   getStatus: vi.fn(),
   getHistory: vi.fn(),
-  applyLlmFileEdit: vi.fn(),
+  applyLlmFileEditJob: vi.fn(),
+  getLlmFileEditJob: vi.fn(),
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -56,6 +57,11 @@ async function renderCompiler(isActive = true) {
   await act(async () => {})
 }
 
+function mockSuccessfulLlmFileEdit(result: unknown) {
+  storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+  storage.getLlmFileEditJob.mockResolvedValue({ job_id: 'llm-job-1', status: 'succeeded', result })
+}
+
 describe('CompilerTab compile jobs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -74,7 +80,6 @@ describe('CompilerTab compile jobs', () => {
     storage.deleteFile.mockResolvedValue(undefined)
     storage.getStatus.mockResolvedValue({ mtime: 42 })
     storage.getHistory.mockResolvedValue({ is_git: true, history: [] })
-    storage.applyLlmFileEdit.mockReset()
   })
 
   afterEach(() => {
@@ -456,7 +461,7 @@ describe('CompilerTab compile jobs', () => {
       if (file === 'helper.py') return Promise.resolve('helper content')
       return Promise.resolve('')
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -474,7 +479,7 @@ describe('CompilerTab compile jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit).toHaveBeenCalledWith(
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledWith(
         'default_purlin',
         {
           prompt: 'refactor both files',
@@ -489,6 +494,106 @@ describe('CompilerTab compile jobs', () => {
     })
   })
 
+  it('keeps polling AI edit jobs past the old fixed attempt limit', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    let statusCalls = 0
+    storage.getLlmFileEditJob.mockImplementation(() => {
+      statusCalls += 1
+      if (statusCalls <= 120) {
+        return Promise.resolve({ job_id: 'llm-job-1', status: 'queued' })
+      }
+      return Promise.resolve({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: '',
+          model: 'test-model',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+          files: [
+            { id: 'file-design-id', filename: 'design.py', content: 'design after long edit', changed: true },
+          ],
+        },
+      })
+    })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a long edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(245_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design after long edit')
+    })
+    expect(statusCalls).toBeGreaterThan(120)
+    expect(screen.queryByText(/AI file edit timed out/)).not.toBeInTheDocument()
+  }, 10000)
+
+  it('keeps polling AI edit jobs after a transient status fetch failure', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    storage.getLlmFileEditJob
+      .mockRejectedValueOnce(new Error('temporary status outage'))
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: '',
+          model: 'test-model',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+          files: [
+            { id: 'file-design-id', filename: 'design.py', content: 'design after retry', changed: true },
+          ],
+        },
+      })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a resilient edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design after retry')
+    })
+    expect(storage.getLlmFileEditJob).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
+  })
+
+  it('surfaces persistent AI edit status fetch failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    storage.getLlmFileEditJob.mockRejectedValue(new Error('LLM edit job not found'))
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a missing edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/\[ERROR\] LLM edit job not found/)).toBeInTheDocument()
+    })
+    expect(storage.getLlmFileEditJob).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('button', { name: /AI edit/i })).toBeEnabled()
+  })
+
   it('saves the active editor before submitting an AI edit', async () => {
     storage.listFileMetadata
       .mockResolvedValueOnce([
@@ -497,7 +602,7 @@ describe('CompilerTab compile jobs', () => {
       .mockResolvedValueOnce([
         { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:01:00Z' },
       ])
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -516,15 +621,15 @@ describe('CompilerTab compile jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit).toHaveBeenCalled()
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalled()
     })
     expect(storage.saveCode).toHaveBeenCalledWith('default_purlin', 'design.py', 'box = Box(9, 9, 9)')
     const saveCallOrder = storage.saveCode.mock.invocationCallOrder[0]
-    const editCallOrder = storage.applyLlmFileEdit.mock.invocationCallOrder[0]
+    const editCallOrder = storage.applyLlmFileEditJob.mock.invocationCallOrder[0]
     expect(saveCallOrder).toBeDefined()
     expect(editCallOrder).toBeDefined()
     expect(saveCallOrder!).toBeLessThan(editCallOrder!)
-    expect(storage.applyLlmFileEdit.mock.calls[0]![1].files).toEqual([
+    expect(storage.applyLlmFileEditJob.mock.calls[0]![1].files).toEqual([
       { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:01:00Z' },
     ])
   })
@@ -542,7 +647,7 @@ describe('CompilerTab compile jobs', () => {
         { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
         { id: 'file-helper-id', filename: 'helper.py', updated_at: '2026-06-17T00:01:00Z' },
       ])
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -568,7 +673,7 @@ describe('CompilerTab compile jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit.mock.calls[0]![1].files).toEqual([
+      expect(storage.applyLlmFileEditJob.mock.calls[0]![1].files).toEqual([
         { id: 'file-helper-id', filename: 'helper.py', updated_at: '2026-06-17T00:01:00Z' },
         { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
       ])
@@ -592,7 +697,7 @@ describe('CompilerTab compile jobs', () => {
       if (file === 'helper.py') return Promise.resolve('helper v1')
       return Promise.resolve('design v1')
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -625,7 +730,7 @@ describe('CompilerTab compile jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit.mock.calls[0]![1].files).toEqual([
+      expect(storage.applyLlmFileEditJob.mock.calls[0]![1].files).toEqual([
         { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:02:00Z' },
       ])
     })
@@ -676,7 +781,7 @@ describe('CompilerTab compile jobs', () => {
       updated_at: `2026-06-17T00:${String(index).padStart(2, '0')}:00Z`,
     }))
     storage.listFileMetadata.mockResolvedValue(metadata)
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -694,9 +799,9 @@ describe('CompilerTab compile jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
 
     await waitFor(() => {
-      expect(storage.applyLlmFileEdit).toHaveBeenCalled()
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalled()
     })
-    const request = storage.applyLlmFileEdit.mock.calls[0]![1]
+    const request = storage.applyLlmFileEditJob.mock.calls[0]![1]
     expect(request.files).toHaveLength(20)
     expect(request.files[0]).toEqual({
       id: 'file-design-id',
@@ -720,7 +825,7 @@ describe('CompilerTab compile jobs', () => {
 
     expect(button).toBeDisabled()
     fireEvent.click(button)
-    expect(storage.applyLlmFileEdit).not.toHaveBeenCalled()
+    expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
   })
 
   it('updates the active editor and file tabs from a successful AI edit response', async () => {
@@ -734,7 +839,7 @@ describe('CompilerTab compile jobs', () => {
       if (file === 'helper.py') return Promise.resolve('helper v1')
       return Promise.resolve('')
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -764,7 +869,7 @@ describe('CompilerTab compile jobs', () => {
       { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
     ])
     storage.loadCode.mockResolvedValue('design v1')
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'no_change',
       message: 'The design already matches.',
@@ -792,7 +897,7 @@ describe('CompilerTab compile jobs', () => {
       { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
     ])
     storage.loadCode.mockResolvedValue('design v1')
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'cannot_complete',
       message: 'A new file is required.',
@@ -825,7 +930,7 @@ describe('CompilerTab compile jobs', () => {
       if (file === 'helper.py') return Promise.resolve('helper v2 (AI updated)')
       return Promise.resolve('')
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -875,7 +980,7 @@ describe('CompilerTab compile jobs', () => {
     storage.getStatus
       .mockResolvedValueOnce({ mtime: 10 })
       .mockResolvedValueOnce({ mtime: 20 })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',
@@ -929,7 +1034,7 @@ describe('CompilerTab compile jobs', () => {
       if (file === 'helper.py') return Promise.resolve({ mtime: 200 })
       return Promise.resolve({})
     })
-    storage.applyLlmFileEdit.mockResolvedValue({
+    mockSuccessfulLlmFileEdit({
       success: true,
       outcome: 'changed',
       message: '',

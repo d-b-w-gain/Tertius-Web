@@ -540,6 +540,7 @@ def build_file_edit_messages(
     files: list[LlmEditableFile],
     *,
     system_prompt: str,
+    prior_prompts: list[str] | tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     system_prompt = file_edit_system_prompt_with_runtime_guardrails(system_prompt)
     available = [
@@ -547,7 +548,12 @@ def build_file_edit_messages(
         for file in files
     ]
     active_id = str(request.active_file_id) if request.active_file_id is not None else "none"
+    history = "\n".join(f"{i + 1}. {prompt}" for i, prompt in enumerate(prior_prompts))
+    history_block = (
+        f"Conversation history (up to 5 prompts):\n{history}\n\n" if history else ""
+    )
     user_prompt = (
+        f"{history_block}"
         f"User request:\n{request.prompt}\n\n"
         f"Active file id:\n{active_id}\n\n"
         f"Files available for editing:\n{json.dumps(available, indent=2)}\n\n"
@@ -591,11 +597,15 @@ def estimate_file_edit_usage(
     *,
     system_prompt: str,
     max_output_tokens: int,
+    prior_prompts: list[str] | tuple[str, ...] = (),
 ) -> TokenUsage:
     prompt_chars = sum(
         len(message["content"])
         for message in build_file_edit_messages(
-            request, files, system_prompt=system_prompt
+            request,
+            files,
+            system_prompt=system_prompt,
+            prior_prompts=prior_prompts,
         )
     )
     metadata_chars = sum(len(key) + len(value) for key, value in request.metadata.items())
@@ -784,6 +794,7 @@ async def generate_file_edits(
     project_id: UUID | None,
     openai_client=None,
     billing_publisher: Publisher | None = None,
+    prior_prompts: list[str] | tuple[str, ...] = (),
 ) -> LlmFileEditResult:
     if not settings.llm_api_key:
         raise LlmNotConfiguredError("LLM provider is not configured")
@@ -807,6 +818,7 @@ async def generate_file_edits(
             request,
             files,
             system_prompt=system_prompt,
+            prior_prompts=prior_prompts,
         )
         with get_tracer(__name__).start_as_current_span("llm.files.edit", attributes=attributes) as span:
             if model_config.api == "anthropic-messages":

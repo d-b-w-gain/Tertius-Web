@@ -23,6 +23,9 @@ type MockRouteState = {
   metadata?: Array<{ id: string; filename: string; updated_at?: string }>
   editStatus?: number
   editBody?: Record<string, unknown>
+  queuedStatusPolls?: number
+  failedStatusPolls?: number
+  statusPollCount?: number
 }
 
 function jsonResponse(data: unknown, ok = true, status = ok ? 200 : 500) {
@@ -46,6 +49,9 @@ function setupRoutes(state: MockRouteState = {}) {
       { id: 'file-design-id', filename: 'design.py', updated_at: '2026-06-17T00:00:00Z' },
     ],
     editStatus: 200,
+    queuedStatusPolls: 0,
+    failedStatusPolls: 0,
+    statusPollCount: 0,
     editBody: {
       success: true,
       outcome: 'changed',
@@ -66,7 +72,6 @@ function setupRoutes(state: MockRouteState = {}) {
     },
     ...state,
   }
-
   mocks.apiFetch.mockImplementation((url: string, _token: unknown, options?: RequestInit) => {
     if (url === '/api/artus/features') {
       return Promise.resolve(jsonResponse({
@@ -87,9 +92,30 @@ function setupRoutes(state: MockRouteState = {}) {
         file_metadata: routeState.metadata,
       }))
     }
-    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit` && options?.method === 'POST') {
+    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit/jobs` && options?.method === 'POST') {
       const ok = routeState.editStatus >= 200 && routeState.editStatus < 300
-      return Promise.resolve(jsonResponse(routeState.editBody, ok, routeState.editStatus))
+      return Promise.resolve(jsonResponse(
+        ok ? { success: true, job_id: 'llm-job-1', status: 'queued' } : routeState.editBody,
+        ok,
+        routeState.editStatus,
+      ))
+    }
+    if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit/jobs/llm-job-1`) {
+      routeState.statusPollCount += 1
+      if (routeState.statusPollCount <= routeState.failedStatusPolls) {
+        return Promise.reject(new Error('temporary status outage'))
+      }
+      if (routeState.statusPollCount <= routeState.queuedStatusPolls) {
+        return Promise.resolve(jsonResponse({
+          job_id: 'llm-job-1',
+          status: 'queued',
+        }))
+      }
+      return Promise.resolve(jsonResponse({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: routeState.editBody,
+      }))
     }
     if (url === `/api/intus/projects/${routeState.projectName}/compile` && options?.method === 'POST') {
       return Promise.resolve(jsonResponse({
@@ -114,7 +140,7 @@ async function renderAuthenticatedFeatureTree() {
 
 function editRequests() {
   return mocks.apiFetch.mock.calls.filter(([url, , options]) => (
-    url === '/api/intus/projects/default_purlin/files/llm-edit' && options?.method === 'POST'
+    url === '/api/intus/projects/default_purlin/files/llm-edit/jobs' && options?.method === 'POST'
   ))
 }
 
@@ -136,6 +162,7 @@ describe('FeatureTreeTab authenticated AI edit', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
   })
 
   it('calls the Intus LLM edit endpoint instead of the Artus ai_modify endpoint', async () => {
@@ -156,6 +183,63 @@ describe('FeatureTreeTab authenticated AI edit', () => {
       expect(editRequests()).toHaveLength(1)
     })
     expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/artus/ai_modify')).toBe(false)
+  })
+
+  it('keeps polling AI edit jobs past the old fixed attempt limit', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const routeState = setupRoutes({ queuedStatusPolls: 120 })
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'run a long edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await vi.advanceTimersByTimeAsync(245_000)
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI updated 1 file/)).toBeInTheDocument()
+    })
+    expect(routeState.statusPollCount).toBeGreaterThan(120)
+    expect(screen.queryByText(/AI file edit timed out/)).not.toBeInTheDocument()
+  }, 10000)
+
+  it('keeps polling AI edit jobs after a transient status fetch failure', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const routeState = setupRoutes({ failedStatusPolls: 1 })
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'run a resilient edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI updated 1 file/)).toBeInTheDocument()
+    })
+    expect(routeState.statusPollCount).toBe(2)
+    expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
+  })
+
+  it('surfaces persistent AI edit status fetch failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const routeState = setupRoutes({ failedStatusPolls: 99 })
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'run a missing edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error: temporary status outage/)).toBeInTheDocument()
+    })
+    expect(routeState.statusPollCount).toBe(3)
+    expect(screen.getByRole('button', { name: 'Apply AI' })).toBeEnabled()
   })
 
   it('sends all editable files with design.py first and active_file_id set to design.py', async () => {
@@ -308,17 +392,24 @@ describe('FeatureTreeTab authenticated AI edit', () => {
           ],
         }))
       }
-      if (url === '/api/intus/projects/project_b/files/llm-edit' && options?.method === 'POST') {
+      if (url === '/api/intus/projects/project_b/files/llm-edit/jobs' && options?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ success: true, job_id: 'job-b-edit', status: 'queued' }, true, 202))
+      }
+      if (url === '/api/intus/projects/project_b/files/llm-edit/jobs/job-b-edit') {
         return Promise.resolve(jsonResponse({
-          success: true,
-          outcome: 'changed',
-          message: '',
-          model: 'test-model',
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
-          files: [
-            { id: 'file-design-b', filename: 'design.py', content: 'project b design', changed: true },
-          ],
+          job_id: 'job-b-edit',
+          status: 'succeeded',
+          result: {
+            success: true,
+            outcome: 'changed',
+            message: '',
+            model: 'test-model',
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+            files: [
+              { id: 'file-design-b', filename: 'design.py', content: 'project b design', changed: true },
+            ],
+          },
         }))
       }
       if (url === '/api/intus/projects/project_b/compile' && options?.method === 'POST') {
@@ -344,8 +435,8 @@ describe('FeatureTreeTab authenticated AI edit', () => {
 
     fireEvent.click(applyButton)
     await waitFor(() => {
-      expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/project_b/files/llm-edit')).toBe(true)
+      expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/project_b/files/llm-edit/jobs')).toBe(true)
     })
-    expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/default_purlin/files/llm-edit')).toBe(false)
+    expect(mocks.apiFetch.mock.calls.some(([url]) => url === '/api/intus/projects/default_purlin/files/llm-edit/jobs')).toBe(false)
   })
 })

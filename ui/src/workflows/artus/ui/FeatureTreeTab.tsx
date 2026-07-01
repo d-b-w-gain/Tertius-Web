@@ -30,6 +30,7 @@ import {
 const AI_EDIT_FILE_LIMIT = 20;
 const AI_EDIT_COMPILE_FORMAT = 'glb';
 const AI_EDIT_COMPILE_QUALITY = 'sketch';
+const AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string;
@@ -1072,7 +1073,8 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
         workflow: 'artus',
         source: 'artus_feature_tree',
         active_panel: activePanel,
-      }, () => storage.applyLlmFileEdit(activeProject, {
+      }, async () => {
+        const job = await storage.applyLlmFileEditJob(activeProject, {
           prompt: prompt.trim(),
           files: requestFiles.map(file => ({
             id: file.id,
@@ -1085,7 +1087,33 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
             active_panel: activePanel,
             highlighted_node: highlightedNode || '',
           },
-        }));
+        });
+        let isFirstPoll = true;
+        let consecutiveStatusFailures = 0;
+        while (true) {
+          let status;
+          try {
+            status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+            consecutiveStatusFailures = 0;
+          } catch (error) {
+            consecutiveStatusFailures += 1;
+            if (consecutiveStatusFailures >= AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES) {
+              throw error;
+            }
+            await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+            isFirstPoll = false;
+            continue;
+          }
+          if (status.status === 'succeeded' && status.result) {
+            return status.result;
+          }
+          if (status.status === 'failed') {
+            throw new Error(status.user_message || status.error || 'AI file edit failed.');
+          }
+          await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+          isFirstPoll = false;
+        }
+      });
 
       const changedMetadata = result.files.map(file => ({
         id: file.id,
