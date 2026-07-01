@@ -1055,11 +1055,99 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 
-def test_llm_file_edit_job_does_not_retry_provider_rate_limit(
+def _stub_rate_limit_backoff_sleep(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(intus_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(intus_server.random, "uniform", lambda a, b: b)
+    return sleeps
+
+
+def test_llm_file_edit_job_retries_provider_rate_limit_with_backoff_then_succeeds(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
     enable_llm(monkeypatch)
     use_test_background_session(monkeypatch, db_session)
+    sleeps = _stub_rate_limit_backoff_sleep(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design_id = design.id
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="changed",
+        message="",
+        files=[
+            SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
+        ],
+        provider="openai-chat-completions",
+        model="test-openai-compatible-model",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+    attempts = 0
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise LlmProviderRateLimitError("LLM provider rate limit exceeded")
+        return fake_result
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+    publisher = FakeBillingPublisher()
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design_id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "succeeded"
+    assert status_body["error"] is None
+    assert status_body["result"]["files"][0]["content"] == "import helper\n"
+    assert attempts == 2
+    assert sleeps == [6]
+
+    db_session.expire_all()
+    job = db_session.get(LlmEditJob, job_id)
+    assert job.status == "succeeded"
+    assert job.attempt_count == 2
+    assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
+
+
+def test_llm_file_edit_job_retries_provider_rate_limit_up_to_four_attempts(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    sleeps = _stub_rate_limit_backoff_sleep(monkeypatch)
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -1099,6 +1187,62 @@ def test_llm_file_edit_job_does_not_retry_provider_rate_limit(
     assert status_body["error"] == "LLM provider rate limit exceeded"
     assert status_body["user_message"] == "LLM provider rate limit exceeded"
     assert status_body["retryable"] is True
+    assert attempts == 4
+    assert len(sleeps) == 3
+    assert sleeps == [6, 18, 30]
+    assert all(2.0 <= s <= 30.0 for s in sleeps)
+
+    db_session.expire_all()
+    job = db_session.get(LlmEditJob, job_id)
+    assert job.status == "failed"
+    assert job.attempt_count == 4
+    assert db_session.get(ProjectFile, design.id).content == original_content
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
+def test_llm_file_edit_job_does_not_retry_truncated_output(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+    attempts = 0
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise LlmFileEditTruncatedError("LLM output truncated before completion")
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "failed"
+    assert status_body["error"] == "LLM output truncated before completion"
     assert attempts == 1
 
     db_session.expire_all()
@@ -1106,7 +1250,6 @@ def test_llm_file_edit_job_does_not_retry_provider_rate_limit(
     assert job.status == "failed"
     assert job.attempt_count == 1
     assert db_session.get(ProjectFile, design.id).content == original_content
-    assert db_session.scalars(select(SourceSnapshot)).all() == []
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 

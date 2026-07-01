@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import asyncio
 from datetime import datetime, timezone
 import logging
+import random
 from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID, uuid4
@@ -830,6 +832,10 @@ async def _run_llm_file_edit_job_inner(
         req = LlmFileEditInput.model_validate(request_payload)
         ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
         max_generation_attempts = 2
+        max_rate_limit_attempts = 4
+        rate_limit_backoff_base_seconds = 2.0
+        rate_limit_backoff_cap_seconds = 30.0
+        previous_backoff_seconds = rate_limit_backoff_base_seconds
         while True:
             try:
                 result, snapshot, changed_files = await _run_llm_file_edit_core(
@@ -841,8 +847,23 @@ async def _run_llm_file_edit_job_inner(
                     ctx=ctx,
                 )
                 break
-            except (LlmProviderRateLimitError, LlmFileEditTruncatedError):
+            except LlmFileEditTruncatedError:
                 raise
+            except LlmProviderRateLimitError:
+                db.rollback()
+                job = job_repo.get_job(project.id, job_id)
+                if job is None or job.attempt_count >= max_rate_limit_attempts:
+                    raise
+                previous_backoff_seconds = min(
+                    rate_limit_backoff_cap_seconds,
+                    random.uniform(
+                        rate_limit_backoff_base_seconds,
+                        previous_backoff_seconds * 3,
+                    ),
+                )
+                await asyncio.sleep(previous_backoff_seconds)
+                job_repo.mark_job_dispatched(job)
+                db.commit()
             except LlmGenerationError:
                 db.rollback()
                 job = job_repo.get_job(project.id, job_id)
