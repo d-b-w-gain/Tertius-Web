@@ -841,6 +841,8 @@ async def _run_llm_file_edit_job_inner(
                     ctx=ctx,
                 )
                 break
+            except (LlmProviderRateLimitError, LlmFileEditTruncatedError):
+                raise
             except LlmGenerationError:
                 db.rollback()
                 job = job_repo.get_job(project.id, job_id)

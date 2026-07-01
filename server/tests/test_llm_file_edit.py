@@ -17,6 +17,7 @@ from core.llm_client import (
     LlmGenerationError,
     LlmInvalidFileEditError,
     LlmProviderAuthenticationError,
+    LlmProviderRateLimitError,
     TokenUsage,
 )
 from core.llm_usage import LlmUsageLimitExceeded
@@ -1050,6 +1051,61 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     db_session.expire_all()
     assert db_session.get(ProjectFile, design.id).content == original_content
     assert db_session.get(LlmEditJob, job_id).attempt_count == 1
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+
+
+def test_llm_file_edit_job_does_not_retry_provider_rate_limit(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_content = design.content
+    attempts = 0
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise LlmProviderRateLimitError("LLM provider rate limit exceeded")
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "failed"
+    assert status_body["error"] == "LLM provider rate limit exceeded"
+    assert status_body["user_message"] == "LLM provider rate limit exceeded"
+    assert status_body["retryable"] is True
+    assert attempts == 1
+
+    db_session.expire_all()
+    job = db_session.get(LlmEditJob, job_id)
+    assert job.status == "failed"
+    assert job.attempt_count == 1
+    assert db_session.get(ProjectFile, design.id).content == original_content
     assert db_session.scalars(select(SourceSnapshot)).all() == []
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
