@@ -829,14 +829,25 @@ async def _run_llm_file_edit_job_inner(
 
         req = LlmFileEditInput.model_validate(request_payload)
         ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
-        result, snapshot, changed_files = await _run_llm_file_edit_core(
-            db=db,
-            repo=repo,
-            settings=settings,
-            req=req,
-            project=project,
-            ctx=ctx,
-        )
+        max_generation_attempts = 2
+        while True:
+            try:
+                result, snapshot, changed_files = await _run_llm_file_edit_core(
+                    db=db,
+                    repo=repo,
+                    settings=settings,
+                    req=req,
+                    project=project,
+                    ctx=ctx,
+                )
+                break
+            except LlmGenerationError:
+                db.rollback()
+                job = job_repo.get_job(project.id, job_id)
+                if job is None or job.attempt_count >= max_generation_attempts:
+                    raise
+                job_repo.mark_job_dispatched(job)
+                db.commit()
         db.commit()
         job_repo.finish_job(
             job=job,

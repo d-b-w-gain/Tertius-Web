@@ -1054,6 +1054,82 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 
+def test_llm_file_edit_job_retries_generation_failure_once_then_succeeds(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design_id = design.id
+    provider_message = "LLM provider request failed (APITimeoutError): request timed out"
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="changed",
+        message="",
+        files=[
+            SimpleNamespace(file_id=design_id, content="import helper\n", summary="Use helper"),
+        ],
+        provider="openai-chat-completions",
+        model="test-openai-compatible-model",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+    attempts = 0
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise LlmGenerationError(provider_message)
+        return fake_result
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+    publisher = FakeBillingPublisher()
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design_id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "succeeded"
+    assert status_body["error"] is None
+    assert status_body["result"]["files"][0]["content"] == "import helper\n"
+    assert attempts == 2
+
+    db_session.expire_all()
+    job = db_session.get(LlmEditJob, job_id)
+    assert job.status == "succeeded"
+    assert job.attempt_count == 2
+    assert job.retryable is False
+    assert db_session.get(ProjectFile, design_id).content == "import helper\n"
+    assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
+
 def test_llm_file_edit_job_records_provider_generation_detail(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
