@@ -4,7 +4,7 @@
 
 **Goal:** Use the last 5 persisted LLM prompts from `llm_edit_jobs` as part of server-side context when calling the LLM, while keeping UI request payloads file-only and preventing stale/malicious client-side conversation state.
 
-**Architecture:** Backend constructs the full LLM message context from trusted DB state in `start_llm_file_edit_job` / `_run_llm_file_edit_job` and `llm_edit_files` before calling `llm_client.build_file_edit_messages`. The UI continues to send current file pointers and active prompt only.
+**Architecture:** Backend constructs the full LLM message context from trusted DB state in `start_llm_file_edit_job` / `_run_llm_file_edit_job` before calling `llm_client.build_file_edit_messages`. The UI continues to send current file pointers and active prompt only.
 
 **Tech Stack:** FastAPI (Python), SQLAlchemy, Pydantic, pytest, React/Vite TypeScript.
 
@@ -71,13 +71,9 @@
 ### Integration Tests
 
 - **IT-001** `server/tests/test_llm_file_edit.py`
-  - `test_sync_llm_edit_includes_last_5_prompts`
-  - Setup: seed 6 history jobs, call sync llm-edit endpoint.
-  - Verify: llm client sees prompts from job 2..6 in request and sends no UI `history` field.
-- **IT-002** `server/tests/test_llm_file_edit.py`
   - `test_async_llm_edit_job_includes_last_5_prompts`
   - Verify background path reads recent prompts before provider call.
-- **IT-003** `server/tests/test_llm_file_edit.py`
+- **IT-002** `server/tests/test_llm_file_edit.py`
   - `test_history_limit_is_project_specific`
   - Verify prompts from other project are not included.
 
@@ -191,7 +187,7 @@ def build_file_edit_messages(
 UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_llm_client.py -q
 ```
 
-## Task 3: Load last 5 prompts from DB in sync and async endpoints
+## Task 3: Load last 5 prompts from DB in async job execution
 
 **Files:**
 - Modify: `server/workflows/intus/intus_server.py`
@@ -201,16 +197,16 @@ UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_llm_client.py -q
 
 ```python
 
-def test_sync_llm_edit_includes_last_5_prompts(db_client, mock_llm_client):
+def test_async_llm_edit_job_includes_last_5_prompts(db_client, mock_llm_client):
     # seed 6 jobs for project
-    # call POST /projects/{name}/files/llm-edit
+    # call POST /projects/{name}/files/llm-edit/jobs and poll job status
     # assert mock_llm_client.build_file_edit_messages was called with prior prompts prompt-1..prompt-5
 ```
 
-- [ ] **Step 2: Thread recent prompts into sync path**
+- [ ] **Step 2: Thread recent prompts into async job path**
 
 ```python
-recent_prompts = ctx.repo.llm_edit_jobs().list_recent_prompts(project.name, limit=5)
+recent_prompts = LlmEditRepository(db, ctx.tenant_id).list_recent_prompts(project.name, limit=5)
 result = await llm_client.generate_file_edits(
     request=request,
     files=file_payloads,
@@ -245,4 +241,4 @@ UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_llm_file_edit.py -q
 - History order in prompt is oldest→newest (most recent 5).
 - No UI payload fields for conversation history are required.
 - Old conversation listing endpoint behavior remains unchanged.
-- Added/updated tests cover sync + async route wiring and builder formatting.
+- Added/updated tests cover async route wiring, polling/history behavior, and builder formatting.

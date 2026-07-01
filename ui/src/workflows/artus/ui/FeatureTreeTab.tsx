@@ -1089,7 +1089,14 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
         });
         let isFirstPoll = true;
         while (true) {
-          const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          let status;
+          try {
+            status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          } catch {
+            await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+            isFirstPoll = false;
+            continue;
+          }
           if (status.status === 'succeeded' && status.result) {
             return status.result;
           }

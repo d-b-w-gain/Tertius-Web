@@ -24,6 +24,7 @@ type MockRouteState = {
   editStatus?: number
   editBody?: Record<string, unknown>
   queuedStatusPolls?: number
+  failedStatusPolls?: number
   statusPollCount?: number
 }
 
@@ -49,6 +50,7 @@ function setupRoutes(state: MockRouteState = {}) {
     ],
     editStatus: 200,
     queuedStatusPolls: 0,
+    failedStatusPolls: 0,
     statusPollCount: 0,
     editBody: {
       success: true,
@@ -100,6 +102,9 @@ function setupRoutes(state: MockRouteState = {}) {
     }
     if (url === `/api/intus/projects/${routeState.projectName}/files/llm-edit/jobs/llm-job-1`) {
       routeState.statusPollCount += 1
+      if (routeState.statusPollCount <= routeState.failedStatusPolls) {
+        return Promise.reject(new Error('temporary status outage'))
+      }
       if (routeState.statusPollCount <= routeState.queuedStatusPolls) {
         return Promise.resolve(jsonResponse({
           job_id: 'llm-job-1',
@@ -198,6 +203,25 @@ describe('FeatureTreeTab authenticated AI edit', () => {
     expect(routeState.statusPollCount).toBeGreaterThan(120)
     expect(screen.queryByText(/AI file edit timed out/)).not.toBeInTheDocument()
   }, 10000)
+
+  it('keeps polling AI edit jobs after a transient status fetch failure', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const routeState = setupRoutes({ failedStatusPolls: 1 })
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'run a resilient edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await vi.advanceTimersByTimeAsync(2_500)
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI updated 1 file/)).toBeInTheDocument()
+    })
+    expect(routeState.statusPollCount).toBe(2)
+    expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
+  })
 
   it('sends all editable files with design.py first and active_file_id set to design.py', async () => {
     setupRoutes({

@@ -536,6 +536,43 @@ describe('CompilerTab compile jobs', () => {
     expect(screen.queryByText(/AI file edit timed out/)).not.toBeInTheDocument()
   }, 10000)
 
+  it('keeps polling AI edit jobs after a transient status fetch failure', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    storage.getLlmFileEditJob
+      .mockRejectedValueOnce(new Error('temporary status outage'))
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: '',
+          model: 'test-model',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
+          files: [
+            { id: 'file-design-id', filename: 'design.py', content: 'design after retry', changed: true },
+          ],
+        },
+      })
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a resilient edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('code editor')).toHaveValue('design after retry')
+    })
+    expect(storage.getLlmFileEditJob).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
+  })
+
   it('saves the active editor before submitting an AI edit', async () => {
     storage.listFileMetadata
       .mockResolvedValueOnce([

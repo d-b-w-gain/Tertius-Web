@@ -563,7 +563,14 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         let result = null;
         let isFirstPoll = true;
         while (!result) {
-          const status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          let status;
+          try {
+            status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+          } catch {
+            await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+            isFirstPoll = false;
+            continue;
+          }
           if (status.status === 'succeeded' && status.result) {
             result = status.result;
             break;
