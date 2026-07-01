@@ -107,6 +107,10 @@ Non-secret provider settings are rendered into the app ConfigMap:
 - `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`
 - `app.config.llmFileEditMaxContextFiles` -> `LLM_FILE_EDIT_MAX_CONTEXT_FILES`
 - `app.config.llmFileEditMaxContextChars` -> `LLM_FILE_EDIT_MAX_CONTEXT_CHARS`
+- `app.config.llmFileEditMaxGenerationAttempts` -> `LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS`
+- `app.config.llmFileEditMaxRateLimitAttempts` -> `LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS`
+- `app.config.llmFileEditRateLimitBackoffBaseSeconds` -> `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS`
+- `app.config.llmFileEditRateLimitBackoffCapSeconds` -> `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS`
 - `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
 - `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
 - `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`

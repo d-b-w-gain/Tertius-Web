@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import asyncio
 from datetime import datetime, timezone
 import logging
+import random
 from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID, uuid4
@@ -590,7 +592,16 @@ def _serialize_llm_edit_history_message(
 def _llm_edit_stale_after_seconds(settings) -> int:
     # OpenAI-compatible clients retry provider timeouts by default. Keep the
     # watchdog outside that retry window so polling cannot fail a live job.
-    return settings.llm_timeout_seconds * 4 + 30
+    provider_retry_window_seconds = settings.llm_timeout_seconds * 4 + 30
+    max_attempts = max(
+        settings.llm_file_edit_max_generation_attempts,
+        settings.llm_file_edit_max_rate_limit_attempts,
+    )
+    max_rate_limit_backoff_seconds = (
+        max(0, settings.llm_file_edit_max_rate_limit_attempts - 1)
+        * settings.llm_file_edit_rate_limit_backoff_cap_seconds
+    )
+    return int(provider_retry_window_seconds * max_attempts + max_rate_limit_backoff_seconds)
 
 
 async def _run_llm_file_edit_core(
@@ -829,14 +840,46 @@ async def _run_llm_file_edit_job_inner(
 
         req = LlmFileEditInput.model_validate(request_payload)
         ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
-        result, snapshot, changed_files = await _run_llm_file_edit_core(
-            db=db,
-            repo=repo,
-            settings=settings,
-            req=req,
-            project=project,
-            ctx=ctx,
-        )
+        max_generation_attempts = settings.llm_file_edit_max_generation_attempts
+        max_rate_limit_attempts = settings.llm_file_edit_max_rate_limit_attempts
+        rate_limit_backoff_base_seconds = settings.llm_file_edit_rate_limit_backoff_base_seconds
+        rate_limit_backoff_cap_seconds = settings.llm_file_edit_rate_limit_backoff_cap_seconds
+        previous_backoff_seconds = rate_limit_backoff_base_seconds
+        while True:
+            try:
+                result, snapshot, changed_files = await _run_llm_file_edit_core(
+                    db=db,
+                    repo=repo,
+                    settings=settings,
+                    req=req,
+                    project=project,
+                    ctx=ctx,
+                )
+                break
+            except LlmFileEditTruncatedError:
+                raise
+            except LlmProviderRateLimitError:
+                db.rollback()
+                job = job_repo.get_job(project.id, job_id)
+                if job is None or job.attempt_count >= max_rate_limit_attempts:
+                    raise
+                previous_backoff_seconds = min(
+                    rate_limit_backoff_cap_seconds,
+                    random.uniform(
+                        rate_limit_backoff_base_seconds,
+                        previous_backoff_seconds * 3,
+                    ),
+                )
+                await asyncio.sleep(previous_backoff_seconds)
+                job_repo.mark_job_dispatched(job)
+                db.commit()
+            except LlmGenerationError:
+                db.rollback()
+                job = job_repo.get_job(project.id, job_id)
+                if job is None or job.attempt_count >= max_generation_attempts:
+                    raise
+                job_repo.mark_job_dispatched(job)
+                db.commit()
         db.commit()
         job_repo.finish_job(
             job=job,
