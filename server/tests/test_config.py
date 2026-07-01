@@ -205,6 +205,10 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
         "LLM_FILE_EDIT_MAX_OUTPUT_TOKENS",
         "LLM_FILE_EDIT_MAX_CONTEXT_FILES",
         "LLM_FILE_EDIT_MAX_CONTEXT_CHARS",
+        "LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS",
+        "LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS",
+        "LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS",
+        "LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS",
         "LLM_USER_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_DAILY_TOKEN_QUOTA",
@@ -234,6 +238,10 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     assert settings.llm_file_edit_max_output_tokens == 65536
     assert settings.llm_file_edit_max_context_files == 20
     assert settings.llm_file_edit_max_context_chars == 80000
+    assert settings.llm_file_edit_max_generation_attempts == 2
+    assert settings.llm_file_edit_max_rate_limit_attempts == 4
+    assert settings.llm_file_edit_rate_limit_backoff_base_seconds == 2.0
+    assert settings.llm_file_edit_rate_limit_backoff_cap_seconds == 30.0
     assert settings.llm_user_rate_limit_per_minute == 10
     assert settings.llm_tenant_rate_limit_per_minute == 60
     assert settings.llm_tenant_daily_token_quota == 3200000
@@ -254,6 +262,10 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_OUTPUT_TOKENS", "4096")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_FILES", "6")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_CHARS", "50000")
+    monkeypatch.setenv("LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS", "3")
+    monkeypatch.setenv("LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS", "5")
+    monkeypatch.setenv("LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS", "1.5")
+    monkeypatch.setenv("LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS", "12.5")
     monkeypatch.setenv("LLM_USER_RATE_LIMIT_PER_MINUTE", "5")
     monkeypatch.setenv("LLM_TENANT_RATE_LIMIT_PER_MINUTE", "25")
     monkeypatch.setenv("LLM_TENANT_DAILY_TOKEN_QUOTA", "50000")
@@ -275,6 +287,10 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     assert settings.llm_file_edit_max_output_tokens == 4096
     assert settings.llm_file_edit_max_context_files == 6
     assert settings.llm_file_edit_max_context_chars == 50000
+    assert settings.llm_file_edit_max_generation_attempts == 3
+    assert settings.llm_file_edit_max_rate_limit_attempts == 5
+    assert settings.llm_file_edit_rate_limit_backoff_base_seconds == 1.5
+    assert settings.llm_file_edit_rate_limit_backoff_cap_seconds == 12.5
     assert settings.llm_user_rate_limit_per_minute == 5
     assert settings.llm_tenant_rate_limit_per_minute == 25
     assert settings.llm_tenant_daily_token_quota == 50000

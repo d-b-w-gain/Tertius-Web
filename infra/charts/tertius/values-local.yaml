@@ -89,6 +89,10 @@ app:
     llmFileEditMaxOutputTokens: 65536
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 80000
+    llmFileEditMaxGenerationAttempts: 2
+    llmFileEditMaxRateLimitAttempts: 4
+    llmFileEditRateLimitBackoffBaseSeconds: 2.0
+    llmFileEditRateLimitBackoffCapSeconds: 30.0
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"

@@ -592,7 +592,16 @@ def _serialize_llm_edit_history_message(
 def _llm_edit_stale_after_seconds(settings) -> int:
     # OpenAI-compatible clients retry provider timeouts by default. Keep the
     # watchdog outside that retry window so polling cannot fail a live job.
-    return settings.llm_timeout_seconds * 4 + 30
+    provider_retry_window_seconds = settings.llm_timeout_seconds * 4 + 30
+    max_attempts = max(
+        settings.llm_file_edit_max_generation_attempts,
+        settings.llm_file_edit_max_rate_limit_attempts,
+    )
+    max_rate_limit_backoff_seconds = (
+        max(0, settings.llm_file_edit_max_rate_limit_attempts - 1)
+        * settings.llm_file_edit_rate_limit_backoff_cap_seconds
+    )
+    return int(provider_retry_window_seconds * max_attempts + max_rate_limit_backoff_seconds)
 
 
 async def _run_llm_file_edit_core(

@@ -51,6 +51,10 @@ prompts.
 | `app.config.llmFileEditMaxOutputTokens` | `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS` | API | File-edit output cap. |
 | `app.config.llmFileEditMaxContextFiles` | `LLM_FILE_EDIT_MAX_CONTEXT_FILES` | API | File-edit context file cap. |
 | `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | File-edit context character cap. |
+| `app.config.llmFileEditMaxGenerationAttempts` | `LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS` | API | File-edit transient generation attempt cap. |
+| `app.config.llmFileEditMaxRateLimitAttempts` | `LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS` | API | File-edit provider rate-limit attempt cap. |
+| `app.config.llmFileEditRateLimitBackoffBaseSeconds` | `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS` | API | File-edit rate-limit backoff base seconds. |
+| `app.config.llmFileEditRateLimitBackoffCapSeconds` | `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS` | API | File-edit rate-limit backoff cap seconds. |
 | `app.config.llmUserRateLimitPerMinute` | `LLM_USER_RATE_LIMIT_PER_MINUTE` | API | Per-user LLM request rate. |
 | `app.config.llmTenantRateLimitPerMinute` | `LLM_TENANT_RATE_LIMIT_PER_MINUTE` | API | Per-tenant LLM request rate. |
 | `app.config.llmTenantDailyTokenQuota` | `LLM_TENANT_DAILY_TOKEN_QUOTA` | API | Tenant daily token fallback quota. |

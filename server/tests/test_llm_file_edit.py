@@ -1372,6 +1372,17 @@ def test_llm_file_edit_job_records_provider_generation_detail(
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 
+def test_llm_file_edit_stale_window_covers_retry_attempts():
+    settings = make_llm_settings(
+        llm_timeout_seconds=1,
+        llm_file_edit_max_generation_attempts=2,
+        llm_file_edit_max_rate_limit_attempts=4,
+        llm_file_edit_rate_limit_backoff_cap_seconds=30.0,
+    )
+
+    assert intus_server._llm_edit_stale_after_seconds(settings) == 226
+
+
 def test_llm_file_edit_job_list_returns_history_with_compile_and_reconciles_stale_jobs(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):

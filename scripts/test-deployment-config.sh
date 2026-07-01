@@ -412,6 +412,11 @@ if ! rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 
   exit 1
 fi
 
+if ! rg -q 'LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS: "2"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS: "4"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS: "2(\.0)?"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS: "30(\.0)?"' <<<"$rendered"; then
+  echo "ConfigMap must render file-edit-specific LLM retry controls." >&2
+  exit 1
+fi
+
 if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET' <<<"$app_configmap"; then
   echo "ConfigMap must not render LLM provider secrets, prompts, or auth client/session secrets." >&2
   exit 1
