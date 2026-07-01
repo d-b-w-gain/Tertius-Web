@@ -831,10 +831,10 @@ async def _run_llm_file_edit_job_inner(
 
         req = LlmFileEditInput.model_validate(request_payload)
         ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
-        max_generation_attempts = 2
-        max_rate_limit_attempts = 4
-        rate_limit_backoff_base_seconds = 2.0
-        rate_limit_backoff_cap_seconds = 30.0
+        max_generation_attempts = settings.llm_file_edit_max_generation_attempts
+        max_rate_limit_attempts = settings.llm_file_edit_max_rate_limit_attempts
+        rate_limit_backoff_base_seconds = settings.llm_file_edit_rate_limit_backoff_base_seconds
+        rate_limit_backoff_cap_seconds = settings.llm_file_edit_rate_limit_backoff_cap_seconds
         previous_backoff_seconds = rate_limit_backoff_base_seconds
         while True:
             try:

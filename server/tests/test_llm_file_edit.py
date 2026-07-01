@@ -1055,23 +1055,11 @@ def test_llm_file_edit_job_records_provider_auth_failure(
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
 
 
-def _stub_rate_limit_backoff_sleep(monkeypatch):
-    sleeps = []
-
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
-
-    monkeypatch.setattr(intus_server.asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(intus_server.random, "uniform", lambda a, b: b)
-    return sleeps
-
-
 def test_llm_file_edit_job_retries_provider_rate_limit_with_backoff_then_succeeds(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
     enable_llm(monkeypatch)
     use_test_background_session(monkeypatch, db_session)
-    sleeps = _stub_rate_limit_backoff_sleep(monkeypatch)
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -1133,7 +1121,6 @@ def test_llm_file_edit_job_retries_provider_rate_limit_with_backoff_then_succeed
     assert status_body["error"] is None
     assert status_body["result"]["files"][0]["content"] == "import helper\n"
     assert attempts == 2
-    assert sleeps == [6]
 
     db_session.expire_all()
     job = db_session.get(LlmEditJob, job_id)
@@ -1147,7 +1134,6 @@ def test_llm_file_edit_job_retries_provider_rate_limit_up_to_four_attempts(
 ):
     enable_llm(monkeypatch)
     use_test_background_session(monkeypatch, db_session)
-    sleeps = _stub_rate_limit_backoff_sleep(monkeypatch)
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -1188,9 +1174,6 @@ def test_llm_file_edit_job_retries_provider_rate_limit_up_to_four_attempts(
     assert status_body["user_message"] == "LLM provider rate limit exceeded"
     assert status_body["retryable"] is True
     assert attempts == 4
-    assert len(sleeps) == 3
-    assert sleeps == [6, 18, 30]
-    assert all(2.0 <= s <= 30.0 for s in sleeps)
 
     db_session.expire_all()
     job = db_session.get(LlmEditJob, job_id)

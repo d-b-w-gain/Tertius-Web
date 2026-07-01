@@ -29,6 +29,8 @@ def make_llm_settings(**overrides: Any) -> Settings:
         "llm_models_json": TEST_LLM_MODELS_JSON,
         "llm_default_model_id": TEST_LLM_MODEL_ID,
         "llm_file_edit_system_prompt": TEST_FILE_EDIT_SYSTEM_PROMPT,
+        "llm_file_edit_rate_limit_backoff_base_seconds": 0.0,
+        "llm_file_edit_rate_limit_backoff_cap_seconds": 0.0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
