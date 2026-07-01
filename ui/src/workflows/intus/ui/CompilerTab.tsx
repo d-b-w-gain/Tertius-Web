@@ -19,6 +19,7 @@ const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
 const COMPILE_STATUS_POLL_MS = 2_000;
 const COMPILE_STATUS_RETRY_MS = 3_000;
 const AI_EDIT_FILE_LIMIT = 20;
+const AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -562,11 +563,17 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         });
         let result = null;
         let isFirstPoll = true;
+        let consecutiveStatusFailures = 0;
         while (!result) {
           let status;
           try {
             status = await storage.getLlmFileEditJob(activeProject, job.job_id);
-          } catch {
+            consecutiveStatusFailures = 0;
+          } catch (error) {
+            consecutiveStatusFailures += 1;
+            if (consecutiveStatusFailures >= AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES) {
+              throw error;
+            }
             await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
             isFirstPoll = false;
             continue;

@@ -30,6 +30,7 @@ import {
 const AI_EDIT_FILE_LIMIT = 20;
 const AI_EDIT_COMPILE_FORMAT = 'glb';
 const AI_EDIT_COMPILE_QUALITY = 'sketch';
+const AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string;
@@ -1088,11 +1089,17 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
           },
         });
         let isFirstPoll = true;
+        let consecutiveStatusFailures = 0;
         while (true) {
           let status;
           try {
             status = await storage.getLlmFileEditJob(activeProject, job.job_id);
-          } catch {
+            consecutiveStatusFailures = 0;
+          } catch (error) {
+            consecutiveStatusFailures += 1;
+            if (consecutiveStatusFailures >= AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES) {
+              throw error;
+            }
             await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
             isFirstPoll = false;
             continue;

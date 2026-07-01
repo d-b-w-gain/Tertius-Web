@@ -335,6 +335,139 @@ def test_llm_file_edit_job_includes_recent_prompts_excluding_current_job(
     ]
 
 
+def test_llm_file_edit_job_rejects_cross_tenant_file_pointer_before_enqueue(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    other_user = AppUser(id=uuid4(), keycloak_subject="kc-other", email="other@example.com")
+    other_tenant = Tenant(id=uuid4(), name="Other Tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    other_project = Project(
+        id=uuid4(), tenant_id=other_tenant.id, name="other_project", created_by=other_user.id
+    )
+    db_session.add(other_project)
+    db_session.flush()
+    other_file = ProjectFile(
+        tenant_id=other_tenant.id,
+        project_id=other_project.id,
+        filename="other.py",
+        content="x = 1\n",
+    )
+    db_session.add(other_file)
+    db_session.commit()
+
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    provider_called = False
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider should not be called for cross-tenant request")
+
+    async def fake_create_billing_publisher(settings):
+        raise AssertionError("billing publisher should not be opened for cross-tenant request")
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [
+                file_pointer(design),
+                file_pointer(other_file),
+            ],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"success": False, "error": "File not found"}
+    assert provider_called is False
+    assert db_session.scalar(
+        select(func.count()).select_from(LlmEditJob).where(
+            LlmEditJob.tenant_id == seeded_tenant.tenant_id,
+        )
+    ) == 0
+
+
+def test_llm_file_edit_job_detects_file_version_change_before_persist(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_llm(monkeypatch)
+    use_test_background_session(monkeypatch, db_session)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    original_pointer = file_pointer(design)
+    original_updated_at = design.updated_at
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="changed",
+        message="",
+        files=[
+            SimpleNamespace(file_id=design.id, content="import helper\n", summary="Use helper"),
+        ],
+        provider="openai-chat-completions",
+        model="test-openai-compatible-model",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+
+    async def fake_generate_file_edits(*args, **kwargs):
+        design.content = "user changed while llm ran\n"
+        design.updated_at = original_updated_at + timedelta(seconds=1)
+        db_session.commit()
+        return fake_result
+
+    publisher = FakeBillingPublisher()
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "generate_file_edits", fake_generate_file_edits)
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [original_pointer],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+
+    db_session.expire_all()
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body["status"] == "failed"
+    assert status_body["error"] == "Files changed while AI edit was running. Reload and try again."
+    assert status_body["user_message"] == "Files changed while AI edit was running. Reload and try again."
+    assert status_body["retryable"] is False
+    assert db_session.get(ProjectFile, design.id).content == "user changed while llm ran\n"
+    assert db_session.scalars(select(SourceSnapshot)).all() == []
+    assert db_session.scalars(select(LlmUsageRecord)).all() == []
+    assert publisher.published == []
+
+
 def test_llm_file_edit_job_records_provider_auth_failure(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):

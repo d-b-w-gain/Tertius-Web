@@ -573,6 +573,27 @@ describe('CompilerTab compile jobs', () => {
     expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
   })
 
+  it('surfaces persistent AI edit status fetch failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob.mockResolvedValue({ success: true, job_id: 'llm-job-1', status: 'queued' })
+    storage.getLlmFileEditJob.mockRejectedValue(new Error('LLM edit job not found'))
+
+    await renderCompiler()
+
+    fireEvent.change(screen.getByLabelText('AI prompt'), { target: { value: 'run a missing edit' } })
+    fireEvent.click(screen.getByRole('button', { name: /AI edit/i }))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/\[ERROR\] LLM edit job not found/)).toBeInTheDocument()
+    })
+    expect(storage.getLlmFileEditJob).toHaveBeenCalledTimes(3)
+    expect(screen.getByRole('button', { name: /AI edit/i })).toBeEnabled()
+  })
+
   it('saves the active editor before submitting an AI edit', async () => {
     storage.listFileMetadata
       .mockResolvedValueOnce([

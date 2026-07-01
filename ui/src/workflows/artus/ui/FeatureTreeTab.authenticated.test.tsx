@@ -223,6 +223,25 @@ describe('FeatureTreeTab authenticated AI edit', () => {
     expect(screen.queryByText(/temporary status outage/)).not.toBeInTheDocument()
   })
 
+  it('surfaces persistent AI edit status fetch failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const routeState = setupRoutes({ failedStatusPolls: 99 })
+    await renderAuthenticatedFeatureTree()
+
+    fireEvent.change(aiPromptInput(), {
+      target: { value: 'run a missing edit' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply AI' }))
+
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error: temporary status outage/)).toBeInTheDocument()
+    })
+    expect(routeState.statusPollCount).toBe(3)
+    expect(screen.getByRole('button', { name: 'Apply AI' })).toBeEnabled()
+  })
+
   it('sends all editable files with design.py first and active_file_id set to design.py', async () => {
     setupRoutes({
       metadata: [

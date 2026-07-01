@@ -83,7 +83,7 @@
 - Modify: `server/core/repositories.py`
 - Test: `server/tests/test_repositories.py`
 
-- [ ] **Step 1: Write tests**
+- [x] **Step 1: Write tests**
 
 ```python
 from core.models import LlmEditJob
@@ -96,13 +96,10 @@ def test_list_recent_prompts_returns_five_latest_in_chronological_order(db_sessi
 
     for i in range(6):
         repo.start_job(
-            project_name=project.name,
-            payload={"prompt": f"prompt-{i}"},
-            file_ids=[],
-            requested_by=project.owner_id,
-            active_file_id=None,
-            request_metadata={},
-            status="done",
+            project.id,
+            project.owner_id,
+            {"prompt": f"prompt-{i}", "files": []},
+            status="succeeded",
         )
     db_session.commit()
 
@@ -116,33 +113,43 @@ Run:
 UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_repositories.py -q
 ```
 
-- [ ] **Step 2: Implement repository helper**
+- [x] **Step 2: Implement repository helper**
 
 ```python
-def list_recent_prompts(self, project_name: str, limit: int = 5) -> list[str]:
-    project = self.get_project(project_name)
-    if not project:
+def list_recent_prompts(
+    self,
+    project_name: str,
+    *,
+    limit: int = 5,
+    exclude_job_id: UUID | None = None,
+) -> list[str]:
+    project = self.db.scalar(
+        select(Project).where(Project.tenant_id == self.tenant_id, Project.name == project_name)
+    )
+    if project is None:
         return []
-    rows = (
-        self.db.query(LlmEditJob)
-        .filter(
+
+    stmt = (
+        select(LlmEditJob)
+        .where(
             LlmEditJob.tenant_id == self.tenant_id,
             LlmEditJob.project_id == project.id,
-            LlmEditJob.request_payload.op("?", "$.prompt").as_string().isnot(None),
         )
         .order_by(LlmEditJob.created_at.desc(), LlmEditJob.id.desc())
-        .limit(limit)
-        .all()
+        .limit(max(1, min(limit, 200)))
     )
-    return list(
-        filter(
-            None,
-            (job.request_payload.get("prompt") for job in reversed(rows)),
-        )
-    )
+    if exclude_job_id is not None:
+        stmt = stmt.where(LlmEditJob.id != exclude_job_id)
+
+    prompts = []
+    for job in reversed(list(self.db.scalars(stmt).all())):
+        payload = job.request_payload
+        if isinstance(payload, dict) and isinstance(payload.get("prompt"), str):
+            prompts.append(payload["prompt"])
+    return prompts
 ```
 
-- [ ] **Step 3: Run repository tests**
+- [x] **Step 3: Run repository tests**
 
 ```bash
 UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_repositories.py -q
@@ -154,7 +161,7 @@ UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_repositories.py -q
 - Modify: `server/core/llm_client.py`
 - Test: `server/tests/test_llm_client.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```python
 def test_build_file_edit_messages_includes_prior_prompts():
@@ -165,7 +172,7 @@ def test_build_file_edit_messages_includes_prior_prompts():
     assert "Current prompt:\nnow" in user_msg
 ```
 
-- [ ] **Step 2: Update builder signature and implementation**
+- [x] **Step 2: Update builder signature and implementation**
 
 ```python
 def build_file_edit_messages(
@@ -181,7 +188,7 @@ def build_file_edit_messages(
     user_message = f"{history_block}User prompt:\n{request.prompt}"
 ```
 
-- [ ] **Step 3: Run llm-client tests**
+- [x] **Step 3: Run llm-client tests**
 
 ```bash
 UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_llm_client.py -q
@@ -193,7 +200,7 @@ UV_CACHE_DIR=.uv-cache rtk uv run pytest server/tests/test_llm_client.py -q
 - Modify: `server/workflows/intus/intus_server.py`
 - Test: `server/tests/test_llm_file_edit.py`
 
-- [ ] **Step 1: Write endpoint tests**
+- [x] **Step 1: Write endpoint tests**
 
 ```python
 
@@ -203,7 +210,7 @@ def test_async_llm_edit_job_includes_last_5_prompts(db_client, mock_llm_client):
     # assert mock_llm_client.build_file_edit_messages was called with prior prompts prompt-1..prompt-5
 ```
 
-- [ ] **Step 2: Thread recent prompts into async job path**
+- [x] **Step 2: Thread recent prompts into async job path**
 
 ```python
 recent_prompts = LlmEditRepository(db, ctx.tenant_id).list_recent_prompts(project.name, limit=5)
@@ -215,14 +222,14 @@ result = await llm_client.generate_file_edits(
 )
 ```
 
-- [ ] **Step 3: Thread recent prompts into async path**
+- [x] **Step 3: Thread recent prompts into async path**
 
 ```python
 recent_prompts = project_repo.llm_edit_jobs().list_recent_prompts(project_name, limit=5)
 result = await generate_file_edits(..., prior_prompts=recent_prompts, ...)
 ```
 
-- [ ] **Step 4: Add contract tests for async path and tenant scoping**
+- [x] **Step 4: Add contract tests for async path and tenant scoping**
 
 Run:
 
