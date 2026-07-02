@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import desc, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
@@ -760,6 +760,40 @@ class LlmEditRepository:
                 .limit(normalized_limit)
             )
         )
+
+    def list_recent_prompts(
+        self,
+        project_name: str,
+        *,
+        limit: int = 5,
+        exclude_job_id: UUID | None = None,
+    ) -> list[str]:
+        project = self.db.scalar(
+            select(Project).where(Project.tenant_id == self.tenant_id, Project.name == project_name)
+        )
+        if project is None:
+            return []
+        normalized_limit = max(1, min(limit, 200))
+        stmt = (
+            select(LlmEditJob)
+            .where(
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == project.id,
+            )
+            .order_by(desc(LlmEditJob.created_at), desc(LlmEditJob.id))
+            .limit(normalized_limit)
+        )
+        if exclude_job_id is not None:
+            stmt = stmt.where(LlmEditJob.id != exclude_job_id)
+        jobs = list(self.db.scalars(stmt).all())
+        prompts: list[str] = []
+        for job in reversed(jobs):
+            payload = job.request_payload
+            if isinstance(payload, dict):
+                prompt = payload.get("prompt")
+                if isinstance(prompt, str):
+                    prompts.append(prompt)
+        return prompts
 
     def get_compile_job_for_llm_edit(self, project_id: UUID, llm_edit_job_id: UUID) -> CompileJob | None:
         return self.db.scalar(

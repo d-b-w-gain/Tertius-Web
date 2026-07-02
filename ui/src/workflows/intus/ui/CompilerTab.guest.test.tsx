@@ -12,7 +12,7 @@ const storage = vi.hoisted(() => ({
   deleteFile: vi.fn(),
   getStatus: vi.fn(),
   getHistory: vi.fn(),
-  applyLlmFileEdit: vi.fn(),
+  applyLlmFileEditJob: vi.fn(),
 }))
 
 const mocks = vi.hoisted(() => ({
@@ -36,7 +36,7 @@ vi.mock('../../shared/projectStorage', async (importOriginal) => {
   return {
     createProjectStorage: (options: Parameters<typeof actual.createProjectStorage>[0]) => {
       const real = actual.createProjectStorage(options)
-      return { ...real, applyLlmFileEdit: storage.applyLlmFileEdit }
+      return { ...real, applyLlmFileEditJob: storage.applyLlmFileEditJob }
     },
   }
 })
@@ -113,21 +113,11 @@ describe('CompilerTab guest mode', () => {
     expect(screen.queryByRole('button', { name: /AI edit/i })).not.toBeInTheDocument()
   })
 
-  it('never invokes storage.applyLlmFileEdit for guests', async () => {
-    storage.applyLlmFileEdit.mockResolvedValue({
-      success: true,
-      outcome: 'changed',
-      message: '',
-      model: 'test-model',
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      snapshot: { id: 'snap-1', message: 'edit', content_hash: 'hash' },
-      files: [],
-    })
-
+  it('never invokes storage.applyLlmFileEditJob for guests', async () => {
     render(<CompilerTab serverUrl="/api/intus" isActive />)
 
     await screen.findByLabelText('code editor')
 
-    expect(storage.applyLlmFileEdit).not.toHaveBeenCalled()
+    expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
   })
 })

@@ -19,6 +19,7 @@ const COMPILE_STATUS_INITIAL_DELAY_MS = 1_000;
 const COMPILE_STATUS_POLL_MS = 2_000;
 const COMPILE_STATUS_RETRY_MS = 3_000;
 const AI_EDIT_FILE_LIMIT = 20;
+const AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -554,12 +555,39 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
         if (latestMetadata.length > AI_EDIT_FILE_LIMIT) {
           setLog(prev => `${prev ? `${prev}\n` : ''}[INFO] AI edit includes ${AI_EDIT_FILE_LIMIT} of ${latestMetadata.length} files.`);
         }
-        const result = await storage.applyLlmFileEdit(activeProject, {
+        const job = await storage.applyLlmFileEditJob(activeProject, {
           prompt: aiPrompt.trim(),
           files: requestFiles.map(file => ({ id: file.id, filename: file.filename, updated_at: file.updated_at! })),
           active_file_id: activeMetadata?.id,
           metadata: { source: 'compiler_tab' },
         });
+        let result = null;
+        let isFirstPoll = true;
+        let consecutiveStatusFailures = 0;
+        while (!result) {
+          let status;
+          try {
+            status = await storage.getLlmFileEditJob(activeProject, job.job_id);
+            consecutiveStatusFailures = 0;
+          } catch (error) {
+            consecutiveStatusFailures += 1;
+            if (consecutiveStatusFailures >= AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES) {
+              throw error;
+            }
+            await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+            isFirstPoll = false;
+            continue;
+          }
+          if (status.status === 'succeeded' && status.result) {
+            result = status.result;
+            break;
+          }
+          if (status.status === 'failed') {
+            throw new Error(status.user_message || status.error || 'AI file edit failed.');
+          }
+          await new Promise(resolve => window.setTimeout(resolve, isFirstPoll ? 500 : 2000));
+          isFirstPoll = false;
+        }
         setAiPrompt('');
         if (result.outcome === 'changed') {
           const nextMetadata = result.files.map(file => ({

@@ -612,6 +612,7 @@ async def _run_llm_file_edit_core(
     req,
     project,
     ctx,
+    exclude_prompt_job_id: UUID | None = None,
 ) -> tuple[Any, Any, list]:
     request_files = req.files
     for pointer in request_files:
@@ -647,6 +648,11 @@ async def _run_llm_file_edit_core(
         raise LlmNotConfiguredError("LLM provider is not configured")
 
     model_config = select_llm_model(settings, req.model_id)
+    recent_prompts = LlmEditRepository(db, ctx.tenant_id).list_recent_prompts(
+        project.name,
+        limit=5,
+        exclude_job_id=exclude_prompt_job_id,
+    )
     selected_files = select_llm_edit_context_files(
         prompt=req.prompt,
         active_file_id=req.active_file_id,
@@ -659,6 +665,7 @@ async def _run_llm_file_edit_core(
         selected_files,
         max_output_tokens=settings.llm_file_edit_max_output_tokens,
         system_prompt=settings.llm_file_edit_system_prompt,
+        prior_prompts=recent_prompts,
     )
     assert_llm_usage_allowed(
         db,
@@ -674,6 +681,7 @@ async def _run_llm_file_edit_core(
         settings=settings,
         auth=ctx,
         project_id=project.id,
+        prior_prompts=recent_prompts,
     )
 
     changed_files: list = []
@@ -854,6 +862,7 @@ async def _run_llm_file_edit_job_inner(
                     req=req,
                     project=project,
                     ctx=ctx,
+                    exclude_prompt_job_id=job_id,
                 )
                 break
             except LlmFileEditTruncatedError:
@@ -1264,296 +1273,6 @@ async def generate_project_build_script(
         "model": result.model,
         "usage": result.usage.model_dump(),
         "cost_usd": result.cost_usd,
-    }
-
-
-@app.post("/projects/{name}/files/llm-edit")
-async def llm_edit_files(
-    name: str,
-    req: LlmFileEditInput,
-    ctx: AuthContext = Depends(get_auth_context),
-    db: Session = Depends(get_db),
-):
-    repo = ProjectRepository(db, ctx.tenant_id)
-    try:
-        project = repo.get_project(name)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
-    if project is None:
-        return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
-
-    try:
-        for pointer in req.files:
-            require_valid_python_filename(pointer.filename)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Invalid Python filename"})
-
-    seen_ids: set[UUID] = set()
-    for pointer in req.files:
-        if pointer.id in seen_ids:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "Duplicate file id in request"},
-            )
-        seen_ids.add(pointer.id)
-
-    if req.active_file_id is not None and req.active_file_id not in seen_ids:
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "error": "Active file id is not in the request"},
-        )
-
-    file_rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
-    if set(file_rows) != seen_ids:
-        return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
-
-    for pointer in req.files:
-        if file_rows[pointer.id].filename != pointer.filename:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "File pointer does not match filename"},
-            )
-        if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
-            return JSONResponse(
-                status_code=status.HTTP_409_CONFLICT,
-                content={
-                    "success": False,
-                    "error": "Files changed while AI edit was running. Reload and try again.",
-                    "retryable": False,
-                },
-            )
-
-    editable_files = [
-        LlmEditableFile(
-            id=row.id, filename=row.filename, content=row.content
-        )
-        for row in [file_rows[pointer.id] for pointer in req.files]
-    ]
-
-    settings = get_settings()
-    billing_publisher = None
-    billing_nc = None
-    snapshot = None
-    changed_files: list[ProjectFile] = []
-    result = None
-    try:
-        if not settings.llm_api_key:
-            raise LlmNotConfiguredError("LLM provider is not configured")
-        model_config = select_llm_model(settings, req.model_id)
-        selected_files = select_llm_edit_context_files(
-            prompt=req.prompt,
-            active_file_id=req.active_file_id,
-            files=editable_files,
-            max_files=settings.llm_file_edit_max_context_files,
-            max_chars=settings.llm_file_edit_max_context_chars,
-        )
-        estimated_usage = estimate_file_edit_usage(
-            req,
-            selected_files,
-            max_output_tokens=settings.llm_file_edit_max_output_tokens,
-            system_prompt=settings.llm_file_edit_system_prompt,
-        )
-        assert_llm_usage_allowed(
-            db,
-            settings,
-            tenant_id=ctx.tenant_id,
-            user_id=ctx.user_id,
-            estimated_tokens=estimated_usage.total_tokens,
-            estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
-        )
-        result = await generate_file_edits(
-            req,
-            files=selected_files,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-        )
-        if result.outcome == "changed":
-            requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
-            changed_ids = {edit.file_id for edit in result.files}
-            requested_files = repo.files_by_ids(name, list(changed_ids))
-            if set(requested_files) != changed_ids:
-                return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
-            for file_id in changed_ids:
-                expected_updated_at = requested_versions[file_id]
-                if normalize_file_version(requested_files[file_id].updated_at) != normalize_file_version(expected_updated_at):
-                    db.rollback()
-                    return JSONResponse(
-                        status_code=status.HTTP_409_CONFLICT,
-                        content={
-                            "success": False,
-                            "error": "Files changed while AI edit was running. Reload and try again.",
-                            "retryable": False,
-                        },
-                    )
-            updates = {edit.file_id: edit.content for edit in result.files}
-            changed_versions = {file_id: requested_versions[file_id] for file_id in updates}
-            try:
-                stage_result = repo.stage_file_updates(
-                    name,
-                    updates,
-                    ctx.user_id,
-                    f"LLM edit: {req.prompt[:480]}",
-                    expected_updated_at=changed_versions,
-                )
-            except ValueError as exc:
-                if str(exc) == "LLM returned no file changes":
-                    raise LlmInvalidFileEditError("changed outcome did not change any files") from exc
-                raise
-            except FileVersionConflictError:
-                db.rollback()
-                return JSONResponse(
-                    status_code=status.HTTP_409_CONFLICT,
-                    content={
-                        "success": False,
-                        "error": "Files changed while AI edit was running. Reload and try again.",
-                        "retryable": False,
-                    },
-                )
-            if stage_result is None:
-                return JSONResponse(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    content={"success": False, "error": "LLM file update failed", "retryable": True},
-                )
-            snapshot, changed_files = stage_result
-            if not changed_files:
-                raise LlmInvalidFileEditError("changed outcome did not change any files")
-        billing_publisher, billing_nc = await create_billing_publisher(settings)
-        billing_event_id = uuid4()
-        result.billing_event_id = billing_event_id
-        await publish_file_edit_billing_event(
-            billing_publisher=billing_publisher,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-            request=req,
-            result=result,
-            event_id=billing_event_id,
-        )
-        record_llm_usage(
-            db,
-            auth=ctx,
-            project_id=project.id,
-            request=req,
-            result=result,
-            provider_request_id=getattr(result, "provider_request_id", None),
-            event_id=getattr(result, "billing_event_id", None),
-            settings=settings,
-            operation="files.llm_edit",
-        )
-        db.commit()
-    except LlmUsageLimitExceeded as exc:
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"success": False, "error": str(exc), "retryable": True},
-        )
-    except LlmNotConfiguredError as exc:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": False},
-        )
-    except LlmProviderAuthenticationError as exc:
-        logger.warning("LLM provider authentication failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": False},
-        )
-    except LlmProviderRateLimitError as exc:
-        logger.warning("LLM provider rate limit exceeded")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": True},
-        )
-    except LlmFileEditTruncatedError:
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            content={"success": False, "error": "LLM response was truncated", "retryable": True},
-        )
-    except LlmGenerationError as exc:
-        db.rollback()
-        message = str(exc) or "LLM generation failed"
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": message, "retryable": True},
-        )
-    except LlmInvalidFileEditError as exc:
-        logger.debug("LLM file edit response rejected: %s", exc)
-        logger.exception("LLM file edit returned invalid response")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            content={"success": False, "error": "LLM returned invalid file edits", "retryable": True},
-        )
-    except ValueError as exc:
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"success": False, "error": str(exc), "retryable": False},
-        )
-    except LlmBillingError:
-        logger.exception("LLM billing failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM billing failed", "retryable": True},
-        )
-    except Exception:
-        logger.exception("LLM file edit failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM generation failed", "retryable": True},
-        )
-    finally:
-        if billing_nc is not None:
-            try:
-                await billing_nc.flush()
-            except Exception:
-                logger.exception("Failed to flush LLM billing NATS connection")
-            finally:
-                try:
-                    await billing_nc.close()
-                except Exception:
-                    logger.exception("Failed to close LLM billing NATS connection")
-
-    if result is None:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM generation failed", "retryable": True},
-        )
-    by_id = {row.id: row for row in changed_files}
-    return {
-        "success": True,
-        "outcome": result.outcome,
-        "message": result.message,
-        "provider": result.provider,
-        "model": result.model,
-        "usage": result.usage.model_dump(),
-        "cost_usd": result.cost_usd,
-        "snapshot": (
-            {
-                "id": str(snapshot.id),
-                "message": snapshot.message,
-                "content_hash": snapshot.content_hash,
-            }
-            if snapshot is not None
-            else None
-        ),
-        "files": [
-            {
-                "id": str(edit.file_id),
-                "filename": by_id[edit.file_id].filename,
-                "content": edit.content,
-                "updated_at": by_id[edit.file_id].updated_at.isoformat(),
-                "changed": True,
-                "summary": edit.summary,
-            }
-            for edit in result.files
-            if edit.file_id in by_id
-        ],
     }
 
 

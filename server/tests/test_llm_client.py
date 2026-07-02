@@ -437,6 +437,29 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
     assert "length = 100" in user_content
 
 
+def test_build_file_edit_messages_includes_prior_prompts():
+    file_id = uuid4()
+    request = LlmFileEditInput(
+        prompt="rename length to span",
+        files=[llm_file_pointer(file_id)],
+        active_file_id=file_id,
+    )
+    files = [LlmEditableFile(id=file_id, filename="design.py", content="length = 100\n")]
+
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt=TEST_FILE_EDIT_SYSTEM_PROMPT,
+        prior_prompts=["first prompt", "second prompt"],
+    )
+
+    user_content = messages[1]["content"]
+    assert "Conversation history (up to 5 prompts):" in user_content
+    assert "1. first prompt" in user_content
+    assert "2. second prompt" in user_content
+    assert "User request:\nrename length to span" in user_content
+
+
 def test_build_file_edit_messages_includes_none_active_file_id():
     request = LlmFileEditInput(
         prompt="refactor",

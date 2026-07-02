@@ -157,20 +157,14 @@ describe('projectStorage', () => {
     ])
   })
 
-  it('posts to /files/llm-edit and returns the success payload for authenticated edits', async () => {
+  it('posts to /files/llm-edit/jobs and returns the queued job payload', async () => {
     const getAccessToken = vi.fn()
     const responseBody = {
       success: true,
-      outcome: 'changed',
-      message: '',
-      model: 'gpt-4',
-      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      snapshot: { id: 'snap-1', message: 'llm edit', content_hash: 'abc123' },
-      files: [
-        { id: 'f-1', filename: 'design.py', content: 'print(1)\n', updated_at: '2024-01-02T00:00:00Z', changed: true, summary: 'added print' },
-      ],
+      job_id: 'llm-job-1',
+      status: 'queued',
     }
-    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody)))
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody), { status: 202 }))
 
     const storage = createProjectStorage({
       authMode: 'authenticated',
@@ -178,7 +172,7 @@ describe('projectStorage', () => {
       getAccessToken,
     })
 
-    const result = await storage.applyLlmFileEdit('demo', {
+    const result = await storage.applyLlmFileEditJob('demo', {
       prompt: 'add a docstring',
       files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       active_file_id: 'f-1',
@@ -187,7 +181,7 @@ describe('projectStorage', () => {
 
     expect(result).toEqual(responseBody)
     expect(mocks.apiFetch).toHaveBeenCalledWith(
-      '/api/intus/projects/demo/files/llm-edit',
+      '/api/intus/projects/demo/files/llm-edit/jobs',
       getAccessToken,
       expect.objectContaining({
         method: 'POST',
@@ -201,7 +195,36 @@ describe('projectStorage', () => {
     )
   })
 
-  it('explains that a 524 LLM edit may still finish after the edge times out', async () => {
+  it('fetches LLM edit job status by job id', async () => {
+    const getAccessToken = vi.fn()
+    const responseBody = {
+      job_id: 'llm-job-1',
+      status: 'succeeded',
+      result: {
+        success: true,
+        outcome: 'changed',
+        message: '',
+        model: 'gpt-4',
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        snapshot: { id: 'snap-1', message: 'llm edit', content_hash: 'abc123' },
+        files: [
+          { id: 'f-1', filename: 'design.py', content: 'print(1)\n', updated_at: '2024-01-02T00:00:00Z', changed: true, summary: 'added print' },
+        ],
+      },
+    }
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody)))
+
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken,
+    })
+
+    await expect(storage.getLlmFileEditJob('demo', 'llm-job-1')).resolves.toEqual(responseBody)
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects/demo/files/llm-edit/jobs/llm-job-1', getAccessToken)
+  })
+
+  it('explains that a 524 LLM edit job submit may still finish after the edge times out', async () => {
     mocks.apiFetch.mockResolvedValueOnce(new Response('<html>timeout</html>', {
       status: 524,
       statusText: '',
@@ -214,7 +237,7 @@ describe('projectStorage', () => {
     })
 
     await expect(
-      storage.applyLlmFileEdit('demo', {
+      storage.applyLlmFileEditJob('demo', {
         prompt: 'make a bracket',
         files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       }),
@@ -223,7 +246,18 @@ describe('projectStorage', () => {
     )
   })
 
-  it('rejects guest applyLlmFileEdit with a login prompt', async () => {
+  it('surfaces authenticated LLM edit job status failures', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'LLM edit job not found' }), { status: 404 }))
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.getLlmFileEditJob('demo', 'missing-job')).rejects.toThrow('LLM edit job not found')
+  })
+
+  it('rejects guest LLM edit job operations with a login prompt', async () => {
     const storage = createProjectStorage({
       authMode: 'guest',
       serverUrl: '/proxy/api/intus',
@@ -231,11 +265,12 @@ describe('projectStorage', () => {
     })
 
     await expect(
-      storage.applyLlmFileEdit('demo', {
+      storage.applyLlmFileEditJob('demo', {
         prompt: 'add a docstring',
         files: [{ id: 'f-1', filename: 'design.py', updated_at: '2024-01-01T00:00:00Z' }],
       }),
     ).rejects.toThrow('Log in to use AI file edits')
+    await expect(storage.getLlmFileEditJob('demo', 'llm-job-1')).rejects.toThrow('Log in to use AI file edits')
     expect(mocks.apiFetch).not.toHaveBeenCalled()
   })
 
