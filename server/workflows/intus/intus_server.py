@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 from datetime import datetime, timezone
+import importlib.util
 import logging
 import random
 from pathlib import Path
@@ -10,7 +11,7 @@ from pydantic import BaseModel
 from fastapi import BackgroundTasks, Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from opentelemetry import propagate
+from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,7 +48,15 @@ from core.llm_client import (
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
-from core.telemetry import get_tracer, record_exception
+from core.telemetry import (
+    counter_add,
+    elapsed_seconds,
+    get_tracer,
+    histogram_record,
+    record_exception,
+    timed,
+    up_down_counter_add,
+)
 from core.repositories import (
     CompileRepository,
     FileVersionConflictError,
@@ -162,17 +171,22 @@ async def publish_file_edit_billing_event(
             message_id=billing_usage_message_id(event),
         )
     except Exception as exc:
+        counter_add(
+            "tertius.billing.publish.error.count",
+            1,
+            {
+                "provider": result.provider,
+                "model_id": result.model,
+                "operation": "files.llm_edit",
+            },
+        )
         logger.exception("Failed to publish LLM billing usage event")
         raise LlmBillingError("LLM billing failed") from exc
 
 
 @app.get("/health")
 def health():
-    try:
-        import build123d
-        has_b3d = True
-    except ImportError:
-        has_b3d = False
+    has_b3d = importlib.util.find_spec("build123d") is not None
     return {"status": "ok", "build123d_installed": has_b3d}
 
 @app.get("/project_name")
@@ -383,6 +397,7 @@ async def compile_project(
             created_at=job.created_at,
             files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
             request_id=request_id,
+            originating_llm_edit_job_id=req.originating_llm_edit_job_id,
         )
         try:
             assert_message_size(command, get_settings().compile_request_max_bytes, "request")
@@ -751,6 +766,46 @@ async def _run_llm_file_edit_core(
     return result, snapshot, changed_files
 
 
+def _record_retry(
+    *,
+    reason: str,
+    attempt: int,
+    backoff_seconds: float | None,
+    attributes: dict[str, Any],
+) -> None:
+    retry_attributes = {**attributes, "llm.retry_reason": reason}
+    counter_add("tertius.llm.retry.count", 1, retry_attributes)
+    event_attributes: dict[str, Any] = {
+        "llm.retry.reason": reason,
+        "llm.retry.attempt": attempt,
+    }
+    if backoff_seconds is not None:
+        event_attributes["llm.retry.backoff_seconds"] = backoff_seconds
+    trace.get_current_span().add_event("llm.retry", attributes=event_attributes)
+
+
+def _llm_file_edit_job_attributes() -> dict[str, str]:
+    return {"llm.operation": "files.llm_edit", "workflow": "intus"}
+
+
+def _record_llm_file_edit_job_finished(
+    *,
+    duration_seconds: float,
+    job_status: str,
+    failure_category: str | None = None,
+    retryable: bool | None = None,
+) -> None:
+    attributes = {**_llm_file_edit_job_attributes(), "job_status": job_status}
+    if failure_category is not None:
+        attributes["failure_category"] = failure_category
+    if retryable is not None:
+        attributes["retryable"] = "true" if retryable else "false"
+    counter_add("tertius.llm.job.finished.count", 1, attributes)
+    if job_status == "failed":
+        counter_add("tertius.llm.job.failed.count", 1, attributes)
+    histogram_record("tertius.llm.job.duration", duration_seconds, attributes)
+
+
 async def _run_llm_file_edit_job(
     *,
     job_id: UUID,
@@ -763,17 +818,18 @@ async def _run_llm_file_edit_job(
     trace_headers: dict[str, str] | None = None,
 ) -> None:
     parent_context = propagate.extract(trace_headers or {})
+    job_attributes = _llm_file_edit_job_attributes()
+    start = timed()
+    outcome: tuple[str, str | None, bool | None] | None = None
+    up_down_counter_add("tertius.llm.jobs.active", 1, job_attributes)
     with get_tracer(__name__).start_as_current_span(
         "llm.file_edit.job",
         context=parent_context,
         kind=SpanKind.CONSUMER,
-        attributes={
-            "llm.operation": "files.llm_edit",
-            "workflow": "intus",
-        },
+        attributes=job_attributes,
     ) as span:
         try:
-            await _run_llm_file_edit_job_inner(
+            outcome = await _run_llm_file_edit_job_inner(
                 job_id=job_id,
                 project_name=project_name,
                 request_payload=request_payload,
@@ -783,8 +839,19 @@ async def _run_llm_file_edit_job(
                 email=email,
             )
         except Exception as exc:
+            outcome = ("failed", "unexpected", True)
             record_exception(span, exc)
             raise
+        finally:
+            if outcome is not None:
+                job_status, failure_category, retryable = outcome
+                _record_llm_file_edit_job_finished(
+                    duration_seconds=elapsed_seconds(start),
+                    job_status=job_status,
+                    failure_category=failure_category,
+                    retryable=retryable,
+                )
+            up_down_counter_add("tertius.llm.jobs.active", -1, job_attributes)
 
 
 async def _run_llm_file_edit_job_inner(
@@ -796,7 +863,7 @@ async def _run_llm_file_edit_job_inner(
     user_id: UUID,
     keycloak_subject: str,
     email: str | None,
-) -> None:
+) -> tuple[str, str | None, bool | None] | None:
     db = None
     job: LlmEditJob | None = None
     project: Project | None = None
@@ -837,14 +904,15 @@ async def _run_llm_file_edit_job_inner(
         job_repo = LlmEditRepository(db, tenant_id)
         project = repo.get_project(project_name)
         if project is None:
-            return
+            return None
 
         job = job_repo.get_job(project.id, job_id)
         if job is None or job.status != "queued":
-            return
+            return None
 
         job_repo.mark_job_dispatched(job)
         db.commit()
+        counter_add("tertius.llm.job.started.count", 1, _llm_file_edit_job_attributes())
 
         req = LlmFileEditInput.model_validate(request_payload)
         ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
@@ -853,6 +921,7 @@ async def _run_llm_file_edit_job_inner(
         rate_limit_backoff_base_seconds = settings.llm_file_edit_rate_limit_backoff_base_seconds
         rate_limit_backoff_cap_seconds = settings.llm_file_edit_rate_limit_backoff_cap_seconds
         previous_backoff_seconds = rate_limit_backoff_base_seconds
+        retry_attributes = _llm_file_edit_job_attributes()
         while True:
             try:
                 result, snapshot, changed_files = await _run_llm_file_edit_core(
@@ -879,6 +948,12 @@ async def _run_llm_file_edit_job_inner(
                         previous_backoff_seconds * 3,
                     ),
                 )
+                _record_retry(
+                    reason="rate_limit",
+                    attempt=job.attempt_count,
+                    backoff_seconds=previous_backoff_seconds,
+                    attributes=retry_attributes,
+                )
                 await asyncio.sleep(previous_backoff_seconds)
                 job_repo.mark_job_dispatched(job)
                 db.commit()
@@ -887,6 +962,12 @@ async def _run_llm_file_edit_job_inner(
                 job = job_repo.get_job(project.id, job_id)
                 if job is None or job.attempt_count >= max_generation_attempts:
                     raise
+                _record_retry(
+                    reason="generation_error",
+                    attempt=job.attempt_count,
+                    backoff_seconds=None,
+                    attributes=retry_attributes,
+                )
                 job_repo.mark_job_dispatched(job)
                 db.commit()
         db.commit()
@@ -896,6 +977,7 @@ async def _run_llm_file_edit_job_inner(
             result_payload=_serialize_llm_edit_result(result, snapshot, changed_files),
         )
         db.commit()
+        return ("succeeded", None, None)
     except LlmUsageLimitExceeded:
         fail_job(
             status="failed",
@@ -904,6 +986,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM generation limit exceeded.",
             retryable=True,
         )
+        return ("failed", "usage_limit", True)
     except LlmNotConfiguredError:
         fail_job(
             status="failed",
@@ -911,6 +994,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM provider is not configured",
             retryable=False,
         )
+        return ("failed", "not_configured", False)
     except LlmProviderAuthenticationError:
         fail_job(
             status="failed",
@@ -918,6 +1002,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM provider authentication failed",
             retryable=False,
         )
+        return ("failed", "auth", False)
     except LlmProviderRateLimitError:
         fail_job(
             status="failed",
@@ -925,6 +1010,16 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM provider rate limit exceeded",
             retryable=True,
         )
+        return ("failed", "rate_limit", True)
+    except LlmFileEditTruncatedError as exc:
+        message = str(exc) or "LLM response was truncated"
+        fail_job(
+            status="failed",
+            error=message,
+            user_message=message,
+            retryable=True,
+        )
+        return ("failed", "truncated", True)
     except LlmGenerationError as exc:
         message = str(exc) or "LLM generation failed"
         fail_job(
@@ -933,6 +1028,7 @@ async def _run_llm_file_edit_job_inner(
             user_message=message,
             retryable=True,
         )
+        return ("failed", "generation_error", True)
     except LlmBillingError:
         fail_job(
             status="failed",
@@ -940,13 +1036,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM billing failed",
             retryable=True,
         )
-    except LlmFileEditTruncatedError:
-        fail_job(
-            status="failed",
-            error="LLM response was truncated",
-            user_message="LLM response was truncated",
-            retryable=True,
-        )
+        return ("failed", "billing", True)
     except LlmInvalidFileEditError:
         fail_job(
             status="failed",
@@ -954,6 +1044,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM returned invalid file edits",
             retryable=True,
         )
+        return ("failed", "invalid_response", True)
     except FileVersionConflictError:
         fail_job(
             status="failed",
@@ -961,6 +1052,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="Files changed while AI edit was running. Reload and try again.",
             retryable=False,
         )
+        return ("failed", "file_conflict", False)
     except ValueError as exc:
         fail_job(
             status="failed",
@@ -968,6 +1060,7 @@ async def _run_llm_file_edit_job_inner(
             user_message=str(exc),
             retryable=False,
         )
+        return ("failed", "validation", False)
     except Exception:
         logger.exception("LLM file edit job failed")
         fail_job(
@@ -976,6 +1069,7 @@ async def _run_llm_file_edit_job_inner(
             user_message="LLM generation failed",
             retryable=True,
         )
+        return ("failed", "unexpected", True)
     finally:
         if db is not None:
             db.close()
@@ -1040,6 +1134,7 @@ def start_llm_file_edit_job(
             status="queued",
         )
         db.commit()
+        counter_add("tertius.llm.job.queued.count", 1, _llm_file_edit_job_attributes())
     except ValueError as exc:
         db.rollback()
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
@@ -1190,13 +1285,17 @@ async def generate_project_build_script(
             estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
         )
         billing_publisher, billing_nc = await create_billing_publisher(settings)
-        result = await generate_build_script(
-            req,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-            billing_publisher=billing_publisher,
-        )
+        with get_tracer(__name__).start_as_current_span(
+            "llm.build_script.request",
+            attributes={"workflow": "intus", "llm.operation": "build_script.generate"},
+        ):
+            result = await generate_build_script(
+                req,
+                settings=settings,
+                auth=ctx,
+                project_id=project.id,
+                billing_publisher=billing_publisher,
+            )
         record_llm_usage(
             db,
             auth=ctx,

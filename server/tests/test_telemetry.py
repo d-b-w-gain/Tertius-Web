@@ -1,10 +1,83 @@
 import json
 import logging
+from typing import Any
 
+import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
+import core.telemetry as telemetry
 from core.config import Settings
-from core.telemetry import JsonTraceFormatter, configure_telemetry
+from core.telemetry import JsonTraceFormatter, configure_telemetry, counter_add, histogram_record, up_down_counter_add
+
+
+def _reader() -> InMemoryMetricReader:
+    return InMemoryMetricReader()
+
+
+def _metric_points(reader: InMemoryMetricReader, name: str) -> list[Any]:
+    points: list[Any] = []
+    data = reader.get_metrics_data()
+    assert data is not None
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == name:
+                    points.extend(metric.data.data_points)
+    return points
+
+
+def test_up_down_counter_add_records_net_delta(monkeypatch):
+    reader = _reader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: provider.get_meter(name))
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+
+    up_down_counter_add("tertius.llm.requests.in_flight", 1, {"llm.model": "m"})
+    up_down_counter_add("tertius.llm.requests.in_flight", 1, {"llm.model": "m"})
+    up_down_counter_add("tertius.llm.requests.in_flight", -2, {"llm.model": "m"})
+
+    points = _metric_points(reader, "tertius.llm.requests.in_flight")
+    assert len(points) == 1
+    assert points[0].value == 0
+    provider.shutdown()
+
+
+def test_histogram_uses_explicit_bucket_boundaries_for_known_metrics(monkeypatch):
+    reader = _reader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: provider.get_meter(name))
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+
+    histogram_record("tertius.llm.tokens.input", 750, {"llm.model": "m"})
+
+    points = _metric_points(reader, "tertius.llm.tokens.input")
+    assert len(points) == 1
+    # explicit boundaries include 500 and 1000; 750 lands in the (500, 1000] bucket
+    explicit = list(telemetry._HISTOGRAM_BOUNDARIES["tertius.llm.tokens.input"])
+    bucket_counts = list(points[0].bucket_counts)
+    assert explicit[5] == 500
+    assert explicit[6] == 1000
+    # cumulative count up to and including the 500 boundary is 0; up to 1000 is 1
+    assert bucket_counts[5] == 0
+    assert bucket_counts[6] == 1
+    provider.shutdown()
+
+
+def test_counter_add_accepts_float_values(monkeypatch):
+    reader = _reader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: provider.get_meter(name))
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+
+    counter_add("tertius.llm.cost.usd.total", 0.0000505, {"llm.model": "m"})
+    counter_add("tertius.llm.cost.usd.total", 0.0001, {"llm.model": "m"})
+
+    points = _metric_points(reader, "tertius.llm.cost.usd.total")
+    assert len(points) == 1
+    assert points[0].value == pytest.approx(0.0001505)
+    provider.shutdown()
 
 
 def test_configure_telemetry_disabled_does_not_export():

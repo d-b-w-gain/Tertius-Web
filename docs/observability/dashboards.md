@@ -27,12 +27,20 @@ dashboard panels so agent validation and dashboards stay aligned.
 
 ## LLM
 
-- Request count and failures by `provider`, `model_id`, and operation: `tertius.llm.request.count`, `tertius.llm.request.error.count`
+- Request count and failures by `provider`, `model_id`, `model`, operation, and bounded `error_category`: `tertius.llm.request.count`, `tertius.llm.request.error.count`
+- In-flight provider requests: `tertius.llm.requests.in_flight` (up/down counter)
+- Active AI edit background jobs: `tertius.llm.jobs.active` (up/down counter)
+- AI edit jobs queued, started, finished, and failed by bounded `failure_category`: `tertius.llm.job.queued.count`, `tertius.llm.job.started.count`, `tertius.llm.job.finished.count`, `tertius.llm.job.failed.count`
+- AI edit job duration by `job_status`, `failure_category`, and `retryable`: `tertius.llm.job.duration`
 - Provider latency by `provider` and `model_id`: `tertius.llm.request.duration`
-- Input and output tokens: `tertius.llm.tokens.input`, `tertius.llm.tokens.output`
-- Estimated cost: `tertius.llm.cost.usd`
+- Retries by reason (`rate_limit`, `generation_error`): `tertius.llm.retry.count` with `llm.retry` span events carrying attempt and backoff
+- Input and output tokens: `tertius.llm.tokens.input`, `tertius.llm.tokens.output` (histograms and `.total` cumulative counters)
+- Total, cached, and cache-creation tokens: `tertius.llm.tokens.total`, `tertius.llm.tokens.cached`, `tertius.llm.tokens.cache_creation` (histograms and `.total` cumulative counters)
+- Estimated cost: `tertius.llm.cost.usd` (histogram) and `tertius.llm.cost.usd.total` (cumulative counter for budget burn-rate)
+- Finish reason slicing on `llm.build_script.generate` / `llm.files.edit` spans via the `llm.finish_reason` attribute
 - Billing publish errors: `tertius.billing.publish.error.count`
 - Trace drilldown from API request to provider span, excluding prompts and generated content
+- AI-edit-to-compile correlation via the `tertius.originating_llm_edit_job_hash` span attribute on compile consume spans
 
 ## Browser
 
