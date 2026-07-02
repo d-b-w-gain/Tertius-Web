@@ -22,6 +22,7 @@ class CompileCommand(BaseModel):
     created_at: datetime
     files: list[CompileSourceFile] = []
     request_id: str | None = None
+    originating_llm_edit_job_id: UUID | None = None
 
 
 class CompileResultPayload(BaseModel):

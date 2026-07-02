@@ -140,7 +140,7 @@ def instrument_sqlalchemy_engine(engine) -> None:
     _SQLALCHEMY_INSTRUMENTED_IDS.add(marker)
 
 
-def counter_add(name: str, value: int = 1, attributes: dict[str, Any] | None = None) -> None:
+def counter_add(name: str, value: int | float = 1, attributes: dict[str, Any] | None = None) -> None:
     counter = _instrument("counter", name)
     counter.add(value, attributes or {})
 
@@ -148,6 +148,11 @@ def counter_add(name: str, value: int = 1, attributes: dict[str, Any] | None = N
 def histogram_record(name: str, value: float, attributes: dict[str, Any] | None = None) -> None:
     histogram = _instrument("histogram", name)
     histogram.record(value, attributes or {})
+
+
+def up_down_counter_add(name: str, value: int = 1, attributes: dict[str, Any] | None = None) -> None:
+    counter = _instrument("up_down_counter", name)
+    counter.add(value, attributes or {})
 
 
 def record_exception(span, exc: BaseException, *, status_description: str | None = None) -> None:
@@ -175,6 +180,31 @@ def elapsed_seconds(start: float) -> float:
     return max(0.0, perf_counter() - start)
 
 
+_HISTOGRAM_BOUNDARIES: dict[str, tuple[float, ...]] = {
+    "tertius.llm.request.duration": (
+        0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0,
+    ),
+    "tertius.llm.tokens.input": (
+        1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000,
+    ),
+    "tertius.llm.tokens.output": (
+        1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000,
+    ),
+    "tertius.llm.tokens.total": (
+        1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000,
+    ),
+    "tertius.llm.tokens.cached": (
+        1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000,
+    ),
+    "tertius.llm.tokens.cache_creation": (
+        1, 10, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000,
+    ),
+    "tertius.llm.cost.usd": (
+        0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 50.0, 100.0,
+    ),
+}
+
+
 def _instrument(kind: str, name: str):
     key = (kind, name)
     existing = _METRIC_INSTRUMENTS.get(key)
@@ -183,8 +213,14 @@ def _instrument(kind: str, name: str):
     meter = get_meter("tertius.telemetry")
     if kind == "counter":
         instrument = meter.create_counter(name)
+    elif kind == "up_down_counter":
+        instrument = meter.create_up_down_counter(name)
     elif kind == "histogram":
-        instrument = meter.create_histogram(name)
+        boundaries = _HISTOGRAM_BOUNDARIES.get(name)
+        kwargs: dict[str, Any] = {}
+        if boundaries is not None:
+            kwargs["explicit_bucket_boundaries_advisory"] = list(boundaries)
+        instrument = meter.create_histogram(name, **kwargs)
     else:
         raise ValueError(f"Unknown metric kind: {kind}")
     _METRIC_INSTRUMENTS[key] = instrument

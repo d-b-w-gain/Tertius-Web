@@ -26,8 +26,10 @@ labels.
 - Provider auth failures: page on any sustained auth/permission failure category for 5 minutes.
 - Provider rate limits: notify when rate-limit failures exceed 5% of LLM requests for 10 minutes.
 - Provider latency: notify when p95 `tertius.llm.request.duration` exceeds the environment threshold for 15 minutes.
+- LLM retry storm: notify when `tertius.llm.retry.count` exceeds 5% of LLM requests for 10 minutes, sliced by `llm.retry_reason`.
+- In-flight saturation: notify when `tertius.llm.requests.in_flight` stays at the environment ceiling for 10 minutes.
 - Billing publish errors: page when `tertius.billing.publish.error.count` is non-zero for 10 minutes.
-- Cost anomaly: notify when `tertius.llm.cost.usd` exceeds the configured daily budget burn-rate threshold.
+- Cost anomaly: notify when `tertius.llm.cost.usd.total` (cumulative counter) exceeds the configured daily budget burn-rate threshold.
 
 ## Data Stores And Platform
 

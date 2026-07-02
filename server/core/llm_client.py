@@ -9,7 +9,7 @@ from math import ceil
 from pathlib import PurePosixPath
 from time import perf_counter
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -22,7 +22,13 @@ from core.billing_messages import (
 )
 from core.config import LlmModelConfig
 from core.nats_client import NatsPublisher, Publisher
-from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
+from core.telemetry import (
+    counter_add,
+    elapsed_seconds,
+    get_tracer,
+    histogram_record,
+    up_down_counter_add,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -312,6 +318,18 @@ def llm_usage_cost_usd(usage: TokenUsage, model_config: LlmModelConfig) -> float
     return round(cost, 8)
 
 
+def _record_token_usage(usage: TokenUsage, attributes: dict[str, Any]) -> None:
+    histogram_record("tertius.llm.tokens.input", usage.prompt_tokens, attributes)
+    histogram_record("tertius.llm.tokens.output", usage.completion_tokens, attributes)
+    histogram_record("tertius.llm.tokens.total", usage.total_tokens, attributes)
+    histogram_record("tertius.llm.tokens.cached", usage.cached_prompt_tokens, attributes)
+    histogram_record("tertius.llm.tokens.cache_creation", usage.cache_creation_prompt_tokens, attributes)
+    counter_add("tertius.llm.tokens.input.total", usage.prompt_tokens, attributes)
+    counter_add("tertius.llm.tokens.output.total", usage.completion_tokens, attributes)
+    counter_add("tertius.llm.tokens.cached.total", usage.cached_prompt_tokens, attributes)
+    counter_add("tertius.llm.tokens.cache_creation.total", usage.cache_creation_prompt_tokens, attributes)
+
+
 def _provider_from_model(model_config: LlmModelConfig) -> str:
     return model_config.api
 
@@ -447,11 +465,14 @@ async def generate_build_script(
     attributes = {
         "llm.provider": provider,
         "llm.model_id": model_config.id,
+        "llm.model": model_config.model,
         "llm.operation": "build_script.generate",
         "provider": provider,
         "model_id": model_config.id,
+        "model": model_config.model,
     }
     start = perf_counter()
+    up_down_counter_add("tertius.llm.requests.in_flight", 1, attributes)
     try:
         messages = build_script_messages(request)
         with get_tracer(__name__).start_as_current_span("llm.build_script.generate", attributes=attributes) as span:
@@ -469,26 +490,28 @@ async def generate_build_script(
                     messages=messages,
                     max_tokens=settings.llm_max_output_tokens,
                 )
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason:
+                span.set_attribute("llm.finish_reason", str(finish_reason))
     except Exception as exc:
         duration = elapsed_seconds(start)
         counter_add("tertius.llm.request.error.count", 1, attributes)
         histogram_record("tertius.llm.request.duration", duration, {**attributes, "status_category": "error"})
-        with get_tracer(__name__).start_as_current_span("llm.build_script.error", attributes=attributes) as span:
-            record_exception(span, exc)
         logger.exception(
             "LLM provider build-script request failed model_id=%s api=%s",
             model_config.id,
             model_config.api,
         )
         raise _classify_provider_exception(exc) from exc
+    finally:
+        up_down_counter_add("tertius.llm.requests.in_flight", -1, attributes)
     duration = elapsed_seconds(start)
     content = response.choices[0].message.content or ""
     usage = extract_usage(response)
     metric_attributes = {**attributes, "status_category": "ok"}
     counter_add("tertius.llm.request.count", 1, metric_attributes)
     histogram_record("tertius.llm.request.duration", duration, metric_attributes)
-    histogram_record("tertius.llm.tokens.input", usage.prompt_tokens, attributes)
-    histogram_record("tertius.llm.tokens.output", usage.completion_tokens, attributes)
+    _record_token_usage(usage, attributes)
     provider_request_id = getattr(response, "id", None)
     result = BuildScriptGenerationResult(
         script=strip_markdown_code_fence(content),
@@ -498,6 +521,7 @@ async def generate_build_script(
         cost_usd=llm_usage_cost_usd(usage, model_config),
         provider_request_id=provider_request_id,
     )
+    counter_add("tertius.llm.cost.usd.total", result.cost_usd, attributes)
     histogram_record("tertius.llm.cost.usd", result.cost_usd, attributes)
 
     if billing_publisher is not None:
@@ -797,11 +821,14 @@ async def generate_file_edits(
     attributes = {
         "llm.provider": provider,
         "llm.model_id": model_config.id,
+        "llm.model": model_config.model,
         "llm.operation": "files.llm_edit",
         "provider": provider,
         "model_id": model_config.id,
+        "model": model_config.model,
     }
     start = perf_counter()
+    up_down_counter_add("tertius.llm.requests.in_flight", 1, attributes)
     try:
         messages = build_file_edit_messages(
             request,
@@ -824,28 +851,29 @@ async def generate_file_edits(
                     max_tokens=settings.llm_file_edit_max_output_tokens,
                     response_format={"type": "json_object"},
                 )
+            finish_reason = getattr(response.choices[0], "finish_reason", None)
+            if finish_reason:
+                span.set_attribute("llm.finish_reason", str(finish_reason))
     except Exception as exc:
         duration = elapsed_seconds(start)
         counter_add("tertius.llm.request.error.count", 1, attributes)
         histogram_record("tertius.llm.request.duration", duration, {**attributes, "status_category": "error"})
-        with get_tracer(__name__).start_as_current_span("llm.files.edit.error", attributes=attributes) as span:
-            record_exception(span, exc)
         logger.exception(
             "LLM provider file-edit request failed model_id=%s api=%s",
             model_config.id,
             model_config.api,
         )
         raise _classify_provider_exception(exc) from exc
+    finally:
+        up_down_counter_add("tertius.llm.requests.in_flight", -1, attributes)
     duration = elapsed_seconds(start)
     usage = extract_usage(response)
     metric_attributes = {**attributes, "status_category": "ok"}
     counter_add("tertius.llm.request.count", 1, metric_attributes)
     histogram_record("tertius.llm.request.duration", duration, metric_attributes)
-    histogram_record("tertius.llm.tokens.input", usage.prompt_tokens, attributes)
-    histogram_record("tertius.llm.tokens.output", usage.completion_tokens, attributes)
+    _record_token_usage(usage, attributes)
     provider_request_id = getattr(response, "id", None)
     choice = response.choices[0]
-    finish_reason = getattr(choice, "finish_reason", None)
     if finish_reason in {"length", "max_tokens"}:
         logger.warning(
             "LLM file edit response truncated provider_request_id=%s finish_reason=%s",
@@ -868,6 +896,7 @@ async def generate_file_edits(
         cost_usd=llm_usage_cost_usd(usage, model_config),
         provider_request_id=provider_request_id,
     )
+    counter_add("tertius.llm.cost.usd.total", result.cost_usd, attributes)
     histogram_record("tertius.llm.cost.usd", result.cost_usd, attributes)
 
     return result

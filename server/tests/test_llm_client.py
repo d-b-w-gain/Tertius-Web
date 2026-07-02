@@ -37,12 +37,22 @@ def llm_file_pointer(file_id: UUID | None = None, filename: str = "design.py") -
 
 
 class FakeChatCompletions:
-    def __init__(self, content=None, prompt_tokens=11, completion_tokens=22, finish_reason="stop"):
+    def __init__(
+        self,
+        content=None,
+        prompt_tokens=11,
+        completion_tokens=22,
+        finish_reason="stop",
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    ):
         self.calls = []
         self._content = content
         self._prompt_tokens = prompt_tokens
         self._completion_tokens = completion_tokens
         self._finish_reason = finish_reason
+        self._cache_read_input_tokens = cache_read_input_tokens
+        self._cache_creation_input_tokens = cache_creation_input_tokens
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -58,6 +68,8 @@ class FakeChatCompletions:
                 prompt_tokens=self._prompt_tokens,
                 completion_tokens=self._completion_tokens,
                 total_tokens=self._prompt_tokens + self._completion_tokens,
+                cache_read_input_tokens=self._cache_read_input_tokens,
+                cache_creation_input_tokens=self._cache_creation_input_tokens,
             ),
         )
 
@@ -997,3 +1009,134 @@ async def test_generate_file_edits_requires_secret_system_prompt():
         )
 
     assert client.chat.completions.calls == []
+
+
+def _collect_metric_points(reader, name: str) -> list[tuple[dict, float | dict]]:
+    points: list[tuple[dict, float | dict]] = []
+    data = reader.get_metrics_data()
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name != name:
+                    continue
+                for point in metric.data.data_points:
+                    attrs = dict(point.attributes)
+                    if hasattr(point, "value"):
+                        points.append((attrs, point.value))
+                    else:
+                        points.append((attrs, {"sum": point.sum, "count": point.count}))
+    return points
+
+
+def _metric_total_value(reader, name: str) -> float:
+    """Sum counter/up_down_counter values (or histogram sums) for a metric name."""
+    total = 0.0
+    for _, value in _collect_metric_points(reader, name):
+        if isinstance(value, dict):
+            total += float(value["sum"])
+        else:
+            total += float(value)
+    return total
+
+
+@pytest.fixture
+def metrics_reader(monkeypatch):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    import core.telemetry as telemetry
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = provider.get_meter("tertius.telemetry")
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: meter)
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+    yield reader
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_emits_full_token_and_cost_metrics(metrics_reader):
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(
+        completions=FakeChatCompletions(
+            prompt_tokens=11,
+            completion_tokens=22,
+            cache_read_input_tokens=5,
+            cache_creation_input_tokens=3,
+        )
+    )
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.input.total") == 11
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.output.total") == 22
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cached.total") == 5
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cache_creation.total") == 3
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.total") == 33
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cached") == 5
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cache_creation") == 3
+    assert _metric_total_value(metrics_reader, "tertius.llm.cost.usd") == pytest.approx(0.0000505)
+    assert _metric_total_value(metrics_reader, "tertius.llm.cost.usd.total") == pytest.approx(0.0000505)
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_in_flight_returns_to_zero_after_success(metrics_reader):
+    client = FakeOpenAIClient()
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.requests.in_flight") == 0
+    # request.count should reflect the successful call
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.count") == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_in_flight_returns_to_zero_after_error(metrics_reader):
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeGenericProviderErrorChatCompletions())
+
+    with pytest.raises(LlmGenerationError):
+        await generate_build_script(
+            BuildScriptGenerationInput(prompt="make a bracket"),
+            settings=make_llm_settings(llm_api_key="secret"),
+            auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.requests.in_flight") == 0
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.error.count") == 1
+    # success counter must not be incremented on error
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.count") == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_records_llm_model_label(metrics_reader):
+    client = FakeOpenAIClient()
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    points = _collect_metric_points(metrics_reader, "tertius.llm.tokens.input.total")
+    assert points, "expected token input counter points"
+    attrs = points[0][0]
+    assert attrs["llm.model"] == "test-openai-compatible-model"
+    assert attrs["llm.model_id"] == "test-openai-compatible-model"

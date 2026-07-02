@@ -200,3 +200,53 @@ def test_compile_job_terms_invalid_command():
 
     assert msg.termed is True
     assert msg.acked is False
+
+
+def test_compile_job_span_records_originating_llm_edit_job_id(monkeypatch, tmp_path):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    class ListExporter(SpanExporter):
+        def __init__(self):
+            self.spans = []
+
+        def export(self, spans):
+            self.spans.extend(spans)
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            return None
+
+        def force_flush(self, timeout_millis=30000):
+            return True
+
+    exporter = ListExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.get_tracer",
+        lambda name: provider.get_tracer(name),
+    )
+
+    output_path = tmp_path / "output.stl"
+    output_path.write_bytes(b"solid job")
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox",
+        lambda *args, **kwargs: SimpleNamespace(
+            success=True, output_path=output_path, stdout="", stderr="", error=None
+        ),
+    )
+
+    llm_job_id = uuid4()
+    msg = FakeMsg(command_payload(originating_llm_edit_job_id=str(llm_job_id)))
+    asyncio.run(handle_compile_request_message(msg, FakePublisher(), job_settings()))
+
+    consume_spans = [
+        s for s in exporter.spans if s.name == "NATS consume tertius.compile.request"
+    ]
+    assert len(consume_spans) == 1
+    attributes = dict(consume_spans[0].attributes or {})
+    assert attributes.get("tertius.originating_llm_edit_job_id") == str(llm_job_id)
+    assert attributes.get("tertius.export_format") == "stl"

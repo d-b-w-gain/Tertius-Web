@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from fastapi import BackgroundTasks, Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from opentelemetry import propagate
+from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -47,7 +47,7 @@ from core.llm_client import (
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
-from core.telemetry import get_tracer, record_exception
+from core.telemetry import counter_add, get_tracer, record_exception, up_down_counter_add
 from core.repositories import (
     CompileRepository,
     FileVersionConflictError,
@@ -383,6 +383,7 @@ async def compile_project(
             created_at=job.created_at,
             files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
             request_id=request_id,
+            originating_llm_edit_job_id=req.originating_llm_edit_job_id,
         )
         try:
             assert_message_size(command, get_settings().compile_request_max_bytes, "request")
@@ -743,6 +744,24 @@ async def _run_llm_file_edit_core(
     return result, snapshot, changed_files
 
 
+def _record_retry(
+    *,
+    reason: str,
+    attempt: int,
+    backoff_seconds: float | None,
+    attributes: dict[str, Any],
+) -> None:
+    retry_attributes = {**attributes, "llm.retry_reason": reason}
+    counter_add("tertius.llm.retry.count", 1, retry_attributes)
+    event_attributes: dict[str, Any] = {
+        "llm.retry.reason": reason,
+        "llm.retry.attempt": attempt,
+    }
+    if backoff_seconds is not None:
+        event_attributes["llm.retry.backoff_seconds"] = backoff_seconds
+    trace.get_current_span().add_event("llm.retry", attributes=event_attributes)
+
+
 async def _run_llm_file_edit_job(
     *,
     job_id: UUID,
@@ -755,14 +774,16 @@ async def _run_llm_file_edit_job(
     trace_headers: dict[str, str] | None = None,
 ) -> None:
     parent_context = propagate.extract(trace_headers or {})
+    job_attributes = {
+        "llm.operation": "files.llm_edit",
+        "workflow": "intus",
+    }
+    up_down_counter_add("tertius.llm.jobs.active", 1, job_attributes)
     with get_tracer(__name__).start_as_current_span(
         "llm.file_edit.job",
         context=parent_context,
         kind=SpanKind.CONSUMER,
-        attributes={
-            "llm.operation": "files.llm_edit",
-            "workflow": "intus",
-        },
+        attributes=job_attributes,
     ) as span:
         try:
             await _run_llm_file_edit_job_inner(
@@ -777,6 +798,8 @@ async def _run_llm_file_edit_job(
         except Exception as exc:
             record_exception(span, exc)
             raise
+        finally:
+            up_down_counter_add("tertius.llm.jobs.active", -1, job_attributes)
 
 
 async def _run_llm_file_edit_job_inner(
@@ -845,6 +868,7 @@ async def _run_llm_file_edit_job_inner(
         rate_limit_backoff_base_seconds = settings.llm_file_edit_rate_limit_backoff_base_seconds
         rate_limit_backoff_cap_seconds = settings.llm_file_edit_rate_limit_backoff_cap_seconds
         previous_backoff_seconds = rate_limit_backoff_base_seconds
+        retry_attributes = {"llm.operation": "files.llm_edit", "workflow": "intus"}
         while True:
             try:
                 result, snapshot, changed_files = await _run_llm_file_edit_core(
@@ -870,6 +894,12 @@ async def _run_llm_file_edit_job_inner(
                         previous_backoff_seconds * 3,
                     ),
                 )
+                _record_retry(
+                    reason="rate_limit",
+                    attempt=job.attempt_count,
+                    backoff_seconds=previous_backoff_seconds,
+                    attributes=retry_attributes,
+                )
                 await asyncio.sleep(previous_backoff_seconds)
                 job_repo.mark_job_dispatched(job)
                 db.commit()
@@ -878,6 +908,12 @@ async def _run_llm_file_edit_job_inner(
                 job = job_repo.get_job(project.id, job_id)
                 if job is None or job.attempt_count >= max_generation_attempts:
                     raise
+                _record_retry(
+                    reason="generation_error",
+                    attempt=job.attempt_count,
+                    backoff_seconds=None,
+                    attributes=retry_attributes,
+                )
                 job_repo.mark_job_dispatched(job)
                 db.commit()
         db.commit()
@@ -1181,13 +1217,17 @@ async def generate_project_build_script(
             estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
         )
         billing_publisher, billing_nc = await create_billing_publisher(settings)
-        result = await generate_build_script(
-            req,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-            billing_publisher=billing_publisher,
-        )
+        with get_tracer(__name__).start_as_current_span(
+            "llm.build_script.request",
+            attributes={"workflow": "intus", "llm.operation": "build_script.generate"},
+        ):
+            result = await generate_build_script(
+                req,
+                settings=settings,
+                auth=ctx,
+                project_id=project.id,
+                billing_publisher=billing_publisher,
+            )
         record_llm_usage(
             db,
             auth=ctx,
@@ -1361,13 +1401,17 @@ async def llm_edit_files(
             estimated_tokens=estimated_usage.total_tokens,
             estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
         )
-        result = await generate_file_edits(
-            req,
-            files=selected_files,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-        )
+        with get_tracer(__name__).start_as_current_span(
+            "llm.file_edit.request",
+            attributes={"workflow": "intus", "llm.operation": "files.llm_edit"},
+        ):
+            result = await generate_file_edits(
+                req,
+                files=selected_files,
+                settings=settings,
+                auth=ctx,
+                project_id=project.id,
+            )
         if result.outcome == "changed":
             requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
             changed_ids = {edit.file_id for edit in result.files}

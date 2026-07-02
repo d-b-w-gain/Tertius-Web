@@ -1695,3 +1695,73 @@ def test_llm_file_edit_public_mounted_route(
     assert body["snapshot"]["id"]
     assert len(body["files"]) == 1
     assert body["files"][0]["filename"] == "design.py"
+
+
+def _retry_metric_points(reader, name):
+    points = []
+    for resource_metrics in reader.get_metrics_data().resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == name:
+                    points.extend(metric.data.data_points)
+    return points
+
+
+def test_record_retry_emits_counter_and_span_event(monkeypatch):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+    import core.telemetry as telemetry
+
+    metric_reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[metric_reader])
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: meter_provider.get_meter(name))
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+
+    class ListExporter(SpanExporter):
+        def __init__(self):
+            self.spans = []
+
+        def export(self, spans):
+            self.spans.extend(spans)
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            return None
+
+        def force_flush(self, timeout_millis=30000):
+            return True
+
+    exporter = ListExporter()
+    trace_provider = TracerProvider()
+    trace_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        intus_server,
+        "get_tracer",
+        lambda name: trace_provider.get_tracer(name),
+    )
+
+    with intus_server.get_tracer("test").start_as_current_span("llm.file_edit.job"):
+        intus_server._record_retry(
+            reason="rate_limit",
+            attempt=2,
+            backoff_seconds=0.5,
+            attributes={"llm.operation": "files.llm_edit", "workflow": "intus"},
+        )
+
+    assert len(exporter.spans) == 1
+    events = [e for e in exporter.spans[0].events if e.name == "llm.retry"]
+    assert len(events) == 1
+    event_attrs = dict(events[0].attributes or {})
+    assert event_attrs["llm.retry.reason"] == "rate_limit"
+    assert event_attrs["llm.retry.attempt"] == 2
+    assert event_attrs["llm.retry.backoff_seconds"] == 0.5
+
+    retry_points = _retry_metric_points(metric_reader, "tertius.llm.retry.count")
+    assert len(retry_points) == 1
+    assert retry_points[0].value == 1
+    assert dict(retry_points[0].attributes).get("llm.retry_reason") == "rate_limit"
+    meter_provider.shutdown()
+    trace_provider.shutdown()

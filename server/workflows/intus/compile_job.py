@@ -65,6 +65,11 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
             return
 
         span.set_attribute("tertius.export_format", command.export_format)
+        if command.originating_llm_edit_job_id is not None:
+            span.set_attribute(
+                "tertius.originating_llm_edit_job_id",
+                str(command.originating_llm_edit_job_id),
+            )
         queue_latency = (now_utc() - command.created_at).total_seconds()
         if queue_latency >= 0:
             histogram_record(
