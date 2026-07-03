@@ -28,7 +28,7 @@ from core.nats_client import (
     pull_compile_result_subscription,
 )
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
-from core.repositories import CompileRepository, UsageRepository
+from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
 
 
@@ -220,6 +220,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 created_at=job.created_at,
                 files=[CompileSourceFile(filename=file.filename, content=file.content) for file in files],
                 request_id=request_id,
+                originating_llm_edit_job_id=job.originating_llm_edit_job_id,
             )
             try:
                 assert_message_size(command, settings.compile_request_max_bytes, "request")

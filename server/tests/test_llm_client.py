@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
+import core.llm_client as llm_client
 from core.auth_types import AuthContext
 from core.config import Settings
 from core.llm_client import (
@@ -37,12 +38,22 @@ def llm_file_pointer(file_id: UUID | None = None, filename: str = "design.py") -
 
 
 class FakeChatCompletions:
-    def __init__(self, content=None, prompt_tokens=11, completion_tokens=22, finish_reason="stop"):
+    def __init__(
+        self,
+        content=None,
+        prompt_tokens=11,
+        completion_tokens=22,
+        finish_reason="stop",
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    ):
         self.calls = []
         self._content = content
         self._prompt_tokens = prompt_tokens
         self._completion_tokens = completion_tokens
         self._finish_reason = finish_reason
+        self._cache_read_input_tokens = cache_read_input_tokens
+        self._cache_creation_input_tokens = cache_creation_input_tokens
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -58,6 +69,8 @@ class FakeChatCompletions:
                 prompt_tokens=self._prompt_tokens,
                 completion_tokens=self._completion_tokens,
                 total_tokens=self._prompt_tokens + self._completion_tokens,
+                cache_read_input_tokens=self._cache_read_input_tokens,
+                cache_creation_input_tokens=self._cache_creation_input_tokens,
             ),
         )
 
@@ -888,6 +901,68 @@ async def test_generate_file_edits_preserves_provider_failure_detail():
 
 
 @pytest.mark.asyncio
+async def test_generate_file_edits_records_bounded_provider_error_metrics(monkeypatch):
+    request, files = _file_edit_request_and_files()
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeGenericProviderErrorChatCompletions())
+    counters = []
+    histograms = []
+    exceptions = []
+
+    monkeypatch.setattr(
+        llm_client,
+        "counter_add",
+        lambda name, value=1, attributes=None: counters.append((name, value, attributes or {})),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "histogram_record",
+        lambda name, value, attributes=None: histograms.append((name, value, attributes or {})),
+    )
+
+    def fake_record_exception(span, exc, **kwargs):
+        exceptions.append((type(exc).__name__, kwargs))
+
+    monkeypatch.setattr(llm_client, "record_exception", fake_record_exception)
+
+    with pytest.raises(LlmGenerationError):
+        await generate_file_edits(
+            request,
+            files=files,
+            settings=make_llm_settings(llm_api_key="secret"),
+            auth=AuthContext(
+                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+            ),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    expected_attrs = {
+        "llm.provider": "openai-chat-completions",
+        "llm.model_id": "test-openai-compatible-model",
+        "llm.model": "test-openai-compatible-model",
+        "llm.operation": "files.llm_edit",
+        "provider": "openai-chat-completions",
+        "model_id": "test-openai-compatible-model",
+        "model": "test-openai-compatible-model",
+        "error_category": "provider_5xx",
+    }
+    assert ("tertius.llm.request.error.count", 1, expected_attrs) in counters
+    duration_attrs = [
+        attrs for name, _value, attrs in histograms if name == "tertius.llm.request.duration"
+    ]
+    assert duration_attrs
+    assert duration_attrs[0] == {**expected_attrs, "status_category": "error"}
+    assert exceptions == [
+        (
+            "SimpleNamespaceProviderError",
+            {"status_description": "provider_5xx", "record_exception_event": False},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_generate_file_edits_does_not_publish_when_provider_returns_invalid_json():
     request, files = _file_edit_request_and_files()
     client = FakeOpenAIClient()
@@ -1020,3 +1095,134 @@ async def test_generate_file_edits_requires_secret_system_prompt():
         )
 
     assert client.chat.completions.calls == []
+
+
+def _collect_metric_points(reader, name: str) -> list[tuple[dict, float | dict]]:
+    points: list[tuple[dict, float | dict]] = []
+    data = reader.get_metrics_data()
+    for resource_metrics in data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name != name:
+                    continue
+                for point in metric.data.data_points:
+                    attrs = dict(point.attributes)
+                    if hasattr(point, "value"):
+                        points.append((attrs, point.value))
+                    else:
+                        points.append((attrs, {"sum": point.sum, "count": point.count}))
+    return points
+
+
+def _metric_total_value(reader, name: str) -> float:
+    """Sum counter/up_down_counter values (or histogram sums) for a metric name."""
+    total = 0.0
+    for _, value in _collect_metric_points(reader, name):
+        if isinstance(value, dict):
+            total += float(value["sum"])
+        else:
+            total += float(value)
+    return total
+
+
+@pytest.fixture
+def metrics_reader(monkeypatch):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    import core.telemetry as telemetry
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = provider.get_meter("tertius.telemetry")
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: meter)
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+    yield reader
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_emits_full_token_and_cost_metrics(metrics_reader):
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(
+        completions=FakeChatCompletions(
+            prompt_tokens=11,
+            completion_tokens=22,
+            cache_read_input_tokens=5,
+            cache_creation_input_tokens=3,
+        )
+    )
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.input.total") == 11
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.output.total") == 22
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cached.total") == 5
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cache_creation.total") == 3
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.total") == 33
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cached") == 5
+    assert _metric_total_value(metrics_reader, "tertius.llm.tokens.cache_creation") == 3
+    assert _metric_total_value(metrics_reader, "tertius.llm.cost.usd") == pytest.approx(0.0000505)
+    assert _metric_total_value(metrics_reader, "tertius.llm.cost.usd.total") == pytest.approx(0.0000505)
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_in_flight_returns_to_zero_after_success(metrics_reader):
+    client = FakeOpenAIClient()
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.requests.in_flight") == 0
+    # request.count should reflect the successful call
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.count") == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_in_flight_returns_to_zero_after_error(metrics_reader):
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeGenericProviderErrorChatCompletions())
+
+    with pytest.raises(LlmGenerationError):
+        await generate_build_script(
+            BuildScriptGenerationInput(prompt="make a bracket"),
+            settings=make_llm_settings(llm_api_key="secret"),
+            auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    assert _metric_total_value(metrics_reader, "tertius.llm.requests.in_flight") == 0
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.error.count") == 1
+    # success counter must not be incremented on error
+    assert _metric_total_value(metrics_reader, "tertius.llm.request.count") == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_build_script_records_llm_model_label(metrics_reader):
+    client = FakeOpenAIClient()
+    await generate_build_script(
+        BuildScriptGenerationInput(prompt="make a bracket"),
+        settings=make_llm_settings(llm_api_key="secret"),
+        auth=AuthContext(user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None),
+        project_id=uuid4(),
+        openai_client=client,
+        billing_publisher=FakePublisher(),
+    )
+
+    points = _collect_metric_points(metrics_reader, "tertius.llm.tokens.input.total")
+    assert points, "expected token input counter points"
+    attrs = points[0][0]
+    assert attrs["llm.model"] == "test-openai-compatible-model"
+    assert attrs["llm.model_id"] == "test-openai-compatible-model"

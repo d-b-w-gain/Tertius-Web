@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -9,18 +10,15 @@ from sqlalchemy.orm import sessionmaker
 import core.db as core_db
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.config import Settings
 from core.db import get_db
 from core.llm_client import (
     LlmBillingError,
     LlmFileEditTruncatedError,
     LlmGenerationError,
-    LlmInvalidFileEditError,
     LlmProviderAuthenticationError,
     LlmProviderRateLimitError,
     TokenUsage,
 )
-from core.llm_usage import LlmUsageLimitExceeded
 from core.models import (
     AppUser,
     Artifact,
@@ -36,7 +34,6 @@ from core.models import (
 from core.repositories import LlmEditRepository
 from llm_test_helpers import make_llm_settings
 from workflows.intus import intus_server
-from workflows.intus.intus_server import app
 
 
 class FakeBillingPublisher:
@@ -112,6 +109,28 @@ def use_test_background_session(monkeypatch, db_session):
     monkeypatch.setattr(core_db, "SessionLocal", testing_session_local)
 
 
+def capture_intus_metrics(monkeypatch):
+    counters = []
+    histograms = []
+    up_down_counters = []
+    monkeypatch.setattr(
+        intus_server,
+        "counter_add",
+        lambda name, value=1, attributes=None: counters.append((name, value, attributes or {})),
+    )
+    monkeypatch.setattr(
+        intus_server,
+        "histogram_record",
+        lambda name, value, attributes=None: histograms.append((name, value, attributes or {})),
+    )
+    monkeypatch.setattr(
+        intus_server,
+        "up_down_counter_add",
+        lambda name, value=1, attributes=None: up_down_counters.append((name, value, attributes or {})),
+    )
+    return counters, histograms, up_down_counters
+
+
 def test_list_files_includes_metadata(authenticated_intus_client, db_session, seeded_tenant):
     db_session.add(
         ProjectFile(
@@ -143,6 +162,7 @@ def test_llm_file_edit_job_completes_and_status_returns_result(
 ):
     enable_llm(monkeypatch)
     use_test_background_session(monkeypatch, db_session)
+    counters, histograms, up_down_counters = capture_intus_metrics(monkeypatch)
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -243,6 +263,23 @@ def test_llm_file_edit_job_completes_and_status_returns_result(
         )
     ) == 1
     assert len(publisher.published) == 1
+    base_labels = {"llm.operation": "files.llm_edit", "workflow": "intus"}
+    assert ("tertius.llm.job.queued.count", 1, base_labels) in counters
+    assert ("tertius.llm.job.started.count", 1, base_labels) in counters
+    assert (
+        "tertius.llm.job.finished.count",
+        1,
+        {**base_labels, "job_status": "succeeded"},
+    ) in counters
+    assert not any(name == "tertius.llm.job.failed.count" for name, _value, _attrs in counters)
+    assert any(
+        name == "tertius.llm.job.duration"
+        and attrs == {**base_labels, "job_status": "succeeded"}
+        and value >= 0
+        for name, value, attrs in histograms
+    )
+    assert ("tertius.llm.jobs.active", 1, base_labels) in up_down_counters
+    assert ("tertius.llm.jobs.active", -1, base_labels) in up_down_counters
 
 
 def test_llm_file_edit_job_includes_recent_prompts_excluding_current_job(
@@ -333,6 +370,96 @@ def test_llm_file_edit_job_includes_recent_prompts_excluding_current_job(
         "history-4",
         "history-5",
     ]
+
+
+def test_llm_file_edit_job_records_billing_publish_error_metric(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    configured_model_id = "configured-model-id"
+    provider_model = "provider-model-name"
+    monkeypatch.setattr(
+        intus_server,
+        "get_settings",
+        lambda: make_llm_settings(
+            llm_api_key="test-key",
+            llm_default_model_id=configured_model_id,
+            llm_models_json=json.dumps(
+                [
+                    {
+                        "id": configured_model_id,
+                        "label": "Configured Model",
+                        "model": provider_model,
+                        "endpoint": "https://llm.example.test/v1/chat/completions",
+                        "api": "openai-chat-completions",
+                        "input_price_per_million": 1.0,
+                        "output_price_per_million": 2.0,
+                        "cached_read_price_per_million": 0.1,
+                        "cached_write_price_per_million": None,
+                        "enabled": True,
+                    }
+                ]
+            ),
+        ),
+    )
+    use_test_background_session(monkeypatch, db_session)
+    counters, _histograms, _up_down_counters = capture_intus_metrics(monkeypatch)
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+
+    fake_result = SimpleNamespace(
+        success=True,
+        outcome="no_change",
+        message="Looks good",
+        files=[],
+        provider="openai-chat-completions",
+        model=provider_model,
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
+        cost_usd=0.0005,
+        provider_request_id="chatcmpl-test",
+        billing_event_id=None,
+    )
+    monkeypatch.setattr(
+        intus_server,
+        "generate_file_edits",
+        make_fake_generate_file_edits(return_value=fake_result),
+    )
+    publisher = FakeBillingPublisher(raise_on_publish=True)
+
+    async def fake_create_billing_publisher(settings):
+        return publisher, None
+
+    monkeypatch.setattr(intus_server, "create_billing_publisher", fake_create_billing_publisher)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Refactor purlin into helper",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    job_id = UUID(response.json()["job_id"])
+    status_response = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job_id}"
+    )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "failed"
+    assert (
+        "tertius.billing.publish.error.count",
+        1,
+        {
+            "provider": "openai-chat-completions",
+            "model_id": configured_model_id,
+            "operation": "files.llm_edit",
+        },
+    ) in counters
 
 
 def test_llm_file_edit_job_rejects_cross_tenant_file_pointer_before_enqueue(
@@ -653,6 +780,7 @@ def test_llm_file_edit_job_does_not_retry_truncated_output(
 ):
     enable_llm(monkeypatch)
     use_test_background_session(monkeypatch, db_session)
+    counters, histograms, _up_down_counters = capture_intus_metrics(monkeypatch)
     design = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded_tenant.tenant_id,
@@ -698,6 +826,19 @@ def test_llm_file_edit_job_does_not_retry_truncated_output(
     assert job.attempt_count == 1
     assert db_session.get(ProjectFile, design.id).content == original_content
     assert db_session.scalars(select(LlmUsageRecord)).all() == []
+    failure_labels = {
+        "llm.operation": "files.llm_edit",
+        "workflow": "intus",
+        "job_status": "failed",
+        "failure_category": "truncated",
+        "retryable": "true",
+    }
+    assert ("tertius.llm.job.failed.count", 1, failure_labels) in counters
+    assert ("tertius.llm.job.finished.count", 1, failure_labels) in counters
+    assert any(
+        name == "tertius.llm.job.duration" and attrs == failure_labels and value >= 0
+        for name, value, attrs in histograms
+    )
 
 
 def test_llm_file_edit_job_retries_generation_failure_once_then_succeeds(
@@ -1083,3 +1224,73 @@ def test_llm_file_edit_job_public_mounted_route(
     assert body["result"]["outcome"] == "no_change"
     assert body["result"]["message"] == "Already matches the request"
     assert body["result"]["usage"]["total_tokens"] == 7
+
+
+def _retry_metric_points(reader, name):
+    points = []
+    for resource_metrics in reader.get_metrics_data().resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == name:
+                    points.extend(metric.data.data_points)
+    return points
+
+
+def test_record_retry_emits_counter_and_span_event(monkeypatch):
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+
+    import core.telemetry as telemetry
+
+    metric_reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[metric_reader])
+    monkeypatch.setattr(telemetry, "get_meter", lambda name: meter_provider.get_meter(name))
+    monkeypatch.setattr(telemetry, "_METRIC_INSTRUMENTS", {})
+
+    class ListExporter(SpanExporter):
+        def __init__(self):
+            self.spans = []
+
+        def export(self, spans):
+            self.spans.extend(spans)
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            return None
+
+        def force_flush(self, timeout_millis=30000):
+            return True
+
+    exporter = ListExporter()
+    trace_provider = TracerProvider()
+    trace_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        intus_server,
+        "get_tracer",
+        lambda name: trace_provider.get_tracer(name),
+    )
+
+    with intus_server.get_tracer("test").start_as_current_span("llm.file_edit.job"):
+        intus_server._record_retry(
+            reason="rate_limit",
+            attempt=2,
+            backoff_seconds=0.5,
+            attributes={"llm.operation": "files.llm_edit", "workflow": "intus"},
+        )
+
+    assert len(exporter.spans) == 1
+    events = [e for e in exporter.spans[0].events if e.name == "llm.retry"]
+    assert len(events) == 1
+    event_attrs = dict(events[0].attributes or {})
+    assert event_attrs["llm.retry.reason"] == "rate_limit"
+    assert event_attrs["llm.retry.attempt"] == 2
+    assert event_attrs["llm.retry.backoff_seconds"] == 0.5
+
+    retry_points = _retry_metric_points(metric_reader, "tertius.llm.retry.count")
+    assert len(retry_points) == 1
+    assert retry_points[0].value == 1
+    assert dict(retry_points[0].attributes).get("llm.retry_reason") == "rate_limit"
+    meter_provider.shutdown()
+    trace_provider.shutdown()
