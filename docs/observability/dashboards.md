@@ -35,7 +35,7 @@ dashboard panels so agent validation and dashboards stay aligned.
 - Provider latency by `provider` and `model_id`: `tertius.llm.request.duration`
 - Retries by reason (`rate_limit`, `generation_error`): `tertius.llm.retry.count` with `llm.retry` span events carrying attempt and backoff
 - Input and output tokens: `tertius.llm.tokens.input`, `tertius.llm.tokens.output` (histograms and `.total` cumulative counters)
-- Total, cached, and cache-creation tokens: `tertius.llm.tokens.total`, `tertius.llm.tokens.cached`, `tertius.llm.tokens.cache_creation` (histograms and `.total` cumulative counters)
+- Total, cached, and cache-creation token histograms: `tertius.llm.tokens.total`, `tertius.llm.tokens.cached`, `tertius.llm.tokens.cache_creation`; cached and cache-creation also emit cumulative counters as `.total`
 - Estimated cost: `tertius.llm.cost.usd` (histogram) and `tertius.llm.cost.usd.total` (cumulative counter for budget burn-rate)
 - Finish reason slicing on `llm.build_script.generate` / `llm.files.edit` spans via the `llm.finish_reason` attribute
 - Billing publish errors: `tertius.billing.publish.error.count`
