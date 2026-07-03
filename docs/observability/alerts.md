@@ -23,11 +23,14 @@ labels.
 
 ## LLM And Billing
 
-- Provider auth failures: page on any sustained auth/permission failure category for 5 minutes.
-- Provider rate limits: notify when rate-limit failures exceed 5% of LLM requests for 10 minutes.
+- Provider auth failures: page on any sustained `error_category="auth"` provider failure for 5 minutes.
+- Provider rate limits: notify when `error_category="rate_limit"` provider failures exceed 5% of LLM requests for 10 minutes.
+- Provider 5xx/timeouts: notify when `error_category=~"provider_5xx|timeout"` failures exceed the environment threshold for 10 minutes.
+- AI edit job failure spike: notify when `tertius.llm.job.failed.count` exceeds 10% of finished AI edit jobs for 15 minutes, sliced by bounded `failure_category`.
 - Provider latency: notify when p95 `tertius.llm.request.duration` exceeds the environment threshold for 15 minutes.
 - LLM retry storm: notify when `tertius.llm.retry.count` exceeds 5% of LLM requests for 10 minutes, sliced by `llm.retry_reason`.
 - In-flight saturation: notify when `tertius.llm.requests.in_flight` stays at the environment ceiling for 10 minutes.
+- AI edit job saturation: notify when `tertius.llm.jobs.active` stays above the environment ceiling for 10 minutes.
 - Billing publish errors: page when `tertius.billing.publish.error.count` is non-zero for 10 minutes.
 - Cost anomaly: notify when `tertius.llm.cost.usd.total` (cumulative counter) exceeds the configured daily budget burn-rate threshold.
 

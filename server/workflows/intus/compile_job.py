@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import hashlib
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
+from uuid import UUID
 
 from opentelemetry.trace import SpanKind
 
@@ -40,6 +42,10 @@ from core.telemetry import (
 logger = logging.getLogger(__name__)
 
 
+def _hash_llm_edit_job_id(job_id: UUID) -> str:
+    return hashlib.sha256(str(job_id).encode("ascii")).hexdigest()[:16]
+
+
 async def handle_compile_request_message(msg, publisher: Publisher, settings) -> None:
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.request")
@@ -67,8 +73,8 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
         span.set_attribute("tertius.export_format", command.export_format)
         if command.originating_llm_edit_job_id is not None:
             span.set_attribute(
-                "tertius.originating_llm_edit_job_id",
-                str(command.originating_llm_edit_job_id),
+                "tertius.originating_llm_edit_job_hash",
+                _hash_llm_edit_job_id(command.originating_llm_edit_job_id),
             )
         queue_latency = (now_utc() - command.created_at).total_seconds()
         if queue_latency >= 0:

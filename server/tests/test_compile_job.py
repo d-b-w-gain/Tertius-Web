@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import importlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -202,7 +203,7 @@ def test_compile_job_terms_invalid_command():
     assert msg.acked is False
 
 
-def test_compile_job_span_records_originating_llm_edit_job_id(monkeypatch, tmp_path):
+def test_compile_job_span_records_originating_llm_edit_job_hash(monkeypatch, tmp_path):
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 
@@ -248,5 +249,7 @@ def test_compile_job_span_records_originating_llm_edit_job_id(monkeypatch, tmp_p
     ]
     assert len(consume_spans) == 1
     attributes = dict(consume_spans[0].attributes or {})
-    assert attributes.get("tertius.originating_llm_edit_job_id") == str(llm_job_id)
+    expected_hash = hashlib.sha256(str(llm_job_id).encode("ascii")).hexdigest()[:16]
+    assert attributes.get("tertius.originating_llm_edit_job_hash") == expected_hash
+    assert "tertius.originating_llm_edit_job_id" not in attributes
     assert attributes.get("tertius.export_format") == "stl"

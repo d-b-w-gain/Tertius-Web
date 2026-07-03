@@ -1,15 +1,51 @@
-# LLM request rate.
+# LLM provider request rate.
 # name: llm_request_rate
-sum(rate(tertius_llm_request_count[5m]))
+sum(rate(tertius_llm_request_count_total[5m]))
 
-# LLM failure rate. Should stay near zero for configured providers.
-# name: llm_failure_rate
-sum(rate(tertius_llm_failure_count[5m]))
+# LLM provider error rate by bounded category.
+# name: llm_provider_error_rate
+sum by (error_category) (rate(tertius_llm_request_error_count_total[5m])) or vector(0)
 
-# LLM token usage rate.
-# name: llm_token_rate
-sum(rate(tertius_llm_token_count[5m]))
+# LLM provider error ratio.
+# name: llm_provider_error_ratio
+sum(increase(tertius_llm_request_error_count_total[5m])) / clamp_min(sum(increase(tertius_llm_request_count_total[5m])) + sum(increase(tertius_llm_request_error_count_total[5m])), 1) or vector(0)
 
-# LLM estimated spend rate.
+# LLM provider request p95 latency.
+# name: llm_request_duration_p95
+histogram_quantile(0.95, sum by (le) (rate(tertius_llm_request_duration_bucket[5m])))
+
+# LLM active provider requests.
+# name: llm_requests_in_flight
+sum(tertius_llm_requests_in_flight) or vector(0)
+
+# AI edit active background jobs.
+# name: llm_file_edit_jobs_active
+sum(tertius_llm_jobs_active) or vector(0)
+
+# AI edit job failure rate by bounded category.
+# name: llm_file_edit_job_failure_rate
+sum by (failure_category) (rate(tertius_llm_job_failed_count_total[5m])) or vector(0)
+
+# AI edit job p95 duration.
+# name: llm_file_edit_job_duration_p95
+histogram_quantile(0.95, sum by (le) (rate(tertius_llm_job_duration_bucket[5m]))) or vector(0)
+
+# LLM retry rate by reason.
+# name: llm_retry_rate
+sum by (llm_retry_reason) (rate(tertius_llm_retry_count_total[5m])) or vector(0)
+
+# LLM input token rate from histogram sums.
+# name: llm_input_token_rate
+sum(rate(tertius_llm_tokens_input_sum[5m]))
+
+# LLM output token rate from histogram sums.
+# name: llm_output_token_rate
+sum(rate(tertius_llm_tokens_output_sum[5m]))
+
+# LLM estimated spend rate from histogram sums.
 # name: llm_cost_usd_rate
-sum(rate(tertius_llm_cost_usd_total[5m]))
+sum(rate(tertius_llm_cost_usd_sum[5m]))
+
+# LLM billing publish error rate.
+# name: llm_billing_publish_error_rate
+sum(rate(tertius_billing_publish_error_count_total[5m])) or vector(0)

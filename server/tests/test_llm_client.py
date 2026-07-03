@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import ValidationError
 
+import core.llm_client as llm_client
 from core.auth_types import AuthContext
 from core.config import Settings
 from core.llm_client import (
@@ -449,6 +450,29 @@ def test_build_file_edit_messages_includes_prompt_files_and_schema_hint():
     assert "length = 100" in user_content
 
 
+def test_build_file_edit_messages_includes_prior_prompts():
+    file_id = uuid4()
+    request = LlmFileEditInput(
+        prompt="rename length to span",
+        files=[llm_file_pointer(file_id)],
+        active_file_id=file_id,
+    )
+    files = [LlmEditableFile(id=file_id, filename="design.py", content="length = 100\n")]
+
+    messages = build_file_edit_messages(
+        request,
+        files,
+        system_prompt=TEST_FILE_EDIT_SYSTEM_PROMPT,
+        prior_prompts=["first prompt", "second prompt"],
+    )
+
+    user_content = messages[1]["content"]
+    assert "Conversation history (up to 5 prompts):" in user_content
+    assert "1. first prompt" in user_content
+    assert "2. second prompt" in user_content
+    assert "User request:\nrename length to span" in user_content
+
+
 def test_build_file_edit_messages_includes_none_active_file_id():
     request = LlmFileEditInput(
         prompt="refactor",
@@ -874,6 +898,68 @@ async def test_generate_file_edits_preserves_provider_failure_detail():
     assert "SimpleNamespaceProviderError" in message
     assert "HTTP 502" in message
     assert "upstream timed out" in message
+
+
+@pytest.mark.asyncio
+async def test_generate_file_edits_records_bounded_provider_error_metrics(monkeypatch):
+    request, files = _file_edit_request_and_files()
+    client = FakeOpenAIClient()
+    client.chat = SimpleNamespace(completions=FakeGenericProviderErrorChatCompletions())
+    counters = []
+    histograms = []
+    exceptions = []
+
+    monkeypatch.setattr(
+        llm_client,
+        "counter_add",
+        lambda name, value=1, attributes=None: counters.append((name, value, attributes or {})),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "histogram_record",
+        lambda name, value, attributes=None: histograms.append((name, value, attributes or {})),
+    )
+
+    def fake_record_exception(span, exc, **kwargs):
+        exceptions.append((type(exc).__name__, kwargs))
+
+    monkeypatch.setattr(llm_client, "record_exception", fake_record_exception)
+
+    with pytest.raises(LlmGenerationError):
+        await generate_file_edits(
+            request,
+            files=files,
+            settings=make_llm_settings(llm_api_key="secret"),
+            auth=AuthContext(
+                user_id=uuid4(), tenant_id=uuid4(), keycloak_subject="kc", email=None
+            ),
+            project_id=uuid4(),
+            openai_client=client,
+            billing_publisher=FakePublisher(),
+        )
+
+    expected_attrs = {
+        "llm.provider": "openai-chat-completions",
+        "llm.model_id": "test-openai-compatible-model",
+        "llm.model": "test-openai-compatible-model",
+        "llm.operation": "files.llm_edit",
+        "provider": "openai-chat-completions",
+        "model_id": "test-openai-compatible-model",
+        "model": "test-openai-compatible-model",
+        "error_category": "provider_5xx",
+    }
+    assert ("tertius.llm.request.error.count", 1, expected_attrs) in counters
+    duration_attrs = [
+        attrs for name, _value, attrs in histograms if name == "tertius.llm.request.duration"
+    ]
+    assert duration_attrs
+    assert duration_attrs[0] == {**expected_attrs, "status_category": "error"}
+    assert exceptions == [
+        (
+            "SimpleNamespaceProviderError",
+            {"status_description": "provider_5xx", "record_exception_event": False},
+        )
+    ]
 
 
 @pytest.mark.asyncio

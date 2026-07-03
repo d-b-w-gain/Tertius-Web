@@ -155,8 +155,17 @@ def up_down_counter_add(name: str, value: int = 1, attributes: dict[str, Any] | 
     counter.add(value, attributes or {})
 
 
-def record_exception(span, exc: BaseException, *, status_description: str | None = None) -> None:
-    span.record_exception(exc)
+def record_exception(
+    span,
+    exc: BaseException,
+    *,
+    status_description: str | None = None,
+    record_exception_event: bool = True,
+) -> None:
+    if record_exception_event:
+        span.record_exception(exc)
+    else:
+        span.set_attribute("exception.type", exc.__class__.__name__)
     span.set_status(Status(StatusCode.ERROR, status_description or exc.__class__.__name__))
 
 
