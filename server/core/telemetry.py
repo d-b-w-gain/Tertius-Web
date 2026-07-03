@@ -20,7 +20,7 @@ from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SE
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ALWAYS_ON, ParentBased, TraceIdRatioBased
-from opentelemetry.trace import SpanKind, Status, StatusCode
+from opentelemetry.trace import Status, StatusCode
 
 logger = logging.getLogger(__name__)
 

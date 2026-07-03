@@ -4,6 +4,7 @@ import logging
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics._internal.point import ExponentialHistogramDataPoint, HistogramDataPoint, NumberDataPoint
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, use_span
 
 import core.telemetry as telemetry
@@ -15,9 +16,14 @@ def _reader() -> InMemoryMetricReader:
     return InMemoryMetricReader()
 
 
-def _metric_points(reader: InMemoryMetricReader, name: str):
-    points = []
-    for resource_metrics in reader.get_metrics_data().resource_metrics:
+def _metric_points(
+    reader: InMemoryMetricReader, name: str
+) -> list[NumberDataPoint | HistogramDataPoint | ExponentialHistogramDataPoint]:
+    points: list[NumberDataPoint | HistogramDataPoint | ExponentialHistogramDataPoint] = []
+    data = reader.get_metrics_data()
+    if data is None:
+        return points
+    for resource_metrics in data.resource_metrics:
         for scope_metrics in resource_metrics.scope_metrics:
             for metric in scope_metrics.metrics:
                 if metric.name == name:

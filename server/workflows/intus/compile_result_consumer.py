@@ -28,7 +28,7 @@ from core.nats_client import (
     pull_compile_result_subscription,
 )
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
-from core.repositories import CompileRepository, UsageRepository
+from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
 
 

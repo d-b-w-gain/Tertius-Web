@@ -21,7 +21,7 @@ from core.billing_messages import (
     billing_usage_message_id,
 )
 from core.config import LlmModelConfig
-from core.nats_client import NatsPublisher, Publisher
+from core.nats_client import Publisher
 from core.telemetry import (
     counter_add,
     elapsed_seconds,
