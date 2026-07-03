@@ -8,7 +8,7 @@ sum by (error_category) (rate(tertius_llm_request_error_count_total[5m])) or vec
 
 # LLM provider error ratio.
 # name: llm_provider_error_ratio
-sum(rate(tertius_llm_request_error_count_total[5m])) / clamp_min(sum(rate(tertius_llm_request_count_total[5m])) + sum(rate(tertius_llm_request_error_count_total[5m])), 1) or vector(0)
+sum(increase(tertius_llm_request_error_count_total[5m])) / clamp_min(sum(increase(tertius_llm_request_count_total[5m])) + sum(increase(tertius_llm_request_error_count_total[5m])), 1) or vector(0)
 
 # LLM provider request p95 latency.
 # name: llm_request_duration_p95

@@ -144,6 +144,7 @@ async def publish_file_edit_billing_event(
     request: LlmFileEditInput,
     result,
     event_id: UUID,
+    model_id: str,
 ) -> None:
     usage = result.usage
     event = LlmTokenUsageEvent(
@@ -176,7 +177,7 @@ async def publish_file_edit_billing_event(
             1,
             {
                 "provider": result.provider,
-                "model_id": result.model,
+                "model_id": model_id,
                 "operation": "files.llm_edit",
             },
         )
@@ -739,6 +740,7 @@ async def _run_llm_file_edit_core(
             request=req,
             result=result,
             event_id=billing_event_id,
+            model_id=model_config.id,
         )
         record_llm_usage(
             db,

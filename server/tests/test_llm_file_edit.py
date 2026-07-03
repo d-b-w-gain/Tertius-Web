@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -374,7 +375,32 @@ def test_llm_file_edit_job_includes_recent_prompts_excluding_current_job(
 def test_llm_file_edit_job_records_billing_publish_error_metric(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
-    enable_llm(monkeypatch)
+    configured_model_id = "configured-model-id"
+    provider_model = "provider-model-name"
+    monkeypatch.setattr(
+        intus_server,
+        "get_settings",
+        lambda: make_llm_settings(
+            llm_api_key="test-key",
+            llm_default_model_id=configured_model_id,
+            llm_models_json=json.dumps(
+                [
+                    {
+                        "id": configured_model_id,
+                        "label": "Configured Model",
+                        "model": provider_model,
+                        "endpoint": "https://llm.example.test/v1/chat/completions",
+                        "api": "openai-chat-completions",
+                        "input_price_per_million": 1.0,
+                        "output_price_per_million": 2.0,
+                        "cached_read_price_per_million": 0.1,
+                        "cached_write_price_per_million": None,
+                        "enabled": True,
+                    }
+                ]
+            ),
+        ),
+    )
     use_test_background_session(monkeypatch, db_session)
     counters, _histograms, _up_down_counters = capture_intus_metrics(monkeypatch)
     design = db_session.scalar(
@@ -390,7 +416,7 @@ def test_llm_file_edit_job_records_billing_publish_error_metric(
         message="Looks good",
         files=[],
         provider="openai-chat-completions",
-        model="test-openai-compatible-model",
+        model=provider_model,
         usage=TokenUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30),
         cost_usd=0.0005,
         provider_request_id="chatcmpl-test",
@@ -430,7 +456,7 @@ def test_llm_file_edit_job_records_billing_publish_error_metric(
         1,
         {
             "provider": "openai-chat-completions",
-            "model_id": "test-openai-compatible-model",
+            "model_id": configured_model_id,
             "operation": "files.llm_edit",
         },
     ) in counters
