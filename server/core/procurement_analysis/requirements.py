@@ -324,6 +324,27 @@ def _is_decomposable_fastener_assembly(call: dict[str, Any] | None) -> bool:
     return _resolved_input(call, "size") is not None and _resolved_input(call, "length_mm") is not None
 
 
+def _is_strong_visual_part_number(value: str) -> bool:
+    return len(value) >= 4 and bool(re.search(r"[A-Z]", value)) and bool(re.search(r"\d", value))
+
+
+def _visual_part_number_overrides_source(
+    component: dict[str, Any],
+    call: dict[str, Any] | None,
+    visual_part_number: str | None,
+) -> bool:
+    if not visual_part_number or not call:
+        return False
+    if not _is_strong_visual_part_number(visual_part_number):
+        return False
+    if _is_decomposable_fastener_assembly(call):
+        return True
+    source_identity = _resolved_input(call, "part_number") or _resolved_input(call, "product_key")
+    if source_identity is None:
+        return False
+    return str(source_identity).strip().upper() != visual_part_number
+
+
 def _function_initials(value: str) -> str:
     text = re.sub(r"^(make|build|create)[_\-\s]+", "", value.strip(), flags=re.IGNORECASE)
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
@@ -974,7 +995,8 @@ def build_procurement_analysis(
         visual_part_number, visual_part_trace = _visual_label_part_number(component)
         source_part_trace = call.get("standard_inputs", {}).get("part_number") if call and _resolved_input(call, "part_number") else None
         product_key_trace = call.get("standard_inputs", {}).get("product_key") if call and _resolved_input(call, "product_key") else None
-        part_number = (
+        visual_overrides_source = _visual_part_number_overrides_source(component, call, visual_part_number)
+        part_number = visual_part_number if visual_overrides_source else (
             (_resolved_input(call, "part_number") if call else None)
             or (_resolved_input(call, "product_key") if call else None)
             or visual_part_number
@@ -983,7 +1005,7 @@ def build_procurement_analysis(
         placeholder_trace = None
         part_number_placeholder = False
         quantity_evidence = _quantity_evidence(call, component, source_analysis, analysis_mode=analysis_mode)
-        if call is not None and _is_decomposable_fastener_assembly(call):
+        if call is not None and _is_decomposable_fastener_assembly(call) and not visual_overrides_source:
             fastener_requirements = _fastener_assembly_requirements(
                 component=component,
                 call=call,
@@ -1019,14 +1041,15 @@ def build_procurement_analysis(
                 "source_line": call.get("source_line") if call else None,
             })
 
+        use_source_details = call is not None and not visual_overrides_source
         dimensions = {
             key: _resolved_input(call, key)
             for key in ["length_mm", "width_mm", "height_mm", "thickness_mm", "diameter_mm", "grip_length_mm", "roof_pitch_deg", "angle_deg"]
-            if call and _resolved_input(call, key) is not None
+            if use_source_details and _resolved_input(call, key) is not None
         }
-        unit = _resolved_input(call, "unit") if call and _resolved_input(call, "unit") else "each"
-        material = _resolved_input(call, "material") if call else None
-        finish = _resolved_input(call, "finish") if call else None
+        unit = _resolved_input(call, "unit") if use_source_details and _resolved_input(call, "unit") else "each"
+        material = _resolved_input(call, "material") if use_source_details else None
+        finish = _resolved_input(call, "finish") if use_source_details else None
         if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
             generated_part_number, generated_part_trace = _make_generated_part_key(component, call)
             if generated_part_number:
@@ -1059,6 +1082,18 @@ def build_procurement_analysis(
             resolution_trace["dimensions"] = dimension_trace
         if quantity_trace:
             resolution_trace["quantity"] = quantity_trace
+        if visual_overrides_source and visual_part_trace:
+            resolution_trace["part_number"] = {
+                **visual_part_trace,
+                "overrode_source": {
+                    "function": call.get("function") if call else None,
+                    "source_file": call.get("source_file") if call else None,
+                    "source_line": call.get("source_line") if call else None,
+                    "part_number": _resolved_input(call, "part_number") if call else None,
+                    "product_key": _resolved_input(call, "product_key") if call else None,
+                    "bom_kind": call.get("bom_kind") if call else None,
+                },
+            }
         if not part_number and quantity_evidence.get("quantity_source") in {"visual_instances", "diagnostic_placeholder"}:
             label = str(component.get("label") or component.get("path") or component.get("id") or "").strip()
             if label:

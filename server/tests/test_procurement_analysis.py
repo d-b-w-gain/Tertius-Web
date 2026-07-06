@@ -941,6 +941,63 @@ model = fascia_bracket_assembly()
     assert {item["count_trace"]["visual_leaf_count"] for item in bolt_requirements} == {2}
 
 
+def test_clean_visual_part_label_overrides_mismatched_nearby_source_call():
+    source = analyze_design_sources({
+        "design.py": """
+def lysaght_zc_purlin(part_number, length):
+    return None
+
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+def floor_assembly():
+    joist_part = lysaght_zc_purlin(part_number="C10019", length=5000)
+    joist_web_bolt = make_fastener_assembly("M12", 25.0, 4.9)
+    return [joist_part, joist_web_bolt]
+
+model = floor_assembly()
+""",
+    })
+    tree = {
+        "assemblies": [],
+        "components": [
+            {
+                "id": "floor-cp",
+                "label": "100CP",
+                "path": "Shed/Floor Assembly/Floor Joist 100CP Brackets/100CP",
+                "assembly_id": None,
+                "visual_node_ids": ["cp-1"],
+                "visual_instance_count": 1,
+            },
+            {
+                "id": "floor-ac",
+                "label": "100AC",
+                "path": "Shed/Floor Assembly/Floor Joist Web 100AC End Brackets/100AC",
+                "assembly_id": None,
+                "visual_node_ids": ["ac-1"],
+                "visual_instance_count": 1,
+            },
+        ],
+        "diagnostics": [],
+    }
+
+    analysis = build_procurement_analysis(source, tree)
+    by_component = {item["component_id"]: item for item in analysis["requirements"]}
+
+    assert by_component["floor-cp"]["part_number"] == "100CP"
+    assert by_component["floor-cp"]["dimensions"] == {}
+    assert by_component["floor-cp"]["resolution_trace"]["part_number"]["overrode_source"]["part_number"] == "C10019"
+
+    assert by_component["floor-ac"]["part_number"] == "100AC"
+    assert by_component["floor-ac"]["dimensions"] == {}
+    assert by_component["floor-ac"]["resolution_trace"]["part_number"]["overrode_source"]["bom_kind"] == "fastener_assembly"
+    assert not any(
+        item["component_id"] == "floor-ac"
+        and item["source_trace"].get("decomposed_from") == "fastener_assembly"
+        for item in analysis["requirements"]
+    )
+
+
 def test_same_transform_named_group_fragments_are_one_visual_component():
     source = analyze_design_sources({
         "design.py": """
