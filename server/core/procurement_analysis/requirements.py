@@ -305,6 +305,27 @@ def _visual_label_part_number(component: dict[str, Any]) -> tuple[str | None, di
     }
 
 
+def _bom_metadata(component: dict[str, Any]) -> dict[str, Any]:
+    metadata = component.get("bom_metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _bom_dimensions(metadata: dict[str, Any]) -> dict[str, Any]:
+    value = metadata.get("dimensions")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _bom_trace(component: dict[str, Any], key: str, value: Any) -> dict[str, Any]:
+    return {
+        "raw": {"kind": "visual_bom_metadata", "field": key, "value": value},
+        "resolved": value,
+        "resolution": "visual_bom_metadata",
+        "source_file": None,
+        "source_line": None,
+        "visual_component_id": component.get("id"),
+    }
+
+
 def _is_visual_container_without_procurement_identity(component: dict[str, Any], call: dict[str, Any] | None) -> bool:
     if call and (_resolved_input(call, "part_number") is not None or _resolved_input(call, "product_key") is not None):
         return False
@@ -706,6 +727,65 @@ def _quantity_evidence(
     }
 
 
+def _visual_quantity_evidence(component: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    visual_count = _visual_instance_count(component)
+    explicit_quantity = _positive_number(metadata.get("quantity"))
+    unit = metadata.get("unit")
+    non_discrete_quantity_unit = _is_non_discrete_quantity_unit(unit)
+    visual_count_is_quantity = visual_count is not None and _allows_visual_quantity(unit)
+
+    if visual_count is not None and visual_count_is_quantity:
+        quantity = visual_count
+        source = "visual_instances"
+        confidence = "verified"
+        orderable = True
+    elif visual_count is not None and non_discrete_quantity_unit and explicit_quantity is not None:
+        quantity = explicit_quantity
+        source = "metadata_quantity_non_discrete"
+        confidence = "verified"
+        orderable = True
+    else:
+        quantity = 1
+        source = "diagnostic_placeholder"
+        confidence = "diagnostic"
+        orderable = visual_count is not None
+
+    trace: dict[str, Any] = {
+        "explicit_quantity": explicit_quantity,
+        "visual_instance_count": visual_count,
+        "visual_leaf_count": _visual_leaf_count(component),
+        "visual_count_is_quantity": visual_count_is_quantity,
+        "non_discrete_quantity_unit": non_discrete_quantity_unit,
+        "assembly_instance_multiplier": 1,
+        "source_call_count": 1,
+    }
+    if unit is not None:
+        trace["quantity_unit"] = unit
+    if (
+        explicit_quantity not in {None, 1}
+        and visual_count is not None
+        and visual_count_is_quantity
+        and explicit_quantity != visual_count
+    ):
+        confidence = "diagnostic"
+        trace["mismatch"] = {
+            "explicit_quantity": explicit_quantity,
+            "visual_instance_count": visual_count,
+        }
+
+    return {
+        "quantity": quantity,
+        "rolled_up_quantity": quantity,
+        "quantity_source": source,
+        "quantity_confidence": confidence,
+        "orderable": orderable,
+        "visual_instance_count": visual_count,
+        "assembly_instance_multiplier": 1,
+        "source_call_count": 1,
+        "count_trace": trace,
+    }
+
+
 def _generated_fastener_part_trace(
     *,
     part_number: str,
@@ -919,45 +999,24 @@ def build_procurement_analysis(
             "message": "GLTF hierarchy did not expose named component groups; source metadata is diagnostic-only and not procurement quantity authority.",
         })
     elif tree_components and source_components:
-        matched_call_keys: set[tuple[Any, ...]] = set()
-        visual_part_numbers: set[str] = set()
-        for component in tree_components:
-            call, _match_reason = _best_source_call(component, source_analysis)
-            call_key = _source_call_key(call)
-            if call_key is not None:
-                matched_call_keys.add(call_key)
-            visual_part_number, _trace = _visual_label_part_number(component)
-            part_number = (_resolved_input(call, "part_number") if call else None) or visual_part_number
-            if part_number:
-                visual_part_numbers.add(str(part_number))
-        source_supplements = []
-        for component in source_components:
-            source_call = component.get("_source_call")
-            if not isinstance(source_call, dict):
-                continue
-            if _source_call_key(source_call) in matched_call_keys:
-                continue
-            if str(_resolved_input(source_call, "part_number") or "") in visual_part_numbers:
-                continue
-            source_supplements.append(component)
-        if source_supplements:
-            diagnostics.append({
-                "code": "source_metadata_without_visual_component",
-                "severity": "warning",
-                "message": (
-                    f"GLTF exposed {len(tree_components)} named component groups; "
-                    f"{len(source_supplements)} source-derived procurement candidate(s) were not added as orderable rows "
-                    "because visual components are the quantity authority."
-                ),
-                "visual_component_count": len(tree_components),
-                "source_component_count": len(source_components),
-                "unmatched_source_component_count": len(source_supplements),
-            })
+        diagnostics.append({
+            "code": "source_metadata_diagnostic_only",
+            "severity": "info",
+            "message": (
+                f"GLTF exposed {len(tree_components)} visual component(s); "
+                "source-derived procurement candidates were not matched into orderable rows because visual components are the quantity authority."
+            ),
+            "visual_component_count": len(tree_components),
+            "source_component_count": len(source_components),
+        })
 
     requirements: list[dict[str, Any]] = []
     components: list[dict[str, Any]] = []
     for component in tree_components:
-        call, match_reason = _best_source_call(component, source_analysis)
+        if analysis_mode == "visual_verified":
+            call, match_reason = None, "visual component authority"
+        else:
+            call, match_reason = _best_source_call(component, source_analysis)
         public_component = {key: value for key, value in component.items() if not key.startswith("_")}
         component_record = {
             **public_component,
@@ -972,6 +1031,98 @@ def build_procurement_analysis(
         components.append(component_record)
 
         visual_part_number, visual_part_trace = _visual_label_part_number(component)
+        if analysis_mode == "visual_verified":
+            metadata = _bom_metadata(component)
+            if metadata.get("bom") is False:
+                continue
+
+            metadata_part_number = metadata.get("part_number") or metadata.get("product_key")
+            part_number = metadata_part_number or visual_part_number
+            dimensions = _bom_dimensions(metadata)
+            unit = metadata.get("unit") or "each"
+            material = metadata.get("material")
+            finish = metadata.get("finish")
+            grade = metadata.get("grade")
+            standard = metadata.get("standard")
+            quantity_evidence = _visual_quantity_evidence(component, metadata)
+            part_number_placeholder = False
+            placeholder_trace = None
+            metadata_part_trace = (
+                _bom_trace(component, "part_number" if metadata.get("part_number") else "product_key", metadata_part_number)
+                if metadata_part_number
+                else None
+            )
+
+            if not part_number and quantity_evidence.get("orderable") is True:
+                part_number, placeholder_trace = _make_placeholder_part_key(
+                    component,
+                    None,
+                    dimensions,
+                    unit,
+                    material,
+                    finish,
+                )
+                part_number_placeholder = True
+
+            if not part_number and quantity_evidence.get("quantity_source") in {"visual_instances", "diagnostic_placeholder"}:
+                label = str(component.get("label") or component.get("path") or component.get("id") or "").strip()
+                if label:
+                    dimensions.setdefault("component_label", label)
+
+            resolution_trace = {
+                "part_number": placeholder_trace or metadata_part_trace or visual_part_trace,
+            }
+            requirement = {
+                "id": f"{component['id']}.requirement",
+                "component_id": component["id"],
+                "assembly_id": component.get("assembly_id"),
+                "part_number": part_number,
+                "stock_number": _requirement_stock_number(part_number, dimensions, resolution_trace),
+                **({"part_number_placeholder": True} if part_number_placeholder else {}),
+                **quantity_evidence,
+                "unit": unit,
+                "dimensions": dimensions,
+                "material": material,
+                "finish": finish,
+                "grade": grade,
+                "standard": standard,
+                "source_trace": component_record["source_trace"],
+                "resolution_trace": resolution_trace,
+            }
+            requirements.append(requirement)
+
+            if part_number_placeholder:
+                diagnostics.append({
+                    "code": "auto_placeholder_part_number",
+                    "severity": "warning",
+                    "message": "Generated placeholder part number because no visual BoM part_number/product_key was resolved.",
+                    "component_id": component["id"],
+                    "requirement_id": requirement["id"],
+                    "part_number": part_number,
+                    "visual_label": component.get("label"),
+                    "visual_path": component.get("path"),
+                    "resolved_inputs": {
+                        "dimensions": dimensions,
+                        "unit": unit,
+                        "material": material,
+                        "finish": finish,
+                    },
+                })
+            if not part_number:
+                diagnostics.append({
+                    "code": "requirement_missing_part_number",
+                    "message": f"{component.get('label')} has no resolved part number.",
+                    "component_id": component["id"],
+                })
+            if quantity_evidence["quantity_confidence"] == "diagnostic":
+                diagnostics.append({
+                    "code": "quantity_evidence_mismatch",
+                    "message": f"{component.get('label')} has conflicting or incomplete visual quantity evidence.",
+                    "component_id": component["id"],
+                    "count_trace": quantity_evidence["count_trace"],
+                })
+            continue
+
         source_part_trace = call.get("standard_inputs", {}).get("part_number") if call and _resolved_input(call, "part_number") else None
         product_key_trace = call.get("standard_inputs", {}).get("product_key") if call and _resolved_input(call, "product_key") else None
         part_number = (

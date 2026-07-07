@@ -21,9 +21,17 @@ from core.procurement_analysis import (
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "procurement" / "3x5shed_expected_bom.json"
 DEFAULT_SHED_DIR = Path(r"C:\Users\dbwga\Documents\Projects\CAD\3x5shed")
 NON_DISCRETE_UNITS = {"m", "m2", "m3", "kg", "l", "litre", "liter", "litres", "liters"}
-COMPARABLE_REFERENCE_STATUSES = {
-    "manual_quantities_checked_product_metadata_pending",
-    "manually_verified",
+COMPARABLE_REFERENCE_STATUSES = {"manually_verified"}
+SHED_ACCEPTANCE_QUANTITIES = {
+    "100AC": 26,
+    "100CP": 32,
+    "YELLOWTONGUE-19-1800X800": 4,
+    "YELLOWTONGUE-19-3600X800": 4,
+}
+SHED_FORBIDDEN_PART_NUMBERS = {
+    "C10019",
+    "DIN-6921-M12X25",
+    "DIN-6923-M12",
 }
 
 
@@ -103,6 +111,8 @@ def _gltf_to_scene_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             "isMesh": has_mesh,
             "children": [convert_node(child_index) for child_index in child_indexes if isinstance(child_index, int)],
         }
+        if isinstance(node.get("extras"), dict):
+            converted["extras"] = node["extras"]
         for key in ("translation", "rotation", "scale", "matrix"):
             if isinstance(node.get(key), list):
                 converted[key] = node[key]
@@ -267,6 +277,18 @@ def _canonical_fixture_non_orderable_rows(rows: list[dict[str, Any]]) -> list[di
     return sorted(normalised, key=lambda row: json.dumps(row, sort_keys=True))
 
 
+def _rolled_up_part_quantities(analysis: dict[str, Any]) -> dict[str, float]:
+    quantities: dict[str, float] = defaultdict(float)
+    for requirement in analysis.get("requirements", []):
+        part_number = requirement.get("part_number")
+        if not part_number:
+            continue
+        quantities[str(part_number)] += float(
+            requirement.get("rolled_up_quantity", requirement.get("quantity") or 0) or 0
+        )
+    return dict(quantities)
+
+
 def _load_actual_analysis() -> dict[str, Any] | None:
     analysis_json = os.environ.get("TERTIUS_PROCUREMENT_SHED_ANALYSIS_JSON")
     if analysis_json:
@@ -313,15 +335,14 @@ def actual_bom_by_identity(actual_analysis: dict[str, Any]) -> dict[str, dict[st
     return {_row_identity(row): row for row in _canonical_bom_rows(actual_analysis)}
 
 
-def test_3x5shed_visual_analysis_contract(actual_analysis: dict[str, Any], expected_fixture: dict[str, Any]):
+def test_3x5shed_visual_analysis_contract(actual_analysis: dict[str, Any]):
     assert actual_analysis.get("analysis_mode") == "visual_verified"
     assert actual_analysis.get("quantity_authority") == "visual_tree"
-    summary = expected_fixture.get("expected_summary", {})
-    assert len(actual_analysis.get("assemblies", [])) == summary.get("assemblies")
-    assert len(actual_analysis.get("components", [])) == summary.get("components")
-    assert len(actual_analysis.get("requirements", [])) == summary.get("requirements")
-    assert sum(1 for item in actual_analysis.get("requirements", []) if item.get("orderable") is not False) == summary.get("orderable_requirements")
-    assert sum(1 for item in actual_analysis.get("requirements", []) if item.get("orderable") is False) == summary.get("non_orderable_requirements")
+    part_quantities = _rolled_up_part_quantities(actual_analysis)
+    for part_number, expected_quantity in SHED_ACCEPTANCE_QUANTITIES.items():
+        assert part_quantities.get(part_number) == expected_quantity
+    for part_number in SHED_FORBIDDEN_PART_NUMBERS:
+        assert part_number not in part_quantities
 
     for requirement in actual_analysis.get("requirements", []):
         if requirement.get("orderable") is False:

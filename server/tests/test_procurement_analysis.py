@@ -195,6 +195,103 @@ left = make_member(1200, part_number="TEST-NOISE")
     )
 
 
+def test_visual_bom_metadata_creates_single_requirement_from_gltf_node_extras():
+    source = analyze_design_sources({
+        "design.py": """
+def make_widget(part_number="SOURCE-SHOULD-NOT-WIN"):
+    return None
+
+widget = make_widget()
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Rendered Widget",
+                "type": "Object3D",
+                "extras": {
+                    "tertiusBom": {
+                        "part_number": "VISUAL-WIDGET",
+                        "unit": "each",
+                        "dimensions": {"length_mm": 1200},
+                        "material": "steel",
+                    }
+                },
+                "children": [
+                    {"name": "mesh_1", "type": "Mesh", "isMesh": True},
+                    {"name": "mesh_2", "type": "Mesh", "isMesh": True},
+                ],
+            }
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert len(analysis["requirements"]) == 1
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] == "VISUAL-WIDGET"
+    assert requirement["dimensions"] == {"length_mm": 1200}
+    assert requirement["material"] == "steel"
+    assert requirement["quantity"] == 1
+    assert requirement["quantity_source"] == "visual_instances"
+    assert requirement["count_trace"]["visual_leaf_count"] == 2
+    assert requirement["source_trace"]["function"] is None
+
+
+def test_visual_bom_false_excludes_component_from_requirements():
+    source = analyze_design_sources({"design.py": "model = object()\n"})
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Reference Sketch",
+                "type": "Object3D",
+                "extras": {"tertiusBom": {"bom": False}},
+                "children": [{"name": "mesh_1", "type": "Mesh", "isMesh": True}],
+            }
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert tree["components"] == []
+    assert analysis["requirements"] == []
+
+
+def test_visual_component_label_beats_nearby_source_call_in_visual_verified_mode():
+    source = analyze_design_sources({
+        "design.py": """
+PURLIN_PART_NUMBER = "C10019"
+
+def lysaght_zc_purlin(part_number, length):
+    return None
+
+def make_fastener_assembly(size, length, grip_length):
+    return None
+
+joist = lysaght_zc_purlin(PURLIN_PART_NUMBER, 2683.6)
+bolt = make_fastener_assembly("M12", 25.0, 4.9)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {"name": "100CP", "type": "Mesh", "isMesh": True},
+            {"name": "100AC", "type": "Mesh", "isMesh": True},
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert [item["part_number"] for item in analysis["requirements"]] == ["100CP", "100AC"]
+    assert all(item["dimensions"] == {} for item in analysis["requirements"])
+    assert not any(
+        item["source_trace"].get("decomposed_from") == "fastener_assembly"
+        for item in analysis["requirements"]
+    )
+
+
 def test_imported_opaque_helper_expands_internal_bom_component_calls():
     source = analyze_design_sources({
         "design.py": """

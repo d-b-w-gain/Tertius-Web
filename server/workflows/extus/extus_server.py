@@ -215,6 +215,8 @@ def gltf_to_scene_tree(gltf: dict) -> dict:
             "isMesh": has_mesh,
             "children": [convert_node(child_index) for child_index in child_indexes if isinstance(child_index, int)],
         }
+        if isinstance(node.get("extras"), dict):
+            converted["extras"] = node["extras"]
         for key in ("translation", "rotation", "scale", "matrix"):
             if isinstance(node.get(key), list):
                 converted[key] = node[key]

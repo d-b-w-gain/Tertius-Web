@@ -23,7 +23,9 @@ def _is_generated_or_default(name: str) -> bool:
 
 
 def _has_mesh_descendant(node: dict[str, Any]) -> bool:
-    return _is_mesh(node) or any(_has_mesh_descendant(child) for child in _children(node))
+    return not _bom_disabled(node) and (
+        _is_mesh(node) or any(_has_mesh_descendant(child) for child in _children(node))
+    )
 
 
 def _is_group(node: dict[str, Any]) -> bool:
@@ -34,14 +36,31 @@ def _is_named_group(node: dict[str, Any]) -> bool:
     return _is_group(node) and not _is_generated_or_default(_node_name(node))
 
 
+def _tertius_bom_metadata(node: dict[str, Any]) -> dict[str, Any] | None:
+    extras = node.get("extras")
+    if not isinstance(extras, dict):
+        return None
+    metadata = extras.get("tertiusBom")
+    return metadata if isinstance(metadata, dict) else None
+
+
+def _bom_disabled(node: dict[str, Any]) -> bool:
+    metadata = _tertius_bom_metadata(node)
+    return metadata is not None and metadata.get("bom") is False
+
+
+def _bom_enabled_children(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return [child for child in _children(node) if not _bom_disabled(child)]
+
+
 def _has_group_child_with_meshes(node: dict[str, Any]) -> bool:
-    return any(_is_group(child) and _has_mesh_descendant(child) for child in _children(node))
+    return any(_is_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node))
 
 
 def _has_named_mesh_child(node: dict[str, Any]) -> bool:
     return any(
         _is_mesh(child) and not _is_generated_or_default(_node_name(child))
-        for child in _children(node)
+        for child in _bom_enabled_children(node)
     )
 
 
@@ -119,7 +138,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
 
             named_mesh_children = [
                 child
-                for child in _children(current)
+                for child in _bom_enabled_children(current)
                 if _is_named_group(child) and _has_mesh_descendant(child)
             ]
             if named_mesh_children and all(
@@ -130,7 +149,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                     visual_ids.append(str(child.get("id") or path_for([*current_ancestors, current], child)))
                 return
 
-            for child in _children(current):
+            for child in _bom_enabled_children(current):
                 collect(child, [*current_ancestors, current])
 
         collect(node, ancestors)
@@ -143,6 +162,8 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     ) -> list[str]:
         visual_ids: list[str] = []
         for child in children:
+            if _bom_disabled(child):
+                continue
             visual_ids.extend(visual_node_ids_for(child, [*ancestors, parent]))
         return visual_ids
 
@@ -152,6 +173,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         path: str,
         assembly_id: str | None,
         visual_node_ids: list[str],
+        bom_metadata: dict[str, Any] | None = None,
     ) -> None:
         component_id = _unique_id(_slug(path, "component"), used_ids)
         components.append({
@@ -161,11 +183,12 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             "assembly_id": assembly_id,
             "visual_node_ids": visual_node_ids,
             "visual_instance_count": None,
+            **({"bom_metadata": bom_metadata} if bom_metadata is not None else {}),
         })
 
     def direct_named_mesh_children_by_label(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
-        for child in _children(node):
+        for child in _bom_enabled_children(node):
             child_name = _node_name(child)
             if _is_mesh(child) and child_name and not _is_generated_or_default(child_name):
                 grouped.setdefault(child_name, []).append(child)
@@ -174,13 +197,13 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     def direct_generated_mesh_children(node: dict[str, Any]) -> list[dict[str, Any]]:
         return [
             child
-            for child in _children(node)
+            for child in _bom_enabled_children(node)
             if _is_mesh(child) and _is_generated_or_default(_node_name(child))
         ]
 
     def direct_named_fragments_by_label_and_transform(node: dict[str, Any]) -> dict[tuple[str, tuple[tuple[str, tuple[float, ...]], ...]], list[dict[str, Any]]]:
         grouped: dict[tuple[str, tuple[tuple[str, tuple[float, ...]], ...]], list[dict[str, Any]]] = {}
-        for child in _children(node):
+        for child in _bom_enabled_children(node):
             child_name = _node_name(child)
             signature = _transform_signature(child)
             if not child_name or _is_generated_or_default(child_name) or signature is None:
@@ -192,8 +215,11 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
 
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         name = _node_name(node)
+        if _bom_disabled(node):
+            return
+        bom_metadata = _tertius_bom_metadata(node)
         if _is_mesh(node):
-            if name and not _is_generated_or_default(name):
+            if bom_metadata is not None or (name and not _is_generated_or_default(name)):
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
                 add_component(
@@ -201,16 +227,29 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                     path=path,
                     assembly_id=parent_id,
                     visual_node_ids=[str(node.get("id") or path)],
+                    bom_metadata=bom_metadata,
                 )
             return
         if _is_group(node) and _has_mesh_descendant(node):
+            if bom_metadata is not None:
+                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                path = path_for(ancestors, node)
+                add_component(
+                    label=name or str(bom_metadata.get("part_number") or bom_metadata.get("product_key") or "BoM Item"),
+                    path=path,
+                    assembly_id=parent_id,
+                    visual_node_ids=visual_node_ids_for(node, ancestors),
+                    bom_metadata=bom_metadata,
+                )
+                return
+
             generated_mesh_children = direct_generated_mesh_children(node)
             if (
                 name
                 and not _is_generated_or_default(name)
                 and _is_plural_bucket_name(name)
                 and len(generated_mesh_children) > 1
-                and len(generated_mesh_children) == len(_children(node))
+                and len(generated_mesh_children) == len(_bom_enabled_children(node))
             ):
                 parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
@@ -263,7 +302,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                         assembly_id=parent_id,
                         visual_node_ids=visual_node_ids_for_children(children, ancestors, node),
                     )
-                for child in _children(node):
+                for child in _bom_enabled_children(node):
                     if id(child) not in grouped_child_ids:
                         visit(child, [*ancestors, node])
                 return
@@ -292,7 +331,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                             for child in children
                         ],
                     )
-                for child in _children(node):
+                for child in _bom_enabled_children(node):
                     if id(child) not in grouped_child_ids:
                         visit(child, [*ancestors, node])
                 return
@@ -325,10 +364,12 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 "path": path_for(ancestors, node),
             })
 
-        for child in _children(node):
+        for child in _bom_enabled_children(node):
             visit(child, [*ancestors, node])
 
     def collect_mesh_fallbacks(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
+        if _bom_disabled(node):
+            return
         if _is_mesh(node):
             path = path_for(ancestors, node)
             label = _node_name(node)
@@ -341,7 +382,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 visual_node_ids=[str(node.get("id") or path)],
             )
             return
-        for child in _children(node):
+        for child in _bom_enabled_children(node):
             collect_mesh_fallbacks(child, [*ancestors, node])
 
     for root in roots:
