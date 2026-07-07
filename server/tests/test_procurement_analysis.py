@@ -352,6 +352,47 @@ def test_parent_named_group_is_assembly_and_leaf_named_group_is_component():
     assert tree["components"][0]["assembly_id"] == tree["assemblies"][0]["id"]
 
 
+def test_non_mesh_assembly_nodes_become_scopes_not_bom_components():
+    source = analyze_design_sources({"design.py": "model = object()\n"})
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "children": [
+            {
+                "name": "Floor Assembly",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "Long Foundation Wall Rails",
+                        "type": "Object3D",
+                        "children": [
+                            {
+                                "name": "100CP",
+                                "type": "Object3D",
+                                "children": [{"name": "mesh_rail", "type": "Mesh", "isMesh": True}],
+                            },
+                            {
+                                "name": "100AC",
+                                "type": "Object3D",
+                                "children": [{"name": "mesh_angle", "type": "Mesh", "isMesh": True}],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    assert [assembly["label"] for assembly in tree["assemblies"]] == [
+        "Floor Assembly",
+        "Long Foundation Wall Rails",
+    ]
+    assert [component["label"] for component in tree["components"]] == ["100CP", "100AC"]
+    assert all(component["label"] not in {"Floor Assembly", "Long Foundation Wall Rails"} for component in tree["components"])
+    assert [requirement["part_number"] for requirement in analysis["requirements"]] == ["100CP", "100AC"]
+    assert all(requirement["assembly_id"] == tree["assemblies"][1]["id"] for requirement in analysis["requirements"])
+
+
 def test_golden_procurement_analysis_uses_resolved_design_values_not_magic_products():
     files = {
         "design.py": """

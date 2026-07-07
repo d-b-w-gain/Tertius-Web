@@ -64,6 +64,22 @@ def _has_named_mesh_child(node: dict[str, Any]) -> bool:
     )
 
 
+def _mesh_descendants(node: dict[str, Any]) -> list[dict[str, Any]]:
+    meshes: list[dict[str, Any]] = []
+
+    def collect(current: dict[str, Any]) -> None:
+        if _bom_disabled(current):
+            return
+        if _is_mesh(current):
+            meshes.append(current)
+            return
+        for child in _bom_enabled_children(current):
+            collect(child)
+
+    collect(node)
+    return meshes
+
+
 def _is_plural_bucket_name(name: str) -> bool:
     words = [word.lower() for word in re.split(r"[^A-Za-z0-9]+", name.strip()) if word]
     if not words:
@@ -186,6 +202,33 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             **({"bom_metadata": bom_metadata} if bom_metadata is not None else {}),
         })
 
+    def parent_assembly_id(ancestors: list[dict[str, Any]]) -> str | None:
+        return next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+
+    def add_assembly(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> str:
+        existing = object_to_assembly.get(id(node))
+        if existing:
+            return existing
+        name = _node_name(node)
+        path = path_for(ancestors, node)
+        assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
+        object_to_assembly[id(node)] = assembly_id
+        assemblies.append({
+            "id": assembly_id,
+            "label": name,
+            "path": path,
+            "parent_id": parent_assembly_id(ancestors),
+        })
+        return assembly_id
+
+    def is_single_mesh_component_wrapper(node: dict[str, Any]) -> bool:
+        name = _node_name(node)
+        if not _is_group(node) or not name or _is_generated_or_default(name):
+            return False
+        if any(_is_named_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node)):
+            return False
+        return len(_mesh_descendants(node)) == 1
+
     def direct_named_mesh_children_by_label(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for child in _bom_enabled_children(node):
@@ -208,7 +251,11 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             signature = _transform_signature(child)
             if not child_name or _is_generated_or_default(child_name) or signature is None:
                 continue
-            if not (_is_mesh(child) or (_is_group(child) and _has_mesh_descendant(child))):
+            if not (
+                _is_mesh(child)
+                or _tertius_bom_metadata(child) is not None
+                or is_single_mesh_component_wrapper(child)
+            ):
                 continue
             grouped.setdefault((child_name, signature), []).append(child)
         return grouped
@@ -220,26 +267,34 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         bom_metadata = _tertius_bom_metadata(node)
         if _is_mesh(node):
             if bom_metadata is not None or (name and not _is_generated_or_default(name)):
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
                 add_component(
                     label=name,
                     path=path,
-                    assembly_id=parent_id,
+                    assembly_id=parent_assembly_id(ancestors),
                     visual_node_ids=[str(node.get("id") or path)],
                     bom_metadata=bom_metadata,
                 )
             return
         if _is_group(node) and _has_mesh_descendant(node):
             if bom_metadata is not None:
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
                 add_component(
                     label=name or str(bom_metadata.get("part_number") or bom_metadata.get("product_key") or "BoM Item"),
                     path=path,
-                    assembly_id=parent_id,
+                    assembly_id=parent_assembly_id(ancestors),
                     visual_node_ids=visual_node_ids_for(node, ancestors),
                     bom_metadata=bom_metadata,
+                )
+                return
+
+            if is_single_mesh_component_wrapper(node):
+                path = path_for(ancestors, node)
+                add_component(
+                    label=name,
+                    path=path,
+                    assembly_id=parent_assembly_id(ancestors),
+                    visual_node_ids=visual_node_ids_for(node, ancestors),
                 )
                 return
 
@@ -251,16 +306,8 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 and len(generated_mesh_children) > 1
                 and len(generated_mesh_children) == len(_bom_enabled_children(node))
             ):
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
                 path = path_for(ancestors, node)
-                assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
-                object_to_assembly[id(node)] = assembly_id
-                assemblies.append({
-                    "id": assembly_id,
-                    "label": name,
-                    "path": path,
-                    "parent_id": parent_id,
-                })
+                assembly_id = add_assembly(node, ancestors)
                 for child in generated_mesh_children:
                     child_path = path_for([*ancestors, node], child)
                     add_component(
@@ -277,18 +324,12 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 if len(children) > 1
             }
             if grouped_fragments:
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
+                parent_id = parent_assembly_id(ancestors)
                 path = path_for(ancestors, node)
-                if _has_group_child_with_meshes(node) or _has_named_mesh_child(node):
-                    assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
-                    object_to_assembly[id(node)] = assembly_id
-                    assemblies.append({
-                        "id": assembly_id,
-                        "label": name,
-                        "path": path,
-                        "parent_id": parent_id,
-                    })
-                    parent_id = assembly_id
+                if name and not _is_generated_or_default(name) and (
+                    _has_group_child_with_meshes(node) or _has_named_mesh_child(node)
+                ):
+                    parent_id = add_assembly(node, ancestors)
 
                 grouped_child_ids = {
                     id(child)
@@ -337,26 +378,10 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 return
 
             if _has_group_child_with_meshes(node) or _has_named_mesh_child(node):
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
-                path = path_for(ancestors, node)
-                assembly_id = _unique_id(_slug(path, "assembly"), used_ids)
-                object_to_assembly[id(node)] = assembly_id
-                assemblies.append({
-                    "id": assembly_id,
-                    "label": name,
-                    "path": path,
-                    "parent_id": parent_id,
-                })
-            else:
-                parent_id = next((object_to_assembly[id(item)] for item in reversed(ancestors) if id(item) in object_to_assembly), None)
-                path = path_for(ancestors, node)
-                visual_node_ids = visual_node_ids_for(node, ancestors)
-                add_component(
-                    label=name,
-                    path=path,
-                    assembly_id=parent_id,
-                    visual_node_ids=visual_node_ids,
-                )
+                if name and not _is_generated_or_default(name):
+                    add_assembly(node, ancestors)
+            elif name and not _is_generated_or_default(name):
+                add_assembly(node, ancestors)
         elif name and not _is_generated_or_default(name):
             diagnostics.append({
                 "code": "ignored_named_node_without_meshes",
@@ -397,6 +422,26 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             "message": "GLB contains visible mesh geometry but no named component groups; generated mesh leaves were emitted as placeholder visual components.",
             "component_count": len(components),
         })
+
+    assembly_by_id = {assembly["id"]: assembly for assembly in assemblies}
+    retained_assembly_ids: set[str] = set()
+    pending_assembly_ids = [
+        assembly_id
+        for component in components
+        if isinstance(assembly_id := component.get("assembly_id"), str)
+    ]
+    while pending_assembly_ids:
+        assembly_id = pending_assembly_ids.pop()
+        if assembly_id in retained_assembly_ids:
+            continue
+        assembly = assembly_by_id.get(assembly_id)
+        if not assembly:
+            continue
+        retained_assembly_ids.add(assembly_id)
+        parent_id = assembly.get("parent_id")
+        if isinstance(parent_id, str):
+            pending_assembly_ids.append(parent_id)
+    assemblies = [assembly for assembly in assemblies if assembly["id"] in retained_assembly_ids]
 
     return {
         "assemblies": assemblies,
