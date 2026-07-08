@@ -240,11 +240,14 @@ def gltf_to_scene_tree(gltf: dict) -> dict:
         }
         scene_indexes = [index for index in range(len(nodes)) if index not in referenced]
 
-    return {
+    scene_tree = {
         "name": "Scene",
         "type": "Scene",
         "children": [convert_node(index) for index in scene_indexes],
     }
+    if isinstance(gltf.get("extras"), dict):
+        scene_tree["extras"] = gltf["extras"]
+    return scene_tree
 
 
 def glb_to_gltf_json(data: bytes) -> dict:

@@ -44,6 +44,16 @@ def _tertius_bom_metadata(node: dict[str, Any]) -> dict[str, Any] | None:
     return metadata if isinstance(metadata, dict) else None
 
 
+def _tertius_source_call_ids(node: dict[str, Any]) -> list[str]:
+    extras = node.get("extras")
+    if not isinstance(extras, dict):
+        return []
+    value = extras.get("tertiusSourceCallIds")
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item]
+
+
 def _bom_disabled(node: dict[str, Any]) -> bool:
     metadata = _tertius_bom_metadata(node)
     return metadata is not None and metadata.get("bom") is False
@@ -134,6 +144,12 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     """Classify a simplified GLTF tree or scene tree into assemblies/components."""
 
     roots = _children(gltf) or [gltf]
+    root_extras = gltf.get("extras")
+    source_map = {}
+    if isinstance(root_extras, dict) and isinstance(root_extras.get("tertiusSourceMap"), dict):
+        source_map = root_extras["tertiusSourceMap"]
+    source_calls_value = source_map.get("source_calls") if isinstance(source_map, dict) else {}
+    source_calls = source_calls_value if isinstance(source_calls_value, dict) else {}
     assemblies: list[dict[str, Any]] = []
     components: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
@@ -183,12 +199,135 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             visual_ids.extend(visual_node_ids_for(child, [*ancestors, parent]))
         return visual_ids
 
+    def source_call_ids_for(node: dict[str, Any]) -> list[str]:
+        source_call_ids: list[str] = []
+
+        def collect(current: dict[str, Any]) -> None:
+            if _bom_disabled(current):
+                return
+            for call_id in _tertius_source_call_ids(current):
+                if call_id not in source_call_ids:
+                    source_call_ids.append(call_id)
+            for child in _bom_enabled_children(current):
+                collect(child)
+
+        collect(node)
+        return source_call_ids
+
+    def source_call_ids_for_children(children: list[dict[str, Any]]) -> list[str]:
+        source_call_ids: list[str] = []
+        for child in children:
+            for call_id in source_call_ids_for(child):
+                if call_id not in source_call_ids:
+                    source_call_ids.append(call_id)
+        return source_call_ids
+
+    def resolved_standard_input(call_id: str, key: str) -> Any:
+        call = source_calls.get(str(call_id))
+        if not isinstance(call, dict):
+            return None
+        standard_inputs = call.get("standard_inputs")
+        if not isinstance(standard_inputs, dict):
+            return None
+        trace = standard_inputs.get(key)
+        if isinstance(trace, dict):
+            return trace.get("resolved")
+        return None
+
+    def source_call_score(call_id: str) -> int:
+        call = source_calls.get(str(call_id))
+        if not isinstance(call, dict):
+            return 0
+        standard_inputs = call.get("standard_inputs")
+        if not isinstance(standard_inputs, dict):
+            standard_inputs = {}
+        function = str(call.get("function") or "")
+        score = 1
+        if not function.startswith("_"):
+            score += 2
+        if resolved_standard_input(call_id, "part_number") is not None:
+            score += 20
+        if resolved_standard_input(call_id, "product_key") is not None:
+            score += 18
+        if resolved_standard_input(call_id, "mark") is not None:
+            score += 8
+        for dimension_key in (
+            "length_mm",
+            "width_mm",
+            "height_mm",
+            "thickness_mm",
+            "diameter_mm",
+            "grip_length_mm",
+            "angle_deg",
+        ):
+            if resolved_standard_input(call_id, dimension_key) is not None:
+                score += 2
+        score += min(len(standard_inputs), 6)
+        return score
+
+    def source_call_has_product_identity(call_id: str) -> bool:
+        return (
+            resolved_standard_input(call_id, "part_number") is not None
+            or resolved_standard_input(call_id, "product_key") is not None
+        )
+
+    def best_source_component_call_id(node: dict[str, Any]) -> str | None:
+        candidates = source_call_ids_for(node)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda call_id: (source_call_score(call_id), candidates.index(call_id)))
+
+    def best_own_product_source_call_id(node: dict[str, Any]) -> str | None:
+        candidates = _tertius_source_call_ids(node)
+        product_candidates = [
+            call_id
+            for call_id in candidates
+            if source_call_has_product_identity(call_id)
+        ]
+        if not product_candidates:
+            return None
+        return max(product_candidates, key=lambda call_id: (source_call_score(call_id), candidates.index(call_id)))
+
+    def source_component_label(call_id: str, fallback: str) -> str:
+        part_number = resolved_standard_input(call_id, "part_number") or resolved_standard_input(call_id, "product_key")
+        if part_number is not None:
+            return str(part_number)
+        call = source_calls.get(str(call_id))
+        if isinstance(call, dict) and call.get("function"):
+            return _human_label(str(call["function"]))
+        return fallback
+
+    def generated_source_component_groups(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        if not _is_group(node):
+            return {}
+        name = _node_name(node)
+        if not name or _is_generated_or_default(name):
+            return {}
+        if any(_is_named_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node)):
+            return {}
+        if any(
+            _is_mesh(child) and not _is_generated_or_default(_node_name(child))
+            for child in _bom_enabled_children(node)
+        ):
+            return {}
+        meshes = _mesh_descendants(node)
+        if not meshes:
+            return {}
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for mesh in meshes:
+            call_id = best_source_component_call_id(mesh)
+            if call_id is None:
+                return {}
+            groups.setdefault(call_id, []).append(mesh)
+        return groups
+
     def add_component(
         *,
         label: str,
         path: str,
         assembly_id: str | None,
         visual_node_ids: list[str],
+        source_call_ids: list[str] | None = None,
         bom_metadata: dict[str, Any] | None = None,
     ) -> None:
         component_id = _unique_id(_slug(path, "component"), used_ids)
@@ -199,6 +338,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             "assembly_id": assembly_id,
             "visual_node_ids": visual_node_ids,
             "visual_instance_count": None,
+            **({"source_call_ids": source_call_ids} if source_call_ids else {}),
             **({"bom_metadata": bom_metadata} if bom_metadata is not None else {}),
         })
 
@@ -266,13 +406,15 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             return
         bom_metadata = _tertius_bom_metadata(node)
         if _is_mesh(node):
-            if bom_metadata is not None or (name and not _is_generated_or_default(name)):
+            source_call_ids = source_call_ids_for(node)
+            if bom_metadata is not None or source_call_ids or (name and not _is_generated_or_default(name)):
                 path = path_for(ancestors, node)
                 add_component(
-                    label=name,
+                    label=name if name and not _is_generated_or_default(name) else "Visual Component",
                     path=path,
                     assembly_id=parent_assembly_id(ancestors),
                     visual_node_ids=[str(node.get("id") or path)],
+                    source_call_ids=source_call_ids,
                     bom_metadata=bom_metadata,
                 )
             return
@@ -284,6 +426,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                     path=path,
                     assembly_id=parent_assembly_id(ancestors),
                     visual_node_ids=visual_node_ids_for(node, ancestors),
+                    source_call_ids=source_call_ids_for(node),
                     bom_metadata=bom_metadata,
                 )
                 return
@@ -295,7 +438,58 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                     path=path,
                     assembly_id=parent_assembly_id(ancestors),
                     visual_node_ids=visual_node_ids_for(node, ancestors),
+                    source_call_ids=source_call_ids_for(node),
                 )
+                return
+
+            own_product_call_id = best_own_product_source_call_id(node)
+            if own_product_call_id is not None:
+                path = path_for(ancestors, node)
+                source_call_ids = [
+                    call_id
+                    for call_id in source_call_ids_for(node)
+                    if call_id != own_product_call_id
+                ]
+                source_call_ids.append(own_product_call_id)
+                add_component(
+                    label=name or source_component_label(own_product_call_id, "Visual Component"),
+                    path=path,
+                    assembly_id=parent_assembly_id(ancestors),
+                    visual_node_ids=visual_node_ids_for(node, ancestors),
+                    source_call_ids=source_call_ids,
+                )
+                return
+
+            source_groups = generated_source_component_groups(node)
+            if source_groups:
+                path = path_for(ancestors, node)
+                if len(source_groups) == 1:
+                    grouped_meshes = next(iter(source_groups.values()))
+                    add_component(
+                        label=name,
+                        path=path,
+                        assembly_id=parent_assembly_id(ancestors),
+                        visual_node_ids=[
+                            str(child.get("id") or path_for([*ancestors, node], child))
+                            for child in grouped_meshes
+                        ],
+                        source_call_ids=source_call_ids_for_children(grouped_meshes),
+                    )
+                    return
+
+                assembly_id = add_assembly(node, ancestors)
+                for call_id, grouped_meshes in source_groups.items():
+                    label = source_component_label(call_id, name)
+                    add_component(
+                        label=label,
+                        path=f"{path}/{label}",
+                        assembly_id=assembly_id,
+                        visual_node_ids=[
+                            str(child.get("id") or path_for([*ancestors, node], child))
+                            for child in grouped_meshes
+                        ],
+                        source_call_ids=source_call_ids_for_children(grouped_meshes),
+                    )
                 return
 
             generated_mesh_children = direct_generated_mesh_children(node)
@@ -315,6 +509,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                         path=child_path,
                         assembly_id=assembly_id,
                         visual_node_ids=[str(child.get("id") or child_path)],
+                        source_call_ids=source_call_ids_for(child),
                     )
                 return
 
@@ -342,6 +537,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                         path=f"{path}/{label}",
                         assembly_id=parent_id,
                         visual_node_ids=visual_node_ids_for_children(children, ancestors, node),
+                        source_call_ids=source_call_ids_for_children(children),
                     )
                 for child in _bom_enabled_children(node):
                     if id(child) not in grouped_child_ids:
@@ -371,6 +567,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                             str(child.get("id") or path_for([*ancestors, node], child))
                             for child in children
                         ],
+                        source_call_ids=source_call_ids_for_children(children),
                     )
                 for child in _bom_enabled_children(node):
                     if id(child) not in grouped_child_ids:
@@ -405,6 +602,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 path=path,
                 assembly_id=None,
                 visual_node_ids=[str(node.get("id") or path)],
+                source_call_ids=source_call_ids_for(node),
             )
             return
         for child in _bom_enabled_children(node):
@@ -447,4 +645,5 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         "assemblies": assemblies,
         "components": components,
         "diagnostics": diagnostics,
+        "source_map": source_map,
     }

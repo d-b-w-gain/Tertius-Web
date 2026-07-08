@@ -2509,3 +2509,184 @@ cp_brackets = fascia_bracket_assembly(mark="FBA01", length_mm=5100)
     assert requirement["dimensions"] == {}
     diagnostic = next(item for item in analysis["diagnostics"] if item["code"] == "auto_placeholder_part_number")
     assert diagnostic["visual_label"] == "Versaloc Block Envelope"
+
+
+def _runtime_source_call(function: str, call_id: str | None = None, **standard_inputs: object) -> dict:
+    return {
+        "id": call_id or function,
+        "function": function,
+        "source_file": "design.py",
+        "source_line": 10,
+        "definition_file": "products.py",
+        "definition_line": 1,
+        "source_scope": "<module>",
+        "standard_inputs": {
+            key: {
+                "raw": value,
+                "resolved": value,
+                "resolution": "runtime_argument",
+                "source_file": "design.py",
+                "source_line": 10,
+            }
+            for key, value in standard_inputs.items()
+        },
+        "returned_visual": True,
+    }
+
+
+def test_visual_runtime_provenance_resolves_component_identity_without_label_matching():
+    source = analyze_design_sources({
+        "design.py": """
+def make_fastener(size, length):
+    return None
+
+fastener = make_fastener("M12", 25)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "extras": {
+            "tertiusSourceMap": {
+                "source_calls": {
+                    "call_1": _runtime_source_call("lysaght_zc_purlin", call_id="call_1", part_number="C10019", length_mm=2400),
+                },
+            },
+        },
+        "children": [
+            {
+                "name": "Left Column",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "Mesh",
+                        "type": "Mesh",
+                        "isMesh": True,
+                        "extras": {"tertiusSourceCallIds": ["call_1"]},
+                    },
+                ],
+            },
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert len(analysis["requirements"]) == 1
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] == "C10019"
+    assert requirement["dimensions"] == {"length_mm": 2400}
+    assert requirement["source_trace"]["source_call_id"] == "call_1"
+    assert requirement["source_trace"]["match_reason"] == "runtime visual provenance"
+
+
+def test_visual_product_wrapper_groups_generated_mesh_faces_into_one_row():
+    source = analyze_design_sources({"design.py": "pass\n"})
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "extras": {
+            "tertiusSourceMap": {
+                "source_calls": {
+                    "call_screw": _runtime_source_call(
+                        "make_roofing_fastener",
+                        call_id="call_screw",
+                        part_number="6-310-3326-6C4",
+                        length_mm=67.5,
+                        standard="AS 3566.1",
+                    ),
+                    "call_head": _runtime_source_call(
+                        "_hex_washer_head",
+                        call_id="call_head",
+                        part_number="6-310-3326-6C4",
+                        length_mm=67.5,
+                    ),
+                },
+            },
+        },
+        "children": [
+            {
+                "name": "6-310-3326-6C4",
+                "type": "Object3D",
+                "extras": {"tertiusSourceCallIds": ["call_screw"]},
+                "children": [
+                    {
+                        "name": "Mesh",
+                        "type": "Mesh",
+                        "isMesh": True,
+                        "extras": {"tertiusSourceCallIds": ["call_head"]},
+                    },
+                    {"name": "Mesh", "type": "Mesh", "isMesh": True},
+                    {"name": "Mesh", "type": "Mesh", "isMesh": True},
+                ],
+            },
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert len(analysis["components"]) == 1
+    assert len(analysis["components"][0]["visual_node_ids"]) == 3
+    assert len(analysis["requirements"]) == 1
+    requirement = analysis["requirements"][0]
+    assert requirement["part_number"] == "6-310-3326-6C4"
+    assert requirement["dimensions"] == {"length_mm": 67.5}
+    assert requirement["source_trace"]["source_call_id"] == "call_screw"
+
+
+def test_visual_assembly_with_child_source_components_emits_child_rows_not_fuzzy_source_row():
+    source = analyze_design_sources({
+        "design.py": """
+def lysaght_zc_purlin(part_number, length):
+    return None
+
+member = lysaght_zc_purlin(part_number="C10019", length=2400)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "extras": {
+            "tertiusSourceMap": {
+                "source_calls": {
+                    "call_bolt": _runtime_source_call(
+                        "make_flange_bolt",
+                        call_id="call_bolt",
+                        part_number="DIN-6921-M12X25",
+                        size="M12",
+                        length_mm=25,
+                    ),
+                    "call_nut": _runtime_source_call(
+                        "make_flange_nut",
+                        call_id="call_nut",
+                        part_number="DIN-6923-M12",
+                        size="M12",
+                    ),
+                },
+            },
+        },
+        "children": [
+            {
+                "name": "Fastener Assembly",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "Mesh",
+                        "type": "Mesh",
+                        "isMesh": True,
+                        "extras": {"tertiusSourceCallIds": ["call_bolt"]},
+                    },
+                    {
+                        "name": "Mesh",
+                        "type": "Mesh",
+                        "isMesh": True,
+                        "extras": {"tertiusSourceCallIds": ["call_nut"]},
+                    },
+                ],
+            },
+        ],
+    })
+
+    analysis = build_procurement_analysis(source, tree)
+
+    assert {requirement["part_number"] for requirement in analysis["requirements"]} == {
+        "DIN-6921-M12X25",
+        "DIN-6923-M12",
+    }
+    assert all(requirement["part_number"] != "C10019" for requirement in analysis["requirements"])

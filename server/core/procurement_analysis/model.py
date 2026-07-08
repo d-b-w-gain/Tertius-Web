@@ -33,6 +33,7 @@ STANDARD_BOM_FIELDS = {
     "role",
     "material",
     "finish",
+    "grade",
     "source_library",
     "bracket_type",
     "roof_pitch",
@@ -41,6 +42,11 @@ STANDARD_BOM_FIELDS = {
     "angle_deg",
     "span",
     "span_mm",
+    "model_length",
+    "stock_length_mm",
+    "stock_width_mm",
+    "cut_length_mm",
+    "cut_width_mm",
     "drawing_number",
 }
 

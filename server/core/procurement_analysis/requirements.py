@@ -268,6 +268,63 @@ def _resolved_input(call: dict[str, Any], key: str) -> Any:
     return None
 
 
+DIMENSION_INPUT_KEYS = [
+    "length_mm",
+    "width_mm",
+    "height_mm",
+    "thickness_mm",
+    "diameter_mm",
+    "grip_length_mm",
+    "roof_pitch_deg",
+    "angle_deg",
+]
+
+
+def _dimensions_from_call(call: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        key: _resolved_input(call, key)
+        for key in DIMENSION_INPUT_KEYS
+        if call and _resolved_input(call, key) is not None
+    }
+
+
+def _runtime_source_calls_by_id(tree_analysis: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    source_map = tree_analysis.get("source_map")
+    if not isinstance(source_map, dict):
+        return {}
+    calls = source_map.get("source_calls")
+    if not isinstance(calls, dict):
+        return {}
+    return {
+        str(call_id): call
+        for call_id, call in calls.items()
+        if isinstance(call, dict)
+    }
+
+
+def _visual_component_source_call(
+    component: dict[str, Any],
+    runtime_calls_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    call_ids = component.get("source_call_ids")
+    if not isinstance(call_ids, list):
+        return None, "visual component authority"
+    candidates = [
+        runtime_calls_by_id[str(call_id)]
+        for call_id in call_ids
+        if str(call_id) in runtime_calls_by_id
+    ]
+    if not candidates:
+        return None, "visual component authority"
+    for call in reversed(candidates):
+        if _resolved_input(call, "part_number") is not None or _resolved_input(call, "product_key") is not None:
+            return call, "runtime visual provenance"
+    for call in reversed(candidates):
+        if _resolved_input(call, "mark") is not None or _dimensions_from_call(call):
+            return call, "runtime visual provenance"
+    return candidates[-1], "runtime visual provenance"
+
+
 def _input_trace(call: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
     if not call:
         return None
@@ -963,6 +1020,7 @@ def build_procurement_analysis(
 
     tree_components = list(tree_analysis.get("components", []))
     assemblies = list(tree_analysis.get("assemblies", []))
+    runtime_calls_by_id = _runtime_source_calls_by_id(tree_analysis)
     analysis_mode = "visual_verified" if tree_components else "source_diagnostic"
     quantity_authority = "visual_tree" if analysis_mode == "visual_verified" else "diagnostic_only"
     if not tree_components and explicit_manifest and explicit_manifest.get("requirements"):
@@ -1014,17 +1072,20 @@ def build_procurement_analysis(
     components: list[dict[str, Any]] = []
     for component in tree_components:
         if analysis_mode == "visual_verified":
-            call, match_reason = None, "visual component authority"
+            call, match_reason = _visual_component_source_call(component, runtime_calls_by_id)
         else:
             call, match_reason = _best_source_call(component, source_analysis)
         public_component = {key: value for key, value in component.items() if not key.startswith("_")}
         component_record = {
             **public_component,
             "source_trace": {
+                "source_call_id": call.get("id") if call else None,
                 "function": call.get("function") if call else None,
                 "source_file": call.get("source_file") if call else None,
                 "source_scope": call.get("source_scope") if call else None,
                 "source_line": call.get("source_line") if call else None,
+                "definition_file": call.get("definition_file") if call else None,
+                "definition_line": call.get("definition_line") if call else None,
                 "match_reason": match_reason,
             },
         }
@@ -1037,19 +1098,36 @@ def build_procurement_analysis(
                 continue
 
             metadata_part_number = metadata.get("part_number") or metadata.get("product_key")
-            part_number = metadata_part_number or visual_part_number
-            dimensions = _bom_dimensions(metadata)
-            unit = metadata.get("unit") or "each"
-            material = metadata.get("material")
-            finish = metadata.get("finish")
-            grade = metadata.get("grade")
-            standard = metadata.get("standard")
-            quantity_evidence = _visual_quantity_evidence(component, metadata)
+            source_part_number = (
+                (_resolved_input(call, "part_number") if call else None)
+                or (_resolved_input(call, "product_key") if call else None)
+            )
+            part_number = metadata_part_number or source_part_number or visual_part_number
+            dimensions = _dimensions_from_call(call)
+            dimensions.update(_bom_dimensions(metadata))
+            unit = metadata.get("unit") or (_resolved_input(call, "unit") if call else None) or "each"
+            material = metadata.get("material") or (_resolved_input(call, "material") if call else None)
+            finish = metadata.get("finish") or (_resolved_input(call, "finish") if call else None)
+            grade = metadata.get("grade") or (_resolved_input(call, "grade") if call else None)
+            standard = metadata.get("standard") or (_resolved_input(call, "standard") if call else None)
+            quantity_metadata = dict(metadata)
+            if call:
+                for key in ("quantity", "unit"):
+                    if key not in quantity_metadata and _resolved_input(call, key) is not None:
+                        quantity_metadata[key] = _resolved_input(call, key)
+            quantity_evidence = _visual_quantity_evidence(component, quantity_metadata)
             part_number_placeholder = False
             placeholder_trace = None
             metadata_part_trace = (
                 _bom_trace(component, "part_number" if metadata.get("part_number") else "product_key", metadata_part_number)
                 if metadata_part_number
+                else None
+            )
+            source_part_trace = (
+                _input_trace(call, "part_number")
+                if call and _resolved_input(call, "part_number") is not None
+                else _input_trace(call, "product_key")
+                if call and _resolved_input(call, "product_key") is not None
                 else None
             )
 
@@ -1070,8 +1148,18 @@ def build_procurement_analysis(
                     dimensions.setdefault("component_label", label)
 
             resolution_trace = {
-                "part_number": placeholder_trace or metadata_part_trace or visual_part_trace,
+                "part_number": placeholder_trace or metadata_part_trace or source_part_trace or visual_part_trace,
             }
+            dimension_trace = {
+                key: trace
+                for key in dimensions
+                if (trace := _notable_input_trace(_input_trace(call, key))) is not None
+            }
+            quantity_trace = _notable_input_trace(_input_trace(call, "quantity"))
+            if dimension_trace:
+                resolution_trace["dimensions"] = dimension_trace
+            if quantity_trace:
+                resolution_trace["quantity"] = quantity_trace
             requirement = {
                 "id": f"{component['id']}.requirement",
                 "component_id": component["id"],

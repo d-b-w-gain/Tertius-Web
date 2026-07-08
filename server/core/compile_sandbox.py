@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
 from .tertius_bom_runtime import TERTIUS_BOM_HELPER_SOURCE
 
 SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views", "timus_bounds"}
@@ -37,12 +38,22 @@ project_dir_str = str(project_dir.resolve())
 if project_dir_str not in sys.path:
     sys.path.insert(0, project_dir_str)
 
+from tertius_provenance import install as install_tertius_provenance
+from tertius_provenance import source_call_ids as tertius_source_call_ids
+from tertius_provenance import source_map as tertius_source_map
+from tertius_provenance import uninstall as uninstall_tertius_provenance
+
 try:
     design_file = project_dir / "design.py"
     if not design_file.exists():
         raise RuntimeError("design.py not found in project. Cannot compile.")
 
-    exec(design_file.read_text(encoding="utf-8"), env)
+    install_tertius_provenance(project_dir)
+    try:
+        design_code = compile(design_file.read_text(encoding="utf-8"), str(design_file), "exec")
+        exec(design_code, env)
+    finally:
+        uninstall_tertius_provenance()
 
     shapes = []
     for val in env.values():
@@ -114,6 +125,7 @@ try:
 
     def visual_metadata_tree(value):
         metadata = getattr(value, "tertius_bom", None)
+        source_ids = tertius_source_call_ids(value)
         label = str(getattr(value, "label", "") or "")
         if not label and isinstance(metadata, dict):
             label = str(metadata.get("part_number") or metadata.get("product_key") or "")
@@ -124,10 +136,12 @@ try:
         return {
             "label": label,
             "bom": metadata if isinstance(metadata, dict) else None,
+            "source_call_ids": source_ids,
             "children": children,
         }
 
     visual_tree = visual_metadata_tree(compound)
+    visual_source_map = tertius_source_map()
     if export_format == "timus_bounds":
         bbox = compound.bounding_box()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
@@ -182,10 +196,24 @@ try:
                 label_to_bom = {}
 
                 def color_factor(color):
-                    rgba = list(color.to_tuple())
+                    rgba = None
+                    try:
+                        if hasattr(color, "to_tuple"):
+                            rgba = list(color.to_tuple())
+                        elif all(hasattr(color, attr) for attr in ("r", "g", "b")):
+                            rgba = [color.r, color.g, color.b, getattr(color, "a", 1.0)]
+                        elif all(hasattr(color, attr) for attr in ("red", "green", "blue")):
+                            rgba = [color.red, color.green, color.blue, getattr(color, "alpha", 1.0)]
+                    except Exception:
+                        rgba = None
+                    if not isinstance(rgba, list):
+                        return None
                     if len(rgba) == 3:
                         rgba.append(1.0)
-                    return [float(component) for component in rgba[:4]]
+                    try:
+                        return [float(component) for component in rgba[:4]]
+                    except Exception:
+                        return None
 
                 for node in bd.PreOrderIter(compound):
                     bom_metadata = getattr(node, "tertius_bom", None) or visual_bom_by_label.get(getattr(node, "label", ""))
@@ -201,7 +229,9 @@ try:
                             if node.label:
                                 tag_to_name[tag] = node.label
                             if node.color is not None:
-                                tag_to_color[tag] = color_factor(node.color)
+                                factor = color_factor(node.color)
+                                if factor is not None:
+                                    tag_to_color[tag] = factor
                             if bom_metadata is not None:
                                 tag_to_bom[tag] = bom_metadata
                                 if node.label:
@@ -225,6 +255,10 @@ try:
 
                 def patch_gltf_json(gltf_json, name_mapping, color_mapping, bom_mapping, label_bom_mapping, visual_metadata):
                     changed = False
+                    extras = gltf_json.setdefault("extras", {})
+                    if visual_source_map.get("source_calls"):
+                        extras["tertiusSourceMap"] = visual_source_map
+                        changed = True
                     for material in gltf_json.get("materials", []):
                         pbr = material.get("pbrMetallicRoughness")
                         if isinstance(pbr, dict) and "baseColorFactor" in pbr:
@@ -278,12 +312,21 @@ try:
 
                         label = str(visual_node.get("label") or "")
                         bom_metadata = visual_node.get("bom")
+                        source_call_ids = [
+                            str(item)
+                            for item in (visual_node.get("source_call_ids") or [])
+                            if item
+                        ]
                         if label and is_generated_export_name(node.get("name")):
                             node["name"] = label
                             changed = True
                         if isinstance(bom_metadata, dict):
                             extras = node.setdefault("extras", {})
                             extras["tertiusBom"] = bom_metadata
+                            changed = True
+                        if source_call_ids:
+                            extras = node.setdefault("extras", {})
+                            extras["tertiusSourceCallIds"] = source_call_ids
                             changed = True
 
                         gltf_children = [
@@ -558,6 +601,8 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
     bom_helper_path = project_dir / "tertius_bom.py"
     if not bom_helper_path.exists():
         bom_helper_path.write_text(TERTIUS_BOM_HELPER_SOURCE, encoding="utf-8")
+    provenance_helper_path = project_dir / "tertius_provenance.py"
+    provenance_helper_path.write_text(TERTIUS_PROVENANCE_HELPER_SOURCE, encoding="utf-8")
     args = [sys.executable, "-c", SANDBOX_SCRIPT, ext]
     if quality:
         args.append(quality)
