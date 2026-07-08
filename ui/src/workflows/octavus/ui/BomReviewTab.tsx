@@ -1169,6 +1169,7 @@ export const BomReviewTab: React.FC<{
   const [selectedLineKey, setSelectedLineKey] = useState<string | null>(null);
   const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
   const [showModelPreview, setShowModelPreview] = useState(false);
+  const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
   const [visibleRows, setVisibleRows] = useState(INITIAL_VISIBLE_ROWS);
   const [suppliers, setSuppliers] = useState<Supplier[]>(() => readJsonState('procurement_suppliers', [], normalizeSuppliers));
   const [assignments, setAssignments] = useState<Record<string, string>>(() => readJsonState('procurement_assignments', {}));
@@ -1808,55 +1809,87 @@ export const BomReviewTab: React.FC<{
               )}
             </main>
 
-            <aside className="flex w-[38%] min-w-[380px] max-w-[620px] flex-col border-l border-slate-800 bg-slate-900/50">
-              {showModelPreview ? (
-                <div className="relative min-h-0 flex-1">
-                  <ProcurementSceneViewer
-                    modelUrl={modelUrl}
-                    getAccessToken={getAccessToken}
-                    selectedVisualNodeIds={selectedVisualNodeIds}
-                    visualComponents={manifest?.components || []}
-                    onSelectComponent={handleSelectComponent}
-                    onModelLoaded={() => undefined}
-                    statusText={statusText}
-                    verificationText={viewerVerificationText}
-                    isVerified={isReadyManifest}
-                    isActive={isActive}
-                  />
+            {isInspectorCollapsed ? (
+              <div className="w-10 shrink-0 border-l border-slate-800 bg-slate-950 flex flex-col items-center">
+                <button
+                  type="button"
+                  onClick={() => setIsInspectorCollapsed(false)}
+                  aria-label="Expand preview panel"
+                  title="Expand preview panel"
+                  className="mt-2 h-8 w-8 rounded border border-slate-700 bg-slate-800 text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+                >
+                  &lt;
+                </button>
+                <div className="mt-3 text-[10px] font-mono uppercase tracking-wide text-slate-600 [writing-mode:vertical-rl]">
+                  Preview
+                </div>
+              </div>
+            ) : (
+              <aside className="flex w-[38%] min-w-[380px] max-w-[620px] flex-col border-l border-slate-800 bg-slate-900/50">
+                <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/80 px-2">
                   <button
                     type="button"
-                    onClick={() => setShowModelPreview(false)}
-                    className="absolute right-3 bottom-3 rounded bg-slate-950/90 px-3 py-2 text-xs font-semibold text-slate-200 ring-1 ring-slate-700 hover:bg-slate-900"
+                    onClick={() => setIsInspectorCollapsed(true)}
+                    aria-label="Collapse preview panel"
+                    title="Collapse preview panel"
+                    className="h-7 w-7 rounded border border-slate-700 bg-slate-800 text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
                   >
-                    Hide 3D preview
+                    &gt;
                   </button>
-                </div>
-              ) : (
-                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-slate-950 p-6 text-center">
-                  <div className={`rounded px-3 py-2 text-xs ${isReadyManifest ? 'bg-emerald-950/80 text-emerald-200' : 'bg-red-950/80 text-red-200'}`}>
-                    {viewerVerificationText}
+                  <div className="min-w-0 truncate px-2 text-xs font-mono font-semibold text-slate-500">
+                    3D Preview
                   </div>
-                  <div className="text-sm font-semibold text-slate-200">3D preview paused</div>
-                  <div className="max-w-sm text-xs leading-5 text-slate-500">
-                    {statusText}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowModelPreview(true)}
-                    disabled={!modelUrl}
-                    className="rounded bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
-                  >
-                    Load 3D preview
-                  </button>
+                  <div className="h-7 w-7" />
                 </div>
-              )}
-              <SelectionPanel
-                selectedLine={selectedLine}
-                selectedComponent={selectedComponent}
-                selectedComponentRequirements={selectedComponentRequirements}
-                componentsById={componentsById}
-              />
-            </aside>
+                {showModelPreview ? (
+                  <div className="relative min-h-0 flex-1">
+                    <ProcurementSceneViewer
+                      modelUrl={modelUrl}
+                      getAccessToken={getAccessToken}
+                      selectedVisualNodeIds={selectedVisualNodeIds}
+                      visualComponents={manifest?.components || []}
+                      onSelectComponent={handleSelectComponent}
+                      onModelLoaded={() => undefined}
+                      statusText={statusText}
+                      verificationText={viewerVerificationText}
+                      isVerified={isReadyManifest}
+                      isActive={isActive}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowModelPreview(false)}
+                      className="absolute right-3 bottom-3 rounded bg-slate-950/90 px-3 py-2 text-xs font-semibold text-slate-200 ring-1 ring-slate-700 hover:bg-slate-900"
+                    >
+                      Hide 3D preview
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-slate-950 p-6 text-center">
+                    <div className={`rounded px-3 py-2 text-xs ${isReadyManifest ? 'bg-emerald-950/80 text-emerald-200' : 'bg-red-950/80 text-red-200'}`}>
+                      {viewerVerificationText}
+                    </div>
+                    <div className="text-sm font-semibold text-slate-200">3D preview paused</div>
+                    <div className="max-w-sm text-xs leading-5 text-slate-500">
+                      {statusText}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowModelPreview(true)}
+                      disabled={!modelUrl}
+                      className="rounded bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+                    >
+                      Load 3D preview
+                    </button>
+                  </div>
+                )}
+                <SelectionPanel
+                  selectedLine={selectedLine}
+                  selectedComponent={selectedComponent}
+                  selectedComponentRequirements={selectedComponentRequirements}
+                  componentsById={componentsById}
+                />
+              </aside>
+            )}
           </>
         )}
 
