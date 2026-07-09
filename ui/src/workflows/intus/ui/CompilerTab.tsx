@@ -70,6 +70,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
   // Git UI State
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
   const [activePane, setActivePane] = useState<'output' | 'history'>('output');
+  const [isConsoleCollapsed, setIsConsoleCollapsed] = useState(false);
   
   const mtimeRef = useRef<number>(0);
   const isCompilingRef = useRef<boolean>(false);
@@ -704,7 +705,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
       {/* Editor & Console */}
       <div className="flex-1 flex min-h-0">
-        <div className="w-2/3 border-r border-slate-800 flex flex-col">
+        <div className="flex-1 min-w-0 border-r border-slate-800 flex flex-col">
           <div className="bg-slate-950 flex border-b border-slate-800 overflow-x-auto scrollbar-hide">
             {files.map(f => (
               <div 
@@ -811,9 +812,34 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             />
           </div>
         </div>
-        <div className="w-1/3 flex flex-col bg-slate-950">
+        {isConsoleCollapsed ? (
+          <div className="w-10 shrink-0 border-l border-slate-800 bg-slate-950 flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => setIsConsoleCollapsed(false)}
+              aria-label="Expand compiler panel"
+              title="Expand compiler panel"
+              className="mt-2 h-8 w-8 rounded border border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-colors"
+            >
+              &lt;
+            </button>
+            <div className="mt-3 text-[10px] font-mono uppercase tracking-wide text-slate-600 [writing-mode:vertical-rl]">
+              {activePane === 'output' ? 'Compiler' : 'History'}
+            </div>
+          </div>
+        ) : (
+        <div className="w-1/3 min-w-[18rem] flex flex-col bg-slate-950">
           <div className="px-3 py-1.5 border-b border-slate-800 text-xs font-mono text-slate-500 flex justify-between items-center bg-slate-900/50">
-            <div className="flex gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => setIsConsoleCollapsed(true)}
+                aria-label="Collapse compiler panel"
+                title="Collapse compiler panel"
+                className="h-7 w-7 shrink-0 rounded border border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-colors"
+              >
+                &gt;
+              </button>
               <button 
                 onClick={() => setActivePane('output')}
                 className={`transition-colors ${activePane === 'output' ? 'text-indigo-400 font-bold' : 'hover:text-slate-300'}`}
@@ -872,6 +898,7 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

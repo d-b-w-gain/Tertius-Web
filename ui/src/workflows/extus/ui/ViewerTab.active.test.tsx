@@ -151,16 +151,35 @@ describe('ViewerTab active state', () => {
     window.cancelAnimationFrame = originalCancelAnimationFrame
   })
 
-  it('resizes the renderer when the hidden viewport becomes active', async () => {
+  it('does not create a renderer until the hidden viewport becomes active', async () => {
     const { rerender } = render(<ViewerTab serverUrl="/api/extus" isActive={false} />)
 
-    expect(mocks.rendererSetSize).toHaveBeenCalledTimes(1)
+    expect(mocks.rendererSetSize).not.toHaveBeenCalled()
+    expect(window.requestAnimationFrame).not.toHaveBeenCalled()
 
     rerender(<ViewerTab serverUrl="/api/extus" isActive />)
     await act(async () => {})
 
     expect(mocks.rendererSetSize).toHaveBeenLastCalledWith(640, 480)
-    expect(mocks.rendererSetSize).toHaveBeenCalledTimes(2)
+    expect(mocks.rendererSetSize).toHaveBeenCalled()
+  })
+
+  it('does not fetch or parse a model while the canvas is inactive', async () => {
+    mocks.apiFetch.mockReset()
+
+    render(
+      <ModelViewerCanvas
+        modelUrl="/api/extus/artifacts/artifact-1/model"
+        getAccessToken={mocks.getAccessToken}
+        statusText="Selected historical model"
+        isActive={false}
+      />,
+    )
+
+    await act(async () => {})
+
+    expect(mocks.apiFetch).not.toHaveBeenCalled()
+    expect(mocks.gltfParse).not.toHaveBeenCalled()
   })
 
   it('shows a model load error and does not parse failed artifact responses', async () => {

@@ -101,6 +101,83 @@ building = bd.Compound(children=[part], label="Colour test assembly")
     assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
 
 
+def test_compile_sandbox_exports_bom_item_metadata_in_glb_node_extras(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+from tertius_bom import bom_item
+
+@bom_item
+def make_plate(part_number="PLATE-001", quantity=1, unit="each", length_mm=120, width_mm=80, material="steel"):
+    part = bd.Solid.make_box(width_mm, length_mm, 6)
+    part.label = part_number
+    return part
+
+plate = make_plate()
+building = bd.Compound(children=[plate], label="BoM test assembly")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+
+    bom_nodes = [
+        node
+        for node in gltf_json.get("nodes", [])
+        if node.get("extras", {}).get("tertiusBom", {}).get("part_number") == "PLATE-001"
+    ]
+    assert bom_nodes
+    metadata = bom_nodes[0]["extras"]["tertiusBom"]
+    assert metadata["quantity"] == 1
+    assert metadata["unit"] == "each"
+    assert metadata["material"] == "steel"
+    assert metadata["dimensions"] == {"length_mm": 120, "width_mm": 80}
+
+
+def test_compile_sandbox_preserves_labels_inside_moved_compound_in_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+
+child = bd.Solid.make_box(20, 10, 5)
+child.label = "CHILD-BRACKET"
+
+fastener = bd.Solid.make_box(4, 4, 12)
+fastener.label = "CHILD-FASTENER"
+
+subassembly = bd.Compound(children=[child, fastener])
+building = bd.Compound(children=[
+    subassembly.moved(bd.Location((50, 0, 0))),
+], label="Moved compound assembly")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+
+    node_names = {node.get("name") for node in gltf_json.get("nodes", [])}
+    assert "CHILD-BRACKET" in node_names
+    assert "CHILD-FASTENER" in node_names
+
+
 def test_compile_sandbox_marks_compound_material_colors_as_authored_in_glb(tmp_path):
     (tmp_path / "design.py").write_text(
         """

@@ -44,6 +44,8 @@ def _standard_key(key: str) -> str:
         return "height_mm"
     if key == "length":
         return "length_mm"
+    if key == "model_length":
+        return "length_mm"
     if key == "grip_length":
         return "grip_length_mm"
     if key in {"bracket_type", "product_key"}:

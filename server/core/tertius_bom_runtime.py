@@ -15,6 +15,38 @@ _requirements: list[dict[str, Any]] = []
 _diagnostics: list[dict[str, Any]] = []
 _scope_stack: list[str] = []
 
+STANDARD_BOM_FIELDS = {
+    "part_number",
+    "product_key",
+    "quantity",
+    "unit",
+    "dimensions",
+    "material",
+    "finish",
+    "grade",
+    "standard",
+    "bom",
+}
+
+DIMENSION_FIELD_ALIASES = {
+    "length": "length_mm",
+    "length_mm": "length_mm",
+    "width": "width_mm",
+    "width_mm": "width_mm",
+    "height": "height_mm",
+    "height_mm": "height_mm",
+    "thickness": "thickness_mm",
+    "thickness_mm": "thickness_mm",
+    "diameter": "diameter_mm",
+    "diameter_mm": "diameter_mm",
+    "grip_length": "grip_length_mm",
+    "grip_length_mm": "grip_length_mm",
+    "angle": "angle_deg",
+    "angle_deg": "angle_deg",
+    "roof_pitch": "roof_pitch_deg",
+    "roof_pitch_deg": "roof_pitch_deg",
+}
+
 
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip()).strip("-").lower()
@@ -53,6 +85,95 @@ def _diagnostic(code: str, severity: str, message: str, **fields: Any) -> None:
         "message": message,
         **fields,
     })
+
+
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonish(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonish(item) for item in value]
+    return str(value)
+
+
+def _metadata_targets(component: Any) -> list[Any]:
+    if component is None:
+        return []
+    if isinstance(component, (list, tuple, set)):
+        targets: list[Any] = []
+        for item in component:
+            targets.extend(_metadata_targets(item))
+        return targets
+    part = getattr(component, "part", None)
+    if part is not None:
+        return [part]
+    return [component]
+
+
+def _set_visual_bom_metadata(component: Any, metadata: dict[str, Any]) -> bool:
+    ok = False
+    for target in _metadata_targets(component):
+        try:
+            setattr(target, "tertius_bom", dict(metadata))
+            ok = True
+        except Exception:
+            pass
+    return ok
+
+
+def _bom_metadata_from_bound_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    dimensions: dict[str, Any] = {}
+
+    if "dimensions" in arguments and isinstance(arguments["dimensions"], dict):
+        dimensions.update(_jsonish(arguments["dimensions"]))
+
+    for key, value in arguments.items():
+        if key in DIMENSION_FIELD_ALIASES and value is not None:
+            dimensions[DIMENSION_FIELD_ALIASES[key]] = _jsonish(value)
+        elif key in STANDARD_BOM_FIELDS and key != "dimensions" and value is not None:
+            metadata[key] = _jsonish(value)
+
+    if dimensions:
+        metadata["dimensions"] = dimensions
+    metadata.setdefault("quantity", 1)
+    metadata.setdefault("unit", "each")
+    metadata.setdefault("bom", True)
+    return metadata
+
+
+def bom_item(function=None, **decorator_metadata: Any):
+    def decorate(func):
+        signature = inspect.signature(func)
+
+        def wrapper(*args: Any, **kwargs: Any):
+            result = func(*args, **kwargs)
+            try:
+                bound = signature.bind_partial(*args, **kwargs)
+                bound.apply_defaults()
+                metadata = _bom_metadata_from_bound_arguments(dict(bound.arguments))
+            except Exception:
+                metadata = {"quantity": 1, "unit": "each", "bom": True}
+            metadata.update({key: _jsonish(value) for key, value in decorator_metadata.items() if value is not None})
+            if not _set_visual_bom_metadata(result, metadata):
+                _diagnostic(
+                    "bom_item_metadata_not_attached",
+                    "warning",
+                    f"Could not attach BoM metadata to {func.__name__!r} result.",
+                    function=func.__name__,
+                    **_source_location(),
+                )
+            return result
+
+        wrapper.__name__ = getattr(func, "__name__", "bom_item_wrapper")
+        wrapper.__doc__ = getattr(func, "__doc__", None)
+        wrapper.__module__ = getattr(func, "__module__", None)
+        return wrapper
+
+    if function is None:
+        return decorate
+    return decorate(function)
 
 
 @contextmanager
