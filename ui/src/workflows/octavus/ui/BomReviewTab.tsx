@@ -1731,10 +1731,15 @@ export const BomReviewTab: React.FC<{
 
   useEffect(() => {
     if (!componentPreviewImage?.visualNodeId) return;
-    const previewKeys = [
-      componentPreviewImage.visualNodeId,
+    const currentSelectionVisualNodeIds = new Set([
       ...viewportVisualNodeIds,
       ...selectedVisualNodeIds,
+    ]);
+    const previewKeys = [
+      componentPreviewImage.visualNodeId,
+      ...(currentSelectionVisualNodeIds.has(componentPreviewImage.visualNodeId)
+        ? [...currentSelectionVisualNodeIds]
+        : []),
     ].filter(Boolean);
     setPreviewImagesByVisualNodeId((current) => {
       let changed = false;
@@ -1905,6 +1910,8 @@ export const BomReviewTab: React.FC<{
     setShowModelPreview(true);
     setIsInspectorCollapsed(false);
     setSelectedComponentId(null);
+    previewImagesByVisualNodeIdRef.current = {};
+    setPreviewImagesByVisualNodeId({});
 
     try {
       await waitForMs(350);
