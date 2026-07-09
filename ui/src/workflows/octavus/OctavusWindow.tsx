@@ -1,5 +1,6 @@
 import React from 'react';
 import { resolveWorkflowServerUrl } from '../shared/apiConfig';
+import type { ComponentPreviewImage } from '../shared/componentPreview';
 import { BomReviewTab } from './ui/BomReviewTab';
 
 export const OctavusWindow: React.FC<{
@@ -8,7 +9,8 @@ export const OctavusWindow: React.FC<{
   useSharedViewport?: boolean;
   onViewportSelectionChange?: (visualNodeIds: string[]) => void;
   onViewportFrameChange?: (rect: DOMRectReadOnly | null) => void;
-}> = ({ isActive = true, onOpenCompiler, useSharedViewport = false, onViewportSelectionChange, onViewportFrameChange }) => {
+  componentPreviewImage?: ComponentPreviewImage | null;
+}> = ({ isActive = true, onOpenCompiler, useSharedViewport = false, onViewportSelectionChange, onViewportFrameChange, componentPreviewImage }) => {
   const artusServerUrl = resolveWorkflowServerUrl('artus', import.meta.env?.VITE_API_URL);
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL);
   const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL);
@@ -24,6 +26,7 @@ export const OctavusWindow: React.FC<{
         useSharedViewport={useSharedViewport}
         onViewportSelectionChange={onViewportSelectionChange}
         onViewportFrameChange={onViewportFrameChange}
+        componentPreviewImage={componentPreviewImage}
       />
     </div>
   );

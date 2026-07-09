@@ -2,6 +2,7 @@ import React from 'react'
 import { useAuth } from '../../auth/AuthProvider'
 import { useServerLauncher } from './ui/ServerLauncher/useServerLauncher'
 import { LatestModelViewer, ModelViewerCanvas } from './ui/ViewerTab'
+import type { ComponentPreviewImage } from '../shared/componentPreview'
 
 export type SharedExtusViewportSource =
   | {
@@ -19,7 +20,8 @@ export const SharedExtusViewport: React.FC<{
   isActive: boolean
   source: SharedExtusViewportSource
   externalSelectedNodeIds?: string[]
-}> = ({ isActive, source, externalSelectedNodeIds }) => {
+  onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void
+}> = ({ isActive, source, externalSelectedNodeIds, onExternalSelectionPreviewChange }) => {
   const { getAccessToken } = useAuth()
   const server = useServerLauncher({
     workflowFolder: 'tertius/extus',
@@ -39,6 +41,7 @@ export const SharedExtusViewport: React.FC<{
         projectName={source.projectName}
         isActive={isActive}
         externalSelectedNodeIds={externalSelectedNodeIds}
+        onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
       />
     )
   }
@@ -49,6 +52,7 @@ export const SharedExtusViewport: React.FC<{
       isActive={isActive}
       statusTextOverride={source.statusTextOverride}
       externalSelectedNodeIds={externalSelectedNodeIds}
+      onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
     />
   )
 }

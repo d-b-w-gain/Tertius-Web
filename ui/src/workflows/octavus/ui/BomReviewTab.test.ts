@@ -376,7 +376,19 @@ describe('Procurement manifest grouping', () => {
     expect(quoteFocusForLine(lines.find((line) => line.partNumber === 'M12_BOLT')!)).toContain('feel welcome to quote if convenient');
 
     const csv = buildSupplierQuoteCsv(lines, { projectName: 'Shed', scopeLabel: 'Whole design', snapshotHash: 'snapshot-a' });
-    const html = buildSupplierQuoteHtml(lines, { projectName: 'Shed', scopeLabel: 'Whole design', snapshotHash: 'snapshot-a' });
+    const html = buildSupplierQuoteHtml(lines, {
+      projectName: 'Shed',
+      scopeLabel: 'Whole design',
+      snapshotHash: 'snapshot-a',
+      previewImagesByVisualNodeId: {
+        'purlin-node': {
+          dataUrl: 'data:image/png;base64,abc123',
+          label: 'Purlin preview',
+          visualNodeId: 'purlin-node',
+          capturedAt: 1,
+        },
+      },
+    });
 
     expect(csv).toContain('Please quote the line items that suit your normal supply range');
     expect(csv).toContain('"Bulk steel / roofing"');
@@ -388,5 +400,7 @@ describe('Procurement manifest grouping', () => {
     expect(html).toContain('Unit $ ex GST');
     expect(html).toContain('Notes / substitutions');
     expect(html).toContain('Optional small hardware');
+    expect(html).toContain('data:image/png;base64,abc123');
+    expect(html).toContain('Preview');
   });
 });

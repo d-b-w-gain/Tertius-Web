@@ -7,6 +7,7 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { perfLog } from '../../../observability/performance';
 import { getPollingDelay, MODEL_STATUS_POLL_INTERVAL_MS, shouldRunPollingRequest } from '../../shared/polling';
 import { createProjectStorage } from '../../shared/projectStorage';
+import type { ComponentPreviewImage } from '../../shared/componentPreview';
 
 type SubTab = 'bom' | 'suppliers' | 'review';
 type CoverageState = 'valid' | 'incomplete' | 'missing' | 'mesh';
@@ -1105,7 +1106,12 @@ export const buildSupplierQuoteCsv = (
 
 export const buildSupplierQuoteHtml = (
   lines: GroupedBomLine[],
-  options: { projectName?: string | null; scopeLabel?: string | null; snapshotHash?: string | null } = {},
+  options: {
+    projectName?: string | null;
+    scopeLabel?: string | null;
+    snapshotHash?: string | null;
+    previewImagesByVisualNodeId?: Record<string, ComponentPreviewImage>;
+  } = {},
 ) => {
   const generatedAt = new Date().toISOString().slice(0, 10);
   const title = options.projectName ? `${options.projectName} BoM Quote Request` : 'BoM Quote Request';
@@ -1113,8 +1119,12 @@ export const buildSupplierQuoteHtml = (
   const rows = lines.map((line) => {
     const focus = quoteFocusForLine(line);
     const section = focus.startsWith('Bulk/') ? 'Bulk steel / roofing' : 'Small hardware / general';
+    const preview = line.visualNodeIds
+      .map((visualNodeId) => options.previewImagesByVisualNodeId?.[visualNodeId])
+      .find(Boolean);
     return `
       <tr>
+        <td class="preview-cell">${preview ? `<img src="${htmlCell(preview.dataUrl)}" alt="${htmlCell(preview.label)}" />` : ''}</td>
         <td>${htmlCell(section)}</td>
         <td>
           <strong>${htmlCell(line.displayName)}</strong>
@@ -1151,16 +1161,19 @@ export const buildSupplierQuoteHtml = (
     .muted { margin-top: 3px; color: #6b7280; font-size: 9px; line-height: 1.35; }
     .num { text-align: right; white-space: nowrap; }
     .write-in { height: 24px; background: white; }
-    .notes { width: 15%; }
-    .section { width: 13%; }
-    .item { width: 20%; }
-    .part { width: 10%; }
-    .qty { width: 6%; }
-    .unit { width: 6%; }
-    .length { width: 7%; }
-    .focus { width: 18%; }
+    .notes { width: 9%; }
+    .preview { width: 7%; }
+    .preview-cell { height: 56px; padding: 3px; text-align: center; vertical-align: middle; }
+    .preview-cell img { max-width: 100%; max-height: 54px; object-fit: contain; }
+    .section { width: 11%; }
+    .item { width: 17%; }
+    .part { width: 9%; }
+    .qty { width: 5%; }
+    .unit { width: 5%; }
+    .length { width: 6%; }
+    .focus { width: 17%; }
     .price { width: 7%; }
-    .lead { width: 8%; }
+    .lead { width: 7%; }
     footer { margin-top: 10px; color: #6b7280; font-size: 9px; }
   </style>
 </head>
@@ -1181,6 +1194,7 @@ export const buildSupplierQuoteHtml = (
   <table>
     <thead>
       <tr>
+        <th class="preview">Preview</th>
         <th class="section">Section</th>
         <th class="item">Line item</th>
         <th class="part">Part number</th>
@@ -1386,6 +1400,7 @@ export const BomReviewTab: React.FC<{
   useSharedViewport?: boolean;
   onViewportSelectionChange?: (visualNodeIds: string[]) => void;
   onViewportFrameChange?: (rect: DOMRectReadOnly | null) => void;
+  componentPreviewImage?: ComponentPreviewImage | null;
 }> = ({
   artusServerUrl: _artusServerUrl,
   extusServerUrl,
@@ -1395,6 +1410,7 @@ export const BomReviewTab: React.FC<{
   useSharedViewport = false,
   onViewportSelectionChange,
   onViewportFrameChange,
+  componentPreviewImage,
 }) => {
   const { authMode, getAccessToken } = useAuth();
   const storage = useMemo(
@@ -1423,6 +1439,7 @@ export const BomReviewTab: React.FC<{
   const [activeSupplierId, setActiveSupplierId] = useState<string | null>(() => localStorage.getItem('procurement_active_supplier'));
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
   const [editPricing, setEditPricing] = useState<SupplierPricing | null>(null);
+  const [previewImagesByVisualNodeId, setPreviewImagesByVisualNodeId] = useState<Record<string, ComponentPreviewImage>>({});
   const sharedViewportSlotRef = useRef<HTMLDivElement | null>(null);
 
   const artifactManifest = manifestEnvelope?.manifest || null;
@@ -1673,12 +1690,34 @@ export const BomReviewTab: React.FC<{
   }, [scopeOptions, selectedScopeId]);
 
   const selectedVisualNodeIds = selectedLine?.visualNodeIds || (selectedComponent?.visual_node_ids || []);
-  const selectedVisualNodeKey = selectedVisualNodeIds.join('\u001f');
+  const viewportVisualNodeIds = useMemo(() => {
+    const firstComponentId = selectedLine?.componentIds[0] || selectedComponent?.id || '';
+    const component = firstComponentId ? componentsById.get(firstComponentId) : selectedComponent;
+    return [
+      ...(component?.visual_node_ids || []).slice(0, 1),
+      component?.label || '',
+      component?.id || '',
+    ].filter(Boolean);
+  }, [componentsById, selectedComponent, selectedLine]);
+  const viewportVisualNodeKey = viewportVisualNodeIds.join('\u001f');
+
+  useEffect(() => {
+    if (!componentPreviewImage?.visualNodeId) return;
+    setPreviewImagesByVisualNodeId((current) => {
+      const existing = current[componentPreviewImage.visualNodeId];
+      if (existing?.dataUrl === componentPreviewImage.dataUrl) return current;
+      return {
+        ...current,
+        [componentPreviewImage.visualNodeId]: componentPreviewImage,
+      };
+    });
+  }, [componentPreviewImage]);
+
   useEffect(() => {
     if (!useSharedViewport || !isActive) return;
-    onViewportSelectionChange?.([...selectedVisualNodeIds]);
+    onViewportSelectionChange?.([...viewportVisualNodeIds]);
     return () => onViewportSelectionChange?.([]);
-  }, [isActive, onViewportSelectionChange, selectedVisualNodeKey, useSharedViewport]);
+  }, [isActive, onViewportSelectionChange, useSharedViewport, viewportVisualNodeKey]);
 
   useEffect(() => {
     if (!useSharedViewport || !isActive || subTab !== 'bom' || isInspectorCollapsed) {
@@ -1827,9 +1866,10 @@ export const BomReviewTab: React.FC<{
       projectName,
       scopeLabel: selectedScope?.label || 'Whole design',
       snapshotHash: manifest?.source_snapshot_hash || null,
+      previewImagesByVisualNodeId,
     });
     openPrintableQuoteSheet(html);
-  }, [bomLines, manifest?.source_snapshot_hash, projectName, selectedScope?.label]);
+  }, [bomLines, manifest?.source_snapshot_hash, previewImagesByVisualNodeId, projectName, selectedScope?.label]);
 
   return (
     <div className={`flex h-full min-h-0 flex-col text-slate-100 ${useSharedViewport ? 'pointer-events-none bg-transparent' : 'bg-slate-950'}`}>
@@ -2541,16 +2581,18 @@ const ProcurementSceneViewer: React.FC<{
 
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const center = sphere.center;
-    const radius = Math.max(sphere.radius, 1);
+    const radius = Math.max(sphere.radius, 0.0001);
     const fov = THREE.MathUtils.degToRad(camera.fov);
-    const distance = Math.max(radius / Math.sin(fov / 2), radius * 3);
+    const distance = (radius / Math.sin(fov / 2)) * 1.08;
     const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
     if (currentDirection.lengthSq() === 0) currentDirection.set(1, -1, 0.7).normalize();
 
-    camera.position.copy(center).addScaledVector(currentDirection, distance * 1.25);
-    camera.near = Math.max(0.1, distance / 10_000);
-    camera.far = Math.max(distance * 20, radius * 30);
+    camera.position.copy(center).addScaledVector(currentDirection, distance);
+    camera.near = Math.max(0.00001, radius / 100, distance / 10_000);
+    camera.far = Math.max(distance * 40, radius * 80, camera.near * 1000);
     camera.updateProjectionMatrix();
+    controls.minDistance = Math.max(0.00001, radius * 0.05);
+    controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
     controls.target.copy(center);
     controls.update();
     requestRender();
