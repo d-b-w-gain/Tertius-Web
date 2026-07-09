@@ -1233,15 +1233,16 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
            if (mesh.visible) {
               const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
-              if (isTransparent && isSelected && viewerMaterials) {
+              const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
+              if (isTransparent && shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.transparentHighlight;
-              } else if (isSelected && viewerMaterials) {
+              } else if (shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.highlight;
               } else if (isTransparent && viewerMaterials) {
                  mesh.material = viewerMaterials.transparent;
               } else if (viewerMaterials) {
                  mesh.material = viewerMaterials.base;
-              } else if (isSelected && highlightMaterial) {
+              } else if (shouldHighlightSelection && highlightMaterial) {
                  mesh.material = highlightMaterial;
               } else if (sharedMaterial) {
                  mesh.material = sharedMaterial;
