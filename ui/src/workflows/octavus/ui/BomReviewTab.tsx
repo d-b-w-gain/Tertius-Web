@@ -1690,6 +1690,7 @@ export const BomReviewTab: React.FC<{
   }, [scopeOptions, selectedScopeId]);
 
   const selectedVisualNodeIds = selectedLine?.visualNodeIds || (selectedComponent?.visual_node_ids || []);
+  const selectedVisualNodeKey = selectedVisualNodeIds.join('\u001f');
   const viewportVisualNodeIds = useMemo(() => {
     const firstComponentId = selectedLine?.componentIds[0] || selectedComponent?.id || '';
     const component = firstComponentId ? componentsById.get(firstComponentId) : selectedComponent;
@@ -1703,15 +1704,22 @@ export const BomReviewTab: React.FC<{
 
   useEffect(() => {
     if (!componentPreviewImage?.visualNodeId) return;
+    const previewKeys = [
+      componentPreviewImage.visualNodeId,
+      ...viewportVisualNodeIds,
+      ...selectedVisualNodeIds,
+    ].filter(Boolean);
     setPreviewImagesByVisualNodeId((current) => {
-      const existing = current[componentPreviewImage.visualNodeId];
-      if (existing?.dataUrl === componentPreviewImage.dataUrl) return current;
-      return {
-        ...current,
-        [componentPreviewImage.visualNodeId]: componentPreviewImage,
-      };
+      let changed = false;
+      const next = { ...current };
+      for (const visualNodeId of previewKeys) {
+        if (next[visualNodeId]?.dataUrl === componentPreviewImage.dataUrl) continue;
+        next[visualNodeId] = { ...componentPreviewImage, visualNodeId };
+        changed = true;
+      }
+      return changed ? next : current;
     });
-  }, [componentPreviewImage]);
+  }, [componentPreviewImage, selectedVisualNodeKey, viewportVisualNodeKey]);
 
   useEffect(() => {
     if (!useSharedViewport || !isActive) return;

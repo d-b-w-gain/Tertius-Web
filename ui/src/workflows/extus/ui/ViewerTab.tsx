@@ -945,10 +945,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowBytes), targetStart);
       }
       context.putImageData(imageData, 0, 0);
+      const requestedVisualNodeId = externalSelectedNodeIds?.find(Boolean) || previewObject.name || previewObject.uuid;
       return {
         dataUrl: canvas.toDataURL('image/png'),
         label: previewObject.name || previewObject.uuid,
-        visualNodeId: previewObject.name || previewObject.uuid,
+        visualNodeId: requestedVisualNodeId,
         capturedAt: Date.now(),
       };
     } catch (error) {
