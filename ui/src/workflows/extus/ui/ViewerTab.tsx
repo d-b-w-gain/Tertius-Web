@@ -45,12 +45,51 @@ const COMPONENT_PREVIEW_SIZE = 512;
 
 const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 
+type GltfNodeJson = {
+  children?: unknown;
+};
+
+type GltfSceneJson = {
+  nodes?: unknown;
+};
+
+type GltfParserJson = {
+  nodes?: unknown;
+  scenes?: unknown;
+  scene?: unknown;
+};
+
+function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
+  const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
+  const scenes = Array.isArray(gltfJson?.scenes) ? gltfJson.scenes as GltfSceneJson[] : [];
+  const sceneIndex = typeof gltfJson?.scene === 'number' ? gltfJson.scene : 0;
+  const sceneNodeIds = Array.isArray(scenes[sceneIndex]?.nodes)
+    ? scenes[sceneIndex].nodes.filter((value): value is number => Number.isInteger(value))
+    : nodes
+      .map((_, index) => index)
+      .filter((index) => !nodes.some((node) => (
+        Array.isArray(node.children) && node.children.some((childIndex) => childIndex === index)
+      )));
+
+  const annotateNode = (object: THREE.Object3D | undefined, nodeId: number) => {
+    if (!object || !nodes[nodeId]) return;
+    object.userData.tertiusGltfNodeId = String(nodeId);
+    const childNodeIds = Array.isArray(nodes[nodeId].children)
+      ? nodes[nodeId].children.filter((value): value is number => Number.isInteger(value))
+      : [];
+    childNodeIds.forEach((childNodeId, childIndex) => annotateNode(object.children[childIndex], childNodeId));
+  };
+
+  sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
+}
+
 const matchesExternalSelection = (
   object: THREE.Object3D,
   selectedIds: Set<string>,
   normalizedSelectedIds: Set<string>,
 ) => (
   selectedIds.has(object.uuid)
+  || Boolean(object.userData?.tertiusGltfNodeId && selectedIds.has(String(object.userData.tertiusGltfNodeId)))
   || Boolean(object.name && selectedIds.has(object.name))
   || Boolean(object.name && normalizedSelectedIds.has(normalizeExternalSelectionId(object.name)))
 );
@@ -714,6 +753,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           if (!isCurrentRequest()) return;
       
           const model = gltf.scene;
+          annotateGltfNodeIds(model, (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json);
       
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
