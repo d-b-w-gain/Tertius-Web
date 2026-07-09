@@ -276,10 +276,30 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
-          kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+          apply_remote_yaml() {
+            local url="$1"
+            local namespace="${2:-}"
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if [ -n "$namespace" ]; then
+                if kubectl -n "$namespace" apply -f "$url"; then
+                  return 0
+                fi
+              elif kubectl apply -f "$url"; then
+                return 0
+              fi
+              sleep $((attempt * 5))
+            done
+            if [ -n "$namespace" ]; then
+              kubectl -n "$namespace" apply -f "$url"
+            else
+              kubectl apply -f "$url"
+            fi
+          }
+          apply_remote_yaml https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+          apply_remote_yaml https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
           kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "${NAMESPACE}" apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/kubernetes.yml
+          apply_remote_yaml https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/26.6.3/kubernetes/kubernetes.yml "${NAMESPACE}"
           kubectl patch clusterrolebinding keycloak-operator-clusterrole-binding --type='json' -p="[{\"op\":\"replace\",\"path\":\"/subjects/0/namespace\",\"value\":\"${NAMESPACE}\"}]"
           kubectl -n "${NAMESPACE}" wait deploy keycloak-operator --for=condition=Available --timeout=90s
 

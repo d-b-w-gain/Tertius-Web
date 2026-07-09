@@ -369,6 +369,14 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             return False
         return len(_mesh_descendants(node)) == 1
 
+    def is_generated_mesh_component_wrapper(node: dict[str, Any]) -> bool:
+        name = _node_name(node)
+        if not _is_group(node) or not name or not _is_generated_or_default(name):
+            return False
+        if any(_is_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node)):
+            return False
+        return bool(_mesh_descendants(node))
+
     def direct_named_mesh_children_by_label(node: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for child in _bom_enabled_children(node):
@@ -395,6 +403,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 _is_mesh(child)
                 or _tertius_bom_metadata(child) is not None
                 or is_single_mesh_component_wrapper(child)
+                or (_is_group(child) and _has_mesh_descendant(child))
             ):
                 continue
             grouped.setdefault((child_name, signature), []).append(child)
@@ -428,6 +437,17 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                     visual_node_ids=visual_node_ids_for(node, ancestors),
                     source_call_ids=source_call_ids_for(node),
                     bom_metadata=bom_metadata,
+                )
+                return
+
+            if is_generated_mesh_component_wrapper(node):
+                path = path_for(ancestors, node)
+                add_component(
+                    label=name,
+                    path=path,
+                    assembly_id=parent_assembly_id(ancestors),
+                    visual_node_ids=visual_node_ids_for(node, ancestors),
+                    source_call_ids=source_call_ids_for(node),
                 )
                 return
 

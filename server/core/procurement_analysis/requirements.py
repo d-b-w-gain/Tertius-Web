@@ -325,6 +325,22 @@ def _visual_component_source_call(
     return candidates[-1], "runtime visual provenance"
 
 
+def _visual_verified_source_call(
+    component: dict[str, Any],
+    source_analysis: dict[str, Any],
+    runtime_calls_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    call, reason = _visual_component_source_call(component, runtime_calls_by_id)
+    if call is not None:
+        return call, reason
+    if _bom_metadata(component):
+        return None, reason
+    fallback_call, fallback_reason = _best_source_call(component, source_analysis)
+    if fallback_call is not None:
+        return fallback_call, f"visual metadata fallback: {fallback_reason}"
+    return None, reason
+
+
 def _input_trace(call: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
     if not call:
         return None
@@ -1062,7 +1078,7 @@ def build_procurement_analysis(
             "severity": "info",
             "message": (
                 f"GLTF exposed {len(tree_components)} visual component(s); "
-                "source-derived procurement candidates were not matched into orderable rows because visual components are the quantity authority."
+                "source metadata may supplement matching visual rows, but visual components remain the row and quantity authority."
             ),
             "visual_component_count": len(tree_components),
             "source_component_count": len(source_components),
@@ -1070,11 +1086,15 @@ def build_procurement_analysis(
 
     requirements: list[dict[str, Any]] = []
     components: list[dict[str, Any]] = []
+    used_source_call_keys: set[tuple[Any, ...]] = set()
     for component in tree_components:
         if analysis_mode == "visual_verified":
-            call, match_reason = _visual_component_source_call(component, runtime_calls_by_id)
+            call, match_reason = _visual_verified_source_call(component, source_analysis, runtime_calls_by_id)
         else:
             call, match_reason = _best_source_call(component, source_analysis)
+        call_key = _source_call_key(call)
+        if call_key is not None:
+            used_source_call_keys.add(call_key)
         public_component = {key: value for key, value in component.items() if not key.startswith("_")}
         component_record = {
             **public_component,
@@ -1115,8 +1135,51 @@ def build_procurement_analysis(
                 for key in ("quantity", "unit"):
                     if key not in quantity_metadata and _resolved_input(call, key) is not None:
                         quantity_metadata[key] = _resolved_input(call, key)
-            quantity_evidence = _visual_quantity_evidence(component, quantity_metadata)
+            quantity_evidence = (
+                _quantity_evidence(call, component, source_analysis, analysis_mode=analysis_mode)
+                if call and not metadata
+                else _visual_quantity_evidence(component, quantity_metadata)
+            )
+            if call is not None and _is_decomposable_fastener_assembly(call):
+                fastener_requirements = _fastener_assembly_requirements(
+                    component=component,
+                    call=call,
+                    component_record=component_record,
+                    quantity_evidence=quantity_evidence,
+                )
+                requirements.extend(fastener_requirements)
+                for fastener_requirement in fastener_requirements:
+                    if not fastener_requirement.get("part_number"):
+                        diagnostics.append({
+                            "code": "requirement_missing_part_number",
+                            "message": f"{component.get('label')} {fastener_requirement['source_trace']['procurement_item']} has no resolved part number.",
+                            "component_id": component["id"],
+                        })
+                continue
+
+            visual_container_without_identity = (
+                (not part_number or (part_number == visual_part_number and (call is None or _resolved_input(call, "part_number") is None)))
+                and _is_visual_container_without_procurement_identity(component, call)
+            )
+            if visual_container_without_identity:
+                part_number = None
+                visual_part_trace = None
+                dimensions = {}
+                diagnostics.append({
+                    "code": "visual_container_without_procurement_identity",
+                    "severity": "warning",
+                    "message": (
+                        f"{component.get('label')} aggregates "
+                        f"{len(component.get('visual_node_ids') or []) or 1} visual leaf node(s), but it has no procurement-readable "
+                        "product identity. It remains a procurement-required visual row unless marked reference/NTBO."
+                    ),
+                    "component_id": component["id"],
+                    "source_file": call.get("source_file") if call else None,
+                    "source_line": call.get("source_line") if call else None,
+                })
+
             part_number_placeholder = False
+            generated_trace = None
             placeholder_trace = None
             metadata_part_trace = (
                 _bom_trace(component, "part_number" if metadata.get("part_number") else "product_key", metadata_part_number)
@@ -1131,10 +1194,20 @@ def build_procurement_analysis(
                 else None
             )
 
-            if not part_number and quantity_evidence.get("orderable") is True:
+            if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
+                generated_part_number, generated_part_trace = _make_generated_part_key(component, call)
+                if generated_part_number:
+                    part_number = generated_part_number
+                    generated_trace = generated_part_trace
+
+            if (
+                not part_number
+                and not visual_container_without_identity
+                and quantity_evidence.get("orderable") is True
+            ):
                 part_number, placeholder_trace = _make_placeholder_part_key(
                     component,
-                    None,
+                    call,
                     dimensions,
                     unit,
                     material,
@@ -1148,7 +1221,7 @@ def build_procurement_analysis(
                     dimensions.setdefault("component_label", label)
 
             resolution_trace = {
-                "part_number": placeholder_trace or metadata_part_trace or source_part_trace or visual_part_trace,
+                "part_number": generated_trace or placeholder_trace or metadata_part_trace or source_part_trace or visual_part_trace,
             }
             dimension_trace = {
                 key: trace
@@ -1180,6 +1253,7 @@ def build_procurement_analysis(
             requirements.append(requirement)
 
             if part_number_placeholder:
+                placeholder_inputs = placeholder_trace.get("raw", {}).get("fields", {}) if isinstance(placeholder_trace, dict) else {}
                 diagnostics.append({
                     "code": "auto_placeholder_part_number",
                     "severity": "warning",
@@ -1187,14 +1261,12 @@ def build_procurement_analysis(
                     "component_id": component["id"],
                     "requirement_id": requirement["id"],
                     "part_number": part_number,
+                    "function": call.get("function") if call else None,
+                    "source_file": call.get("source_file") if call else None,
+                    "source_line": call.get("source_line") if call else None,
                     "visual_label": component.get("label"),
                     "visual_path": component.get("path"),
-                    "resolved_inputs": {
-                        "dimensions": dimensions,
-                        "unit": unit,
-                        "material": material,
-                        "finish": finish,
-                    },
+                    "resolved_inputs": placeholder_inputs,
                 })
             if not part_number:
                 diagnostics.append({
@@ -1358,6 +1430,25 @@ def build_procurement_analysis(
                 "code": "requirement_missing_part_number",
                 "message": f"{component.get('label')} has no resolved part number.",
                 "component_id": component["id"],
+            })
+
+    if analysis_mode == "visual_verified" and source_components:
+        for source_component in source_components:
+            source_call = source_component.get("_source_call") if isinstance(source_component, dict) else None
+            source_call_key = _source_call_key(source_call)
+            if source_call_key is None or source_call_key in used_source_call_keys:
+                continue
+            diagnostics.append({
+                "code": "source_metadata_without_visual_component",
+                "severity": "info",
+                "message": (
+                    f"{source_call.get('function') if source_call else 'source metadata'} was found in source metadata "
+                    "but did not match any GLB visual component."
+                ),
+                "function": source_call.get("function") if source_call else None,
+                "source_file": source_call.get("source_file") if source_call else None,
+                "source_line": source_call.get("source_line") if source_call else None,
+                "source_scope": source_call.get("source_scope") if source_call else None,
             })
 
     _annotate_source_call_counts(requirements)
