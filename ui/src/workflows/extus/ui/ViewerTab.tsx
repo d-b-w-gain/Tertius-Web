@@ -23,6 +23,7 @@ interface ViewerProps {
   serverUrl: string;
   isActive?: boolean;
   statusTextOverride?: string;
+  externalSelectedNodeIds?: string[];
 }
 
 interface ModelViewerCanvasProps {
@@ -31,6 +32,7 @@ interface ModelViewerCanvasProps {
   statusText?: string;
   projectName?: string;
   isActive?: boolean;
+  externalSelectedNodeIds?: string[];
 }
 
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
@@ -248,7 +250,12 @@ export const ViewerTab: React.FC<ViewerProps> = (props) => {
   return <LatestModelViewer {...props} />;
 };
 
-export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive = true, statusTextOverride }) => {
+export const LatestModelViewer: React.FC<ViewerProps> = ({
+  serverUrl,
+  isActive = true,
+  statusTextOverride,
+  externalSelectedNodeIds,
+}) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
   const [url, setUrl] = useState<string>('');
@@ -306,6 +313,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({ serverUrl, isActive =
       statusText={statusTextOverride || statusText}
       projectName={projectName}
       isActive={isActive}
+      externalSelectedNodeIds={externalSelectedNodeIds}
     />
   );
 };
@@ -316,6 +324,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   statusText = 'Waiting for model...',
   projectName = '',
   isActive = true,
+  externalSelectedNodeIds,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
@@ -334,6 +343,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const autoRotateRef = useRef<boolean>(true);
+  const isActiveRef = useRef<boolean>(isActive);
   
   // THREE.js refs
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -369,8 +379,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     renderer.setSize(w, h);
   }, []);
 
-  // 1. Initialize Scene (run once)
+  // 1. Initialize Scene while the viewer tab is active.
   useEffect(() => {
+    if (!isActive) return;
     if (!containerRef.current || !canvasRef.current) return;
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -459,17 +470,42 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       canvas.removeEventListener('wheel', handleInteraction);
       if (resumeTimeout) clearTimeout(resumeTimeout);
       cancelAnimationFrame(animIdRef.current);
+      animIdRef.current = 0;
       disposeObjectTree(scene);
       renderer.dispose();
+      sceneRef.current = null;
+      cameraRef.current = null;
+      rendererRef.current = null;
+      controlsRef.current = null;
+      meshRef.current = null;
+      loadedModelUrlRef.current = '';
+      setSceneGraph(null);
+      setSelectedNodeId(null);
+      setIsolatedNodeId(null);
     };
-  }, [resizeRendererToContainer]);
+  }, [isActive, resizeRendererToContainer]);
 
   useEffect(() => {
+    isActiveRef.current = isActive;
+    if (controlsRef.current) controlsRef.current.enabled = isActive;
     if (!isActive) return;
 
     resizeRendererToContainer();
     const frame = requestAnimationFrame(resizeRendererToContainer);
     return () => cancelAnimationFrame(frame);
+  }, [isActive, resizeRendererToContainer]);
+
+  useEffect(() => {
+    if (!isActive || !containerRef.current) return;
+    const container = containerRef.current;
+    if (typeof ResizeObserver === 'undefined') {
+      resizeRendererToContainer();
+      return;
+    }
+    const resizeObserver = new ResizeObserver(resizeRendererToContainer);
+    resizeObserver.observe(container);
+    resizeRendererToContainer();
+    return () => resizeObserver.disconnect();
   }, [isActive, resizeRendererToContainer]);
 
   useEffect(() => {
@@ -513,7 +549,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const requestId = modelLoadRequestRef.current + 1;
     modelLoadRequestRef.current = requestId;
     setLoadErrorText(null);
-    if (!modelUrl || !sceneRef.current) {
+    if (!isActive || !modelUrl || !sceneRef.current) {
       if (!modelUrl) {
         loadedModelUrlRef.current = '';
         clearCurrentModel();
@@ -722,7 +758,46 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadSpanEnded = true;
       }
     };
-  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel]);
+  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel, isActive]);
+
+  const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
+
+  useEffect(() => {
+    if (!externalSelectedNodeIds?.length || !meshRef.current || !cameraRef.current || !controlsRef.current) return;
+
+    const selectedIds = new Set(externalSelectedNodeIds.filter(Boolean));
+    if (selectedIds.size === 0) return;
+
+    const model = meshRef.current;
+    const selectionBox = new THREE.Box3();
+    let found = false;
+
+    model.traverse((object) => {
+      if (!selectedIds.has(object.uuid) && (!object.name || !selectedIds.has(object.name))) return;
+      const objectBox = new THREE.Box3().setFromObject(object);
+      if (objectBox.isEmpty()) return;
+      selectionBox.union(objectBox);
+      found = true;
+    });
+
+    if (!found || selectionBox.isEmpty()) return;
+
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const sphere = selectionBox.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 1);
+    const fov = THREE.MathUtils.degToRad(camera.fov);
+    const distance = Math.max(radius / Math.sin(fov / 2), radius * 3);
+    const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+    if (currentDirection.lengthSq() === 0) currentDirection.set(1, 1, 0.7).normalize();
+
+    camera.position.copy(sphere.center).addScaledVector(currentDirection, distance * 1.2);
+    camera.near = Math.max(0.1, distance / 10_000);
+    camera.far = Math.max(distance * 20, radius * 30);
+    camera.updateProjectionMatrix();
+    controls.target.copy(sphere.center);
+    controls.update();
+  }, [externalSelectionKey, sceneGraph]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -836,10 +911,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      const model = meshRef.current;
      const batchedMesh = model.userData.batchedMesh;
      const appearanceBatchMesh = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
-     const sharedMaterial = model.userData.sharedMat as THREE.Material | undefined;
-     const highlightMaterial = model.userData.highlightMat as THREE.Material | undefined;
-     const hasAppearanceOverrides = Object.values(appearanceByPath).some(appearance => appearance.hidden || appearance.transparent);
-     const appearanceBatchKey = JSON.stringify(appearanceByPath);
+      const sharedMaterial = model.userData.sharedMat as THREE.Material | undefined;
+      const highlightMaterial = model.userData.highlightMat as THREE.Material | undefined;
+      const hasAppearanceOverrides = Object.values(appearanceByPath).some(appearance => appearance.hidden || appearance.transparent);
+      const appearanceBatchKey = JSON.stringify(appearanceByPath);
+      const externallySelectedIds = externalSelectedNodeIds ? new Set(externalSelectedNodeIds.filter(Boolean)) : null;
+      const selectedNodeIds = externallySelectedIds || (selectedNodeId ? new Set([selectedNodeId]) : new Set<string>());
+      const isNodeSelected = (node: THREE.Object3D) => (
+        selectedNodeIds.has(node.uuid) || Boolean(node.name && selectedNodeIds.has(node.name))
+      );
 
      const removeAppearanceBatch = () => {
         const currentBatch = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
@@ -903,13 +983,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            let isIsolated = false;
            let isHidden = false;
            let isTransparent = false;
-           let p: THREE.Object3D | null = child;
-           
-           while (p && p !== model) {
-              if (p.uuid === selectedNodeId) isSelected = true;
-              if (p.uuid === isolatedNodeId) isIsolated = true;
-              const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
-              if (appearance?.hidden) isHidden = true;
+            let p: THREE.Object3D | null = child;
+
+            while (p && p !== model) {
+               if (isNodeSelected(p)) isSelected = true;
+               if (p.uuid === isolatedNodeId) isIsolated = true;
+               const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
+               if (appearance?.hidden) isHidden = true;
               if (appearance?.transparent) isTransparent = true;
               p = p.parent;
            }
@@ -942,8 +1022,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
         }
      });
-     
-  }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality]);
+
+   }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
 
   return (
     <div className="flex-1 relative bg-slate-900 flex overflow-hidden">

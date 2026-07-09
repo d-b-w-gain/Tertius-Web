@@ -1,16 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { IntusWindow } from './workflows/intus/IntusWindow'
-import { ExtusWindow } from './workflows/extus/ExtusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { OctavusWindow } from './workflows/octavus/OctavusWindow'
-import { GenerateDesignWindow } from './workflows/generate/GenerateDesignWindow'
+import { GenerateDesignWindow, type GenerateViewportState } from './workflows/generate/GenerateDesignWindow'
+import { SharedExtusViewport, type SharedExtusViewportSource } from './workflows/extus/SharedExtusViewport'
 import { AiBudgetGauge } from './workflows/generate/AiBudgetGauge'
 import { useAuth } from './auth/AuthProvider'
 import { LoginStateWidget } from './auth/LoginStateWidget'
 import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
 import { importGuestWorkspace } from './workflows/shared/guestImport'
 import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
+
+type ViewportFrame = {
+  left: number
+  top: number
+  width: number
+  height: number
+}
 
 function App() {
   const { authMode, getAccessToken, isLoading } = useAuth()
@@ -19,9 +26,74 @@ function App() {
   const [showImportBanner, setShowImportBanner] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
+  const [procurementSelectedVisualNodeIds, setProcurementSelectedVisualNodeIds] = useState<string[]>([])
+  const [procurementViewportFrame, setProcurementViewportFrame] = useState<ViewportFrame | null>(null)
+  const [generateViewportState, setGenerateViewportState] = useState<GenerateViewportState>({
+    title: 'Latest Model',
+    subtitle: 'No active project',
+    projectName: '',
+    modelUrl: '',
+  })
+  const workbenchRef = useRef<HTMLDivElement | null>(null)
   const previousAuthMode = useRef(authMode)
   const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
   const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
+  const usesSharedExtusViewport = activeTab === 'extus' || activeTab === 'octavus' || (activeTab === 'generate' && authMode !== 'guest')
+  const sharedExtusViewportSource: SharedExtusViewportSource = activeTab === 'generate' && generateViewportState.modelUrl
+    ? {
+        kind: 'artifact',
+        modelUrl: generateViewportState.modelUrl,
+        projectName: generateViewportState.projectName,
+        statusText: generateViewportState.statusText,
+      }
+    : {
+        kind: 'latest',
+        statusTextOverride: activeTab === 'generate' ? generateViewportState.statusText : undefined,
+      }
+
+  const handleProcurementViewportFrameChange = useCallback((rect: DOMRectReadOnly | null) => {
+    const host = workbenchRef.current?.getBoundingClientRect()
+    if (!rect || !host || rect.width <= 0 || rect.height <= 0) {
+      setProcurementViewportFrame(null)
+      return
+    }
+    const next = {
+      left: Math.max(0, rect.left - host.left),
+      top: Math.max(0, rect.top - host.top),
+      width: rect.width,
+      height: rect.height,
+    }
+    setProcurementViewportFrame((current) => {
+      if (
+        current &&
+        Math.abs(current.left - next.left) < 0.5 &&
+        Math.abs(current.top - next.top) < 0.5 &&
+        Math.abs(current.width - next.width) < 0.5 &&
+        Math.abs(current.height - next.height) < 0.5
+      ) {
+        return current
+      }
+      return next
+    })
+  }, [])
+
+  const sharedViewportFrameClass = activeTab === 'octavus'
+    ? procurementViewportFrame
+      ? 'absolute flex flex-col overflow-hidden bg-slate-950'
+      : 'hidden'
+    : 'absolute inset-0 flex flex-col'
+  const sharedViewportFrameStyle = activeTab === 'octavus' && procurementViewportFrame
+    ? {
+        left: `${procurementViewportFrame.left}px`,
+        top: `${procurementViewportFrame.top}px`,
+        width: `${procurementViewportFrame.width}px`,
+        height: `${procurementViewportFrame.height}px`,
+      }
+    : undefined
+
+  useEffect(() => {
+    if (activeTab !== 'octavus') setProcurementViewportFrame(null)
+  }, [activeTab])
 
   useEffect(() => {
     if (authMode === 'guest') {
@@ -205,12 +277,22 @@ function App() {
           </div>
         </div>
 
-        <div className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
+        <div ref={workbenchRef} className="flex-1 relative flex flex-col min-h-0 bg-slate-950">
+          {usesSharedExtusViewport && (
+            <div className={sharedViewportFrameClass} style={sharedViewportFrameStyle}>
+              <SharedExtusViewport
+                isActive={usesSharedExtusViewport}
+                source={sharedExtusViewportSource}
+                externalSelectedNodeIds={activeTab === 'octavus' ? procurementSelectedVisualNodeIds : undefined}
+              />
+            </div>
+          )}
           <div className={activeTab === 'generate' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
-            <GenerateDesignWindow isActive={activeTab === 'generate'} />
-          </div>
-          <div className={activeTab === 'extus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
-            <ExtusWindow isActive={activeTab === 'extus'} />
+            <GenerateDesignWindow
+              isActive={activeTab === 'generate'}
+              renderViewport={false}
+              onViewportStateChange={setGenerateViewportState}
+            />
           </div>
           <div className={activeTab === 'intus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
             <IntusWindow isActive={activeTab === 'intus'} />
@@ -219,7 +301,13 @@ function App() {
             <TimusWindow isActive={activeTab === 'timus'} />
           </div>
           <div className={activeTab === 'octavus' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
-            <OctavusWindow isActive={activeTab === 'octavus'} onOpenCompiler={() => setActiveTab('intus')} />
+            <OctavusWindow
+              isActive={activeTab === 'octavus'}
+              onOpenCompiler={() => setActiveTab('intus')}
+              useSharedViewport
+              onViewportSelectionChange={setProcurementSelectedVisualNodeIds}
+              onViewportFrameChange={handleProcurementViewportFrameChange}
+            />
           </div>
         </div>
       </div>

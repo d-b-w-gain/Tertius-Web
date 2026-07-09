@@ -53,6 +53,21 @@ type ChatMessage = {
   repairForCompileJobId?: string
 }
 
+export type GenerateViewportState = {
+  title: string
+  subtitle: string
+  projectName: string
+  modelUrl: string
+  statusText?: string
+  openUrl?: string
+}
+
+type GenerateDesignWindowProps = {
+  isActive?: boolean
+  renderViewport?: boolean
+  onViewportStateChange?: (state: GenerateViewportState) => void
+}
+
 type CompileJobStatus = {
   status?: string
   job_id?: string
@@ -142,7 +157,11 @@ function formatPrice(model: LlmModelOption) {
   return `$${model.input_price_per_million.toFixed(2)} / $${model.output_price_per_million.toFixed(2)}`
 }
 
-export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }) {
+export function GenerateDesignWindow({
+  isActive = true,
+  renderViewport = true,
+  onViewportStateChange,
+}: GenerateDesignWindowProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
@@ -223,6 +242,18 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   const modelViewerStatusText = isNonTerminalStatus(selectedCompileStatus)
     ? 'Compiling updated model...'
     : undefined
+  const viewportState = useMemo<GenerateViewportState>(() => ({
+    title: selectedModelUrl ? 'Historical Model' : 'Latest Model',
+    subtitle: selectedMessage?.content || activeProject || 'No active project',
+    projectName: activeProject,
+    modelUrl: selectedModelUrl,
+    statusText: modelViewerStatusText,
+    openUrl: selectedModelUrl || undefined,
+  }), [activeProject, modelViewerStatusText, selectedMessage?.content, selectedModelUrl])
+
+  useEffect(() => {
+    onViewportStateChange?.(viewportState)
+  }, [onViewportStateChange, viewportState])
 
   const updateAssistantMessage = useCallback((messageIdToUpdate: string, updater: (message: ChatMessage) => ChatMessage) => {
     setMessages(prev => prev.map(message => (
@@ -812,20 +843,29 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
   }
 
   return (
-    <div className="relative flex h-full min-h-0 overflow-hidden bg-slate-950 text-slate-100">
-      <section className="flex min-h-0 w-full flex-col">
-        <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/95 px-4 py-3">
+    <div className={renderViewport
+      ? 'relative flex h-full min-h-0 overflow-hidden bg-slate-950 text-slate-100'
+      : 'pointer-events-none relative h-full min-h-0 overflow-hidden text-slate-100'
+    }>
+      <section className={renderViewport
+        ? 'flex min-h-0 w-full flex-col'
+        : 'pointer-events-auto absolute left-4 top-24 z-20 max-w-[min(36rem,calc(100%-2rem))] rounded border border-slate-800 bg-slate-950/90 shadow-xl shadow-slate-950/50 backdrop-blur'
+      }>
+        <div className={renderViewport
+          ? 'flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/95 px-4 py-3'
+          : 'flex items-center justify-between gap-3 px-4 py-3'
+        }>
           <div className="min-w-0">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              {selectedModelUrl ? 'Historical Model' : 'Latest Model'}
+              {viewportState.title}
             </div>
             <div className="truncate text-xs text-slate-400">
-              {selectedMessage?.content || activeProject || 'No active project'}
+              {viewportState.subtitle}
             </div>
           </div>
-          {selectedModelUrl && (
+          {viewportState.openUrl && (
             <a
-              href={selectedModelUrl}
+              href={viewportState.openUrl}
               target="_blank"
               rel="noreferrer"
               className="shrink-0 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 hover:bg-slate-700"
@@ -834,24 +874,26 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
             </a>
           )}
         </div>
-        <div className="min-h-0 flex-1">
-          {selectedModelUrl ? (
-            <ModelViewerCanvas
-              key={selectedModelUrl}
-              modelUrl={selectedModelUrl}
-              getAccessToken={getAccessToken}
-              statusText={modelViewerStatusText || 'Selected historical model'}
-              projectName={activeProject}
-              isActive={isActive}
-            />
-          ) : (
-            <LatestModelViewer
-              serverUrl={extusServerUrl}
-              isActive={isActive}
-              statusTextOverride={modelViewerStatusText}
-            />
-          )}
-        </div>
+        {renderViewport && (
+          <div className="min-h-0 flex-1">
+            {selectedModelUrl ? (
+              <ModelViewerCanvas
+                key={selectedModelUrl}
+                modelUrl={selectedModelUrl}
+                getAccessToken={getAccessToken}
+                statusText={modelViewerStatusText || 'Selected historical model'}
+                projectName={activeProject}
+                isActive={isActive}
+              />
+            ) : (
+              <LatestModelViewer
+                serverUrl={extusServerUrl}
+                isActive={isActive}
+                statusTextOverride={modelViewerStatusText}
+              />
+            )}
+          </div>
+        )}
       </section>
 
       {!isConversationOpen && (
@@ -871,7 +913,7 @@ export function GenerateDesignWindow({ isActive = true }: { isActive?: boolean }
         <aside
           role="complementary"
           aria-label="Generate Design conversation"
-          className="absolute inset-x-3 bottom-3 top-16 z-20 flex min-h-0 flex-col rounded border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/60 backdrop-blur md:left-auto md:right-4 md:w-[28rem]"
+          className="pointer-events-auto absolute inset-x-3 bottom-3 top-16 z-20 flex min-h-0 flex-col rounded border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/60 backdrop-blur md:left-auto md:right-4 md:w-[28rem]"
         >
           <div className="border-b border-slate-800 p-4">
             <div className="flex items-start justify-between gap-3">

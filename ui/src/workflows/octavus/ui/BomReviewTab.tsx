@@ -1149,7 +1149,19 @@ export const BomReviewTab: React.FC<{
   intusServerUrl: string;
   isActive?: boolean;
   onOpenCompiler?: () => void;
-}> = ({ artusServerUrl: _artusServerUrl, extusServerUrl, intusServerUrl, isActive = true, onOpenCompiler }) => {
+  useSharedViewport?: boolean;
+  onViewportSelectionChange?: (visualNodeIds: string[]) => void;
+  onViewportFrameChange?: (rect: DOMRectReadOnly | null) => void;
+}> = ({
+  artusServerUrl: _artusServerUrl,
+  extusServerUrl,
+  intusServerUrl,
+  isActive = true,
+  onOpenCompiler,
+  useSharedViewport = false,
+  onViewportSelectionChange,
+  onViewportFrameChange,
+}) => {
   const { authMode, getAccessToken } = useAuth();
   const storage = useMemo(
     () => createProjectStorage({ authMode, serverUrl: intusServerUrl, getAccessToken }),
@@ -1168,7 +1180,7 @@ export const BomReviewTab: React.FC<{
   const [selectedScopeId, setSelectedScopeId] = useState('__all__');
   const [selectedLineKey, setSelectedLineKey] = useState<string | null>(null);
   const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
-  const [showModelPreview, setShowModelPreview] = useState(false);
+  const [showModelPreview, setShowModelPreview] = useState(true);
   const [isInspectorCollapsed, setIsInspectorCollapsed] = useState(false);
   const [visibleRows, setVisibleRows] = useState(INITIAL_VISIBLE_ROWS);
   const [suppliers, setSuppliers] = useState<Supplier[]>(() => readJsonState('procurement_suppliers', [], normalizeSuppliers));
@@ -1177,6 +1189,7 @@ export const BomReviewTab: React.FC<{
   const [activeSupplierId, setActiveSupplierId] = useState<string | null>(() => localStorage.getItem('procurement_active_supplier'));
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
   const [editPricing, setEditPricing] = useState<SupplierPricing | null>(null);
+  const sharedViewportSlotRef = useRef<HTMLDivElement | null>(null);
 
   const artifactManifest = manifestEnvelope?.manifest || null;
   const artifactState = resolveBomArtifactState(manifestEnvelope);
@@ -1413,7 +1426,7 @@ export const BomReviewTab: React.FC<{
   }, [selectedScopeId, manifestEnvelope?.manifest_artifact_id]);
 
   useEffect(() => {
-    setShowModelPreview(false);
+    if (modelUrl) setShowModelPreview(true);
   }, [modelUrl]);
 
   useEffect(() => {
@@ -1426,6 +1439,45 @@ export const BomReviewTab: React.FC<{
   }, [scopeOptions, selectedScopeId]);
 
   const selectedVisualNodeIds = selectedLine?.visualNodeIds || (selectedComponent?.visual_node_ids || []);
+  const selectedVisualNodeKey = selectedVisualNodeIds.join('\u001f');
+  useEffect(() => {
+    if (!useSharedViewport || !isActive) return;
+    onViewportSelectionChange?.([...selectedVisualNodeIds]);
+    return () => onViewportSelectionChange?.([]);
+  }, [isActive, onViewportSelectionChange, selectedVisualNodeKey, useSharedViewport]);
+
+  useEffect(() => {
+    if (!useSharedViewport || !isActive || subTab !== 'bom' || isInspectorCollapsed) {
+      onViewportFrameChange?.(null);
+      return;
+    }
+    const element = sharedViewportSlotRef.current;
+    if (!element) {
+      onViewportFrameChange?.(null);
+      return;
+    }
+
+    let animationFrame = 0;
+    const publishFrame = () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        onViewportFrameChange?.(element.getBoundingClientRect());
+      });
+    };
+
+    publishFrame();
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publishFrame);
+    resizeObserver?.observe(element);
+    window.addEventListener('resize', publishFrame);
+
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', publishFrame);
+      onViewportFrameChange?.(null);
+    };
+  }, [isActive, isInspectorCollapsed, onViewportFrameChange, subTab, useSharedViewport]);
+
   const handleSelectComponent = useCallback((componentId: string) => {
     setSelectedComponentId(componentId);
     setSelectedLineKey(null);
@@ -1527,8 +1579,8 @@ export const BomReviewTab: React.FC<{
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-950 text-slate-100">
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900 px-4 py-3">
+    <div className={`flex h-full min-h-0 flex-col text-slate-100 ${useSharedViewport ? 'pointer-events-none bg-transparent' : 'bg-slate-950'}`}>
+      <div className="pointer-events-auto flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900 px-4 py-3">
         <div className="mr-2">
           <div className="text-sm font-bold text-slate-100">Procurement</div>
           <div className="max-w-[360px] truncate text-[11px] text-slate-500">
@@ -1555,14 +1607,14 @@ export const BomReviewTab: React.FC<{
         </div>
       </div>
 
-      {error && <div className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">{error}</div>}
+      {error && <div className="pointer-events-auto border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">{error}</div>}
       {artifactState === 'stale_manifest' && (
-        <div className="border-b border-red-900/60 bg-red-950/30 px-4 py-2 text-sm text-red-200">
+        <div className="pointer-events-auto border-b border-red-900/60 bg-red-950/30 px-4 py-2 text-sm text-red-200">
           The latest BoM manifest and latest 3D model came from different compile jobs. Recompile before treating this BoM as verified.
         </div>
       )}
       {procurementAnalysisUnavailable && !isReadyManifest && (
-        <div className="border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
+        <div className="pointer-events-auto border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
           The running backend does not expose deterministic procurement analysis yet, so GLTF-derived draft rows are hidden.
         </div>
       )}
@@ -1571,7 +1623,7 @@ export const BomReviewTab: React.FC<{
         {subTab === 'bom' && (
           <>
             {showScopeList && (
-              <aside className="w-72 shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3">
+              <aside className="pointer-events-auto w-72 shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3">
                 <div className="mb-3 text-xs font-bold uppercase tracking-wider text-amber-300">BoM view</div>
                 <button
                   onClick={() => setSelectedScopeId('__all__')}
@@ -1601,7 +1653,7 @@ export const BomReviewTab: React.FC<{
                 ))}
               </aside>
             )}
-            <main className="min-w-0 flex-1 overflow-auto p-4">
+            <main className="pointer-events-auto min-w-0 flex-1 overflow-auto bg-slate-950/95 p-4">
               {showBomToolbar && (
                 <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-slate-400">
                   {showScopeSelector ? (
@@ -1809,7 +1861,51 @@ export const BomReviewTab: React.FC<{
               )}
             </main>
 
-            {isInspectorCollapsed ? (
+            {useSharedViewport ? isInspectorCollapsed ? (
+              <div className="pointer-events-auto flex w-10 shrink-0 flex-col items-center border-l border-slate-800 bg-slate-950">
+                <button
+                  type="button"
+                  onClick={() => setIsInspectorCollapsed(false)}
+                  aria-label="Expand preview panel"
+                  title="Expand preview panel"
+                  className="mt-2 h-8 w-8 rounded border border-slate-700 bg-slate-800 text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+                >
+                  &lt;
+                </button>
+                <div className="mt-3 text-[10px] font-mono uppercase tracking-wide text-slate-600 [writing-mode:vertical-rl]">
+                  Preview
+                </div>
+              </div>
+            ) : (
+              <aside className="flex min-h-0 w-[38%] min-w-[380px] max-w-[620px] flex-col border-l border-slate-800">
+                <div className="pointer-events-auto flex h-10 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900/90 px-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsInspectorCollapsed(true)}
+                    aria-label="Collapse preview panel"
+                    title="Collapse preview panel"
+                    className="h-7 w-7 rounded border border-slate-700 bg-slate-800 text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+                  >
+                    &gt;
+                  </button>
+                  <div className="min-w-0 truncate px-2 text-xs font-mono font-semibold text-slate-500">
+                    3D Preview
+                  </div>
+                  <div className="h-7 w-7" />
+                </div>
+                <div ref={sharedViewportSlotRef} className="pointer-events-none relative min-h-0 flex-1 basis-0 overflow-hidden">
+                  <div className={`pointer-events-none absolute left-3 top-3 rounded px-3 py-2 text-xs shadow-xl shadow-slate-950/40 ${isReadyManifest ? 'bg-emerald-950/85 text-emerald-200' : 'bg-red-950/85 text-red-200'}`}>
+                    {viewerVerificationText}
+                  </div>
+                </div>
+                <SelectionPanel
+                  selectedLine={selectedLine}
+                  selectedComponent={selectedComponent}
+                  selectedComponentRequirements={selectedComponentRequirements}
+                  componentsById={componentsById}
+                />
+              </aside>
+            ) : isInspectorCollapsed ? (
               <div className="w-10 shrink-0 border-l border-slate-800 bg-slate-950 flex flex-col items-center">
                 <button
                   type="button"
@@ -1841,7 +1937,7 @@ export const BomReviewTab: React.FC<{
                   </div>
                   <div className="h-7 w-7" />
                 </div>
-                {showModelPreview ? (
+                {showModelPreview && modelUrl ? (
                   <div className="relative min-h-0 flex-1">
                     <ProcurementSceneViewer
                       modelUrl={modelUrl}
@@ -1868,7 +1964,9 @@ export const BomReviewTab: React.FC<{
                     <div className={`rounded px-3 py-2 text-xs ${isReadyManifest ? 'bg-emerald-950/80 text-emerald-200' : 'bg-red-950/80 text-red-200'}`}>
                       {viewerVerificationText}
                     </div>
-                    <div className="text-sm font-semibold text-slate-200">3D preview paused</div>
+                    <div className="text-sm font-semibold text-slate-200">
+                      {modelUrl ? '3D preview paused' : 'Waiting for 3D preview'}
+                    </div>
                     <div className="max-w-sm text-xs leading-5 text-slate-500">
                       {statusText}
                     </div>
@@ -1895,7 +1993,7 @@ export const BomReviewTab: React.FC<{
 
         {subTab === 'suppliers' && (
           <>
-            <aside className="w-64 shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3">
+            <aside className="pointer-events-auto w-64 shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3">
               <div className="mb-3 text-xs font-bold uppercase tracking-wider text-amber-300">Suppliers</div>
               {suppliers.map((supplier) => (
                 <button
@@ -1911,7 +2009,7 @@ export const BomReviewTab: React.FC<{
               <button onClick={() => { const supplier = newSupplier(); setEditSupplier(supplier); setActiveSupplierId(supplier.id); }} className="mt-2 w-full rounded bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700">Add supplier</button>
             </aside>
 
-            <main className="min-w-0 flex-1 overflow-y-auto p-4">
+            <main className="pointer-events-auto min-w-0 flex-1 overflow-y-auto bg-slate-950/95 p-4">
               {editSupplier ? (
                 <SupplierEditor supplier={editSupplier} setSupplier={setEditSupplier} onSave={saveSupplierEdit} onCancel={() => setEditSupplier(null)} />
               ) : activeSupplierId && suppliers.some((supplier) => supplier.id === activeSupplierId) ? (
@@ -1936,7 +2034,7 @@ export const BomReviewTab: React.FC<{
         )}
 
         {subTab === 'review' && (
-          <main className="min-w-0 flex-1 overflow-auto p-4">
+          <main className="pointer-events-auto min-w-0 flex-1 overflow-auto bg-slate-950/95 p-4">
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
               <div className="overflow-hidden rounded border border-slate-800">
                 <table className="w-full min-w-[840px] text-left text-xs">
@@ -2013,8 +2111,9 @@ const SelectionPanel: React.FC<{
   selectedComponent: ManifestComponent | null;
   selectedComponentRequirements: ManifestRequirement[];
   componentsById: Map<string, ManifestComponent>;
-}> = ({ selectedLine, selectedComponent, selectedComponentRequirements, componentsById }) => (
-  <div className="max-h-[34%] overflow-auto border-t border-slate-800 bg-slate-950 p-3 text-xs">
+  className?: string;
+}> = ({ selectedLine, selectedComponent, selectedComponentRequirements, componentsById, className }) => (
+  <div className={className || 'max-h-[34%] overflow-auto border-t border-slate-800 bg-slate-950 p-3 text-xs'}>
     {selectedLine ? (
       <div>
         <div className="mb-2 text-sm font-bold text-slate-100">{selectedLine.displayName}</div>
@@ -2326,6 +2425,7 @@ const ProcurementSceneViewer: React.FC<{
 
   useEffect(() => {
     const container = containerRef.current;
+    if (!isActive) return;
     if (!container) return;
 
     const scene = new THREE.Scene();
@@ -2396,7 +2496,6 @@ const ProcurementSceneViewer: React.FC<{
       clearIdleTimeout();
 
       if (!isActiveRef.current) {
-        scheduleIdleCheck(500);
         return;
       }
 
@@ -2466,11 +2565,16 @@ const ProcurementSceneViewer: React.FC<{
       });
       renderer.dispose();
       dimMaterial.dispose();
+      sceneRef.current = null;
+      cameraRef.current = null;
+      rendererRef.current = null;
+      controlsRef.current = null;
       dimMaterialRef.current = null;
+      modelRef.current = null;
       renderer.domElement.remove();
       onModelLoaded(null);
     };
-  }, [onModelLoaded, onSelectComponent, renderScene, requestRender]);
+  }, [isActive, onModelLoaded, onSelectComponent, renderScene, requestRender]);
 
   useEffect(() => {
     if (!modelUrl || !isActive || !sceneRef.current) return;
