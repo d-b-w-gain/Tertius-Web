@@ -28,6 +28,8 @@ const BOM_RECOVERY_POLL_MS = 2_000;
 const BOM_RECOVERY_MAX_POLLS = 90;
 const PROCUREMENT_SYNC_WORK_LOG_MS = 50;
 const PROCUREMENT_SYNC_WORK_WARN_MS = 200;
+const QUOTE_PREVIEW_CAPTURE_WAIT_MS = 180;
+const QUOTE_PREVIEW_CAPTURE_TIMEOUT_MS = 2_800;
 const BOM_STARTER_SNIPPET = `from tertius_bom import bom_scope, bom_component, requirement
 
 with bom_scope("Portal", id="portal"):
@@ -276,6 +278,10 @@ const readJsonState = <T,>(key: string, fallback: T, normalize?: (value: unknown
     return fallback;
   }
 };
+
+const waitForMs = (ms: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, ms);
+});
 
 const writeJsonState = (key: string, value: unknown) => {
   try {
@@ -1440,7 +1446,11 @@ export const BomReviewTab: React.FC<{
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
   const [editPricing, setEditPricing] = useState<SupplierPricing | null>(null);
   const [previewImagesByVisualNodeId, setPreviewImagesByVisualNodeId] = useState<Record<string, ComponentPreviewImage>>({});
+  const [isGeneratingQuotePreviews, setIsGeneratingQuotePreviews] = useState(false);
+  const [quotePreviewProgress, setQuotePreviewProgress] = useState<{ current: number; total: number } | null>(null);
   const sharedViewportSlotRef = useRef<HTMLDivElement | null>(null);
+  const previewImagesByVisualNodeIdRef = useRef(previewImagesByVisualNodeId);
+  const quotePreviewGenerationRef = useRef(0);
 
   const artifactManifest = manifestEnvelope?.manifest || null;
   const artifactState = resolveBomArtifactState(manifestEnvelope);
@@ -1456,6 +1466,19 @@ export const BomReviewTab: React.FC<{
     if (activeSupplierId) localStorage.setItem('procurement_active_supplier', activeSupplierId);
     else localStorage.removeItem('procurement_active_supplier');
   }, [activeSupplierId]);
+  useEffect(() => {
+    previewImagesByVisualNodeIdRef.current = previewImagesByVisualNodeId;
+  }, [previewImagesByVisualNodeId]);
+  useEffect(() => {
+    quotePreviewGenerationRef.current += 1;
+    previewImagesByVisualNodeIdRef.current = {};
+    setPreviewImagesByVisualNodeId({});
+    setQuotePreviewProgress(null);
+    setIsGeneratingQuotePreviews(false);
+  }, [modelUrl, manifestEnvelope?.manifest_artifact_id]);
+  useEffect(() => () => {
+    quotePreviewGenerationRef.current += 1;
+  }, []);
 
   useEffect(() => {
     if (!isActive) return;
@@ -1580,6 +1603,10 @@ export const BomReviewTab: React.FC<{
   const allBomLineCount = scopeStats.allItemCount;
   const selectedLine = useMemo(() => bomLines.find((line) => line.key === selectedLineKey) || null, [bomLines, selectedLineKey]);
   const visibleBomRows = useMemo(() => bomLines.slice(0, visibleRows), [bomLines, visibleRows]);
+  const quotePreviewLines = useMemo(() => bomLines.filter((line) => line.visualNodeIds.length > 0), [bomLines]);
+  const quotePreviewReadyCount = useMemo(() => quotePreviewLines.filter((line) => (
+    line.visualNodeIds.some((visualNodeId) => Boolean(previewImagesByVisualNodeId[visualNodeId]))
+  )).length, [previewImagesByVisualNodeId, quotePreviewLines]);
 
   const scopeOptions = useMemo<ScopeOption[]>(() => {
     if (!manifest || !canUseAssemblyViews) return [];
@@ -1859,6 +1886,59 @@ export const BomReviewTab: React.FC<{
     if (activeSupplierId === id) setActiveSupplierId(null);
   };
 
+  const generateQuotePreviews = useCallback(async () => {
+    if (isGeneratingQuotePreviews || !useSharedViewport || !modelUrl || quotePreviewLines.length === 0) return;
+
+    const runId = quotePreviewGenerationRef.current + 1;
+    quotePreviewGenerationRef.current = runId;
+    const previousLineKey = selectedLineKey;
+    const previousComponentId = selectedComponentId;
+    const total = quotePreviewLines.length;
+
+    const hasPreview = (line: GroupedBomLine) => (
+      line.visualNodeIds.some((visualNodeId) => Boolean(previewImagesByVisualNodeIdRef.current[visualNodeId]))
+    );
+
+    setIsGeneratingQuotePreviews(true);
+    setQuotePreviewProgress({ current: 0, total });
+    setSubTab('bom');
+    setShowModelPreview(true);
+    setIsInspectorCollapsed(false);
+    setSelectedComponentId(null);
+
+    try {
+      await waitForMs(350);
+      for (let index = 0; index < quotePreviewLines.length; index += 1) {
+        if (quotePreviewGenerationRef.current !== runId) return;
+        const line = quotePreviewLines[index]!;
+        setQuotePreviewProgress({ current: index + 1, total });
+        if (hasPreview(line)) continue;
+
+        setSelectedLineKey(line.key);
+        setSelectedComponentId(null);
+        const startedAt = performance.now();
+        while (quotePreviewGenerationRef.current === runId && performance.now() - startedAt < QUOTE_PREVIEW_CAPTURE_TIMEOUT_MS) {
+          if (hasPreview(line)) break;
+          await waitForMs(QUOTE_PREVIEW_CAPTURE_WAIT_MS);
+        }
+      }
+    } finally {
+      if (quotePreviewGenerationRef.current === runId) {
+        setSelectedLineKey(previousLineKey);
+        setSelectedComponentId(previousComponentId);
+        setIsGeneratingQuotePreviews(false);
+        setQuotePreviewProgress(null);
+      }
+    }
+  }, [
+    isGeneratingQuotePreviews,
+    modelUrl,
+    quotePreviewLines,
+    selectedComponentId,
+    selectedLineKey,
+    useSharedViewport,
+  ]);
+
   const downloadQuoteCsv = useCallback(() => {
     const csv = buildSupplierQuoteCsv(bomLines, {
       projectName,
@@ -1985,6 +2065,17 @@ export const BomReviewTab: React.FC<{
                   <span>{counts.diagnostics} diagnostic{counts.diagnostics === 1 ? '' : 's'}</span>
                   {bomLines.length > 0 && (
                     <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={generateQuotePreviews}
+                        disabled={isGeneratingQuotePreviews || !useSharedViewport || !modelUrl || quotePreviewLines.length === 0}
+                        title="Focus each BoM line in the 3D viewer and cache its quote preview image"
+                        className="rounded bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-900 disabled:text-slate-600"
+                      >
+                        {isGeneratingQuotePreviews && quotePreviewProgress
+                          ? `Generating previews ${quotePreviewProgress.current}/${quotePreviewProgress.total}`
+                          : `Generate previews ${quotePreviewReadyCount}/${quotePreviewLines.length}`}
+                      </button>
                       <button
                         type="button"
                         onClick={printQuotePdf}
