@@ -916,23 +916,34 @@ fi
 
 images_job="$(extract_workflow_job "$IMAGE_WORKFLOW" images | sed '/^[[:space:]]*#/d')"
 promote_job="$(extract_workflow_job "$IMAGE_WORKFLOW" promote | sed '/^[[:space:]]*#/d')"
+app_token_count="$( (rg -c 'actions/create-github-app-token@v3' <<<"$promote_job" || true) | tr -d ' ' )"
+client_id_count="$( (rg -F -c 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" || true) | tr -d ' ' )"
+private_key_count="$( (rg -F -c 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job" || true) | tr -d ' ' )"
 
-if ! rg -q 'actions/create-github-app-token@v3' <<<"$promote_job" ||
-   ! rg -F -q 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" ||
-   ! rg -F -q 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job"; then
+if [ "$app_token_count" -lt 2 ] || [ "$client_id_count" -lt 2 ] || [ "$private_key_count" -lt 2 ] ||
+   [ "$( (rg -c 'permission-checks:[[:space:]]*read' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
+   [ "$( (rg -c 'permission-contents:[[:space:]]*write' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
+   [ "$( (rg -c 'permission-pull-requests:[[:space:]]*write' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
+   ! rg -F -q 'GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}' <<<"$promote_job"; then
   echo "Build Images must mint a promotion token from the configured GitHub App credentials." >&2
   exit 1
 fi
 
-if ! rg -q 'needs:[[:space:]]*images[[:space:]]*$' <<<"$promote_job" ||
+if ! rg -F -q 'GITHUB_RUN_ATTEMPT' <<<"$images_job" ||
+   ! rg -q 'needs:[[:space:]]*images[[:space:]]*$' <<<"$promote_job" ||
    ! rg -q '^[[:space:]]*python3 scripts/promote_images\.py([[:space:]]|$)' <<<"$promote_job" ||
    ! rg -q 'image-promotion' <<<"$promote_job" ||
+   ! rg -q -- '--force-with-lease=' <<<"$promote_job" ||
+   rg -q -- '--force([="[:space:]]|$)' <<<"$promote_job" ||
    ! rg -F -q 'commits/${head_sha}/check-runs' <<<"$promote_job" ||
    ! rg -F -q 'Chart render/config checks' <<<"$promote_job" ||
+   ! rg -F -q '.app.slug == "github-actions"' <<<"$promote_job" ||
+   ! rg -F -q 'if [ "${conclusion}" = success ]' <<<"$promote_job" ||
    ! rg -q '^[[:space:]]*sleep[[:space:]]+[0-9]+' <<<"$promote_job" ||
    ! rg -q '^[[:space:]]*gh pr create([[:space:]]|$)' <<<"$promote_job" ||
    ! rg -q '^[[:space:]]*gh pr merge([[:space:]]|$)' <<<"$promote_job" ||
-   ! rg -q -- '--match-head-commit' <<<"$promote_job"; then
+   ! rg -q -- '--match-head-commit' <<<"$promote_job" ||
+   rg -q -- '--delete-branch' <<<"$promote_job"; then
   echo "Build Images promotion must update the chart, open a PR, poll its named config check, and merge the checked commit." >&2
   exit 1
 fi
@@ -942,12 +953,22 @@ images_publish_line="$(rg -n -m1 'push:[[:space:]]*true[[:space:]]*$' <<<"$image
 promote_check_poll_line="$(rg -n -F -m1 'commits/${head_sha}/check-runs' <<<"$promote_job" | cut -d: -f1 || true)"
 promote_master_recheck_line="$(rg -n -m1 'git/ref/heads/master' <<<"$promote_job" | cut -d: -f1 || true)"
 promote_merge_line="$(rg -n -m1 '^[[:space:]]*gh pr merge([[:space:]]|$)' <<<"$promote_job" | cut -d: -f1 || true)"
+images_source_compare_count="$( (rg -F -c '"${current_master_sha}" != "${GITHUB_SHA}"' <<<"$images_job" || true) | tr -d ' ' )"
+promote_source_compare_count="$( (rg -F -c '"${current_master_sha}" != "${SOURCE_SHA}"' <<<"$promote_job" || true) | tr -d ' ' )"
 if [ -z "$images_master_check_line" ] || [ -z "$images_publish_line" ] ||
+   [ "$images_source_compare_count" -lt 1 ] || [ "$promote_source_compare_count" -lt 2 ] ||
    [ "$images_master_check_line" -ge "$images_publish_line" ] ||
    [ -z "$promote_check_poll_line" ] || [ -z "$promote_master_recheck_line" ] ||
    [ -z "$promote_merge_line" ] || [ "$promote_check_poll_line" -ge "$promote_master_recheck_line" ] ||
    [ "$promote_master_recheck_line" -ge "$promote_merge_line" ]; then
   echo "Build Images promotion must verify the current master SHA before promotion and again before merge." >&2
+  exit 1
+fi
+
+branch_protection_job="$(extract_workflow_job "${ROOT_DIR}/.github/workflows/tests.yml" branch-protection)"
+if ! rg -q 'name:[[:space:]]*Branch protection gate[[:space:]]*$' <<<"$branch_protection_job" ||
+   rg -q '^    if:' <<<"$branch_protection_job"; then
+  echo ".github/workflows/tests.yml must register the always-present strict branch protection check." >&2
   exit 1
 fi
 

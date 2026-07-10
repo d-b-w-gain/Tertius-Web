@@ -17,7 +17,7 @@ The `Build Images` workflow is the single promotion orchestrator:
 5. Update both chart tags with `scripts/promote_images.py` on the fixed `image-promotion` branch.
 6. Create or reuse the branch's PR, then poll the exact PR head until `Chart render/config checks` completes successfully.
 7. Verify `master` still equals the source SHA, mint a fresh App token, and merge with `--match-head-commit`.
-8. Delete the promotion branch as part of the merge. A failed run is recoverable because the next run force-updates the fixed branch with a lease and reuses its open PR.
+8. Keep the fixed promotion branch after merge. A failed or newer run force-updates it with a lease and reuses its open PR without racing branch deletion.
 
 Flux continues reconciling the public HTTPS repository and `master`, but its `GitRepository` has no `secretRef`. ImageRepository, ImagePolicy, and ImageUpdateAutomation resources are removed.
 
@@ -44,6 +44,8 @@ Create a GitHub App installed only on `d-b-w-gain/Tertius-Web` with:
 
 The App must not appear in the `Protect Master` bypass list. Store its client ID as the repository variable `IMAGE_PROMOTION_APP_CLIENT_ID` and its private key as the Actions secret `IMAGE_PROMOTION_APP_PRIVATE_KEY`. Workflow jobs mint installation tokens with `actions/create-github-app-token@v3`; no installation token is stored.
 
+The `Protect Master` ruleset must require the always-present `Branch protection gate` check with strict branch-up-to-date semantics. This makes the source-SHA condition atomic at GitHub's merge boundary instead of relying only on client-side checks.
+
 ## 5. Concurrency And Staleness
 
 - The workflow concurrency group is constant for `master` image promotion and uses `cancel-in-progress: true`.
@@ -51,7 +53,7 @@ The App must not appear in the `Protect Master` bypass list. Store its client ID
 - A newer `master` commit cancels the older run; the newer run owns the fixed promotion branch.
 - Branch replacement uses `--force-with-lease`, never blind force.
 - The merge step rechecks live `master` immediately before merge.
-- `--match-head-commit` prevents merging a PR head that changed after validation.
+- `--match-head-commit` prevents merging a PR head that changed after validation, while the strict ruleset rejects a PR whose base advanced.
 - Chart-only promotion merges stay excluded from `Build Images`, preventing a build loop.
 
 ## 6. Image Tag Mutation

@@ -42,7 +42,7 @@
 - [x] Add a `promote` job after both image pushes that mints a v3 App token from `IMAGE_PROMOTION_APP_CLIENT_ID` and `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
 - [x] Check out the source SHA without persisted `GITHUB_TOKEN`, call `scripts/promote_images.py`, force-update `image-promotion` with a lease, and create or reuse its PR.
 - [x] Poll `Chart render/config checks` for the exact PR head; fail on timeout or non-success.
-- [x] Recheck live `master`, mint a fresh App token, and merge using `--match-head-commit` and branch deletion.
+- [x] Recheck live `master`, mint a fresh App token, and merge using `--match-head-commit` while retaining the fixed branch.
 - [x] Remove the obsolete asynchronous PAT workflow.
 
 ### Task 4: Make Flux Read-Only
@@ -85,9 +85,9 @@
 **Files:**
 - Modify: `docs/superpowers/plans/2026-07-10-ci-owned-image-promotion.md`
 
-- [ ] Run `rtk ./scripts/test-deployment-config.sh`; expect `Runtime parity check passed.`
-- [ ] Run `rtk helm lint infra/charts/tertius`; expect zero failed charts.
-- [ ] Run `rtk helm template tertius infra/charts/tertius`; verify successful rendering.
-- [ ] Run `rtk kubectl kustomize infra/clusters/production`; verify successful rendering with no image toolkit resources.
-- [ ] Parse all changed workflow YAML with the repository Python environment and run `git diff --check`.
-- [ ] Request a code review, address findings, and mark every completed plan checkbox.
+- [x] Run `rtk ./scripts/test-deployment-config.sh`; expect `Runtime parity check passed.`
+- [x] Run `rtk helm lint infra/charts/tertius`; expect zero failed charts.
+- [x] Run `rtk helm template tertius infra/charts/tertius`; verify successful rendering.
+- [x] Run `rtk kubectl kustomize infra/clusters/production`; verify successful rendering with no image toolkit resources.
+- [x] Parse all changed workflow YAML with the repository Python environment and run `git diff --check`.
+- [x] Request a code review, address findings, and mark every completed plan checkbox.

@@ -9,6 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  branch-protection:
+    name: Branch protection gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm workflow eligibility
+        run: echo "Branch protection check registered for ${GITHUB_SHA}."
+
   ui:
     name: UI lint and build
     runs-on: ubuntu-latest

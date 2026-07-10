@@ -298,9 +298,10 @@ An owner of `d-b-w-gain` must create a private GitHub App for promotion:
    - **Pull requests**: `Read and write`
    - **Checks**: `Read-only`
 4. Install the App for **Only select repositories** and select `d-b-w-gain/Tertius-Web`.
-5. Do not add the App to the `Protect Master` ruleset bypass list. Promotion must continue through a normal PR.
-6. Copy the App client ID into the Actions repository variable `IMAGE_PROMOTION_APP_CLIENT_ID`.
-7. Generate a private key and store its complete PEM value in the Actions repository secret `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
+5. In the `Protect Master` ruleset, require the `Branch protection gate` status check from GitHub Actions and enable **Require branches to be up to date before merging**. This server-side condition prevents a checked image promotion from merging after `master` advances.
+6. Do not add the App to the ruleset bypass list. Promotion must continue through a normal, up-to-date PR.
+7. Copy the App client ID into the Actions repository variable `IMAGE_PROMOTION_APP_CLIENT_ID`.
+8. Generate a private key and store its complete PEM value in the Actions repository secret `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
 
 The workflow uses `actions/create-github-app-token` to mint repository-scoped installation tokens for each run. Installation tokens are not stored and expire automatically. To rotate the App key without downtime, generate a second private key, replace `IMAGE_PROMOTION_APP_PRIVATE_KEY`, verify one promotion, then delete the old key from the App.
 
