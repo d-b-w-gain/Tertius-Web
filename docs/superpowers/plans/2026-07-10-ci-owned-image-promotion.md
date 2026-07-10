@@ -66,9 +66,9 @@
 - Modify: `.github/workflows/tests.yml`
 - Modify: `.github/workflows/integration.yml`
 
-- [ ] Remove the obsolete `flux-image-updates` push trigger and workflow path.
-- [ ] Skip heavy tests and k3s smoke only when the exact generated head branch is `image-promotion`; keep `Chart render/config checks` running on its PR.
-- [ ] Add deployment-gate assertions for these exact branch rules.
+- [x] Remove the obsolete `flux-image-updates` push trigger and workflow path.
+- [x] Skip heavy tests and k3s smoke only when the exact generated head branch is `image-promotion`; keep `Chart render/config checks` running on its PR.
+- [x] Add deployment-gate assertions for these exact branch rules.
 
 ### Task 6: Replace PAT Operations With App Operations
 

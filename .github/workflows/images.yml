@@ -158,12 +158,14 @@ jobs:
             --json number \
             --jq '.[0].number // ""')"
           if [ -z "${pr_number}" ]; then
-            pr_url="$(gh pr create \
-              --repo "${GITHUB_REPOSITORY}" \
-              --head "${PROMOTION_BRANCH}" \
-              --base master \
-              --title "chore: promote ${IMAGE_TAG}" \
-              --body "Promotes the API and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}.")"
+            pr_url="$(
+              gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --head "${PROMOTION_BRANCH}" \
+                --base master \
+                --title "chore: promote ${IMAGE_TAG}" \
+                --body "Promotes the API and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
+            )"
             pr_number="${pr_url##*/}"
           fi
 
@@ -187,13 +189,14 @@ jobs:
         run: |
           set -euo pipefail
           deadline=$((SECONDS + 900))
+          head_sha="${HEAD_SHA}"
 
           while [ "$SECONDS" -lt "$deadline" ]; do
             check_json="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+              "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
               --jq '[.check_runs[] | select(.name == "Chart render/config checks")] | sort_by(.id) | last // empty')"
             if [ -z "${check_json}" ]; then
-              echo "Waiting for Chart render/config checks to register for ${HEAD_SHA}."
+              echo "Waiting for Chart render/config checks to register for ${head_sha}."
               sleep 10
               continue
             fi
@@ -213,7 +216,7 @@ jobs:
             sleep 10
           done
 
-          echo "::error::Timed out waiting for Chart render/config checks on ${HEAD_SHA}."
+          echo "::error::Timed out waiting for Chart render/config checks on ${head_sha}."
           exit 1
 
       - name: Verify master before merge
