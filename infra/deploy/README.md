@@ -285,38 +285,44 @@ helm template tertius infra/charts/tertius --values infra/charts/tertius/values-
 scripts/test-deployment-config.sh
 ```
 
-## Flux Image Update PAT
+## Image Promotion GitHub App
 
-Flux image automation pushes image tag bumps to the `flux-image-updates` branch. The GitHub Actions workflow `.github/workflows/flux-image-update-pr.yml` then uses the repository secret `FLUX_IMAGE_UPDATE_PAT` to create and auto-merge a PR back to `master`.
+The `Build Images` workflow publishes the API and UI images, updates their chart tags on the fixed `image-promotion` branch, opens a PR, waits for `Chart render/config checks`, and merges the exact checked head. Flux only reads `master`; it does not hold a Git write credential.
 
-Regenerate the token when the workflow fails with:
+An owner of `d-b-w-gain` must create a private GitHub App for promotion:
 
-```text
-Resource not accessible by personal access token (createPullRequest)
-```
-
-Create a fine-grained personal access token:
-
-1. Open <https://github.com/settings/personal-access-tokens>.
-2. Select **Generate new token**, then **Fine-grained token**.
-3. Use a clear token name such as `Tertius Flux image update PR`.
-4. Set **Resource owner** to `d-b-w-gain`.
-5. Set **Repository access** to **Only select repositories**.
-6. Select `d-b-w-gain/Tertius-Web`.
-7. Under **Repository permissions**, set:
+1. Open the organization settings and create a GitHub App named `Tertius Image Promotion`.
+2. Disable webhooks. No callback URL or webhook delivery is required.
+3. Grant these repository permissions:
    - **Contents**: `Read and write`
    - **Pull requests**: `Read and write`
-8. Leave **Metadata** as the default read-only permission.
-9. Generate the token and copy it immediately.
+   - **Checks**: `Read-only`
+4. Install the App for **Only select repositories** and select `d-b-w-gain/Tertius-Web`.
+5. Do not add the App to the `Protect Master` ruleset bypass list. Promotion must continue through a normal PR.
+6. Copy the App client ID into the Actions repository variable `IMAGE_PROMOTION_APP_CLIENT_ID`.
+7. Generate a private key and store its complete PEM value in the Actions repository secret `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
 
-Update the repository secret:
+The workflow uses `actions/create-github-app-token` to mint repository-scoped installation tokens for each run. Installation tokens are not stored and expire automatically. To rotate the App key without downtime, generate a second private key, replace `IMAGE_PROMOTION_APP_PRIVATE_KEY`, verify one promotion, then delete the old key from the App.
 
-1. Open `d-b-w-gain/Tertius-Web` on GitHub.
-2. Go to **Settings** -> **Secrets and variables** -> **Actions**.
-3. Update `FLUX_IMAGE_UPDATE_PAT` with the new token value.
-4. Rerun the failed **Flux Image Update PR** workflow, or wait for the next Flux image automation push.
+Configure the App variable and secret before merging the CI-owned promotion change. Otherwise the first `Build Images` run will publish images but stop before creating the promotion PR.
 
-The token should not need repository administration permissions. If PR creation still fails after updating the secret, confirm the token owner has write access to `d-b-w-gain/Tertius-Web` and that the token was created for the `d-b-w-gain` resource owner.
+### One-Time Flux Cleanup
+
+The old `tertius-web-write` Secret was created outside Git, so Flux pruning cannot delete it. After the updated public `GitRepository` reports Ready without a `secretRef`, remove the obsolete credential and confirm the image automation resources were pruned:
+
+```bash
+flux reconcile source git tertius-web -n flux-system
+flux get sources git tertius-web -n flux-system
+kubectl -n flux-system delete secret tertius-web-write --ignore-not-found
+kubectl -n flux-system get imagerepositories,imagepolicies,imageupdateautomations
+```
+
+Delete the obsolete remote branch only after confirming no open PR references it:
+
+```bash
+gh pr list --state open --head flux-image-updates
+git push origin --delete flux-image-updates
+```
 
 ## Production Operations
 
@@ -327,7 +333,7 @@ After changing chart templates, chart values, or production manifests:
 3. Push the GitOps/chart change to the branch watched by Flux.
 4. Watch Flux reconcile the source, Kustomization, and HelmRelease.
 
-Application image builds are handled by the `Build Images` workflow on `master`; Flux image automation promotes new image tags through `infra/charts/tertius/values.yaml`.
+Application image builds and checked image-tag PRs are handled by the `Build Images` workflow on `master`. Read-only Flux deploys the promotion merge from `infra/charts/tertius/values.yaml`.
 
 Useful production inspection commands:
 

@@ -75,10 +75,10 @@
 **Files:**
 - Modify: `infra/deploy/README.md`
 
-- [ ] Replace PAT regeneration instructions with repository-scoped GitHub App creation, permissions, installation, variable, private-key secret, and key-rotation instructions.
-- [ ] Document that the App must not bypass `Protect Master`.
-- [ ] Document the ordered cleanup of `tertius-web-write`, Flux image resources, and the obsolete remote branch only after read-only reconciliation is Ready.
-- [ ] Update production operations to describe CI-owned PR promotion and read-only Flux deployment.
+- [x] Replace PAT regeneration instructions with repository-scoped GitHub App creation, permissions, installation, variable, private-key secret, and key-rotation instructions.
+- [x] Document that the App must not bypass `Protect Master`.
+- [x] Document the ordered cleanup of `tertius-web-write`, Flux image resources, and the obsolete remote branch only after read-only reconciliation is Ready.
+- [x] Update production operations to describe CI-owned PR promotion and read-only Flux deployment.
 
 ### Task 7: Verify The Complete Change
 
