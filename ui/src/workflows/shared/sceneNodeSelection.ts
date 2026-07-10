@@ -2,6 +2,8 @@ import type * as THREE from 'three';
 
 export const SCENE_NODE_SELECTION_STORAGE_KEY = 'tertius_selected_node';
 export const SCENE_NODE_APPEARANCE_STORAGE_KEY = 'tertius_scene_node_appearance';
+export const SCENE_NODE_TARGET_STORAGE_KEY = 'tertius_scene_node_target';
+export const SCENE_NODE_TARGET_EVENT = 'tertius:scene-node-target';
 
 export type SceneNodeAppearance = {
   hidden?: boolean;

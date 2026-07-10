@@ -12,18 +12,22 @@ import { startInteractionSpan } from '../../../telemetry';
 import {
   SCENE_NODE_APPEARANCE_STORAGE_KEY,
   SCENE_NODE_SELECTION_STORAGE_KEY,
+  SCENE_NODE_TARGET_EVENT,
+  SCENE_NODE_TARGET_STORAGE_KEY,
   type SceneNodeAppearanceMap,
   createSceneNodeSelectionValue,
   getSceneNodePathKey,
   readSceneNodeAppearanceMap,
   resolveSceneNodeSelection,
 } from '../../shared/sceneNodeSelection';
+import type { ComponentPreviewImage } from '../../shared/componentPreview';
 
 interface ViewerProps {
   serverUrl: string;
   isActive?: boolean;
   statusTextOverride?: string;
   externalSelectedNodeIds?: string[];
+  onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
 interface ModelViewerCanvasProps {
@@ -33,9 +37,114 @@ interface ModelViewerCanvasProps {
   projectName?: string;
   isActive?: boolean;
   externalSelectedNodeIds?: string[];
+  onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
+const COMPONENT_PREVIEW_SIZE = 512;
+
+const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+type GltfNodeJson = {
+  children?: unknown;
+};
+
+type GltfSceneJson = {
+  nodes?: unknown;
+};
+
+type GltfParserJson = {
+  nodes?: unknown;
+  scenes?: unknown;
+  scene?: unknown;
+};
+
+function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
+  const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
+  const scenes = Array.isArray(gltfJson?.scenes) ? gltfJson.scenes as GltfSceneJson[] : [];
+  const sceneIndex = typeof gltfJson?.scene === 'number' ? gltfJson.scene : 0;
+  const sceneNodeIds = Array.isArray(scenes[sceneIndex]?.nodes)
+    ? scenes[sceneIndex].nodes.filter((value): value is number => Number.isInteger(value))
+    : nodes
+      .map((_, index) => index)
+      .filter((index) => !nodes.some((node) => (
+        Array.isArray(node.children) && node.children.some((childIndex) => childIndex === index)
+      )));
+
+  const annotateNode = (object: THREE.Object3D | undefined, nodeId: number) => {
+    if (!object || !nodes[nodeId]) return;
+    object.userData.tertiusGltfNodeId = String(nodeId);
+    const childNodeIds = Array.isArray(nodes[nodeId].children)
+      ? nodes[nodeId].children.filter((value): value is number => Number.isInteger(value))
+      : [];
+    childNodeIds.forEach((childNodeId, childIndex) => annotateNode(object.children[childIndex], childNodeId));
+  };
+
+  sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
+}
+
+const matchesExternalSelection = (
+  object: THREE.Object3D,
+  selectedIds: Set<string>,
+  normalizedSelectedIds: Set<string>,
+) => (
+  selectedIds.has(object.uuid)
+  || Boolean(object.userData?.tertiusGltfNodeId && selectedIds.has(String(object.userData.tertiusGltfNodeId)))
+  || Boolean(object.name && selectedIds.has(object.name))
+  || Boolean(object.name && normalizedSelectedIds.has(normalizeExternalSelectionId(object.name)))
+);
+
+const getRenderableObjectBounds = (object: THREE.Object3D) => {
+  const bounds = new THREE.Box3();
+
+  object.traverse((child) => {
+    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
+    const meshBox = new THREE.Box3().setFromObject(child);
+    if (!meshBox.isEmpty()) bounds.union(meshBox);
+  });
+
+  if (bounds.isEmpty()) {
+    const objectBox = new THREE.Box3().setFromObject(object);
+    if (!objectBox.isEmpty()) bounds.union(objectBox);
+  }
+
+  return bounds;
+};
+
+const resolveExternalSelectionMeshes = (model: THREE.Object3D, selectedIds: Set<string>) => {
+  const normalizedSelectedIds = new Set([...selectedIds].map(normalizeExternalSelectionId).filter(Boolean));
+  const bounds = new THREE.Box3();
+  const meshes = new Set<THREE.Mesh>();
+  let focusObject: THREE.Object3D | null = null;
+
+  model.traverse((child) => {
+    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    let current: THREE.Object3D | null = mesh;
+    while (current && current !== model) {
+      if (matchesExternalSelection(current, selectedIds, normalizedSelectedIds)) {
+        focusObject = focusObject || current;
+        const meshBox = new THREE.Box3().setFromObject(mesh);
+        if (!meshBox.isEmpty()) {
+          bounds.union(meshBox);
+          meshes.add(mesh);
+        }
+        return;
+      }
+      current = current.parent;
+    }
+  });
+
+  const focusBounds = focusObject ? getRenderableObjectBounds(focusObject) : new THREE.Box3();
+
+  return {
+    bounds,
+    focusBounds: focusBounds.isEmpty() ? bounds : focusBounds,
+    focusObject,
+    meshes,
+    hasSelection: meshes.size > 0 && !bounds.isEmpty(),
+  };
+};
 
 type ViewerBatchOptions = {
   createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
@@ -255,6 +364,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
   isActive = true,
   statusTextOverride,
   externalSelectedNodeIds,
+  onExternalSelectionPreviewChange,
 }) => {
   const { getAccessToken } = useAuth();
   const [statusText, setStatusText] = useState('Waiting for connection...');
@@ -314,6 +424,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
       projectName={projectName}
       isActive={isActive}
       externalSelectedNodeIds={externalSelectedNodeIds}
+      onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
     />
   );
 };
@@ -325,6 +436,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   projectName = '',
   isActive = true,
   externalSelectedNodeIds,
+  onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [autoRotate, setAutoRotate] = useState<boolean>(true);
@@ -353,6 +465,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const animIdRef = useRef<number>(0);
   const modelLoadRequestRef = useRef<number>(0);
   const loadedModelUrlRef = useRef<string>('');
+  const previousExternalSelectionKeyRef = useRef<string>('');
 
   const clearCurrentModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -378,6 +491,36 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
   }, []);
+
+  const frameCameraOnBox = useCallback((box: THREE.Box3, padding = 1.08) => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls || box.isEmpty()) return false;
+
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 0.0001);
+    const fov = THREE.MathUtils.degToRad(camera.fov);
+    const distance = (radius / Math.sin(fov / 2)) * padding;
+    const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+    if (currentDirection.lengthSq() === 0) currentDirection.set(1, 1, 0.7).normalize();
+
+    camera.position.copy(sphere.center).addScaledVector(currentDirection, distance);
+    camera.near = Math.max(0.00001, radius / 100, distance / 10_000);
+    camera.far = Math.max(distance * 40, radius * 80, camera.near * 1000);
+    camera.updateProjectionMatrix();
+    controls.minDistance = Math.max(0.00001, radius * 0.05);
+    controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
+    controls.target.copy(sphere.center);
+    controls.update();
+    return true;
+  }, []);
+
+  const frameModelRoot = useCallback((padding = 1.5) => {
+    const model = meshRef.current;
+    if (!model) return false;
+    const box = getRenderableObjectBounds(model);
+    return frameCameraOnBox(box, padding);
+  }, [frameCameraOnBox]);
 
   // 1. Initialize Scene while the viewer tab is active.
   useEffect(() => {
@@ -610,6 +753,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           if (!isCurrentRequest()) return;
       
           const model = gltf.scene;
+          annotateGltfNodeIds(model, (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json);
       
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
@@ -762,42 +906,129 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
   const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
 
+  const captureExternalSelectionPreview = useCallback((): ComponentPreviewImage | null => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const model = meshRef.current;
+    const sourceCamera = cameraRef.current;
+    const controls = controlsRef.current;
+    const selectedIds = new Set((externalSelectedNodeIds || []).filter(Boolean));
+    if (!renderer || !scene || !model || !sourceCamera || selectedIds.size === 0) return null;
+    const normalizedSelectedIds = new Set([...selectedIds].map(normalizeExternalSelectionId).filter(Boolean));
+    const selection = resolveExternalSelectionMeshes(model, selectedIds);
+    if (!selection.hasSelection) return null;
+
+    let selectedObject: THREE.Object3D | null = null;
+    model.traverse((object) => {
+      if (selectedObject) return;
+      if (matchesExternalSelection(object, selectedIds, normalizedSelectedIds)) selectedObject = object;
+    });
+    const previewObject = selectedObject as THREE.Object3D | null;
+    if (!previewObject) return null;
+
+    const box = selection.focusBounds;
+    if (box.isEmpty()) return null;
+
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const radius = Math.max(sphere.radius, 0.0001);
+    const previewCamera = new THREE.PerspectiveCamera(38, 1, 0.1, 100_000);
+    previewCamera.up.copy(sourceCamera.up);
+    const fov = THREE.MathUtils.degToRad(previewCamera.fov);
+    const distance = (radius / Math.sin(fov / 2)) * 1.08;
+    const direction = controls
+      ? new THREE.Vector3().subVectors(sourceCamera.position, controls.target).normalize()
+      : new THREE.Vector3().subVectors(sourceCamera.position, sphere.center).normalize();
+    if (direction.lengthSq() === 0) direction.set(1, 1, 0.7).normalize();
+    previewCamera.position.copy(sphere.center).addScaledVector(direction, distance);
+    previewCamera.near = Math.max(0.00001, radius / 100, distance / 10_000);
+    previewCamera.far = Math.max(distance * 40, radius * 80, previewCamera.near * 1000);
+    previewCamera.lookAt(sphere.center);
+    previewCamera.updateProjectionMatrix();
+
+    const renderTarget = new THREE.WebGLRenderTarget(COMPONENT_PREVIEW_SIZE, COMPONENT_PREVIEW_SIZE, {
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    const previousTarget = renderer.getRenderTarget();
+    const previousViewport = renderer.getViewport(new THREE.Vector4());
+    const previousScissor = renderer.getScissor(new THREE.Vector4());
+    const previousScissorTest = renderer.getScissorTest();
+    const previousAutoClear = renderer.autoClear;
+    const previousGridVisible = scene.getObjectByName('GridHelper')?.visible;
+    const previousAxesVisible = scene.getObjectByName('AxesHelper')?.visible;
+
+    try {
+      const grid = scene.getObjectByName('GridHelper');
+      const axes = scene.getObjectByName('AxesHelper');
+      if (grid) grid.visible = false;
+      if (axes) axes.visible = false;
+      renderer.autoClear = true;
+      renderer.setRenderTarget(renderTarget);
+      renderer.setViewport(0, 0, COMPONENT_PREVIEW_SIZE, COMPONENT_PREVIEW_SIZE);
+      renderer.setScissor(0, 0, COMPONENT_PREVIEW_SIZE, COMPONENT_PREVIEW_SIZE);
+      renderer.setScissorTest(false);
+      renderer.clear();
+      renderer.render(scene, previewCamera);
+
+      const pixels = new Uint8Array(COMPONENT_PREVIEW_SIZE * COMPONENT_PREVIEW_SIZE * 4);
+      renderer.readRenderTargetPixels(renderTarget, 0, 0, COMPONENT_PREVIEW_SIZE, COMPONENT_PREVIEW_SIZE, pixels);
+      const canvas = document.createElement('canvas');
+      canvas.width = COMPONENT_PREVIEW_SIZE;
+      canvas.height = COMPONENT_PREVIEW_SIZE;
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      const imageData = context.createImageData(COMPONENT_PREVIEW_SIZE, COMPONENT_PREVIEW_SIZE);
+      const rowBytes = COMPONENT_PREVIEW_SIZE * 4;
+      for (let row = 0; row < COMPONENT_PREVIEW_SIZE; row += 1) {
+        const sourceStart = row * rowBytes;
+        const targetStart = (COMPONENT_PREVIEW_SIZE - row - 1) * rowBytes;
+        imageData.data.set(pixels.subarray(sourceStart, sourceStart + rowBytes), targetStart);
+      }
+      context.putImageData(imageData, 0, 0);
+      const requestedVisualNodeId = externalSelectedNodeIds?.find(Boolean) || previewObject.name || previewObject.uuid;
+      return {
+        dataUrl: canvas.toDataURL('image/png'),
+        label: previewObject.name || previewObject.uuid,
+        visualNodeId: requestedVisualNodeId,
+        capturedAt: Date.now(),
+      };
+    } catch (error) {
+      console.warn('Component preview capture failed', error);
+      return null;
+    } finally {
+      const grid = scene.getObjectByName('GridHelper');
+      const axes = scene.getObjectByName('AxesHelper');
+      if (grid && typeof previousGridVisible === 'boolean') grid.visible = previousGridVisible;
+      if (axes && typeof previousAxesVisible === 'boolean') axes.visible = previousAxesVisible;
+      renderer.autoClear = previousAutoClear;
+      renderer.setRenderTarget(previousTarget);
+      renderer.setViewport(previousViewport.x, previousViewport.y, previousViewport.z, previousViewport.w);
+      renderer.setScissor(previousScissor.x, previousScissor.y, previousScissor.z, previousScissor.w);
+      renderer.setScissorTest(previousScissorTest);
+      renderTarget.dispose();
+    }
+  }, [externalSelectedNodeIds]);
+
   useEffect(() => {
-    if (!externalSelectedNodeIds?.length || !meshRef.current || !cameraRef.current || !controlsRef.current) return;
+    const hadExternalSelection = Boolean(previousExternalSelectionKeyRef.current);
+    previousExternalSelectionKeyRef.current = externalSelectionKey;
+
+    if (!externalSelectionKey) {
+      if (hadExternalSelection) frameModelRoot(1.5);
+      return;
+    }
+
+    if (!externalSelectedNodeIds?.length || !meshRef.current) return;
 
     const selectedIds = new Set(externalSelectedNodeIds.filter(Boolean));
     if (selectedIds.size === 0) return;
 
     const model = meshRef.current;
-    const selectionBox = new THREE.Box3();
-    let found = false;
+    const selection = resolveExternalSelectionMeshes(model, selectedIds);
+    if (!selection.hasSelection) return;
 
-    model.traverse((object) => {
-      if (!selectedIds.has(object.uuid) && (!object.name || !selectedIds.has(object.name))) return;
-      const objectBox = new THREE.Box3().setFromObject(object);
-      if (objectBox.isEmpty()) return;
-      selectionBox.union(objectBox);
-      found = true;
-    });
-
-    if (!found || selectionBox.isEmpty()) return;
-
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    const sphere = selectionBox.getBoundingSphere(new THREE.Sphere());
-    const radius = Math.max(sphere.radius, 1);
-    const fov = THREE.MathUtils.degToRad(camera.fov);
-    const distance = Math.max(radius / Math.sin(fov / 2), radius * 3);
-    const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
-    if (currentDirection.lengthSq() === 0) currentDirection.set(1, 1, 0.7).normalize();
-
-    camera.position.copy(sphere.center).addScaledVector(currentDirection, distance * 1.2);
-    camera.near = Math.max(0.1, distance / 10_000);
-    camera.far = Math.max(distance * 20, radius * 30);
-    camera.updateProjectionMatrix();
-    controls.target.copy(sphere.center);
-    controls.update();
-  }, [externalSelectionKey, sceneGraph]);
+    frameCameraOnBox(selection.focusBounds, 1.08);
+  }, [externalSelectedNodeIds, externalSelectionKey, frameCameraOnBox, frameModelRoot, sceneGraph]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -904,6 +1135,35 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     return () => window.removeEventListener('storage', handleStorage);
   }, [sceneGraph]);
 
+  useEffect(() => {
+    const frameTargetValue = (value: string | null) => {
+      if (!meshRef.current || !value) return;
+      const node = resolveSceneNodeSelection(meshRef.current, value);
+      if (!node) return;
+      frameCameraOnBox(getRenderableObjectBounds(node), 1.08);
+    };
+
+    const handleTarget = (event: Event) => {
+      const detail = (event as CustomEvent<{ value?: unknown }>).detail;
+      const value = typeof detail?.value === 'string'
+        ? detail.value
+        : localStorage.getItem(SCENE_NODE_TARGET_STORAGE_KEY);
+      frameTargetValue(value);
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== SCENE_NODE_TARGET_STORAGE_KEY) return;
+      frameTargetValue(event.newValue);
+    };
+
+    window.addEventListener(SCENE_NODE_TARGET_EVENT, handleTarget);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener(SCENE_NODE_TARGET_EVENT, handleTarget);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [frameCameraOnBox, sceneGraph]);
+
 
   // 5. Apply visibility and highlights
   useEffect(() => {
@@ -916,9 +1176,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const hasAppearanceOverrides = Object.values(appearanceByPath).some(appearance => appearance.hidden || appearance.transparent);
       const appearanceBatchKey = JSON.stringify(appearanceByPath);
       const externallySelectedIds = externalSelectedNodeIds ? new Set(externalSelectedNodeIds.filter(Boolean)) : null;
+      const normalizedExternalIds = new Set([...(externallySelectedIds || new Set<string>())].map(normalizeExternalSelectionId).filter(Boolean));
+      const externalSelection = externallySelectedIds?.size ? resolveExternalSelectionMeshes(model, externallySelectedIds) : null;
+      const hasRenderableExternalSelection = Boolean(externalSelection?.hasSelection);
       const selectedNodeIds = externallySelectedIds || (selectedNodeId ? new Set([selectedNodeId]) : new Set<string>());
       const isNodeSelected = (node: THREE.Object3D) => (
-        selectedNodeIds.has(node.uuid) || Boolean(node.name && selectedNodeIds.has(node.name))
+        externallySelectedIds
+          ? matchesExternalSelection(node, externallySelectedIds, normalizedExternalIds)
+          : selectedNodeIds.has(node.uuid) || Boolean(node.name && selectedNodeIds.has(node.name))
       );
 
      const removeAppearanceBatch = () => {
@@ -969,8 +1234,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      }
      
      // Reset batched mesh
-     if (batchedMesh) batchedMesh.visible = !isolatedNodeId && !hasAppearanceOverrides;
-     if (appearanceBatchMesh) appearanceBatchMesh.visible = !isolatedNodeId && hasAppearanceOverrides;
+     if (batchedMesh) batchedMesh.visible = !isolatedNodeId && !hasAppearanceOverrides && !hasRenderableExternalSelection;
+     if (appearanceBatchMesh) appearanceBatchMesh.visible = !isolatedNodeId && hasAppearanceOverrides && !hasRenderableExternalSelection;
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {
@@ -997,6 +1262,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            if (isolatedNodeId) {
               // If we are in isolation mode, only isolated parts are visible
               mesh.visible = isIsolated && !isHidden;
+           } else if (hasRenderableExternalSelection) {
+              mesh.visible = Boolean(externalSelection?.meshes.has(mesh)) && !isHidden;
            } else if (hasAppearanceOverrides) {
               mesh.visible = !isHidden && (isTransparent || isSelected);
            } else {
@@ -1006,15 +1273,16 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
            if (mesh.visible) {
               const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
-              if (isTransparent && isSelected && viewerMaterials) {
+              const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
+              if (isTransparent && shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.transparentHighlight;
-              } else if (isSelected && viewerMaterials) {
+              } else if (shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.highlight;
               } else if (isTransparent && viewerMaterials) {
                  mesh.material = viewerMaterials.transparent;
               } else if (viewerMaterials) {
                  mesh.material = viewerMaterials.base;
-              } else if (isSelected && highlightMaterial) {
+              } else if (shouldHighlightSelection && highlightMaterial) {
                  mesh.material = highlightMaterial;
               } else if (sharedMaterial) {
                  mesh.material = sharedMaterial;
@@ -1024,6 +1292,19 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      });
 
    }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
+
+  useEffect(() => {
+    if (!onExternalSelectionPreviewChange) return;
+    if (!externalSelectionKey || !sceneGraph) {
+      onExternalSelectionPreviewChange(null);
+      return;
+    }
+    onExternalSelectionPreviewChange(null);
+    const timer = window.setTimeout(() => {
+      onExternalSelectionPreviewChange(captureExternalSelectionPreview());
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [captureExternalSelectionPreview, externalSelectionKey, onExternalSelectionPreviewChange, sceneGraph]);
 
   return (
     <div className="flex-1 relative bg-slate-900 flex overflow-hidden">
@@ -1040,6 +1321,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               {projectName}
             </div>
           )}
+          <button
+            onClick={() => frameModelRoot(1.5)}
+            className="pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-slate-300 transition-colors hover:border-sky-500 hover:text-sky-300"
+            title="Frame the whole model"
+            aria-label="Frame the whole model"
+          >
+            Fit
+          </button>
           <button 
             onClick={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
             className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${renderQuality === 'high' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}

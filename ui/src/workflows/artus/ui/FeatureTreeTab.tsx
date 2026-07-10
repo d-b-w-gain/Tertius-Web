@@ -19,6 +19,8 @@ import { runWithInteractionSpan } from '../../../telemetry';
 import {
   SCENE_NODE_APPEARANCE_STORAGE_KEY,
   SCENE_NODE_SELECTION_STORAGE_KEY,
+  SCENE_NODE_TARGET_EVENT,
+  SCENE_NODE_TARGET_STORAGE_KEY,
   type SceneNodeAppearanceMap,
   createSceneNodeSelectionValue,
   getSceneNodePathKey,
@@ -73,6 +75,17 @@ const TransparencyIcon: React.FC<{ active: boolean }> = ({ active }) => (
   </svg>
 );
 
+const TargetIcon: React.FC = () => (
+  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="7" />
+    <path d="M12 3v3" />
+    <path d="M12 18v3" />
+    <path d="M3 12h3" />
+    <path d="M18 12h3" />
+    <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 function isAssemblyTreeNode(node: THREE.Object3D): boolean {
   const isMesh = (node as THREE.Mesh).isMesh === true;
   const isGroup = node.type === 'Group' || node.type === 'Object3D';
@@ -88,9 +101,10 @@ const TreeNode: React.FC<{
   selectedValue: string | null;
   appearanceByPath: SceneNodeAppearanceMap;
   onSelect: (node: THREE.Object3D, isDouble: boolean) => void;
+  onTarget: (node: THREE.Object3D) => void;
   onToggleVisibility: (node: THREE.Object3D) => void;
   onToggleTransparency: (node: THREE.Object3D) => void;
-}> = ({ node, root, depth, selectedValue, appearanceByPath, onSelect, onToggleVisibility, onToggleTransparency }) => {
+}> = ({ node, root, depth, selectedValue, appearanceByPath, onSelect, onTarget, onToggleVisibility, onToggleTransparency }) => {
   const [expanded, setExpanded] = useState(depth < 2);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -131,6 +145,18 @@ const TreeNode: React.FC<{
           <div className={`ml-2 flex shrink-0 items-center gap-1 transition-opacity duration-150 ${showControls ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
             <button
               type="button"
+              title="Frame component in the 3D viewer"
+              aria-label={`Frame ${displayName}`}
+              className="flex h-5 w-5 items-center justify-center rounded border border-slate-700 bg-slate-950 text-slate-300 transition-colors hover:border-indigo-500 hover:text-indigo-300"
+              onClick={(e) => {
+                e.stopPropagation();
+                onTarget(node);
+              }}
+            >
+              <TargetIcon />
+            </button>
+            <button
+              type="button"
               title={isHidden ? 'Show component and children' : 'Hide component and children'}
               aria-label={isHidden ? `Show ${displayName}` : `Hide ${displayName}`}
               className={`flex h-5 w-5 items-center justify-center rounded border transition-colors ${isHidden ? 'border-slate-600 bg-slate-900 text-slate-500 hover:text-slate-200' : 'border-slate-700 bg-slate-950 text-slate-300 hover:border-sky-500 hover:text-sky-300'}`}
@@ -168,6 +194,7 @@ const TreeNode: React.FC<{
              selectedValue={selectedValue}
              appearanceByPath={appearanceByPath}
              onSelect={onSelect}
+             onTarget={onTarget}
              onToggleVisibility={onToggleVisibility}
              onToggleTransparency={onToggleTransparency}
            />
@@ -806,6 +833,15 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
      window.dispatchEvent(new Event('storage'));
   };
 
+  const handleTargetNode = useCallback((node: THREE.Object3D) => {
+    const selectionValue = createSceneNodeSelectionValue(sceneGraph, node);
+    setHighlightedNode(selectionValue);
+    localStorage.setItem(SCENE_NODE_SELECTION_STORAGE_KEY, selectionValue);
+    localStorage.setItem(SCENE_NODE_TARGET_STORAGE_KEY, selectionValue);
+    window.dispatchEvent(new CustomEvent(SCENE_NODE_TARGET_EVENT, { detail: { value: selectionValue } }));
+    window.dispatchEvent(new Event('storage'));
+  }, [sceneGraph]);
+
   const updateAppearance = useCallback((updater: (current: SceneNodeAppearanceMap) => SceneNodeAppearanceMap) => {
     setAppearanceByPath(current => {
       const next = updater(current);
@@ -1320,6 +1356,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
                         selectedValue={highlightedNode}
                         appearanceByPath={appearanceByPath}
                         onSelect={handleSelectNode} 
+                        onTarget={handleTargetNode}
                         onToggleVisibility={handleToggleVisibility}
                         onToggleTransparency={handleToggleTransparency}
                       />

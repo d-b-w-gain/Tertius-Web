@@ -7,6 +7,7 @@ import { useAuth } from '../../../auth/AuthProvider';
 import { perfLog } from '../../../observability/performance';
 import { getPollingDelay, MODEL_STATUS_POLL_INTERVAL_MS, shouldRunPollingRequest } from '../../shared/polling';
 import { createProjectStorage } from '../../shared/projectStorage';
+import type { ComponentPreviewImage } from '../../shared/componentPreview';
 
 type SubTab = 'bom' | 'suppliers' | 'review';
 type CoverageState = 'valid' | 'incomplete' | 'missing' | 'mesh';
@@ -27,6 +28,8 @@ const BOM_RECOVERY_POLL_MS = 2_000;
 const BOM_RECOVERY_MAX_POLLS = 90;
 const PROCUREMENT_SYNC_WORK_LOG_MS = 50;
 const PROCUREMENT_SYNC_WORK_WARN_MS = 200;
+const QUOTE_PREVIEW_CAPTURE_WAIT_MS = 180;
+const QUOTE_PREVIEW_CAPTURE_TIMEOUT_MS = 2_800;
 const BOM_STARTER_SNIPPET = `from tertius_bom import bom_scope, bom_component, requirement
 
 with bom_scope("Portal", id="portal"):
@@ -275,6 +278,10 @@ const readJsonState = <T,>(key: string, fallback: T, normalize?: (value: unknown
     return fallback;
   }
 };
+
+const waitForMs = (ms: number) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, ms);
+});
 
 const writeJsonState = (key: string, value: unknown) => {
   try {
@@ -1001,6 +1008,253 @@ const lineMetadata = (line: GroupedBomLine) => (
   ].filter(Boolean).join(' | ')
 );
 
+const csvCell = (value: unknown) => {
+  const text = value === null || value === undefined ? '' : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
+const htmlCell = (value: unknown) => {
+  const text = value === null || value === undefined ? '' : String(value);
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+const dimensionValue = (dimensions: Record<string, unknown>, key: string) => {
+  const value = dimensions[key];
+  return value === null || value === undefined ? '' : String(value);
+};
+
+export const quoteFocusForLine = (line: GroupedBomLine) => {
+  const searchable = [
+    line.displayName,
+    line.partNumber,
+    line.material,
+    line.finish,
+    line.grade,
+    line.standard,
+    line.unit,
+    dimensionSummary(line.dimensions),
+  ].join(' ').toLowerCase();
+  const lengthMm = asNumber(line.dimensions.length_mm, 0);
+  const bulkyKeywords = ['purlin', 'cladding', 'sheet', 'flashing', 'gutter', 'downpipe', 'ridge', 'barge', 'fascia', 'roof'];
+  const smallHardwareKeywords = ['bolt', 'nut', 'washer', 'screw', 'bracket', 'cleat', 'rivet', 'anchor'];
+
+  if (lengthMm >= 2400 || bulkyKeywords.some((keyword) => searchable.includes(keyword))) {
+    return 'Bulk/long-length item; please quote if this suits your stock and delivery service.';
+  }
+  if (smallHardwareKeywords.some((keyword) => searchable.includes(keyword)) || line.unit === 'each') {
+    return 'Optional small hardware; feel welcome to quote if convenient, otherwise leave blank.';
+  }
+  return 'Please quote if this item is in your normal supply range.';
+};
+
+export const buildSupplierQuoteCsv = (
+  lines: GroupedBomLine[],
+  options: { projectName?: string | null; scopeLabel?: string | null; snapshotHash?: string | null } = {},
+) => {
+  const generatedAt = new Date().toISOString().slice(0, 10);
+  const title = options.projectName ? `${options.projectName} BoM quote request` : 'BoM quote request';
+  const scope = options.scopeLabel || 'Whole design';
+  const headerRows = [
+    ['Quote request', title],
+    ['Generated', generatedAt],
+    ['BoM view', scope],
+    ['Snapshot', options.snapshotHash || ''],
+    ['Note', 'Please quote the line items that suit your normal supply range. It is completely fine to leave rows blank if another supplier is better suited for those items; I am comparing bulk delivery, availability, and small boxed hardware separately.'],
+    [],
+  ];
+  const tableHeader = [
+    'Section',
+    'Line item',
+    'Part number',
+    'Quantity',
+    'Unit',
+    'Length mm',
+    'Dimensions / specification',
+    'Material',
+    'Finish',
+    'Grade',
+    'Standard',
+    'Quote focus',
+    'Supplier unit price ex GST',
+    'Supplier total ex GST',
+    'Lead time',
+    'Supplier notes / substitutions',
+    'Internal BoM key',
+  ];
+  const dataRows = lines.map((line) => [
+    quoteFocusForLine(line).startsWith('Bulk/') ? 'Bulk steel / roofing' : 'Small hardware / general',
+    line.displayName,
+    line.partNumber,
+    line.quantity,
+    line.unit,
+    dimensionValue(line.dimensions, 'length_mm'),
+    lineMetadata(line),
+    line.material,
+    line.finish,
+    line.grade,
+    line.standard,
+    quoteFocusForLine(line),
+    '',
+    '',
+    '',
+    '',
+    line.key,
+  ]);
+  return [...headerRows, tableHeader, ...dataRows]
+    .map((row) => row.map(csvCell).join(','))
+    .join('\r\n');
+};
+
+export const buildSupplierQuoteHtml = (
+  lines: GroupedBomLine[],
+  options: {
+    projectName?: string | null;
+    scopeLabel?: string | null;
+    snapshotHash?: string | null;
+    previewImagesByVisualNodeId?: Record<string, ComponentPreviewImage>;
+  } = {},
+) => {
+  const generatedAt = new Date().toISOString().slice(0, 10);
+  const title = options.projectName ? `${options.projectName} BoM Quote Request` : 'BoM Quote Request';
+  const scope = options.scopeLabel || 'Whole design';
+  const rows = lines.map((line) => {
+    const focus = quoteFocusForLine(line);
+    const section = focus.startsWith('Bulk/') ? 'Bulk steel / roofing' : 'Small hardware / general';
+    const preview = line.visualNodeIds
+      .map((visualNodeId) => options.previewImagesByVisualNodeId?.[visualNodeId])
+      .find(Boolean);
+    return `
+      <tr>
+        <td class="preview-cell">${preview ? `<img src="${htmlCell(preview.dataUrl)}" alt="${htmlCell(preview.label)}" />` : ''}</td>
+        <td>${htmlCell(section)}</td>
+        <td>
+          <strong>${htmlCell(line.displayName)}</strong>
+          <div class="muted">${htmlCell(lineMetadata(line))}</div>
+        </td>
+        <td>${htmlCell(line.partNumber)}</td>
+        <td class="num">${htmlCell(line.quantity)}</td>
+        <td>${htmlCell(line.unit)}</td>
+        <td class="num">${htmlCell(dimensionValue(line.dimensions, 'length_mm'))}</td>
+        <td>${htmlCell(focus)}</td>
+        <td class="write-in"></td>
+        <td class="write-in"></td>
+        <td class="write-in notes"></td>
+      </tr>`;
+  }).join('');
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${htmlCell(title)}</title>
+  <style>
+    @page { size: A4 landscape; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #111827; font-family: Arial, Helvetica, sans-serif; font-size: 10.5px; }
+    header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #111827; padding-bottom: 10px; margin-bottom: 12px; }
+    h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: 0; }
+    .meta { color: #4b5563; line-height: 1.45; }
+    .note { max-width: 520px; border: 1px solid #d1d5db; background: #f9fafb; padding: 9px 11px; line-height: 1.45; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { background: #111827; color: white; font-size: 9px; text-transform: uppercase; letter-spacing: .03em; }
+    th, td { border: 1px solid #d1d5db; padding: 6px; vertical-align: top; }
+    tbody tr:nth-child(even) { background: #f9fafb; }
+    .muted { margin-top: 3px; color: #6b7280; font-size: 9px; line-height: 1.35; }
+    .num { text-align: right; white-space: nowrap; }
+    .write-in { height: 24px; background: white; }
+    .notes { width: 9%; }
+    .preview { width: 7%; }
+    .preview-cell { height: 56px; padding: 3px; text-align: center; vertical-align: middle; }
+    .preview-cell img { max-width: 100%; max-height: 54px; object-fit: contain; }
+    .section { width: 11%; }
+    .item { width: 17%; }
+    .part { width: 9%; }
+    .qty { width: 5%; }
+    .unit { width: 5%; }
+    .length { width: 6%; }
+    .focus { width: 17%; }
+    .price { width: 7%; }
+    .lead { width: 7%; }
+    footer { margin-top: 10px; color: #6b7280; font-size: 9px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>${htmlCell(title)}</h1>
+      <div class="meta">
+        Generated: ${htmlCell(generatedAt)}<br />
+        BoM view: ${htmlCell(scope)}<br />
+        Snapshot: ${htmlCell(options.snapshotHash || '')}
+      </div>
+    </div>
+    <div class="note">
+      Please quote the line items that suit your normal supply range. It is completely fine to leave rows blank if another supplier is better suited for those items. I am comparing bulk delivery, availability, and small boxed hardware separately.
+    </div>
+  </header>
+  <table>
+    <thead>
+      <tr>
+        <th class="preview">Preview</th>
+        <th class="section">Section</th>
+        <th class="item">Line item</th>
+        <th class="part">Part number</th>
+        <th class="qty">Qty</th>
+        <th class="unit">Unit</th>
+        <th class="length">Length mm</th>
+        <th class="focus">Quote guidance</th>
+        <th class="price">Unit $ ex GST</th>
+        <th class="lead">Lead time</th>
+        <th class="notes">Notes / substitutions</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <footer>Generated from Tertius Procurement BoM.</footer>
+  <script>
+    window.addEventListener('load', function () {
+      window.setTimeout(function () {
+        window.print();
+      }, 250);
+    });
+  </script>
+</body>
+</html>`;
+};
+
+const downloadTextFile = (filename: string, contents: string, type: string) => {
+  const blob = new Blob([contents], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+const safeFilenamePart = (value: string) => (
+  value.trim().replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'bom'
+);
+
+const openPrintableQuoteSheet = (html: string) => {
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const printWindow = window.open(url, '_blank');
+  if (!printWindow) {
+    URL.revokeObjectURL(url);
+    return false;
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
+};
+
 const ffd1D = (pieces: number[], stockLength: number) => {
   const sorted = [...pieces].sort((left, right) => right - left);
   const remaining: number[] = [];
@@ -1152,6 +1406,7 @@ export const BomReviewTab: React.FC<{
   useSharedViewport?: boolean;
   onViewportSelectionChange?: (visualNodeIds: string[]) => void;
   onViewportFrameChange?: (rect: DOMRectReadOnly | null) => void;
+  componentPreviewImage?: ComponentPreviewImage | null;
 }> = ({
   artusServerUrl: _artusServerUrl,
   extusServerUrl,
@@ -1161,6 +1416,7 @@ export const BomReviewTab: React.FC<{
   useSharedViewport = false,
   onViewportSelectionChange,
   onViewportFrameChange,
+  componentPreviewImage,
 }) => {
   const { authMode, getAccessToken } = useAuth();
   const storage = useMemo(
@@ -1189,7 +1445,12 @@ export const BomReviewTab: React.FC<{
   const [activeSupplierId, setActiveSupplierId] = useState<string | null>(() => localStorage.getItem('procurement_active_supplier'));
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null);
   const [editPricing, setEditPricing] = useState<SupplierPricing | null>(null);
+  const [previewImagesByVisualNodeId, setPreviewImagesByVisualNodeId] = useState<Record<string, ComponentPreviewImage>>({});
+  const [isGeneratingQuotePreviews, setIsGeneratingQuotePreviews] = useState(false);
+  const [quotePreviewProgress, setQuotePreviewProgress] = useState<{ current: number; total: number } | null>(null);
   const sharedViewportSlotRef = useRef<HTMLDivElement | null>(null);
+  const previewImagesByVisualNodeIdRef = useRef(previewImagesByVisualNodeId);
+  const quotePreviewGenerationRef = useRef(0);
 
   const artifactManifest = manifestEnvelope?.manifest || null;
   const artifactState = resolveBomArtifactState(manifestEnvelope);
@@ -1205,6 +1466,19 @@ export const BomReviewTab: React.FC<{
     if (activeSupplierId) localStorage.setItem('procurement_active_supplier', activeSupplierId);
     else localStorage.removeItem('procurement_active_supplier');
   }, [activeSupplierId]);
+  useEffect(() => {
+    previewImagesByVisualNodeIdRef.current = previewImagesByVisualNodeId;
+  }, [previewImagesByVisualNodeId]);
+  useEffect(() => {
+    quotePreviewGenerationRef.current += 1;
+    previewImagesByVisualNodeIdRef.current = {};
+    setPreviewImagesByVisualNodeId({});
+    setQuotePreviewProgress(null);
+    setIsGeneratingQuotePreviews(false);
+  }, [modelUrl, manifestEnvelope?.manifest_artifact_id]);
+  useEffect(() => () => {
+    quotePreviewGenerationRef.current += 1;
+  }, []);
 
   useEffect(() => {
     if (!isActive) return;
@@ -1329,6 +1603,10 @@ export const BomReviewTab: React.FC<{
   const allBomLineCount = scopeStats.allItemCount;
   const selectedLine = useMemo(() => bomLines.find((line) => line.key === selectedLineKey) || null, [bomLines, selectedLineKey]);
   const visibleBomRows = useMemo(() => bomLines.slice(0, visibleRows), [bomLines, visibleRows]);
+  const quotePreviewLines = useMemo(() => bomLines.filter((line) => line.visualNodeIds.length > 0), [bomLines]);
+  const quotePreviewReadyCount = useMemo(() => quotePreviewLines.filter((line) => (
+    line.visualNodeIds.some((visualNodeId) => Boolean(previewImagesByVisualNodeId[visualNodeId]))
+  )).length, [previewImagesByVisualNodeId, quotePreviewLines]);
 
   const scopeOptions = useMemo<ScopeOption[]>(() => {
     if (!manifest || !canUseAssemblyViews) return [];
@@ -1440,11 +1718,46 @@ export const BomReviewTab: React.FC<{
 
   const selectedVisualNodeIds = selectedLine?.visualNodeIds || (selectedComponent?.visual_node_ids || []);
   const selectedVisualNodeKey = selectedVisualNodeIds.join('\u001f');
+  const viewportVisualNodeIds = useMemo(() => {
+    const firstComponentId = selectedLine?.componentIds[0] || selectedComponent?.id || '';
+    const component = firstComponentId ? componentsById.get(firstComponentId) : selectedComponent;
+    return [
+      ...(component?.visual_node_ids || []).slice(0, 1),
+      component?.label || '',
+      component?.id || '',
+    ].filter(Boolean);
+  }, [componentsById, selectedComponent, selectedLine]);
+  const viewportVisualNodeKey = viewportVisualNodeIds.join('\u001f');
+
+  useEffect(() => {
+    if (!componentPreviewImage?.visualNodeId) return;
+    const currentSelectionVisualNodeIds = new Set([
+      ...viewportVisualNodeIds,
+      ...selectedVisualNodeIds,
+    ]);
+    const previewKeys = [
+      componentPreviewImage.visualNodeId,
+      ...(currentSelectionVisualNodeIds.has(componentPreviewImage.visualNodeId)
+        ? [...currentSelectionVisualNodeIds]
+        : []),
+    ].filter(Boolean);
+    setPreviewImagesByVisualNodeId((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const visualNodeId of previewKeys) {
+        if (next[visualNodeId]?.dataUrl === componentPreviewImage.dataUrl) continue;
+        next[visualNodeId] = { ...componentPreviewImage, visualNodeId };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [componentPreviewImage, selectedVisualNodeKey, viewportVisualNodeKey]);
+
   useEffect(() => {
     if (!useSharedViewport || !isActive) return;
-    onViewportSelectionChange?.([...selectedVisualNodeIds]);
+    onViewportSelectionChange?.([...viewportVisualNodeIds]);
     return () => onViewportSelectionChange?.([]);
-  }, [isActive, onViewportSelectionChange, selectedVisualNodeKey, useSharedViewport]);
+  }, [isActive, onViewportSelectionChange, useSharedViewport, viewportVisualNodeKey]);
 
   useEffect(() => {
     if (!useSharedViewport || !isActive || subTab !== 'bom' || isInspectorCollapsed) {
@@ -1578,6 +1891,81 @@ export const BomReviewTab: React.FC<{
     if (activeSupplierId === id) setActiveSupplierId(null);
   };
 
+  const generateQuotePreviews = useCallback(async () => {
+    if (isGeneratingQuotePreviews || !useSharedViewport || !modelUrl || quotePreviewLines.length === 0) return;
+
+    const runId = quotePreviewGenerationRef.current + 1;
+    quotePreviewGenerationRef.current = runId;
+    const previousLineKey = selectedLineKey;
+    const previousComponentId = selectedComponentId;
+    const total = quotePreviewLines.length;
+
+    const hasPreview = (line: GroupedBomLine) => (
+      line.visualNodeIds.some((visualNodeId) => Boolean(previewImagesByVisualNodeIdRef.current[visualNodeId]))
+    );
+
+    setIsGeneratingQuotePreviews(true);
+    setQuotePreviewProgress({ current: 0, total });
+    setSubTab('bom');
+    setShowModelPreview(true);
+    setIsInspectorCollapsed(false);
+    setSelectedComponentId(null);
+    previewImagesByVisualNodeIdRef.current = {};
+    setPreviewImagesByVisualNodeId({});
+
+    try {
+      await waitForMs(350);
+      for (let index = 0; index < quotePreviewLines.length; index += 1) {
+        if (quotePreviewGenerationRef.current !== runId) return;
+        const line = quotePreviewLines[index]!;
+        setQuotePreviewProgress({ current: index + 1, total });
+        if (hasPreview(line)) continue;
+
+        setSelectedLineKey(line.key);
+        setSelectedComponentId(null);
+        const startedAt = performance.now();
+        while (quotePreviewGenerationRef.current === runId && performance.now() - startedAt < QUOTE_PREVIEW_CAPTURE_TIMEOUT_MS) {
+          if (hasPreview(line)) break;
+          await waitForMs(QUOTE_PREVIEW_CAPTURE_WAIT_MS);
+        }
+      }
+    } finally {
+      if (quotePreviewGenerationRef.current === runId) {
+        setSelectedLineKey(previousLineKey);
+        setSelectedComponentId(previousComponentId);
+        setIsGeneratingQuotePreviews(false);
+        setQuotePreviewProgress(null);
+      }
+    }
+  }, [
+    isGeneratingQuotePreviews,
+    modelUrl,
+    quotePreviewLines,
+    selectedComponentId,
+    selectedLineKey,
+    useSharedViewport,
+  ]);
+
+  const downloadQuoteCsv = useCallback(() => {
+    const csv = buildSupplierQuoteCsv(bomLines, {
+      projectName,
+      scopeLabel: selectedScope?.label || 'Whole design',
+      snapshotHash: manifest?.source_snapshot_hash || null,
+    });
+    const filename = `${safeFilenamePart(projectName || 'tertius')}-${safeFilenamePart(selectedScope?.label || 'whole-design')}-quote-request.csv`;
+    downloadTextFile(filename, csv, 'text/csv;charset=utf-8');
+  }, [bomLines, manifest?.source_snapshot_hash, projectName, selectedScope?.label]);
+
+  const printQuotePdf = useCallback(() => {
+    const html = buildSupplierQuoteHtml(bomLines, {
+      projectName,
+      scopeLabel: selectedScope?.label || 'Whole design',
+      snapshotHash: manifest?.source_snapshot_hash || null,
+      previewImagesByVisualNodeId,
+    });
+    openPrintableQuoteSheet(html);
+  }, [bomLines, manifest?.source_snapshot_hash, previewImagesByVisualNodeId, projectName, selectedScope?.label]);
+
   return (
     <div className={`flex h-full min-h-0 flex-col text-slate-100 ${useSharedViewport ? 'pointer-events-none bg-transparent' : 'bg-slate-950'}`}>
       <div className="pointer-events-auto flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900 px-4 py-3">
@@ -1682,6 +2070,35 @@ export const BomReviewTab: React.FC<{
                   <span>{bomLines.length} grouped requirement{bomLines.length === 1 ? '' : 's'}</span>
                   <span>{selectedComponentCount} registered visual component{selectedComponentCount === 1 ? '' : 's'}</span>
                   <span>{counts.diagnostics} diagnostic{counts.diagnostics === 1 ? '' : 's'}</span>
+                  {bomLines.length > 0 && (
+                    <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={generateQuotePreviews}
+                        disabled={isGeneratingQuotePreviews || !useSharedViewport || !modelUrl || quotePreviewLines.length === 0}
+                        title="Focus each BoM line in the 3D viewer and cache its quote preview image"
+                        className="rounded bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-900 disabled:text-slate-600"
+                      >
+                        {isGeneratingQuotePreviews && quotePreviewProgress
+                          ? `Generating previews ${quotePreviewProgress.current}/${quotePreviewProgress.total}`
+                          : `Generate previews ${quotePreviewReadyCount}/${quotePreviewLines.length}`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={printQuotePdf}
+                        className="rounded bg-amber-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-500"
+                      >
+                        Print / PDF quote
+                      </button>
+                      <button
+                        type="button"
+                        onClick={downloadQuoteCsv}
+                        className="rounded bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+                      >
+                        Download quote CSV
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2270,16 +2687,18 @@ const ProcurementSceneViewer: React.FC<{
 
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const center = sphere.center;
-    const radius = Math.max(sphere.radius, 1);
+    const radius = Math.max(sphere.radius, 0.0001);
     const fov = THREE.MathUtils.degToRad(camera.fov);
-    const distance = Math.max(radius / Math.sin(fov / 2), radius * 3);
+    const distance = (radius / Math.sin(fov / 2)) * 1.08;
     const currentDirection = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
     if (currentDirection.lengthSq() === 0) currentDirection.set(1, -1, 0.7).normalize();
 
-    camera.position.copy(center).addScaledVector(currentDirection, distance * 1.25);
-    camera.near = Math.max(0.1, distance / 10_000);
-    camera.far = Math.max(distance * 20, radius * 30);
+    camera.position.copy(center).addScaledVector(currentDirection, distance);
+    camera.near = Math.max(0.00001, radius / 100, distance / 10_000);
+    camera.far = Math.max(distance * 40, radius * 80, camera.near * 1000);
     camera.updateProjectionMatrix();
+    controls.minDistance = Math.max(0.00001, radius * 0.05);
+    controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
     controls.target.copy(center);
     controls.update();
     requestRender();

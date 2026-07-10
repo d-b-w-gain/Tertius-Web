@@ -11,6 +11,7 @@ import { LoginStateWidget } from './auth/LoginStateWidget'
 import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
 import { importGuestWorkspace } from './workflows/shared/guestImport'
 import { resolveWorkflowServerUrl } from './workflows/shared/apiConfig'
+import type { ComponentPreviewImage } from './workflows/shared/componentPreview'
 
 type ViewportFrame = {
   left: number
@@ -27,6 +28,7 @@ function App() {
   const [importError, setImportError] = useState<string | null>(null)
   const [isImporting, setIsImporting] = useState(false)
   const [procurementSelectedVisualNodeIds, setProcurementSelectedVisualNodeIds] = useState<string[]>([])
+  const [procurementComponentPreview, setProcurementComponentPreview] = useState<ComponentPreviewImage | null>(null)
   const [procurementViewportFrame, setProcurementViewportFrame] = useState<ViewportFrame | null>(null)
   const [generateViewportState, setGenerateViewportState] = useState<GenerateViewportState>({
     title: 'Latest Model',
@@ -284,6 +286,7 @@ function App() {
                 isActive={usesSharedExtusViewport}
                 source={sharedExtusViewportSource}
                 externalSelectedNodeIds={activeTab === 'octavus' ? procurementSelectedVisualNodeIds : undefined}
+                onExternalSelectionPreviewChange={activeTab === 'octavus' ? setProcurementComponentPreview : undefined}
               />
             </div>
           )}
@@ -307,6 +310,7 @@ function App() {
               useSharedViewport
               onViewportSelectionChange={setProcurementSelectedVisualNodeIds}
               onViewportFrameChange={handleProcurementViewportFrameChange}
+              componentPreviewImage={procurementComponentPreview}
             />
           </div>
         </div>

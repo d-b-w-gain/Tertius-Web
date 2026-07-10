@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import {
+  buildSupplierQuoteHtml,
+  buildSupplierQuoteCsv,
   canonicalRequirementKey,
   deriveAssemblyTreeManifest,
   groupManifestRequirements,
@@ -8,6 +10,7 @@ import {
   normalizeManifestEnvelope,
   normalizeProcurementManifest,
   priceGroupedLine,
+  quoteFocusForLine,
   resolveBomArtifactState,
 } from './BomReviewTab';
 import type { BomManifest, ManifestEnvelope, SupplierPricing } from './BomReviewTab';
@@ -350,5 +353,54 @@ describe('Procurement manifest grouping', () => {
     expect(resolveBomArtifactState(normalized)).toBe('ready');
     expect(normalized?.manifest_counts).toEqual({ scopes: 1, components: 1, requirements: 1, diagnostics: 0 });
     expect(groupManifestRequirements(normalized?.manifest || null, '__all__')[0]?.quantity).toBe(528);
+  });
+
+  it('builds a supplier quote CSV with tactful competitive-pricing wording', () => {
+    const manifest: BomManifest = {
+      version: 1,
+      source_snapshot_hash: 'snapshot-a',
+      scopes: [],
+      components: [
+        { id: 'purlin', scope_id: null, label: 'Purlin', role: 'Structural', visual_node_ids: ['purlin-node'] },
+        { id: 'bolt', scope_id: null, label: 'Bolt', role: 'Fastener', visual_node_ids: ['bolt-node'] },
+      ],
+      requirements: [
+        { id: 'r1', component_id: 'purlin', part_number: 'C10012', quantity: 1, unit: 'each', dimensions: { length_mm: 9000 }, material: 'galvanised steel' },
+        { id: 'r2', component_id: 'bolt', part_number: 'M12_BOLT', quantity: 84, unit: 'each', dimensions: { size: 'M12' } },
+      ],
+      diagnostics: [],
+    };
+    const lines = groupManifestRequirements(manifest, '__all__');
+
+    expect(quoteFocusForLine(lines.find((line) => line.partNumber === 'C10012')!)).toContain('Bulk/long-length');
+    expect(quoteFocusForLine(lines.find((line) => line.partNumber === 'M12_BOLT')!)).toContain('feel welcome to quote if convenient');
+
+    const csv = buildSupplierQuoteCsv(lines, { projectName: 'Shed', scopeLabel: 'Whole design', snapshotHash: 'snapshot-a' });
+    const html = buildSupplierQuoteHtml(lines, {
+      projectName: 'Shed',
+      scopeLabel: 'Whole design',
+      snapshotHash: 'snapshot-a',
+      previewImagesByVisualNodeId: {
+        'purlin-node': {
+          dataUrl: 'data:image/png;base64,abc123',
+          label: 'Purlin preview',
+          visualNodeId: 'purlin-node',
+          capturedAt: 1,
+        },
+      },
+    });
+
+    expect(csv).toContain('Please quote the line items that suit your normal supply range');
+    expect(csv).toContain('"Bulk steel / roofing"');
+    expect(csv).toContain('"Small hardware / general"');
+    expect(csv).toContain('"Supplier unit price ex GST"');
+    expect(csv).toContain('"C10012"');
+    expect(csv).toContain('"9000"');
+    expect(html).toContain('Shed BoM Quote Request');
+    expect(html).toContain('Unit $ ex GST');
+    expect(html).toContain('Notes / substitutions');
+    expect(html).toContain('Optional small hardware');
+    expect(html).toContain('data:image/png;base64,abc123');
+    expect(html).toContain('Preview');
   });
 });
