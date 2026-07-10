@@ -696,23 +696,8 @@ if printf '%s\n' "$production_rendered" | rg -C 3 -i 'app.kubernetes.io/name: na
   exit 1
 fi
 
-if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-api.*"\$imagepolicy": "flux-system:tertius-api:name"' "${CHART_DIR}/values.yaml"; then
-  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the API repository." >&2
-  exit 1
-fi
-
-if ! rg -q 'master-[0-9]+-[a-f0-9]{7}.*"\$imagepolicy": "flux-system:tertius-api:tag"' "${CHART_DIR}/values.yaml"; then
-  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the API tag." >&2
-  exit 1
-fi
-
-if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui.*"\$imagepolicy": "flux-system:tertius-ui:name"' "${CHART_DIR}/values.yaml"; then
-  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the UI repository." >&2
-  exit 1
-fi
-
-if ! rg -q 'master-[0-9]+-[a-f0-9]{7}.*"\$imagepolicy": "flux-system:tertius-ui:tag"' "${CHART_DIR}/values.yaml"; then
-  echo "infra/charts/tertius/values.yaml is missing the Flux image policy marker for the UI tag." >&2
+if rg -q '\$imagepolicy' "${CHART_DIR}/values.yaml"; then
+  echo "infra/charts/tertius/values.yaml must not contain Flux image policy markers." >&2
   exit 1
 fi
 
@@ -756,50 +741,177 @@ if ! rg -q 'GIT_COMMIT=\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}
   exit 1
 fi
 
+PRODUCTION_DIR="${ROOT_DIR}/infra/clusters/production"
+PRODUCTION_KUSTOMIZATION="${PRODUCTION_DIR}/kustomization.yaml"
+FLUX_GIT_REPOSITORY="${PRODUCTION_DIR}/flux-system/gitrepository.yaml"
+IMAGE_WORKFLOW="${ROOT_DIR}/.github/workflows/images.yml"
+CHART_WORKFLOW="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+
+extract_workflow_job() {
+  local workflow="$1"
+  local job="$2"
+
+  awk -v job="$job" '
+    $0 ~ ("^  " job ":[[:space:]]*$") { in_job = 1 }
+    in_job && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " job ":[[:space:]]*$") { exit }
+    in_job { print }
+  ' "$workflow"
+}
+
+extract_workflow_trigger() {
+  local workflow="$1"
+  local trigger="$2"
+
+  awk -v trigger="$trigger" '
+    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
+    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
+    in_trigger { print }
+  ' "$workflow"
+}
+
+extract_job_if() {
+  awk '
+    /^    if:/ { in_if = 1 }
+    in_if && /^    [[:alnum:]_-]+:/ && $0 !~ /^    if:/ { exit }
+    in_if { print }
+  '
+}
+
 for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
-  if [ ! -f "${ROOT_DIR}/infra/clusters/production/flux-system/${flux_file}" ]; then
-    echo "Missing Flux image automation manifest: ${flux_file}." >&2
+  if [ -e "${PRODUCTION_DIR}/flux-system/${flux_file}" ]; then
+    echo "Production must not contain the Flux image automation manifest ${flux_file}." >&2
     exit 1
   fi
 
-  if ! rg -q "flux-system/${flux_file}" "${ROOT_DIR}/infra/clusters/production/kustomization.yaml"; then
-    echo "infra/clusters/production/kustomization.yaml does not include ${flux_file}." >&2
+  if rg -F -q "flux-system/${flux_file}" "$PRODUCTION_KUSTOMIZATION"; then
+    echo "Production kustomization must not include ${flux_file}." >&2
     exit 1
   fi
 done
 
-if rg -q '^apiVersion: image\.toolkit\.fluxcd\.io/v1beta' "${ROOT_DIR}/infra/clusters/production/flux-system"/image-*.yaml; then
-  echo "Flux image automation manifests must use image.toolkit.fluxcd.io/v1, not v1beta*." >&2
+if rg -q '^kind:[[:space:]]*(ImageRepository|ImagePolicy|ImageUpdateAutomation)[[:space:]]*$' "$PRODUCTION_DIR" --glob '*.yaml'; then
+  echo "Production YAML must not contain Flux image repository, policy, or update automation resources." >&2
   exit 1
 fi
 
-if ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-api' "${ROOT_DIR}/infra/clusters/production/flux-system/image-repositories.yaml" || ! rg -q 'image: ghcr\.io/d-b-w-gain/tertius-ui' "${ROOT_DIR}/infra/clusters/production/flux-system/image-repositories.yaml"; then
-  echo "Flux ImageRepository resources must scan the expected GHCR API and UI packages." >&2
+if ! rg -q 'url:[[:space:]]*https://github\.com/d-b-w-gain/Tertius-Web\.git[[:space:]]*$' "$FLUX_GIT_REPOSITORY" ||
+   ! rg -q 'branch:[[:space:]]*master[[:space:]]*$' "$FLUX_GIT_REPOSITORY"; then
+  echo "GitRepository tertius-web must read the public Tertius-Web master branch." >&2
   exit 1
 fi
 
-if ! rg -F -q "pattern: '^master-(?P<run>[0-9]+)-[a-f0-9]{7}$'" "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml" || ! rg -F -q "extract: '\$run'" "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml" || ! rg -q 'order: asc' "${ROOT_DIR}/infra/clusters/production/flux-system/image-policies.yaml"; then
-  echo "Flux ImagePolicy resources must select the newest master run tag numerically." >&2
+if rg -q 'secretRef:|tertius-web-write' "$FLUX_GIT_REPOSITORY"; then
+  echo "GitRepository tertius-web must not reference a Git write credential." >&2
   exit 1
 fi
 
-if ! rg -q 'branch: master' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'branch: flux-image-updates' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'path: ./infra/charts/tertius' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -q 'strategy: Setters' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml" || ! rg -F -q '{{range .Changed.Objects}}{{println .}}{{end}}' "${ROOT_DIR}/infra/clusters/production/flux-system/image-update-automation.yaml"; then
-  echo "Flux ImageUpdateAutomation must commit setter updates for infra/charts/tertius to the image update branch." >&2
+if [ -e "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" ]; then
+  echo "The obsolete Flux image update PR workflow must be removed." >&2
   exit 1
 fi
 
-if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'workflow_run:' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'pull-requests: write' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'GH_TOKEN: \$\{\{ secrets\.FLUX_IMAGE_UPDATE_PAT \}\}' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'No image update commits to promote' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'No file changes to promote' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q "github.event_name != 'workflow_run'" "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q "github.event.workflow_run.event == 'push'" "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'gh pr close' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--match-head-commit' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'git/refs/heads/\$\{HEAD_BRANCH\}' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'changes outside infra/charts/tertius/values.yaml' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Merge image update PR' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q -- '--delete-branch=false' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || rg -q -- '--auto' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml" || ! rg -q 'Unable to create Flux image update PR automatically' "${ROOT_DIR}/.github/workflows/flux-image-update-pr.yml"; then
-  echo ".github/workflows/flux-image-update-pr.yml must open and check-gate merges for Flux image update branches without GitHub auto-merge." >&2
+if rg -q 'FLUX_IMAGE_UPDATE_PAT' "${ROOT_DIR}/.github/workflows"; then
+  echo "GitHub workflows must not use FLUX_IMAGE_UPDATE_PAT." >&2
   exit 1
 fi
 
-if ! rg -q -- '- flux-image-updates' "${ROOT_DIR}/.github/workflows/chart-tests.yml"; then
-  echo ".github/workflows/chart-tests.yml must run config checks on flux-image-updates pushes so final Flux commits can be auto-merged." >&2
+if rg -q 'flux-image-updates' "${ROOT_DIR}/.github/workflows"; then
+  echo "GitHub workflows must not reference the obsolete flux-image-updates branch." >&2
   exit 1
 fi
 
-if ! rg -q 'secretRef:\s*$' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml" || ! rg -q 'name: tertius-web-write' "${ROOT_DIR}/infra/clusters/production/flux-system/gitrepository.yaml"; then
-  echo "GitRepository tertius-web is missing the write-capable PAT secretRef." >&2
+images_job="$(extract_workflow_job "$IMAGE_WORKFLOW" images | sed '/^[[:space:]]*#/d')"
+promote_job="$(extract_workflow_job "$IMAGE_WORKFLOW" promote | sed '/^[[:space:]]*#/d')"
+
+if ! rg -q 'actions/create-github-app-token@v3' <<<"$promote_job" ||
+   ! rg -F -q 'app-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" ||
+   ! rg -F -q 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job"; then
+  echo "Build Images must mint a promotion token from the configured GitHub App credentials." >&2
+  exit 1
+fi
+
+if ! rg -q 'needs:[[:space:]]*images[[:space:]]*$' <<<"$promote_job" ||
+   ! rg -q '^[[:space:]]*python3 scripts/promote_images\.py([[:space:]]|$)' <<<"$promote_job" ||
+   ! rg -q 'image-promotion' <<<"$promote_job" ||
+   ! rg -F -q 'commits/${head_sha}/check-runs' <<<"$promote_job" ||
+   ! rg -F -q 'Chart render/config checks' <<<"$promote_job" ||
+   ! rg -q '^[[:space:]]*sleep[[:space:]]+[0-9]+' <<<"$promote_job" ||
+   ! rg -q '^[[:space:]]*gh pr create([[:space:]]|$)' <<<"$promote_job" ||
+   ! rg -q '^[[:space:]]*gh pr merge([[:space:]]|$)' <<<"$promote_job" ||
+   ! rg -q -- '--match-head-commit' <<<"$promote_job"; then
+  echo "Build Images promotion must update the chart, open a PR, poll its named config check, and merge the checked commit." >&2
+  exit 1
+fi
+
+images_master_check_line="$(rg -n -m1 'git/ref/heads/master' <<<"$images_job" | cut -d: -f1 || true)"
+images_publish_line="$(rg -n -m1 'push:[[:space:]]*true[[:space:]]*$' <<<"$images_job" | cut -d: -f1 || true)"
+promote_check_poll_line="$(rg -n -F -m1 'commits/${head_sha}/check-runs' <<<"$promote_job" | cut -d: -f1 || true)"
+promote_master_recheck_line="$(rg -n -m1 'git/ref/heads/master' <<<"$promote_job" | cut -d: -f1 || true)"
+promote_merge_line="$(rg -n -m1 '^[[:space:]]*gh pr merge([[:space:]]|$)' <<<"$promote_job" | cut -d: -f1 || true)"
+if [ -z "$images_master_check_line" ] || [ -z "$images_publish_line" ] ||
+   [ "$images_master_check_line" -ge "$images_publish_line" ] ||
+   [ -z "$promote_check_poll_line" ] || [ -z "$promote_master_recheck_line" ] ||
+   [ -z "$promote_merge_line" ] || [ "$promote_check_poll_line" -ge "$promote_master_recheck_line" ] ||
+   [ "$promote_master_recheck_line" -ge "$promote_merge_line" ]; then
+  echo "Build Images promotion must verify the current master SHA before promotion and again before merge." >&2
+  exit 1
+fi
+
+for test_job_name in ui python; do
+  test_job="$(extract_workflow_job "${ROOT_DIR}/.github/workflows/tests.yml" "$test_job_name")"
+  test_job_if="$(extract_job_if <<<"$test_job")"
+  if ! rg -F -q "github.ref != 'refs/heads/image-promotion'" <<<"$test_job_if" ||
+     ! rg -F -q "github.head_ref != 'image-promotion'" <<<"$test_job_if"; then
+    echo ".github/workflows/tests.yml job ${test_job_name} must skip image-promotion pushes and pull requests." >&2
+    exit 1
+  fi
+done
+
+integration_job="$(extract_workflow_job "${ROOT_DIR}/.github/workflows/integration.yml" docker-smoke-test)"
+integration_job_if="$(extract_job_if <<<"$integration_job")"
+if ! rg -F -q "github.ref != 'refs/heads/image-promotion'" <<<"$integration_job_if" ||
+   ! rg -F -q "github.head_ref != 'image-promotion'" <<<"$integration_job_if"; then
+  echo ".github/workflows/integration.yml job docker-smoke-test must skip image-promotion pushes and pull requests." >&2
+  exit 1
+fi
+
+chart_config_job="$(extract_workflow_job "$CHART_WORKFLOW" deployment-config-check)"
+chart_k3s_job="$(extract_workflow_job "$CHART_WORKFLOW" k3s-deployment-smoke)"
+chart_k3s_job_if="$(extract_job_if <<<"$chart_k3s_job")"
+if ! rg -F -q "github.head_ref != 'image-promotion'" <<<"$chart_k3s_job_if"; then
+  echo ".github/workflows/chart-tests.yml must skip the k3s smoke job for image-promotion pull requests." >&2
+  exit 1
+fi
+
+chart_pull_request_trigger="$(extract_workflow_trigger "$CHART_WORKFLOW" pull_request)"
+if ! rg -F -q -- "- 'infra/charts/**'" <<<"$chart_pull_request_trigger" ||
+   rg -q '^    if:' <<<"$chart_config_job"; then
+  echo ".github/workflows/chart-tests.yml must run chart render/config checks on image promotion pull requests." >&2
+  exit 1
+fi
+
+promotion_tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$promotion_tmp_dir"' EXIT
+promotion_values="${promotion_tmp_dir}/values.yaml"
+cp "${CHART_DIR}/values.yaml" "$promotion_values"
+if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
+  --values "$promotion_values" \
+  --tag master-999-1-abcdef0; then
+  echo "scripts/promote_images.py failed to promote the temporary chart values copy." >&2
+  exit 1
+fi
+
+promoter_marker_count="$( (rg -o '\$imagepromoter' "$promotion_values" || true) | wc -l | tr -d ' ' )"
+api_marker_count="$( (rg '\$imagepromoter' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-api"' || true )"
+ui_marker_count="$( (rg '\$imagepromoter' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-ui"' || true )"
+promoted_api_marker_count="$( (rg 'tag:[[:space:]]*master-999-1-abcdef0([[:space:]]|$)' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-api"' || true )"
+promoted_ui_marker_count="$( (rg 'tag:[[:space:]]*master-999-1-abcdef0([[:space:]]|$)' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-ui"' || true )"
+rm -rf "$promotion_tmp_dir"
+trap - EXIT
+if [ "$promoter_marker_count" -ne 2 ] ||
+   [ "$api_marker_count" -ne 1 ] || [ "$ui_marker_count" -ne 1 ] ||
+   [ "$promoted_api_marker_count" -ne 1 ] || [ "$promoted_ui_marker_count" -ne 1 ]; then
+  echo "scripts/promote_images.py must update one tertius-api and one tertius-ui imagepromoter marker to the requested tag." >&2
   exit 1
 fi
 
@@ -812,6 +924,6 @@ if [ -z "$infra_parent_line" ] || [ -z "$infra_charts_line" ] || [ -z "$infra_cl
 fi
 
 if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml"; then
-  echo "HelmRelease tertius must reconcile chart content by Git revision so Flux image tag commits are deployed." >&2
+  echo "HelmRelease tertius must reconcile chart content by Git revision so CI image promotion commits are deployed." >&2
   exit 1
 fi

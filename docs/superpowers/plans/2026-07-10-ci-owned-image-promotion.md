@@ -15,9 +15,9 @@
 **Files:**
 - Modify: `scripts/test-deployment-config.sh`
 
-- [ ] Replace the Flux setter, ImageUpdateAutomation, PAT workflow, and write-secret assertions with negative assertions for those resources and positive assertions for App-token promotion in `images.yml`.
-- [ ] Add a temporary-copy exercise that invokes `scripts/promote_images.py` with `master-999-1-abcdef0` and verifies both marked tag values change.
-- [ ] Run `rtk ./scripts/test-deployment-config.sh` and verify it fails because the old automation manifests and PAT architecture still exist.
+- [x] Replace the Flux setter, ImageUpdateAutomation, PAT workflow, and write-secret assertions with negative assertions for those resources and positive assertions for App-token promotion in `images.yml`.
+- [x] Add a temporary-copy exercise that invokes `scripts/promote_images.py` with `master-999-1-abcdef0` and verifies both marked tag values change.
+- [x] Run `rtk ./scripts/test-deployment-config.sh` and verify it fails because the old automation manifests and PAT architecture still exist.
 
 ### Task 2: Add The Deterministic Tag Updater
 
