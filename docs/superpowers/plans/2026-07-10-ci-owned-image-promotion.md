@@ -54,10 +54,10 @@
 - Delete: `infra/clusters/production/flux-system/image-policies.yaml`
 - Delete: `infra/clusters/production/flux-system/image-update-automation.yaml`
 
-- [ ] Remove all three image automation resources from the production Kustomization.
-- [ ] Remove `secretRef: tertius-web-write` from the public GitRepository.
-- [ ] Delete the unused image reflection and automation manifests.
-- [ ] Run `kubectl kustomize infra/clusters/production` and verify there are no image toolkit resources or Secret references.
+- [x] Remove all three image automation resources from the production Kustomization.
+- [x] Remove `secretRef: tertius-web-write` from the public GitRepository.
+- [x] Delete the unused image reflection and automation manifests.
+- [x] Run `kubectl kustomize infra/clusters/production` and verify there are no image toolkit resources or Secret references.
 
 ### Task 5: Keep Generated Promotion Checks Focused
 
