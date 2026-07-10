@@ -681,12 +681,12 @@ if ! rg -q 'KEYCLOAK_ISSUER: "https://tertius\.johnsonyuen\.com/realms/tertius"'
   exit 1
 fi
 
-if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:master-[0-9]+-[a-f0-9]{7}"' <<<"$production_rendered"; then
+if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-api:(master-107-5d1e30c|master-[0-9]+-[0-9]+-[a-f0-9]{7})"' <<<"$production_rendered"; then
   echo "Production Helm defaults do not render the expected GHCR API image." >&2
   exit 1
 fi
 
-if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:master-[0-9]+-[a-f0-9]{7}"' <<<"$production_rendered"; then
+if ! rg -q 'image: "ghcr\.io/d-b-w-gain/tertius-ui:(master-107-5d1e30c|master-[0-9]+-[0-9]+-[a-f0-9]{7})"' <<<"$production_rendered"; then
   echo "Production Helm defaults do not render the expected GHCR UI image." >&2
   exit 1
 fi
@@ -776,6 +776,100 @@ extract_job_if() {
     in_if { print }
   '
 }
+
+promotion_tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$promotion_tmp_dir"' EXIT
+promotion_tag="master-999-1-abcdef0"
+
+assert_promotion_fails_without_write() {
+  local case_name="$1"
+  local values_path="$2"
+  local tag="$3"
+  local before_path="${promotion_tmp_dir}/${case_name}.before.yaml"
+
+  cp -p "$values_path" "$before_path"
+  if python3 "${ROOT_DIR}/scripts/promote_images.py" \
+    --values "$values_path" \
+    --tag "$tag" >"${promotion_tmp_dir}/${case_name}.stdout" 2>"${promotion_tmp_dir}/${case_name}.stderr"; then
+    echo "scripts/promote_images.py must reject the ${case_name} case." >&2
+    exit 1
+  fi
+
+  if ! cmp -s "$before_path" "$values_path"; then
+    echo "scripts/promote_images.py modified values for the rejected ${case_name} case." >&2
+    exit 1
+  fi
+}
+
+promotion_values="${promotion_tmp_dir}/values.yaml"
+promotion_expected="${promotion_tmp_dir}/expected-values.yaml"
+cp -p "${CHART_DIR}/values.yaml" "$promotion_values"
+chmod 6755 "$promotion_values"
+promotion_mode_before="$(stat -c '%a' "$promotion_values")"
+sed -E \
+  '/"\$imagepromoter": "tertius-(api|ui)"/s/(tag:[[:space:]]*)[^[:space:]]+/\1master-999-1-abcdef0/' \
+  "${CHART_DIR}/values.yaml" >"$promotion_expected"
+if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
+  --values "$promotion_values" \
+  --tag "$promotion_tag"; then
+  echo "scripts/promote_images.py failed to promote the temporary chart values copy." >&2
+  exit 1
+fi
+
+if ! cmp -s "$promotion_expected" "$promotion_values"; then
+  echo "scripts/promote_images.py must preserve all bytes outside the two marked tag scalars." >&2
+  exit 1
+fi
+
+if [ "$(stat -c '%a' "$promotion_values")" != "$promotion_mode_before" ]; then
+  echo "scripts/promote_images.py must preserve the values file mode." >&2
+  exit 1
+fi
+
+invalid_tag_values="${promotion_tmp_dir}/invalid-tag.yaml"
+cp -p "${CHART_DIR}/values.yaml" "$invalid_tag_values"
+assert_promotion_fails_without_write \
+  "invalid-tag" "$invalid_tag_values" "master-999-abcdef0"
+
+missing_marker_values="${promotion_tmp_dir}/missing-marker.yaml"
+sed '/"\$imagepromoter": "tertius-ui"/s/[[:space:]]*#.*$//' \
+  "${CHART_DIR}/values.yaml" >"$missing_marker_values"
+assert_promotion_fails_without_write \
+  "missing-marker" "$missing_marker_values" "$promotion_tag"
+
+duplicate_marker_values="${promotion_tmp_dir}/duplicate-marker.yaml"
+cp -p "${CHART_DIR}/values.yaml" "$duplicate_marker_values"
+rg '"\$imagepromoter": "tertius-api"' "${CHART_DIR}/values.yaml" \
+  >>"$duplicate_marker_values"
+assert_promotion_fails_without_write \
+  "duplicate-marker" "$duplicate_marker_values" "$promotion_tag"
+
+malformed_marker_values="${promotion_tmp_dir}/malformed-marker.yaml"
+sed 's/tag: \([^[:space:]]*\) # {"\$imagepromoter": "tertius-api"}/repository: \1 # {"$imagepromoter": "tertius-api"}/' \
+  "${CHART_DIR}/values.yaml" >"$malformed_marker_values"
+assert_promotion_fails_without_write \
+  "malformed-marker" "$malformed_marker_values" "$promotion_tag"
+
+symlink_target="${promotion_tmp_dir}/symlink-target.yaml"
+symlink_values="${promotion_tmp_dir}/symlink-values.yaml"
+cp -p "${CHART_DIR}/values.yaml" "$symlink_target"
+cp -p "$symlink_target" "${promotion_tmp_dir}/symlink-target.before.yaml"
+ln -s "$(basename "$symlink_target")" "$symlink_values"
+symlink_before="$(readlink "$symlink_values")"
+if python3 "${ROOT_DIR}/scripts/promote_images.py" \
+  --values "$symlink_values" \
+  --tag "$promotion_tag" >"${promotion_tmp_dir}/symlink.stdout" 2>"${promotion_tmp_dir}/symlink.stderr"; then
+  echo "scripts/promote_images.py must reject a symlink --values path." >&2
+  exit 1
+fi
+if [ ! -L "$symlink_values" ] || [ "$(readlink "$symlink_values")" != "$symlink_before" ] ||
+   ! cmp -s "${promotion_tmp_dir}/symlink-target.before.yaml" "$symlink_target"; then
+  echo "scripts/promote_images.py must not replace a values symlink or modify its target." >&2
+  exit 1
+fi
+
+rm -rf "$promotion_tmp_dir"
+trap - EXIT
 
 for flux_file in image-repositories.yaml image-policies.yaml image-update-automation.yaml; do
   if [ -e "${PRODUCTION_DIR}/flux-system/${flux_file}" ]; then
@@ -887,31 +981,6 @@ chart_pull_request_trigger="$(extract_workflow_trigger "$CHART_WORKFLOW" pull_re
 if ! rg -F -q -- "- 'infra/charts/**'" <<<"$chart_pull_request_trigger" ||
    rg -q '^    if:' <<<"$chart_config_job"; then
   echo ".github/workflows/chart-tests.yml must run chart render/config checks on image promotion pull requests." >&2
-  exit 1
-fi
-
-promotion_tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$promotion_tmp_dir"' EXIT
-promotion_values="${promotion_tmp_dir}/values.yaml"
-cp "${CHART_DIR}/values.yaml" "$promotion_values"
-if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
-  --values "$promotion_values" \
-  --tag master-999-1-abcdef0; then
-  echo "scripts/promote_images.py failed to promote the temporary chart values copy." >&2
-  exit 1
-fi
-
-promoter_marker_count="$( (rg -o '\$imagepromoter' "$promotion_values" || true) | wc -l | tr -d ' ' )"
-api_marker_count="$( (rg '\$imagepromoter' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-api"' || true )"
-ui_marker_count="$( (rg '\$imagepromoter' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-ui"' || true )"
-promoted_api_marker_count="$( (rg 'tag:[[:space:]]*master-999-1-abcdef0([[:space:]]|$)' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-api"' || true )"
-promoted_ui_marker_count="$( (rg 'tag:[[:space:]]*master-999-1-abcdef0([[:space:]]|$)' "$promotion_values" || true) | rg -F -c '"$imagepromoter": "tertius-ui"' || true )"
-rm -rf "$promotion_tmp_dir"
-trap - EXIT
-if [ "$promoter_marker_count" -ne 2 ] ||
-   [ "$api_marker_count" -ne 1 ] || [ "$ui_marker_count" -ne 1 ] ||
-   [ "$promoted_api_marker_count" -ne 1 ] || [ "$promoted_ui_marker_count" -ne 1 ]; then
-  echo "scripts/promote_images.py must update one tertius-api and one tertius-ui imagepromoter marker to the requested tag." >&2
   exit 1
 fi
 

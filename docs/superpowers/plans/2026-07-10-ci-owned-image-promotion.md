@@ -25,10 +25,10 @@
 - Create: `scripts/promote_images.py`
 - Modify: `infra/charts/tertius/values.yaml`
 
-- [ ] Implement `master-[0-9]+-[0-9]+-[a-f0-9]{7}` validation and exact single replacement for `$imagepromoter` markers `tertius-api` and `tertius-ui`.
-- [ ] Make writes atomic with a sibling temporary file and preserve all unrelated text.
-- [ ] Replace the four Flux image-policy comments with two CI image-promoter tag markers; repository values remain unmarked.
-- [ ] Run the configuration gate and verify the updater tests pass while the architecture assertions still fail on old Flux resources.
+- [x] Implement `master-[0-9]+-[0-9]+-[a-f0-9]{7}` validation and exact single replacement for `$imagepromoter` markers `tertius-api` and `tertius-ui`.
+- [x] Make writes atomic with a sibling temporary file and preserve all unrelated text.
+- [x] Replace the four Flux image-policy comments with two CI image-promoter tag markers; repository values remain unmarked.
+- [x] Run the configuration gate and verify the updater tests pass while the architecture assertions still fail on old Flux resources.
 
 ### Task 3: Move Promotion Into Build Images
 
