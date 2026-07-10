@@ -711,8 +711,8 @@ if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" ||
   exit 1
 fi
 
-if ! rg -q "github\.event_name != 'push' \|\| !contains\(github\.event\.head_commit\.message, '\[skip ci\]'\)" "${ROOT_DIR}/.github/workflows/images.yml"; then
-  echo ".github/workflows/images.yml skip-ci guard must allow workflow_dispatch events without reading head_commit." >&2
+if rg -q '\[skip ci\]|head_commit\.message' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml must not let a master commit bypass image publication and promotion." >&2
   exit 1
 fi
 
@@ -918,7 +918,7 @@ images_job="$(extract_workflow_job "$IMAGE_WORKFLOW" images | sed '/^[[:space:]]
 promote_job="$(extract_workflow_job "$IMAGE_WORKFLOW" promote | sed '/^[[:space:]]*#/d')"
 
 if ! rg -q 'actions/create-github-app-token@v3' <<<"$promote_job" ||
-   ! rg -F -q 'app-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" ||
+   ! rg -F -q 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" ||
    ! rg -F -q 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job"; then
   echo "Build Images must mint a promotion token from the configured GitHub App credentials." >&2
   exit 1

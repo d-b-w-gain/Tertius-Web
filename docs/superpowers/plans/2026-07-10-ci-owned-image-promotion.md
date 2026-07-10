@@ -36,14 +36,14 @@
 - Modify: `.github/workflows/images.yml`
 - Delete: `.github/workflows/flux-image-update-pr.yml`
 
-- [ ] Add workflow concurrency `ci-owned-image-promotion` with `cancel-in-progress: true` and remove the `[skip ci]` deployment bypass.
-- [ ] Verify live `master` equals `GITHUB_SHA` before image publication.
-- [ ] Change the published immutable tag to `master-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}` and expose it as a job output.
-- [ ] Add a `promote` job after both image pushes that mints a v3 App token from `IMAGE_PROMOTION_APP_CLIENT_ID` and `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
-- [ ] Check out the source SHA without persisted `GITHUB_TOKEN`, call `scripts/promote_images.py`, force-update `image-promotion` with a lease, and create or reuse its PR.
-- [ ] Poll `Chart render/config checks` for the exact PR head; fail on timeout or non-success.
-- [ ] Recheck live `master`, mint a fresh App token, and merge using `--match-head-commit` and branch deletion.
-- [ ] Remove the obsolete asynchronous PAT workflow.
+- [x] Add workflow concurrency `ci-owned-image-promotion` with `cancel-in-progress: true` and remove the `[skip ci]` deployment bypass.
+- [x] Verify live `master` equals `GITHUB_SHA` before image publication.
+- [x] Change the published immutable tag to `master-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}` and expose it as a job output.
+- [x] Add a `promote` job after both image pushes that mints a v3 App token from `IMAGE_PROMOTION_APP_CLIENT_ID` and `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
+- [x] Check out the source SHA without persisted `GITHUB_TOKEN`, call `scripts/promote_images.py`, force-update `image-promotion` with a lease, and create or reuse its PR.
+- [x] Poll `Chart render/config checks` for the exact PR head; fail on timeout or non-success.
+- [x] Recheck live `master`, mint a fresh App token, and merge using `--match-head-commit` and branch deletion.
+- [x] Remove the obsolete asynchronous PAT workflow.
 
 ### Task 4: Make Flux Read-Only
 
