@@ -38,7 +38,7 @@ Create a GitHub App installed only on `d-b-w-gain/Tertius-Web` with:
 
 | Permission | Access | Purpose |
 |---|---|---|
-| Contents | Read and write | Push the promotion branch and delete it after merge |
+| Contents | Read and write | Push and replace the fixed promotion branch |
 | Pull requests | Read and write | Create, inspect, and merge the promotion PR |
 | Checks | Read | Poll the chart check attached to the exact PR head |
 
@@ -117,12 +117,14 @@ Missing, duplicate, malformed, or unexpected markers fail without writing the fi
 
 ## 10. Rollout And Cleanup
 
-1. Merge the repository change without deleting `tertius-web-write` first.
-2. Confirm Flux reconciles the read-only `GitRepository` and prunes the three image automation resources.
-3. Configure and install the GitHub App before the next non-chart `master` merge.
-4. Delete the manually managed `tertius-web-write` Secret after the read-only source is Ready.
-5. Delete the obsolete `flux-image-updates` remote branch after no open PR references it.
-6. Verify the next image build promotes and deploys both images end to end.
+1. Create and install the GitHub App, then configure `IMAGE_PROMOTION_APP_CLIENT_ID` and `IMAGE_PROMOTION_APP_PRIVATE_KEY`.
+2. On this implementation PR, wait for `Branch protection gate` to register, then require it with strict branch-up-to-date semantics in `Protect Master`.
+3. Confirm the App is not a ruleset bypass actor, then merge the repository change without deleting `tertius-web-write` first.
+4. Confirm the resulting `Build Images` run publishes, promotes, and merges both image tags end to end.
+5. Confirm Flux reconciles the read-only `GitRepository` and prunes the three image automation resources.
+6. Delete the obsolete Actions secret `FLUX_IMAGE_UPDATE_PAT` after App-based promotion succeeds.
+7. Delete the manually managed `tertius-web-write` Secret after the read-only source is Ready.
+8. Delete the obsolete `flux-image-updates` remote branch after no open PR references it.
 
 ## 11. References
 

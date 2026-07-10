@@ -289,9 +289,9 @@ scripts/test-deployment-config.sh
 
 The `Build Images` workflow publishes the API and UI images, updates their chart tags on the fixed `image-promotion` branch, opens a PR, waits for `Chart render/config checks`, and merges the exact checked head. Flux only reads `master`; it does not hold a Git write credential.
 
-An owner of `d-b-w-gain` must create a private GitHub App for promotion:
+The owner of the `d-b-w-gain` user account must create a private GitHub App for promotion:
 
-1. Open the organization settings and create a GitHub App named `Tertius Image Promotion`.
+1. Sign in as `d-b-w-gain`, open **Settings** -> **Developer settings** -> **GitHub Apps**, and create an App named `Tertius Image Promotion`.
 2. Disable webhooks. No callback URL or webhook delivery is required.
 3. Grant these repository permissions:
    - **Contents**: `Read and write`
@@ -323,6 +323,12 @@ Delete the obsolete remote branch only after confirming no open PR references it
 ```bash
 gh pr list --state open --head flux-image-updates
 git push origin --delete flux-image-updates
+```
+
+After the first App-based promotion succeeds, remove the unused repository Actions secret:
+
+```bash
+gh secret delete FLUX_IMAGE_UPDATE_PAT --repo d-b-w-gain/Tertius-Web
 ```
 
 ## Production Operations

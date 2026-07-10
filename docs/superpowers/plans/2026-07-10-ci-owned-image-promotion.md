@@ -91,3 +91,4 @@
 - [x] Run `rtk kubectl kustomize infra/clusters/production`; verify successful rendering with no image toolkit resources.
 - [x] Parse all changed workflow YAML with the repository Python environment and run `git diff --check`.
 - [x] Request a code review, address findings, and mark every completed plan checkbox.
+- [ ] After the App credentials and strict required check are configured, merge this implementation PR and verify the resulting hosted promotion creates, checks, and merges the exact image tag PR before Flux deploys it.
