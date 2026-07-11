@@ -3,8 +3,5 @@ kind: Kustomization
 resources:
   - flux-system/gitrepository.yaml
   - flux-system/kustomization.yaml
-  - flux-system/image-repositories.yaml
-  - flux-system/image-policies.yaml
-  - flux-system/image-update-automation.yaml
   - tertius/namespace.yaml
   - tertius/helmrelease.yaml

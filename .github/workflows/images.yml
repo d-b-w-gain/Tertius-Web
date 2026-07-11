@@ -12,14 +12,33 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: ci-owned-image-promotion
+  cancel-in-progress: true
+
 jobs:
   images:
     name: Build and push GHCR images
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]') }}
+    if: ${{ github.ref == 'refs/heads/master' }}
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Verify current master source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_master_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" \
+            --jq '.object.sha')"
+          if [ "${current_master_sha}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Refusing to build stale commit ${GITHUB_SHA}; master is ${current_master_sha}."
+            exit 1
+          fi
 
       - name: Set image tag
         id: vars
@@ -28,7 +47,7 @@ jobs:
           commit_date="$(git log -1 --format=%cI)"
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "commit_date=${commit_date}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=master-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=master-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -71,3 +90,187 @@ jobs:
             ghcr.io/d-b-w-gain/tertius-ui:master
           cache-from: type=gha,scope=tertius-ui
           cache-to: type=gha,mode=max,scope=tertius-ui
+
+  promote:
+    name: Promote checked image tags
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: ${{ github.ref == 'refs/heads/master' }}
+    env:
+      PROMOTION_BRANCH: image-promotion
+      SOURCE_SHA: ${{ github.sha }}
+      IMAGE_TAG: ${{ needs.images.outputs.image_tag }}
+    steps:
+      - name: Create promotion App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout source commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push promotion branch and open PR
+        id: promotion
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+
+          gh auth setup-git
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq '.id')"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          python3 scripts/promote_images.py \
+            --values infra/charts/tertius/values.yaml \
+            --tag "${IMAGE_TAG}"
+
+          git checkout -B "${PROMOTION_BRANCH}"
+          git add infra/charts/tertius/values.yaml
+          git commit -m "chore: promote images for ${SOURCE_SHA::7}"
+
+          if git fetch origin \
+              "refs/heads/${PROMOTION_BRANCH}:refs/remotes/origin/${PROMOTION_BRANCH}"; then
+            expected_head="$(git rev-parse "refs/remotes/origin/${PROMOTION_BRANCH}")"
+            git push \
+              --force-with-lease="refs/heads/${PROMOTION_BRANCH}:${expected_head}" \
+              origin "HEAD:refs/heads/${PROMOTION_BRANCH}"
+          else
+            git push origin "HEAD:refs/heads/${PROMOTION_BRANCH}"
+          fi
+
+          pr_number="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${PROMOTION_BRANCH}" \
+            --base master \
+            --state open \
+            --json number \
+            --jq '.[0].number // ""')"
+          if [ -z "${pr_number}" ]; then
+            pr_url="$(
+              gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --head "${PROMOTION_BRANCH}" \
+                --base master \
+                --title "chore: promote ${IMAGE_TAG}" \
+                --body "Promotes the API and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
+            )"
+            pr_number="${pr_url##*/}"
+          fi
+
+          head_sha="$(gh pr view "${pr_number}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid \
+            --jq '.headRefOid')"
+          local_head="$(git rev-parse HEAD)"
+          if [ "${head_sha}" != "${local_head}" ]; then
+            echo "::error::Promotion PR head ${head_sha} does not match pushed commit ${local_head}."
+            exit 1
+          fi
+
+          echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for chart configuration check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_SHA: ${{ steps.promotion.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+          head_sha="${HEAD_SHA}"
+
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            check_json="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(
+                .name == "Chart render/config checks" and
+                .app.slug == "github-actions" and
+                (.details_url | contains("/actions/runs/"))
+              )] | sort_by(.id) | last // empty')"
+            if [ -z "${check_json}" ]; then
+              echo "Waiting for Chart render/config checks to register for ${head_sha}."
+              sleep 10
+              continue
+            fi
+
+            status="$(jq -r '.status' <<<"${check_json}")"
+            conclusion="$(jq -r '.conclusion // "pending"' <<<"${check_json}")"
+            details_url="$(jq -r '.details_url' <<<"${check_json}")"
+            echo "Chart render/config checks: ${status}/${conclusion} ${details_url}"
+
+            if [ "${status}" = completed ]; then
+              if [ "${conclusion}" = success ]; then
+                exit 0
+              fi
+              echo "::error::Chart render/config checks completed with ${conclusion}: ${details_url}"
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "::error::Timed out waiting for Chart render/config checks on ${head_sha}."
+          exit 1
+
+      - name: Verify master before merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          current_master_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" \
+            --jq '.object.sha')"
+          if [ "${current_master_sha}" != "${SOURCE_SHA}" ]; then
+            echo "::error::Master advanced from ${SOURCE_SHA} to ${current_master_sha}; refusing stale promotion."
+            exit 1
+          fi
+
+      - name: Create merge App token
+        id: merge-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Merge checked promotion
+        env:
+          GH_TOKEN: ${{ steps.merge-app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.promotion.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.promotion.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          current_master_sha="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/master" \
+            --jq '.object.sha')"
+          if [ "${current_master_sha}" != "${SOURCE_SHA}" ]; then
+            echo "::error::Master advanced from ${SOURCE_SHA} to ${current_master_sha}; refusing stale promotion."
+            exit 1
+          fi
+
+          current_head="$(gh pr view "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json headRefOid \
+            --jq '.headRefOid')"
+          if [ "${current_head}" != "${HEAD_SHA}" ]; then
+            echo "::error::Promotion PR moved from ${HEAD_SHA} to ${current_head}; refusing merge."
+            exit 1
+          fi
+
+          gh pr merge "${PR_NUMBER}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --merge \
+            --match-head-commit "${HEAD_SHA}"
