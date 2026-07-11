@@ -30,7 +30,6 @@ export type LlmFileEditResult = {
   provider?: string
   model: string
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
-  cost_usd?: number
   snapshot: { id: string; message: string; content_hash: string } | null
   files: Array<{
     id: string
@@ -83,19 +82,11 @@ export type LlmModelOption = {
   id: string
   label: string
   model: string
-  api: string
-  endpoint: string
-  input_price_per_million: number
-  output_price_per_million: number
-  cached_read_price_per_million: number | null
-  cached_write_price_per_million: number | null
   enabled: boolean
 }
 
 export type LlmModelsResponse = {
   default_model_id: string
-  weekly_budget_usd?: number
-  daily_budget_usd: number
   models: LlmModelOption[]
 }
 
@@ -186,7 +177,7 @@ function createGuestStorage(): ProjectStorage {
       return []
     },
     async listLlmModels() {
-      return { default_model_id: '', daily_budget_usd: 0, models: [] }
+      return { default_model_id: '', models: [] }
     },
   }
 }

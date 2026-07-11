@@ -24,6 +24,8 @@ back to a non-interactive authorization-code login against the same realm.
 Optional environment:
   LIVE_FLOW_PROJECT
   LIVE_FLOW_MODEL_ID
+  LIVE_FLOW_AI_PROMPT                (default: harmless design.py comment)
+  LIVE_FLOW_EXPECTED_AI_OUTCOME      (changed or no_changes; default: any)
   LIVE_FLOW_COMPILE_TIMEOUT_SECONDS (default: 240)
   LIVE_FLOW_AI_TIMEOUT_SECONDS      (default: 300)
 EOF
@@ -48,8 +50,18 @@ API_BASE_URL="${UI_BASE_URL}/api/intus"
 PROJECT_NAME="${LIVE_FLOW_PROJECT:-agent_live_flow_$(date -u +%Y%m%d%H%M%S)}"
 COMPILE_TIMEOUT_SECONDS="${LIVE_FLOW_COMPILE_TIMEOUT_SECONDS:-240}"
 AI_TIMEOUT_SECONDS="${LIVE_FLOW_AI_TIMEOUT_SECONDS:-300}"
+AI_PROMPT="${LIVE_FLOW_AI_PROMPT:-Add a single harmless Python comment '# live AI edit smoke' near the top of design.py. Do not change geometry.}"
+EXPECTED_AI_OUTCOME="${LIVE_FLOW_EXPECTED_AI_OUTCOME:-}"
 TEMP_FILES=""
 TOKEN=""
+
+case "$EXPECTED_AI_OUTCOME" in
+  ""|changed|no_changes) ;;
+  *)
+    echo "LIVE_FLOW_EXPECTED_AI_OUTCOME must be changed or no_changes" >&2
+    exit 2
+    ;;
+esac
 
 cleanup() {
   for file in $TEMP_FILES; do
@@ -410,7 +422,7 @@ elif kind == "llm_edit":
     if not active and files:
         active = files[0].get("id", "")
     payload = {
-        "prompt": "Add a single harmless Python comment '# live AI edit smoke' near the top of design.py. Do not change geometry.",
+        "prompt": sys.argv[5],
         "files": files[:20],
         "active_file_id": active or None,
         "metadata": {"source": "smoke-live-flow"},
@@ -508,7 +520,7 @@ ai_edit_and_wait() {
   metadata=$(file_metadata_json)
   request=$(tmpfile)
   response=$(tmpfile)
-  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}"
+  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}" "$AI_PROMPT"
   response=$(api_request POST "${API_BASE_URL}/projects/${PROJECT_NAME}/files/llm-edit/jobs" "$request")
   job_id=$(json_get "$response" job_id)
   [ -n "$job_id" ] || {
@@ -530,6 +542,11 @@ ai_edit_and_wait() {
           cat "$status_body" >&2
           exit 1
         }
+        if [ -n "$EXPECTED_AI_OUTCOME" ] && [ "$outcome" != "$EXPECTED_AI_OUTCOME" ]; then
+          echo "FAIL AI edit: expected outcome ${EXPECTED_AI_OUTCOME}, got ${outcome}" >&2
+          cat "$status_body" >&2
+          exit 1
+        fi
         echo "PASS AI edit job succeeded (${job_id}, outcome=${outcome})" >&2
         printf '%s\n' "$job_id"
         return

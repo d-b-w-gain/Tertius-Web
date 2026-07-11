@@ -5,7 +5,7 @@ import { TimusWindow } from './workflows/timus/TimusWindow'
 import { OctavusWindow } from './workflows/octavus/OctavusWindow'
 import { GenerateDesignWindow, type GenerateViewportState } from './workflows/generate/GenerateDesignWindow'
 import { SharedExtusViewport, type SharedExtusViewportSource } from './workflows/extus/SharedExtusViewport'
-import { AiBudgetGauge } from './workflows/generate/AiBudgetGauge'
+import { AiUsageGauge } from './workflows/generate/AiUsageGauge'
 import { useAuth } from './auth/AuthProvider'
 import { LoginStateWidget } from './auth/LoginStateWidget'
 import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
@@ -315,7 +315,7 @@ function App() {
           </div>
         </div>
       </div>
-      <AiBudgetGauge serverUrl={intusServerUrl} />
+      <AiUsageGauge serverUrl={intusServerUrl} />
     </div>
   )
 }

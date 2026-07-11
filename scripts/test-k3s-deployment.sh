@@ -9,6 +9,7 @@ NAMESPACE="${NAMESPACE:-tertius}"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 API_IMAGE="${API_IMAGE:-}"
 UI_IMAGE="${UI_IMAGE:-}"
+PI_AGENT_IMAGE="${PI_AGENT_IMAGE:-}"
 ENABLE_TUNNEL="${ENABLE_TUNNEL:-false}"
 TUNNEL_TOKEN_SECRET_NAME="${TUNNEL_TOKEN_SECRET_NAME:-}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}"
@@ -19,6 +20,7 @@ KEYCLOAK_CHECK_IMAGE="${KEYCLOAK_CHECK_IMAGE:-busybox:1.37.0}"
 VALKEY_CHECK_IMAGE="${VALKEY_CHECK_IMAGE:-}"
 NATS_CHECK_IMAGE="${NATS_CHECK_IMAGE:-natsio/nats-box:0.19.7}"
 KEDA_ENABLED="${KEDA_ENABLED:-false}"
+PI_AGENT_ENABLED="${PI_AGENT_ENABLED:-false}"
 ALLOW_FLUX_MANAGED_RELEASE="${ALLOW_FLUX_MANAGED_RELEASE:-false}"
 ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH="${ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH:-false}"
 BUILDX_GHA_CACHE="${BUILDX_GHA_CACHE:-false}"
@@ -42,6 +44,8 @@ CLEANUP=false
 DELETE_DATA=false
 PORT_FORWARD_PIDS=""
 TEMP_FILES=""
+PI_AUTH_CLAIM=""
+PI_AUTH_RENDERED_STORAGE_CLASS=""
 
 usage() {
   cat <<EOF
@@ -55,6 +59,7 @@ Environment:
   RELEASE_NAME                  Default: tertius
   API_IMAGE                     Default: tertius-api:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   UI_IMAGE                      Default: tertius-ui:local (auto-suffixed with :local-<timestamp> for fresh rollout)
+  PI_AGENT_IMAGE                Default: tertius-pi-agent:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   ENABLE_TUNNEL                 Default: false
   TUNNEL_TOKEN_SECRET_NAME      Required when ENABLE_TUNNEL=true
   TUNNEL_HOSTNAME               Optional external hostname to smoke test when tunnel is enabled.
@@ -65,6 +70,7 @@ Environment:
   VALKEY_CHECK_IMAGE            Default: valkey image from values-local.yaml, then valkey/valkey:9.0.0
   NATS_CHECK_IMAGE              Default: natsio/nats-box:0.19.7
   KEDA_ENABLED                  Default: false. Enables KEDA ScaledJob rendering during the smoke deploy.
+  PI_AGENT_ENABLED              Default: false. Enables the serial Pi ScaledJob after OAuth verification.
   ALLOW_FLUX_MANAGED_RELEASE    Default: false. Set true only when intentionally testing a Flux-managed release.
   ALLOW_KEYCLOAK_OPERATOR_SCOPE_MISMATCH
                                 Default: false. Set true only when an external Keycloak operator is known to watch NAMESPACE.
@@ -232,6 +238,7 @@ refresh_local_image_tag() {
 apply_image_defaults() {
   api_from_default=0
   ui_from_default=0
+  pi_agent_from_default=0
 
   if [ -z "$API_IMAGE" ]; then
     API_IMAGE=$(values_image_for api tertius-api:local)
@@ -241,6 +248,10 @@ apply_image_defaults() {
     UI_IMAGE=$(values_image_for ui tertius-ui:local)
     ui_from_default=1
   fi
+  if [ -z "$PI_AGENT_IMAGE" ]; then
+    PI_AGENT_IMAGE=$(values_image_for piAgent tertius-pi-agent:local)
+    pi_agent_from_default=1
+  fi
   [ -n "$VALKEY_CHECK_IMAGE" ] || VALKEY_CHECK_IMAGE=$(values_image_for valkey valkey/valkey:9.0.0)
 
   if [ "$api_from_default" -eq 1 ]; then
@@ -248,6 +259,9 @@ apply_image_defaults() {
   fi
   if [ "$ui_from_default" -eq 1 ]; then
     UI_IMAGE=$(refresh_local_image_tag "$UI_IMAGE")
+  fi
+  if [ "$pi_agent_from_default" -eq 1 ]; then
+    PI_AGENT_IMAGE=$(refresh_local_image_tag "$PI_AGENT_IMAGE")
   fi
 }
 
@@ -458,6 +472,7 @@ EOF
 check_preflight() {
   need kubectl
   need helm
+  need jq
   need curl
   need "$DOCKER"
   require_chart_files
@@ -528,6 +543,7 @@ build_image() {
 build_images() {
   build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
   build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api --build-arg VITE_OTEL_ENABLED=true --build-arg VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=/otel/v1/traces
+  build_image tertius-pi-agent "${ROOT_DIR}/Dockerfile.api" "$PI_AGENT_IMAGE" --target pi-agent
 }
 
 build_and_load_images() {
@@ -536,6 +552,9 @@ build_and_load_images() {
 
   build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api --build-arg VITE_OTEL_ENABLED=true --build-arg VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=/otel/v1/traces
   load_image "$UI_IMAGE"
+
+  build_image tertius-pi-agent "${ROOT_DIR}/Dockerfile.api" "$PI_AGENT_IMAGE" --target pi-agent
+  load_image "$PI_AGENT_IMAGE"
 }
 
 k3s_ctr() {
@@ -625,6 +644,7 @@ load_image() {
 load_images() {
   load_image "$API_IMAGE"
   load_image "$UI_IMAGE"
+  load_image "$PI_AGENT_IMAGE"
 }
 
 helm_set_args() {
@@ -632,12 +652,17 @@ helm_set_args() {
   api_tag=$(image_tag "$API_IMAGE")
   ui_repo=$(image_repo "$UI_IMAGE")
   ui_tag=$(image_tag "$UI_IMAGE")
+  pi_agent_repo=$(image_repo "$PI_AGENT_IMAGE")
+  pi_agent_tag=$(image_tag "$PI_AGENT_IMAGE")
 
   HELM_EXTRA_ARGS="
 --set-string api.image.repository=${api_repo}
 --set-string api.image.tag=${api_tag}
 --set-string ui.image.repository=${ui_repo}
 --set-string ui.image.tag=${ui_tag}
+--set-string piAgent.image.repository=${pi_agent_repo}
+--set-string piAgent.image.tag=${pi_agent_tag}
+--set piAgent.enabled=${PI_AGENT_ENABLED}
 --set keda.enabled=${KEDA_ENABLED}
 --set app.secret.create=false
 --set-string app.secretName=${APP_SECRET_NAME}
@@ -674,14 +699,68 @@ ensure_app_secret() {
     -o yaml | kubectl apply -f -
 }
 
+pi_auth_manifest_fields() {
+  manifest_file=$1
+  kubectl create --dry-run=client -f "$manifest_file" -o json | jq -rsr '
+    [.[] | select(
+      .kind == "PersistentVolumeClaim" and
+      .metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth"
+    )] |
+    if length != 1 then error("expected exactly one chart-managed Pi auth PVC") else .[0] end |
+    [.metadata.name, (.spec.storageClassName // "")] | @tsv
+  '
+}
+
 render_and_install() {
   helm_set_args
   helm_cmd_with_extra helm lint "$CHART_DIR" --values "$VALUES_FILE"
   quote_cmd helm template "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --values "$VALUES_FILE" '>/tmp/tertius-helm-template.yaml'
   # shellcheck disable=SC2086
   helm template "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --values "$VALUES_FILE" $HELM_EXTRA_ARGS >/tmp/tertius-helm-template.yaml
+  rendered_pi_auth_fields=$(pi_auth_manifest_fields /tmp/tertius-helm-template.yaml)
+  IFS=$'\t' read -r PI_AUTH_CLAIM PI_AUTH_RENDERED_STORAGE_CLASS <<<"$rendered_pi_auth_fields"
   ensure_app_secret
-  helm_cmd_with_extra helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" --wait --timeout "$TIMEOUT"
+  if helm_wait_required; then
+    helm_cmd_with_extra helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" --wait --timeout "$TIMEOUT"
+  else
+    echo "Pi auth PVC ${NAMESPACE}/${PI_AUTH_CLAIM} is awaiting its first consumer; installing without Helm --wait and checking runtime readiness explicitly."
+    helm_cmd_with_extra helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --values "$VALUES_FILE" --timeout "$TIMEOUT"
+  fi
+}
+
+helm_wait_required() {
+  truthy "$PI_AGENT_ENABLED" && return 0
+  [ -n "$PI_AUTH_CLAIM" ] || return 0
+
+  if ! phase=$(kubectl get pvc "$PI_AUTH_CLAIM" -n "$NAMESPACE" --ignore-not-found -o jsonpath='{.status.phase}' 2>/dev/null); then
+    return 0
+  fi
+  case "$phase" in
+    "") pi_auth_storage_is_wffc "$PI_AUTH_RENDERED_STORAGE_CLASS" && return 1 ;;
+    Pending)
+      if ! storage_class=$(kubectl get pvc "$PI_AUTH_CLAIM" -n "$NAMESPACE" -o jsonpath='{.spec.storageClassName}' 2>/dev/null); then
+        return 0
+      fi
+      pi_auth_storage_is_wffc "$storage_class" && return 1
+      ;;
+    *) return 0 ;;
+  esac
+  return 0
+}
+
+pi_auth_storage_is_wffc() {
+  storage_class=${1:-}
+  if [ -z "$storage_class" ]; then
+    if ! storage_classes=$(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); then
+      return 1
+    fi
+    storage_class=$(printf '%s\n' "$storage_classes" | head -n 1)
+  fi
+  [ -n "$storage_class" ] || return 1
+  if ! binding_mode=$(kubectl get storageclass "$storage_class" -o jsonpath='{.volumeBindingMode}' 2>/dev/null); then
+    return 1
+  fi
+  [ "$binding_mode" = "WaitForFirstConsumer" ]
 }
 
 wait_for_rollout() {
@@ -692,11 +771,14 @@ wait_for_rollout() {
   [ -z "$valkey_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $valkey_pods --timeout="$TIMEOUT"
   nats_pods=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/name=nats" -o name 2>/dev/null || true)
   [ -z "$nats_pods" ] || run kubectl wait --for=condition=Ready -n "$NAMESPACE" $nats_pods --timeout="$TIMEOUT"
+  jobs=$(kubectl get jobs -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+  [ -z "$jobs" ] || run kubectl wait --for=condition=Complete -n "$NAMESPACE" $jobs --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   run kubectl wait --for=condition=Ready keycloaks.k8s.keycloak.org -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" --timeout="$TIMEOUT"
   if truthy "$ENABLE_TUNNEL"; then
     run kubectl wait --for=condition=Available deployment -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=cloudflared" --timeout="$TIMEOUT"
   fi
+  check_release_pvcs_ready
 }
 
 first_resource_by_label() {
@@ -840,15 +922,26 @@ curl_expect_same_body() {
   fi
 }
 
-check_release_pvcs_bound() {
+check_release_pvcs_ready() {
   pvc_names=$(capture kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' || true)
   [ -n "$pvc_names" ] || {
     echo "No PVCs found for release ${RELEASE_NAME}." >&2
     exit 1
   }
   printf '%s\n' "$pvc_names"
-  if printf '%s\n' "$pvc_names" | awk '$2 != "Bound" { found=1 } END { exit found ? 0 : 1 }'; then
-    echo "At least one PVC is not Bound." >&2
+  allow_pending_pi_auth=false
+  if ! truthy "$PI_AGENT_ENABLED"; then
+    if storage_class=$(kubectl get pvc "$PI_AUTH_CLAIM" -n "$NAMESPACE" -o jsonpath='{.spec.storageClassName}' 2>/dev/null) && pi_auth_storage_is_wffc "$storage_class"; then
+      allow_pending_pi_auth=true
+    fi
+  fi
+  if ! printf '%s\n' "$pvc_names" | awk -v expected="$PI_AUTH_CLAIM" -v allow_pending="$allow_pending_pi_auth" '
+    $2 == "Bound" { next }
+    allow_pending == "true" && $1 == expected && $2 == "Pending" { next }
+    { print > "/dev/stderr"; failed=1 }
+    END { exit failed ? 1 : 0 }
+  '; then
+    echo "At least one unexpected PVC is not Bound." >&2
     exit 1
   fi
 }
@@ -1177,7 +1270,7 @@ check_tunnel() {
 
 run_smoke_tests() {
   smoke_test_http
-  check_release_pvcs_bound
+  check_release_pvcs_ready
   check_api_has_no_pvc_mount
   check_postgres
   check_valkey
@@ -1237,4 +1330,6 @@ main() {
   run_smoke_tests
 }
 
-main "$@"
+if ! truthy "${TEST_K3S_DEPLOYMENT_LIB_ONLY:-false}"; then
+  main "$@"
+fi

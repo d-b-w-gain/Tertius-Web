@@ -164,8 +164,20 @@ kubectl -n "$NAMESPACE" get pods
 step "Setting local auth issuer"
 PUBLIC_BASE_URL=http://localhost:18080 NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-repair-auth-wsl.sh
 
-step "Syncing local LLM settings"
-NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-sync-llm-env-wsl.sh
+release="${RELEASE_NAME:-tertius}"
+pi_enabled="$(helm get values "$release" -n "$NAMESPACE" --all -o json 2>/dev/null | jq -r '.piAgent.enabled // false' 2>/dev/null || printf false)"
+if [ "$pi_enabled" = true ]; then
+  pi_claim="$(kubectl -n "$NAMESPACE" get pvc -l "app.kubernetes.io/instance=${release},app.kubernetes.io/component=pi-agent-auth" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  pi_verified=""
+  if [ -n "$pi_claim" ]; then
+    pi_verified="$(kubectl -n "$NAMESPACE" get pvc "$pi_claim" -o jsonpath='{.metadata.annotations.tertius\.io/pi-agent-auth-verified}' 2>/dev/null || true)"
+  fi
+  if [ "$pi_verified" != true ]; then
+    warn "Pi agent OAuth must be verified before AI edit jobs can run."
+    printf 'scripts/pi-agent-auth.sh login --namespace %q --release %q\n' "$NAMESPACE" "$release"
+    printf 'scripts/pi-agent-auth.sh verify --namespace %q --release %q\n' "$NAMESPACE" "$release"
+  fi
+fi
 
 step "Starting localhost:18080 tunnel from inside WSL"
 pkill -f 'kubectl -n tertius port-forward pod/.*18080:80' >/dev/null 2>&1 || true

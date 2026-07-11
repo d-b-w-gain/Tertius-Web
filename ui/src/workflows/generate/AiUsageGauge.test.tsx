@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AiBudgetGauge, recordAiBudgetUsage } from './AiBudgetGauge'
+import { AiUsageGauge, recordAiUsage } from './AiUsageGauge'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -25,7 +25,7 @@ function jsonResponse(data: unknown, ok = true) {
   }
 }
 
-describe('AiBudgetGauge', () => {
+describe('AiUsageGauge', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.clear()
@@ -40,19 +40,16 @@ describe('AiBudgetGauge', () => {
       tenant_daily_token_quota: 1000,
       tenant_tokens_used_today: 250,
       tenant_tokens_remaining_today: 750,
-      tenant_weekly_budget_usd: 14,
-      tenant_cost_used_this_week_usd: 3,
-      tenant_cost_remaining_this_week_usd: 11,
       user_daily_token_quota: 500,
       user_tokens_used_today: 100,
       user_tokens_remaining_today: 400,
       last_edit: { model: 'test-model', total_tokens: 25 },
     }))
 
-    render(<AiBudgetGauge serverUrl="/api/intus" />)
+    render(<AiUsageGauge serverUrl="/api/intus" />)
 
-    expect(await screen.findByText('$3.00 / $14.00')).toBeInTheDocument()
-    expect(screen.getByText('This week')).toBeInTheDocument()
+    expect(await screen.findByText('250 / 1.0k')).toBeInTheDocument()
+    expect(screen.getByText('Today')).toBeInTheDocument()
     expect(screen.getByText('test-model')).toBeInTheDocument()
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/llm-usage/today', mocks.getAccessToken)
   })
@@ -60,8 +57,8 @@ describe('AiBudgetGauge', () => {
   it('updates browser-session usage from local edit events', async () => {
     mocks.apiFetch.mockResolvedValue(jsonResponse({}, false))
 
-    render(<AiBudgetGauge serverUrl="/api/intus" />)
-    recordAiBudgetUsage(42)
+    render(<AiUsageGauge serverUrl="/api/intus" />)
+    recordAiUsage(42)
 
     await waitFor(() => {
       expect(screen.getByText('42 used')).toBeInTheDocument()

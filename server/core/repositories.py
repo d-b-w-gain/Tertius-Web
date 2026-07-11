@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import desc, func, or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
@@ -806,13 +807,35 @@ class LlmEditRepository:
             .order_by(CompileJob.created_at.desc(), CompileJob.id.desc())
         )
 
-    def mark_job_dispatched(self, job: LlmEditJob) -> None:
-        job.status = "running"
-        job.error = None
-        job.error_code = None
-        job.user_message = None
-        job.retryable = False
-        job.attempt_count += 1
+    def mark_job_dispatched(self, job: LlmEditJob) -> bool:
+        dispatched_id = self.db.scalar(
+            update(LlmEditJob)
+            .where(
+                LlmEditJob.id == job.id,
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == job.project_id,
+                LlmEditJob.status == "queued",
+            )
+            .values(
+                status="running",
+                error=None,
+                error_code=None,
+                user_message=None,
+                retryable=False,
+                attempt_count=LlmEditJob.attempt_count + 1,
+            )
+            .returning(LlmEditJob.id)
+        )
+        self.db.expire(job)
+        self.db.refresh(job)
+        if dispatched_id is None:
+            return False
+        payload = dict(job.request_payload)
+        payload["dispatched_at"] = now_utc().isoformat()
+        job.request_payload = payload
+        flag_modified(job, "request_payload")
+        self.db.flush()
+        return True
 
     def finish_job(
         self,

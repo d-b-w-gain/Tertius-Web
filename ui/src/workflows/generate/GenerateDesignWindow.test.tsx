@@ -93,20 +93,12 @@ describe('GenerateDesignWindow', () => {
     ])
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
     storage.listLlmModels.mockResolvedValue({
-      default_model_id: 'kimi-k2.7-code',
-      weekly_budget_usd: 14,
-      daily_budget_usd: 2,
+      default_model_id: 'gpt-5.5',
       models: [
         {
-          id: 'kimi-k2.7-code',
-          label: 'Kimi K2.7 Code',
-          model: 'kimi-k2.7-code',
-          api: 'openai-chat-completions',
-          endpoint: 'https://opencode.ai/zen/go/v1/chat/completions',
-          input_price_per_million: 0.95,
-          output_price_per_million: 4,
-          cached_read_price_per_million: 0.19,
-          cached_write_price_per_million: null,
+          id: 'gpt-5.5',
+          label: 'GPT-5.5',
+          model: 'gpt-5.5',
           enabled: true,
         },
       ],
@@ -137,7 +129,6 @@ describe('GenerateDesignWindow', () => {
             summary: 'Made the box larger.',
           },
         ],
-        cost_usd: 0.01,
       },
     })
     mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
@@ -176,6 +167,26 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByRole('button', { name: 'Close Generate Design conversation' })).toBeInTheDocument()
   })
 
+  it('shows the configured fixed model without pricing controls', async () => {
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+
+    expect(await screen.findByText('GPT-5.5')).toBeInTheDocument()
+    expect(screen.getByText('gpt-5.5')).toBeInTheDocument()
+    expect(screen.queryByText(/\$|per 1M|week/i)).not.toBeInTheDocument()
+  })
+
+  it('shows an error when the models response is empty', async () => {
+    storage.listLlmModels.mockResolvedValueOnce({ default_model_id: '', models: [] })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+
+    expect(await screen.findByText('No AI model is configured.')).toBeInTheDocument()
+  })
+
   it('sends design.py first, omits files missing concurrency metadata, compiles changed output, and selects the artifact URL', async () => {
     render(<GenerateDesignWindow />)
 
@@ -201,7 +212,7 @@ describe('GenerateDesignWindow', () => {
         { id: 'helpers-id', filename: 'helpers.py', updated_at: '2026-06-18T00:00:00Z' },
       ],
       active_file_id: 'design-id',
-      model_id: 'kimi-k2.7-code',
+      model_id: 'gpt-5.5',
       metadata: { source: 'generate_design_window' },
     })
 
@@ -459,7 +470,6 @@ describe('GenerateDesignWindow', () => {
                 summary: 'Removed unavailable RoundedPolygon API.',
               },
             ],
-            cost_usd: 0.02,
           },
         })
       }
@@ -483,7 +493,6 @@ describe('GenerateDesignWindow', () => {
               summary: 'Generated a lever.',
             },
           ],
-          cost_usd: 0.01,
         },
       })
     })

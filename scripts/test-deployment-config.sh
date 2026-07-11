@@ -5,8 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
+legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 
 "${ROOT_DIR}/scripts/check-runtime-parity.sh"
+bash "${ROOT_DIR}/scripts/test-k3s-wffc-wait.sh"
 
 render_local() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES"
@@ -92,6 +94,38 @@ render_external_observability_collector() {
     --set-string app.observability.collectorHttpPort=4318
 }
 
+render_pi_worker() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set piAgent.enabled=true
+}
+
+render_pi_disabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set piAgent.enabled=false
+}
+
+render_pi_existing_claim() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set piAgent.enabled=true \
+    --set-string piAgent.auth.existingClaim=external-pi-auth-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-0123456789
+}
+
+render_pi_keda_disabled() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set piAgent.enabled=true \
+    --set keda.enabled=false
+}
+
+render_pi_prompt() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set piAgent.enabled=true \
+    --set-string piAgent.systemPrompt='worker-only prompt'
+}
+
+render_pi_without_auth_storage() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" \
+    --set piAgent.enabled=true \
+    --set piAgent.auth.storage.enabled=false
+}
+
 extract_render_doc() {
   local content="$1"
   local kind_pattern="$2"
@@ -147,13 +181,306 @@ if ! rg -q '/api/auth/login' "${ROOT_DIR}/ui/src/auth/AuthProvider.tsx" || ! rg 
   exit 1
 fi
 
-if ! rg -q 'local-k3s-sync-llm-env-wsl.sh' "${ROOT_DIR}/scripts/local-k3s-start-wsl.sh" || ! rg -q 'local-k3s-sync-llm-env-wsl.sh' "${ROOT_DIR}/scripts/local-k3s-patch-api.ps1"; then
-  echo "Local k3s start and API patch helpers must sync local API-only LLM settings automatically." >&2
+if rg -q --glob '!test-deployment-config.sh' 'local-k3s-sync-llm-env-wsl.sh|set-k3s-llm-api-key.sh' "${ROOT_DIR}/scripts" "${ROOT_DIR}/docs/configuration-and-secrets.md"; then
+  echo "Legacy API-key synchronization helpers and callers must be removed." >&2
   exit 1
 fi
 
-if ! rg -q 'kubectl -n "\$NAMESPACE" set env "deployment/\$\{DEPLOYMENT\}" --containers=api' "${ROOT_DIR}/scripts/local-k3s-sync-llm-env-wsl.sh" || ! rg -q 'kubectl -n "\$NAMESPACE" create secret generic "\$LLM_SECRET_NAME"' "${ROOT_DIR}/scripts/local-k3s-sync-llm-env-wsl.sh"; then
-  echo "Local k3s LLM sync must apply model/base URL to the API deployment and credentials to the dedicated LLM Secret." >&2
+if [ ! -x "${ROOT_DIR}/scripts/pi-agent-auth.sh" ]; then
+  echo "Pi OAuth operations require an executable scripts/pi-agent-auth.sh helper." >&2
+  exit 1
+fi
+
+pi_auth_test_dir="$(mktemp -d)"
+trap 'rm -rf "$pi_auth_test_dir"' EXIT
+mkdir -p "$pi_auth_test_dir/bin"
+cat >"$pi_auth_test_dir/bin/kubectl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >>"$MOCK_KUBECTL_LOG"
+printf '\n' >>"$MOCK_KUBECTL_LOG"
+args=" $* "
+if [[ "$args" == *" get pvc "* ]]; then
+  printf '%s' "${MOCK_PVC_PHASE:-Bound}"
+elif [[ "$args" == *" get scaledjob "* ]]; then
+  case "${MOCK_SCALEDJOB_MODE:-absent}" in
+    absent) ;;
+    error) printf 'forbidden\n' >&2; exit 1 ;;
+    paused) printf '{"metadata":{"annotations":{"autoscaling.keda.sh/paused":"true"}}}' ;;
+    unsupported) printf '{"metadata":{"annotations":{"autoscaling.keda.sh/paused-replicas":"0"}}}' ;;
+    active) printf '{"metadata":{"annotations":{}}}' ;;
+  esac
+elif [[ "$args" == *" get jobs "* ]]; then
+  case "${MOCK_JOBS_MODE:-empty}" in
+    empty) printf '{"items":[]}' ;;
+    error) printf 'forbidden\n' >&2; exit 1 ;;
+    active) printf '{"items":[{"metadata":{"name":"pi-job"},"status":{"active":1}}]}' ;;
+  esac
+elif [[ "$args" == *" get pods "* ]]; then
+  if [ "${MOCK_PODS_ERROR:-false}" = true ]; then
+    printf 'forbidden\n' >&2
+    exit 1
+  fi
+  if [ "${MOCK_ACTIVE_WORKER:-false}" = true ]; then
+    printf '{"items":[{"metadata":{"name":"pi-worker-0"},"status":{"phase":"Running"}}]}'
+  else
+    printf '{"items":[]}'
+  fi
+elif [[ "$args" == *" create -f -"* ]]; then
+  manifest="$(cat)"
+  printf '%s\n' "$manifest" >"$MOCK_MANIFEST"
+  printf 'pod/mock created\n'
+elif [[ "$args" == *" exec -it "* ]]; then
+  if [ -n "${MOCK_ATTACH_TTY:-}" ]; then
+    if [ -t 0 ]; then printf 'tty\n'; else printf 'not-a-tty\n'; fi >"$MOCK_ATTACH_TTY"
+  fi
+  if [ "${MOCK_ATTACH_SLEEP:-false}" = true ]; then
+    printf '%s\n' "$$" >"$MOCK_ATTACH_PID"
+    trap 'printf TERM >>"$MOCK_ATTACH_EVENTS"; exit 143' TERM
+    while :; do sleep 1; done
+  fi
+elif [[ "$args" == *" exec "* && "$args" == *" stat "* ]]; then
+  printf '%s\n' "${MOCK_AUTH_STAT:-regular file|1000|1000|600}"
+elif [[ "$args" == *" exec "* ]]; then
+  printf '%s\n' "${MOCK_PI_CANARY:-PI_AUTH_OK}"
+fi
+EOF
+chmod +x "$pi_auth_test_dir/bin/kubectl"
+cat >"$pi_auth_test_dir/bin/helm" <<'EOF'
+#!/usr/bin/env bash
+printf '%q ' "$@" >>"$MOCK_HELM_LOG"
+printf '\n' >>"$MOCK_HELM_LOG"
+if [ -n "${MOCK_HELM_VALUES:-}" ]; then
+  printf '%s\n' "$MOCK_HELM_VALUES"
+else
+  printf '%s\n' '{"nameOverride":"","imagePullSecrets":[],"piAgent":{"runtimeClassName":""}}'
+fi
+EOF
+chmod +x "$pi_auth_test_dir/bin/helm"
+
+run_pi_auth_fixture() {
+  MOCK_KUBECTL_LOG="$pi_auth_test_dir/kubectl.log" \
+  MOCK_MANIFEST="$pi_auth_test_dir/manifest.yaml" \
+  MOCK_ATTACH_PID="$pi_auth_test_dir/attach.pid" \
+  MOCK_ATTACH_EVENTS="$pi_auth_test_dir/attach.events" \
+  MOCK_ATTACH_TTY="$pi_auth_test_dir/attach.tty" \
+  MOCK_HELM_LOG="$pi_auth_test_dir/helm.log" \
+  PATH="$pi_auth_test_dir/bin:$PATH" \
+    "${ROOT_DIR}/scripts/pi-agent-auth.sh" "$@"
+}
+
+for invalid_args in \
+  'verify --namespace -bad --release release --claim claim --image image:test' \
+  'verify --namespace test --release -bad --claim claim --image image:test' \
+  'verify --namespace test --release release --claim -bad --image image:test'; do
+  : >"$pi_auth_test_dir/kubectl.log"
+  : >"$pi_auth_test_dir/helm.log"
+  # shellcheck disable=SC2086
+  if run_pi_auth_fixture $invalid_args >/dev/null 2>&1; then
+    echo "Pi auth accepted option-like Kubernetes identifier: $invalid_args" >&2
+    exit 1
+  fi
+  if [ -s "$pi_auth_test_dir/kubectl.log" ] || [ -s "$pi_auth_test_dir/helm.log" ]; then
+    echo "Pi auth invoked Helm or kubectl before rejecting: $invalid_args" >&2
+    exit 1
+  fi
+done
+
+for safety_case in scaledjob_error jobs_error pods_error unsupported_pause active_scaledjob active_job; do
+  : >"$pi_auth_test_dir/kubectl.log"
+  : >"$pi_auth_test_dir/helm.log"
+  case "$safety_case" in
+    scaledjob_error)
+      if MOCK_SCALEDJOB_MODE=error run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth did not fail closed on ScaledJob discovery error." >&2; exit 1
+      fi
+      ;;
+    pods_error)
+      if MOCK_PODS_ERROR=true run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth did not fail closed on worker pod discovery error." >&2; exit 1
+      fi
+      ;;
+    jobs_error)
+      if MOCK_JOBS_MODE=error run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth did not fail closed on worker Job discovery error." >&2; exit 1
+      fi
+      ;;
+    unsupported_pause)
+      if MOCK_SCALEDJOB_MODE=unsupported run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth accepted an unsupported KEDA pause annotation." >&2; exit 1
+      fi
+      ;;
+    active_scaledjob)
+      if MOCK_SCALEDJOB_MODE=active run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth accepted an unpaused Pi ScaledJob." >&2; exit 1
+      fi
+      ;;
+    active_job)
+      if MOCK_SCALEDJOB_MODE=paused MOCK_JOBS_MODE=active run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+        echo "Pi auth accepted an active worker Job." >&2; exit 1
+      fi
+      ;;
+  esac
+  if rg -q ' create -f -' "$pi_auth_test_dir/kubectl.log"; then
+    echo "Pi auth created an operator pod after unsafe probe: $safety_case" >&2; exit 1
+  fi
+done
+
+: >"$pi_auth_test_dir/kubectl.log"
+MOCK_SCALEDJOB_MODE=paused run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null
+
+for accepted_auth_stat in 'regular file|1000|1000|600' 'regular file|1000|1000|660'; do
+  : >"$pi_auth_test_dir/kubectl.log"
+  MOCK_AUTH_STAT="$accepted_auth_stat" run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null
+  if ! rg -q 'annotate pvc claim tertius.io/pi-agent-auth-verified=true' "$pi_auth_test_dir/kubectl.log"; then
+    echo "Pi auth did not mark an accepted credential file verified: $accepted_auth_stat" >&2
+    exit 1
+  fi
+done
+
+for rejected_auth_stat in \
+  'regular file|1000|1000|640' \
+  'regular file|1000|1000|664' \
+  'regular file|1001|1000|600' \
+  'regular file|1000|1001|600' \
+  'directory|1000|1000|600'; do
+  : >"$pi_auth_test_dir/kubectl.log"
+  if MOCK_AUTH_STAT="$rejected_auth_stat" run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+    echo "Pi auth accepted an unsafe credential file: $rejected_auth_stat" >&2
+    exit 1
+  fi
+  if rg -q 'annotate pvc claim tertius.io/pi-agent-auth-verified=true' "$pi_auth_test_dir/kubectl.log"; then
+    echo "Pi auth marked an unsafe credential file verified: $rejected_auth_stat" >&2
+    exit 1
+  fi
+done
+
+: >"$pi_auth_test_dir/kubectl.log"
+if MOCK_PI_CANARY=AUTH_FAILED MOCK_AUTH_STAT='regular file|1000|1000|600' \
+  run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+  echo "Pi auth accepted a failed provider canary." >&2
+  exit 1
+fi
+if rg -q ' stat |annotate pvc claim tertius.io/pi-agent-auth-verified=true' "$pi_auth_test_dir/kubectl.log"; then
+  echo "Pi auth inspected or marked credentials verified after a failed provider canary." >&2
+  exit 1
+fi
+
+: >"$pi_auth_test_dir/kubectl.log"
+: >"$pi_auth_test_dir/helm.log"
+invalid_claim_values='{"nameOverride":"","imagePullSecrets":[],"piAgent":{"runtimeClassName":"","auth":{"existingClaim":"-helm-injected"}}}'
+if MOCK_HELM_VALUES="$invalid_claim_values" run_pi_auth_fixture verify --namespace test --release release --image image:test >/dev/null 2>&1; then
+  echo "Pi auth accepted an option-like Helm-derived claim." >&2
+  exit 1
+fi
+if [ -s "$pi_auth_test_dir/kubectl.log" ]; then
+  echo "Pi auth invoked kubectl before rejecting an invalid Helm-derived claim." >&2
+  exit 1
+fi
+
+: >"$pi_auth_test_dir/kubectl.log"
+: >"$pi_auth_test_dir/helm.log"
+pi_auth_output="$(run_pi_auth_fixture login --namespace test --release release --claim claim --image image:test 2>&1)"
+if ! rg -q ' exec -i ' "$pi_auth_test_dir/kubectl.log" || rg -q ' exec -it ' "$pi_auth_test_dir/kubectl.log"; then
+  echo "Non-TTY Pi auth must keep stdin without requesting a remote TTY." >&2
+  exit 1
+fi
+if ! rg -q ' delete pod ' "$pi_auth_test_dir/kubectl.log"; then
+  echo "I-018: Pi login pod must be deleted after a normal exit." >&2
+  exit 1
+fi
+PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" rtk uv run python -c '
+import json, os
+pod = json.load(open(os.environ["PI_AUTH_MANIFEST"]))
+assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "tertius"
+assert pod["metadata"]["labels"]["app.kubernetes.io/instance"] == "release"
+assert pod["metadata"]["labels"]["tertius.io/pi-agent-network"] == "true"
+assert pod["spec"]["automountServiceAccountToken"] is False
+assert pod["spec"]["securityContext"]["runAsUser"] == 1000
+assert pod["spec"]["containers"][0]["securityContext"]["readOnlyRootFilesystem"] is True
+'
+
+: >"$pi_auth_test_dir/kubectl.log"
+long_pi_app_name="$(printf 'a%.0s' $(seq 1 62))-suffix"
+private_helm_values="$(jq -cn --arg name "$long_pi_app_name" '{nameOverride:$name,imagePullSecrets:[{name:"private-registry"}],piAgent:{runtimeClassName:"gvisor"}}')"
+MOCK_HELM_VALUES="$private_helm_values" \
+  run_pi_auth_fixture verify --namespace test --release release --claim claim --image 'registry.invalid/pi:test' >/dev/null
+PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" rtk uv run python -c '
+import json, os
+pod = json.load(open(os.environ["PI_AUTH_MANIFEST"]))
+assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "a" * 62
+assert pod["spec"]["imagePullSecrets"] == [{"name": "private-registry"}]
+assert pod["spec"]["runtimeClassName"] == "gvisor"
+'
+
+: >"$pi_auth_test_dir/kubectl.log"
+rm -f "$pi_auth_test_dir/attach.pid" "$pi_auth_test_dir/attach.events" "$pi_auth_test_dir/attach.tty"
+printf -v pi_auth_pty_command '%q=%q %q=%q %q=%q %q=%q %q=%q %q=%q %q=%q %q login --namespace test --release release --claim claim --image image:test' \
+  MOCK_KUBECTL_LOG "$pi_auth_test_dir/kubectl.log" \
+  MOCK_MANIFEST "$pi_auth_test_dir/manifest.yaml" \
+  MOCK_ATTACH_PID "$pi_auth_test_dir/attach.pid" \
+  MOCK_ATTACH_EVENTS "$pi_auth_test_dir/attach.events" \
+  MOCK_ATTACH_TTY "$pi_auth_test_dir/attach.tty" \
+  MOCK_ATTACH_SLEEP true \
+  PATH "$pi_auth_test_dir/bin:$PATH" \
+  "${ROOT_DIR}/scripts/pi-agent-auth.sh"
+setsid script -qfec "$pi_auth_pty_command" /dev/null >/dev/null 2>&1 &
+pi_auth_pid=$!
+for _ in $(seq 1 50); do
+  [ -s "$pi_auth_test_dir/attach.pid" ] && break
+  sleep 0.02
+done
+if [ "$(cat "$pi_auth_test_dir/attach.tty" 2>/dev/null)" != tty ]; then
+  echo "I-019: stdin-TTY kubectl exec must run in the foreground with terminal stdin." >&2
+  kill -TERM -- "-$pi_auth_pid" 2>/dev/null || true
+  wait "$pi_auth_pid" 2>/dev/null || true
+  exit 1
+fi
+if ! rg -q 'if \[ -t 0 \]; then' "${ROOT_DIR}/scripts/pi-agent-auth.sh" || rg -q '\[ -t 1 \]' "${ROOT_DIR}/scripts/pi-agent-auth.sh"; then
+  echo "Pi auth TTY allocation must depend on stdin only so redirected output retains masking." >&2
+  exit 1
+fi
+attach_pid="$(cat "$pi_auth_test_dir/attach.pid")"
+auth_shell_pid="$(ps -o ppid= -p "$attach_pid" | tr -d ' ')"
+kill -TERM "$attach_pid" "$auth_shell_pid"
+wait "$pi_auth_pid" 2>/dev/null || true
+if ! rg -q ' delete pod ' "$pi_auth_test_dir/kubectl.log"; then
+  echo "I-019: Pi login pod must be deleted after interruption." >&2
+  exit 1
+fi
+if kill -0 "$attach_pid" 2>/dev/null || ! rg -q TERM "$pi_auth_test_dir/attach.events"; then
+  echo "I-019: interruption must terminate the foreground interactive kubectl process." >&2
+  exit 1
+fi
+
+: >"$pi_auth_test_dir/kubectl.log"
+if MOCK_ACTIVE_WORKER=true run_pi_auth_fixture login --namespace test --release release --claim claim --image image:test >/dev/null 2>&1; then
+  echo "I-020: Pi login must refuse while a worker pod is active." >&2
+  exit 1
+fi
+if rg -q ' create -f -' "$pi_auth_test_dir/kubectl.log"; then
+  echo "I-020: Pi login created an operator pod before refusing an active worker." >&2
+  exit 1
+fi
+
+: >"$pi_auth_test_dir/kubectl.log"
+pi_login_sdk_output="$(run_pi_auth_fixture login --namespace test --release release --claim claim --image image:test 2>&1)"
+pi_verify_output="$(run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test 2>&1)"
+pi_logout_output="$(run_pi_auth_fixture logout --namespace test --release release --claim claim --image image:test --confirm 2>&1)"
+pi_all_auth_output="${pi_auth_output}${pi_login_sdk_output}${pi_verify_output}${pi_logout_output}"
+if ! rg -q 'node /app/server/pi/oauth-cli\.ts login openai-codex' "$pi_auth_test_dir/kubectl.log" || \
+   ! rg -q 'node /app/server/pi/oauth-cli\.ts logout openai-codex' "$pi_auth_test_dir/kubectl.log"; then
+  echo "Pi login/logout must use the non-TUI SDK OAuth helper." >&2
+  exit 1
+fi
+if rg -q ' exec -it .* pi .*--no-session' "$pi_auth_test_dir/kubectl.log"; then
+  echo "Pi login/logout must not start the interactive TUI." >&2
+  exit 1
+fi
+if rg -qi 'auth\.json.*(cat|base64|cp|copy)|(^|[[:space:]])(cat|base64|cp)[[:space:]].*auth\.json' <<<"$pi_all_auth_output" || \
+   rg -qi 'auth\.json.*(cat|base64|cp|copy)|(^|[[:space:]])(cat|base64|cp)[[:space:]].*auth\.json' "$pi_auth_test_dir/kubectl.log" || \
+   rg -qi '(cat|base64|cp|copy).*auth\.json|kubectl.*(get|create|patch).*secret|secret.*(print|output|display)' "${ROOT_DIR}/scripts/pi-agent-auth.sh"; then
+  echo "I-021: Pi auth operations must not display or copy auth.json." >&2
   exit 1
 fi
 
@@ -207,12 +534,18 @@ confidential_client_rendered="$(render_confidential_client)"
 network_policy_enabled_rendered="$(render_network_policy_enabled)"
 network_policy_disabled_rendered="$(render_network_policy_disabled)"
 external_observability_rendered="$(render_external_observability_collector)"
+pi_worker_rendered="$(render_pi_worker)"
+pi_disabled_rendered="$(render_pi_disabled)"
+pi_existing_claim_rendered="$(render_pi_existing_claim)"
+pi_prompt_rendered="$(render_pi_prompt)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
 app_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'name: tertius-config')"
 default_app_configmap="$(extract_render_doc "$default_rendered" 'kind: ConfigMap' 'name: tertius-config')"
 api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
+pi_enabled_api_deployment="$(extract_render_doc "$pi_worker_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
+pi_disabled_api_deployment="$(extract_render_doc "$pi_disabled_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
@@ -236,6 +569,190 @@ api_with_llm_secret_without_prompt="$(extract_render_doc "$app_secret_without_pr
 ui_with_llm_secret="$(extract_render_doc "$app_secret_rendered" 'app.kubernetes.io/component: ui')"
 compile_job_network_policy="$(extract_render_doc "$network_policy_enabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
 compile_job_network_policy_disabled="$(extract_render_doc "$network_policy_disabled_rendered" 'kind: NetworkPolicy' 'name: tertius-compile-job')"
+pi_auth_pvc="$(extract_render_doc "$default_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
+pi_worker="$(extract_render_doc "$pi_worker_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
+pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
+pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
+pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
+pi_prompt_worker="$(extract_render_doc "$pi_prompt_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
+pi_prompt_api="$(extract_render_doc "$pi_prompt_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
+
+# ConfigMap-backed API settings must change the pod template so Helm rolls the
+# API together with workers that consume the same feature flag.
+pi_enabled_config_checksum="$(printf '%s\n' "$pi_enabled_api_deployment" | awk '/checksum\/config:/ {gsub(/"/, "", $2); print $2; exit}')"
+pi_disabled_config_checksum="$(printf '%s\n' "$pi_disabled_api_deployment" | awk '/checksum\/config:/ {gsub(/"/, "", $2); print $2; exit}')"
+if [[ ! "$pi_enabled_config_checksum" =~ ^[0-9a-f]{64}$ ]] || [[ ! "$pi_disabled_config_checksum" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "API pod template must expose only an opaque SHA-256 checksum for ConfigMap rollout state." >&2
+  exit 1
+fi
+if [ "$pi_enabled_config_checksum" = "$pi_disabled_config_checksum" ]; then
+  echo "Changing piAgent.enabled must change the API pod template ConfigMap checksum." >&2
+  exit 1
+fi
+
+if rg -F -q -- '- ::ffff:0:0/96' <<<"$pi_network_policy"; then
+  echo "Pi network policy must not use the Kubernetes-invalid IPv4-mapped IPv6 exclusion." >&2
+  exit 1
+fi
+
+# Helm validates structure only. When a cluster is reachable, ask the API server
+# to validate this dependency-free fixture so CIDR semantics are covered too.
+if command -v kubectl >/dev/null 2>&1 && kubectl get --raw=/readyz --request-timeout=5s >/dev/null 2>&1; then
+  if ! printf '%s\n' "$pi_network_policy" | kubectl apply --dry-run=server -f - >/dev/null; then
+    echo "Kubernetes API server rejected the rendered Pi NetworkPolicy." >&2
+    exit 1
+  fi
+fi
+
+# I-010: auth storage is retained and independent from worker enablement.
+if [ -z "$pi_auth_pvc" ] || ! rg -q 'helm.sh/resource-policy: keep' <<<"$pi_auth_pvc" || ! rg -q -- '- ReadWriteOnce' <<<"$pi_auth_pvc"; then
+  echo "Pi auth storage must render a retained ReadWriteOnce PVC while the worker is disabled." >&2
+  exit 1
+fi
+
+# I-011: an external claim takes precedence over chart-created storage.
+if [ -n "$pi_existing_claim_pvc" ] || ! rg -q 'claimName: external-pi-auth-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-0123456789$' <<<"$pi_existing_claim_worker"; then
+  echo "Pi existingClaim must suppress the chart PVC and be mounted by the worker." >&2
+  exit 1
+fi
+
+# I-012: one serial KEDA job consumes the durable Pi request queue.
+if ! rg -q 'maxReplicaCount: 1' <<<"$pi_worker" || ! rg -q 'type: nats-jetstream' <<<"$pi_worker" || ! rg -q 'stream: "?TERTIUS_PI_AGENT"?' <<<"$pi_worker" || ! rg -q 'consumer: "?pi-agent-workers"?' <<<"$pi_worker"; then
+  echo "Pi worker must render a serial KEDA NATS JetStream ScaledJob." >&2
+  exit 1
+fi
+if ! rg -q 'activeDeadlineSeconds: 540' <<<"$pi_worker" || ! printf '%s\n' "$pi_worker" | rg -A 2 'name: workspace' | rg -q 'sizeLimit: "128Mi"'; then
+  echo "Pi worker must use the fixed 540-second deadline and 128Mi workspace bound." >&2
+  exit 1
+fi
+if ! rg -q 'name: PI_SKIP_VERSION_CHECK' <<<"$pi_worker" || ! rg -q 'name: PI_TELEMETRY' <<<"$pi_worker"; then
+  echo "Pi worker must disable upstream version checks and telemetry." >&2
+  exit 1
+fi
+
+compose_canary_tmp="$(mktemp -d "${TMPDIR:-/tmp}/tertius-compose-canary.XXXXXX")"
+cat >"${compose_canary_tmp}/docker" <<'SH'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
+printf '%s\n' "${MOCK_CANARY_OUTPUT:-PI_AUTH_OK}"
+SH
+chmod +x "${compose_canary_tmp}/docker"
+MOCK_DOCKER_LOG="${compose_canary_tmp}/docker.log" PATH="${compose_canary_tmp}:$PATH" \
+  PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS=5 "${ROOT_DIR}/scripts/harness-compose.sh" auth-preflight
+if ! rg -q -- '--no-tools.*--provider openai-codex --model gpt-5\.5.*Reply with exactly PI_AUTH_OK' "${compose_canary_tmp}/docker.log"; then
+  echo "Compose auth preflight must run the no-tool OpenAI Codex canary." >&2
+  rm -rf "$compose_canary_tmp"
+  exit 1
+fi
+if MOCK_DOCKER_LOG="${compose_canary_tmp}/docker.log" MOCK_CANARY_OUTPUT=NOT_AUTHENTICATED \
+  PATH="${compose_canary_tmp}:$PATH" PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS=5 \
+  "${ROOT_DIR}/scripts/harness-compose.sh" auth-preflight >/dev/null 2>&1; then
+  echo "Compose auth preflight must reject any response other than PI_AUTH_OK." >&2
+  rm -rf "$compose_canary_tmp"
+  exit 1
+fi
+rm -rf "$compose_canary_tmp"
+
+pi_stream_max_bytes="$(printf '%s\n' "$app_configmap" | awk '/PI_AGENT_STREAM_MAX_BYTES:/ {gsub(/"/, "", $2); print $2; exit}')"
+if [ "$pi_stream_max_bytes" != "67108864" ] || ! PYTHONPATH="${ROOT_DIR}/server" PI_AGENT_STREAM_MAX_BYTES="$pi_stream_max_bytes" rtk uv run python -c 'from core.config import Settings; assert Settings().pi_agent_stream_max_bytes == 67108864' 2>/dev/null; then
+  echo "PI_AGENT_STREAM_MAX_BYTES must render as an exact decimal accepted by Pydantic Settings." >&2
+  exit 1
+fi
+if ! printf '%s\n' "$pi_worker" | rg -A 1 'name: PI_AGENT_STREAM_MAX_BYTES' | rg -q 'value: "67108864"'; then
+  echo "Pi worker must receive PI_AGENT_STREAM_MAX_BYTES as an exact decimal string." >&2
+  exit 1
+fi
+
+# I-013: the production worker preserves the compile-job pod boundary.
+for required in 'runtimeClassName: "gvisor"' 'runAsNonRoot: true' 'runAsUser: 1000' 'runAsGroup: 1000' 'fsGroup: 1000' 'automountServiceAccountToken: false' 'readOnlyRootFilesystem: true' 'allowPrivilegeEscalation: false' 'drop:' '- ALL'; do
+  if ! rg -F -q -- "$required" <<<"$pi_worker"; then
+    echo "Pi worker is missing hardening setting: $required" >&2
+    exit 1
+  fi
+done
+
+# I-014: mutable OAuth/API provider secrets never enter API or worker pods.
+if rg -q "${legacy_provider_key_pattern}|DATABASE_URL|APP_DB_|KEYCLOAK|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET" <<<"$pi_worker" || rg -q "${legacy_provider_key_pattern}|PI_AGENT_SYSTEM_PROMPT" <<<"$pi_prompt_api" || ! rg -q 'PI_AGENT_SYSTEM_PROMPT' <<<"$pi_prompt_worker"; then
+  echo "Pi provider credentials must be absent and the optional system prompt must be worker-only." >&2
+  exit 1
+fi
+
+# I-015: writable storage is limited to the whole auth directory and bounded scratch volumes.
+for mount in 'mountPath: /var/lib/pi-agent' 'mountPath: /workspace' 'mountPath: /tmp' 'mountPath: /tmp/home'; do
+  if ! rg -F -q "$mount" <<<"$pi_worker"; then
+    echo "Pi worker is missing volume mount: $mount" >&2
+    exit 1
+  fi
+done
+if rg -q 'subPath:|hostPath:|privileged: true' <<<"$pi_worker" || [ "$(rg -c 'sizeLimit:' <<<"$pi_worker")" -lt 3 ]; then
+  echo "Pi worker scratch volumes must be bounded emptyDirs and auth must be a whole-directory mount." >&2
+  exit 1
+fi
+
+# I-016: login and worker pods share a default-deny ingress/public-only egress policy.
+for required in 'tertius.io/pi-agent-network: "true"' 'ingress: []' 'port: 53' 'port: 4222' 'port: 4317' 'port: 443' 'except:' '0.0.0.0/8' '10.0.0.0/8' '100.64.0.0/10' '127.0.0.0/8' '169.254.0.0/16' '172.16.0.0/12' '192.0.0.0/24' '192.0.2.0/24' '192.31.196.0/24' '192.52.193.0/24' '192.88.99.0/24' '192.168.0.0/16' '192.175.48.0/24' '198.18.0.0/15' '198.51.100.0/24' '203.0.113.0/24' '224.0.0.0/4' '240.0.0.0/4' '::/128' '::1/128' '64:ff9b::/96' '64:ff9b:1::/48' '100::/64' '2001::/32' '2001:1::1/128' '2001:1::2/128' '2001:2::/48' '2001:3::/32' '2001:4:112::/48' '2001:20::/28' '2001:30::/28' '2001:db8::/32' '2002::/16' '2620:4f:8000::/48' '3fff::/20' '5f00::/16' 'fc00::/7' 'fe80::/10' 'ff00::/8'; do
+  if ! rg -F -q "$required" <<<"$pi_network_policy"; then
+    echo "Pi network policy is missing required isolation rule: $required" >&2
+    exit 1
+  fi
+done
+if ! PI_NETWORK_POLICY_YAML="$pi_network_policy" rtk uv run python -c '
+import os, yaml
+policy = yaml.safe_load(os.environ["PI_NETWORK_POLICY_YAML"])
+dns_rules = [rule for rule in policy["spec"]["egress"] if {p.get("port") for p in rule.get("ports", [])} == {53}]
+assert len(dns_rules) == 1
+peers = dns_rules[0].get("to", [])
+assert peers == [{
+    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+}]
+' 2>/dev/null; then
+  echo "Pi DNS egress must select only kube-system pods labelled k8s-app=kube-dns." >&2
+  exit 1
+fi
+
+other_release_rendered="$(RELEASE_NAME=other-tertius render_default)"
+other_pi_network_policy="$(extract_render_doc "$other_release_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
+if ! PI_NETWORK_POLICIES_YAML="$pi_network_policy
+---
+$other_pi_network_policy" rtk uv run python -c '
+import os, yaml
+policies = list(yaml.safe_load_all(os.environ["PI_NETWORK_POLICIES_YAML"]))
+assert len(policies) == 2
+for policy, release in zip(policies, ("tertius", "other-tertius"), strict=True):
+    selector = policy["spec"]["podSelector"]["matchLabels"]
+    assert selector["app.kubernetes.io/name"] == "tertius"
+    assert selector["app.kubernetes.io/instance"] == release
+    assert selector["tertius.io/pi-agent-network"] == "true"
+    nats = next(rule for rule in policy["spec"]["egress"] if any(port.get("port") == 4222 for port in rule.get("ports", [])))
+    assert nats["to"] == [{"podSelector": {"matchLabels": {
+        "app.kubernetes.io/name": "nats",
+        "app.kubernetes.io/instance": release,
+        "app.kubernetes.io/component": "nats",
+    }}}]
+' 2>/dev/null; then
+  echo "Pi worker/login and NATS policy selectors must remain isolated per Helm release." >&2
+  exit 1
+fi
+
+# I-017: an enabled API must not render without its KEDA worker runtime.
+if pi_keda_disabled_error="$(render_pi_keda_disabled 2>&1)"; then
+  echo "Pi-enabled renders must fail when KEDA is disabled." >&2
+  exit 1
+fi
+if ! rg -q 'piAgent.enabled requires keda.enabled=true' <<<"$pi_keda_disabled_error"; then
+  echo "KEDA-disabled Pi renders must report the precise worker precondition error." >&2
+  exit 1
+fi
+
+if invalid_pi_auth_error="$(render_pi_without_auth_storage 2>&1)"; then
+  echo "Pi worker render must fail when neither auth storage nor existingClaim is configured." >&2
+  exit 1
+fi
+if ! rg -q 'piAgent.enabled requires piAgent.auth.storage.enabled=true or piAgent.auth.existingClaim' <<<"$invalid_pi_auth_error"; then
+  echo "Invalid Pi auth storage render must report the precise configuration error." >&2
+  exit 1
+fi
 
 if invalid_confidential_error="$(render_invalid_confidential_client 2>&1)"; then
   echo "Helm render must fail when the UI client is confidential but no Keycloak client secret is configured." >&2
@@ -397,8 +914,8 @@ if ! rg -q 'accessTokenLifespan: 300' <<<"$rendered" || ! rg -q 'ssoSessionIdleT
   exit 1
 fi
 
-if ! rg -q 'LLM_MODELS_JSON: ".*kimi-k2.7-code.*minimax-m3' <<<"$rendered" || ! rg -q 'LLM_DEFAULT_MODEL_ID: "kimi-k2.7-code"' <<<"$rendered" || ! rg -q 'LLM_WEEKLY_BUDGET_USD: "14.00"' <<<"$rendered"; then
-  echo "ConfigMap must render the LLM model catalog, default model, and weekly dollar budget." >&2
+if ! rg -q 'PI_AGENT_MODEL: "gpt-5.5"' <<<"$rendered" || ! rg -q 'PI_AGENT_STREAM_NAME: "TERTIUS_PI_AGENT"' <<<"$rendered"; then
+  echo "ConfigMap must render the fixed Pi model and durable transport contract." >&2
   exit 1
 fi
 
@@ -407,17 +924,17 @@ if ! rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' <<<"$rendered" || ! rg -q 'LLM
   exit 1
 fi
 
-if ! rg -q 'LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"' <<<"$rendered"; then
-  echo "ConfigMap must render file-edit-specific LLM output and context limits." >&2
+if ! rg -q 'PI_AGENT_ESTIMATED_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"' <<<"$rendered"; then
+  echo "ConfigMap must render Pi output reservation and file-selection limits." >&2
   exit 1
 fi
 
-if ! rg -q 'LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS: "2"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS: "4"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS: "2(\.0)?"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS: "30(\.0)?"' <<<"$rendered"; then
-  echo "ConfigMap must render file-edit-specific LLM retry controls." >&2
+if ! rg -q 'PI_AGENT_MAX_TURNS: "12"' <<<"$rendered" || ! rg -q 'PI_AGENT_MAX_TOOL_CALLS: "48"' <<<"$rendered"; then
+  echo "ConfigMap must render bounded Pi execution controls." >&2
   exit 1
 fi
 
-if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET' <<<"$app_configmap"; then
+if rg -q "${legacy_provider_key_pattern}|PI_AGENT_SYSTEM_PROMPT|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET" <<<"$app_configmap"; then
   echo "ConfigMap must not render LLM provider secrets, prompts, or auth client/session secrets." >&2
   exit 1
 fi
@@ -427,27 +944,12 @@ if ! rg -q 'AUTH_SESSION_SECRET: "local-auth-session-secret-change-me"' <<<"$ren
   exit 1
 fi
 
-if ! rg -q 'kind: Secret' <<<"$app_secret_rendered" || ! rg -q 'LLM_API_KEY: "openai-compatible-test-key"' <<<"$app_secret_rendered" || ! rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: "test file edit prompt"' <<<"$app_secret_rendered"; then
-  echo "Dedicated LLM Secret must render LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT when app.llmSecret.create=true." >&2
+if rg -q "${legacy_provider_key_pattern}|LLM_FILE_EDIT_SYSTEM_PROMPT" <<<"$app_secret_rendered$api_with_llm_secret$api_with_llm_secret_without_prompt"; then
+  echo "Chart renders must not create or inject direct provider credentials." >&2
   exit 1
 fi
 
-if ! rg -q 'kind: Secret' <<<"$app_secret_without_prompt_rendered" || ! rg -q 'LLM_API_KEY: "openai-compatible-test-key"' <<<"$app_secret_without_prompt_rendered" || ! rg -q 'LLM_FILE_EDIT_SYSTEM_PROMPT: ""' <<<"$app_secret_without_prompt_rendered"; then
-  echo "Dedicated LLM Secret must render an explicit empty LLM_FILE_EDIT_SYSTEM_PROMPT when no prompt value is configured." >&2
-  exit 1
-fi
-
-if ! rg -q 'name: LLM_API_KEY' <<<"$api_with_llm_secret" || ! rg -q 'key: LLM_API_KEY' <<<"$api_with_llm_secret" || ! rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret" || ! rg -q 'key: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret"; then
-  echo "API Deployment must reference LLM_API_KEY and LLM_FILE_EDIT_SYSTEM_PROMPT from the dedicated LLM Secret." >&2
-  exit 1
-fi
-
-if ! rg -q 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' <<<"$api_with_llm_secret_without_prompt" || ! printf '%s\n' "$api_with_llm_secret_without_prompt" | rg -A 5 'name: LLM_FILE_EDIT_SYSTEM_PROMPT' | rg -q 'optional: true'; then
-  echo "API Deployment must keep the LLM_FILE_EDIT_SYSTEM_PROMPT secret key reference optional." >&2
-  exit 1
-fi
-
-if rg -q 'LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:' <<<"$ui_with_llm_secret"; then
+if rg -q "${legacy_provider_key_pattern}|PI_AGENT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD|BILLING_LLM_USAGE_SUBJECT|llm|envFrom:|configMapRef:|secretRef:" <<<"$ui_with_llm_secret"; then
   echo "UI Deployment must not receive or reference LLM provider credentials." >&2
   exit 1
 fi
@@ -537,7 +1039,7 @@ if ! rg -q 'command: \["sh", "/app/server/start-compile-job.sh"\]' <<<"$scaled_j
   exit 1
 fi
 
-if rg -q 'envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|LLM_API_KEY|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD' <<<"$scaled_job"; then
+if rg -q "envFrom:|secretRef:|APP_DB_PASSWORD|APP_DB_OWNER|APP_DB_HOST|APP_DB_NAME|DATABASE_URL|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET|${legacy_provider_key_pattern}|LLM_FILE_EDIT_SYSTEM_PROMPT|LLM_MODELS_JSON|LLM_DEFAULT_MODEL_ID|LLM_WEEKLY_BUDGET_USD" <<<"$scaled_job"; then
   echo "Compile ScaledJob must not receive app secrets, database environment, or LLM provider configuration." >&2
   exit 1
 fi

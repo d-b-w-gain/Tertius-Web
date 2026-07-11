@@ -26,7 +26,7 @@ def _request(prompt: str = "make a bracket"):
 
 def _result(total_tokens: int = 30):
     return SimpleNamespace(
-        model="test-openai-compatible-model",
+        model="gpt-5.5",
         usage=SimpleNamespace(
             prompt_tokens=10,
             completion_tokens=total_tokens - 10,
@@ -42,8 +42,9 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
         project_id=seeded_tenant.project_id,
         request=_request(),
         result=_result(),
-        provider_request_id="chatcmpl-123",
+        provider_request_id=None,
         settings=Settings(),
+        operation="files.llm_edit",
     )
     db_session.commit()
 
@@ -52,14 +53,13 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
     assert row.user_id == seeded_tenant.user_id
     assert row.project_id == seeded_tenant.project_id
     assert row.workflow == "intus"
-    assert row.operation == "build_script.generate"
-    assert row.provider == "openai-compatible"
-    assert row.model == "test-openai-compatible-model"
-    assert row.prompt == "make a bracket"
+    assert row.operation == "files.llm_edit"
+    assert row.provider == "openai-codex"
+    assert row.model == "gpt-5.5"
     assert row.prompt_tokens == 10
     assert row.completion_tokens == 20
     assert row.total_tokens == 30
-    assert row.provider_request_id == "chatcmpl-123"
+    assert row.provider_request_id is None
     assert row.metadata_json == {"source": "compiler_tab"}
     assert row.status == "completed"
 
@@ -76,27 +76,18 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
         usage_server,
         "get_settings",
         lambda: Settings(
-            llm_weekly_budget_usd=14.0,
             llm_tenant_daily_token_quota=1000,
             llm_user_daily_token_quota=500,
         ),
     )
     old_event_id = record_llm_usage(
-        db_session,
-        auth=_auth(seeded_tenant),
-        project_id=seeded_tenant.project_id,
-        request=_request("old edit"),
-        result=_result(200),
-        settings=Settings(),
+        db_session, auth=_auth(seeded_tenant), project_id=seeded_tenant.project_id,
+        request=_request("old edit"), result=_result(200), settings=Settings(),
         operation="files.llm_edit",
     )
     current_event_id = record_llm_usage(
-        db_session,
-        auth=_auth(seeded_tenant),
-        project_id=seeded_tenant.project_id,
-        request=_request("current edit"),
-        result=_result(120),
-        settings=Settings(),
+        db_session, auth=_auth(seeded_tenant), project_id=seeded_tenant.project_id,
+        request=_request("current edit"), result=_result(120), settings=Settings(),
         operation="files.llm_edit",
     )
     other_user_id = uuid4()
@@ -104,17 +95,10 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
     db_session.flush()
     record_llm_usage(
         db_session,
-        auth=AuthContext(
-            user_id=other_user_id,
-            tenant_id=seeded_tenant.tenant_id,
-            keycloak_subject="kc-tenant-peer",
-            email=None,
-        ),
-        project_id=seeded_tenant.project_id,
-        request=_request("peer edit"),
-        result=_result(80),
-        settings=Settings(),
-        operation="files.llm_edit",
+        auth=AuthContext(user_id=other_user_id, tenant_id=seeded_tenant.tenant_id,
+                         keycloak_subject="kc-tenant-peer", email=None),
+        project_id=seeded_tenant.project_id, request=_request("peer edit"),
+        result=_result(80), settings=Settings(), operation="files.llm_edit",
     )
     old_row = db_session.query(LlmUsageRecord).filter_by(event_id=old_event_id).one()
     old_row.created_at = old_row.created_at - timedelta(days=1)
@@ -128,15 +112,12 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
     assert data["tenant_daily_token_quota"] == 1000
     assert data["tenant_tokens_used_today"] == 200
     assert data["tenant_tokens_remaining_today"] == 800
-    assert data["tenant_weekly_budget_usd"] == 14.0
-    assert data["tenant_cost_used_this_week_usd"] == 0.0
-    assert data["tenant_cost_remaining_this_week_usd"] == 14.0
-    assert data["tenant_daily_budget_usd"] == 2.0
     assert data["user_daily_token_quota"] == 500
     assert data["user_tokens_used_today"] == 120
     assert data["user_tokens_remaining_today"] == 380
+    assert not any("usd" in key or "cost" in key or "budget" in key for key in data)
     assert data["last_edit"]["operation"] == "files.llm_edit"
-    assert data["last_edit"]["model"] == "test-openai-compatible-model"
+    assert data["last_edit"]["model"] == "gpt-5.5"
     assert data["last_edit"]["total_tokens"] == 120
     assert data["last_edit"]["created_at"] == current_row.created_at.isoformat()
 
@@ -229,18 +210,30 @@ def test_llm_usage_guard_rejects_user_daily_token_quota(db_session, seeded_tenan
         )
 
 
-def test_llm_usage_guard_rejects_tenant_weekly_budget(db_session, seeded_tenant):
-    settings = Settings(llm_weekly_budget_usd=1.0)
+def test_llm_models_endpoint_returns_only_fixed_pi_model(authenticated_intus_client):
+    response = authenticated_intus_client.get("/llm-usage/models")
 
-    with pytest.raises(LlmUsageLimitExceeded, match="LLM usage limit exceeded"):
-        assert_llm_usage_allowed(
-            db_session,
-            settings,
-            tenant_id=seeded_tenant.tenant_id,
-            user_id=seeded_tenant.user_id,
-            estimated_tokens=1,
-            estimated_cost_usd=1.01,
-        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "default_model_id": "gpt-5.5",
+        "models": [
+            {
+                "id": "gpt-5.5",
+                "model": "gpt-5.5",
+                "label": "GPT-5.5",
+                "enabled": True,
+            }
+        ],
+    }
+
+
+def test_legacy_build_script_generation_route_is_removed(authenticated_intus_client):
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/build-script/generate",
+        json={"prompt": "make a bracket", "active_file": "model.py"},
+    )
+
+    assert response.status_code == 404
 
 
 def test_llm_usage_guard_ignores_other_tenants(db_session, seeded_tenant):

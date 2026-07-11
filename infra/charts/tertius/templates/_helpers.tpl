@@ -79,3 +79,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "tertius.keycloakName" -}}
 {{- default (printf "%s-keycloak" (include "tertius.fullname" .)) .Values.keycloak.name | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+
+{{- define "tertius.piAgentAuthClaimName" -}}
+{{- if .Values.piAgent.auth.existingClaim -}}
+{{- .Values.piAgent.auth.existingClaim -}}
+{{- else -}}
+{{- printf "%s-pi-agent-auth" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}

@@ -1,6 +1,7 @@
 import core.config as config
 from core.config import Settings
-from llm_test_helpers import TEST_FILE_EDIT_SYSTEM_PROMPT, TEST_LLM_MODEL_ID, TEST_LLM_MODELS_JSON
+from pydantic import ValidationError
+import pytest
 
 
 def test_server_env_example_matches_settings_fields():
@@ -192,23 +193,15 @@ def test_settings_allows_otel_overrides(monkeypatch):
     assert settings.otel_log_json is False
 
 
-def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
+def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     for env_var in (
-        "LLM_MODELS_JSON",
-        "LLM_DEFAULT_MODEL_ID",
-        "LLM_WEEKLY_BUDGET_USD",
-        "LLM_DAILY_BUDGET_USD",
-        "LLM_API_KEY",
-        "LLM_FILE_EDIT_SYSTEM_PROMPT",
-        "LLM_TIMEOUT_SECONDS",
-        "LLM_MAX_OUTPUT_TOKENS",
-        "LLM_FILE_EDIT_MAX_OUTPUT_TOKENS",
-        "LLM_FILE_EDIT_MAX_CONTEXT_FILES",
-        "LLM_FILE_EDIT_MAX_CONTEXT_CHARS",
-        "LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS",
-        "LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS",
-        "LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS",
-        "LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS",
+        "PI_AGENT_ENABLED", "PI_AGENT_PROVIDER", "PI_AGENT_MODEL", "PI_AGENT_MODEL_LABEL",
+        "PI_AGENT_THINKING", "PI_AGENT_TIMEOUT_SECONDS", "PI_AGENT_MAX_TURNS",
+        "PI_AGENT_MAX_TOOL_CALLS", "PI_AGENT_ESTIMATED_OUTPUT_TOKENS",
+        "PI_AGENT_STREAM_NAME", "PI_AGENT_REQUEST_SUBJECT", "PI_AGENT_RESULT_SUBJECT",
+        "PI_AGENT_WORKER_QUEUE", "PI_AGENT_RESULT_CONSUMER", "PI_AGENT_ACK_WAIT_SECONDS",
+        "PI_AGENT_MAX_DELIVER", "PI_AGENT_REQUEST_MAX_BYTES", "PI_AGENT_RESULT_MAX_BYTES",
+        "PI_AGENT_STREAM_MAX_AGE_SECONDS", "PI_AGENT_STREAM_MAX_BYTES", "PI_AGENT_SYSTEM_PROMPT",
         "LLM_USER_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_DAILY_TOKEN_QUOTA",
@@ -219,53 +212,56 @@ def test_settings_exposes_llm_and_billing_defaults(monkeypatch):
     ):
         monkeypatch.delenv(env_var, raising=False)
 
-    monkeypatch.setenv("LLM_MODELS_JSON", "[]")
-    monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", "")
-    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "14.00")
-    monkeypatch.setenv("LLM_API_KEY", "")
-
     settings = Settings()
-
-    assert settings.llm_models_json == "[]"
-    assert settings.llm_default_model_id == ""
-    assert settings.llm_weekly_budget_usd == 14.0
-    assert settings.llm_daily_budget_usd is None
-    assert settings.llm_models == []
-    assert settings.llm_api_key == ""
-    assert settings.llm_file_edit_system_prompt == ""
-    assert settings.llm_timeout_seconds == 480
-    assert settings.llm_max_output_tokens == 2048
-    assert settings.llm_file_edit_max_output_tokens == 65536
-    assert settings.llm_file_edit_max_context_files == 20
-    assert settings.llm_file_edit_max_context_chars == 80000
-    assert settings.llm_file_edit_max_generation_attempts == 2
-    assert settings.llm_file_edit_max_rate_limit_attempts == 4
-    assert settings.llm_file_edit_rate_limit_backoff_base_seconds == 2.0
-    assert settings.llm_file_edit_rate_limit_backoff_cap_seconds == 30.0
-    assert settings.llm_user_rate_limit_per_minute == 10
-    assert settings.llm_tenant_rate_limit_per_minute == 60
-    assert settings.llm_tenant_daily_token_quota == 3200000
-    assert settings.llm_user_daily_token_quota == 3200000
-    assert settings.billing_stream_name == "TERTIUS_BILLING"
-    assert settings.billing_llm_usage_subject == "tertius.billing.usage.llm.tokens"
-    assert settings.billing_max_bytes == 262144
+    assert settings.pi_agent_enabled is False
+    assert settings.pi_agent_provider == "openai-codex"
+    assert settings.pi_agent_model == "gpt-5.5"
+    assert settings.pi_agent_model_label == "GPT-5.5"
+    assert settings.pi_agent_thinking == "high"
+    assert settings.pi_agent_timeout_seconds == 480
+    assert settings.pi_agent_max_turns == 12
+    assert settings.pi_agent_max_tool_calls == 48
+    assert settings.pi_agent_estimated_output_tokens == 65536
+    assert settings.pi_agent_request_max_bytes == 524288
+    assert settings.pi_agent_result_max_bytes == 524288
+    assert settings.pi_agent_stream_name == "TERTIUS_PI_AGENT"
+    assert settings.pi_agent_request_subject == "tertius.pi.request"
+    assert settings.pi_agent_result_subject == "tertius.pi.result"
+    assert settings.pi_agent_worker_queue == "pi-agent-workers"
+    assert settings.pi_agent_result_consumer == "pi-agent-result-api"
+    assert settings.pi_agent_ack_wait_seconds == 90
+    assert settings.pi_agent_max_deliver == 2
+    assert settings.pi_agent_stream_max_age_seconds == 86400
+    assert settings.pi_agent_stream_max_bytes == 67108864
+    assert settings.pi_agent_system_prompt == ""
 
 
-def test_settings_allows_llm_and_billing_overrides(monkeypatch):
-    monkeypatch.setenv("LLM_MODELS_JSON", TEST_LLM_MODELS_JSON)
-    monkeypatch.setenv("LLM_DEFAULT_MODEL_ID", TEST_LLM_MODEL_ID)
-    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "17.50")
-    monkeypatch.setenv("LLM_API_KEY", "secret-key")
-    monkeypatch.setenv("LLM_FILE_EDIT_SYSTEM_PROMPT", TEST_FILE_EDIT_SYSTEM_PROMPT)
-    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "30")
-    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS", "1024")
-    monkeypatch.setenv("LLM_FILE_EDIT_MAX_OUTPUT_TOKENS", "4096")
+@pytest.mark.parametrize("field,value", [("pi_agent_thinking", "extreme"), ("pi_agent_max_turns", 0), ("pi_agent_request_max_bytes", 0)])
+def test_settings_rejects_invalid_pi_agent_values(field, value):
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
+
+
+def test_removed_direct_provider_settings_are_absent():
+    removed = {
+        "llm_api_key", "llm_models_json", "llm_default_model_id",
+        "llm_weekly_" + "budget_usd", "llm_daily_" + "budget_usd", "llm_max_output_tokens",
+        "llm_file_edit_max_output_tokens", "llm_file_edit_max_generation_attempts",
+        "llm_file_edit_max_rate_limit_attempts",
+        "llm_file_edit_rate_limit_backoff_base_seconds",
+        "llm_file_edit_rate_limit_backoff_cap_seconds",
+    }
+    assert removed.isdisjoint(Settings.model_fields)
+
+
+def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
+    monkeypatch.setenv("PI_AGENT_ENABLED", "true")
+    monkeypatch.setenv("PI_AGENT_MODEL", "gpt-test")
+    monkeypatch.setenv("PI_AGENT_THINKING", "xhigh")
+    monkeypatch.setenv("PI_AGENT_MAX_TURNS", "8")
+    monkeypatch.setenv("PI_AGENT_SYSTEM_PROMPT", "Worker prompt")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_FILES", "6")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_CHARS", "50000")
-    monkeypatch.setenv("LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS", "3")
-    monkeypatch.setenv("LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS", "5")
-    monkeypatch.setenv("LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS", "1.5")
-    monkeypatch.setenv("LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS", "12.5")
     monkeypatch.setenv("LLM_USER_RATE_LIMIT_PER_MINUTE", "5")
     monkeypatch.setenv("LLM_TENANT_RATE_LIMIT_PER_MINUTE", "25")
     monkeypatch.setenv("LLM_TENANT_DAILY_TOKEN_QUOTA", "50000")
@@ -276,21 +272,13 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
 
     settings = Settings()
 
-    assert settings.llm_default_model_id == TEST_LLM_MODEL_ID
-    assert settings.llm_weekly_budget_usd == 17.5
-    assert settings.get_llm_model().id == TEST_LLM_MODEL_ID
-    assert settings.get_llm_model().endpoint == "https://llm.example.test/v1/chat/completions"
-    assert settings.llm_api_key == "secret-key"
-    assert settings.llm_file_edit_system_prompt == TEST_FILE_EDIT_SYSTEM_PROMPT
-    assert settings.llm_timeout_seconds == 30
-    assert settings.llm_max_output_tokens == 1024
-    assert settings.llm_file_edit_max_output_tokens == 4096
+    assert settings.pi_agent_enabled is True
+    assert settings.pi_agent_model == "gpt-test"
+    assert settings.pi_agent_thinking == "xhigh"
+    assert settings.pi_agent_max_turns == 8
+    assert settings.pi_agent_system_prompt == "Worker prompt"
     assert settings.llm_file_edit_max_context_files == 6
     assert settings.llm_file_edit_max_context_chars == 50000
-    assert settings.llm_file_edit_max_generation_attempts == 3
-    assert settings.llm_file_edit_max_rate_limit_attempts == 5
-    assert settings.llm_file_edit_rate_limit_backoff_base_seconds == 1.5
-    assert settings.llm_file_edit_rate_limit_backoff_cap_seconds == 12.5
     assert settings.llm_user_rate_limit_per_minute == 5
     assert settings.llm_tenant_rate_limit_per_minute == 25
     assert settings.llm_tenant_daily_token_quota == 50000
@@ -298,23 +286,3 @@ def test_settings_allows_llm_and_billing_overrides(monkeypatch):
     assert settings.billing_stream_name == "CUSTOM_BILLING"
     assert settings.billing_llm_usage_subject == "custom.billing.llm"
     assert settings.billing_max_bytes == 65536
-
-
-def test_settings_converts_legacy_daily_llm_budget_to_weekly(monkeypatch):
-    monkeypatch.delenv("LLM_WEEKLY_BUDGET_USD", raising=False)
-    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "2.00")
-
-    settings = Settings()
-
-    assert settings.llm_daily_budget_usd == 2.0
-    assert settings.llm_weekly_budget_usd == 14.0
-
-
-def test_settings_prefers_explicit_weekly_llm_budget_over_legacy_daily(monkeypatch):
-    monkeypatch.setenv("LLM_WEEKLY_BUDGET_USD", "14.00")
-    monkeypatch.setenv("LLM_DAILY_BUDGET_USD", "1.00")
-
-    settings = Settings()
-
-    assert settings.llm_daily_budget_usd == 1.0
-    assert settings.llm_weekly_budget_usd == 14.0

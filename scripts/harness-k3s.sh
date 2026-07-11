@@ -268,6 +268,35 @@ require_compile_worker() {
   exit 1
 }
 
+require_pi_agent_auth() {
+  claim=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=pi-agent-auth" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$claim" ] || {
+    echo "Pi agent auth PVC is missing for ${NAMESPACE}/${RELEASE_NAME}." >&2
+    echo "Deploy with piAgent.auth.storage.enabled=true, then run scripts/pi-agent-auth.sh login and verify." >&2
+    exit 1
+  }
+  phase=$(kubectl get pvc "$claim" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  verified=$(kubectl get pvc "$claim" -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.tertius\.io/pi-agent-auth-verified}' 2>/dev/null || true)
+  [ "$phase" = "Bound" ] && [ "$verified" = "true" ] || {
+    echo "Pi agent auth PVC ${NAMESPACE}/${claim} is not ready (phase=${phase:-missing}, verified=${verified:-false})." >&2
+    echo "Run scripts/pi-agent-auth.sh login --namespace ${NAMESPACE} --release ${RELEASE_NAME}, then verify." >&2
+    exit 1
+  }
+}
+
+require_pi_agent_worker() {
+  if kubectl get scaledjob -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=pi-agent-worker" \
+    -o name 2>/dev/null | grep -q .; then
+    return
+  fi
+  echo "No serial Pi agent worker was found for ${NAMESPACE}/${RELEASE_NAME}." >&2
+  echo "Redeploy the verified release with KEDA_ENABLED=true PI_AGENT_ENABLED=true before running full live-flow." >&2
+  exit 1
+}
+
 case "${1:-}" in
   up)
     stop_port_forwards
@@ -300,6 +329,10 @@ case "${1:-}" in
       . "$STATUS_FILE"
     fi
     require_compile_worker
+    if [ "${LIVE_FLOW_COMPILE_ONLY:-false}" != "true" ]; then
+      require_pi_agent_auth
+      require_pi_agent_worker
+    fi
     live_flow_started_ports=false
     if ! ui_reachable "${UI_BASE_URL:-http://localhost:${UI_LOCAL_PORT}}"; then
       stop_port_forwards

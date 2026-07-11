@@ -45,6 +45,7 @@ jobs:
         with:
           context: .
           file: Dockerfile.api
+          target: api
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
@@ -52,6 +53,20 @@ jobs:
             ghcr.io/d-b-w-gain/tertius-api:master
           cache-from: type=gha,scope=tertius-api
           cache-to: type=gha,mode=max,scope=tertius-api
+
+      - name: Build and push Pi agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          target: pi-agent
+          push: true
+          tags: |
+            ghcr.io/d-b-w-gain/tertius-pi-agent:${{ steps.vars.outputs.image_tag }}
+            ghcr.io/d-b-w-gain/tertius-pi-agent:sha-${{ steps.vars.outputs.short_sha }}
+            ghcr.io/d-b-w-gain/tertius-pi-agent:master
+          cache-from: type=gha,scope=tertius-pi-agent
+          cache-to: type=gha,mode=max,scope=tertius-pi-agent
 
       - name: Build and push UI image
         uses: docker/build-push-action@v6

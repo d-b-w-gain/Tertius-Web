@@ -56,10 +56,18 @@ from workflows.artus.artus_server import app as artus_app
 from workflows.extus.extus_server import app as extus_app
 from workflows.timus.timus_server import app as timus_app
 from workflows.intus.compile_result_consumer import run_result_consumer
+from workflows.intus.pi_agent_result_consumer import (
+    run_pi_agent_active_observer,
+    run_pi_agent_result_consumer,
+)
 from core.provisioning import provision_user_context
 
 _compile_result_stop_event: asyncio.Event | None = None
 _compile_result_task: asyncio.Task | None = None
+_pi_agent_result_stop_event: asyncio.Event | None = None
+_pi_agent_result_task: asyncio.Task | None = None
+_pi_agent_active_stop_event: asyncio.Event | None = None
+_pi_agent_active_task: asyncio.Task | None = None
 
 
 async def start_compile_result_consumer():
@@ -79,12 +87,56 @@ async def stop_compile_result_consumer():
             pass
 
 
+async def start_pi_agent_result_consumer():
+    global _pi_agent_result_stop_event, _pi_agent_result_task
+    if not settings.pi_agent_enabled:
+        return
+    _pi_agent_result_stop_event = asyncio.Event()
+    _pi_agent_result_task = asyncio.create_task(run_pi_agent_result_consumer(_pi_agent_result_stop_event))
+
+
+async def stop_pi_agent_result_consumer():
+    if _pi_agent_result_stop_event is not None:
+        _pi_agent_result_stop_event.set()
+    if _pi_agent_result_task is not None:
+        _pi_agent_result_task.cancel()
+        try:
+            await _pi_agent_result_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def start_pi_agent_active_observer():
+    global _pi_agent_active_stop_event, _pi_agent_active_task
+    if not settings.pi_agent_enabled:
+        return
+    _pi_agent_active_stop_event = asyncio.Event()
+    _pi_agent_active_task = asyncio.create_task(
+        run_pi_agent_active_observer(_pi_agent_active_stop_event)
+    )
+
+
+async def stop_pi_agent_active_observer():
+    if _pi_agent_active_stop_event is not None:
+        _pi_agent_active_stop_event.set()
+    if _pi_agent_active_task is not None:
+        _pi_agent_active_task.cancel()
+        try:
+            await _pi_agent_active_task
+        except asyncio.CancelledError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await start_compile_result_consumer()
+    await start_pi_agent_active_observer()
+    await start_pi_agent_result_consumer()
     try:
         yield
     finally:
+        await stop_pi_agent_result_consumer()
+        await stop_pi_agent_active_observer()
         await stop_compile_result_consumer()
 
 

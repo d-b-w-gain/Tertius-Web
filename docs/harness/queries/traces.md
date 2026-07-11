@@ -16,6 +16,21 @@ Expected services after `scripts/smoke-live-flow.sh`:
 - `tertius-api`
 - `tertius-compile-job`
 
+For a Pi agent edit, inspect one trace and require this parent-linked chain:
+
+```text
+tertius-api HTTP request
+  -> NATS publish
+  -> tertius-pi-agent-job pi_agent.command.consume
+  -> NATS publish
+  -> tertius-api pi_agent.result.consume
+```
+
+NATS headers are authoritative for each consume boundary. Envelope
+`traceparent`/`tracestate` fields are used only when headers are absent for a
+republished or legacy message. No span attribute may include prompts, source,
+filenames, auth material, or raw tenant, user, project, or job identifiers.
+
 `tertius-ui` spans require a browser run because the shell live-flow validates
 the UI origin and proxy with curl but does not execute frontend JavaScript.
 

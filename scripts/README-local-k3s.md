@@ -23,11 +23,11 @@ scripts/harness-k3s.sh up
 
 Use this after rebooting, WSL restarting, or when the local stack has stale pods.
 It starts k3s if needed, waits for the Tertius pods, repairs the local Keycloak
-issuer/audience settings, syncs API-only LLM settings from `.env` or
-`server/.env` into k3s, starts the `localhost:18080` tunnel, and patches the UI
-bundle from the current checkout. `LLM_MODELS_JSON`, `LLM_DEFAULT_MODEL_ID`, and
-`LLM_WEEKLY_BUDGET_USD` are applied to the API Deployment; `LLM_API_KEY` remains
-in the dedicated local k3s LLM Secret.
+issuer/audience settings, starts the `localhost:18080` tunnel, and patches the UI
+bundle from the current checkout. When the Pi worker is enabled, the helper
+prints the release-specific OAuth login and verification commands. Provision
+the retained auth claim with those commands before running AI edits; see
+`docs/operations/pi-agent-auth.md`.
 
 ## Patch Frontend Changes
 
@@ -48,7 +48,7 @@ Keycloak settings, copies `ui/dist` into the running UI pod, and verifies
 Use this after editing backend API code under `server/`, including Timus API
 logic. It builds a fresh `localhost/tertius-api:local-<timestamp>` image, imports
 it into k3s containerd, updates the `tertius-api` deployment, waits for rollout,
-syncs local API-only LLM settings, and verifies `http://localhost:18080/api/`.
+and verifies `http://localhost:18080/api/`.
 
 Note: this patches the long-running API deployment only. It warns instead of
 patching the KEDA compile `ScaledJob`; run a full local redeploy/start flow when

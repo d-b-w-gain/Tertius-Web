@@ -7,7 +7,7 @@ COMPOSE_PARITY_API_PORT="${COMPOSE_PARITY_API_PORT:-18000}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <dev-up|parity-up|smoke|live-flow|status|down>
+Usage: $(basename "$0") <dev-up|parity-up|smoke|live-flow|auth-preflight|status|down|delete-data>
 EOF
 }
 
@@ -49,14 +49,35 @@ preflight_parity_ports() {
   done
 }
 
+require_pi_agent_auth() {
+  canary_timeout="${PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS:-60}"
+  canary="$(timeout "$canary_timeout" docker compose \
+    -f "${ROOT_DIR}/docker-compose.yml" -f "${ROOT_DIR}/docker-compose.parity.yml" \
+    run --rm --no-deps --entrypoint pi pi-agent-worker \
+    --no-session --no-tools --no-extensions --no-skills --no-prompt-templates \
+    --no-themes --no-context-files --no-approve \
+    --provider openai-codex --model gpt-5.5 -p \
+    'Reply with exactly PI_AUTH_OK and no other text.' 2>/dev/null)" || {
+    echo "Compose Pi OpenAI Codex authentication canary failed or timed out after ${canary_timeout}s." >&2
+    echo "Run: docker compose run --rm --entrypoint pi pi-agent-worker" >&2
+    echo "Complete /login, then exit Pi before running the full live-flow." >&2
+    exit 1
+  }
+  [ "$canary" = "PI_AUTH_OK" ] || {
+    echo "Compose Pi OpenAI Codex authentication canary returned an unexpected response." >&2
+    echo "Run: docker compose run --rm --entrypoint pi pi-agent-worker" >&2
+    exit 1
+  }
+}
+
 case "${1:-}" in
   dev-up)
     compose up -d postgres keycloak nats otel-collector victoriametrics victoriatraces
-    compose up backend compile-job-runner frontend
+    compose up backend compile-job-runner pi-agent-worker frontend
     ;;
   parity-up)
     preflight_parity_ports
-    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics victoriatraces backend compile-job-runner frontend
+    compose_parity up -d --build postgres keycloak nats otel-collector victoriametrics victoriatraces backend compile-job-runner pi-agent-worker frontend
     ;;
   smoke)
     "${ROOT_DIR}/scripts/smoke-http.sh" \
@@ -67,8 +88,13 @@ case "${1:-}" in
     live_flow_args=()
     if [ "${LIVE_FLOW_COMPILE_ONLY:-false}" = "true" ]; then
       live_flow_args+=(--compile-only)
+    else
+      require_pi_agent_auth
     fi
     "${ROOT_DIR}/scripts/smoke-live-flow.sh" "${live_flow_args[@]}" "http://localhost:${COMPOSE_PARITY_UI_PORT}"
+    ;;
+  auth-preflight)
+    require_pi_agent_auth
     ;;
   status)
     if compose_available; then
@@ -85,13 +111,17 @@ case "${1:-}" in
     echo "k3s uses the same default parity ports; override with COMPOSE_PARITY_UI_PORT and COMPOSE_PARITY_API_PORT."
     ;;
   down)
-    if [ "${DELETE_DATA:-false}" = "true" ]; then
-      compose_parity down -v
-      compose down -v
-    else
-      compose_parity down
-      compose down
+    compose_parity down
+    compose down
+    ;;
+  delete-data)
+    if [ "${HARNESS_ASSUME_YES:-false}" != "true" ]; then
+      printf 'Delete all Compose harness data, including pi-agent-auth? Type yes to continue: '
+      read -r answer
+      [ "$answer" = "yes" ] || exit 1
     fi
+    compose_parity down -v
+    compose down -v
     ;;
   --help|-h)
     usage

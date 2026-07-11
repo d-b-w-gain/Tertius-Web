@@ -81,62 +81,31 @@ app:
     compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
-    llmDefaultModelId: kimi-k2.7-code
-    llmWeeklyBudgetUsd: "14.00"
-    llmModels:
-      - id: glm-5.2
-        label: GLM-5.2
-        model: glm-5.2
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 1.40
-        output_price_per_million: 4.40
-        cached_read_price_per_million: 0.26
-        cached_write_price_per_million: null
-        enabled: true
-      - id: kimi-k2.7-code
-        label: Kimi K2.7 Code
-        model: kimi-k2.7-code
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 0.95
-        output_price_per_million: 4.00
-        cached_read_price_per_million: 0.19
-        cached_write_price_per_million: null
-        enabled: true
-      - id: deepseek-v4-pro
-        label: DeepSeek V4 Pro
-        model: deepseek-v4-pro
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 1.74
-        output_price_per_million: 3.48
-        cached_read_price_per_million: 0.0145
-        cached_write_price_per_million: null
-        enabled: true
-      - id: minimax-m3
-        label: MiniMax M3
-        model: minimax-m3
-        endpoint: https://opencode.ai/zen/go/v1/messages
-        api: anthropic-messages
-        input_price_per_million: 0.30
-        output_price_per_million: 1.20
-        cached_read_price_per_million: 0.06
-        cached_write_price_per_million: null
-        enabled: true
-    llmTimeoutSeconds: 480
-    llmMaxOutputTokens: 2048
-    llmFileEditMaxOutputTokens: 65536
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 80000
-    llmFileEditMaxGenerationAttempts: 2
-    llmFileEditMaxRateLimitAttempts: 4
-    llmFileEditRateLimitBackoffBaseSeconds: 2.0
-    llmFileEditRateLimitBackoffCapSeconds: 30.0
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"
     llmUserDailyTokenQuota: "3200000"
+    piAgentProvider: openai-codex
+    piAgentModel: gpt-5.5
+    piAgentModelLabel: GPT-5.5
+    piAgentThinking: high
+    piAgentTimeoutSeconds: 480
+    piAgentMaxTurns: 12
+    piAgentMaxToolCalls: 48
+    piAgentEstimatedOutputTokens: 65536
+    piAgentStreamName: TERTIUS_PI_AGENT
+    piAgentRequestSubject: tertius.pi.request
+    piAgentResultSubject: tertius.pi.result
+    piAgentWorkerQueue: pi-agent-workers
+    piAgentResultConsumer: pi-agent-result-api
+    piAgentAckWaitSeconds: 90
+    piAgentMaxDeliver: 2
+    piAgentRequestMaxBytes: 524288
+    piAgentResultMaxBytes: 524288
+    piAgentStreamMaxAgeSeconds: 86400
+    piAgentStreamMaxBytes: 67108864
     billingStreamName: TERTIUS_BILLING
     billingLlmUsageSubject: tertius.billing.usage.llm.tokens
     billingMaxBytes: 262144
@@ -148,11 +117,6 @@ app:
     oidcIssuerUrl: http://localhost:8081/realms/tertius
     oidcClientId: tertius-ui
     oidcAudience: tertius-api
-  llmSecretName: ""
-  llmSecret:
-    create: false
-    apiKey: ""
-    fileEditSystemPrompt: ""
   secretName: ""
   secret:
     create: false
@@ -187,6 +151,35 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+piAgent:
+  enabled: false
+  image:
+    repository: ghcr.io/d-b-w-gain/tertius-pi-agent # {"$imagepolicy": "flux-system:tertius-pi-agent:name"}
+    tag: master-107-5d1e30c # {"$imagepolicy": "flux-system:tertius-pi-agent:tag"}
+    pullPolicy: IfNotPresent
+  auth:
+    existingClaim: ""
+    storage:
+      enabled: true
+      size: 64Mi
+      storageClassName: ""
+      retain: true
+  systemPrompt: ""
+  runtimeClassName: gvisor
+  activeDeadlineSeconds: 540
+  ttlSecondsAfterFinished: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  workspaceSizeLimit: 128Mi
+  tmpSizeLimit: 256Mi
+  homeSizeLimit: 16Mi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
 compileJobs:
   runtimeClassName: gvisor
   maxReplicaCount: 4

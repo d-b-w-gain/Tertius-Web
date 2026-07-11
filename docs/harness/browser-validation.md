@@ -85,11 +85,13 @@ Intus compile submit and status:
 
 Generate Design live AI edit and compile:
 
-- Preconditions: logged in, `LLM_API_KEY` configured, file edit system prompt
-  configured, compile worker available.
-- Run `scripts/harness-k3s.sh live-flow` or `scripts/harness-compose.sh
-  live-flow` before browser inspection so backend/proxy/auth prerequisites are
-  proven.
+- Preconditions: logged in, the retained Pi OAuth claim provisioned and
+  verified, Pi and compile workers available.
+- Run `scripts/pi-agent-auth.sh verify --namespace tertius --release
+  tertius-live-flow-smoke` for the target k3s release, then run the full
+  `scripts/harness-k3s.sh live-flow` before browser inspection so
+  backend/proxy/auth prerequisites are proven. Compile-only mode is not valid
+  evidence for this workflow.
 - Open Generate Design, submit a small prompt that changes `design.py`, and
   watch the generated message and compile status.
 - Pass: AI edit job reaches a terminal success state, changed file metadata is

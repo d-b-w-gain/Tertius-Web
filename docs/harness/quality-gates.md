@@ -10,7 +10,9 @@ evidence in final notes or PR notes.
 - Python typing-sensitive changes: `uv run mypy`.
 - Frontend changes: typecheck/tests for the touched surface.
 - Helm/config/runtime changes: `bash scripts/test-deployment-config.sh` and
-  `bash scripts/check-runtime-parity.sh`.
+  `bash scripts/check-runtime-parity.sh`. When Kubernetes is reachable, the
+  deployment test also submits the rendered Pi `NetworkPolicy` with
+  `kubectl apply --dry-run=server` to catch API-server-only validation errors.
 - Runtime integration changes: shared HTTP smoke against the relevant runtime.
 - Authenticated frontend/API workflow changes: `scripts/harness-k3s.sh
   live-flow` or `scripts/harness-compose.sh live-flow`.

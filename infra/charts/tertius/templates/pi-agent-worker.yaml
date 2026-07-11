@@ -1,0 +1,158 @@
+{{- if and .Values.keda.enabled .Values.piAgent.enabled }}
+{{- $natsUrl := .Values.app.config.natsUrl | trim | default (printf "nats://%s-nats:4222" .Release.Name) }}
+{{- $otelEndpoint := .Values.app.observability.otlpEndpoint | trim | default "" }}
+{{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled (not $otelEndpoint) }}
+{{- $otelEndpoint = printf "http://%s:4317" (include "tertius.otelCollectorName" .) }}
+{{- end }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledJob
+metadata:
+  name: {{ include "tertius.fullname" . }}-pi-agent
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pi-agent-worker
+spec:
+  pollingInterval: 5
+  maxReplicaCount: 1
+  successfulJobsHistoryLimit: {{ .Values.piAgent.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.piAgent.failedJobsHistoryLimit }}
+  jobTargetRef:
+    parallelism: 1
+    completions: 1
+    backoffLimit: 0
+    activeDeadlineSeconds: {{ .Values.piAgent.activeDeadlineSeconds }}
+    ttlSecondsAfterFinished: {{ .Values.piAgent.ttlSecondsAfterFinished }}
+    template:
+      metadata:
+        labels:
+          {{- include "tertius.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: pi-agent-worker
+          tertius.io/pi-agent-network: "true"
+      spec:
+        restartPolicy: Never
+        automountServiceAccountToken: false
+        enableServiceLinks: false
+        hostNetwork: false
+        hostPID: false
+        hostIPC: false
+        {{- with .Values.piAgent.runtimeClassName }}
+        runtimeClassName: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imagePullSecrets }}
+        imagePullSecrets:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: pi-agent
+            image: "{{ .Values.piAgent.image.repository }}:{{ .Values.piAgent.image.tag }}"
+            imagePullPolicy: {{ .Values.piAgent.image.pullPolicy }}
+            command: ["sh", "/app/server/start-pi-agent-job.sh"]
+            env:
+              - name: NATS_URL
+                value: {{ $natsUrl | quote }}
+              - name: PI_AGENT_PROVIDER
+                value: {{ .Values.app.config.piAgentProvider | quote }}
+              - name: PI_AGENT_MODEL
+                value: {{ .Values.app.config.piAgentModel | quote }}
+              - name: PI_AGENT_THINKING
+                value: {{ .Values.app.config.piAgentThinking | quote }}
+              - name: PI_AGENT_TIMEOUT_SECONDS
+                value: {{ .Values.app.config.piAgentTimeoutSeconds | quote }}
+              - name: PI_AGENT_MAX_TURNS
+                value: {{ .Values.app.config.piAgentMaxTurns | quote }}
+              - name: PI_AGENT_MAX_TOOL_CALLS
+                value: {{ .Values.app.config.piAgentMaxToolCalls | quote }}
+              - name: PI_AGENT_STREAM_NAME
+                value: {{ .Values.app.config.piAgentStreamName | quote }}
+              - name: PI_AGENT_REQUEST_SUBJECT
+                value: {{ .Values.app.config.piAgentRequestSubject | quote }}
+              - name: PI_AGENT_RESULT_SUBJECT
+                value: {{ .Values.app.config.piAgentResultSubject | quote }}
+              - name: PI_AGENT_WORKER_QUEUE
+                value: {{ .Values.app.config.piAgentWorkerQueue | quote }}
+              - name: PI_AGENT_ACK_WAIT_SECONDS
+                value: {{ .Values.app.config.piAgentAckWaitSeconds | quote }}
+              - name: PI_AGENT_MAX_DELIVER
+                value: {{ .Values.app.config.piAgentMaxDeliver | quote }}
+              - name: PI_AGENT_REQUEST_MAX_BYTES
+                value: {{ .Values.app.config.piAgentRequestMaxBytes | quote }}
+              - name: PI_AGENT_RESULT_MAX_BYTES
+                value: {{ .Values.app.config.piAgentResultMaxBytes | quote }}
+              - name: PI_AGENT_STREAM_MAX_AGE_SECONDS
+                value: {{ .Values.app.config.piAgentStreamMaxAgeSeconds | quote }}
+              - name: PI_AGENT_STREAM_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.piAgentStreamMaxBytes | int64) | quote }}
+              - name: PI_CODING_AGENT_DIR
+                value: /var/lib/pi-agent
+              - name: PI_SKIP_VERSION_CHECK
+                value: "1"
+              - name: PI_TELEMETRY
+                value: "0"
+              - name: HOME
+                value: /tmp/home
+              {{- with .Values.piAgent.systemPrompt }}
+              - name: PI_AGENT_SYSTEM_PROMPT
+                value: {{ . | quote }}
+              {{- end }}
+              - name: OTEL_SERVICE_NAME
+                value: tertius-pi-agent
+              - name: OTEL_ENABLED
+                value: {{ .Values.app.observability.enabled | quote }}
+              - name: OTEL_EXPORTER_OTLP_ENDPOINT
+                value: {{ $otelEndpoint | quote }}
+              - name: OTEL_EXPORTER_OTLP_PROTOCOL
+                value: {{ .Values.app.observability.otlpProtocol | quote }}
+              - name: OTEL_TRACES_SAMPLER
+                value: {{ .Values.app.observability.tracesSampler | quote }}
+              - name: OTEL_TRACES_SAMPLER_ARG
+                value: {{ .Values.app.observability.tracesSamplerArg | quote }}
+              - name: OTEL_LOG_JSON
+                value: {{ .Values.app.observability.logJson | quote }}
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            volumeMounts:
+              - name: auth
+                mountPath: /var/lib/pi-agent
+              - name: workspace
+                mountPath: /workspace
+              - name: tmp
+                mountPath: /tmp
+              - name: home
+                mountPath: /tmp/home
+            resources:
+              {{- toYaml .Values.piAgent.resources | nindent 14 }}
+        volumes:
+          - name: auth
+            persistentVolumeClaim:
+              claimName: {{ include "tertius.piAgentAuthClaimName" . }}
+          - name: workspace
+            emptyDir:
+              sizeLimit: {{ .Values.piAgent.workspaceSizeLimit | quote }}
+          - name: tmp
+            emptyDir:
+              sizeLimit: {{ .Values.piAgent.tmpSizeLimit | quote }}
+          - name: home
+            emptyDir:
+              sizeLimit: {{ .Values.piAgent.homeSizeLimit | quote }}
+  triggers:
+    - type: nats-jetstream
+      metadata:
+        natsServerMonitoringEndpoint: {{ printf "%s-nats-headless.%s.svc.cluster.local:8222" .Release.Name .Release.Namespace | quote }}
+        account: "$G"
+        stream: {{ .Values.app.config.piAgentStreamName | quote }}
+        consumer: {{ .Values.app.config.piAgentWorkerQueue | quote }}
+        lagThreshold: "1"
+        activationLagThreshold: "0"
+        useHttps: "false"
+{{- end }}

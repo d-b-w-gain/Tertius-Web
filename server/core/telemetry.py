@@ -190,6 +190,11 @@ def elapsed_seconds(start: float) -> float:
 
 
 _HISTOGRAM_BOUNDARIES: dict[str, tuple[float, ...]] = {
+    "tertius.pi_agent.job.duration": (
+        0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0,
+    ),
+    "tertius.pi_agent.turns": (1, 2, 4, 6, 8, 10, 12),
+    "tertius.pi_agent.tool_calls": (1, 2, 4, 8, 12, 16, 24, 32, 48),
     "tertius.llm.request.duration": (
         0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0,
     ),

@@ -93,53 +93,39 @@ Default local storage is intentionally small. Set explicit storage sizes,
 storage classes, retention, and resource requests before using bundled backends
 outside smoke or small installs.
 
-## LLM Build Script Generation
+## Pi Agent Worker
 
-The API can call configured LLM providers to generate Intus build scripts and file edits.
+AI edits run in a one-shot KEDA `ScaledJob` backed by the release-local NATS
+JetStream service. Set `piAgent.enabled=true` to render the worker. The worker is
+serial (`maxReplicaCount: 1`), runs as UID/GID 1000, and does not receive the
+application Secret, database configuration, Keycloak configuration, provider
+API keys, or a Kubernetes service-account token.
+`piAgent.enabled=true` requires `keda.enabled=true` and configured chart or
+external auth storage; invalid combinations fail during Helm rendering.
 
-Non-secret provider settings are rendered into the app ConfigMap:
+OAuth state is stored in a retained ReadWriteOnce claim mounted read/write at
+`/var/lib/pi-agent`. The claim renders by default even while the worker is
+disabled, allowing an operator login pod to provision authentication first.
+Set `piAgent.auth.existingClaim` to mount an externally managed claim and
+suppress chart PVC creation. Deleting a Helm release does not delete the
+chart-created claim while `piAgent.auth.storage.retain=true`.
 
-- `app.config.llmModels` -> `LLM_MODELS_JSON`
-- `app.config.llmDefaultModelId` -> `LLM_DEFAULT_MODEL_ID`
-- `app.config.llmWeeklyBudgetUsd` -> `LLM_WEEKLY_BUDGET_USD`
-- `app.config.llmTimeoutSeconds` -> `LLM_TIMEOUT_SECONDS`
-- `app.config.llmMaxOutputTokens` -> `LLM_MAX_OUTPUT_TOKENS`
-- `app.config.llmFileEditMaxOutputTokens` -> `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS`
-- `app.config.llmFileEditMaxContextFiles` -> `LLM_FILE_EDIT_MAX_CONTEXT_FILES`
-- `app.config.llmFileEditMaxContextChars` -> `LLM_FILE_EDIT_MAX_CONTEXT_CHARS`
-- `app.config.llmFileEditMaxGenerationAttempts` -> `LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS`
-- `app.config.llmFileEditMaxRateLimitAttempts` -> `LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS`
-- `app.config.llmFileEditRateLimitBackoffBaseSeconds` -> `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS`
-- `app.config.llmFileEditRateLimitBackoffCapSeconds` -> `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS`
-- `app.config.llmUserRateLimitPerMinute` -> `LLM_USER_RATE_LIMIT_PER_MINUTE`
-- `app.config.llmTenantRateLimitPerMinute` -> `LLM_TENANT_RATE_LIMIT_PER_MINUTE`
-- `app.config.llmTenantDailyTokenQuota` -> `LLM_TENANT_DAILY_TOKEN_QUOTA`
-- `app.config.llmUserDailyTokenQuota` -> `LLM_USER_DAILY_TOKEN_QUOTA`
-- `app.config.billingStreamName` -> `BILLING_STREAM_NAME`
-- `app.config.billingLlmUsageSubject` -> `BILLING_LLM_USAGE_SUBJECT`
-- `app.config.billingMaxBytes` -> `BILLING_MAX_BYTES`
+The worker's other writable locations are bounded `emptyDir` volumes at
+`/workspace`, `/tmp`, and `/tmp/home`. Production defaults to the `gvisor`
+runtime class. Local values clear the runtime class and select `local-path` for
+the auth PVC.
 
-See `docs/configuration-and-secrets.md` for the full ConfigMap, Secret, and LLM model schema reference.
+`PI_AGENT_SYSTEM_PROMPT` is optional and is rendered only in the worker when
+`piAgent.systemPrompt` is non-empty. Provider credentials are OAuth state on the
+auth claim; the chart does not create or inject an API-key Secret.
 
-The provider API key and file-edit system prompt are secret material:
-
-- `app.llmSecret.apiKey` -> `LLM_API_KEY` when `app.llmSecret.create=true`
-- `app.llmSecret.fileEditSystemPrompt` -> `LLM_FILE_EDIT_SYSTEM_PROMPT` when `app.llmSecret.create=true`
-- `app.llmSecretName` selects an externally managed dedicated LLM Secret when production manages these values out of chart values.
-- Do not put `LLM_API_KEY` or `LLM_FILE_EDIT_SYSTEM_PROMPT` in the shared app Secret selected by `app.secretName`; keep provider credentials and prompts in the dedicated LLM Secret.
-
-The file-edit system prompt has no Python fallback. It must be supplied through the dedicated LLM Secret as `LLM_FILE_EDIT_SYSTEM_PROMPT`; otherwise AI file edits are treated as not configured.
-
-Only the API Deployment receives LLM configuration, `LLM_API_KEY`, and `LLM_FILE_EDIT_SYSTEM_PROMPT`. UI and Compile Jobs do not receive LLM configuration, keys, or prompts.
-
-For production, manage the dedicated LLM Secret outside committed values:
-
-```bash
-kubectl -n tertius create secret generic tertius-llm \
-  --from-literal=LLM_API_KEY="$LLM_API_KEY" \
-  --from-literal=LLM_FILE_EDIT_SYSTEM_PROMPT="$LLM_FILE_EDIT_SYSTEM_PROMPT" \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
+When network policies are enabled, pods labelled
+`tertius.io/pi-agent-network=true` with the chart's release selector labels have
+no ingress and can egress only to DNS, release-local NATS, the in-chart OTLP
+collector, and public TCP 443 addresses. Task 9 login pods must carry the same
+release selector labels so they are isolated to their release's policy.
+Kubernetes NetworkPolicy cannot restrict public HTTPS by DNS name, so the rule
+cannot be limited to the subscription provider hostname.
 
 ## Secrets
 
