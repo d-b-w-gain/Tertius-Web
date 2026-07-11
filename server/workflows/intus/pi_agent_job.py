@@ -25,7 +25,10 @@ from core.nats_client import (
     extract_nats_context,
     pull_pi_agent_request_subscription,
 )
-from core.pi_agent_telemetry import pi_agent_metric_attributes
+from core.pi_agent_conversation import (
+    render_conversation_context,
+    render_legacy_prior_prompts,
+)
 from core.pi_agent_messages import (
     PiAgentChangedFile,
     PiAgentCommand,
@@ -34,10 +37,10 @@ from core.pi_agent_messages import (
     assert_pi_agent_result_size,
     pi_agent_result_message_id,
 )
+from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.pi_agent_prompt import (
     PiAgentPromptError,
     load_pi_agent_prompt,
-    render_legacy_pi_agent_conversation_prompt,
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_rpc import PiAgentRpcError, run_pi_agent
@@ -51,6 +54,8 @@ from core.telemetry import (
 
 logger = logging.getLogger(__name__)
 _MAX_FILE_BYTES = 200_000
+
+
 def _metric_attributes(
     command: PiAgentCommand,
     *,
@@ -82,17 +87,16 @@ class ManifestEntry:
 
 def build_coding_agent_prompt(command: PiAgentCommand) -> str:
     active_filename = next(
-        (
-            file.filename
-            for file in command.files
-            if file.id == command.active_file_id
-        ),
+        (file.filename for file in command.files if file.id == command.active_file_id),
         None,
     )
-    conversation = render_legacy_pi_agent_conversation_prompt(
-        prompt=command.prompt,
-        prior_prompts=command.prior_prompts,
-    )
+    if command.schema_version == 2:
+        assert command.conversation is not None
+        conversation = render_conversation_context(command.conversation, command.prompt)
+    else:
+        conversation = render_legacy_prior_prompts(
+            command.prior_prompts, command.prompt
+        )
     return render_pi_agent_user_prompt(
         conversation_prompt=conversation,
         editable_filenames=[file.filename for file in command.files],
@@ -213,6 +217,19 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
     workspace_base = Path(os.environ.get("TERTIUS_PI_WORKSPACE", "/workspace"))
     root: Path | None = None
     try:
+        snapshot = load_pi_agent_prompt()
+        if (
+            command.schema_version == 2
+            and command.system_prompt_sha256 != snapshot.sha256
+        ):
+            return _failure(
+                command,
+                started_at,
+                "worker_config_mismatch",
+                "AI worker configuration changed; retry after deployment completes.",
+                True,
+                execution_id=execution_id,
+            )
         workspace_base.mkdir(mode=0o700, parents=True, exist_ok=True)
         if workspace_base.is_symlink() or not workspace_base.is_dir():
             raise WorkspaceError("invalid workspace base")
@@ -226,7 +243,7 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
             provider=command.provider,
             model=command.model,
             thinking=command.thinking,
-            system_prompt=load_pi_agent_prompt().content,
+            system_prompt_path=snapshot.path,
             timeout_seconds=settings.pi_agent_timeout_seconds,
             max_turns=settings.pi_agent_max_turns,
             max_tool_calls=settings.pi_agent_max_tool_calls,
@@ -249,7 +266,8 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
             outcome="changed" if changed else "no_changes",
             provider=command.provider,
             model=command.model,
-            assistant_summary=rpc.assistant_summary if changed else "",
+            assistant_summary=rpc.assistant_summary
+            or ("Updated files." if changed else "No files changed."),
             changed_files=changed,
             usage=rpc.usage,
             worker_started_at=started_at,

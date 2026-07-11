@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from core.pi_agent_rpc import PiAgentRpcError, run_pi_agent
+from core.pi_agent_rpc import PiAgentRpcError, build_pi_argv, run_pi_agent
 
 
 @pytest.fixture
@@ -38,6 +39,11 @@ for raw in sys.stdin:
         elif scenario=="assistant-mentions-guard": events=[{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The literal TERTIUS_GUARD_FAILURE is documented here."}],"stopReason":"stop"}}]
         elif scenario=="user-mentions-guard": events=[{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Explain TERTIUS_GUARD_FAILURE"}]}}]
         elif scenario=="successful-tool-mentions-guard": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}],"details":{}},"isError":False}]
+        elif scenario=="assistant-summary": events=[
+            {"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"USER_SENTINEL"}]}},
+            {"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TOOL_SENTINEL"}],"details":{}},"isError":False},
+            {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_SENTINEL"*210},{"type":"text","text":"first block "},{"type":"text","text":"second block"}],"stopReason":"stop"}},
+        ]
         elif scenario=="auth": events=[{"type":"agent_error","error":{"message":"Unauthorized bearer sk-secret"}}]
         elif scenario=="rate": events=[{"type":"auto_retry_end","success":False,"finalError":"429 rate limit exceeded"}]
         elif scenario=="assistant-error": events=[{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Unauthorized secret-token"}}]
@@ -56,15 +62,33 @@ for raw in sys.stdin:
 
 
 def settings(fake_pi: Path, scenario: str = "settled") -> dict:
+    system_prompt_path = fake_pi.parent / "APPEND_SYSTEM.md"
+    system_prompt_path.write_text("system", encoding="utf-8")
     return {
         "executable": str(fake_pi),
         "cwd": fake_pi.parent,
-        "system_prompt": "system",
+        "system_prompt_path": system_prompt_path,
         "timeout_seconds": 1,
         "max_turns": 12,
         "max_tool_calls": 48,
         "environment": {"FAKE_PI_SCENARIO": scenario},
     }
+
+
+def test_pi_argv_uses_prompt_path_without_prompt_bytes(tmp_path):
+    path = tmp_path / "APPEND_SYSTEM.md"
+    path.write_text("PROMPT_ARGV_SENTINEL", encoding="utf-8")
+    argv = build_pi_argv(
+        "pi",
+        provider="openai-codex",
+        model="gpt-5.5",
+        thinking="high",
+        system_prompt_path=path,
+        extension_path="/opt/tertius-pi/workspace-guard.ts",
+    )
+    index = argv.index("--append-system-prompt")
+    assert argv[index + 1] == str(path)
+    assert "PROMPT_ARGV_SENTINEL" not in argv
 
 
 @pytest.mark.asyncio
@@ -93,8 +117,34 @@ async def test_u024_prompt_is_stdin_only_and_argv_is_fixed(fake_pi):
         "--no-context-files",
         "--no-approve",
         "--append-system-prompt",
-        "system",
+        str(fake_pi.parent / "APPEND_SYSTEM.md"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_rpc_rejects_missing_prompt_path_before_spawn(
+    monkeypatch, fake_pi, tmp_path
+):
+    async def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("subprocess must not start")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    options = settings(fake_pi)
+    options["system_prompt_path"] = tmp_path / "missing.md"
+    with pytest.raises(PiAgentRpcError) as caught:
+        await run_pi_agent("prompt", **options)
+    assert caught.value.code == "worker_config_error"
+
+
+@pytest.mark.asyncio
+async def test_rpc_captures_only_bounded_final_assistant_text(fake_pi, tmp_path):
+    path = tmp_path / "APPEND_SYSTEM.md"
+    path.write_text("policy", encoding="utf-8")
+    options = settings(fake_pi, "assistant-summary")
+    options["system_prompt_path"] = path
+    result = await run_pi_agent("prompt", **options)
+    assert result.assistant_summary == "first block second block"[:2000]
+    assert len(result.assistant_summary) <= 2000
 
 
 @pytest.mark.asyncio

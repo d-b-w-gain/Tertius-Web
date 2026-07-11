@@ -11,7 +11,16 @@ from uuid import uuid4
 
 import pytest
 
-from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile
+from core.pi_agent_conversation import (
+    render_conversation_context,
+    render_legacy_prior_prompts,
+)
+from core.pi_agent_messages import (
+    PiAgentCommand,
+    PiAgentConversationContext,
+    PiAgentConversationTurn,
+    PiAgentSourceFile,
+)
 from core.pi_agent_messages import PiAgentUsage
 from core.pi_agent_prompt import (
     PiAgentPromptError,
@@ -72,34 +81,127 @@ async def test_worker_passes_coding_agent_contract_and_job_correlation_id(
     monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
     monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
 
-    result = await job.execute_pi_agent_command(
-        request, worker_settings(pi_agent_system_prompt="Configured system prompt")
-    )
+    result = await job.execute_pi_agent_command(request, worker_settings())
 
     assert result.status == "succeeded"
     prompt = captured["prompt"]
     assert prompt == render_pi_agent_user_prompt(
-        conversation_prompt=(
-            "Previous user requests, oldest first:\n"
-            "1. First request\n"
-            "2. Second request\n\n"
-            "Current user request:\n"
-            "Current request"
+        conversation_prompt=render_legacy_prior_prompts(
+            ["First request", "Second request"], "Current request"
         ),
         editable_filenames=["parts/model.py", "dimensions.py"],
         active_filename="parts/model.py",
     )
-    assert "Previous user requests, oldest first:" in prompt
-    assert "1. First request\n2. Second request" in prompt
-    assert "Current user request:\nCurrent request" in prompt
+    legacy, current = captured["prompt"].split("Current user request:\n", maxsplit=1)
+    assert "<legacy_user_requests>" in legacy
+    assert '"First request"' in legacy
+    assert '"Second request"' in legacy
+    assert '"outcome":' not in legacy
+    assert '"status":' not in legacy
+    assert "succeeded" not in legacy
+    assert current.startswith("Current request")
     assert "Active file:\nparts/model.py" in prompt
     assert "- parts/model.py\n- dimensions.py" in prompt
     assert "Edit the existing files in place" in prompt
     assert "Do not create, delete, or rename files" in prompt
     assert "SOURCE_SENTINEL" not in prompt
     assert "WIDTH = 12" not in prompt
-    assert captured["kwargs"]["system_prompt"] == load_pi_agent_prompt().content
+    assert captured["kwargs"]["system_prompt_path"] == load_pi_agent_prompt().path
     assert captured["kwargs"]["correlation_id"] == str(request.job_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_v2_worker_uses_structured_context_and_preserves_assistant_summary(
+    monkeypatch, tmp_path, changed
+):
+    import workflows.intus.pi_agent_job as job
+
+    active = source("parts/model.py", "SOURCE_SENTINEL")
+    context = PiAgentConversationContext(
+        rolling_summary="Older work was completed.",
+        recent_turns=[
+            PiAgentConversationTurn(
+                user_request="Earlier request",
+                status="succeeded",
+                outcome="no_changes",
+                assistant_summary="Already satisfied",
+            )
+        ],
+    )
+    snapshot = load_pi_agent_prompt()
+    request = command([active]).model_copy(
+        update={
+            "schema_version": 2,
+            "prompt": "Current request",
+            "conversation": context,
+            "system_prompt_sha256": snapshot.sha256,
+            "active_file_id": active.id,
+        }
+    )
+    captured = {}
+
+    async def fake_rpc(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["kwargs"] = kwargs
+        if changed:
+            (Path(kwargs["cwd"]) / active.filename).write_text(
+                "UPDATED_SOURCE", encoding="utf-8"
+            )
+        return PiAgentRpcResult(
+            usage=PiAgentUsage(),
+            assistant_summary="Adjusted the design.",
+            turns=1,
+            tool_calls=0,
+            argv=["pi"],
+        )
+
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
+
+    result = await job.execute_pi_agent_command(request, worker_settings())
+
+    assert result.status == "succeeded"
+    assert result.outcome == ("changed" if changed else "no_changes")
+    assert result.assistant_summary == "Adjusted the design."
+    assert captured["prompt"] == render_pi_agent_user_prompt(
+        conversation_prompt=render_conversation_context(context, "Current request"),
+        editable_filenames=["parts/model.py"],
+        active_filename="parts/model.py",
+    )
+    assert captured["kwargs"]["system_prompt_path"] == snapshot.path
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_v2_prompt_hash_mismatch_without_calling_pi(
+    monkeypatch, tmp_path
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("design.py", "x = 1")]).model_copy(
+        update={
+            "schema_version": 2,
+            "prior_prompts": [],
+            "conversation": PiAgentConversationContext(),
+            "system_prompt_sha256": "0" * 64,
+        }
+    )
+
+    async def forbidden_rpc(*_args, **_kwargs):
+        raise AssertionError("Pi must not run on prompt mismatch")
+
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "run_pi_agent", forbidden_rpc)
+
+    result = await job.execute_pi_agent_command(request, worker_settings())
+
+    assert result.status == "failed"
+    assert result.error_code == "worker_config_mismatch"
+    assert result.error_message == (
+        "AI worker configuration changed; retry after deployment completes."
+    )
+    assert result.retryable is True
+    assert not (tmp_path / "workspace").exists()
 
 
 def source(filename, content):
@@ -139,6 +241,7 @@ async def test_worker_returns_fixed_nonretryable_failure_when_policy_is_unavaila
     assert result.outcome is None
     assert result.changed_files == []
     assert "secret prompt path" not in caplog.text
+    assert not (tmp_path / "workspace").exists()
 
 
 def test_worker_hydrates_fresh_manifest_with_secure_modes(tmp_path):
@@ -217,7 +320,6 @@ def worker_settings(**overrides):
         "pi_agent_result_max_bytes": 524288,
         "pi_agent_result_subject": "tertius.pi.result",
         "pi_agent_ack_wait_seconds": 90,
-        "pi_agent_system_prompt": "",
         "pi_agent_timeout_seconds": 480,
         "pi_agent_max_turns": 12,
         "pi_agent_max_tool_calls": 48,
@@ -260,6 +362,7 @@ async def test_worker_uses_writable_preprovisioned_workspace_without_chmodding_b
 
     assert result.status == "succeeded"
     assert result.outcome == "no_changes"
+    assert result.assistant_summary == "No files changed."
 
 
 @pytest.mark.asyncio
@@ -307,7 +410,9 @@ async def test_worker_acks_only_after_confirmed_publish(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_emits_bounded_completion_metrics_and_result_trace_context(monkeypatch):
+async def test_worker_emits_bounded_completion_metrics_and_result_trace_context(
+    monkeypatch,
+):
     import workflows.intus.pi_agent_job as job
 
     request = command([source("model.py", "old")]).model_copy(
@@ -396,7 +501,9 @@ async def test_worker_prefers_nats_header_parent_over_payload_fallback(monkeypat
     await job.handle_pi_agent_request_message(msg, FakePublisher(), worker_settings())
 
     consumer = next(
-        span for span in exporter.get_finished_spans() if span.name == "pi_agent.command.consume"
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == "pi_agent.command.consume"
     )
     assert consumer.context.trace_id == producer_context.trace_id
     assert consumer.parent.span_id == producer_context.span_id
@@ -539,7 +646,9 @@ async def test_heartbeat_interval_stays_below_short_ack_wait(monkeypatch):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(job.asyncio, "sleep", stop_after_sleep)
-    await asyncio.gather(job._heartbeat(FakeMessage(b"{}"), 0.6), return_exceptions=True)
+    await asyncio.gather(
+        job._heartbeat(FakeMessage(b"{}"), 0.6), return_exceptions=True
+    )
     assert delays == [pytest.approx(0.2)]
 
 

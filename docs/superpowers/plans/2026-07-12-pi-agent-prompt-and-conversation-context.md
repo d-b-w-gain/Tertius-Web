@@ -970,7 +970,7 @@ rtk git commit -m "feat: dispatch structured Pi conversation context"
 - Modify: `server/tests/test_pi_agent_rpc.py`
 - Modify: `server/tests/test_pi_agent_job.py`
 
-- [ ] **Step 1: Write failing RPC and worker tests**
+- [x] **Step 1: Write failing RPC and worker tests**
 
 Add these concrete tests beside the existing RPC and worker contract tests:
 
@@ -1103,7 +1103,7 @@ assert current.startswith("Current request")
 
 Change the main v2 worker test to use `load_pi_agent_prompt().sha256` and assert no-change `rpc.assistant_summary` survives in `PiAgentResult`.
 
-- [ ] **Step 2: Run the tests and verify red**
+- [x] **Step 2: Run the tests and verify red**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_rpc.py server/tests/test_pi_agent_job.py -q
@@ -1111,7 +1111,7 @@ rtk uv run pytest server/tests/test_pi_agent_rpc.py server/tests/test_pi_agent_j
 
 Expected: failures because prompt text is still in argv and assistant summaries are empty.
 
-- [ ] **Step 3: Change RPC to path-only append prompt**
+- [x] **Step 3: Change RPC to path-only append prompt**
 
 Rename `system_prompt` parameters to `system_prompt_path`. Before spawn, require the path to be an existing readable regular file. Build argv with:
 
@@ -1144,7 +1144,7 @@ Rename `system_prompt` parameters to `system_prompt_path`. Before spawn, require
 
 Never read or log prompt text in `pi_agent_rpc.py`; the shared loader owns validation/content/hash and Pi owns reading the validated file.
 
-- [ ] **Step 4: Extract the final bounded assistant text**
+- [x] **Step 4: Extract the final bounded assistant text**
 
 Extend normalized events with a private assistant event:
 
@@ -1165,7 +1165,7 @@ def _assistant_text(message: object) -> str | None:
 
 On assistant `message_end`, queue `{"type": "_assistant_message", "text": text}` without logging it. Track the latest value until `agent_settled` and return it in `PiAgentRpcResult.assistant_summary`.
 
-- [ ] **Step 5: Validate v2 prompt identity and render structured history**
+- [x] **Step 5: Validate v2 prompt identity and render structured history**
 
 At the start of `execute_pi_agent_command()`:
 
@@ -1192,7 +1192,7 @@ filenames/active filename through the shared user-prompt renderer, then pass
 `snapshot.path` to RPC. Set `assistant_summary=rpc.assistant_summary` for both
 `changed` and `no_changes`.
 
-- [ ] **Step 6: Run green tests and commit**
+- [x] **Step 6: Run green tests and commit**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_rpc.py server/tests/test_pi_agent_job.py -q

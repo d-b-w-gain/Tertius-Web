@@ -37,7 +37,7 @@ def build_pi_argv(
     provider: str,
     model: str,
     thinking: str,
-    system_prompt: str,
+    system_prompt_path: Path,
     extension_path: str,
 ) -> list[str]:
     return [
@@ -62,7 +62,7 @@ def build_pi_argv(
         "--no-context-files",
         "--no-approve",
         "--append-system-prompt",
-        system_prompt,
+        str(system_prompt_path),
     ]
 
 
@@ -90,6 +90,20 @@ def _is_guard_failure(value: dict[str, Any]) -> bool:
         and item.get("text") == _GUARD_SENTINEL
         for item in content
     )
+
+
+def _assistant_text(message: object) -> str | None:
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return None
+    content = message.get("content")
+    if not isinstance(content, list):
+        return None
+    text = "".join(
+        item.get("text", "")
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "text"
+    ).strip()
+    return text[:2000] or None
 
 
 def _normalized_event(value: dict[str, Any]) -> dict[str, Any] | None:
@@ -129,6 +143,8 @@ def _normalized_event(value: dict[str, Any]) -> dict[str, Any] | None:
                     "code": failure.code,
                     "retryable": failure.retryable,
                 }
+            if event_type == "message_end" and (text := _assistant_text(message)):
+                return {"type": "_assistant_message", "text": text}
     return None
 
 
@@ -241,19 +257,23 @@ async def run_pi_agent(
     provider: str = "openai-codex",
     model: str = "gpt-5.5",
     thinking: str = "high",
-    system_prompt: str = "",
+    system_prompt_path: Path,
     extension_path: str = "/opt/tertius-pi/workspace-guard.ts",
     timeout_seconds: float = 480,
     max_turns: int = 12,
     max_tool_calls: int = 48,
     environment: Mapping[str, str] | None = None,
 ) -> PiAgentRpcResult:
+    if not system_prompt_path.is_file() or not os.access(system_prompt_path, os.R_OK):
+        raise PiAgentRpcError(
+            "worker_config_error", "Pi agent system prompt is unavailable"
+        )
     argv = build_pi_argv(
         executable,
         provider=provider,
         model=model,
         thinking=thinking,
-        system_prompt=system_prompt,
+        system_prompt_path=system_prompt_path,
         extension_path=extension_path,
     )
     env = {
@@ -276,6 +296,7 @@ async def run_pi_agent(
     )
     protocol = _RpcProtocol(process)
     turns = tool_calls = 0
+    assistant_summary = ""
     try:
         async with asyncio.timeout(timeout_seconds):
             state_response = await protocol.request("get_state")
@@ -325,6 +346,8 @@ async def run_pi_agent(
                         raise PiAgentRpcError(
                             "agent_limit_exceeded", "Agent tool-call limit exceeded"
                         )
+                if event_type == "_assistant_message":
+                    assistant_summary = event["text"]
                 if event_type == "agent_settled":
                     break
             stats_response = await protocol.request("get_session_stats")
@@ -339,7 +362,7 @@ async def run_pi_agent(
             )
             return PiAgentRpcResult(
                 usage=usage,
-                assistant_summary="",
+                assistant_summary=assistant_summary,
                 turns=turns,
                 tool_calls=tool_calls,
                 argv=argv,
