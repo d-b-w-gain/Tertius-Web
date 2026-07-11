@@ -6,9 +6,10 @@ from sqlalchemy import func, select
 
 from core.llm_file_edit import TokenUsage
 from core.models import LlmEditJob, ProjectFile
-from core.pi_agent_prompt import PiAgentPromptError, render_pi_agent_user_prompt
+from core.pi_agent_conversation import render_conversation_context
+from core.pi_agent_messages import PiAgentConversationContext
+from core.pi_agent_prompt import PiAgentPromptError, load_pi_agent_prompt, render_pi_agent_user_prompt
 from workflows.intus import intus_server
-from workflows.intus.pi_agent_job import build_coding_agent_prompt
 
 
 def file_pointer(file: ProjectFile) -> dict[str, str]:
@@ -36,6 +37,27 @@ def test_submit_commits_job_and_publishes_selected_persisted_files(authenticated
     settings = enable_pi(monkeypatch)
     design = design_file(db_session, seeded_tenant)
     commands = []
+    snapshot = load_pi_agent_prompt()
+    prior = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "Earlier request", "files": []},
+        result_payload={
+            "outcome": "changed",
+            "message": "Adjusted the bracket",
+            "files": [
+                {
+                    "filename": "historical.py",
+                    "content": "HISTORICAL_SOURCE_SENTINEL",
+                    "changed": True,
+                }
+            ],
+        },
+    )
+    db_session.add(prior)
+    db_session.commit()
 
     async def publish(_settings, command):
         commands.append(command)
@@ -61,6 +83,17 @@ def test_submit_commits_job_and_publishes_selected_persisted_files(authenticated
     assert command.provider == settings.pi_agent_provider
     assert command.model == settings.pi_agent_model
     assert command.files[0].content == design.content
+    assert command.schema_version == 2
+    assert command.conversation.model_dump(mode="json") == job.request_payload["dispatched_conversation"]
+    assert command.system_prompt_sha256 == snapshot.sha256
+    assert job.request_payload["dispatched_command_schema_version"] == 2
+    assert job.request_payload["dispatched_system_prompt_sha256"] == snapshot.sha256
+    assert "dispatched_prior_prompts" not in job.request_payload
+    serialized = command.model_dump_json()
+    assert snapshot.content not in serialized
+    assert str(snapshot.path) not in serialized
+    assert "HISTORICAL_SOURCE_SENTINEL" not in command.conversation.model_dump_json()
+    assert command.conversation.recent_turns[-1].assistant_summary == "Adjusted the bracket"
 
 
 def test_submit_estimates_the_complete_shared_worker_prompt(
@@ -91,7 +124,10 @@ def test_submit_estimates_the_complete_shared_worker_prompt(
 
     assert response.status_code == 202
     assert captured["user_prompt"] == render_pi_agent_user_prompt(
-        conversation_prompt="Change length",
+        conversation_prompt=render_conversation_context(
+            PiAgentConversationContext(),
+            "Change length",
+        ),
         editable_filenames=[design.filename],
         active_filename=design.filename,
     )
@@ -132,7 +168,7 @@ def test_submit_returns_fixed_unavailable_response_when_policy_cannot_load(
     assert db_session.scalar(select(func.count()).select_from(LlmEditJob)) == 0
 
 
-def test_api_estimate_and_worker_execution_share_exact_legacy_prompt_bytes(
+def test_api_estimate_uses_exact_structured_conversation_prompt_bytes(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
     enable_pi(monkeypatch)
@@ -153,6 +189,11 @@ def test_api_estimate_and_worker_execution_share_exact_legacy_prompt_bytes(
                 requested_by=seeded_tenant.user_id,
                 status="succeeded",
                 request_payload={"prompt": "Première demande"},
+                result_payload={
+                    "outcome": "changed",
+                    "message": "Première modification",
+                    "files": [{"filename": "design.py", "changed": True}],
+                },
                 created_at=now - timedelta(minutes=2),
             ),
             LlmEditJob(
@@ -161,6 +202,8 @@ def test_api_estimate_and_worker_execution_share_exact_legacy_prompt_bytes(
                 requested_by=seeded_tenant.user_id,
                 status="failed",
                 request_payload={"prompt": "Deuxième demande"},
+                error_code="invalid_request",
+                user_message="Deuxième demande refusée",
                 created_at=now - timedelta(minutes=1),
             ),
         ]
@@ -193,14 +236,24 @@ def test_api_estimate_and_worker_execution_share_exact_legacy_prompt_bytes(
 
     assert response.status_code == 202, response.json()
     assert len(commands) == 1
-    assert commands[0].prior_prompts == ["Première demande", "Deuxième demande"]
+    assert commands[0].schema_version == 2
+    assert commands[0].prior_prompts == []
+    assert [turn.user_request for turn in commands[0].conversation.recent_turns] == [
+        "Première demande",
+        "Deuxième demande",
+    ]
     assert [file.filename for file in commands[0].files] == [
         "design.py",
         "dimensions.py",
     ]
     assert commands[0].active_file_id == support.id
-    assert captured["user_prompt"].encode("utf-8") == build_coding_agent_prompt(
-        commands[0]
+    assert captured["user_prompt"].encode("utf-8") == render_pi_agent_user_prompt(
+        conversation_prompt=render_conversation_context(
+            commands[0].conversation,
+            commands[0].prompt,
+        ),
+        editable_filenames=[file.filename for file in commands[0].files],
+        active_filename=support.filename,
     ).encode("utf-8")
     assert captured["source_bytes"] == sum(
         len(file.content.encode("utf-8")) for file in commands[0].files

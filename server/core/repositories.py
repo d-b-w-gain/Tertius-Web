@@ -762,39 +762,26 @@ class LlmEditRepository:
             )
         )
 
-    def list_recent_prompts(
+    def list_recent_terminal_jobs(
         self,
-        project_name: str,
+        project_id: UUID,
         *,
-        limit: int = 5,
-        exclude_job_id: UUID | None = None,
-    ) -> list[str]:
-        project = self.db.scalar(
-            select(Project).where(Project.tenant_id == self.tenant_id, Project.name == project_name)
-        )
-        if project is None:
-            return []
+        limit: int = 200,
+    ) -> list[LlmEditJob]:
         normalized_limit = max(1, min(limit, 200))
-        stmt = (
-            select(LlmEditJob)
-            .where(
-                LlmEditJob.tenant_id == self.tenant_id,
-                LlmEditJob.project_id == project.id,
+        jobs = list(
+            self.db.scalars(
+                select(LlmEditJob)
+                .where(
+                    LlmEditJob.tenant_id == self.tenant_id,
+                    LlmEditJob.project_id == project_id,
+                    LlmEditJob.status.in_(["succeeded", "failed"]),
+                )
+                .order_by(desc(LlmEditJob.created_at), desc(LlmEditJob.id))
+                .limit(normalized_limit)
             )
-            .order_by(desc(LlmEditJob.created_at), desc(LlmEditJob.id))
-            .limit(normalized_limit)
         )
-        if exclude_job_id is not None:
-            stmt = stmt.where(LlmEditJob.id != exclude_job_id)
-        jobs = list(self.db.scalars(stmt).all())
-        prompts: list[str] = []
-        for job in reversed(jobs):
-            payload = job.request_payload
-            if isinstance(payload, dict):
-                prompt = payload.get("prompt")
-                if isinstance(prompt, str):
-                    prompts.append(prompt)
-        return prompts
+        return list(reversed(jobs))
 
     def get_compile_job_for_llm_edit(self, project_id: UUID, llm_edit_job_id: UUID) -> CompileJob | None:
         return self.db.scalar(

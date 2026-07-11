@@ -817,7 +817,7 @@ rtk git commit -m "feat: define bounded Pi conversation context"
 - Modify: `server/tests/test_repositories.py`
 - Modify: `server/tests/test_llm_file_edit.py`
 
-- [ ] **Step 1: Write failing repository and API dispatch tests**
+- [x] **Step 1: Write failing repository and API dispatch tests**
 
 Replace the prompt-only repository test with a terminal-history test using the existing `seed_two_tenants()` fixture helper:
 
@@ -890,7 +890,7 @@ assert command.conversation.recent_turns[-1].assistant_summary == "Adjusted the 
 
 Keep the endpoint submission/capture setup already present at `server/tests/test_llm_file_edit.py:31-43`; insert the prior job before the POST and the assertions after the existing identity/file assertions.
 
-- [ ] **Step 2: Run the tests and verify red**
+- [x] **Step 2: Run the tests and verify red**
 
 ```bash
 rtk uv run pytest server/tests/test_repositories.py server/tests/test_llm_file_edit.py -q
@@ -898,7 +898,7 @@ rtk uv run pytest server/tests/test_repositories.py server/tests/test_llm_file_e
 
 Expected: failures because dispatch still uses `list_recent_prompts()` and schema v1.
 
-- [ ] **Step 3: Replace prompt lookup with terminal-job retrieval**
+- [x] **Step 3: Replace prompt lookup with terminal-job retrieval**
 
 Implement:
 
@@ -927,7 +927,7 @@ def list_recent_terminal_jobs(
 
 Delete `list_recent_prompts()` after all callers/tests move.
 
-- [ ] **Step 4: Build one exact dispatch context under the existing project lock**
+- [x] **Step 4: Build one exact dispatch context under the existing project lock**
 
 In `start_llm_file_edit_job()`:
 
@@ -954,7 +954,7 @@ Catch `PiAgentPromptError` separately and return HTTP 503 with fixed body:
 
 Do not log the exception object because its cause can contain a filesystem path.
 
-- [ ] **Step 5: Run green tests and commit**
+- [x] **Step 5: Run green tests and commit**
 
 ```bash
 rtk uv run pytest server/tests/test_repositories.py server/tests/test_llm_file_edit.py server/tests/test_pi_agent_prompt.py -q

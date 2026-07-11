@@ -23,12 +23,12 @@ from core.db import get_db
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
+from core.pi_agent_conversation import next_conversation_context, render_conversation_context
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
 from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
     load_pi_agent_prompt,
-    render_legacy_pi_agent_conversation_prompt,
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
@@ -597,11 +597,10 @@ async def start_llm_file_edit_job(
             max_files=settings.llm_file_edit_max_context_files,
             max_chars=settings.llm_file_edit_max_context_chars,
         )
-        prior_prompts = job_repo.list_recent_prompts(name, limit=5)
-        conversation_prompt = render_legacy_pi_agent_conversation_prompt(
-            prompt=req.prompt,
-            prior_prompts=prior_prompts,
-        )
+        prompt_snapshot = load_pi_agent_prompt()
+        history_jobs = job_repo.list_recent_terminal_jobs(project.id)
+        conversation = next_conversation_context(history_jobs)
+        conversation_prompt = render_conversation_context(conversation, req.prompt)
         selected_ids = {file.id for file in selected}
         active_filename = next(
             (
@@ -622,7 +621,7 @@ async def start_llm_file_edit_job(
             active_filename=active_filename,
         )
         estimate = estimate_pi_agent_usage(
-            system_prompt=load_pi_agent_prompt().content,
+            system_prompt=prompt_snapshot.content,
             user_prompt=user_prompt,
             source_bytes=sum(
                 len(file.content.encode("utf-8")) for file in selected
@@ -656,7 +655,9 @@ async def start_llm_file_edit_job(
                 "dispatched_provider": settings.pi_agent_provider,
                 "dispatched_model": settings.pi_agent_model,
                 "dispatched_thinking": settings.pi_agent_thinking,
-                "dispatched_prior_prompts": prior_prompts,
+                "dispatched_command_schema_version": 2,
+                "dispatched_conversation": conversation.model_dump(mode="json"),
+                "dispatched_system_prompt_sha256": prompt_snapshot.sha256,
                 "dispatch_created_at": dispatch_created_at.isoformat(),
                 "dispatch_attempted_at": dispatch_created_at.isoformat(),
                 "dispatched_manifest": [
@@ -676,7 +677,7 @@ async def start_llm_file_edit_job(
         request_payload["dispatch_tracestate"] = trace_headers.get("tracestate")
         job = job_repo.start_job(project.id, ctx.user_id, request_payload, status="queued")
         command = PiAgentCommand(
-            schema_version=1,
+            schema_version=2,
             job_id=job.id,
             tenant_id=ctx.tenant_id,
             project_id=project.id,
@@ -684,7 +685,9 @@ async def start_llm_file_edit_job(
             model=settings.pi_agent_model,
             thinking=settings.pi_agent_thinking,
             prompt=req.prompt,
-            prior_prompts=prior_prompts,
+            prior_prompts=[],
+            conversation=conversation,
+            system_prompt_sha256=prompt_snapshot.sha256,
             active_file_id=req.active_file_id,
             files=command_files,
             created_at=dispatch_created_at,
