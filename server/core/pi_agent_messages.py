@@ -59,8 +59,44 @@ class PiAgentFileManifest(StrictMessage):
         return value
 
 
+class PiAgentConversationTurn(StrictMessage):
+    user_request: str = Field(min_length=1, max_length=12000)
+    status: Literal["succeeded", "failed"]
+    outcome: Literal["changed", "no_changes"] | None = None
+    assistant_summary: str = Field(default="", max_length=2000)
+    error_code: str | None = Field(default=None, max_length=100)
+    changed_files: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("changed_files")
+    @classmethod
+    def safe_changed_filenames(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if len(value) > 512:
+                raise ValueError("changed filenames must be at most 512 characters")
+            validate_filename(value)
+        return values
+
+    @model_validator(mode="after")
+    def consistent_outcome(self):
+        if self.status == "succeeded" and self.outcome is None:
+            raise ValueError("successful conversation turns require an outcome")
+        if self.status == "failed" and (self.outcome is not None or not self.error_code):
+            raise ValueError("failed conversation turns require only an error code")
+        if self.outcome != "changed" and self.changed_files:
+            raise ValueError("only changed turns can contain filenames")
+        return self
+
+
+class PiAgentConversationContext(StrictMessage):
+    rolling_summary: str = Field(default="", max_length=8000)
+    recent_turns: list[PiAgentConversationTurn] = Field(
+        default_factory=list,
+        max_length=5,
+    )
+
+
 class PiAgentCommand(StrictMessage):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     job_id: UUID
     tenant_id: UUID
     project_id: UUID
@@ -69,6 +105,11 @@ class PiAgentCommand(StrictMessage):
     thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
     prompt: str = Field(min_length=1, max_length=20000)
     prior_prompts: list[str] = Field(default_factory=list, max_length=5)
+    conversation: PiAgentConversationContext | None = None
+    system_prompt_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     active_file_id: UUID | None = None
     files: list[PiAgentSourceFile] = Field(min_length=1, max_length=20)
     created_at: datetime
@@ -88,6 +129,17 @@ class PiAgentCommand(StrictMessage):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("created_at must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def versioned_context(self):
+        if self.schema_version == 1:
+            if self.conversation is not None or self.system_prompt_sha256 is not None:
+                raise ValueError("v1 commands cannot contain v2 prompt context")
+        elif self.conversation is None or self.system_prompt_sha256 is None:
+            raise ValueError("v2 commands require conversation and prompt hash")
+        elif self.prior_prompts:
+            raise ValueError("v2 commands cannot contain legacy prior prompts")
+        return self
 
     @model_validator(mode="after")
     def consistent_files(self):

@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from core.pi_agent_messages import (
     PiAgentChangedFile,
     PiAgentCommand,
+    PiAgentConversationContext,
+    PiAgentConversationTurn,
     PiAgentResult,
     PiAgentSourceFile,
     PiAgentUsage,
@@ -56,6 +58,67 @@ def test_command_round_trips_and_rejects_extra_fields():
     assert PiAgentCommand.model_validate_json(message.model_dump_json()) == message
     with pytest.raises(ValidationError):
         command(unexpected=True)
+
+
+@pytest.mark.parametrize(
+    (
+        "schema_version",
+        "prior_prompts",
+        "conversation",
+        "system_prompt_sha256",
+        "valid",
+    ),
+    [
+        (1, ["Earlier request"], None, None, True),
+        (2, [], PiAgentConversationContext(), "a" * 64, True),
+        (1, [], PiAgentConversationContext(), "a" * 64, False),
+        (2, [], PiAgentConversationContext(), None, False),
+        (2, [], None, "a" * 64, False),
+        (2, ["Earlier request"], PiAgentConversationContext(), "a" * 64, False),
+    ],
+)
+def test_command_version_context_field_matrix(
+    schema_version,
+    prior_prompts,
+    conversation,
+    system_prompt_sha256,
+    valid,
+):
+    values = {
+        "schema_version": schema_version,
+        "prior_prompts": prior_prompts,
+        "conversation": conversation,
+        "system_prompt_sha256": system_prompt_sha256,
+    }
+    if valid:
+        assert command(**values).schema_version == schema_version
+    else:
+        with pytest.raises(ValidationError):
+            command(**values)
+
+
+def test_conversation_turn_enforces_state_and_filename_bounds():
+    assert PiAgentConversationTurn(
+        user_request="Update the design",
+        status="succeeded",
+        outcome="changed",
+        changed_files=["parts/design.py"],
+    )
+    assert PiAgentConversationTurn(
+        user_request="Update the design",
+        status="failed",
+        error_code="provider_error",
+    )
+    for values in (
+        {"status": "succeeded"},
+        {"status": "failed", "outcome": "no_changes", "error_code": "provider_error"},
+        {"status": "failed", "error_code": ""},
+        {"status": "succeeded", "outcome": "no_changes", "changed_files": ["design.py"]},
+        {"status": "succeeded", "outcome": "changed", "changed_files": ["../design.py"]},
+        {"status": "succeeded", "outcome": "changed", "changed_files": ["x" * 513]},
+    ):
+        with pytest.raises(ValidationError):
+            PiAgentConversationTurn(user_request="Update the design", **values)
 
 
 def test_command_rejects_duplicate_ids_normalized_names_and_bad_hashes():

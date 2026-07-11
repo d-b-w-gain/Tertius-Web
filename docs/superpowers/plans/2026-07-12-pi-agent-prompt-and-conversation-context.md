@@ -442,7 +442,7 @@ rtk git commit -m "feat: add immutable Pi agent policy"
 - Modify: `server/core/pi_agent_messages.py`
 - Modify: `server/tests/test_pi_agent_messages.py`
 
-- [ ] **Step 1: Write failing strict-model and rollover tests**
+- [x] **Step 1: Write failing strict-model and rollover tests**
 
 Create `server/tests/test_pi_agent_conversation.py` with the following core cases; keep command-version field-matrix tests in `test_pi_agent_messages.py` next to the existing command round-trip test:
 
@@ -554,7 +554,7 @@ def test_legacy_renderer_labels_unknown_outcomes_without_fabricating_turns():
 
 In `test_pi_agent_messages.py`, parameterize `(schema_version, prior_prompts, conversation, system_prompt_sha256, valid)` across valid v1, valid v2, v1-with-v2-fields, v2-without-hash, v2-without-context, and v2-with-prior-prompts. Assert invalid rows raise `ValidationError`.
 
-- [ ] **Step 2: Run the tests and verify red**
+- [x] **Step 2: Run the tests and verify red**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_messages.py server/tests/test_pi_agent_conversation.py -q
@@ -562,7 +562,7 @@ rtk uv run pytest server/tests/test_pi_agent_messages.py server/tests/test_pi_ag
 
 Expected: failures because the v2 context models and builder do not exist.
 
-- [ ] **Step 3: Add strict conversation models and v1/v2 validation**
+- [x] **Step 3: Add strict conversation models and v1/v2 validation**
 
 Add before `PiAgentCommand`:
 
@@ -593,7 +593,7 @@ class PiAgentConversationContext(StrictMessage):
 
 Add filename validation with `validate_filename()` and a 512-character bound. Change `PiAgentCommand` to the compatibility contract in section 4. Do not modify result schema version 1.
 
-- [ ] **Step 4: Implement deterministic context advancement**
+- [x] **Step 4: Implement deterministic context advancement**
 
 Create pure helpers in `pi_agent_conversation.py`:
 
@@ -730,7 +730,7 @@ def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
 
 It must never use `job.error`, result file `content`, snapshot metadata, raw IDs, traces, or dispatched context.
 
-- [ ] **Step 5: Implement legacy bootstrap and structured rendering**
+- [x] **Step 5: Implement legacy bootstrap and structured rendering**
 
 Implement bootstrap and rendering with these exact bodies:
 
@@ -800,7 +800,7 @@ Current user request:
 ...
 ```
 
-- [ ] **Step 6: Run green tests and commit**
+- [x] **Step 6: Run green tests and commit**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_messages.py server/tests/test_pi_agent_conversation.py -q
