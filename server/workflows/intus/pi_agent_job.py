@@ -34,7 +34,7 @@ from core.pi_agent_messages import (
     assert_pi_agent_result_size,
     pi_agent_result_message_id,
 )
-from core.pi_agent_prompt import load_pi_agent_prompt
+from core.pi_agent_prompt import load_pi_agent_prompt, render_pi_agent_user_prompt
 from core.pi_agent_rpc import PiAgentRpcError, run_pi_agent
 from core.telemetry import (
     configure_telemetry,
@@ -91,25 +91,19 @@ def build_conversation_prompt(prompt: str, prior_prompts: list[str]) -> str:
 
 
 def build_coding_agent_prompt(command: PiAgentCommand) -> str:
-    filenames = "\n".join(f"- {file.filename}" for file in command.files)
     active_filename = next(
         (
             file.filename
             for file in command.files
             if file.id == command.active_file_id
         ),
-        "none",
+        None,
     )
     conversation = build_conversation_prompt(command.prompt, command.prior_prompts)
-    return (
-        "Work on the source files already present in the current workspace.\n"
-        "Inspect them as needed. Edit the existing files in place to implement the "
-        "user's request. Do not merely return or describe replacement source.\n"
-        "Do not create, delete, or rename files.\n\n"
-        f"Files available for editing:\n{filenames}\n\n"
-        f"Active file:\n{active_filename}\n\n"
-        f"{conversation}\n\n"
-        "When finished, provide a concise summary of the changes."
+    return render_pi_agent_user_prompt(
+        conversation_prompt=conversation,
+        editable_filenames=[file.filename for file in command.files],
+        active_filename=active_filename,
     )
 
 

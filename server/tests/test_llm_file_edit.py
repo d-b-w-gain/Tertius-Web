@@ -3,7 +3,9 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from core.llm_file_edit import TokenUsage
 from core.models import LlmEditJob, ProjectFile
+from core.pi_agent_prompt import render_pi_agent_user_prompt
 from workflows.intus import intus_server
 
 
@@ -57,6 +59,41 @@ def test_submit_commits_job_and_publishes_selected_persisted_files(authenticated
     assert command.provider == settings.pi_agent_provider
     assert command.model == settings.pi_agent_model
     assert command.files[0].content == design.content
+
+
+def test_submit_estimates_the_complete_shared_worker_prompt(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_pi(monkeypatch)
+    design = design_file(db_session, seeded_tenant)
+    captured = {}
+
+    def capture_estimate(**kwargs):
+        captured.update(kwargs)
+        return TokenUsage(prompt_tokens=1, completion_tokens=100, total_tokens=101)
+
+    async def publish(_settings, _command):
+        return None
+
+    monkeypatch.setattr(intus_server, "estimate_pi_agent_usage", capture_estimate)
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", publish)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Change length",
+            "files": [file_pointer(design)],
+            "active_file_id": str(design.id),
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["user_prompt"] == render_pi_agent_user_prompt(
+        conversation_prompt="Change length",
+        editable_filenames=[design.filename],
+        active_filename=design.filename,
+    )
+    assert captured["source_bytes"] == len(design.content.encode("utf-8"))
 
 
 def test_submit_rejects_unsupported_model_before_publish(

@@ -24,7 +24,11 @@ from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
-from core.pi_agent_prompt import estimate_pi_agent_usage, load_pi_agent_prompt
+from core.pi_agent_prompt import (
+    estimate_pi_agent_usage,
+    load_pi_agent_prompt,
+    render_pi_agent_user_prompt,
+)
 from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.llm_file_edit import (
     LlmEditableFile as DomainEditableFile,
@@ -597,14 +601,33 @@ async def start_llm_file_edit_job(
                 f"{index}. {prompt}"
                 for index, prompt in enumerate(prior_prompts, start=1)
             )
-            user_prompt = (
+            conversation_prompt = (
                 "Previous user requests, oldest first:\n"
                 f"{history}\n\n"
                 "Current user request:\n"
                 f"{req.prompt}"
             )
         else:
-            user_prompt = req.prompt
+            conversation_prompt = req.prompt
+        selected_ids = {file.id for file in selected}
+        active_filename = next(
+            (
+                rows[pointer.id].filename
+                for pointer in req.files
+                if pointer.id == req.active_file_id
+                and pointer.id in selected_ids
+            ),
+            None,
+        )
+        user_prompt = render_pi_agent_user_prompt(
+            conversation_prompt=conversation_prompt,
+            editable_filenames=[
+                rows[pointer.id].filename
+                for pointer in req.files
+                if pointer.id in selected_ids
+            ],
+            active_filename=active_filename,
+        )
         estimate = estimate_pi_agent_usage(
             system_prompt=load_pi_agent_prompt().content,
             user_prompt=user_prompt,
@@ -621,7 +644,6 @@ async def start_llm_file_edit_job(
             user_id=ctx.user_id,
             estimated_tokens=estimate.total_tokens,
         )
-        selected_ids = {file.id for file in selected}
         command_files = [
             PiAgentSourceFile(
                 id=row.id,

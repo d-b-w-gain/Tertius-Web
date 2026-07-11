@@ -13,7 +13,7 @@ import pytest
 
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile
 from core.pi_agent_messages import PiAgentUsage
-from core.pi_agent_prompt import load_pi_agent_prompt
+from core.pi_agent_prompt import load_pi_agent_prompt, render_pi_agent_user_prompt
 from core.pi_agent_rpc import PiAgentRpcResult
 from workflows.intus.pi_agent_job import (
     WorkspaceError,
@@ -74,6 +74,17 @@ async def test_worker_passes_coding_agent_contract_and_job_correlation_id(
 
     assert result.status == "succeeded"
     prompt = captured["prompt"]
+    assert prompt == render_pi_agent_user_prompt(
+        conversation_prompt=(
+            "Previous user requests, oldest first:\n"
+            "1. First request\n"
+            "2. Second request\n\n"
+            "Current user request:\n"
+            "Current request"
+        ),
+        editable_filenames=["parts/model.py", "dimensions.py"],
+        active_filename="parts/model.py",
+    )
     assert "Previous user requests, oldest first:" in prompt
     assert "1. First request\n2. Second request" in prompt
     assert "Current user request:\nCurrent request" in prompt

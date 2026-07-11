@@ -9,6 +9,7 @@ from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
     load_pi_agent_prompt,
+    render_pi_agent_user_prompt,
 )
 
 
@@ -87,3 +88,36 @@ def test_pi_usage_estimate_counts_exact_bytes_once_plus_fixed_reserve():
 
     assert usage.prompt_tokens == expected_prompt
     assert usage.total_tokens == expected_prompt + 65_536
+
+
+def test_pi_user_prompt_renderer_preserves_exact_outer_frame():
+    rendered = render_pi_agent_user_prompt(
+        conversation_prompt="Previous context\n\nCurrent request",
+        editable_filenames=["parts/model.py", "dimensions.py"],
+        active_filename="parts/model.py",
+    )
+
+    assert rendered == (
+        "Work on the source files already present in the current workspace.\n"
+        "Inspect them as needed. Edit the existing files in place to implement the "
+        "user's request. Do not merely return or describe replacement source.\n"
+        "Do not create, delete, or rename files.\n\n"
+        "Files available for editing:\n"
+        "- parts/model.py\n"
+        "- dimensions.py\n\n"
+        "Active file:\n"
+        "parts/model.py\n\n"
+        "Previous context\n\n"
+        "Current request\n\n"
+        "When finished, provide a concise summary of the changes."
+    )
+
+
+def test_pi_user_prompt_renderer_labels_missing_active_file_as_none():
+    rendered = render_pi_agent_user_prompt(
+        conversation_prompt="Current request",
+        editable_filenames=["design.py"],
+        active_filename=None,
+    )
+
+    assert "Active file:\nnone\n\nCurrent request" in rendered

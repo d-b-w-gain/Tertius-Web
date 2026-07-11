@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from core.llm_file_edit import TokenUsage
 
@@ -48,6 +48,25 @@ def load_pi_agent_prompt(
         path=resolved,
         content=content,
         sha256=sha256(raw).hexdigest(),
+    )
+
+
+def render_pi_agent_user_prompt(
+    *,
+    conversation_prompt: str,
+    editable_filenames: Sequence[str],
+    active_filename: str | None,
+) -> str:
+    filenames = "\n".join(f"- {filename}" for filename in editable_filenames)
+    return (
+        "Work on the source files already present in the current workspace.\n"
+        "Inspect them as needed. Edit the existing files in place to implement the "
+        "user's request. Do not merely return or describe replacement source.\n"
+        "Do not create, delete, or rename files.\n\n"
+        f"Files available for editing:\n{filenames}\n\n"
+        f"Active file:\n{active_filename or 'none'}\n\n"
+        f"{conversation_prompt}\n\n"
+        "When finished, provide a concise summary of the changes."
     )
 
 
