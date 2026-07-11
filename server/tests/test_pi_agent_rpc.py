@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -40,9 +41,11 @@ for raw in sys.stdin:
         elif scenario=="user-mentions-guard": events=[{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Explain TERTIUS_GUARD_FAILURE"}]}}]
         elif scenario=="successful-tool-mentions-guard": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}],"details":{}},"isError":False}]
         elif scenario=="assistant-summary": events=[
+            {"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"UPDATE_SENTINEL"}]}},
+            {"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"EARLIER_SENTINEL"}],"stopReason":"stop"}},
             {"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"USER_SENTINEL"}]}},
             {"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TOOL_SENTINEL"}],"details":{}},"isError":False},
-            {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_SENTINEL"*210},{"type":"text","text":"first block "},{"type":"text","text":"second block"}],"stopReason":"stop"}},
+            {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_SENTINEL"*210},{"type":"text","text":"FINAL_FIRST_BLOCK "},{"type":"text","text":"F"*2100},{"type":"text","text":" FINAL_SECOND_BLOCK"}],"stopReason":"stop"}},
         ]
         elif scenario=="auth": events=[{"type":"agent_error","error":{"message":"Unauthorized bearer sk-secret"}}]
         elif scenario=="rate": events=[{"type":"auto_retry_end","success":False,"finalError":"429 rate limit exceeded"}]
@@ -122,6 +125,29 @@ async def test_u024_prompt_is_stdin_only_and_argv_is_fixed(fake_pi):
 
 
 @pytest.mark.asyncio
+async def test_rpc_does_not_inject_prompt_bytes_into_child_argv_or_env(
+    monkeypatch, fake_pi
+):
+    sentinel = "PROMPT_CHILD_ENV_SENTINEL"
+    options = settings(fake_pi)
+    options["system_prompt_path"].write_text(sentinel, encoding="utf-8")
+    captured = {}
+    original_spawn = asyncio.create_subprocess_exec
+
+    async def capture_spawn(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return await original_spawn(*argv, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_spawn)
+
+    await run_pi_agent("prompt", **options)
+
+    assert all(sentinel not in argument for argument in captured["argv"])
+    assert all(sentinel not in value for value in captured["env"].values())
+
+
+@pytest.mark.asyncio
 async def test_rpc_rejects_missing_prompt_path_before_spawn(
     monkeypatch, fake_pi, tmp_path
 ):
@@ -137,14 +163,59 @@ async def test_rpc_rejects_missing_prompt_path_before_spawn(
 
 
 @pytest.mark.asyncio
+async def test_rpc_rejects_directory_prompt_path_before_spawn(
+    monkeypatch, fake_pi, tmp_path
+):
+    async def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("subprocess must not start")
+
+    prompt_directory = tmp_path / "prompt-directory"
+    prompt_directory.mkdir()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    options = settings(fake_pi)
+    options["system_prompt_path"] = prompt_directory
+
+    with pytest.raises(PiAgentRpcError) as caught:
+        await run_pi_agent("prompt", **options)
+
+    assert caught.value.code == "worker_config_error"
+
+
+@pytest.mark.asyncio
+async def test_rpc_rejects_unreadable_prompt_path_before_spawn(
+    monkeypatch, fake_pi, tmp_path
+):
+    async def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("subprocess must not start")
+
+    prompt_path = tmp_path / "unreadable.md"
+    prompt_path.write_text("policy", encoding="utf-8")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    monkeypatch.setattr(os, "access", lambda _path, _mode: False)
+    options = settings(fake_pi)
+    options["system_prompt_path"] = prompt_path
+
+    with pytest.raises(PiAgentRpcError) as caught:
+        await run_pi_agent("prompt", **options)
+
+    assert caught.value.code == "worker_config_error"
+
+
+@pytest.mark.asyncio
 async def test_rpc_captures_only_bounded_final_assistant_text(fake_pi, tmp_path):
     path = tmp_path / "APPEND_SYSTEM.md"
     path.write_text("policy", encoding="utf-8")
     options = settings(fake_pi, "assistant-summary")
     options["system_prompt_path"] = path
     result = await run_pi_agent("prompt", **options)
-    assert result.assistant_summary == "first block second block"[:2000]
+    final_text = "FINAL_FIRST_BLOCK " + "F" * 2100 + " FINAL_SECOND_BLOCK"
+    assert result.assistant_summary == final_text[:2000]
     assert len(result.assistant_summary) <= 2000
+    assert "UPDATE_SENTINEL" not in result.assistant_summary
+    assert "EARLIER_SENTINEL" not in result.assistant_summary
+    assert "USER_SENTINEL" not in result.assistant_summary
+    assert "TOOL_SENTINEL" not in result.assistant_summary
+    assert "THINKING_SENTINEL" not in result.assistant_summary
 
 
 @pytest.mark.asyncio
