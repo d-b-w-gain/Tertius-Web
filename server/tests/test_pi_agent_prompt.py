@@ -9,6 +9,7 @@ from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
     load_pi_agent_prompt,
+    render_legacy_pi_agent_conversation_prompt,
     render_pi_agent_user_prompt,
 )
 
@@ -121,3 +122,24 @@ def test_pi_user_prompt_renderer_labels_missing_active_file_as_none():
     )
 
     assert "Active file:\nnone\n\nCurrent request" in rendered
+
+
+def test_legacy_conversation_renderer_preserves_current_framing():
+    assert (
+        render_legacy_pi_agent_conversation_prompt(
+            prompt="Current request",
+            prior_prompts=["First request", "Second request"],
+        )
+        == "Previous user requests, oldest first:\n"
+        "1. First request\n"
+        "2. Second request\n\n"
+        "Current user request:\n"
+        "Current request"
+    )
+    assert (
+        render_legacy_pi_agent_conversation_prompt(
+            prompt="Current request",
+            prior_prompts=[],
+        )
+        == "Current request"
+    )

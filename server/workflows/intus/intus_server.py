@@ -25,8 +25,10 @@ from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorksp
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
 from core.pi_agent_prompt import (
+    PiAgentPromptError,
     estimate_pi_agent_usage,
     load_pi_agent_prompt,
+    render_legacy_pi_agent_conversation_prompt,
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
@@ -596,19 +598,10 @@ async def start_llm_file_edit_job(
             max_chars=settings.llm_file_edit_max_context_chars,
         )
         prior_prompts = job_repo.list_recent_prompts(name, limit=5)
-        if prior_prompts:
-            history = "\n".join(
-                f"{index}. {prompt}"
-                for index, prompt in enumerate(prior_prompts, start=1)
-            )
-            conversation_prompt = (
-                "Previous user requests, oldest first:\n"
-                f"{history}\n\n"
-                "Current user request:\n"
-                f"{req.prompt}"
-            )
-        else:
-            conversation_prompt = req.prompt
+        conversation_prompt = render_legacy_pi_agent_conversation_prompt(
+            prompt=req.prompt,
+            prior_prompts=prior_prompts,
+        )
         selected_ids = {file.id for file in selected}
         active_filename = next(
             (
@@ -718,6 +711,16 @@ async def start_llm_file_edit_job(
         if job is not None:
             job_repo.mark_job_dispatched(job)
             db.commit()
+    except PiAgentPromptError:
+        db.rollback()
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "AI editing is not configured",
+                "retryable": False,
+            },
+        )
     except LlmUsageLimitExceeded:
         db.rollback()
         return JSONResponse(status_code=429, content={"success": False, "error": "LLM generation limit exceeded.", "retryable": True})

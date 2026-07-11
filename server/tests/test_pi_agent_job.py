@@ -13,7 +13,11 @@ import pytest
 
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile
 from core.pi_agent_messages import PiAgentUsage
-from core.pi_agent_prompt import load_pi_agent_prompt, render_pi_agent_user_prompt
+from core.pi_agent_prompt import (
+    PiAgentPromptError,
+    load_pi_agent_prompt,
+    render_pi_agent_user_prompt,
+)
 from core.pi_agent_rpc import PiAgentRpcResult
 from workflows.intus.pi_agent_job import (
     WorkspaceError,
@@ -106,6 +110,35 @@ def source(filename, content):
         updated_at=datetime.now(timezone.utc),
         sha256=hashlib.sha256(content.encode()).hexdigest(),
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_returns_fixed_nonretryable_failure_when_policy_is_unavailable(
+    monkeypatch, tmp_path, caplog
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("design.py", "length = 10\n")])
+
+    def unavailable_prompt():
+        raise PiAgentPromptError("secret prompt path /tmp/policy")
+
+    async def forbidden_rpc(*_args, **_kwargs):
+        raise AssertionError("provider must not run")
+
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "load_pi_agent_prompt", unavailable_prompt)
+    monkeypatch.setattr(job, "run_pi_agent", forbidden_rpc)
+
+    result = await job.execute_pi_agent_command(request, worker_settings())
+
+    assert result.status == "failed"
+    assert result.error_code == "worker_config_error"
+    assert result.error_message == "Pi agent policy is unavailable."
+    assert result.retryable is False
+    assert result.outcome is None
+    assert result.changed_files == []
+    assert "secret prompt path" not in caplog.text
 
 
 def test_worker_hydrates_fresh_manifest_with_secure_modes(tmp_path):

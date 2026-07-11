@@ -51,6 +51,25 @@ def load_pi_agent_prompt(
     )
 
 
+def render_legacy_pi_agent_conversation_prompt(
+    *,
+    prompt: str,
+    prior_prompts: Sequence[str],
+) -> str:
+    if not prior_prompts:
+        return prompt
+    history = "\n".join(
+        f"{index}. {prior_prompt}"
+        for index, prior_prompt in enumerate(prior_prompts, start=1)
+    )
+    return (
+        "Previous user requests, oldest first:\n"
+        f"{history}\n\n"
+        "Current user request:\n"
+        f"{prompt}"
+    )
+
+
 def render_pi_agent_user_prompt(
     *,
     conversation_prompt: str,

@@ -1,12 +1,14 @@
 import socket
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select
 
 from core.llm_file_edit import TokenUsage
 from core.models import LlmEditJob, ProjectFile
-from core.pi_agent_prompt import render_pi_agent_user_prompt
+from core.pi_agent_prompt import PiAgentPromptError, render_pi_agent_user_prompt
 from workflows.intus import intus_server
+from workflows.intus.pi_agent_job import build_coding_agent_prompt
 
 
 def file_pointer(file: ProjectFile) -> dict[str, str]:
@@ -94,6 +96,116 @@ def test_submit_estimates_the_complete_shared_worker_prompt(
         active_filename=design.filename,
     )
     assert captured["source_bytes"] == len(design.content.encode("utf-8"))
+
+
+def test_submit_returns_fixed_unavailable_response_when_policy_cannot_load(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    caplog,
+):
+    enable_pi(monkeypatch)
+    design = design_file(db_session, seeded_tenant)
+
+    def unavailable_prompt():
+        raise PiAgentPromptError("secret prompt path /tmp/policy")
+
+    async def forbidden_publish(*_args):
+        raise AssertionError("unavailable policy must not publish")
+
+    monkeypatch.setattr(intus_server, "load_pi_agent_prompt", unavailable_prompt)
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", forbidden_publish)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={"prompt": "Inspect", "files": [file_pointer(design)]},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "success": False,
+        "error": "AI editing is not configured",
+        "retryable": False,
+    }
+    assert "secret prompt path" not in caplog.text
+    assert db_session.scalar(select(func.count()).select_from(LlmEditJob)) == 0
+
+
+def test_api_estimate_and_worker_execution_share_exact_legacy_prompt_bytes(
+    authenticated_intus_client, db_session, seeded_tenant, monkeypatch
+):
+    enable_pi(monkeypatch)
+    design = design_file(db_session, seeded_tenant)
+    support = ProjectFile(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        filename="dimensions.py",
+        content="largeur = 'café'\n",
+    )
+    now = datetime.now(timezone.utc)
+    db_session.add_all(
+        [
+            support,
+            LlmEditJob(
+                tenant_id=seeded_tenant.tenant_id,
+                project_id=seeded_tenant.project_id,
+                requested_by=seeded_tenant.user_id,
+                status="succeeded",
+                request_payload={"prompt": "Première demande"},
+                created_at=now - timedelta(minutes=2),
+            ),
+            LlmEditJob(
+                tenant_id=seeded_tenant.tenant_id,
+                project_id=seeded_tenant.project_id,
+                requested_by=seeded_tenant.user_id,
+                status="failed",
+                request_payload={"prompt": "Deuxième demande"},
+                created_at=now - timedelta(minutes=1),
+            ),
+        ]
+    )
+    db_session.commit()
+    db_session.refresh(support)
+    captured = {}
+    commands = []
+    real_estimate = intus_server.estimate_pi_agent_usage
+
+    def capture_estimate(**kwargs):
+        captured.update(kwargs)
+        return real_estimate(**kwargs)
+
+    async def publish(_settings, command):
+        commands.append(command)
+
+    monkeypatch.setattr(intus_server, "estimate_pi_agent_usage", capture_estimate)
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", publish)
+
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Agrandir la pièce",
+            "files": [file_pointer(design), file_pointer(support)],
+            "active_file_id": str(support.id),
+            "metadata": {"source": "éditeur"},
+        },
+    )
+
+    assert response.status_code == 202, response.json()
+    assert len(commands) == 1
+    assert commands[0].prior_prompts == ["Première demande", "Deuxième demande"]
+    assert [file.filename for file in commands[0].files] == [
+        "design.py",
+        "dimensions.py",
+    ]
+    assert commands[0].active_file_id == support.id
+    assert captured["user_prompt"].encode("utf-8") == build_coding_agent_prompt(
+        commands[0]
+    ).encode("utf-8")
+    assert captured["source_bytes"] == sum(
+        len(file.content.encode("utf-8")) for file in commands[0].files
+    )
+    assert captured["metadata"] == {"source": "éditeur"}
 
 
 def test_submit_rejects_unsupported_model_before_publish(

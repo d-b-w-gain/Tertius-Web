@@ -34,7 +34,12 @@ from core.pi_agent_messages import (
     assert_pi_agent_result_size,
     pi_agent_result_message_id,
 )
-from core.pi_agent_prompt import load_pi_agent_prompt, render_pi_agent_user_prompt
+from core.pi_agent_prompt import (
+    PiAgentPromptError,
+    load_pi_agent_prompt,
+    render_legacy_pi_agent_conversation_prompt,
+    render_pi_agent_user_prompt,
+)
 from core.pi_agent_rpc import PiAgentRpcError, run_pi_agent
 from core.telemetry import (
     configure_telemetry,
@@ -75,21 +80,6 @@ class ManifestEntry:
     content: str
 
 
-def build_conversation_prompt(prompt: str, prior_prompts: list[str]) -> str:
-    if not prior_prompts:
-        return prompt
-    history = "\n".join(
-        f"{index}. {prior_prompt}"
-        for index, prior_prompt in enumerate(prior_prompts, start=1)
-    )
-    return (
-        "Previous user requests, oldest first:\n"
-        f"{history}\n\n"
-        "Current user request:\n"
-        f"{prompt}"
-    )
-
-
 def build_coding_agent_prompt(command: PiAgentCommand) -> str:
     active_filename = next(
         (
@@ -99,7 +89,10 @@ def build_coding_agent_prompt(command: PiAgentCommand) -> str:
         ),
         None,
     )
-    conversation = build_conversation_prompt(command.prompt, command.prior_prompts)
+    conversation = render_legacy_pi_agent_conversation_prompt(
+        prompt=command.prompt,
+        prior_prompts=command.prior_prompts,
+    )
     return render_pi_agent_user_prompt(
         conversation_prompt=conversation,
         editable_filenames=[file.filename for file in command.files],
@@ -274,6 +267,15 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
                 execution_id=execution_id,
             )
         return result
+    except PiAgentPromptError:
+        return _failure(
+            command,
+            started_at,
+            "worker_config_error",
+            "Pi agent policy is unavailable.",
+            False,
+            execution_id=execution_id,
+        )
     except PiAgentRpcError as exc:
         return _failure(
             command,
