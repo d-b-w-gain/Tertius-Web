@@ -391,9 +391,17 @@ async def republish_queued_pi_agent_jobs(
                         sha256=item.sha256,
                     )
                 )
-            schema_version = int(
-                payload.get("dispatched_command_schema_version", 1)
-            )
+            if "dispatched_command_schema_version" in payload:
+                schema_version = payload["dispatched_command_schema_version"]
+                if type(schema_version) is not int or schema_version not in {1, 2}:
+                    raise ValueError("Invalid dispatched command schema version")
+            else:
+                if (
+                    "dispatched_conversation" in payload
+                    or "dispatched_system_prompt_sha256" in payload
+                ):
+                    raise ValueError("Missing dispatched command schema version")
+                schema_version = 1
             if schema_version == 2:
                 conversation = PiAgentConversationContext.model_validate(
                     payload["dispatched_conversation"]

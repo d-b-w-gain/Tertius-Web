@@ -836,17 +836,57 @@ async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_ten
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "v2_context",
+    "invalid_dispatch_context",
     [
-        {},
-        {
-            "dispatched_conversation": {"recent_turns": "malformed"},
-            "dispatched_system_prompt_sha256": "a" * 64,
-        },
+        pytest.param(
+            {"dispatched_command_schema_version": 2},
+            id="v2-fields-missing",
+        ),
+        pytest.param(
+            {
+                "dispatched_command_schema_version": 2,
+                "dispatched_conversation": {"recent_turns": "malformed"},
+                "dispatched_system_prompt_sha256": "a" * 64,
+            },
+            id="v2-conversation-malformed",
+        ),
+        pytest.param(
+            {"dispatched_conversation": {"rolling_summary": "orphaned v2"}},
+            id="missing-version-with-conversation",
+        ),
+        pytest.param(
+            {"dispatched_system_prompt_sha256": "a" * 64},
+            id="missing-version-with-prompt-hash",
+        ),
+        *[
+            pytest.param(
+                {
+                    "dispatched_command_schema_version": value,
+                    "dispatched_conversation": {
+                        "rolling_summary": "valid v2 context"
+                    },
+                    "dispatched_system_prompt_sha256": "a" * 64,
+                },
+                id=f"invalid-version-{value!r}",
+            )
+            for value in [
+                1.0,
+                1.9,
+                2.0,
+                2.9,
+                "1",
+                "2",
+                True,
+                False,
+                0,
+                -1,
+                3,
+            ]
+        ],
     ],
 )
-async def test_queued_reconciliation_fails_closed_for_invalid_v2_context(
-    db_session, seeded_tenant, v2_context
+async def test_queued_reconciliation_fails_closed_for_invalid_dispatch_context(
+    db_session, seeded_tenant, invalid_dispatch_context
 ):
     file = db_session.scalar(
         select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
@@ -862,8 +902,7 @@ async def test_queued_reconciliation_fails_closed_for_invalid_v2_context(
             "dispatched_provider": "openai-codex",
             "dispatched_model": "gpt-5.5",
             "dispatched_thinking": "high",
-            "dispatched_command_schema_version": 2,
-            **v2_context,
+            **invalid_dispatch_context,
         }
     )
     job.request_payload = payload

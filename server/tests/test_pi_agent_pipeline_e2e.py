@@ -169,6 +169,8 @@ async def test_pi_pipeline_worker_publishes_and_api_applies_result(
         assert second.conversation.recent_turns[-1].user_request == first_prompt
         assert second.conversation.recent_turns[-1].assistant_summary == "Added height"
         assert second.conversation.recent_turns[-1].status == "succeeded"
+        assert second.conversation.recent_turns[-1].outcome == "changed"
+        assert second.conversation.recent_turns[-1].changed_files == [file.filename]
         assert second.files[0].content == refreshed_content
         assert "REFRESHED_FILE_SENTINEL" in second.files[0].content
         assert "REFRESHED_FILE_SENTINEL" not in second.conversation.model_dump_json()
