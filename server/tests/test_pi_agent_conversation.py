@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from core.pi_agent_conversation import (
     MAX_RENDERED_CONTEXT_TOKENS,
     advance_conversation_context,
@@ -114,6 +116,19 @@ def test_successful_job_uses_bounded_safe_result_fields_only():
     assert "RAW_INTERNAL_SENTINEL" not in serialized
 
 
+def test_successful_job_with_unhashable_outcome_is_skipped():
+    job = SimpleNamespace(
+        status="succeeded",
+        request_payload={"prompt": "change the files"},
+        result_payload={"outcome": ["changed"], "message": "", "files": []},
+        user_message=None,
+        error=None,
+        error_code=None,
+    )
+
+    assert conversation_turn_from_job(job) is None
+
+
 def test_latest_persisted_context_advances_only_the_latest_job():
     persisted = PiAgentConversationContext(recent_turns=[successful_turn(1)])
     latest = SimpleNamespace(
@@ -213,6 +228,18 @@ def test_malformed_terminal_rows_do_not_abort_valid_history_reconstruction():
         "valid first",
         "valid second",
     ]
+
+
+def test_history_reconstruction_propagates_job_property_type_errors():
+    class BrokenJob:
+        request_payload = {"prompt": "valid request"}
+
+        @property
+        def status(self):
+            raise TypeError("broken status property")
+
+    with pytest.raises(TypeError, match="broken status property"):
+        next_conversation_context([BrokenJob()])
 
 
 def test_renderer_keeps_current_request_outside_historical_json():

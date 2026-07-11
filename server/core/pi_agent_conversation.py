@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from pydantic import ValidationError
+
 from core.llm_file_edit import validate_filename
 from core.pi_agent_messages import PiAgentConversationContext, PiAgentConversationTurn
 
@@ -128,7 +130,7 @@ def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
         return None
     result = job.result_payload if isinstance(job.result_payload, dict) else {}
     outcome = result.get("outcome")
-    if outcome not in {"changed", "no_changes"}:
+    if not isinstance(outcome, str) or outcome not in {"changed", "no_changes"}:
         return None
     message = result.get("message") if isinstance(result.get("message"), str) else ""
     fallback = "Updated files." if outcome == "changed" else "No files changed."
@@ -145,7 +147,7 @@ def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
 def _safe_conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
     try:
         return conversation_turn_from_job(job)
-    except (TypeError, ValueError):
+    except ValidationError:
         return None
 
 
