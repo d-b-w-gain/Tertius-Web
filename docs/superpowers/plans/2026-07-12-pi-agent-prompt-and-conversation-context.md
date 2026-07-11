@@ -120,6 +120,7 @@
 | Assistant summary per turn | 2,000 characters |
 | Changed filenames per turn | 20 |
 | Changed filename | 512 characters |
+| Rendered historical context | 12,000 estimated tokens using UTF-8 bytes divided by four |
 | Legacy bootstrap query | 200 terminal jobs |
 | Whole command | Existing 524,288-byte serializer gate |
 
@@ -152,7 +153,7 @@ def versioned_context(self):
 
 - The API and queued-job republisher emit v2 for new jobs.
 - The worker accepts v1 until the retained request stream has exceeded its 24-hour maximum age after deployment.
-- v1 adapts `prior_prompts` into user-only historical turns in memory; it is never rewritten in NATS.
+- v1 renders `prior_prompts` as a separately delimited JSON list of legacy user requests; it never fabricates statuses/outcomes and is never rewritten in NATS.
 - `PiAgentResult.schema_version` remains `1`.
 
 ## 5. Anti-Patterns
@@ -180,7 +181,7 @@ def versioned_context(self):
 | Malformed persisted conversation JSON | Strict Pydantic validation | Ignore the malformed cached context and bootstrap from at most 200 terminal jobs | Normal request if bootstrap succeeds | No |
 | Invalid terminal job payload | Missing/non-string prompt or malformed result | Skip only that job during legacy bootstrap | Remaining valid history is used | No |
 | Oversized conversation field | Pydantic bounds or deterministic compactor | Fold oldest turn, clip summary entries, or reject malformed external command | Generic invalid-command failure | No |
-| v1 command retained in JetStream | `schema_version == 1` | Adapt `prior_prompts` and execute with current prompt file | Normal legacy execution | No |
+| v1 command retained in JetStream | `schema_version == 1` | Render `prior_prompts` as bounded legacy user-request JSON and execute with the current prompt file | Normal legacy execution | No |
 | v2 command missing context/hash | Pydantic model validator | Terminate invalid NATS message without provider execution | No new job result; existing invalid-message telemetry | No |
 | Pi produces no final assistant text | No assistant `message_end` text | Persist deterministic fallback based on outcome/error | `Updated files.`, `No files changed.`, or bounded error message | No |
 | Assistant text contains prompt/source | It is model output, not trusted metadata | Persist bounded result content but never log/label it | Existing conversation UI may display it | No |
@@ -197,7 +198,7 @@ def versioned_context(self):
 | U-03 | Command model | Valid v1 and v2 payloads | Both parse; cross-version fields fail. |
 | U-04 | Turn model | Success/failure/outcome combinations | Only consistent combinations parse. |
 | U-05 | Context advance | Six complete turns | Oldest folds into rolling summary; newest five remain oldest-first. |
-| U-06 | Summary bound | Repeated long completed turns | Summary stays at or below 8,000 characters without partial newest entries. |
+| U-06 | Summary/token bound | Repeated long completed turns | Summary stays at or below 8,000 characters, rendered history stays at or below 12,000 estimated tokens, and the current request remains intact outside history compaction. |
 | U-07 | Job conversion | Succeeded changed/no-change and failed jobs | Safe summaries/status/error code/filenames only; no file content, raw error, IDs, or hashes. |
 | U-08 | Legacy bootstrap | Mixed tenants/projects and malformed payloads | Only valid requested tenant/project terminal jobs contribute. |
 | U-09 | Prompt renderer | Summary, recent turns, current request | Historical JSON and current request are separately delimited; current files declared authoritative. |
@@ -239,14 +240,67 @@ def versioned_context(self):
 
 - [ ] **Step 1: Write failing prompt-loader and exact-estimate tests**
 
-Add tests covering exact bytes, SHA-256, every invalid-file case, a path-only render input, and deterministic estimation. The primary success assertion must be:
+Create `server/tests/test_pi_agent_prompt.py` with these concrete tests (retain the exact checked-in text assertion in the first test so accidental prompt edits require an intentional test change):
 
 ```python
-snapshot = load_pi_agent_prompt()
-raw = snapshot.path.read_bytes()
-assert snapshot.content == raw.decode("utf-8")
-assert snapshot.sha256 == sha256(raw).hexdigest()
-assert len(raw) <= 32_768
+from hashlib import sha256
+
+import pytest
+
+from core.pi_agent_prompt import (
+    PI_AGENT_BASE_AND_TOOL_RESERVE_TOKENS,
+    PI_AGENT_PROMPT_PATH,
+    PiAgentPromptError,
+    estimate_pi_agent_usage,
+    load_pi_agent_prompt,
+)
+
+
+def test_checked_in_pi_prompt_loads_exact_bytes_and_hash():
+    load_pi_agent_prompt.cache_clear()
+    snapshot = load_pi_agent_prompt()
+    raw = snapshot.path.read_bytes()
+    assert snapshot.path == PI_AGENT_PROMPT_PATH.resolve()
+    assert snapshot.content == raw.decode("utf-8")
+    assert snapshot.sha256 == sha256(raw).hexdigest()
+    assert len(raw) <= 32_768
+    assert snapshot.content.startswith("Tertius file-edit policy:\n")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"", b"  \n", b"bad\0prompt", b"\xff", b"x" * 32_769],
+)
+def test_pi_prompt_loader_rejects_invalid_content_without_echo(tmp_path, raw):
+    path = tmp_path / "prompt.md"
+    path.write_bytes(raw)
+    load_pi_agent_prompt.cache_clear()
+    with pytest.raises(PiAgentPromptError) as caught:
+        load_pi_agent_prompt(path)
+    assert str(path) not in str(caught.value)
+    assert "bad" not in str(caught.value)
+
+
+def test_pi_prompt_loader_rejects_missing_path_without_echo(tmp_path):
+    path = tmp_path / "missing.md"
+    load_pi_agent_prompt.cache_clear()
+    with pytest.raises(PiAgentPromptError) as caught:
+        load_pi_agent_prompt(path)
+    assert str(path) not in str(caught.value)
+
+
+def test_pi_usage_estimate_counts_exact_bytes_once_plus_fixed_reserve():
+    usage = estimate_pi_agent_usage(
+        system_prompt="policy",
+        user_prompt="history and current request",
+        source_bytes=len("width = 10".encode("utf-8")),
+        metadata={"source": "ai_edit"},
+        max_output_tokens=65_536,
+    )
+    framed = b"policyhistory and current requestwidth = 10sourceai_edit"
+    expected_prompt = PI_AGENT_BASE_AND_TOOL_RESERVE_TOKENS + (len(framed) + 3) // 4
+    assert usage.prompt_tokens == expected_prompt
+    assert usage.total_tokens == expected_prompt + 65_536
 ```
 
 - [ ] **Step 2: Run the tests and verify red**
@@ -289,8 +343,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
+from typing import Mapping
+
+from core.llm_file_edit import TokenUsage
 
 MAX_PI_AGENT_PROMPT_BYTES = 32_768
+PI_AGENT_BASE_AND_TOOL_RESERVE_TOKENS = 8_192
 PI_AGENT_PROMPT_PATH = Path(__file__).with_name("pi_agent_system_prompt.md")
 
 
@@ -322,9 +380,35 @@ def load_pi_agent_prompt(path: Path = PI_AGENT_PROMPT_PATH) -> PiAgentPromptSnap
         content=content,
         sha256=sha256(raw).hexdigest(),
     )
+
+
+def estimate_pi_agent_usage(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    source_bytes: int,
+    metadata: Mapping[str, str],
+    max_output_tokens: int,
+) -> TokenUsage:
+    metadata_bytes = sum(
+        len(key.encode("utf-8")) + len(value.encode("utf-8"))
+        for key, value in metadata.items()
+    )
+    framed_bytes = (
+        len(system_prompt.encode("utf-8"))
+        + len(user_prompt.encode("utf-8"))
+        + source_bytes
+        + metadata_bytes
+    )
+    prompt_tokens = PI_AGENT_BASE_AND_TOOL_RESERVE_TOKENS + (framed_bytes + 3) // 4
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=max_output_tokens,
+        total_tokens=prompt_tokens + max_output_tokens,
+    )
 ```
 
-Move prompt-specific estimation into this module or change `estimate_file_edit_usage()` to accept already-final `system_prompt` and already-rendered `user_prompt`. Define `PI_AGENT_BASE_AND_TOOL_RESERVE_TOKENS = 8_192`, add it once to `prompt_tokens`, and then add the configured output-token reserve. Remove `BUILD123D_RUNTIME_GUARDRAILS`, `file_edit_system_content()`, and the obsolete direct-provider JSON-return framing from `llm_file_edit.py`; keep file selection and shared token/result models.
+Remove `BUILD123D_RUNTIME_GUARDRAILS`, `FileEditPromptContents`, `file_edit_system_content()`, `file_edit_prompt_contents()`, `estimate_file_edit_usage()`, and `estimate_file_edit_tokens()` from `llm_file_edit.py`. Keep `TokenUsage`, file selection, request validation, and result models. Update callers to use `estimate_pi_agent_usage()`; do not retain a second estimator.
 
 - [ ] **Step 5: Lock the image mode and run green tests**
 
@@ -360,7 +444,115 @@ rtk git commit -m "feat: add immutable Pi agent policy"
 
 - [ ] **Step 1: Write failing strict-model and rollover tests**
 
-Cover U-03 through U-09, including a mutation that places `content`, snapshot IDs, and raw internal errors in a job payload and proves none reach the resulting turn.
+Create `server/tests/test_pi_agent_conversation.py` with the following core cases; keep command-version field-matrix tests in `test_pi_agent_messages.py` next to the existing command round-trip test:
+
+```python
+from types import SimpleNamespace
+
+from core.pi_agent_conversation import (
+    MAX_RENDERED_CONTEXT_TOKENS,
+    advance_conversation_context,
+    conversation_turn_from_job,
+    estimated_context_tokens,
+    next_conversation_context,
+    render_conversation_context,
+    render_legacy_prior_prompts,
+)
+from core.pi_agent_messages import PiAgentConversationContext, PiAgentConversationTurn
+
+
+def successful_turn(index: int, *, request_size: int = 10):
+    return PiAgentConversationTurn(
+        user_request=f"request-{index}-" + "u" * request_size,
+        status="succeeded",
+        outcome="changed",
+        assistant_summary=f"changed-{index}",
+        changed_files=["design.py"],
+    )
+
+
+def test_context_rolls_oldest_turns_and_obeys_token_budget():
+    context = PiAgentConversationContext()
+    for index in range(12):
+        context = advance_conversation_context(
+            context,
+            successful_turn(index, request_size=11_500),
+        )
+    assert len(context.recent_turns) <= 5
+    assert context.recent_turns[-1].user_request.startswith("request-11-")
+    assert len(context.rolling_summary) <= 8_000
+    assert estimated_context_tokens(context) <= MAX_RENDERED_CONTEXT_TOKENS
+
+
+def test_failed_job_uses_user_message_and_excludes_internal_payload():
+    job = SimpleNamespace(
+        status="failed",
+        request_payload={
+            "prompt": "try the change",
+            "dispatched_conversation": {"rolling_summary": "secret recursion"},
+        },
+        result_payload={
+            "files": [{"filename": "design.py", "content": "SOURCE_SENTINEL"}],
+            "snapshot": {"id": "SNAPSHOT_SENTINEL"},
+        },
+        user_message="Provider was unavailable",
+        error="RAW_INTERNAL_SENTINEL",
+        error_code="provider_error",
+    )
+    turn = conversation_turn_from_job(job)
+    assert turn.status == "failed"
+    assert turn.error_code == "provider_error"
+    assert turn.assistant_summary == "Provider was unavailable"
+    serialized = turn.model_dump_json()
+    assert "SOURCE_SENTINEL" not in serialized
+    assert "SNAPSHOT_SENTINEL" not in serialized
+    assert "RAW_INTERNAL_SENTINEL" not in serialized
+    assert "secret recursion" not in serialized
+
+
+def test_latest_persisted_context_advances_only_the_latest_job():
+    persisted = PiAgentConversationContext(recent_turns=[successful_turn(1)])
+    latest = SimpleNamespace(
+        status="succeeded",
+        request_payload={
+            "prompt": "latest request",
+            "dispatched_conversation": persisted.model_dump(mode="json"),
+        },
+        result_payload={"outcome": "no_changes", "message": "No update needed", "files": []},
+        user_message=None,
+        error=None,
+        error_code=None,
+    )
+    context = next_conversation_context([latest])
+    assert [turn.user_request for turn in context.recent_turns] == [
+        persisted.recent_turns[0].user_request,
+        "latest request",
+    ]
+
+
+def test_renderer_keeps_current_request_outside_historical_json():
+    context = PiAgentConversationContext(recent_turns=[successful_turn(1)])
+    rendered = render_conversation_context(context, "CURRENT_REQUEST_SENTINEL")
+    history, current = rendered.split("Current user request:\n", maxsplit=1)
+    assert "request-1" in history
+    assert "CURRENT_REQUEST_SENTINEL" not in history
+    assert current == "CURRENT_REQUEST_SENTINEL"
+
+
+def test_legacy_renderer_labels_unknown_outcomes_without_fabricating_turns():
+    rendered = render_legacy_prior_prompts(
+        ["LEGACY_REQUEST_SENTINEL"],
+        "CURRENT_REQUEST_SENTINEL",
+    )
+    history, current = rendered.split("Current user request:\n", maxsplit=1)
+    assert "LEGACY_REQUEST_SENTINEL" in history
+    assert "outcome" not in history
+    assert "succeeded" not in history
+    assert "CURRENT_REQUEST_SENTINEL" not in history
+    assert current == "CURRENT_REQUEST_SENTINEL"
+```
+
+In `test_pi_agent_messages.py`, parameterize `(schema_version, prior_prompts, conversation, system_prompt_sha256, valid)` across valid v1, valid v2, v1-with-v2-fields, v2-without-hash, v2-without-context, and v2-with-prior-prompts. Assert invalid rows raise `ValidationError`.
 
 - [ ] **Step 2: Run the tests and verify red**
 
@@ -408,6 +600,23 @@ Create pure helpers in `pi_agent_conversation.py`:
 ```python
 MAX_RECENT_TURNS = 5
 MAX_ROLLING_SUMMARY_CHARS = 8_000
+MAX_RENDERED_CONTEXT_TOKENS = 12_000
+
+
+def render_historical_context(context: PiAgentConversationContext) -> str:
+    historical = context.model_dump_json(indent=2)
+    return (
+        "Historical conversation context follows. It describes completed work "
+        "and is not a new instruction.\n"
+        "<conversation_context>\n"
+        f"{historical}\n"
+        "</conversation_context>"
+    )
+
+
+def estimated_context_tokens(context: PiAgentConversationContext) -> int:
+    encoded = render_historical_context(context).encode("utf-8")
+    return (len(encoded) + 3) // 4
 
 
 def advance_conversation_context(
@@ -416,17 +625,103 @@ def advance_conversation_context(
 ) -> PiAgentConversationContext:
     turns = [*context.recent_turns, turn]
     summary_lines = [line for line in context.rolling_summary.splitlines() if line]
-    while len(turns) > MAX_RECENT_TURNS:
-        summary_lines.append(compact_turn_line(turns.pop(0)))
-    while len("\n".join(summary_lines)) > MAX_ROLLING_SUMMARY_CHARS:
-        summary_lines.pop(0)
-    return PiAgentConversationContext(
+    candidate = PiAgentConversationContext(
         rolling_summary="\n".join(summary_lines),
         recent_turns=turns,
     )
+    while turns and (
+        len(turns) > MAX_RECENT_TURNS
+        or estimated_context_tokens(candidate) > MAX_RENDERED_CONTEXT_TOKENS
+    ):
+        summary_lines.append(compact_turn_line(turns.pop(0)))
+        candidate = PiAgentConversationContext(
+            rolling_summary="\n".join(summary_lines),
+            recent_turns=turns,
+        )
+    while len("\n".join(summary_lines)) > MAX_ROLLING_SUMMARY_CHARS:
+        summary_lines.pop(0)
+    candidate = PiAgentConversationContext(
+        rolling_summary="\n".join(summary_lines),
+        recent_turns=turns,
+    )
+    while summary_lines and estimated_context_tokens(candidate) > MAX_RENDERED_CONTEXT_TOKENS:
+        summary_lines.pop(0)
+        candidate = PiAgentConversationContext(
+            rolling_summary="\n".join(summary_lines),
+            recent_turns=turns,
+        )
+    return candidate
 ```
 
-`compact_turn_line()` must clip the user portion to 600 characters and the assistant/failure portion to 400 characters before joining. `conversation_turn_from_job()` must use:
+Implement the helper bodies exactly as follows, with `_safe_filenames()` validating at most 20 filenames through `validate_filename()` and clipping each to 512 characters:
+
+```python
+def _clip(value: str, limit: int) -> str:
+    normalized = " ".join(value.split())
+    return normalized if len(normalized) <= limit else normalized[: limit - 3] + "..."
+
+
+def compact_turn_line(turn: PiAgentConversationTurn) -> str:
+    result = turn.assistant_summary or turn.error_code or turn.status
+    return (
+        f"- user={_clip(turn.user_request, 600)!r}; "
+        f"status={turn.status}; outcome={turn.outcome or 'none'}; "
+        f"result={_clip(result, 400)!r}"
+    )
+
+
+def _safe_filenames(raw_files: object) -> list[str]:
+    if not isinstance(raw_files, list):
+        return []
+    filenames: list[str] = []
+    for item in raw_files:
+        if not isinstance(item, dict):
+            continue
+        filename = item.get("filename")
+        if not isinstance(filename, str) or len(filename) > 512:
+            continue
+        try:
+            filenames.append(validate_filename(filename))
+        except ValueError:
+            continue
+        if len(filenames) == 20:
+            break
+    return filenames
+
+
+def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
+    request_payload = job.request_payload if isinstance(job.request_payload, dict) else {}
+    user_request = request_payload.get("prompt")
+    if not isinstance(user_request, str) or not user_request.strip():
+        return None
+    if job.status == "failed":
+        error_code = job.error_code if isinstance(job.error_code, str) and job.error_code else "unknown_failure"
+        user_message = job.user_message if isinstance(job.user_message, str) else "Previous request failed."
+        return PiAgentConversationTurn(
+            user_request=user_request,
+            status="failed",
+            assistant_summary=_clip(user_message, 2000),
+            error_code=error_code,
+        )
+    if job.status != "succeeded":
+        return None
+    result = job.result_payload if isinstance(job.result_payload, dict) else {}
+    outcome = result.get("outcome")
+    if outcome not in {"changed", "no_changes"}:
+        return None
+    message = result.get("message") if isinstance(result.get("message"), str) else ""
+    fallback = "Updated files." if outcome == "changed" else "No files changed."
+    filenames = _safe_filenames(result.get("files", [])) if outcome == "changed" else []
+    return PiAgentConversationTurn(
+        user_request=user_request,
+        status="succeeded",
+        outcome=outcome,
+        assistant_summary=_clip(message.strip() or fallback, 2000),
+        changed_files=filenames,
+    )
+```
+
+`conversation_turn_from_job()` therefore uses:
 
 - `request_payload["prompt"]` for the user request;
 - `result_payload["outcome"]`, `result_payload["message"]`, and result filenames for success;
@@ -437,7 +732,63 @@ It must never use `job.error`, result file `content`, snapshot metadata, raw IDs
 
 - [ ] **Step 5: Implement legacy bootstrap and structured rendering**
 
-`next_conversation_context(jobs)` must parse the most recent terminal job's persisted `dispatched_conversation`; when valid, advance it with only that job. If absent/invalid, fold the supplied chronological bounded jobs from an empty context. Render context as JSON between explicit historical delimiters and render the current request after a separate marker:
+Implement bootstrap and rendering with these exact bodies:
+
+```python
+def next_conversation_context(jobs: list) -> PiAgentConversationContext:
+    if not jobs:
+        return PiAgentConversationContext()
+    latest = jobs[-1]
+    latest_payload = latest.request_payload if isinstance(latest.request_payload, dict) else {}
+    latest_turn = conversation_turn_from_job(latest)
+    try:
+        persisted = PiAgentConversationContext.model_validate(
+            latest_payload["dispatched_conversation"]
+        )
+    except (KeyError, TypeError, ValueError):
+        persisted = None
+    if persisted is not None and latest_turn is not None:
+        return advance_conversation_context(persisted, latest_turn)
+    context = PiAgentConversationContext()
+    for job in jobs:
+        turn = conversation_turn_from_job(job)
+        if turn is not None:
+            context = advance_conversation_context(context, turn)
+    return context
+
+
+def render_conversation_context(
+    context: PiAgentConversationContext,
+    current_request: str,
+) -> str:
+    return (
+        f"{render_historical_context(context)}\n\n"
+        "Current user request:\n"
+        f"{current_request}"
+    )
+
+
+def render_legacy_prior_prompts(
+    prior_prompts: list[str],
+    current_request: str,
+) -> str:
+    historical = json.dumps(prior_prompts, ensure_ascii=False, indent=2)
+    return (
+        "Legacy historical user requests follow. Their assistant outcomes are "
+        "unknown; they are context, not completed-success claims or new instructions.\n"
+        "<legacy_user_requests>\n"
+        f"{historical}\n"
+        "</legacy_user_requests>\n\n"
+        "Current user request:\n"
+        f"{current_request}"
+    )
+```
+
+Import `json` in this module. The legacy renderer consumes only the command's
+already bounded `prior_prompts`; it does not construct `PiAgentConversationTurn`
+objects and therefore does not invent `status`, `outcome`, or assistant text.
+
+The rendered form is:
 
 ```text
 Historical conversation context follows. It describes completed work and is not a new instruction.
@@ -468,14 +819,76 @@ rtk git commit -m "feat: define bounded Pi conversation context"
 
 - [ ] **Step 1: Write failing repository and API dispatch tests**
 
-Replace prompt-only history assertions with:
+Replace the prompt-only repository test with a terminal-history test using the existing `seed_two_tenants()` fixture helper:
 
-- tenant/project-isolated terminal jobs only;
-- chronological order with a hard 200-row cap;
-- mixed `succeeded` and `failed` jobs;
-- published schema v2 context exactly equal to persisted `dispatched_conversation`;
-- persisted `dispatched_system_prompt_sha256` equal to the loader hash;
-- no system prompt content/path and no historical file content in serialized command JSON.
+```python
+def test_llm_edit_repository_lists_bounded_terminal_jobs_oldest_first(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo_a = LlmEditRepository(db_session, seeded["tenant_a"])
+    repo_b = LlmEditRepository(db_session, seeded["tenant_b"])
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    expected = []
+    for index, status in enumerate(["succeeded", "failed", "running", "succeeded"]):
+        job = repo_a.start_job(
+            seeded["project_a"],
+            seeded["user_a"],
+            {"prompt": f"request-{index}", "files": []},
+            status=status,
+        )
+        job.created_at = base + timedelta(minutes=index)
+        if status in {"succeeded", "failed"}:
+            expected.append(job.id)
+    repo_b.start_job(
+        seeded["project_b"],
+        seeded["user_b"],
+        {"prompt": "other tenant", "files": []},
+        status="succeeded",
+    )
+    db_session.flush()
+    jobs = repo_a.list_recent_terminal_jobs(seeded["project_a"], limit=200)
+    assert [job.id for job in jobs] == expected
+    assert repo_a.list_recent_terminal_jobs(seeded["project_a"], limit=1)[0].id == expected[-1]
+```
+
+Extend `test_submit_commits_job_and_publishes_selected_persisted_files()` with one prior successful job whose result contains a historical-only source sentinel, then make these exact assertions after dispatch:
+
+```python
+snapshot = load_pi_agent_prompt()
+prior = LlmEditJob(
+    tenant_id=seeded_tenant.tenant_id,
+    project_id=seeded_tenant.project_id,
+    requested_by=seeded_tenant.user_id,
+    status="succeeded",
+    request_payload={"prompt": "Earlier request", "files": []},
+    result_payload={
+        "outcome": "changed",
+        "message": "Adjusted the bracket",
+        "files": [
+            {
+                "filename": "historical.py",
+                "content": "HISTORICAL_SOURCE_SENTINEL",
+                "changed": True,
+            }
+        ],
+    },
+)
+db_session.add(prior)
+db_session.commit()
+
+command = commands[0]
+job = db_session.get(LlmEditJob, UUID(response.json()["job_id"]))
+assert command.schema_version == 2
+assert command.conversation.model_dump(mode="json") == job.request_payload["dispatched_conversation"]
+assert command.system_prompt_sha256 == snapshot.sha256
+assert job.request_payload["dispatched_system_prompt_sha256"] == snapshot.sha256
+serialized = command.model_dump_json()
+assert snapshot.content not in serialized
+assert str(snapshot.path) not in serialized
+assert "HISTORICAL_SOURCE_SENTINEL" not in command.conversation.model_dump_json()
+assert command.conversation.recent_turns[-1].assistant_summary == "Adjusted the bracket"
+```
+
+Keep the endpoint submission/capture setup already present at `server/tests/test_llm_file_edit.py:31-43`; insert the prior job before the POST and the assertions after the existing identity/file assertions.
 
 - [ ] **Step 2: Run the tests and verify red**
 
@@ -559,17 +972,136 @@ rtk git commit -m "feat: dispatch structured Pi conversation context"
 
 - [ ] **Step 1: Write failing RPC and worker tests**
 
-Add tests proving:
+Add these concrete tests beside the existing RPC and worker contract tests:
 
-- argv contains `--append-system-prompt` followed by only the canonical path;
-- a unique prompt-file sentinel is absent from argv and the child environment;
-- missing prompt path fails before subprocess spawn;
-- only assistant `message_end` text is captured, with multiple text blocks concatenated and clipped to 2,000 characters;
-- tool output, user content, and thinking are never captured as the assistant summary;
-- a matching v2 hash calls Pi;
-- a mismatched v2 hash never hydrates/calls Pi and returns `worker_config_mismatch`, retryable true;
-- v1 commands still execute through the legacy adapter;
-- no-change results preserve a real assistant summary.
+```python
+def test_pi_argv_uses_prompt_path_without_prompt_bytes(tmp_path):
+    path = tmp_path / "APPEND_SYSTEM.md"
+    path.write_text("PROMPT_ARGV_SENTINEL", encoding="utf-8")
+    argv = build_pi_argv(
+        "pi",
+        provider="openai-codex",
+        model="gpt-5.5",
+        thinking="high",
+        system_prompt_path=path,
+        extension_path="/opt/tertius-pi/workspace-guard.ts",
+    )
+    index = argv.index("--append-system-prompt")
+    assert argv[index + 1] == str(path)
+    assert "PROMPT_ARGV_SENTINEL" not in argv
+
+
+@pytest.mark.asyncio
+async def test_rpc_captures_only_bounded_final_assistant_text(fake_pi, tmp_path):
+    path = tmp_path / "APPEND_SYSTEM.md"
+    path.write_text("policy", encoding="utf-8")
+    result = await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "assistant-summary"),
+        system_prompt_path=path,
+    )
+    assert result.assistant_summary == "first block second block"[:2000]
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_v2_prompt_hash_mismatch_without_calling_pi(
+    monkeypatch, tmp_path
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("design.py", "x = 1")]).model_copy(
+        update={
+            "schema_version": 2,
+            "prior_prompts": [],
+            "conversation": PiAgentConversationContext(),
+            "system_prompt_sha256": "0" * 64,
+        }
+    )
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(
+        job,
+        "run_pi_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Pi must not run on prompt mismatch")
+        ),
+    )
+    result = await job.execute_pi_agent_command(request, worker_settings())
+    assert result.status == "failed"
+    assert result.error_code == "worker_config_mismatch"
+    assert result.retryable is True
+    assert not (tmp_path / "workspace").exists()
+```
+
+Add this exact branch to the fake RPC script after its existing scenarios:
+
+```python
+elif scenario == "assistant-summary":
+    events = [
+        {
+            "type": "message_end",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "USER_SENTINEL"}],
+            },
+        },
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "call-1",
+            "toolName": "read",
+            "result": {
+                "content": [{"type": "text", "text": "TOOL_SENTINEL"}],
+                "details": {},
+            },
+            "isError": False,
+        },
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "THINKING_SENTINEL" * 210},
+                    {"type": "text", "text": "first block "},
+                    {"type": "text", "text": "second block"},
+                ],
+                "stopReason": "stop",
+            },
+        },
+    ]
+```
+
+Add the missing-path test exactly as follows:
+
+```python
+@pytest.mark.asyncio
+async def test_rpc_rejects_missing_prompt_path_before_spawn(
+    monkeypatch, fake_pi, tmp_path
+):
+    async def forbidden_spawn(*_args, **_kwargs):
+        raise AssertionError("subprocess must not start")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    with pytest.raises(PiAgentRpcError) as caught:
+        await run_pi_agent(
+            "prompt",
+            **settings(fake_pi),
+            system_prompt_path=tmp_path / "missing.md",
+        )
+    assert caught.value.code == "worker_config_error"
+```
+
+Retain the existing v1 worker test and replace its prior-prompt assertions with:
+
+```python
+legacy, current = captured["prompt"].split("Current user request:\n", maxsplit=1)
+assert "<legacy_user_requests>" in legacy
+assert '"First request"' in legacy
+assert '"Second request"' in legacy
+assert "outcome" not in legacy
+assert "succeeded" not in legacy
+assert current.startswith("Current request")
+```
+
+Change the main v2 worker test to use `load_pi_agent_prompt().sha256` and assert no-change `rpc.assistant_summary` survives in `PiAgentResult`.
 
 - [ ] **Step 2: Run the tests and verify red**
 
@@ -652,7 +1184,13 @@ if command.schema_version == 2 and command.system_prompt_sha256 != snapshot.sha2
 
 Catch `PiAgentPromptError` separately and return non-retryable `worker_config_error` with `Pi agent policy is unavailable.`. Do not include the path, underlying exception, content, or hash in the result or logs.
 
-Use `command.conversation` for v2 and an in-memory user-only adapter for v1. Render current filenames/active filename and structured conversation through the shared prompt renderer. Pass `snapshot.path` to RPC. Set `assistant_summary=rpc.assistant_summary` for both `changed` and `no_changes`.
+For v2, call `render_conversation_context(command.conversation, command.prompt)`.
+For v1, call `render_legacy_prior_prompts(command.prior_prompts, command.prompt)`
+directly; do not create `PiAgentConversationTurn` objects for legacy prompts.
+Pass the selected rendered history/current-request block plus current
+filenames/active filename through the shared user-prompt renderer, then pass
+`snapshot.path` to RPC. Set `assistant_summary=rpc.assistant_summary` for both
+`changed` and `no_changes`.
 
 - [ ] **Step 6: Run green tests and commit**
 
@@ -672,7 +1210,122 @@ rtk git commit -m "feat: run Pi with shared prompt and structured history"
 
 - [ ] **Step 1: Write failing v1/v2 republish and two-job pipeline tests**
 
-The v2 retry test must create newer terminal conversation rows after the queued job and prove the republished command still equals the queued job's persisted `dispatched_conversation`. The pipeline test must prove the second command sees the first result summary and refreshed current file contents.
+Convert `test_queued_reconciliation_republishes_with_same_deterministic_id()` to v2 by adding this setup and these assertions around its existing two republish calls:
+
+```python
+conversation = PiAgentConversationContext(
+    rolling_summary="older summary",
+    recent_turns=[
+        PiAgentConversationTurn(
+            user_request="Earlier request",
+            status="succeeded",
+            outcome="no_changes",
+            assistant_summary="Already satisfied",
+        )
+    ],
+)
+payload.update(
+    {
+        "dispatched_command_schema_version": 2,
+        "dispatched_conversation": conversation.model_dump(mode="json"),
+        "dispatched_system_prompt_sha256": "a" * 64,
+    }
+)
+
+newer = LlmEditRepository(db_session, seeded_tenant.tenant_id).start_job(
+    seeded_tenant.project_id,
+    seeded_tenant.user_id,
+    {"prompt": "Newer terminal request", "files": []},
+    status="failed",
+)
+newer.error_code = "provider_error"
+newer.user_message = "Newer failure"
+db_session.commit()
+
+assert await republish_queued_pi_agent_jobs(
+    db_session, publisher, settings, backoff_seconds=0
+) == 0
+republished = publisher.calls[0][0][1]
+assert republished.schema_version == 2
+assert republished.conversation == conversation
+assert republished.system_prompt_sha256 == "a" * 64
+assert "Newer terminal request" not in republished.model_dump_json()
+```
+
+Add a separate v1 case using the existing `_job()`, `Publisher`, and settings fixtures:
+
+```python
+@pytest.mark.asyncio
+async def test_queued_reconciliation_preserves_v1_context(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    job = _job(db_session, seeded_tenant, file, _result(seeded_tenant, file))
+    payload = dict(job.request_payload)
+    payload.update(
+        {
+            "dispatch_attempted_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat(),
+            "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
+            "dispatched_provider": "openai-codex",
+            "dispatched_model": "gpt-5.5",
+            "dispatched_thinking": "high",
+            "dispatched_prior_prompts": ["legacy request"],
+        }
+    )
+    job.request_payload = payload
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    publisher = Publisher()
+    settings = SimpleNamespace(
+        pi_agent_request_subject="request",
+        pi_agent_request_max_bytes=524288,
+        pi_agent_provider="openai-codex",
+        pi_agent_model="gpt-5.5",
+        pi_agent_thinking="high",
+    )
+
+    assert await republish_queued_pi_agent_jobs(
+        db_session, publisher, settings, backoff_seconds=0
+    ) == 1
+    command = publisher.calls[0][0][1]
+    assert command.schema_version == 1
+    assert command.conversation is None
+    assert command.system_prompt_sha256 is None
+    assert command.prior_prompts == ["legacy request"]
+```
+
+In `test_pi_agent_pipeline_e2e.py`, extend the existing successful pipeline test after its first persisted result with the following second dispatch. Add `datetime` and `timezone` to its imports:
+
+```python
+current = db_session.get(ProjectFile, file.id)
+current.content += "# REFRESHED_FILE_SENTINEL\n"
+current.updated_at = datetime.now(timezone.utc)
+db_session.commit()
+refreshed_content = current.content
+first_prompt = "Add height"
+second_response = authenticated_intus_client.post(
+    "/projects/default_purlin/files/llm-edit/jobs",
+    json={
+        "prompt": "Use completed prior request as context",
+        "files": [pointer(current)],
+        "active_file_id": str(current.id),
+    },
+)
+assert second_response.status_code == 202
+second_message = await run_pipeline(js, settings, db_session, monkeypatch)
+second = PiAgentCommand.model_validate_json(second_message.data)
+assert second.schema_version == 2
+assert second.conversation.recent_turns[-1].user_request == first_prompt
+assert second.conversation.recent_turns[-1].assistant_summary == "Added height"
+assert second.conversation.recent_turns[-1].status == "succeeded"
+assert second.files[0].content == refreshed_content
+assert "REFRESHED_FILE_SENTINEL" in second.files[0].content
+assert "REFRESHED_FILE_SENTINEL" not in second.conversation.model_dump_json()
+```
 
 - [ ] **Step 2: Run the tests and verify red**
 
@@ -723,7 +1376,24 @@ Do not call the repository history query or prompt loader while reconstructing a
 
 - [ ] **Step 4: Verify result summaries are safe inputs to subsequent context**
 
-Keep `_result_payload()` bounded and ensure it stores `result.assistant_summary` for both success outcomes. Add assertions that a later context builder uses `message`, `outcome`, and filenames but excludes file `content`, snapshot data, usage, and provider details.
+Add this exact assertion block to the success-result test after `_result_payload()` is persisted, and repeat it with `outcome="no_changes"` and no files:
+
+```python
+persisted = db_session.get(LlmEditJob, result.job_id)
+assert persisted.result_payload["message"] == result.assistant_summary
+turn = conversation_turn_from_job(persisted)
+assert turn.outcome == result.outcome
+assert turn.assistant_summary == result.assistant_summary
+assert turn.changed_files == [edit.filename for edit in result.changed_files]
+serialized = turn.model_dump_json()
+for forbidden in (
+    result.changed_files[0].content if result.changed_files else "SOURCE_SENTINEL",
+    str(persisted.result_payload.get("snapshot")),
+    "prompt_tokens",
+    result.provider,
+):
+    assert forbidden not in serialized
+```
 
 - [ ] **Step 5: Run green tests and commit**
 
@@ -749,14 +1419,43 @@ rtk git commit -m "fix: preserve Pi context across queued retries"
 
 - [ ] **Step 1: Write failing removal and image-contract checks**
 
-Tests must assert:
+Add `pi_agent_system_prompt` to the existing removed-settings set in `test_settings_removes_legacy_llm_provider_fields()`. Replace the deployment prompt fixture/check with these exact shell assertions in `scripts/test-deployment-config.sh`:
 
-- `Settings.model_fields` excludes `pi_agent_system_prompt`;
-- no rendered API/worker/ConfigMap contains `PI_AGENT_SYSTEM_PROMPT`;
-- values schema has no `piAgent.systemPrompt`;
-- Compose renders no prompt env or prompt/auth overlay;
-- both images contain identical `/app/server/core/pi_agent_system_prompt.md` SHA, owned by UID/GID 0 and not writable by UID 1000;
-- the API image still has no `/app/server/pi` and no `pi` executable.
+```bash
+if rg -q 'PI_AGENT_SYSTEM_PROMPT|piAgent\.systemPrompt' \
+  "$ROOT_DIR/server/.env.example" \
+  "$ROOT_DIR/infra/charts/tertius/values.yaml" \
+  "$ROOT_DIR/infra/charts/tertius/templates" \
+  "$ROOT_DIR/docker-compose.yml" \
+  "$ROOT_DIR/docker-compose.parity.yml"; then
+  echo 'Legacy Pi system prompt runtime configuration is still present.' >&2
+  exit 1
+fi
+```
+
+In `server/tests/test_pi_agent_image_config.py`, add source-level assertions before the runtime image inspection:
+
+```python
+def test_pi_prompt_is_common_image_artifact_not_runtime_config():
+    prompt = Path("server/core/pi_agent_system_prompt.md")
+    assert prompt.is_file()
+    assert prompt.read_text(encoding="utf-8").startswith("Tertius file-edit policy:")
+    dockerfile = Path("Dockerfile.api").read_text(encoding="utf-8")
+    assert "COPY server/core/ ./server/core/" in dockerfile
+    assert "chmod 0444 /app/server/core/pi_agent_system_prompt.md" in dockerfile
+    rendered_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            Path("server/.env.example"),
+            Path("infra/charts/tertius/values.yaml"),
+            Path("infra/charts/tertius/templates/pi-agent-worker.yaml"),
+        )
+    )
+    assert "PI_AGENT_SYSTEM_PROMPT" not in rendered_sources
+    assert "systemPrompt:" not in rendered_sources
+```
+
+The container assertions in Step 3 prove identical SHA, root ownership/mode, non-writability, and continued absence of Pi tooling from the API image.
 
 - [ ] **Step 2: Remove the runtime override surfaces**
 
@@ -823,37 +1522,165 @@ Add `server/core/pi_agent_prompt.py` and `server/core/pi_agent_conversation.py` 
     "assistant_summary",
     "rolling_summary",
     "system_prompt",
+    "system_prompt_sha256",
 }
 ```
 
-Do not forbid `system_prompt_sha256` as a persisted data field, but add a mutation proving it cannot become a metric/trace label.
+The AST safety scanner only evaluates logger arguments and telemetry/span attributes, so forbidding `system_prompt_sha256` here does not prevent it from being persisted in `request_payload`. Add both `set_attribute("system_prompt_sha256", prompt_hash)` and `logger.info("prompt hash %s", system_prompt_sha256)` to the rejected mutation set.
 
 - [ ] **Step 2: Add an opt-in two-turn live-flow canary**
 
 Add `LIVE_FLOW_VERIFY_CONVERSATION` defaulting to `false`. When true:
 
-1. Generate a random `TERTIUS_CONTEXT_CANARY_<hex>` codeword.
-2. First request asks for a valid geometry edit and explicitly says to remember, but not write, the codeword.
-3. Confirm the codeword is absent from all current source files.
-4. Second request says: `Add a Python comment containing the codeword from my previous request; do not change geometry.`
-5. Poll the second job, fetch current files, assert the exact codeword occurs, then compile the second job.
+1. Generate or accept overrides for `TERTIUS_CONTEXT_USER_CANARY_<hex>` and `TERTIUS_CONTEXT_ASSISTANT_CANARY_<hex>`.
+2. First request asks for a valid geometry edit, says to remember but not write the user canary, and requires the final assistant summary to end with the assistant canary.
+3. Assert the first job's persisted result message contains the assistant canary and neither canary occurs in current source files.
+4. Second request says: `Add a Python comment containing the codeword from my previous user request; do not change geometry.` It contains neither canary literally.
+5. Poll the second job, fetch current files, assert the user canary occurs and the assistant canary does not, then compile the second job.
+6. Write both generated values to `.tmp/harness/live-flow-sensitive-canaries.env` with mode `0600` without printing them.
 
 Change `ai_edit_and_wait()` to take prompt and label arguments rather than reading a global mutable prompt. Ensure command traces never echo either prompt.
 
+Immediately after `set -Eeuo pipefail`, define the repository root used for the
+mode-`0600` canary file:
+
+```bash
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+```
+
+Implement the enabled branch with this concrete shell flow after the existing first compile. `api_request`, `json_get`, and `tmpfile` are the existing helpers in the script:
+
+```bash
+if [ "$LIVE_FLOW_VERIFY_CONVERSATION" = true ]; then
+  random_suffix=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  LIVE_FLOW_USER_CANARY=${LIVE_FLOW_USER_CANARY:-TERTIUS_CONTEXT_USER_CANARY_${random_suffix}}
+  LIVE_FLOW_ASSISTANT_CANARY=${LIVE_FLOW_ASSISTANT_CANARY:-TERTIUS_CONTEXT_ASSISTANT_CANARY_${random_suffix}}
+  canary_file="${ROOT_DIR}/.tmp/harness/live-flow-sensitive-canaries.env"
+  mkdir -p "$(dirname "$canary_file")"
+  umask 077
+  printf 'LIVE_FLOW_USER_CANARY=%q\nLIVE_FLOW_ASSISTANT_CANARY=%q\n' \
+    "$LIVE_FLOW_USER_CANARY" "$LIVE_FLOW_ASSISTANT_CANARY" > "$canary_file"
+
+  first_prompt="Increase the main model width by 1 mm. Remember but do not write the codeword ${LIVE_FLOW_USER_CANARY}. End your final summary with ${LIVE_FLOW_ASSISTANT_CANARY}."
+  first_job_id=$(ai_edit_and_wait "$first_prompt" "AI edit context seed")
+  first_status=$(api_request GET "${API_BASE_URL}/projects/${PROJECT_NAME}/files/llm-edit/jobs/${first_job_id}")
+  first_message=$(json_get "$first_status" result.message)
+  case "$first_message" in
+    *"$LIVE_FLOW_ASSISTANT_CANARY") ;;
+    *) echo 'FAIL context seed: assistant canary missing from result summary' >&2; exit 1 ;;
+  esac
+
+  design_before_followup=$(load_design_code)
+  if printf '%s' "$design_before_followup" | rg -F \
+    -e "$LIVE_FLOW_USER_CANARY" -e "$LIVE_FLOW_ASSISTANT_CANARY"; then
+    echo 'FAIL context seed: canary was written before the follow-up' >&2
+    exit 1
+  fi
+
+  second_prompt='In design.py, add a Python comment containing the codeword from my previous user request; do not change geometry.'
+  second_job_id=$(ai_edit_and_wait "$second_prompt" "AI edit context follow-up")
+  design_after_followup=$(load_design_code)
+  printf '%s' "$design_after_followup" | rg -F "$LIVE_FLOW_USER_CANARY" >/dev/null || {
+    echo 'FAIL context follow-up: previous user codeword was not applied' >&2
+    exit 1
+  }
+  if printf '%s' "$design_after_followup" | rg -F "$LIVE_FLOW_ASSISTANT_CANARY"; then
+    echo 'FAIL context follow-up: assistant summary canary leaked into source' >&2
+    exit 1
+  fi
+  compile_and_wait "post-context-follow-up" "$second_job_id"
+else
+  llm_job_id=$(ai_edit_and_wait "$AI_PROMPT" "AI edit")
+  compile_and_wait "post-AI-edit" "$llm_job_id"
+fi
+```
+
+Apply this exact parameterization to the existing function; its polling/control flow is otherwise unchanged:
+
+```diff
+ ai_edit_and_wait() {
++  prompt=$1
++  label=$2
+   metadata=$(file_metadata_json)
+   request=$(tmpfile)
+-  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}" "$AI_PROMPT"
++  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}" "$prompt"
+   response=$(api_request POST "${API_BASE_URL}/projects/${PROJECT_NAME}/files/llm-edit/jobs" "$request")
+@@
+-        echo "PASS AI edit job succeeded (${job_id}, outcome=${outcome})" >&2
++        echo "PASS ${label} job succeeded (${job_id}, outcome=${outcome})" >&2
+@@
+-        echo "FAIL AI edit job failed" >&2
++        echo "FAIL ${label} job failed" >&2
+@@
+-  echo "FAIL AI edit job timed out" >&2
++  echo "FAIL ${label} job timed out" >&2
+ }
+```
+
 - [ ] **Step 3: Update harness configuration tests**
 
-Test the default single-turn path and the enabled two-turn path with stubbed API responses. Assert the first request contains the codeword, the second does not contain it, and the final file assertion searches for it.
+Extend `scripts/test-smoke-live-flow-config.sh` with these exact static/configuration assertions; the real responses are covered by E-01/E-02 rather than a second Bash HTTP stub framework:
+
+```bash
+grep -q 'LIVE_FLOW_VERIFY_CONVERSATION' <<<"$help_output"
+grep -Fq 'ROOT_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)' "$SCRIPT"
+grep -Fq 'LIVE_FLOW_VERIFY_CONVERSATION="${LIVE_FLOW_VERIFY_CONVERSATION:-false}"' "$SCRIPT"
+grep -Fq 'LIVE_FLOW_USER_CANARY=${LIVE_FLOW_USER_CANARY:-TERTIUS_CONTEXT_USER_CANARY_' "$SCRIPT"
+grep -Fq 'LIVE_FLOW_ASSISTANT_CANARY=${LIVE_FLOW_ASSISTANT_CANARY:-TERTIUS_CONTEXT_ASSISTANT_CANARY_' "$SCRIPT"
+grep -Fq "second_prompt='In design.py, add a Python comment containing the codeword from my previous user request; do not change geometry.'" "$SCRIPT"
+grep -Fq 'live-flow-sensitive-canaries.env' "$SCRIPT"
+
+invalid_context_output=$(LIVE_FLOW_VERIFY_CONVERSATION=invalid "$SCRIPT" http://127.0.0.1 2>&1) && {
+  echo 'invalid conversation verification flag should fail' >&2
+  exit 1
+}
+grep -q 'LIVE_FLOW_VERIFY_CONVERSATION must be true or false' <<<"$invalid_context_output"
+```
 
 - [ ] **Step 4: Update operational documentation**
 
-Document:
+Add this exact policy paragraph to `docs/configuration-and-secrets.md` and point the other harness documents to it rather than duplicating it:
 
-- the prompt is committed application policy, not a Kubernetes secret;
-- changes require rebuilding/restarting both API and Pi worker images;
-- OAuth state remains the only Pi data on the retained PVC;
-- conversation context is reconstructed from Postgres and Pi still uses `--no-session`;
-- the exact runtime parity and browser follow-up validation steps;
-- system prompt, current/prior user requests, assistant summaries, source, and hashes must not appear in telemetry.
+```markdown
+The Tertius Pi append prompt is committed application policy at
+`server/core/pi_agent_system_prompt.md`; it is not a credential or runtime
+secret. Both API and Pi worker images contain identical read-only bytes, so a
+prompt change requires rebuilding and restarting both images. The retained Pi
+PVC contains OAuth state only. Tertius reconstructs bounded conversation
+context from Postgres for each `--no-session` worker invocation. System prompt
+text, current or historical user requests, assistant summaries, source text,
+and prompt hashes must never be added to logs, metrics, or trace attributes.
+```
+
+Add these exact rows to the runtime matrix in `docs/harness/runtime-parity.md`:
+
+```markdown
+| Pi append policy | identical read-only image file in API and worker | identical read-only image file in API and worker | no environment, Secret, ConfigMap, workspace, or OAuth-PVC copy |
+| Pi conversation continuity | bounded Postgres context, one `--no-session` worker per turn | bounded Postgres context, one `--no-session` worker per turn | Pi session files are not persisted |
+```
+
+Add this paragraph to `docs/harness/browser-validation.md` under the authenticated AI-edit flow:
+
+```markdown
+When a change affects Pi conversation continuity, run `live-flow` with
+`LIVE_FLOW_VERIFY_CONVERSATION=true`. The first edit plants separate user and
+assistant canaries only in persisted conversation state; the second edit must
+recover the user canary without copying the assistant canary into `design.py`,
+and the resulting project must compile. Do not use compile-only mode for this
+proof. See `docs/configuration-and-secrets.md` for prompt and history handling.
+```
+
+Add this prohibition to `docs/harness/queries/traces.md` beside the Pi trace query:
+
+```markdown
+Pi spans may identify bounded operation, provider, model, status, and service
+names only. Never attach system prompt text or hashes, current or historical
+user requests, assistant summaries, source content, workspace paths, or raw
+tenant/project/job identifiers. See `docs/configuration-and-secrets.md` for the
+canonical policy.
+```
 
 - [ ] **Step 5: Run focused safety/harness tests and commit**
 
@@ -916,11 +1743,40 @@ docker run --rm --entrypoint sh tertius-pi-agent:test -c 'stat -c "%u:%g %a" /ap
 
 Expected: both report `0:0 444` and the same SHA; API reports no Pi tooling.
 
-- [ ] **Step 4: Run the required full k3s AI-edit flow**
+- [ ] **Step 4: Create, authenticate, enable, and run the isolated k3s release**
 
-Use the isolated smoke release with demo auth, KEDA, and LLM credentials:
+Create the disposable non-Flux release with the Pi worker disabled but its retained claim present:
 
 ```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+KEDA_ENABLED=true PI_AGENT_ENABLED=false scripts/harness-k3s.sh up
+```
+
+Authenticate and verify the exact release image/PVC:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+scripts/pi-agent-auth.sh login --namespace tertius --release tertius-live-flow-smoke
+KUBECONFIG=/home/johnson/.kube/config \
+scripts/pi-agent-auth.sh verify --namespace tertius --release tertius-live-flow-smoke
+```
+
+Redeploy with both KEDA and Pi enabled, then run the full two-turn flow through the same release and ports:
+
+```bash
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+KEDA_ENABLED=true PI_AGENT_ENABLED=true scripts/harness-k3s.sh up
+
+KUBECONFIG=/home/johnson/.kube/config \
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 LIVE_FLOW_VERIFY_CONVERSATION=true scripts/harness-k3s.sh live-flow
 ```
 
@@ -928,14 +1784,42 @@ Expected: pre-edit compile, first AI edit, context-dependent second AI edit, and
 
 - [ ] **Step 5: Query safety and cross-service telemetry**
 
-Run the documented Pi metrics and trace queries:
+Run the documented Pi metrics and require the API -> Pi worker cross-service trace:
 
 ```bash
-scripts/harness-query-metrics.sh --file docs/harness/queries/pi-agent.promql
-scripts/harness-query-traces.sh
+mkdir -p .tmp/harness
+METRICS_BASE_URL=http://127.0.0.1:8430 \
+  scripts/harness-query-metrics.sh \
+  --file docs/harness/queries/pi-agent.promql \
+  > .tmp/harness/pi-context-metrics.txt
+TRACES_BASE_URL=http://127.0.0.1:10431 \
+  scripts/harness-query-traces.sh --require-cross-service \
+  --cross-service tertius-api \
+  --cross-service tertius-pi-agent-job \
+  > .tmp/harness/pi-context-traces.txt
+
+kubectl get pods -n tertius \
+  -l app.kubernetes.io/instance=tertius-live-flow-smoke \
+  -o name | while read -r pod; do
+    kubectl logs -n tertius "$pod" --all-containers=true --ignore-errors --prefix=true
+  done > .tmp/harness/pi-context-pod-logs.txt
+
+set -a
+. .tmp/harness/live-flow-sensitive-canaries.env
+set +a
+if rg -F \
+  -e 'Tertius file-edit policy:' \
+  -e "$LIVE_FLOW_USER_CANARY" \
+  -e "$LIVE_FLOW_ASSISTANT_CANARY" \
+  .tmp/harness/pi-context-metrics.txt \
+  .tmp/harness/pi-context-traces.txt \
+  .tmp/harness/pi-context-pod-logs.txt; then
+  echo 'Sensitive Pi prompt or conversation content reached telemetry/logs' >&2
+  exit 1
+fi
 ```
 
-Inspect API/worker pod logs plus returned metrics/traces for the generated system/user/history/assistant canary values. Expected: bounded operation/provider/model/status telemetry is present; sensitive canaries are absent.
+Expected: the query commands prove the cross-service trace exists, bounded operation/provider/model/status telemetry is present, and all three sensitive canaries are absent.
 
 - [ ] **Step 6: Commit verification corrections and push**
 
@@ -957,7 +1841,7 @@ If no verification correction was required, omit the empty commit and push the e
 - [ ] Retained schema-v1 commands remain executable for the 24-hour compatibility window.
 - [ ] API and worker use the same rendered context for quota estimation and execution.
 - [ ] New context includes prior user requests and assistant outcomes/status, not only user prompts.
-- [ ] Rolling context never exceeds five recent turns, 8,000 summary characters, or the existing command byte cap.
+- [ ] Rolling context never exceeds five recent turns, 8,000 summary characters, 12,000 estimated rendered-history tokens, or the existing command byte cap; the current request is never compacted.
 - [ ] Failed turns are explicitly labeled and use bounded user-facing errors, never raw internal errors.
 - [ ] Historical file content, tool traces, snapshots, IDs, hashes, and recursively dispatched context never enter conversation history.
 - [ ] Queued retries reconstruct the exact persisted command context instead of observing newer history.
@@ -997,7 +1881,7 @@ If no verification correction was required, omit the empty commit and push the e
 
 | Check | Result |
 |---|---|
-| Actionable | Pass: every implementation change has exact files, contracts, tests, commands, and expected outcomes. |
+| Actionable | Pass: every behavior-changing step includes exact files, concrete code/diff/assertion blocks, commands, and expected outcomes. |
 | Current | Pass: reread against pushed commit `f6a328d593bd967f9861ab475ea18a9218a91b9b`. |
 | Single source | Pass: prompt file, conversation context, and retry payload each have one named owner. |
 | Decision, not wish | Pass: session lifecycle, bounds, schema rollout, errors, and storage are fixed. |
@@ -1011,6 +1895,6 @@ If no verification correction was required, omit the empty commit and push the e
 | Deep links present | Pass: section 10 links repository and upstream Pi contracts. |
 | No duplicates | Pass: the historical Pi integration plan is referenced, not rewritten. |
 
-**AI coder understandability score:** 9.4/10
+**AI coder understandability score:** 9.3/10
 
-The remaining 0.6 is runtime variability in provider behavior during the two-turn canary; the test uses a mechanically verifiable codeword and compilation to reduce that ambiguity.
+The remaining 0.7 is runtime variability in provider behavior during the two-turn canary; separate user/assistant codewords, persisted-result assertions, source checks, and compilation reduce that ambiguity.
