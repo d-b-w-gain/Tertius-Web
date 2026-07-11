@@ -142,12 +142,19 @@ def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
     )
 
 
+def _safe_conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
+    try:
+        return conversation_turn_from_job(job)
+    except (TypeError, ValueError):
+        return None
+
+
 def next_conversation_context(jobs: list) -> PiAgentConversationContext:
     if not jobs:
         return PiAgentConversationContext()
     latest = jobs[-1]
     latest_payload = latest.request_payload if isinstance(latest.request_payload, dict) else {}
-    latest_turn = conversation_turn_from_job(latest)
+    latest_turn = _safe_conversation_turn_from_job(latest)
     try:
         persisted = PiAgentConversationContext.model_validate(
             latest_payload["dispatched_conversation"]
@@ -158,7 +165,7 @@ def next_conversation_context(jobs: list) -> PiAgentConversationContext:
         return advance_conversation_context(persisted, latest_turn)
     context = PiAgentConversationContext()
     for job in jobs:
-        turn = conversation_turn_from_job(job)
+        turn = _safe_conversation_turn_from_job(job)
         if turn is not None:
             context = advance_conversation_context(context, turn)
     return context

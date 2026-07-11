@@ -37,6 +37,22 @@ def test_context_rolls_oldest_turns_and_obeys_token_budget():
     assert estimated_context_tokens(context) <= MAX_RENDERED_CONTEXT_TOKENS
 
 
+def test_max_length_multibyte_request_compacts_within_byte_estimated_budget():
+    turn = PiAgentConversationTurn(
+        user_request="😀" * 12_000,
+        status="succeeded",
+        outcome="no_changes",
+        assistant_summary="No files changed.",
+    )
+
+    context = advance_conversation_context(PiAgentConversationContext(), turn)
+
+    assert context.recent_turns == []
+    assert context.rolling_summary
+    assert len(context.rolling_summary) <= 8_000
+    assert estimated_context_tokens(context) <= MAX_RENDERED_CONTEXT_TOKENS
+
+
 def test_failed_job_uses_user_message_and_excludes_internal_payload():
     job = SimpleNamespace(
         status="failed",
@@ -164,6 +180,39 @@ def test_invalid_persisted_context_bootstraps_valid_jobs_oldest_first():
     assert context.recent_turns[0].assistant_summary == "No files changed."
     assert context.recent_turns[1].assistant_summary == "Previous request failed."
     assert context.recent_turns[1].error_code == "unknown_failure"
+
+
+def test_malformed_terminal_rows_do_not_abort_valid_history_reconstruction():
+    def succeeded(prompt):
+        return SimpleNamespace(
+            status="succeeded",
+            request_payload={"prompt": prompt},
+            result_payload={"outcome": "no_changes", "message": "", "files": []},
+            user_message=None,
+            error=None,
+            error_code=None,
+        )
+
+    jobs = [
+        succeeded("valid first"),
+        succeeded("x" * 12_001),
+        succeeded("valid second"),
+        SimpleNamespace(
+            status="failed",
+            request_payload={"prompt": "invalid error code"},
+            result_payload=None,
+            user_message="Failed safely",
+            error="do not include",
+            error_code="e" * 101,
+        ),
+    ]
+
+    context = next_conversation_context(jobs)
+
+    assert [turn.user_request for turn in context.recent_turns] == [
+        "valid first",
+        "valid second",
+    ]
 
 
 def test_renderer_keeps_current_request_outside_historical_json():

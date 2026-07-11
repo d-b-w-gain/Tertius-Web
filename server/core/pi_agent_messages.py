@@ -78,8 +78,11 @@ class PiAgentConversationTurn(StrictMessage):
 
     @model_validator(mode="after")
     def consistent_outcome(self):
-        if self.status == "succeeded" and self.outcome is None:
-            raise ValueError("successful conversation turns require an outcome")
+        if self.status == "succeeded":
+            if self.outcome is None:
+                raise ValueError("successful conversation turns require an outcome")
+            if self.error_code is not None:
+                raise ValueError("successful conversation turns cannot contain errors")
         if self.status == "failed" and (self.outcome is not None or not self.error_code):
             raise ValueError("failed conversation turns require only an error code")
         if self.outcome != "changed" and self.changed_files:

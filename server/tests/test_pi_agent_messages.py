@@ -113,6 +113,7 @@ def test_conversation_turn_enforces_state_and_filename_bounds():
         {"status": "succeeded"},
         {"status": "failed", "outcome": "no_changes", "error_code": "provider_error"},
         {"status": "failed", "error_code": ""},
+        {"status": "succeeded", "outcome": "no_changes", "error_code": "stale_error"},
         {"status": "succeeded", "outcome": "no_changes", "changed_files": ["design.py"]},
         {"status": "succeeded", "outcome": "changed", "changed_files": ["../design.py"]},
         {"status": "succeeded", "outcome": "changed", "changed_files": ["x" * 513]},
