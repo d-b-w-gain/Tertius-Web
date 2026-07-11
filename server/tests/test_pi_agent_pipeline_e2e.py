@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from nats.js.errors import NotFoundError
 from sqlalchemy import func, select
 from testcontainers.core.container import DockerContainer
 
@@ -20,12 +21,11 @@ from core.models import LlmEditJob, LlmUsageRecord, ProjectFile, SourceSnapshot
 from core.nats_client import (
     NatsPublisher,
     connect_nats,
-    ensure_billing_stream,
     ensure_pi_agent_stream,
     pull_pi_agent_request_subscription,
     pull_pi_agent_result_subscription,
 )
-from core.pi_agent_messages import PiAgentUsage
+from core.pi_agent_messages import PiAgentResult, PiAgentUsage
 from core.pi_agent_rpc import PiAgentRpcResult
 from workflows.intus import intus_server
 from workflows.intus import pi_agent_job as worker_module
@@ -103,6 +103,22 @@ async def run_pipeline(js, settings, db_session, monkeypatch):
     return request
 
 
+async def provision_result_consumer_runtime(js, settings, monkeypatch):
+    monkeypatch.setattr(result_module, "get_settings", lambda: settings)
+    consumer = asyncio.create_task(result_module.run_pi_agent_result_consumer())
+    try:
+        for _ in range(50):
+            try:
+                await js.stream_info(settings.billing_stream_name)
+                return
+            except NotFoundError:
+                await asyncio.sleep(0.1)
+        pytest.fail("Pi result consumer did not provision the billing stream")
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_pi_pipeline_worker_publishes_and_api_applies_result(
     pi_nats_url, authenticated_intus_client, db_session, seeded_tenant, monkeypatch, tmp_path
@@ -112,7 +128,7 @@ async def test_pi_pipeline_worker_publishes_and_api_applies_result(
     monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path))
     nc = await connect_nats(settings.nats_url)
     js = await ensure_pi_agent_stream(nc, settings)
-    await ensure_billing_stream(nc, settings)
+    await provision_result_consumer_runtime(js, settings, monkeypatch)
     try:
         file = db_session.scalar(select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id))
         response = authenticated_intus_client.post(
@@ -141,7 +157,7 @@ async def test_unacked_command_redelivers_once_and_persists_one_terminal_result(
     monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path))
     nc = await connect_nats(settings.nats_url)
     js = await ensure_pi_agent_stream(nc, settings)
-    await ensure_billing_stream(nc, settings)
+    await provision_result_consumer_runtime(js, settings, monkeypatch)
     file = db_session.scalar(select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id))
     response = authenticated_intus_client.post(
         "/projects/default_purlin/files/llm-edit/jobs",
@@ -165,6 +181,7 @@ async def test_unacked_command_redelivers_once_and_persists_one_terminal_result(
         await worker_module.handle_pi_agent_request_message(second, publisher, settings)
         result_sub = await pull_pi_agent_result_subscription(replacement_js, settings)
         result = (await result_sub.fetch(batch=1, timeout=5))[0]
+        result_payload = PiAgentResult.model_validate_json(result.data)
         await result_module.handle_pi_agent_result_message(result, db_session, settings, publisher)
         billing_sub = await replacement_js.pull_subscribe(
             settings.billing_llm_usage_subject,
@@ -175,7 +192,7 @@ async def test_unacked_command_redelivers_once_and_persists_one_terminal_result(
         billing = LlmTokenUsageEvent.model_validate_json(billing_messages[0].data)
         await billing_messages[0].ack()
         assert billing.event_id == result_module.pi_agent_billing_event_id(
-            UUID(response.json()["job_id"])
+            result_payload.execution_id
         )
         with pytest.raises(TimeoutError):
             await billing_sub.fetch(batch=1, timeout=1)
@@ -233,7 +250,7 @@ async def test_publish_persists_then_raises_but_queued_worker_result_still_appli
     monkeypatch.setattr(worker_module, "run_pi_agent", fake_pi_rpc)
     nc = await connect_nats(settings.nats_url)
     js = await ensure_pi_agent_stream(nc, settings)
-    await ensure_billing_stream(nc, settings)
+    await provision_result_consumer_runtime(js, settings, monkeypatch)
 
     real_publish = intus_server.publish_pi_agent_command
 

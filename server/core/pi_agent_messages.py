@@ -129,6 +129,7 @@ class PiAgentUsage(StrictMessage):
 
 class PiAgentResult(StrictMessage):
     schema_version: Literal[1]
+    execution_id: UUID
     job_id: UUID
     tenant_id: UUID
     project_id: UUID
@@ -198,5 +199,4 @@ def pi_agent_command_message_id(command: PiAgentCommand) -> str:
 
 
 def pi_agent_result_message_id(result: PiAgentResult) -> str:
-    discriminator = result.outcome if result.status == "succeeded" else result.error_code
-    return f"pi-result:{result.job_id}:{result.status}:{discriminator}"
+    return f"pi-result:{result.job_id}:{result.execution_id}"

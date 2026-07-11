@@ -210,7 +210,17 @@ def test_llm_usage_guard_rejects_user_daily_token_quota(db_session, seeded_tenan
         )
 
 
-def test_llm_models_endpoint_returns_only_fixed_pi_model(authenticated_intus_client):
+@pytest.mark.parametrize("pi_agent_enabled", [False, True])
+def test_llm_models_endpoint_reflects_pi_agent_availability(
+    authenticated_intus_client, monkeypatch, pi_agent_enabled
+):
+    from workflows.intus import usage_server
+
+    monkeypatch.setattr(
+        usage_server,
+        "get_settings",
+        lambda: Settings(pi_agent_enabled=pi_agent_enabled),
+    )
     response = authenticated_intus_client.get("/llm-usage/models")
 
     assert response.status_code == 200
@@ -221,7 +231,7 @@ def test_llm_models_endpoint_returns_only_fixed_pi_model(authenticated_intus_cli
                 "id": "gpt-5.5",
                 "model": "gpt-5.5",
                 "label": "GPT-5.5",
-                "enabled": True,
+                "enabled": pi_agent_enabled,
             }
         ],
     }

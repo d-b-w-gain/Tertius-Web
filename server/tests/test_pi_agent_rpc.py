@@ -34,7 +34,10 @@ for raw in sys.stdin:
         elif scenario=="overflow": events=[{"type":"turn_end"}]*300
         elif scenario=="noise": events=[{"id":f"unknown-{i}","success":True,"data":"x"*1000} for i in range(1000)]
         elif scenario=="tool-limit": events=[{"type":"tool_execution_start"}]*49
-        elif scenario=="guard": events=[{"type":"tool_execution_end","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}]}}]
+        elif scenario=="guard": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}],"details":{}},"isError":True}]
+        elif scenario=="assistant-mentions-guard": events=[{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The literal TERTIUS_GUARD_FAILURE is documented here."}],"stopReason":"stop"}}]
+        elif scenario=="user-mentions-guard": events=[{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Explain TERTIUS_GUARD_FAILURE"}]}}]
+        elif scenario=="successful-tool-mentions-guard": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}],"details":{}},"isError":False}]
         elif scenario=="auth": events=[{"type":"agent_error","error":{"message":"Unauthorized bearer sk-secret"}}]
         elif scenario=="rate": events=[{"type":"auto_retry_end","success":False,"finalError":"429 rate limit exceeded"}]
         elif scenario=="assistant-error": events=[{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Unauthorized secret-token"}}]
@@ -176,6 +179,23 @@ async def test_u027_to_u034_failures_are_bounded(fake_pi, scenario, code, retrya
 @pytest.mark.asyncio
 async def test_u028_interleaved_events_do_not_break_correlation(fake_pi):
     result = await run_pi_agent("prompt", **settings(fake_pi, "interleaved"))
+    assert result.usage.total_tokens == 23
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "assistant-mentions-guard",
+        "user-mentions-guard",
+        "successful-tool-mentions-guard",
+    ],
+)
+async def test_guard_sentinel_in_ordinary_rpc_content_is_not_a_guard_failure(
+    fake_pi, scenario
+):
+    result = await run_pi_agent("prompt", **settings(fake_pi, scenario))
+
     assert result.usage.total_tokens == 23
 
 

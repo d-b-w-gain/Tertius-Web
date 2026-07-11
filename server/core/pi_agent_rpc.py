@@ -75,19 +75,26 @@ def _resolved_id(value: Any) -> str | None:
     return None
 
 
-def _contains(value: Any, needle: str) -> bool:
-    if isinstance(value, str):
-        return needle in value
-    if isinstance(value, dict):
-        return any(_contains(item, needle) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains(item, needle) for item in value)
-    return False
+def _is_guard_failure(value: dict[str, Any]) -> bool:
+    if value.get("type") != "tool_execution_end" or value.get("isError") is not True:
+        return False
+    result = value.get("result")
+    if not isinstance(result, dict):
+        return False
+    content = result.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and item.get("text") == _GUARD_SENTINEL
+        for item in content
+    )
 
 
 def _normalized_event(value: dict[str, Any]) -> dict[str, Any] | None:
     event_type = value.get("type")
-    if _contains(value, _GUARD_SENTINEL):
+    if _is_guard_failure(value):
         return {"type": "_guard_failure"}
     if event_type == "turn_end":
         return {"type": "turn_end"}

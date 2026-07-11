@@ -10,13 +10,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
 from core.config import get_settings
+from core.llm_file_edit import file_edit_system_content
 from core.nats_client import (
     NatsPublisher,
     Publisher,
@@ -86,6 +87,29 @@ def build_conversation_prompt(prompt: str, prior_prompts: list[str]) -> str:
         f"{history}\n\n"
         "Current user request:\n"
         f"{prompt}"
+    )
+
+
+def build_coding_agent_prompt(command: PiAgentCommand) -> str:
+    filenames = "\n".join(f"- {file.filename}" for file in command.files)
+    active_filename = next(
+        (
+            file.filename
+            for file in command.files
+            if file.id == command.active_file_id
+        ),
+        "none",
+    )
+    conversation = build_conversation_prompt(command.prompt, command.prior_prompts)
+    return (
+        "Work on the source files already present in the current workspace.\n"
+        "Inspect them as needed. Edit the existing files in place to implement the "
+        "user's request. Do not merely return or describe replacement source.\n"
+        "Do not create, delete, or rename files.\n\n"
+        f"Files available for editing:\n{filenames}\n\n"
+        f"Active file:\n{active_filename}\n\n"
+        f"{conversation}\n\n"
+        "When finished, provide a concise summary of the changes."
     )
 
 
@@ -176,9 +200,12 @@ def _failure(
     code: str,
     message: str,
     retryable: bool,
+    *,
+    execution_id: UUID | None = None,
 ) -> PiAgentResult:
     return PiAgentResult(
         schema_version=1,
+        execution_id=execution_id or uuid4(),
         job_id=command.job_id,
         tenant_id=command.tenant_id,
         project_id=command.project_id,
@@ -195,6 +222,7 @@ def _failure(
 
 async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgentResult:
     started_at = datetime.now(timezone.utc)
+    execution_id = uuid4()
     workspace_base = Path(os.environ.get("TERTIUS_PI_WORKSPACE", "/workspace"))
     root: Path | None = None
     try:
@@ -205,13 +233,13 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
         root.rmdir()
         manifest = hydrate_workspace(command, root)
         rpc = await run_pi_agent(
-            build_conversation_prompt(command.prompt, command.prior_prompts),
+            build_coding_agent_prompt(command),
             correlation_id=str(command.job_id),
             cwd=root,
             provider=command.provider,
             model=command.model,
             thinking=command.thinking,
-            system_prompt=settings.pi_agent_system_prompt,
+            system_prompt=file_edit_system_content(settings.pi_agent_system_prompt),
             timeout_seconds=settings.pi_agent_timeout_seconds,
             max_turns=settings.pi_agent_max_turns,
             max_tool_calls=settings.pi_agent_max_tool_calls,
@@ -226,6 +254,7 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
         changed = scan_workspace(root, manifest)
         result = PiAgentResult(
             schema_version=1,
+            execution_id=execution_id,
             job_id=command.job_id,
             tenant_id=command.tenant_id,
             project_id=command.project_id,
@@ -248,10 +277,18 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
                 "result_too_large",
                 "Edited files exceed the worker result size limit",
                 False,
+                execution_id=execution_id,
             )
         return result
     except PiAgentRpcError as exc:
-        return _failure(command, started_at, exc.code, str(exc), exc.retryable)
+        return _failure(
+            command,
+            started_at,
+            exc.code,
+            str(exc),
+            exc.retryable,
+            execution_id=execution_id,
+        )
     except WorkspaceError:
         return _failure(
             command,
@@ -259,10 +296,16 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
             "invalid_workspace",
             "Worker workspace validation failed",
             False,
+            execution_id=execution_id,
         )
     except Exception:
         return _failure(
-            command, started_at, "worker_error", "Pi agent worker failed", True
+            command,
+            started_at,
+            "worker_error",
+            "Pi agent worker failed",
+            True,
+            execution_id=execution_id,
         )
     finally:
         if root is not None and root.exists():
@@ -347,28 +390,35 @@ async def _process_pi_agent_request_message(
                 "tracestate": trace_headers.get("tracestate"),
             }
         )
-        publish = asyncio.create_task(
-            publisher.publish_json(
-                settings.pi_agent_result_subject,
-                result,
-                message_id=pi_agent_result_message_id(result),
-                telemetry_message_id=(
-                    "pi-result:"
-                    + hashlib.sha256(str(command.job_id).encode("ascii")).hexdigest()[
-                        :16
-                    ]
-                ),
+        for attempt in range(3):
+            publish = asyncio.create_task(
+                publisher.publish_json(
+                    settings.pi_agent_result_subject,
+                    result,
+                    message_id=pi_agent_result_message_id(result),
+                    telemetry_message_id=(
+                        "pi-result:"
+                        + hashlib.sha256(
+                            str(command.job_id).encode("ascii")
+                        ).hexdigest()[:16]
+                    ),
+                )
             )
-        )
-        done, _ = await asyncio.wait(
-            {publish, heartbeat}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if heartbeat in done:
-            publish.cancel()
-            await asyncio.gather(publish, return_exceptions=True)
-            await heartbeat
-            raise RuntimeError("heartbeat ended unexpectedly")
-        await publish
+            done, _ = await asyncio.wait(
+                {publish, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                publish.cancel()
+                await asyncio.gather(publish, return_exceptions=True)
+                await heartbeat
+                raise RuntimeError("heartbeat ended unexpectedly")
+            try:
+                await publish
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.1 * (2**attempt))
     except BaseException as exc:
         operation.cancel()
         await asyncio.gather(operation, return_exceptions=True)

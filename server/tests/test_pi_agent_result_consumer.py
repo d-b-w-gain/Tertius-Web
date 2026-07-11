@@ -27,6 +27,7 @@ def _result(seeded_tenant, file, *, tenant_id=None):
     now = datetime.now(timezone.utc)
     return PiAgentResult(
         schema_version=1,
+        execution_id=uuid4(),
         job_id=uuid4(),
         tenant_id=tenant_id or seeded_tenant.tenant_id,
         project_id=seeded_tenant.project_id,
@@ -107,6 +108,38 @@ async def test_terminal_duplicate_has_no_writes_or_second_billing(db_session, se
     assert await apply_pi_agent_result(db_session, result, SimpleNamespace(billing_llm_usage_subject="billing", billing_max_bytes=524288), publisher) == "duplicate"
     assert len(publisher.calls) == 1
     assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_job_records_distinct_worker_execution_without_reapplying_files(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    first = _result(seeded_tenant, file)
+    _job(db_session, seeded_tenant, file, first)
+    publisher = Publisher()
+    settings = SimpleNamespace(
+        billing_llm_usage_subject="billing", billing_max_bytes=524288
+    )
+
+    assert await apply_pi_agent_result(db_session, first, settings, publisher) == "applied"
+    db_session.commit()
+    snapshots_after_first = db_session.scalar(
+        select(func.count()).select_from(SourceSnapshot)
+    )
+
+    second = first.model_copy(update={"execution_id": uuid4()})
+    assert await apply_pi_agent_result(db_session, second, settings, publisher) == "duplicate"
+    db_session.commit()
+
+    assert len(publisher.calls) == 2
+    assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 2
+    assert (
+        db_session.scalar(select(func.count()).select_from(SourceSnapshot))
+        == snapshots_after_first
+    )
 
 
 @pytest.mark.asyncio
@@ -228,7 +261,8 @@ async def test_invalid_and_terminal_duplicate_messages_are_acked(db_session, see
     publisher = Publisher()
     await handle_pi_agent_result_message(duplicate, db_session, settings, publisher)
     assert duplicate.acked == 1 and duplicate.nacked == 0
-    assert publisher.calls == []
+    assert len(publisher.calls) == 1
+    assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
 
 
 @pytest.mark.asyncio
@@ -370,7 +404,7 @@ async def test_invalid_provenance_cannot_select_trace_parent_or_metric_labels(
 async def test_commit_failure_redelivery_reuses_deterministic_billing_event(db_session, seeded_tenant, monkeypatch):
     file = db_session.scalar(select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id))
     result = _result(seeded_tenant, file)
-    job = _job(db_session, seeded_tenant, file, result)
+    _job(db_session, seeded_tenant, file, result)
     settings = SimpleNamespace(pi_agent_result_max_bytes=524288, billing_llm_usage_subject="billing", billing_max_bytes=524288)
     publisher = Publisher()
     original_commit = db_session.commit
@@ -391,7 +425,7 @@ async def test_commit_failure_redelivery_reuses_deterministic_billing_event(db_s
     await handle_pi_agent_result_message(second, db_session, settings, publisher)
     assert second.acked == 1
     event_ids = [call[0][1].event_id for call in publisher.calls]
-    assert event_ids == [pi_agent_billing_event_id(job.id)] * 2
+    assert event_ids == [pi_agent_billing_event_id(result.execution_id)] * 2
 
 
 def test_stale_reconciliation_uses_dynamic_running_and_queued_deadlines(
@@ -429,6 +463,7 @@ def test_stale_reconciliation_uses_dynamic_running_and_queued_deadlines(
 async def test_stale_reconciliation_runs_during_sustained_message_traffic(monkeypatch):
     stop = __import__("asyncio").Event()
     reconciled = []
+    billing_streams = []
 
     class Nc:
         async def close(self):
@@ -450,12 +485,18 @@ async def test_stale_reconciliation_runs_during_sustained_message_traffic(monkey
     monkeypatch.setattr(consumer_module, "get_settings", lambda: SimpleNamespace(nats_url="nats://test"))
     monkeypatch.setattr(consumer_module, "connect_nats", lambda *_args: _async_value(Nc()))
     monkeypatch.setattr(consumer_module, "ensure_pi_agent_stream", lambda *_args: _async_value(object()))
+    monkeypatch.setattr(
+        consumer_module,
+        "ensure_billing_stream",
+        lambda *_args: _async_value(billing_streams.append(True)),
+    )
     monkeypatch.setattr(consumer_module, "pull_pi_agent_result_subscription", lambda *_args: _async_value(Subscription()))
     monkeypatch.setattr(consumer_module, "SessionLocal", DbContext)
     monkeypatch.setattr(consumer_module, "republish_queued_pi_agent_jobs", lambda *_args: _async_value(0))
     monkeypatch.setattr(consumer_module, "reconcile_stale_pi_agent_jobs", lambda _db, _settings: reconciled.append(True))
     monkeypatch.setattr(consumer_module.asyncio, "get_running_loop", lambda: SimpleNamespace(time=lambda: next(times)))
     await consumer_module.run_pi_agent_result_consumer(stop)
+    assert billing_streams == [True]
     assert reconciled == [True]
 
 
@@ -478,6 +519,9 @@ async def test_result_consumer_heartbeat_is_bounded_and_stops_on_cancel(monkeypa
     monkeypatch.setattr(consumer_module, "connect_nats", lambda *_: _async_value(Nc()))
     monkeypatch.setattr(
         consumer_module, "ensure_pi_agent_stream", lambda *_: _async_value(object())
+    )
+    monkeypatch.setattr(
+        consumer_module, "ensure_billing_stream", lambda *_: _async_value(object())
     )
     monkeypatch.setattr(
         consumer_module,

@@ -15,7 +15,7 @@ from core.billing_messages import LlmTokenUsageEvent, assert_billing_message_siz
 from core.config import get_settings
 from core.db import SessionLocal
 from core.models import LlmEditJob, LlmUsageRecord, Project
-from core.nats_client import NatsPublisher, connect_nats, ensure_pi_agent_stream, extract_nats_context, pull_pi_agent_result_subscription
+from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_pi_agent_stream, extract_nats_context, pull_pi_agent_result_subscription
 from core.pi_agent_messages import (
     PiAgentCommand,
     PiAgentFileManifest,
@@ -98,8 +98,33 @@ def _record_result_consumer_heartbeat(settings) -> None:
     )
 
 
-def pi_agent_billing_event_id(job_id: UUID) -> UUID:
-    return uuid5(NAMESPACE_URL, f"pi-agent-billing:{job_id}")
+def pi_agent_billing_event_id(execution_id: UUID) -> UUID:
+    return uuid5(NAMESPACE_URL, f"pi-agent-billing:{execution_id}")
+
+
+def _usage_record(
+    job: LlmEditJob,
+    result: PiAgentResult,
+    payload: dict,
+    event_id: UUID,
+) -> LlmUsageRecord:
+    return LlmUsageRecord(
+        event_id=event_id,
+        tenant_id=job.tenant_id,
+        user_id=job.requested_by,
+        project_id=job.project_id,
+        workflow="intus",
+        operation="files.llm_edit",
+        provider=result.provider,
+        model=result.model,
+        prompt=str(payload.get("prompt", "")),
+        prompt_tokens=result.usage.input_tokens,
+        completion_tokens=result.usage.output_tokens,
+        total_tokens=result.usage.total_tokens,
+        provider_request_id=None,
+        metadata_json=payload.get("metadata", {}),
+        status="completed" if result.status == "succeeded" else "failed",
+    )
 
 
 def _result_payload(result: PiAgentResult, snapshot, changed_rows) -> dict:
@@ -137,9 +162,7 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
             return "invalid", None, None
         if job.tenant_id != result.tenant_id or job.project_id != result.project_id:
             return "invalid", None, None
-        if job.status in {"succeeded", "failed"}:
-            return "duplicate", None, None
-        if job.status not in {"queued", "running"}:
+        if job.status not in {"queued", "running", "succeeded", "failed"}:
             return "invalid", None, None
         payload = job.request_payload if isinstance(job.request_payload, dict) else {}
         if (
@@ -168,16 +191,23 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
             )
         ):
             return "invalid", None, None
-        return "valid", payload, pointers
+        state = "duplicate" if job.status in {"succeeded", "failed"} else "valid"
+        return state, payload, pointers
 
     job = db.scalar(
         select(LlmEditJob).where(LlmEditJob.id == result.job_id).with_for_update()
     )
     state, payload, _ = validate_locked_job(job)
-    if state != "valid":
+    if state == "invalid":
         return state
     assert job is not None and payload is not None
-    event_id = pi_agent_billing_event_id(job.id)
+    event_id = pi_agent_billing_event_id(result.execution_id)
+    already_recorded = db.scalar(
+        select(LlmUsageRecord.id).where(LlmUsageRecord.event_id == event_id)
+    )
+    if already_recorded is not None:
+        db.rollback()
+        return "duplicate"
     event = LlmTokenUsageEvent(
         event_id=event_id,
         tenant_id=job.tenant_id,
@@ -207,9 +237,17 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
         select(LlmEditJob).where(LlmEditJob.id == result.job_id).with_for_update()
     )
     state, payload, pointers = validate_locked_job(job)
-    if state != "valid":
+    if state == "invalid":
         return state
     assert job is not None and payload is not None and pointers is not None
+    already_recorded = db.scalar(
+        select(LlmUsageRecord.id).where(LlmUsageRecord.event_id == event_id)
+    )
+    if already_recorded is not None:
+        return "duplicate"
+    if state == "duplicate":
+        db.add(_usage_record(job, result, payload, event_id))
+        return "duplicate"
     project = db.scalar(
         select(Project).where(
             Project.id == job.project_id, Project.tenant_id == job.tenant_id
@@ -246,25 +284,9 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
         if state != "valid":
             return state
         assert job is not None and payload is not None
-        db.add(
-            LlmUsageRecord(
-                event_id=event_id,
-                tenant_id=job.tenant_id,
-                user_id=job.requested_by,
-                project_id=job.project_id,
-                workflow="intus",
-                operation="files.llm_edit",
-                provider=result.provider,
-                model=result.model,
-                prompt=str(payload.get("prompt", "")),
-                prompt_tokens=result.usage.input_tokens,
-                completion_tokens=result.usage.output_tokens,
-                total_tokens=result.usage.total_tokens,
-                provider_request_id=None,
-                metadata_json=payload.get("metadata", {}),
-                status="failed",
-            )
-        )
+        usage_record = _usage_record(job, result, payload, event_id)
+        usage_record.status = "failed"
+        db.add(usage_record)
         LlmEditRepository(db, job.tenant_id).finish_job(
             job,
             "failed",
@@ -275,25 +297,7 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
         )
         return "applied"
 
-    db.add(
-        LlmUsageRecord(
-            event_id=event_id,
-            tenant_id=job.tenant_id,
-            user_id=job.requested_by,
-            project_id=job.project_id,
-            workflow="intus",
-            operation="files.llm_edit",
-            provider=result.provider,
-            model=result.model,
-            prompt=str(payload.get("prompt", "")),
-            prompt_tokens=result.usage.input_tokens,
-            completion_tokens=result.usage.output_tokens,
-            total_tokens=result.usage.total_tokens,
-            provider_request_id=None,
-            metadata_json=payload.get("metadata", {}),
-            status="completed" if result.status == "succeeded" else "failed",
-        )
-    )
+    db.add(_usage_record(job, result, payload, event_id))
     repo = LlmEditRepository(db, job.tenant_id)
     if result.status == "failed":
         repo.finish_job(
@@ -642,6 +646,7 @@ async def run_pi_agent_result_consumer(
         try:
             nc = await connect_nats(settings.nats_url)
             js = await ensure_pi_agent_stream(nc, settings)
+            await ensure_billing_stream(nc, settings)
             publisher = NatsPublisher(js)
             subscription = await pull_pi_agent_result_subscription(js, settings)
             last_reconcile = asyncio.get_running_loop().time()

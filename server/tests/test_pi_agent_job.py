@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from core.llm_file_edit import BUILD123D_RUNTIME_GUARDRAILS
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile
 from core.pi_agent_messages import PiAgentUsage
 from core.pi_agent_rpc import PiAgentRpcResult
@@ -37,13 +38,19 @@ def command(files):
 
 
 @pytest.mark.asyncio
-async def test_worker_passes_bounded_conversation_context_and_job_correlation_id(
+async def test_worker_passes_coding_agent_contract_and_job_correlation_id(
     monkeypatch, tmp_path
 ):
     import workflows.intus.pi_agent_job as job
 
-    request = command([source("model.py", "old")]).model_copy(
-        update={"prompt": "Current request", "prior_prompts": ["First request", "Second request"]}
+    active = source("parts/model.py", "SOURCE_SENTINEL")
+    support = source("dimensions.py", "WIDTH = 12")
+    request = command([active, support]).model_copy(
+        update={
+            "prompt": "Current request",
+            "prior_prompts": ["First request", "Second request"],
+            "active_file_id": active.id,
+        }
     )
     captured = {}
 
@@ -61,15 +68,23 @@ async def test_worker_passes_bounded_conversation_context_and_job_correlation_id
     monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
     monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
 
-    result = await job.execute_pi_agent_command(request, worker_settings())
+    result = await job.execute_pi_agent_command(
+        request, worker_settings(pi_agent_system_prompt="Configured system prompt")
+    )
 
     assert result.status == "succeeded"
-    assert captured["prompt"] == (
-        "Previous user requests, oldest first:\n"
-        "1. First request\n"
-        "2. Second request\n\n"
-        "Current user request:\nCurrent request"
-    )
+    prompt = captured["prompt"]
+    assert "Previous user requests, oldest first:" in prompt
+    assert "1. First request\n2. Second request" in prompt
+    assert "Current user request:\nCurrent request" in prompt
+    assert "Active file:\nparts/model.py" in prompt
+    assert "- parts/model.py\n- dimensions.py" in prompt
+    assert "Edit the existing files in place" in prompt
+    assert "Do not create, delete, or rename files" in prompt
+    assert "SOURCE_SENTINEL" not in prompt
+    assert "WIDTH = 12" not in prompt
+    assert captured["kwargs"]["system_prompt"].startswith("Configured system prompt\n\n")
+    assert BUILD123D_RUNTIME_GUARDRAILS.strip() in captured["kwargs"]["system_prompt"]
     assert captured["kwargs"]["correlation_id"] == str(request.job_id)
 
 
@@ -138,13 +153,14 @@ class FakeMessage:
 
 
 class FakePublisher:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, fail_times=0):
         self.fail = fail
+        self.fail_times = fail_times
         self.calls = []
 
     async def publish_json(self, subject, message, **kwargs):
         self.calls.append((subject, message, kwargs))
-        if self.fail:
+        if self.fail or len(self.calls) <= self.fail_times:
             raise TimeoutError
 
 
@@ -241,7 +257,9 @@ async def test_worker_acks_only_after_confirmed_publish(monkeypatch):
     await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
 
     assert msg.actions == ["ack"]
-    assert publisher.calls[0][2]["message_id"].endswith(":failed:provider_auth")
+    assert publisher.calls[0][2]["message_id"] == (
+        f"pi-result:{result.job_id}:{result.execution_id}"
+    )
     assert str(request.job_id) not in publisher.calls[0][2]["telemetry_message_id"]
 
 
@@ -342,7 +360,9 @@ async def test_worker_prefers_nats_header_parent_over_payload_fallback(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_worker_naks_transient_publish_failure(monkeypatch):
+async def test_worker_retries_transient_publish_failure_without_rerunning_provider(
+    monkeypatch,
+):
     import workflows.intus.pi_agent_job as job
 
     request = command([source("model.py", "old")])
@@ -354,11 +374,31 @@ async def test_worker_naks_transient_publish_failure(monkeypatch):
     )
     msg = FakeMessage(request.model_dump_json().encode())
 
-    await job.handle_pi_agent_request_message(
-        msg, FakePublisher(fail=True), worker_settings()
+    publisher = FakePublisher(fail_times=1)
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
+
+    assert msg.actions == ["ack"]
+    assert len(publisher.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_worker_naks_persistent_publish_failure(monkeypatch):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    result = job._failure(
+        request, datetime.now(timezone.utc), "provider_auth", "failed", False
     )
+    monkeypatch.setattr(
+        job, "execute_pi_agent_command", lambda *_: asyncio.sleep(0, result=result)
+    )
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = FakePublisher(fail=True)
+
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
 
     assert msg.actions == ["nak"]
+    assert len(publisher.calls) == 3
 
 
 @pytest.mark.asyncio

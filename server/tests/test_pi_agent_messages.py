@@ -71,7 +71,13 @@ def test_command_rejects_duplicate_ids_normalized_names_and_bad_hashes():
 
 
 def test_result_cross_field_states():
-    identity = {"schema_version": 1, "job_id": uuid4(), "tenant_id": uuid4(), "project_id": uuid4()}
+    identity = {
+        "schema_version": 1,
+        "execution_id": uuid4(),
+        "job_id": uuid4(),
+        "tenant_id": uuid4(),
+        "project_id": uuid4(),
+    }
     usage = PiAgentUsage(input_tokens=10, output_tokens=5, total_tokens=15)
     changed_file = PiAgentChangedFile(id=uuid4(), filename="design.py", content="x = 2", sha256=sha256(b"x = 2").hexdigest())
     common = {
@@ -95,6 +101,7 @@ def test_result_cross_field_states():
 def test_result_rejects_duplicate_changed_file_ids_and_normalized_filenames():
     common = {
         "schema_version": 1,
+        "execution_id": uuid4(),
         "job_id": uuid4(),
         "tenant_id": uuid4(),
         "project_id": uuid4(),
@@ -148,6 +155,7 @@ def test_message_ids_are_deterministic_and_result_discriminator_is_stable():
 
     common = {
         "schema_version": 1,
+        "execution_id": uuid4(),
         "job_id": message.job_id,
         "tenant_id": message.tenant_id,
         "project_id": message.project_id,
@@ -157,15 +165,29 @@ def test_message_ids_are_deterministic_and_result_discriminator_is_stable():
         "worker_finished_at": NOW + timedelta(seconds=1),
     }
     result = PiAgentResult(status="succeeded", outcome="no_changes", **common)
-    assert pi_agent_result_message_id(result) == f"pi-result:{message.job_id}:succeeded:no_changes"
+    assert pi_agent_result_message_id(result) == (
+        f"pi-result:{message.job_id}:{result.execution_id}"
+    )
     failed = PiAgentResult(
         status="failed", error_code="provider_auth", error_message="Login required", **common
     )
-    assert pi_agent_result_message_id(failed) == f"pi-result:{message.job_id}:failed:provider_auth"
-    other_failure = PiAgentResult(
-        status="failed", error_code="provider_rate_limit", error_message="Try again", retryable=True, **common
+    assert pi_agent_result_message_id(failed) == (
+        f"pi-result:{message.job_id}:{failed.execution_id}"
     )
-    assert pi_agent_result_message_id(other_failure) != pi_agent_result_message_id(failed)
+    same_execution_failure = PiAgentResult(
+        status="failed",
+        error_code="provider_rate_limit",
+        error_message="Try again",
+        retryable=True,
+        **common,
+    )
+    assert pi_agent_result_message_id(same_execution_failure) == pi_agent_result_message_id(
+        failed
+    )
+    other_execution = same_execution_failure.model_copy(
+        update={"execution_id": uuid4()}
+    )
+    assert pi_agent_result_message_id(other_execution) != pi_agent_result_message_id(failed)
 
 
 def test_message_byte_size_enforcement_uses_serialized_utf8_bytes():
@@ -177,6 +199,7 @@ def test_message_byte_size_enforcement_uses_serialized_utf8_bytes():
 
     result = PiAgentResult(
         schema_version=1,
+        execution_id=uuid4(),
         job_id=message.job_id,
         tenant_id=message.tenant_id,
         project_id=message.project_id,
