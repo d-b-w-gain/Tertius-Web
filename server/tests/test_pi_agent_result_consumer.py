@@ -858,6 +858,28 @@ async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_ten
             {"dispatched_system_prompt_sha256": "a" * 64},
             id="missing-version-with-prompt-hash",
         ),
+        pytest.param(
+            {
+                "dispatched_command_schema_version": 1,
+                "dispatched_conversation": {"rolling_summary": "orphaned v2"},
+            },
+            id="v1-with-conversation",
+        ),
+        pytest.param(
+            {
+                "dispatched_command_schema_version": 1,
+                "dispatched_system_prompt_sha256": "a" * 64,
+            },
+            id="v1-with-prompt-hash",
+        ),
+        pytest.param(
+            {
+                "dispatched_command_schema_version": 1,
+                "dispatched_conversation": {"rolling_summary": "orphaned v2"},
+                "dispatched_system_prompt_sha256": "a" * 64,
+            },
+            id="v1-with-both-v2-fields",
+        ),
         *[
             pytest.param(
                 {
