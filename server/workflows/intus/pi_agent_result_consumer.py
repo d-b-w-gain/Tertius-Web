@@ -18,6 +18,7 @@ from core.models import LlmEditJob, LlmUsageRecord, Project
 from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_pi_agent_stream, extract_nats_context, pull_pi_agent_result_subscription
 from core.pi_agent_messages import (
     PiAgentCommand,
+    PiAgentConversationContext,
     PiAgentFileManifest,
     PiAgentResult,
     PiAgentSourceFile,
@@ -390,8 +391,21 @@ async def republish_queued_pi_agent_jobs(
                         sha256=item.sha256,
                     )
                 )
+            schema_version = int(
+                payload.get("dispatched_command_schema_version", 1)
+            )
+            if schema_version == 2:
+                conversation = PiAgentConversationContext.model_validate(
+                    payload["dispatched_conversation"]
+                )
+                prompt_hash = payload["dispatched_system_prompt_sha256"]
+                prior_prompts = []
+            else:
+                conversation = None
+                prompt_hash = None
+                prior_prompts = payload.get("dispatched_prior_prompts", [])
             command = PiAgentCommand(
-                schema_version=1,
+                schema_version=schema_version,
                 job_id=job.id,
                 tenant_id=job.tenant_id,
                 project_id=job.project_id,
@@ -399,7 +413,9 @@ async def republish_queued_pi_agent_jobs(
                 model=payload["dispatched_model"],
                 thinking=payload["dispatched_thinking"],
                 prompt=payload["prompt"],
-                prior_prompts=payload.get("dispatched_prior_prompts", []),
+                prior_prompts=prior_prompts,
+                conversation=conversation,
+                system_prompt_sha256=prompt_hash,
                 active_file_id=payload.get("active_file_id"),
                 files=command_files,
                 created_at=datetime.fromisoformat(payload["dispatch_created_at"]),

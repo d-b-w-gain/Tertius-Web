@@ -9,7 +9,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.models import LlmEditJob, LlmUsageRecord, ProjectFile, SourceSnapshot
-from core.pi_agent_messages import PiAgentChangedFile, PiAgentResult, PiAgentUsage
+from core.pi_agent_conversation import conversation_turn_from_job
+from core.pi_agent_messages import (
+    PiAgentChangedFile,
+    PiAgentConversationContext,
+    PiAgentConversationTurn,
+    PiAgentResult,
+    PiAgentUsage,
+)
 from core.repositories import LlmEditRepository
 from workflows.intus.pi_agent_result_consumer import (
     apply_pi_agent_result,
@@ -94,6 +101,62 @@ async def test_valid_changed_result_stages_usage_and_terminal_job_atomically(db_
     assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
     assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
     assert len(publisher.calls) == 1
+    assert job.result_payload["message"] == result.assistant_summary
+    turn = conversation_turn_from_job(job)
+    assert turn.outcome == result.outcome
+    assert turn.assistant_summary == result.assistant_summary
+    assert turn.changed_files == [edit.filename for edit in result.changed_files]
+    serialized = turn.model_dump_json()
+    for forbidden in (
+        result.changed_files[0].content,
+        str(job.result_payload.get("snapshot")),
+        "prompt_tokens",
+        result.provider,
+    ):
+        assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_valid_no_changes_result_persists_bounded_conversation_turn(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file).model_copy(
+        update={
+            "outcome": "no_changes",
+            "assistant_summary": "No update needed",
+            "changed_files": [],
+        }
+    )
+    job = _job(db_session, seeded_tenant, file, result)
+
+    outcome = await apply_pi_agent_result(
+        db_session,
+        result,
+        SimpleNamespace(
+            billing_llm_usage_subject="billing", billing_max_bytes=524288
+        ),
+        Publisher(),
+    )
+    db_session.commit()
+
+    assert outcome == "applied"
+    db_session.refresh(job)
+    assert job.result_payload["message"] == result.assistant_summary
+    turn = conversation_turn_from_job(job)
+    assert turn.outcome == result.outcome
+    assert turn.assistant_summary == result.assistant_summary
+    assert turn.changed_files == []
+    serialized = turn.model_dump_json()
+    for forbidden in (
+        file.content,
+        str(job.result_payload.get("snapshot")),
+        "prompt_tokens",
+        result.provider,
+    ):
+        assert forbidden not in serialized
 
 
 @pytest.mark.asyncio
@@ -669,16 +732,41 @@ async def test_queued_reconciliation_republishes_with_same_deterministic_id(db_s
     result = _result(seeded_tenant, file)
     job = _job(db_session, seeded_tenant, file, result)
     payload = dict(job.request_payload)
-    payload.update({
-        "dispatch_attempted_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
-        "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
-        "dispatched_provider": "openai-codex",
-        "dispatched_model": "gpt-5.5",
-        "dispatched_thinking": "high",
-        "dispatched_prior_prompts": [],
-    })
+    conversation = PiAgentConversationContext(
+        rolling_summary="older summary",
+        recent_turns=[
+            PiAgentConversationTurn(
+                user_request="Earlier request",
+                status="succeeded",
+                outcome="no_changes",
+                assistant_summary="Already satisfied",
+            )
+        ],
+    )
+    payload.update(
+        {
+            "dispatch_attempted_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat(),
+            "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
+            "dispatched_provider": "openai-codex",
+            "dispatched_model": "gpt-5.5",
+            "dispatched_thinking": "high",
+            "dispatched_command_schema_version": 2,
+            "dispatched_conversation": conversation.model_dump(mode="json"),
+            "dispatched_system_prompt_sha256": "a" * 64,
+        }
+    )
     job.request_payload = payload
     flag_modified(job, "request_payload")
+    newer = LlmEditRepository(db_session, seeded_tenant.tenant_id).start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {"prompt": "Newer terminal request", "files": []},
+        status="failed",
+    )
+    newer.error_code = "provider_error"
+    newer.user_message = "Newer failure"
     db_session.commit()
 
     class AmbiguousPublisher(Publisher):
@@ -691,8 +779,116 @@ async def test_queued_reconciliation_republishes_with_same_deterministic_id(db_s
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert [call[1]["message_id"] for call in publisher.calls] == [f"pi-request:{job.id}"] * 2
+    for call in publisher.calls:
+        republished = call[0][1]
+        assert republished.schema_version == 2
+        assert republished.conversation == conversation
+        assert republished.system_prompt_sha256 == "a" * 64
+        assert republished.prior_prompts == []
+        assert "Newer terminal request" not in republished.model_dump_json()
     db_session.refresh(job)
     assert job.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_tenant):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    job = _job(db_session, seeded_tenant, file, _result(seeded_tenant, file))
+    payload = dict(job.request_payload)
+    payload.update(
+        {
+            "dispatch_attempted_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat(),
+            "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
+            "dispatched_provider": "openai-codex",
+            "dispatched_model": "gpt-5.5",
+            "dispatched_thinking": "high",
+            "dispatched_prior_prompts": ["legacy request"],
+        }
+    )
+    job.request_payload = payload
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    publisher = Publisher()
+    settings = SimpleNamespace(
+        pi_agent_request_subject="request",
+        pi_agent_request_max_bytes=524288,
+        pi_agent_provider="openai-codex",
+        pi_agent_model="gpt-5.5",
+        pi_agent_thinking="high",
+    )
+
+    assert (
+        await republish_queued_pi_agent_jobs(
+            db_session, publisher, settings, backoff_seconds=0
+        )
+        == 1
+    )
+    command = publisher.calls[0][0][1]
+    assert command.schema_version == 1
+    assert command.conversation is None
+    assert command.system_prompt_sha256 is None
+    assert command.prior_prompts == ["legacy request"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "v2_context",
+    [
+        {},
+        {
+            "dispatched_conversation": {"recent_turns": "malformed"},
+            "dispatched_system_prompt_sha256": "a" * 64,
+        },
+    ],
+)
+async def test_queued_reconciliation_fails_closed_for_invalid_v2_context(
+    db_session, seeded_tenant, v2_context
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    job = _job(db_session, seeded_tenant, file, _result(seeded_tenant, file))
+    payload = dict(job.request_payload)
+    payload.update(
+        {
+            "dispatch_attempted_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat(),
+            "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
+            "dispatched_provider": "openai-codex",
+            "dispatched_model": "gpt-5.5",
+            "dispatched_thinking": "high",
+            "dispatched_command_schema_version": 2,
+            **v2_context,
+        }
+    )
+    job.request_payload = payload
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    publisher = Publisher()
+    settings = SimpleNamespace(
+        pi_agent_request_subject="request",
+        pi_agent_request_max_bytes=524288,
+        pi_agent_provider="openai-codex",
+        pi_agent_model="gpt-5.5",
+        pi_agent_thinking="high",
+    )
+
+    assert (
+        await republish_queued_pi_agent_jobs(
+            db_session, publisher, settings, backoff_seconds=0
+        )
+        == 0
+    )
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error_code == "dispatch_config_error"
+    assert job.user_message == "AI edit could not be safely retried."
+    assert publisher.calls == []
 
 
 @pytest.mark.asyncio

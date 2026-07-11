@@ -1208,7 +1208,7 @@ rtk git commit -m "feat: run Pi with shared prompt and structured history"
 - Modify: `server/tests/test_pi_agent_result_consumer.py`
 - Modify: `server/tests/test_pi_agent_pipeline_e2e.py`
 
-- [ ] **Step 1: Write failing v1/v2 republish and two-job pipeline tests**
+- [x] **Step 1: Write failing v1/v2 republish and two-job pipeline tests**
 
 Convert `test_queued_reconciliation_republishes_with_same_deterministic_id()` to v2 by adding this setup and these assertions around its existing two republish calls:
 
@@ -1327,7 +1327,7 @@ assert "REFRESHED_FILE_SENTINEL" in second.files[0].content
 assert "REFRESHED_FILE_SENTINEL" not in second.conversation.model_dump_json()
 ```
 
-- [ ] **Step 2: Run the tests and verify red**
+- [x] **Step 2: Run the tests and verify red**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_result_consumer.py server/tests/test_pi_agent_pipeline_e2e.py -q
@@ -1335,7 +1335,7 @@ rtk uv run pytest server/tests/test_pi_agent_result_consumer.py server/tests/tes
 
 Expected: failures because republish only reconstructs schema v1 `prior_prompts`.
 
-- [ ] **Step 3: Reconstruct the persisted command version exactly**
+- [x] **Step 3: Reconstruct the persisted command version exactly**
 
 In `republish_queued_pi_agent_jobs()`:
 
@@ -1374,7 +1374,7 @@ command = PiAgentCommand(
 
 Do not call the repository history query or prompt loader while reconstructing a queued command. Continue validating provider/model/thinking and the exact dispatched file manifest.
 
-- [ ] **Step 4: Verify result summaries are safe inputs to subsequent context**
+- [x] **Step 4: Verify result summaries are safe inputs to subsequent context**
 
 Add this exact assertion block to the success-result test after `_result_payload()` is persisted, and repeat it with `outcome="no_changes"` and no files:
 
@@ -1395,7 +1395,7 @@ for forbidden in (
     assert forbidden not in serialized
 ```
 
-- [ ] **Step 5: Run green tests and commit**
+- [x] **Step 5: Run green tests and commit**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_result_consumer.py server/tests/test_pi_agent_pipeline_e2e.py server/tests/test_pi_agent_conversation.py -q

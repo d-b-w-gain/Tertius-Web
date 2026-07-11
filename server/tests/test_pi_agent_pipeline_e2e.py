@@ -7,6 +7,7 @@ import os
 import socket
 import time
 from collections.abc import Generator
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -25,7 +26,7 @@ from core.nats_client import (
     pull_pi_agent_request_subscription,
     pull_pi_agent_result_subscription,
 )
-from core.pi_agent_messages import PiAgentResult, PiAgentUsage
+from core.pi_agent_messages import PiAgentCommand, PiAgentResult, PiAgentUsage
 from core.pi_agent_rpc import PiAgentRpcResult
 from workflows.intus import intus_server
 from workflows.intus import pi_agent_job as worker_module
@@ -144,6 +145,33 @@ async def test_pi_pipeline_worker_publishes_and_api_applies_result(
         assert db_session.get(ProjectFile, file.id).content.endswith("height = 200\n")
         assert db_session.scalar(select(func.count()).select_from(SourceSnapshot)) == 1
         assert db_session.scalar(select(func.count()).select_from(LlmUsageRecord)) == 1
+
+        current = db_session.get(ProjectFile, file.id)
+        current.content += "# REFRESHED_FILE_SENTINEL\n"
+        current.updated_at = datetime.now(timezone.utc)
+        db_session.commit()
+        refreshed_content = current.content
+        first_prompt = "Add height"
+        second_response = authenticated_intus_client.post(
+            "/projects/default_purlin/files/llm-edit/jobs",
+            json={
+                "prompt": "Use completed prior request as context",
+                "files": [pointer(current)],
+                "active_file_id": str(current.id),
+            },
+        )
+        assert second_response.status_code == 202
+        second_message = await run_pipeline(
+            js, settings, db_session, monkeypatch
+        )
+        second = PiAgentCommand.model_validate_json(second_message.data)
+        assert second.schema_version == 2
+        assert second.conversation.recent_turns[-1].user_request == first_prompt
+        assert second.conversation.recent_turns[-1].assistant_summary == "Added height"
+        assert second.conversation.recent_turns[-1].status == "succeeded"
+        assert second.files[0].content == refreshed_content
+        assert "REFRESHED_FILE_SENTINEL" in second.files[0].content
+        assert "REFRESHED_FILE_SENTINEL" not in second.conversation.model_dump_json()
     finally:
         await nc.close()
 
