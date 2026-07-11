@@ -201,7 +201,7 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
         "PI_AGENT_STREAM_NAME", "PI_AGENT_REQUEST_SUBJECT", "PI_AGENT_RESULT_SUBJECT",
         "PI_AGENT_WORKER_QUEUE", "PI_AGENT_RESULT_CONSUMER", "PI_AGENT_ACK_WAIT_SECONDS",
         "PI_AGENT_MAX_DELIVER", "PI_AGENT_REQUEST_MAX_BYTES", "PI_AGENT_RESULT_MAX_BYTES",
-        "PI_AGENT_STREAM_MAX_AGE_SECONDS", "PI_AGENT_STREAM_MAX_BYTES", "PI_AGENT_SYSTEM_PROMPT",
+        "PI_AGENT_STREAM_MAX_AGE_SECONDS", "PI_AGENT_STREAM_MAX_BYTES",
         "LLM_USER_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_RATE_LIMIT_PER_MINUTE",
         "LLM_TENANT_DAILY_TOKEN_QUOTA",
@@ -233,7 +233,6 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     assert settings.pi_agent_max_deliver == 2
     assert settings.pi_agent_stream_max_age_seconds == 86400
     assert settings.pi_agent_stream_max_bytes == 67108864
-    assert settings.pi_agent_system_prompt == ""
 
 
 @pytest.mark.parametrize("field,value", [("pi_agent_thinking", "extreme"), ("pi_agent_max_turns", 0), ("pi_agent_request_max_bytes", 0)])
@@ -244,6 +243,7 @@ def test_settings_rejects_invalid_pi_agent_values(field, value):
 
 def test_removed_direct_provider_settings_are_absent():
     removed = {
+        "pi_agent_system_prompt",
         "llm_api_key", "llm_models_json", "llm_default_model_id",
         "llm_weekly_" + "budget_usd", "llm_daily_" + "budget_usd", "llm_max_output_tokens",
         "llm_file_edit_max_output_tokens", "llm_file_edit_max_generation_attempts",
@@ -259,7 +259,6 @@ def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("PI_AGENT_MODEL", "gpt-test")
     monkeypatch.setenv("PI_AGENT_THINKING", "xhigh")
     monkeypatch.setenv("PI_AGENT_MAX_TURNS", "8")
-    monkeypatch.setenv("PI_AGENT_SYSTEM_PROMPT", "Worker prompt")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_FILES", "6")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_CHARS", "50000")
     monkeypatch.setenv("LLM_USER_RATE_LIMIT_PER_MINUTE", "5")
@@ -276,7 +275,6 @@ def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
     assert settings.pi_agent_model == "gpt-test"
     assert settings.pi_agent_thinking == "xhigh"
     assert settings.pi_agent_max_turns == 8
-    assert settings.pi_agent_system_prompt == "Worker prompt"
     assert settings.llm_file_edit_max_context_files == 6
     assert settings.llm_file_edit_max_context_chars == 50000
     assert settings.llm_user_rate_limit_per_minute == 5

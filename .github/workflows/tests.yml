@@ -47,8 +47,13 @@ jobs:
           docker build --target api -t tertius-api:test -f Dockerfile.api .
           docker build --target pi-agent -t tertius-pi-agent:test -f Dockerfile.api .
 
-      - name: Verify API excludes Pi
-        run: docker run --rm tertius-api:test sh -c '! command -v pi && test ! -e /app/server/pi'
+      - name: Verify common prompt artifact and API tooling isolation
+        run: |
+          api_sha=$(docker run --rm --entrypoint sha256sum tertius-api:test /app/server/core/pi_agent_system_prompt.md | awk '{print $1}')
+          worker_sha=$(docker run --rm --entrypoint sha256sum tertius-pi-agent:test /app/server/core/pi_agent_system_prompt.md | awk '{print $1}')
+          test "$api_sha" = "$worker_sha"
+          docker run --rm --entrypoint sh tertius-api:test -c 'test "$(stat -c "%u:%g %a" /app/server/core/pi_agent_system_prompt.md)" = "0:0 444" && test ! -w /app/server/core/pi_agent_system_prompt.md && test ! -e /app/server/pi && ! command -v pi'
+          docker run --rm --entrypoint sh tertius-pi-agent:test -c 'test "$(stat -c "%u:%g %a" /app/server/core/pi_agent_system_prompt.md)" = "0:0 444" && test ! -w /app/server/core/pi_agent_system_prompt.md'
 
       - name: Verify Pi runtime identity and secret isolation
         run: |

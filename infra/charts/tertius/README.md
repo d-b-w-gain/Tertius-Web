@@ -115,9 +115,11 @@ The worker's other writable locations are bounded `emptyDir` volumes at
 runtime class. Local values clear the runtime class and select `local-path` for
 the auth PVC.
 
-`PI_AGENT_SYSTEM_PROMPT` is optional and is rendered only in the worker when
-`piAgent.systemPrompt` is non-empty. Provider credentials are OAuth state on the
-auth claim; the chart does not create or inject an API-key Secret.
+The Pi system prompt is the immutable checked-in
+`server/core/pi_agent_system_prompt.md` artifact copied into both the API and
+worker images. Prompt changes require rebuilding both images and restarting the
+API and worker workloads. Provider credentials are OAuth state on the auth
+claim; the chart does not create or inject an API-key Secret.
 
 When network policies are enabled, pods labelled
 `tertius.io/pi-agent-network=true` with the chart's release selector labels have

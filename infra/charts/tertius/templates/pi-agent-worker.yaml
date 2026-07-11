@@ -97,10 +97,6 @@ spec:
                 value: "0"
               - name: HOME
                 value: /tmp/home
-              {{- with .Values.piAgent.systemPrompt }}
-              - name: PI_AGENT_SYSTEM_PROMPT
-                value: {{ . | quote }}
-              {{- end }}
               - name: OTEL_SERVICE_NAME
                 value: tertius-pi-agent
               - name: OTEL_ENABLED

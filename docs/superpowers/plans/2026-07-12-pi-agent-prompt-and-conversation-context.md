@@ -1417,7 +1417,7 @@ rtk git commit -m "fix: preserve Pi context across queued retries"
 - Modify: `scripts/test-deployment-config.sh`
 - Modify: `scripts/check-runtime-parity.sh`
 
-- [ ] **Step 1: Write failing removal and image-contract checks**
+- [x] **Step 1: Write failing removal and image-contract checks**
 
 Add `pi_agent_system_prompt` to the existing removed-settings set in `test_settings_removes_legacy_llm_provider_fields()`. Replace the deployment prompt fixture/check with these exact shell assertions in `scripts/test-deployment-config.sh`:
 
@@ -1457,7 +1457,7 @@ def test_pi_prompt_is_common_image_artifact_not_runtime_config():
 
 The container assertions in Step 3 prove identical SHA, root ownership/mode, non-writability, and continued absence of Pi tooling from the API image.
 
-- [ ] **Step 2: Remove the runtime override surfaces**
+- [x] **Step 2: Remove the runtime override surfaces**
 
 Delete:
 
@@ -1469,7 +1469,7 @@ Delete:
 
 Do not add replacement environment variables, ConfigMaps, Secrets, mounts, or values.
 
-- [ ] **Step 3: Add container assertions to CI**
+- [x] **Step 3: Add container assertions to CI**
 
 After building both targets in `.github/workflows/tests.yml`, run equivalent assertions:
 
@@ -1481,7 +1481,7 @@ docker run --rm --entrypoint sh tertius-api:test -c 'test ! -w /app/server/core/
 docker run --rm --entrypoint sh tertius-pi-agent:test -c 'test ! -w /app/server/core/pi_agent_system_prompt.md'
 ```
 
-- [ ] **Step 4: Run config, parity, and image validation**
+- [x] **Step 4: Run config, parity, and image validation**
 
 ```bash
 rtk uv run pytest server/tests/test_config.py server/tests/test_pi_agent_image_config.py -q
@@ -1493,7 +1493,7 @@ docker build --target pi-agent -t tertius-pi-agent:test -f Dockerfile.api .
 
 Expected: all commands exit 0 and both images report the same prompt SHA.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 rtk git add server/core/config.py server/tests/test_config.py server/.env.example infra/charts/tertius/values.yaml infra/charts/tertius/templates/pi-agent-worker.yaml infra/charts/tertius/README.md .github/workflows/tests.yml server/tests/test_pi_agent_image_config.py scripts/test-deployment-config.sh scripts/check-runtime-parity.sh

@@ -43,6 +43,31 @@ not_contains() {
 
 not_contains "$CHART_DIR/templates/configmap.yaml" 'LLM_WEEKLY_BUDGET_USD' "Helm ConfigMap must not include direct-provider dollar budgets"
 contains "$CHART_DIR/templates/configmap.yaml" 'PI_AGENT_STREAM_NAME' "Helm ConfigMap must include Pi agent transport settings"
+python3 - "$ROOT_DIR/Dockerfile.api" "$ROOT_DIR/server/core/pi_agent_system_prompt.md" <<'PY' || fail "API and Pi worker images must inherit the same immutable checked-in prompt artifact"
+from pathlib import Path
+import sys
+
+dockerfile = Path(sys.argv[1]).read_text(encoding="utf-8")
+prompt = Path(sys.argv[2])
+assert prompt.is_file()
+assert prompt.read_text(encoding="utf-8").startswith("Tertius file-edit policy:")
+assert "FROM python-app AS pi-agent" in dockerfile
+assert "FROM python-app AS api" in dockerfile
+common = dockerfile.split("FROM python-app AS pi-agent", 1)[0]
+assert "COPY server/core/ ./server/core/" in common
+assert "chmod 0444 /app/server/core/pi_agent_system_prompt.md" in common
+PY
+for file in \
+  "$ROOT_DIR/server/.env.example" \
+  "$CHART_DIR/values.yaml" \
+  "$CHART_DIR/templates/pi-agent-worker.yaml" \
+  "$ROOT_DIR/docker-compose.yml" \
+  "$ROOT_DIR/docker-compose.parity.yml"; do
+  not_contains "$file" 'PI_AGENT_SYSTEM_PROMPT|piAgent\.systemPrompt|systemPrompt:' "$file must not expose a runtime Pi prompt override"
+done
+not_contains "$CHART_DIR/templates/pi-agent-worker.yaml" 'pi_agent_system_prompt\.md|/app/server/core' "Helm must not mount over the image-owned Pi prompt"
+not_contains "$ROOT_DIR/docker-compose.yml" 'pi_agent_system_prompt\.md|/app/server/core' "Compose dev must not mount over the image-owned Pi prompt"
+not_contains "$ROOT_DIR/docker-compose.parity.yml" 'pi_agent_system_prompt\.md|/app/server/core' "Compose parity must not mount over the image-owned Pi prompt"
 contains "$ROOT_DIR/docker-compose.yml" 'pi-agent-worker:' "Compose dev must define the Pi agent worker"
 contains "$ROOT_DIR/docker-compose.yml" 'pi-agent-auth:' "Compose dev must define the retained Pi auth volume"
 contains "$ROOT_DIR/docker-compose.yml" 'target:[[:space:]]*pi-agent' "Compose Pi worker must build the pi-agent image target"
@@ -194,6 +219,7 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"
+  not_contains "$file" 'PI_AGENT_SYSTEM_PROMPT|piAgent\.systemPrompt|pi_agent_system_prompt\.md|/app/server/core' "${file} must use the image-owned Pi prompt without runtime overrides or mounts"
 done
 
 for file in "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-parity.yaml"; do

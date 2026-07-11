@@ -114,12 +114,6 @@ render_pi_keda_disabled() {
     --set keda.enabled=false
 }
 
-render_pi_prompt() {
-  helm template "$RELEASE_NAME" "$CHART_DIR" \
-    --set piAgent.enabled=true \
-    --set-string piAgent.systemPrompt='worker-only prompt'
-}
-
 render_pi_without_auth_storage() {
   helm template "$RELEASE_NAME" "$CHART_DIR" \
     --set piAgent.enabled=true \
@@ -537,7 +531,6 @@ external_observability_rendered="$(render_external_observability_collector)"
 pi_worker_rendered="$(render_pi_worker)"
 pi_disabled_rendered="$(render_pi_disabled)"
 pi_existing_claim_rendered="$(render_pi_existing_claim)"
-pi_prompt_rendered="$(render_pi_prompt)"
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
@@ -574,8 +567,6 @@ pi_worker="$(extract_render_doc "$pi_worker_rendered" 'kind: ScaledJob' 'app.kub
 pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
 pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
 pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
-pi_prompt_worker="$(extract_render_doc "$pi_prompt_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
-pi_prompt_api="$(extract_render_doc "$pi_prompt_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 
 # ConfigMap-backed API settings must change the pod template so Helm rolls the
 # API together with workers that consume the same feature flag.
@@ -672,8 +663,18 @@ for required in 'runtimeClassName: "gvisor"' 'runAsNonRoot: true' 'runAsUser: 10
 done
 
 # I-014: mutable OAuth/API provider secrets never enter API or worker pods.
-if rg -q "${legacy_provider_key_pattern}|DATABASE_URL|APP_DB_|KEYCLOAK|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET" <<<"$pi_worker" || rg -q "${legacy_provider_key_pattern}|PI_AGENT_SYSTEM_PROMPT" <<<"$pi_prompt_api" || ! rg -q 'PI_AGENT_SYSTEM_PROMPT' <<<"$pi_prompt_worker"; then
-  echo "Pi provider credentials must be absent and the optional system prompt must be worker-only." >&2
+if rg -q "${legacy_provider_key_pattern}|DATABASE_URL|APP_DB_|KEYCLOAK|AUTH_SESSION_SECRET|OIDC_CLIENT_SECRET" <<<"$pi_worker"; then
+  echo "Pi provider credentials must be absent from the worker." >&2
+  exit 1
+fi
+
+if rg -q 'PI_AGENT_SYSTEM_PROMPT|piAgent\.systemPrompt' \
+  "$ROOT_DIR/server/.env.example" \
+  "$ROOT_DIR/infra/charts/tertius/values.yaml" \
+  "$ROOT_DIR/infra/charts/tertius/templates" \
+  "$ROOT_DIR/docker-compose.yml" \
+  "$ROOT_DIR/docker-compose.parity.yml"; then
+  echo 'Legacy Pi system prompt runtime configuration is still present.' >&2
   exit 1
 fi
 

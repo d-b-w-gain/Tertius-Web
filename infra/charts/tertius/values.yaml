@@ -164,7 +164,6 @@ piAgent:
       size: 64Mi
       storageClassName: ""
       retain: true
-  systemPrompt: ""
   runtimeClassName: gvisor
   activeDeadlineSeconds: 540
   ttlSecondsAfterFinished: 300

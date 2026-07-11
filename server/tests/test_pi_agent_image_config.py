@@ -9,6 +9,25 @@ def read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text()
 
 
+def test_pi_prompt_is_common_image_artifact_not_runtime_config() -> None:
+    prompt = ROOT / "server/core/pi_agent_system_prompt.md"
+    assert prompt.is_file()
+    assert prompt.read_text(encoding="utf-8").startswith("Tertius file-edit policy:")
+    dockerfile = read("Dockerfile.api")
+    assert "COPY server/core/ ./server/core/" in dockerfile
+    assert "chmod 0444 /app/server/core/pi_agent_system_prompt.md" in dockerfile
+    rendered_sources = "\n".join(
+        read(path)
+        for path in (
+            "server/.env.example",
+            "infra/charts/tertius/values.yaml",
+            "infra/charts/tertius/templates/pi-agent-worker.yaml",
+        )
+    )
+    assert "PI_AGENT_SYSTEM_PROMPT" not in rendered_sources
+    assert "systemPrompt:" not in rendered_sources
+
+
 def test_dockerfile_has_isolated_api_and_pi_agent_targets() -> None:
     dockerfile = read("Dockerfile.api")
 
