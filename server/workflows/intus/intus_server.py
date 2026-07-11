@@ -24,11 +24,11 @@ from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
+from core.pi_agent_prompt import estimate_pi_agent_usage, load_pi_agent_prompt
 from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.llm_file_edit import (
     LlmEditableFile as DomainEditableFile,
     LlmFileEditInput,
-    estimate_file_edit_usage as estimate_domain_file_edit_usage,
     select_llm_edit_context_files as select_domain_context_files,
 )
 from core.telemetry import (
@@ -592,12 +592,27 @@ async def start_llm_file_edit_job(
             max_chars=settings.llm_file_edit_max_context_chars,
         )
         prior_prompts = job_repo.list_recent_prompts(name, limit=5)
-        estimate = estimate_domain_file_edit_usage(
-            req,
-            selected,
-            system_prompt=settings.pi_agent_system_prompt,
+        if prior_prompts:
+            history = "\n".join(
+                f"{index}. {prompt}"
+                for index, prompt in enumerate(prior_prompts, start=1)
+            )
+            user_prompt = (
+                "Previous user requests, oldest first:\n"
+                f"{history}\n\n"
+                "Current user request:\n"
+                f"{req.prompt}"
+            )
+        else:
+            user_prompt = req.prompt
+        estimate = estimate_pi_agent_usage(
+            system_prompt=load_pi_agent_prompt().content,
+            user_prompt=user_prompt,
+            source_bytes=sum(
+                len(file.content.encode("utf-8")) for file in selected
+            ),
+            metadata=req.metadata,
             max_output_tokens=settings.pi_agent_estimated_output_tokens,
-            prior_prompts=prior_prompts,
         )
         assert_llm_usage_allowed(
             db,

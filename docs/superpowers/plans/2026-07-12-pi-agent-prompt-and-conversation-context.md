@@ -238,7 +238,7 @@ def versioned_context(self):
 - Modify: `server/tests/test_llm_file_edit_domain.py`
 - Modify: `Dockerfile.api`
 
-- [ ] **Step 1: Write failing prompt-loader and exact-estimate tests**
+- [x] **Step 1: Write failing prompt-loader and exact-estimate tests**
 
 Create `server/tests/test_pi_agent_prompt.py` with these concrete tests (retain the exact checked-in text assertion in the first test so accidental prompt edits require an intentional test change):
 
@@ -303,7 +303,7 @@ def test_pi_usage_estimate_counts_exact_bytes_once_plus_fixed_reserve():
     assert usage.total_tokens == expected_prompt + 65_536
 ```
 
-- [ ] **Step 2: Run the tests and verify red**
+- [x] **Step 2: Run the tests and verify red**
 
 Run:
 
@@ -313,7 +313,7 @@ rtk uv run pytest server/tests/test_pi_agent_prompt.py server/tests/test_llm_fil
 
 Expected: failure because `core.pi_agent_prompt` and the checked-in prompt file do not exist.
 
-- [ ] **Step 3: Add the exact append-prompt text**
+- [x] **Step 3: Add the exact append-prompt text**
 
 Create `server/core/pi_agent_system_prompt.md` with:
 
@@ -332,7 +332,7 @@ Tertius file-edit policy:
 - Avoid advanced builder-mode APIs unless they already appear in the current project files.
 ```
 
-- [ ] **Step 4: Implement the fail-closed loader**
+- [x] **Step 4: Implement the fail-closed loader**
 
 Create `server/core/pi_agent_prompt.py` with these concrete contracts:
 
@@ -410,7 +410,7 @@ def estimate_pi_agent_usage(
 
 Remove `BUILD123D_RUNTIME_GUARDRAILS`, `FileEditPromptContents`, `file_edit_system_content()`, `file_edit_prompt_contents()`, `estimate_file_edit_usage()`, and `estimate_file_edit_tokens()` from `llm_file_edit.py`. Keep `TokenUsage`, file selection, request validation, and result models. Update callers to use `estimate_pi_agent_usage()`; do not retain a second estimator.
 
-- [ ] **Step 5: Lock the image mode and run green tests**
+- [x] **Step 5: Lock the image mode and run green tests**
 
 After the common `server/core` copy in `Dockerfile.api`, add:
 
@@ -427,7 +427,7 @@ rtk uv run ruff check server/core/pi_agent_prompt.py server/tests/test_pi_agent_
 
 Expected: all selected tests and Ruff pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 rtk git add Dockerfile.api server/core/pi_agent_system_prompt.md server/core/pi_agent_prompt.py server/core/llm_file_edit.py server/tests/test_pi_agent_prompt.py server/tests/test_llm_file_edit_domain.py

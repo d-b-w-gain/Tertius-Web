@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import ast
-import json
 import logging
 import posixpath
 import re
 from datetime import datetime
-from math import ceil
 from pathlib import PurePosixPath
-from typing import Literal, NamedTuple
+from typing import Literal
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,14 +18,6 @@ MAX_METADATA_ENTRIES = 50
 MAX_METADATA_KEY_CHARS = 200
 MAX_METADATA_VALUE_CHARS = 200
 LlmFileEditOutcome = Literal["changed", "no_change", "cannot_complete"]
-BUILD123D_RUNTIME_GUARDRAILS = """\
-build123d runtime guardrails:
-- Use only build123d APIs known to exist in this runtime; do not invent helpers, classes, or functions.
-- Do not use bd.RoundedPolygon; it is not available.
-- For rounded rectangular or handle-like geometry, prefer bd.Box, bd.Cylinder, bd.Sphere, bd.Cone, boolean operations, and fillets on resulting solids.
-- Always produce code that can run with `import build123d as bd`.
-- Avoid advanced builder-mode APIs unless they already appear in the supplied project files.
-"""
 
 
 def validate_filename(filename: str) -> str:
@@ -134,65 +124,6 @@ class LlmFileEditResult(BaseModel):
     usage: TokenUsage
     provider_request_id: str | None = None
     billing_event_id: UUID | None = None
-
-
-class FileEditPromptContents(NamedTuple):
-    system: str
-    user: str
-
-
-def file_edit_system_content(system_prompt: str) -> str:
-    return f"{system_prompt.rstrip()}\n\n{BUILD123D_RUNTIME_GUARDRAILS.strip()}"
-
-
-def file_edit_prompt_contents(
-    request: LlmFileEditInput,
-    files: list[LlmEditableFile],
-    *,
-    system_prompt: str,
-    prior_prompts: list[str] | tuple[str, ...] = (),
-) -> FileEditPromptContents:
-    system = file_edit_system_content(system_prompt)
-    available = [
-        {"file_id": str(file.id), "filename": file.filename, "content": file.content}
-        for file in files
-    ]
-    active_id = str(request.active_file_id) if request.active_file_id is not None else "none"
-    history = "\n".join(f"{index + 1}. {prompt}" for index, prompt in enumerate(prior_prompts))
-    history_block = f"Conversation history (up to 5 prompts):\n{history}\n\n" if history else ""
-    user = (
-        f"{history_block}"
-        f"User request:\n{request.prompt}\n\n"
-        f"Active file id:\n{active_id}\n\n"
-        f"Files available for editing:\n{json.dumps(available, indent=2)}\n\n"
-        "Return JSON matching:\n"
-        "{\n"
-        '  "outcome": "changed",\n'
-        '  "message": "",\n'
-        '  "files": [\n'
-        "    {\n"
-        '      "file_id": "<uuid from files available for editing>",\n'
-        '      "content": "<full final Python source>",\n'
-        '      "summary": "<short human-readable summary>"\n'
-        "    }\n"
-        "  ]\n"
-        "}"
-    )
-    return FileEditPromptContents(system=system, user=user)
-
-
-def estimate_file_edit_usage(request: LlmFileEditInput, files: list[LlmEditableFile], *, system_prompt: str, max_output_tokens: int, prior_prompts: list[str] | tuple[str, ...] = ()) -> TokenUsage:
-    contents = file_edit_prompt_contents(
-        request, files, system_prompt=system_prompt, prior_prompts=prior_prompts
-    )
-    prompt_chars = len(contents.system) + len(contents.user)
-    prompt_chars += sum(len(key) + len(value) for key, value in request.metadata.items())
-    prompt_tokens = ceil(prompt_chars / 4)
-    return TokenUsage(prompt_tokens=prompt_tokens, completion_tokens=max_output_tokens, total_tokens=prompt_tokens + max_output_tokens)
-
-
-def estimate_file_edit_tokens(request: LlmFileEditInput, files: list[LlmEditableFile], *, system_prompt: str, max_output_tokens: int) -> int:
-    return estimate_file_edit_usage(request, files, system_prompt=system_prompt, max_output_tokens=max_output_tokens).total_tokens
 
 
 def _module_stem(filename: str) -> str | None:

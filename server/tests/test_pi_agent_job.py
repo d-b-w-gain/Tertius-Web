@@ -11,9 +11,9 @@ from uuid import uuid4
 
 import pytest
 
-from core.llm_file_edit import BUILD123D_RUNTIME_GUARDRAILS
 from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile
 from core.pi_agent_messages import PiAgentUsage
+from core.pi_agent_prompt import load_pi_agent_prompt
 from core.pi_agent_rpc import PiAgentRpcResult
 from workflows.intus.pi_agent_job import (
     WorkspaceError,
@@ -83,8 +83,7 @@ async def test_worker_passes_coding_agent_contract_and_job_correlation_id(
     assert "Do not create, delete, or rename files" in prompt
     assert "SOURCE_SENTINEL" not in prompt
     assert "WIDTH = 12" not in prompt
-    assert captured["kwargs"]["system_prompt"].startswith("Configured system prompt\n\n")
-    assert BUILD123D_RUNTIME_GUARDRAILS.strip() in captured["kwargs"]["system_prompt"]
+    assert captured["kwargs"]["system_prompt"] == load_pi_agent_prompt().content
     assert captured["kwargs"]["correlation_id"] == str(request.job_id)
 
 

@@ -43,6 +43,7 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 COPY server/alembic.ini server/main.py server/start-api.sh server/start-compile-job.sh server/start-pi-agent-job.sh ./server/
 COPY server/core/ ./server/core/
+RUN chmod 0444 /app/server/core/pi_agent_system_prompt.md
 COPY server/migrations/ ./server/migrations/
 COPY server/workflows/ ./server/workflows/
 

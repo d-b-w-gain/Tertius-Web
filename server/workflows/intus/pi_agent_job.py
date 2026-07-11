@@ -17,7 +17,6 @@ from opentelemetry import propagate, trace
 from opentelemetry.trace import SpanKind
 
 from core.config import get_settings
-from core.llm_file_edit import file_edit_system_content
 from core.nats_client import (
     NatsPublisher,
     Publisher,
@@ -35,6 +34,7 @@ from core.pi_agent_messages import (
     assert_pi_agent_result_size,
     pi_agent_result_message_id,
 )
+from core.pi_agent_prompt import load_pi_agent_prompt
 from core.pi_agent_rpc import PiAgentRpcError, run_pi_agent
 from core.telemetry import (
     configure_telemetry,
@@ -239,7 +239,7 @@ async def execute_pi_agent_command(command: PiAgentCommand, settings) -> PiAgent
             provider=command.provider,
             model=command.model,
             thinking=command.thinking,
-            system_prompt=file_edit_system_content(settings.pi_agent_system_prompt),
+            system_prompt=load_pi_agent_prompt().content,
             timeout_seconds=settings.pi_agent_timeout_seconds,
             max_turns=settings.pi_agent_max_turns,
             max_tool_calls=settings.pi_agent_max_tool_calls,
