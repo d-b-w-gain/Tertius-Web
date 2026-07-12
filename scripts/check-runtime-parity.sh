@@ -162,6 +162,16 @@ for path in sys.argv[1:]:
     validate(config)
     configs.append(config)
 
+compose_dev, compose_parity = configs
+dev_api_mounts = compose_dev["services"]["backend"].get("volumes", [])
+dev_worker_mounts = compose_dev["services"]["pi-agent-worker"].get("volumes", [])
+assert any(mount["target"] == "/app/server" for mount in dev_api_mounts)
+assert all(mount["target"] != "/app/server" for mount in dev_worker_mounts)
+assert all(
+    mount["target"] != "/app/server"
+    for mount in compose_parity["services"]["backend"].get("volumes", [])
+)
+
 # Mutation fixtures prove the validator is scoped to the worker contract.
 mutations = []
 network_mutation = copy.deepcopy(configs[1])
@@ -249,6 +259,9 @@ contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18080' "Har
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18000' "Harness docs must document API port 18000"
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:10428' "Harness docs must document traces port 10428"
 contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'Compose dev' "Runtime parity docs must describe Compose dev differences"
+contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'bind-mounted API.*image-backed worker' "Runtime parity docs must describe Compose dev Pi prompt drift"
+contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'rebuild.*worker' "Runtime parity docs must require rebuilding the Compose dev Pi worker after prompt changes"
+contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'no environment, Secret, ConfigMap, workspace, or OAuth-PVC copy' "Runtime parity docs must preserve the immutable Pi prompt distribution contract"
 contains "$ROOT_DIR/docs/harness/runtime-parity.md" 'traces backend' "Runtime parity docs must describe traces backend differences"
 
 if [ "$failures" -ne 0 ]; then

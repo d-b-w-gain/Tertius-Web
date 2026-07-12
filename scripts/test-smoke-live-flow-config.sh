@@ -26,10 +26,51 @@ grep -Fq 'SENSITIVE_OUTPUT=true' "$SCRIPT"
 grep -Fq 'if [ "$SENSITIVE_OUTPUT" = true ]; then' "$SCRIPT"
 grep -Fq 'response body suppressed during conversation verification' "$SCRIPT"
 grep -Fq 'umask 077' "$SCRIPT"
-grep -Fq 'chmod 600 "$canary_file"' "$SCRIPT"
+grep -Fq 'canary_tmp=$(mktemp "${canary_dir}/live-flow-sensitive-canaries.XXXXXX")' "$SCRIPT"
+grep -Fq 'TEMP_FILES="${TEMP_FILES} ${canary_tmp}"' "$SCRIPT"
+grep -Fq 'chmod 600 "$canary_tmp"' "$SCRIPT"
+grep -Fq 'mv -fT -- "$canary_tmp" "$canary_file"' "$SCRIPT"
 grep -Fq "printf 'LIVE_FLOW_USER_CANARY=%q\\nLIVE_FLOW_ASSISTANT_CANARY=%q\\n'" "$SCRIPT"
 grep -Fq -- '-e "$LIVE_FLOW_USER_CANARY" -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then' "$SCRIPT"
 grep -Fq 'rg -F -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then' "$SCRIPT"
+
+python3 - "$SCRIPT" <<'PY'
+from pathlib import Path
+import sys
+
+script = Path(sys.argv[1]).read_text(encoding="utf-8")
+block = script.split('canary_dir="${ROOT_DIR}/.tmp/harness"', 1)[1].split(
+    'first_prompt=', 1
+)[0]
+operations = (
+    'canary_tmp=$(mktemp "${canary_dir}/live-flow-sensitive-canaries.XXXXXX")',
+    'TEMP_FILES="${TEMP_FILES} ${canary_tmp}"',
+    'chmod 600 "$canary_tmp"',
+    "printf 'LIVE_FLOW_USER_CANARY=%q\\nLIVE_FLOW_ASSISTANT_CANARY=%q\\n'",
+    'mv -fT -- "$canary_tmp" "$canary_file"',
+)
+assert [block.index(operation) for operation in operations] == sorted(
+    block.index(operation) for operation in operations
+)
+assert '> "$canary_file"' not in block
+PY
+
+probe_root=$(mktemp -d)
+trap 'rm -rf "$probe_root"' EXIT
+probe_target_dir="${probe_root}/symlink-target"
+probe_canary_file="${probe_root}/live-flow-sensitive-canaries.env"
+mkdir -p "$probe_target_dir"
+ln -s "$probe_target_dir" "$probe_canary_file"
+umask 077
+probe_tmp=$(mktemp "${probe_root}/live-flow-sensitive-canaries.XXXXXX")
+chmod 600 "$probe_tmp"
+printf 'LIVE_FLOW_USER_CANARY=%q\nLIVE_FLOW_ASSISTANT_CANARY=%q\n' \
+  probe-user probe-assistant > "$probe_tmp"
+mv -fT -- "$probe_tmp" "$probe_canary_file"
+test -f "$probe_canary_file"
+test ! -L "$probe_canary_file"
+test "$(stat -c '%a' "$probe_canary_file")" = 600
+test -z "$(find "$probe_target_dir" -mindepth 1 -maxdepth 1 -print -quit)"
 
 invalid_output=$(LIVE_FLOW_EXPECTED_AI_OUTCOME=invalid "$SCRIPT" http://127.0.0.1 2>&1) && {
   echo "invalid expected outcome should fail" >&2

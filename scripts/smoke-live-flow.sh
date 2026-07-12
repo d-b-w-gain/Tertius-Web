@@ -610,12 +610,16 @@ if [ "$LIVE_FLOW_VERIFY_CONVERSATION" = true ]; then
   random_suffix=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
   LIVE_FLOW_USER_CANARY=${LIVE_FLOW_USER_CANARY:-TERTIUS_CONTEXT_USER_CANARY_${random_suffix}}
   LIVE_FLOW_ASSISTANT_CANARY=${LIVE_FLOW_ASSISTANT_CANARY:-TERTIUS_CONTEXT_ASSISTANT_CANARY_${random_suffix}}
-  canary_file="${ROOT_DIR}/.tmp/harness/live-flow-sensitive-canaries.env"
-  mkdir -p "$(dirname "$canary_file")"
+  canary_dir="${ROOT_DIR}/.tmp/harness"
+  canary_file="${canary_dir}/live-flow-sensitive-canaries.env"
+  mkdir -p "$canary_dir"
   umask 077
+  canary_tmp=$(mktemp "${canary_dir}/live-flow-sensitive-canaries.XXXXXX")
+  TEMP_FILES="${TEMP_FILES} ${canary_tmp}"
+  chmod 600 "$canary_tmp"
   printf 'LIVE_FLOW_USER_CANARY=%q\nLIVE_FLOW_ASSISTANT_CANARY=%q\n' \
-    "$LIVE_FLOW_USER_CANARY" "$LIVE_FLOW_ASSISTANT_CANARY" > "$canary_file"
-  chmod 600 "$canary_file"
+    "$LIVE_FLOW_USER_CANARY" "$LIVE_FLOW_ASSISTANT_CANARY" > "$canary_tmp"
+  mv -fT -- "$canary_tmp" "$canary_file"
 
   first_prompt="Increase the main model width by 1 mm. Remember but do not write the codeword ${LIVE_FLOW_USER_CANARY}. End your final summary with ${LIVE_FLOW_ASSISTANT_CANARY}."
   first_job_id=$(ai_edit_and_wait "$first_prompt" "AI edit context seed")
