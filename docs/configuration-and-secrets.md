@@ -2,7 +2,8 @@
 
 This document is the operating reference for Tertius runtime configuration.
 Helm values are the source for ConfigMap-backed settings. Kubernetes Secrets
-are the source for credentials and prompts that must not be committed.
+are the source for credentials and other sensitive runtime values that must not
+be committed.
 
 ## ConfigMap
 
@@ -79,6 +80,15 @@ Pi OAuth is not a Kubernetes Secret. It is mutable provider state on the retaine
 Pi auth PVC and is mounted only by the Pi worker and operator auth pod. Provision,
 verify, rotate, and remove it with `scripts/pi-agent-auth.sh`; see
 `docs/operations/pi-agent-auth.md`.
+
+The Tertius Pi append prompt is committed application policy at
+`server/core/pi_agent_system_prompt.md`; it is not a credential or runtime
+secret. Both API and Pi worker images contain identical read-only bytes, so a
+prompt change requires rebuilding and restarting both images. The retained Pi
+PVC contains OAuth state only. Tertius reconstructs bounded conversation
+context from Postgres for each `--no-session` worker invocation. System prompt
+text, current or historical user requests, assistant summaries, source text,
+and prompt hashes must never be added to logs, metrics, or trace attributes.
 
 ## Browser Auth Sessions
 

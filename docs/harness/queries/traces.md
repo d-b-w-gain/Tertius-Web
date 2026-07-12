@@ -26,6 +26,12 @@ tertius-api HTTP request
   -> tertius-api pi_agent.result.consume
 ```
 
+Pi spans may identify bounded operation, provider, model, status, and service
+names only. Never attach system prompt text or hashes, current or historical
+user requests, assistant summaries, source content, workspace paths, or raw
+tenant/project/job identifiers. See `docs/configuration-and-secrets.md` for the
+canonical policy.
+
 NATS headers are authoritative for each consume boundary. Envelope
 `traceparent`/`tracestate` fields are used only when headers are absent for a
 republished or legacy message. No span attribute may include prompts, source,

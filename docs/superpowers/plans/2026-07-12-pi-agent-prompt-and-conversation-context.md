@@ -1511,7 +1511,7 @@ rtk git commit -m "chore: remove runtime Pi prompt overrides"
 - Modify: `docs/harness/browser-validation.md`
 - Modify: `docs/harness/queries/traces.md`
 
-- [ ] **Step 1: Expand static telemetry safety tests**
+- [x] **Step 1: Expand static telemetry safety tests**
 
 Add `server/core/pi_agent_prompt.py` and `server/core/pi_agent_conversation.py` to `FILES`. Add these exact forbidden attribute/logger identifiers:
 
@@ -1528,7 +1528,7 @@ Add `server/core/pi_agent_prompt.py` and `server/core/pi_agent_conversation.py` 
 
 The AST safety scanner only evaluates logger arguments and telemetry/span attributes, so forbidding `system_prompt_sha256` here does not prevent it from being persisted in `request_payload`. Add both `set_attribute("system_prompt_sha256", prompt_hash)` and `logger.info("prompt hash %s", system_prompt_sha256)` to the rejected mutation set.
 
-- [ ] **Step 2: Add an opt-in two-turn live-flow canary**
+- [x] **Step 2: Add an opt-in two-turn live-flow canary**
 
 Add `LIVE_FLOW_VERIFY_CONVERSATION` defaulting to `false`. When true:
 
@@ -1619,7 +1619,7 @@ Apply this exact parameterization to the existing function; its polling/control 
  }
 ```
 
-- [ ] **Step 3: Update harness configuration tests**
+- [x] **Step 3: Update harness configuration tests**
 
 Extend `scripts/test-smoke-live-flow-config.sh` with these exact static/configuration assertions; the real responses are covered by E-01/E-02 rather than a second Bash HTTP stub framework:
 
@@ -1639,7 +1639,7 @@ invalid_context_output=$(LIVE_FLOW_VERIFY_CONVERSATION=invalid "$SCRIPT" http://
 grep -q 'LIVE_FLOW_VERIFY_CONVERSATION must be true or false' <<<"$invalid_context_output"
 ```
 
-- [ ] **Step 4: Update operational documentation**
+- [x] **Step 4: Update operational documentation**
 
 Add this exact policy paragraph to `docs/configuration-and-secrets.md` and point the other harness documents to it rather than duplicating it:
 
@@ -1682,7 +1682,7 @@ tenant/project/job identifiers. See `docs/configuration-and-secrets.md` for the
 canonical policy.
 ```
 
-- [ ] **Step 5: Run focused safety/harness tests and commit**
+- [x] **Step 5: Run focused safety/harness tests and commit**
 
 ```bash
 rtk uv run pytest server/tests/test_pi_agent_telemetry_safety.py -q

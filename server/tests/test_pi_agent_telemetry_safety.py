@@ -6,6 +6,8 @@ FILES = (
     Path("server/core/nats_client.py"),
     Path("server/core/telemetry.py"),
     Path("server/core/pi_agent_telemetry.py"),
+    Path("server/core/pi_agent_prompt.py"),
+    Path("server/core/pi_agent_conversation.py"),
     Path("server/workflows/intus/intus_server.py"),
     Path("server/workflows/intus/pi_agent_job.py"),
     Path("server/workflows/intus/pi_agent_result_consumer.py"),
@@ -21,6 +23,12 @@ APPROVED_LABELS = {
     "retryable",
 }
 FORBIDDEN_KEYS = {
+    "conversation",
+    "history",
+    "assistant_summary",
+    "rolling_summary",
+    "system_prompt",
+    "system_prompt_sha256",
     "prompt",
     "source",
     "content",
@@ -156,6 +164,8 @@ def test_safety_scan_rejects_sensitive_and_dynamic_mutations():
         'span.start_as_current_span("x", attributes={"job_id": raw_id})',
         'logger.info("file %s", filename)',
         'logger.info("request %s", command.prompt)',
+        'set_attribute("system_prompt_sha256", prompt_hash)',
+        'logger.info("prompt hash %s", system_prompt_sha256)',
         'labels = make_runtime_labels()\ncounter_add("x", 1, labels)',
         'counter_add("tertius.pi_agent.x", 1, {"region": "unbounded"})',
     )

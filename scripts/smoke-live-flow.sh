@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+
 COMPILE_ONLY=false
 
 usage() {
@@ -26,6 +29,7 @@ Optional environment:
   LIVE_FLOW_MODEL_ID
   LIVE_FLOW_AI_PROMPT                (default: harmless design.py comment)
   LIVE_FLOW_EXPECTED_AI_OUTCOME      (changed or no_changes; default: any)
+  LIVE_FLOW_VERIFY_CONVERSATION      (true or false; default: false)
   LIVE_FLOW_COMPILE_TIMEOUT_SECONDS (default: 240)
   LIVE_FLOW_AI_TIMEOUT_SECONDS      (default: 300)
 EOF
@@ -52,8 +56,10 @@ COMPILE_TIMEOUT_SECONDS="${LIVE_FLOW_COMPILE_TIMEOUT_SECONDS:-240}"
 AI_TIMEOUT_SECONDS="${LIVE_FLOW_AI_TIMEOUT_SECONDS:-300}"
 AI_PROMPT="${LIVE_FLOW_AI_PROMPT:-Add a single harmless Python comment '# live AI edit smoke' near the top of design.py. Do not change geometry.}"
 EXPECTED_AI_OUTCOME="${LIVE_FLOW_EXPECTED_AI_OUTCOME:-}"
+LIVE_FLOW_VERIFY_CONVERSATION="${LIVE_FLOW_VERIFY_CONVERSATION:-false}"
 TEMP_FILES=""
 TOKEN=""
+SENSITIVE_OUTPUT=false
 
 case "$EXPECTED_AI_OUTCOME" in
   ""|changed|no_changes) ;;
@@ -63,12 +69,34 @@ case "$EXPECTED_AI_OUTCOME" in
     ;;
 esac
 
+case "$LIVE_FLOW_VERIFY_CONVERSATION" in
+  true|false) ;;
+  *)
+    echo "LIVE_FLOW_VERIFY_CONVERSATION must be true or false" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$COMPILE_ONLY" = true ] && [ "$LIVE_FLOW_VERIFY_CONVERSATION" = true ]; then
+  echo "LIVE_FLOW_VERIFY_CONVERSATION cannot be combined with --compile-only" >&2
+  exit 2
+fi
+
 cleanup() {
   for file in $TEMP_FILES; do
     [ -f "$file" ] && rm -f "$file"
   done
 }
 trap cleanup EXIT
+
+report_response_body() {
+  body_file=$1
+  if [ "$SENSITIVE_OUTPUT" = true ]; then
+    echo "response body suppressed during conversation verification" >&2
+    return
+  fi
+  cat "$body_file" >&2 || true
+}
 
 tmpfile() {
   file=$(mktemp "${TMPDIR:-/tmp}/tertius-live-flow.XXXXXX")
@@ -347,12 +375,12 @@ api_request() {
   fi
   status=$(curl "${args[@]}" "$url") || {
     echo "FAIL ${method} ${url}: curl failed" >&2
-    cat "$out" >&2 || true
+    report_response_body "$out"
     exit 1
   }
   if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
     echo "FAIL ${method} ${url}: HTTP ${status}" >&2
-    cat "$out" >&2
+    report_response_body "$out"
     exit 1
   fi
   printf '%s\n' "$out"
@@ -370,7 +398,7 @@ api_request_allow_exists() {
     --write-out "%{http_code}" \
     "$url") || {
     echo "FAIL ${method} ${url}: curl failed" >&2
-    cat "$out" >&2 || true
+    report_response_body "$out"
     exit 1
   }
   if [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; then
@@ -382,7 +410,7 @@ api_request_allow_exists() {
     return
   fi
   echo "FAIL ${method} ${url}: HTTP ${status}" >&2
-  cat "$out" >&2
+  report_response_body "$out"
   exit 1
 }
 
@@ -483,7 +511,7 @@ compile_and_wait() {
   job_id=$(json_get "$response" job_id)
   [ -n "$job_id" ] || {
     echo "FAIL ${label}: compile response did not include job_id" >&2
-    cat "$response" >&2
+    report_response_body "$response"
     exit 1
   }
 
@@ -497,7 +525,7 @@ compile_and_wait() {
         artifact_id=$(json_get "$status_body" artifact_id)
         [ -n "$artifact_id" ] || {
           echo "FAIL ${label}: compile succeeded without artifact_id" >&2
-          cat "$status_body" >&2
+          report_response_body "$status_body"
           exit 1
         }
         echo "PASS ${label}: compile job succeeded (${job_id})"
@@ -505,27 +533,29 @@ compile_and_wait() {
         ;;
       failed)
         echo "FAIL ${label}: compile job failed" >&2
-        cat "$status_body" >&2
+        report_response_body "$status_body"
         exit 1
         ;;
     esac
     sleep 3
   done
   echo "FAIL ${label}: compile job timed out" >&2
-  cat "$status_body" >&2
+  report_response_body "$status_body"
   exit 1
 }
 
 ai_edit_and_wait() {
+  prompt=$1
+  label=$2
   metadata=$(file_metadata_json)
   request=$(tmpfile)
   response=$(tmpfile)
-  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}" "$AI_PROMPT"
+  write_json "$request" llm_edit "$metadata" "${LIVE_FLOW_MODEL_ID:-}" "$prompt"
   response=$(api_request POST "${API_BASE_URL}/projects/${PROJECT_NAME}/files/llm-edit/jobs" "$request")
   job_id=$(json_get "$response" job_id)
   [ -n "$job_id" ] || {
     echo "FAIL AI edit: response did not include job_id" >&2
-    cat "$response" >&2
+    report_response_body "$response"
     exit 1
   }
 
@@ -539,28 +569,28 @@ ai_edit_and_wait() {
         outcome=$(json_get "$status_body" result.outcome)
         [ -n "$outcome" ] || {
           echo "FAIL AI edit: completed without result outcome" >&2
-          cat "$status_body" >&2
+          report_response_body "$status_body"
           exit 1
         }
         if [ -n "$EXPECTED_AI_OUTCOME" ] && [ "$outcome" != "$EXPECTED_AI_OUTCOME" ]; then
           echo "FAIL AI edit: expected outcome ${EXPECTED_AI_OUTCOME}, got ${outcome}" >&2
-          cat "$status_body" >&2
+          report_response_body "$status_body"
           exit 1
         fi
-        echo "PASS AI edit job succeeded (${job_id}, outcome=${outcome})" >&2
+        echo "PASS ${label} job succeeded (${job_id}, outcome=${outcome})" >&2
         printf '%s\n' "$job_id"
         return
         ;;
       failed)
-        echo "FAIL AI edit job failed" >&2
-        cat "$status_body" >&2
+        echo "FAIL ${label} job failed" >&2
+        report_response_body "$status_body"
         exit 1
         ;;
     esac
     sleep 5
   done
-  echo "FAIL AI edit job timed out" >&2
-  cat "$status_body" >&2
+  echo "FAIL ${label} job timed out" >&2
+  report_response_body "$status_body"
   exit 1
 }
 
@@ -574,6 +604,49 @@ if [ "$COMPILE_ONLY" = true ]; then
   exit 0
 fi
 
-llm_job_id=$(ai_edit_and_wait)
-compile_and_wait "post-AI-edit" "$llm_job_id"
+if [ "$LIVE_FLOW_VERIFY_CONVERSATION" = true ]; then
+  set +x
+  SENSITIVE_OUTPUT=true
+  random_suffix=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+  LIVE_FLOW_USER_CANARY=${LIVE_FLOW_USER_CANARY:-TERTIUS_CONTEXT_USER_CANARY_${random_suffix}}
+  LIVE_FLOW_ASSISTANT_CANARY=${LIVE_FLOW_ASSISTANT_CANARY:-TERTIUS_CONTEXT_ASSISTANT_CANARY_${random_suffix}}
+  canary_file="${ROOT_DIR}/.tmp/harness/live-flow-sensitive-canaries.env"
+  mkdir -p "$(dirname "$canary_file")"
+  umask 077
+  printf 'LIVE_FLOW_USER_CANARY=%q\nLIVE_FLOW_ASSISTANT_CANARY=%q\n' \
+    "$LIVE_FLOW_USER_CANARY" "$LIVE_FLOW_ASSISTANT_CANARY" > "$canary_file"
+  chmod 600 "$canary_file"
+
+  first_prompt="Increase the main model width by 1 mm. Remember but do not write the codeword ${LIVE_FLOW_USER_CANARY}. End your final summary with ${LIVE_FLOW_ASSISTANT_CANARY}."
+  first_job_id=$(ai_edit_and_wait "$first_prompt" "AI edit context seed")
+  first_status=$(api_request GET "${API_BASE_URL}/projects/${PROJECT_NAME}/files/llm-edit/jobs/${first_job_id}")
+  first_message=$(json_get "$first_status" result.message)
+  case "$first_message" in
+    *"$LIVE_FLOW_ASSISTANT_CANARY") ;;
+    *) echo 'FAIL context seed: assistant canary missing from result summary' >&2; exit 1 ;;
+  esac
+
+  design_before_followup=$(load_design_code)
+  if printf '%s' "$design_before_followup" | rg -F \
+    -e "$LIVE_FLOW_USER_CANARY" -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then
+    echo 'FAIL context seed: canary was written before the follow-up' >&2
+    exit 1
+  fi
+
+  second_prompt='In design.py, add a Python comment containing the codeword from my previous user request; do not change geometry.'
+  second_job_id=$(ai_edit_and_wait "$second_prompt" "AI edit context follow-up")
+  design_after_followup=$(load_design_code)
+  printf '%s' "$design_after_followup" | rg -F -e "$LIVE_FLOW_USER_CANARY" >/dev/null || {
+    echo 'FAIL context follow-up: previous user codeword was not applied' >&2
+    exit 1
+  }
+  if printf '%s' "$design_after_followup" | rg -F -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then
+    echo 'FAIL context follow-up: assistant summary canary leaked into source' >&2
+    exit 1
+  fi
+  compile_and_wait "post-context-follow-up" "$second_job_id"
+else
+  llm_job_id=$(ai_edit_and_wait "$AI_PROMPT" "AI edit")
+  compile_and_wait "post-AI-edit" "$llm_job_id"
+fi
 echo "PASS live frontend proxy -> backend -> compile/AI edit flow"

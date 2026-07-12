@@ -98,6 +98,13 @@ Generate Design live AI edit and compile:
   reflected in the UI, a post-edit compile queues and succeeds, and no prompt or
   generated source appears in telemetry/log labels.
 
+When a change affects Pi conversation continuity, run `live-flow` with
+`LIVE_FLOW_VERIFY_CONVERSATION=true`. The first edit plants separate user and
+assistant canaries only in persisted conversation state; the second edit must
+recover the user canary without copying the assistant canary into `design.py`,
+and the resulting project must compile. Do not use compile-only mode for this
+proof. See `docs/configuration-and-secrets.md` for prompt and history handling.
+
 Extus viewer load:
 
 - Preconditions: project/artifact available.
