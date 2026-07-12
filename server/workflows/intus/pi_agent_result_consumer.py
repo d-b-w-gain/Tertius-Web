@@ -2,6 +2,7 @@ import asyncio
 from hashlib import sha256
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
@@ -395,10 +396,15 @@ async def republish_queued_pi_agent_jobs(
                 "dispatched_conversation" in payload
                 or "dispatched_system_prompt_sha256" in payload
             )
+            schema_version: Literal[1, 2]
             if "dispatched_command_schema_version" in payload:
-                schema_version = payload["dispatched_command_schema_version"]
-                if type(schema_version) is not int or schema_version not in {1, 2}:
+                raw_schema_version = payload["dispatched_command_schema_version"]
+                if type(raw_schema_version) is not int or raw_schema_version not in {1, 2}:
                     raise ValueError("Invalid dispatched command schema version")
+                if raw_schema_version == 1:
+                    schema_version = 1
+                else:
+                    schema_version = 2
             else:
                 if has_v2_context:
                     raise ValueError("Missing dispatched command schema version")

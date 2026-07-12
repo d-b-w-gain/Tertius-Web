@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -129,12 +130,19 @@ def conversation_turn_from_job(job) -> PiAgentConversationTurn | None:
     if job.status != "succeeded":
         return None
     result = job.result_payload if isinstance(job.result_payload, dict) else {}
-    outcome = result.get("outcome")
-    if not isinstance(outcome, str) or outcome not in {"changed", "no_changes"}:
+    raw_outcome = result.get("outcome")
+    if not isinstance(raw_outcome, str) or raw_outcome not in {"changed", "no_changes"}:
         return None
-    message = result.get("message") if isinstance(result.get("message"), str) else ""
+    outcome: Literal["changed", "no_changes"]
+    if raw_outcome == "changed":
+        outcome = "changed"
+        filenames = _safe_filenames(result.get("files", []))
+    else:
+        outcome = "no_changes"
+        filenames = []
+    raw_message = result.get("message")
+    message = raw_message if isinstance(raw_message, str) else ""
     fallback = "Updated files." if outcome == "changed" else "No files changed."
-    filenames = _safe_filenames(result.get("files", [])) if outcome == "changed" else []
     return PiAgentConversationTurn(
         user_request=user_request,
         status="succeeded",
