@@ -1697,7 +1697,7 @@ rtk git commit -m "test: validate stateless Pi conversation continuity"
 **Files:**
 - Modify only files required to correct failures found by these gates; update this plan's task checkboxes as each gate completes.
 
-- [ ] **Step 1: Run all focused Pi/context tests**
+- [x] **Step 1: Run all focused Pi/context tests**
 
 ```bash
 rtk uv run pytest \
@@ -1732,7 +1732,7 @@ rtk git diff --check
 
 Expected: every command exits 0.
 
-- [ ] **Step 3: Build and inspect both runtime images**
+- [x] **Step 3: Build and inspect both runtime images**
 
 ```bash
 docker build --target api -t tertius-api:test -f Dockerfile.api .
@@ -1821,7 +1821,15 @@ fi
 
 Expected: the query commands prove the cross-service trace exists, bounded operation/provider/model/status telemetry is present, and all three sensitive canaries are absent.
 
-- [ ] **Step 6: Commit verification corrections and push**
+Runtime verification note (2026-07-12): the isolated release, OAuth verification,
+pre-edit compile, image inspection, bounded failure metrics, and sensitive-canary
+scan passed. The authenticated AI turns are blocked because OpenAI Codex returns
+`The usage limit has been reached` before any tool call. Consequently the
+successful two-turn flow and required API-to-worker trace remain unchecked. The
+full repository Ruff gate also reports 32 pre-existing violations in files not
+changed by this branch; all branch-focused Ruff checks pass.
+
+- [x] **Step 6: Commit verification corrections and push**
 
 ```bash
 rtk git status --short
@@ -1834,20 +1842,20 @@ If no verification correction was required, omit the empty commit and push the e
 
 ## 9. Acceptance Criteria
 
-- [ ] One checked-in prompt file is the only Tertius system-policy source.
-- [ ] API and Pi worker images contain identical root-owned mode-`0444` prompt bytes.
-- [ ] Prompt bytes are absent from API-to-worker messages, argv, environment, Helm, Compose, logs, metrics, and traces.
-- [ ] New commands use schema v2 and contain prompt SHA plus bounded structured conversation context.
-- [ ] Retained schema-v1 commands remain executable for the 24-hour compatibility window.
-- [ ] API and worker use the same rendered context for quota estimation and execution.
-- [ ] New context includes prior user requests and assistant outcomes/status, not only user prompts.
-- [ ] Rolling context never exceeds five recent turns, 8,000 summary characters, 12,000 estimated rendered-history tokens, or the existing command byte cap; the current request is never compacted.
-- [ ] Failed turns are explicitly labeled and use bounded user-facing errors, never raw internal errors.
-- [ ] Historical file content, tool traces, snapshots, IDs, hashes, and recursively dispatched context never enter conversation history.
-- [ ] Queued retries reconstruct the exact persisted command context instead of observing newer history.
-- [ ] Pi remains one-shot with `--no-session`; Postgres and current project files remain authoritative.
-- [ ] Assistant summaries are captured and persisted for both changed and no-change outcomes.
-- [ ] No database migration or frontend contract change is introduced.
+- [x] One checked-in prompt file is the only Tertius system-policy source.
+- [x] API and Pi worker images contain identical root-owned mode-`0444` prompt bytes.
+- [x] Prompt bytes are absent from API-to-worker messages, argv, environment, Helm, Compose, logs, metrics, and traces.
+- [x] New commands use schema v2 and contain prompt SHA plus bounded structured conversation context.
+- [x] Retained schema-v1 commands remain executable for the 24-hour compatibility window.
+- [x] API and worker use the same rendered context for quota estimation and execution.
+- [x] New context includes prior user requests and assistant outcomes/status, not only user prompts.
+- [x] Rolling context never exceeds five recent turns, 8,000 summary characters, 12,000 estimated rendered-history tokens, or the existing command byte cap; the current request is never compacted.
+- [x] Failed turns are explicitly labeled and use bounded user-facing errors, never raw internal errors.
+- [x] Historical file content, tool traces, snapshots, IDs, hashes, and recursively dispatched context never enter conversation history.
+- [x] Queued retries reconstruct the exact persisted command context instead of observing newer history.
+- [x] Pi remains one-shot with `--no-session`; Postgres and current project files remain authoritative.
+- [x] Assistant summaries are captured and persisted for both changed and no-change outcomes.
+- [x] No database migration or frontend contract change is introduced.
 - [ ] Focused tests, full tests, typing, lint, deployment/parity scripts, both image builds, full k3s live flow, metrics, traces, and telemetry-safety inspection pass.
 
 ## 10. References
