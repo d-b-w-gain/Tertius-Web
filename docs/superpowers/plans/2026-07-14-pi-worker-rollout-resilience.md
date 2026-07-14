@@ -50,8 +50,8 @@
 **Files:**
 - Update checkboxes in: `docs/superpowers/plans/2026-07-14-pi-worker-rollout-resilience.md`
 
-- [ ] Run the complete Pi worker test module and backend type checks.
-- [ ] Run Helm deployment configuration, runtime parity, and diff checks.
-- [ ] Validate gradual rollout behavior in isolated k3s without invoking a provider request.
-- [ ] Review the final diff for scope, telemetry safety, and existing auth-helper guarantees.
+- [x] Run the complete Pi worker test module and backend type checks.
+- [x] Run Helm deployment configuration, runtime parity, and diff checks.
+- [x] Validate gradual rollout behavior in isolated k3s without invoking a provider request.
+- [x] Review the final diff for scope, telemetry safety, and existing auth-helper guarantees.
 - [ ] Commit, push, open a PR, watch CI, merge when green, and verify Flux reconciliation.
