@@ -9,10 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  branch-protection:
+    name: Branch protection gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm workflow eligibility
+        run: echo "Branch protection check registered for ${GITHUB_SHA}."
+
   pi-agent:
     name: Pi agent tests
     runs-on: ubuntu-latest
-    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -36,7 +43,7 @@ jobs:
   images:
     name: Image content and isolation
     runs-on: ubuntu-latest
-    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -97,7 +104,7 @@ jobs:
   ui:
     name: UI lint and build
     runs-on: ubuntu-latest
-    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -133,7 +140,7 @@ jobs:
   python:
     name: Python tests
     runs-on: ubuntu-latest
-    if: ${{ github.ref != 'refs/heads/flux-image-updates' && (github.event_name != 'pull_request' || github.head_ref != 'flux-image-updates') }}
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
     timeout-minutes: 20
     env:
       UV_CACHE_DIR: .uv-cache

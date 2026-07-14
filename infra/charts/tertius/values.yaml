@@ -127,8 +127,8 @@ app:
 api:
   replicaCount: 1
   image:
-    repository: ghcr.io/d-b-w-gain/tertius-api # {"$imagepolicy": "flux-system:tertius-api:name"}
-    tag: master-107-5d1e30c # {"$imagepolicy": "flux-system:tertius-api:tag"}
+    repository: ghcr.io/d-b-w-gain/tertius-api
+    tag: master-112-1-7040802 # {"$imagepromoter": "tertius-api"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -154,8 +154,8 @@ api:
 piAgent:
   enabled: false
   image:
-    repository: ghcr.io/d-b-w-gain/tertius-pi-agent # {"$imagepolicy": "flux-system:tertius-pi-agent:name"}
-    tag: master-107-5d1e30c # {"$imagepolicy": "flux-system:tertius-pi-agent:tag"}
+    repository: ghcr.io/d-b-w-gain/tertius-pi-agent
+    tag: master-107-5d1e30c # {"$imagepromoter": "tertius-pi-agent"}
     pullPolicy: IfNotPresent
   auth:
     existingClaim: ""
@@ -203,8 +203,8 @@ keda:
 ui:
   replicaCount: 1
   image:
-    repository: ghcr.io/d-b-w-gain/tertius-ui # {"$imagepolicy": "flux-system:tertius-ui:name"}
-    tag: master-107-5d1e30c # {"$imagepolicy": "flux-system:tertius-ui:tag"}
+    repository: ghcr.io/d-b-w-gain/tertius-ui
+    tag: master-112-1-7040802 # {"$imagepromoter": "tertius-ui"}
     pullPolicy: IfNotPresent
   port: 80
   service:

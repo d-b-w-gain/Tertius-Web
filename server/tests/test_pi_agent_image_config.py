@@ -53,17 +53,23 @@ def test_image_workflow_builds_explicit_api_and_pi_agent_targets() -> None:
     assert "ghcr.io/d-b-w-gain/tertius-pi-agent:sha-${{ steps.vars.outputs.short_sha }}" in workflow
 
 
-def test_pi_agent_image_is_tracked_by_flux_and_ci() -> None:
-    repositories = read("infra/clusters/production/flux-system/image-repositories.yaml")
-    policies = read("infra/clusters/production/flux-system/image-policies.yaml")
+def test_pi_agent_image_is_tracked_by_ci_promotion() -> None:
     values = read("infra/charts/tertius/values.yaml")
+    promoter = read("scripts/promote_images.py")
     ci_images = read("ci/k3s-images.txt")
+    production_kustomization = read("infra/clusters/production/kustomization.yaml")
 
-    assert "name: tertius-pi-agent" in repositories
-    assert "image: ghcr.io/d-b-w-gain/tertius-pi-agent" in repositories
-    assert "name: tertius-pi-agent" in policies
-    assert 'repository: ghcr.io/d-b-w-gain/tertius-pi-agent # {"$imagepolicy": "flux-system:tertius-pi-agent:name"}' in values
-    assert '# {"$imagepolicy": "flux-system:tertius-pi-agent:tag"}' in values
+    assert not (
+        ROOT / "infra/clusters/production/flux-system/image-repositories.yaml"
+    ).exists()
+    assert not (
+        ROOT / "infra/clusters/production/flux-system/image-policies.yaml"
+    ).exists()
+    assert "image-repositories.yaml" not in production_kustomization
+    assert "image-policies.yaml" not in production_kustomization
+    assert "repository: ghcr.io/d-b-w-gain/tertius-pi-agent" in values
+    assert '# {"$imagepromoter": "tertius-pi-agent"}' in values
+    assert '"tertius-pi-agent"' in promoter
     assert "tertius-pi-agent:local" in ci_images
 
 
