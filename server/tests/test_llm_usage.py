@@ -26,7 +26,7 @@ def _request(prompt: str = "make a bracket"):
 
 def _result(total_tokens: int = 30):
     return SimpleNamespace(
-        model="gpt-5.5",
+        model="gpt-5.6",
         usage=SimpleNamespace(
             prompt_tokens=10,
             completion_tokens=total_tokens - 10,
@@ -55,7 +55,7 @@ def test_record_llm_usage_persists_completed_usage_row(db_session, seeded_tenant
     assert row.workflow == "intus"
     assert row.operation == "files.llm_edit"
     assert row.provider == "openai-codex"
-    assert row.model == "gpt-5.5"
+    assert row.model == "gpt-5.6"
     assert row.prompt_tokens == 10
     assert row.completion_tokens == 20
     assert row.total_tokens == 30
@@ -117,7 +117,7 @@ def test_llm_usage_today_endpoint_summarizes_current_day(
     assert data["user_tokens_remaining_today"] == 380
     assert not any("usd" in key or "cost" in key or "budget" in key for key in data)
     assert data["last_edit"]["operation"] == "files.llm_edit"
-    assert data["last_edit"]["model"] == "gpt-5.5"
+    assert data["last_edit"]["model"] == "gpt-5.6"
     assert data["last_edit"]["total_tokens"] == 120
     assert data["last_edit"]["created_at"] == current_row.created_at.isoformat()
 
@@ -225,12 +225,12 @@ def test_llm_models_endpoint_reflects_pi_agent_availability(
 
     assert response.status_code == 200
     assert response.json() == {
-        "default_model_id": "gpt-5.5",
+        "default_model_id": "gpt-5.6",
         "models": [
             {
-                "id": "gpt-5.5",
-                "model": "gpt-5.5",
-                "label": "GPT-5.5",
+                "id": "gpt-5.6",
+                "model": "gpt-5.6",
+                "label": "GPT-5.6",
                 "enabled": pi_agent_enabled,
             }
         ],

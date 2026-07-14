@@ -41,7 +41,7 @@ def _result(seeded_tenant, file, *, tenant_id=None):
         status="succeeded",
         outcome="changed",
         provider="openai-codex",
-        model="gpt-5.5",
+        model="gpt-5.6",
         assistant_summary="Updated length",
         changed_files=[PiAgentChangedFile(id=file.id, filename=file.filename, content=content, sha256=sha256(content.encode()).hexdigest())],
         usage=PiAgentUsage(input_tokens=10, output_tokens=5, total_tokens=15),
@@ -361,7 +361,7 @@ async def test_persisted_file_conflict_emits_one_api_terminal_metric(
     assert terminal[0][2] == {
         "operation": "pi_agent.api",
         "provider": "openai-codex",
-        "model": "gpt-5.5",
+        "model": "gpt-5.6",
         "status": "failed",
         "failure_category": "file_conflict",
         "retryable": False,
@@ -454,7 +454,7 @@ async def test_invalid_provenance_cannot_select_trace_parent_or_metric_labels(
     await handle_pi_agent_result_message(
         msg,
         db_session,
-        SimpleNamespace(pi_agent_result_max_bytes=524288, pi_agent_model="gpt-5.5"),
+        SimpleNamespace(pi_agent_result_max_bytes=524288, pi_agent_model="gpt-5.6"),
         Publisher(),
     )
 
@@ -750,8 +750,8 @@ async def test_queued_reconciliation_republishes_with_same_deterministic_id(db_s
             ).isoformat(),
             "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
             "dispatched_provider": "openai-codex",
-            "dispatched_model": "gpt-5.5",
-            "dispatched_thinking": "high",
+            "dispatched_model": "gpt-5.6",
+            "dispatched_thinking": "medium",
             "dispatched_command_schema_version": 2,
             "dispatched_conversation": conversation.model_dump(mode="json"),
             "dispatched_system_prompt_sha256": "a" * 64,
@@ -775,7 +775,7 @@ async def test_queued_reconciliation_republishes_with_same_deterministic_id(db_s
             raise RuntimeError("ack lost")
 
     publisher = AmbiguousPublisher()
-    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.5", pi_agent_thinking="high")
+    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6", pi_agent_thinking="medium")
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert [call[1]["message_id"] for call in publisher.calls] == [f"pi-request:{job.id}"] * 2
@@ -804,8 +804,8 @@ async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_ten
             ).isoformat(),
             "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
             "dispatched_provider": "openai-codex",
-            "dispatched_model": "gpt-5.5",
-            "dispatched_thinking": "high",
+            "dispatched_model": "gpt-5.6",
+            "dispatched_thinking": "medium",
             "dispatched_prior_prompts": ["legacy request"],
         }
     )
@@ -817,8 +817,8 @@ async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_ten
         pi_agent_request_subject="request",
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
-        pi_agent_model="gpt-5.5",
-        pi_agent_thinking="high",
+        pi_agent_model="gpt-5.6",
+        pi_agent_thinking="medium",
     )
 
     assert (
@@ -922,8 +922,8 @@ async def test_queued_reconciliation_fails_closed_for_invalid_dispatch_context(
             ).isoformat(),
             "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
             "dispatched_provider": "openai-codex",
-            "dispatched_model": "gpt-5.5",
-            "dispatched_thinking": "high",
+            "dispatched_model": "gpt-5.6",
+            "dispatched_thinking": "medium",
             **invalid_dispatch_context,
         }
     )
@@ -935,8 +935,8 @@ async def test_queued_reconciliation_fails_closed_for_invalid_dispatch_context(
         pi_agent_request_subject="request",
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
-        pi_agent_model="gpt-5.5",
-        pi_agent_thinking="high",
+        pi_agent_model="gpt-5.6",
+        pi_agent_thinking="medium",
     )
 
     assert (
@@ -964,8 +964,8 @@ async def test_queued_reconciliation_fails_when_manifest_file_changed(
         "dispatch_attempted_at": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(),
         "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
         "dispatched_provider": "openai-codex",
-        "dispatched_model": "gpt-5.5",
-        "dispatched_thinking": "high",
+        "dispatched_model": "gpt-5.6",
+        "dispatched_thinking": "medium",
         "dispatched_prior_prompts": [],
     })
     job.request_payload = payload
@@ -980,7 +980,7 @@ async def test_queued_reconciliation_fails_when_manifest_file_changed(
         "counter_add",
         lambda name, value, attrs: metrics.append((name, value, attrs)),
     )
-    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.5", pi_agent_thinking="high")
+    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6", pi_agent_thinking="medium")
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     db_session.refresh(job)
     assert job.status == "failed"
@@ -1005,7 +1005,7 @@ async def test_queued_reconciliation_config_failure_emits_bounded_terminal(
             "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
             "dispatched_provider": "openai-codex",
             "dispatched_model": "unexpected-model",
-            "dispatched_thinking": "high",
+            "dispatched_thinking": "medium",
         }
     )
     job.request_payload = payload
@@ -1021,8 +1021,8 @@ async def test_queued_reconciliation_config_failure_emits_bounded_terminal(
         pi_agent_request_subject="request",
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
-        pi_agent_model="gpt-5.5",
-        pi_agent_thinking="high",
+        pi_agent_model="gpt-5.6",
+        pi_agent_thinking="medium",
     )
 
     assert await republish_queued_pi_agent_jobs(

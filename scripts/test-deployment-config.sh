@@ -328,6 +328,10 @@ done
 
 : >"$pi_auth_test_dir/kubectl.log"
 MOCK_SCALEDJOB_MODE=paused run_pi_auth_fixture verify --namespace test --release release --claim claim --image image:test >/dev/null
+if ! rg -q -- '--provider openai-codex --model gpt-5\.6 --thinking medium -p' "$pi_auth_test_dir/kubectl.log"; then
+  echo "Pi auth verification must use the fixed model and reasoning effort." >&2
+  exit 1
+fi
 
 for accepted_auth_stat in 'regular file|1000|1000|600' 'regular file|1000|1000|660'; do
   : >"$pi_auth_test_dir/kubectl.log"
@@ -636,7 +640,7 @@ SH
 chmod +x "${compose_canary_tmp}/docker"
 MOCK_DOCKER_LOG="${compose_canary_tmp}/docker.log" PATH="${compose_canary_tmp}:$PATH" \
   PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS=5 "${ROOT_DIR}/scripts/harness-compose.sh" auth-preflight
-if ! rg -q -- '--no-tools.*--provider openai-codex --model gpt-5\.5.*Reply with exactly PI_AUTH_OK' "${compose_canary_tmp}/docker.log"; then
+if ! rg -q -- '--no-tools.*--provider openai-codex --model gpt-5\.6 --thinking medium.*Reply with exactly PI_AUTH_OK' "${compose_canary_tmp}/docker.log"; then
   echo "Compose auth preflight must run the no-tool OpenAI Codex canary." >&2
   rm -rf "$compose_canary_tmp"
   exit 1
@@ -921,7 +925,7 @@ if ! rg -q 'accessTokenLifespan: 300' <<<"$rendered" || ! rg -q 'ssoSessionIdleT
   exit 1
 fi
 
-if ! rg -q 'PI_AGENT_MODEL: "gpt-5.5"' <<<"$rendered" || ! rg -q 'PI_AGENT_STREAM_NAME: "TERTIUS_PI_AGENT"' <<<"$rendered"; then
+if ! rg -q 'PI_AGENT_MODEL: "gpt-5.6"' <<<"$rendered" || ! rg -q 'PI_AGENT_THINKING: "medium"' <<<"$rendered" || ! rg -q 'PI_AGENT_STREAM_NAME: "TERTIUS_PI_AGENT"' <<<"$rendered"; then
   echo "ConfigMap must render the fixed Pi model and durable transport contract." >&2
   exit 1
 fi
