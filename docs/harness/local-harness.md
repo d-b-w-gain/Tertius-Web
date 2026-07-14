@@ -34,7 +34,7 @@ exit. Compose does not bind-mount host `~/.pi`; authentication stays isolated in
 the retained named volume.
 
 Before a full Compose live-flow, the harness runs the same minimal no-tool
-OpenAI Codex `gpt-5.5` canary used by the Kubernetes verifier. It accepts only
+OpenAI Codex `gpt-5.6` canary used by the Kubernetes verifier. It accepts only
 the exact response `PI_AUTH_OK` and times out after 60 seconds by default. Set
 `PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS` only when a slower provider response is
 expected; canary output is not printed on failure.

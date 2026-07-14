@@ -42,8 +42,8 @@ def command(files):
         tenant_id=uuid4(),
         project_id=uuid4(),
         provider="openai-codex",
-        model="gpt-5.5",
-        thinking="high",
+        model="gpt-5.6",
+        thinking="medium",
         prompt="edit",
         files=files,
         created_at=datetime.now(timezone.utc),
@@ -314,8 +314,8 @@ def worker_settings(**overrides):
     from types import SimpleNamespace
 
     values = {
-        "pi_agent_model": "gpt-5.5",
-        "pi_agent_thinking": "high",
+        "pi_agent_model": "gpt-5.6",
+        "pi_agent_thinking": "medium",
         "pi_agent_request_max_bytes": 524288,
         "pi_agent_result_max_bytes": 524288,
         "pi_agent_result_subject": "tertius.pi.result",

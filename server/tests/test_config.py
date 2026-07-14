@@ -215,9 +215,9 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     settings = Settings()
     assert settings.pi_agent_enabled is False
     assert settings.pi_agent_provider == "openai-codex"
-    assert settings.pi_agent_model == "gpt-5.5"
-    assert settings.pi_agent_model_label == "GPT-5.5"
-    assert settings.pi_agent_thinking == "high"
+    assert settings.pi_agent_model == "gpt-5.6"
+    assert settings.pi_agent_model_label == "GPT-5.6"
+    assert settings.pi_agent_thinking == "medium"
     assert settings.pi_agent_timeout_seconds == 480
     assert settings.pi_agent_max_turns == 12
     assert settings.pi_agent_max_tool_calls == 48

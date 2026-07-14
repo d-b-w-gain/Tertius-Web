@@ -88,9 +88,9 @@ app:
     llmTenantDailyTokenQuota: "3200000"
     llmUserDailyTokenQuota: "3200000"
     piAgentProvider: openai-codex
-    piAgentModel: gpt-5.5
-    piAgentModelLabel: GPT-5.5
-    piAgentThinking: high
+    piAgentModel: gpt-5.6
+    piAgentModelLabel: GPT-5.6
+    piAgentThinking: medium
     piAgentTimeoutSeconds: 480
     piAgentMaxTurns: 12
     piAgentMaxToolCalls: 48

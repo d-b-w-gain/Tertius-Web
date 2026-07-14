@@ -93,12 +93,12 @@ describe('GenerateDesignWindow', () => {
     ])
     storage.loadCode.mockResolvedValue('box = Box(1, 1, 1)')
     storage.listLlmModels.mockResolvedValue({
-      default_model_id: 'gpt-5.5',
+      default_model_id: 'gpt-5.6',
       models: [
         {
-          id: 'gpt-5.5',
-          label: 'GPT-5.5',
-          model: 'gpt-5.5',
+          id: 'gpt-5.6',
+          label: 'GPT-5.6',
+          model: 'gpt-5.6',
           enabled: true,
         },
       ],
@@ -172,8 +172,8 @@ describe('GenerateDesignWindow', () => {
     await screen.findByText('Latest model viewer')
     openGenerateDesignConversation()
 
-    expect(await screen.findByText('GPT-5.5')).toBeInTheDocument()
-    expect(screen.getByText('gpt-5.5')).toBeInTheDocument()
+    expect(await screen.findByText('GPT-5.6')).toBeInTheDocument()
+    expect(screen.getByText('gpt-5.6')).toBeInTheDocument()
     expect(screen.queryByText(/\$|per 1M|week/i)).not.toBeInTheDocument()
   })
 
@@ -212,7 +212,7 @@ describe('GenerateDesignWindow', () => {
         { id: 'helpers-id', filename: 'helpers.py', updated_at: '2026-06-18T00:00:00Z' },
       ],
       active_file_id: 'design-id',
-      model_id: 'gpt-5.5',
+      model_id: 'gpt-5.6',
       metadata: { source: 'generate_design_window' },
     })
 

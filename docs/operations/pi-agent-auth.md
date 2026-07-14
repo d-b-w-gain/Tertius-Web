@@ -26,7 +26,7 @@ scripts/pi-agent-auth.sh verify --namespace tertius --release tertius
 The script runs a non-TUI helper built on Pi's public `AuthStorage.login()` API.
 Complete the browser or device flow it displays. Text and manual-code prompts
 are read from standard input; secret values are not echoed. The helper then
-runs a no-tool `openai-codex/gpt-5.5` canary and
+runs a no-tool `openai-codex/gpt-5.6` canary and
 checks only that the credential path is a regular file owned by UID/GID
 `1000:1000` with mode `0600` or `0660`. Pi writes `0600`; Kubernetes may widen
 the group bits to `0660` when it applies pod `fsGroup: 1000` to the mounted PVC.
