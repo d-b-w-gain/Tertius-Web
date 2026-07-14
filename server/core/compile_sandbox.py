@@ -259,13 +259,31 @@ try:
                     if visual_source_map.get("source_calls"):
                         extras["tertiusSourceMap"] = visual_source_map
                         changed = True
+
+                    def mark_authored_material(material):
+                        material_changed = False
+                        extras = material.setdefault("extras", {})
+                        if extras.get("tertiusAuthoredColor") is not True:
+                            extras["tertiusAuthoredColor"] = True
+                            material_changed = True
+
+                        base_color = material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+                        if (
+                            isinstance(base_color, list)
+                            and len(base_color) >= 4
+                            and isinstance(base_color[3], (int, float))
+                            and float(base_color[3]) < 1.0
+                            and material.get("alphaMode") != "BLEND"
+                        ):
+                            material["alphaMode"] = "BLEND"
+                            material_changed = True
+
+                        return material_changed
+
                     for material in gltf_json.get("materials", []):
                         pbr = material.get("pbrMetallicRoughness")
                         if isinstance(pbr, dict) and "baseColorFactor" in pbr:
-                            extras = material.setdefault("extras", {})
-                            if extras.get("tertiusAuthoredColor") is not True:
-                                extras["tertiusAuthoredColor"] = True
-                                changed = True
+                            changed = mark_authored_material(material) or changed
 
                     for node in gltf_json.get("nodes", []):
                         node_tag = node.get("name")
@@ -284,9 +302,7 @@ try:
                                         material = materials[material_index]
                                         pbr = material.setdefault("pbrMetallicRoughness", {})
                                         pbr["baseColorFactor"] = color_mapping[node_tag]
-                                        extras = material.setdefault("extras", {})
-                                        extras["tertiusAuthoredColor"] = True
-                                        changed = True
+                                        changed = mark_authored_material(material) or changed
                         if node_tag in bom_mapping:
                             extras = node.setdefault("extras", {})
                             extras["tertiusBom"] = bom_mapping[node_tag]

@@ -101,6 +101,41 @@ building = bd.Compound(children=[part], label="Colour test assembly")
     assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
 
 
+def test_compile_sandbox_marks_build123d_alpha_color_as_blended_in_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+
+part = bd.Solid.make_box(20, 20, 20)
+part.label = "Glass test cube"
+part.color = bd.Color(0.25, 0.72, 1.0, 0.35)
+
+building = bd.Compound(children=[part], label="Alpha colour test assembly")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    data = result.output_path.read_bytes()
+    magic, _version, _length = struct.unpack("<4sII", data[:12])
+    assert magic == b"glTF"
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+
+    blended_materials = []
+    for material in gltf_json.get("materials", []):
+        base_color = material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+        if isinstance(base_color, list) and len(base_color) >= 4 and abs(base_color[3] - 0.35) < 1e-6:
+            blended_materials.append(material)
+    assert blended_materials
+    assert all(material.get("alphaMode") == "BLEND" for material in blended_materials)
+    assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in blended_materials)
+
+
 def test_compile_sandbox_exports_bom_item_metadata_in_glb_node_extras(tmp_path):
     (tmp_path / "design.py").write_text(
         """
