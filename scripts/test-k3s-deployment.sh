@@ -701,7 +701,7 @@ ensure_app_secret() {
 
 pi_auth_manifest_fields() {
   manifest_file=$1
-  kubectl create --dry-run=client -f "$manifest_file" -o json | jq -rsr '
+  kubectl create --dry-run=client -f "$manifest_file" -o json | jq --slurp --raw-output '
     [.[] | select(
       .kind == "PersistentVolumeClaim" and
       .metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth"

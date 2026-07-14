@@ -6,6 +6,14 @@ export TEST_K3S_DEPLOYMENT_LIB_ONLY=true
 # shellcheck source=test-k3s-deployment.sh
 source "${ROOT_DIR}/scripts/test-k3s-deployment.sh"
 
+jq() {
+  if [ "${1:-}" != "--slurp" ] || [ "${2:-}" != "--raw-output" ]; then
+    echo "Pi auth manifest parsing must use portable jq long options." >&2
+    return 2
+  fi
+  command jq "$@"
+}
+
 manifest_fixture=$(mktemp "${TMPDIR:-/tmp}/tertius-pi-pvc.XXXXXX")
 trap 'rm -f "$manifest_fixture"' EXIT
 printf '%s\n' \
