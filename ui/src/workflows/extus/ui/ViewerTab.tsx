@@ -172,6 +172,11 @@ export function hasAuthoredMaterialColor(material: THREE.Material | THREE.Materi
   return materialList(material).some((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
 }
 
+function hasSourceMaterialTransparency(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
+  if (!material) return false;
+  return materialList(material).some((mat) => mat.transparent === true && 'opacity' in mat && mat.opacity < 1);
+}
+
 function colorFromMaterial(material: THREE.Material | THREE.Material[] | null | undefined): THREE.Color | null {
   if (!material) return null;
   const authored = materialList(material).find((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
@@ -823,10 +828,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
            geom.applyMatrix4(relativeMatrix);
-           sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            mesh.userData.viewerSourceMaterial = mesh.material;
            mesh.userData.viewerBatchGeometry = geom;
            mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
+           if (!hasSourceMaterialTransparency(mesh.material)) {
+             sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
+           }
            
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
@@ -1205,6 +1212,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            let isHidden = false;
            let isTransparent = false;
            let p: THREE.Object3D | null = child;
+           const material = child.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined;
+           const hasModelTransparency = hasSourceMaterialTransparency(material);
 
            while (p && p !== model) {
               const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
@@ -1213,9 +1222,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               p = p.parent;
            }
 
-           if (!isHidden && !isTransparent) {
+           if (!isHidden && !isTransparent && !hasModelTransparency) {
               const geometry = child.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
-              const material = child.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined;
               if (geometry && material) opaqueMeshes.push(new THREE.Mesh(geometry, material));
            }
         });
@@ -1248,6 +1256,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            let isIsolated = false;
            let isHidden = false;
            let isTransparent = false;
+           const hasModelTransparency = hasSourceMaterialTransparency(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
             let p: THREE.Object3D | null = child;
 
             while (p && p !== model) {
@@ -1265,10 +1274,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            } else if (hasRenderableExternalSelection) {
               mesh.visible = Boolean(externalSelection?.meshes.has(mesh)) && !isHidden;
            } else if (hasAppearanceOverrides) {
-              mesh.visible = !isHidden && (isTransparent || isSelected);
+              mesh.visible = !isHidden && (isTransparent || isSelected || hasModelTransparency);
            } else {
               // In normal mode, only the selected parts are visible (as an overlay on the batched mesh)
-              mesh.visible = isSelected;
+              mesh.visible = isSelected || hasModelTransparency;
            }
 
            if (mesh.visible) {
