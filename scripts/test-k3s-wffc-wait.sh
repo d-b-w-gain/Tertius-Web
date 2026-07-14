@@ -6,16 +6,17 @@ export TEST_K3S_DEPLOYMENT_LIB_ONLY=true
 # shellcheck source=test-k3s-deployment.sh
 source "${ROOT_DIR}/scripts/test-k3s-deployment.sh"
 
-jq() {
-  if [ "${1:-}" != "--slurp" ] || [ "${2:-}" != "--raw-output" ]; then
-    echo "Pi auth manifest parsing must use portable jq long options." >&2
+kubectl() {
+  if [ "${1:-}" = "create" ]; then
+    echo "Pi auth manifest parsing must not require Kubernetes API discovery." >&2
     return 2
   fi
-  command jq "$@"
+  command kubectl "$@"
 }
 
 manifest_fixture=$(mktemp "${TMPDIR:-/tmp}/tertius-pi-pvc.XXXXXX")
-trap 'rm -f "$manifest_fixture"' EXIT
+duplicate_manifest_fixture=$(mktemp "${TMPDIR:-/tmp}/tertius-pi-pvc-duplicate.XXXXXX")
+trap 'rm -f "$manifest_fixture" "$duplicate_manifest_fixture"' EXIT
 printf '%s\n' \
   'apiVersion: v1' \
   'kind: PersistentVolumeClaim' \
@@ -32,6 +33,16 @@ printf '%s\n' \
 manifest_fields=$(pi_auth_manifest_fields "$manifest_fixture")
 if [ "$manifest_fields" != $'structural-claim\timmediate-class' ]; then
   echo "Pi auth manifest fields must be decoded structurally, including storageClassName." >&2
+  exit 1
+fi
+
+{
+  cat "$manifest_fixture"
+  printf '%s\n' '---'
+  cat "$manifest_fixture"
+} >"$duplicate_manifest_fixture"
+if pi_auth_manifest_fields "$duplicate_manifest_fixture" >/dev/null 2>&1; then
+  echo "Pi auth manifest parsing must reject duplicate chart-managed claims." >&2
   exit 1
 fi
 

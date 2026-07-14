@@ -701,14 +701,62 @@ ensure_app_secret() {
 
 pi_auth_manifest_fields() {
   manifest_file=$1
-  kubectl create --dry-run=client -f "$manifest_file" -o json | jq --slurp --raw-output '
-    [.[] | select(
-      .kind == "PersistentVolumeClaim" and
-      .metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth"
-    )] |
-    if length != 1 then error("expected exactly one chart-managed Pi auth PVC") else .[0] end |
-    [.metadata.name, (.spec.storageClassName // "")] | @tsv
-  '
+  awk '
+    function scalar(line, value) {
+      value = line
+      sub(/^[^:]+:[[:space:]]*/, "", value)
+      if (value ~ /^".*"$/) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      return value
+    }
+
+    function reset_document() {
+      kind = ""
+      section = ""
+      resource_name = ""
+      component = ""
+      storage_class = ""
+    }
+
+    function finish_document() {
+      if (kind == "PersistentVolumeClaim" && component == "pi-agent-auth") {
+        matches++
+        selected_name = resource_name
+        selected_storage_class = storage_class
+      }
+    }
+
+    BEGIN { reset_document() }
+    /^---[[:space:]]*$/ {
+      finish_document()
+      reset_document()
+      next
+    }
+    /^kind:[[:space:]]*/ { kind = scalar($0); next }
+    /^metadata:[[:space:]]*$/ { section = "metadata"; next }
+    /^spec:[[:space:]]*$/ { section = "spec"; next }
+    section == "metadata" && /^  name:[[:space:]]*/ {
+      resource_name = scalar($0)
+      next
+    }
+    /^    app\.kubernetes\.io\/component:[[:space:]]*/ {
+      component = scalar($0)
+      next
+    }
+    section == "spec" && /^  storageClassName:[[:space:]]*/ {
+      storage_class = scalar($0)
+      next
+    }
+    END {
+      finish_document()
+      if (matches != 1) {
+        print "expected exactly one chart-managed Pi auth PVC" > "/dev/stderr"
+        exit 5
+      }
+      printf "%s\t%s\n", selected_name, selected_storage_class
+    }
+  ' "$manifest_file"
 }
 
 render_and_install() {
