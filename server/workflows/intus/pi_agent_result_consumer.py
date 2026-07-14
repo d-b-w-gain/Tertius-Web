@@ -62,7 +62,7 @@ def _result_provenance(
         return None
     payload = job.request_payload if isinstance(job.request_payload, dict) else {}
     provider = payload.get("dispatched_provider", "openai-codex")
-    model = payload.get("dispatched_model", getattr(settings, "pi_agent_model", "gpt-5.6"))
+    model = payload.get("dispatched_model", getattr(settings, "pi_agent_model", "gpt-5.6-sol"))
     if not isinstance(provider, str) or not isinstance(model, str):
         return None
     if result.provider != provider or result.model != model:
@@ -94,7 +94,7 @@ def _record_result_consumer_heartbeat(settings) -> None:
         pi_agent_metric_attributes(
             operation="pi_agent.api",
             provider=getattr(settings, "pi_agent_provider", "openai-codex"),
-            model=getattr(settings, "pi_agent_model", "gpt-5.6"),
+            model=getattr(settings, "pi_agent_model", "gpt-5.6-sol"),
             status="healthy",
         ),
     )
@@ -171,7 +171,7 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
             result.provider != payload.get("dispatched_provider", "openai-codex")
             or result.model
             != payload.get(
-                "dispatched_model", getattr(settings, "pi_agent_model", "gpt-5.6")
+                "dispatched_model", getattr(settings, "pi_agent_model", "gpt-5.6-sol")
             )
         ):
             return "invalid", None, None
@@ -452,7 +452,7 @@ async def republish_queued_pi_agent_jobs(
             db.commit()
             _record_api_terminal(
                 provider=getattr(settings, "pi_agent_provider", "openai-codex"),
-                model=getattr(settings, "pi_agent_model", "gpt-5.6"),
+                model=getattr(settings, "pi_agent_model", "gpt-5.6-sol"),
                 status="failed",
                 failure_category=error_code,
                 retryable=False,
@@ -609,7 +609,7 @@ def reconcile_stale_pi_agent_jobs(db: Session, settings) -> int:
         terminal_attributes = pi_agent_metric_attributes(
             operation="pi_agent.api",
             provider=getattr(settings, "pi_agent_provider", "openai-codex"),
-            model=getattr(settings, "pi_agent_model", "gpt-5.6"),
+            model=getattr(settings, "pi_agent_model", "gpt-5.6-sol"),
             status="failed",
             failure_category="worker_lost",
             retryable=True,
@@ -637,7 +637,7 @@ def observe_pi_agent_active_jobs(db: Session, settings) -> int:
     active_attributes = pi_agent_metric_attributes(
         operation="pi_agent.api",
         provider=getattr(settings, "pi_agent_provider", "openai-codex"),
-        model=getattr(settings, "pi_agent_model", "gpt-5.6"),
+        model=getattr(settings, "pi_agent_model", "gpt-5.6-sol"),
         status="active",
     )
     up_down_counter_add(

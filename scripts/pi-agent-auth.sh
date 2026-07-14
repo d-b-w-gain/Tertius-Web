@@ -210,7 +210,7 @@ elif [ "$action" = logout ]; then
 fi
 
 canary="$(kubectl -n "$namespace" exec "$pod" -- env PI_CODING_AGENT_DIR=/var/lib/pi-agent HOME=/tmp/home \
-  pi "${pi_common[@]}" --provider openai-codex --model gpt-5.6 --thinking medium -p \
+  pi "${pi_common[@]}" --provider openai-codex --model gpt-5.6-sol --thinking medium -p \
   'Reply with exactly PI_AUTH_OK and no other text.')"
 [ "$canary" = PI_AUTH_OK ] || die "Pi OpenAI Codex verification failed"
 

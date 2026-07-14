@@ -20,7 +20,7 @@ for raw in sys.stdin:
     request=json.loads(raw)
     kind=request["type"]
     if kind=="get_state":
-        print(json.dumps({"id":request["id"],"success":True,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6"}}}), flush=True)
+        print(json.dumps({"id":request["id"],"success":True,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6-sol"}}}), flush=True)
     elif kind=="prompt":
         assert "message" in request
         expected_id=os.environ.get("FAKE_PI_EXPECT_PROMPT_ID")
@@ -106,7 +106,7 @@ async def test_u024_prompt_is_stdin_only_and_argv_is_fixed(fake_pi):
         "--provider",
         "openai-codex",
         "--model",
-        "gpt-5.6",
+        "gpt-5.6-sol",
         "--thinking",
         "medium",
         "--tools",
@@ -247,7 +247,7 @@ async def test_u025_stats_are_mapped_without_cost(fake_pi):
 async def test_u026_crlf_is_accepted_but_unicode_separator_is_not(tmp_path):
     path = tmp_path / "fake"
     path.write_text(
-        '#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write(b\'{"id":"state","success":true,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6"}}}\\r\\n\');sys.stdout.flush();sys.stdin.readline();sys.stdout.write(\'{bad\\u2028\');sys.stdout.flush()\n'
+        '#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write(b\'{"id":"state","success":true,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6-sol"}}}\\r\\n\');sys.stdout.flush();sys.stdin.readline();sys.stdout.write(\'{bad\\u2028\');sys.stdout.flush()\n'
     )
     path.chmod(0o755)
     with pytest.raises(PiAgentRpcError) as caught:
@@ -262,7 +262,7 @@ async def test_rpc_rejects_valid_json_eof_record_without_lf(tmp_path):
         """#!/usr/bin/env python3
 import json, sys
 request=json.loads(sys.stdin.readline())
-sys.stdout.write(json.dumps({"id":request["id"],"success":True,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6"}}}))
+sys.stdout.write(json.dumps({"id":request["id"],"success":True,"data":{"model":{"provider":"openai-codex","id":"gpt-5.6-sol"}}}))
 sys.stdout.flush()
 """,
         encoding="utf-8",

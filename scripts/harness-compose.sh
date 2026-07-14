@@ -56,7 +56,7 @@ require_pi_agent_auth() {
     run --rm --no-deps --entrypoint pi pi-agent-worker \
     --no-session --no-tools --no-extensions --no-skills --no-prompt-templates \
     --no-themes --no-context-files --no-approve \
-    --provider openai-codex --model gpt-5.6 --thinking medium -p \
+    --provider openai-codex --model gpt-5.6-sol --thinking medium -p \
     'Reply with exactly PI_AUTH_OK and no other text.' 2>/dev/null)" || {
     echo "Compose Pi OpenAI Codex authentication canary failed or timed out after ${canary_timeout}s." >&2
     echo "Run: docker compose run --rm --entrypoint pi pi-agent-worker" >&2
