@@ -40,10 +40,10 @@
 - Modify: `infra/charts/tertius/README.md`
 - Modify: `scripts/test-deployment-config.sh`
 
-- [ ] Extend I-012 to require `rollout.strategy: gradual`; run it and confirm the render test fails.
-- [ ] Add the gradual rollout invariant to the Pi ScaledJob template.
-- [ ] Document that ordinary ScaledJob updates drain existing Jobs while future Jobs use the new template.
-- [ ] Run deployment configuration and runtime parity checks.
+- [x] Extend I-012 to require `rollout.strategy: gradual`; run it and confirm the render test fails.
+- [x] Add the gradual rollout invariant to the Pi ScaledJob template.
+- [x] Document that ordinary ScaledJob updates drain existing Jobs while future Jobs use the new template.
+- [x] Run deployment configuration and runtime parity checks.
 
 ### Task 4: Verify and Publish
 

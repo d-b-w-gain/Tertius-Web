@@ -100,6 +100,8 @@ JetStream service. Set `piAgent.enabled=true` to render the worker. The worker i
 serial (`maxReplicaCount: 1`), runs as UID/GID 1000, and does not receive the
 application Secret, database configuration, Keycloak configuration, provider
 API keys, or a Kubernetes service-account token.
+The ScaledJob uses KEDA's gradual rollout strategy, so ordinary updates drain
+existing Jobs while future Jobs use the new template.
 `piAgent.enabled=true` requires `keda.enabled=true` and configured chart or
 external auth storage; invalid combinations fail during Helm rendering.
 
