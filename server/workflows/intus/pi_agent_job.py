@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import signal
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -387,7 +388,19 @@ async def _process_pi_agent_request_message(
     heartbeat = asyncio.create_task(_heartbeat(msg, settings.pi_agent_ack_wait_seconds))
     operation = asyncio.create_task(execute_pi_agent_command(command, settings))
     publish: asyncio.Task[None] | None = None
-    try:
+    nak_task: asyncio.Task[None] | None = None
+
+    async def nak_once() -> None:
+        nonlocal nak_task
+        if nak_task is None:
+            nak_task = asyncio.create_task(msg.nak())
+        await asyncio.shield(nak_task)
+
+    async def wait_for_cleanup(*tasks: asyncio.Task) -> None:
+        await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+
+    async def process_until_published() -> PiAgentResult:
+        nonlocal publish
         done, _ = await asyncio.wait(
             {operation, heartbeat}, return_when=asyncio.FIRST_COMPLETED
         )
@@ -433,20 +446,39 @@ async def _process_pi_agent_request_message(
                 if attempt == 2:
                     raise
                 await asyncio.sleep(0.1 * (2**attempt))
-    except BaseException as exc:
-        operation.cancel()
-        await asyncio.gather(operation, return_exceptions=True)
-        if isinstance(exc, asyncio.CancelledError):
+        return result
+
+    try:
+        try:
+            result = await process_until_published()
+        except asyncio.CancelledError:
             raise
-        logger.warning("Pi agent request processing failed before ACK")
-        await msg.nak()
-        return
-    finally:
+        except BaseException:
+            operation.cancel()
+            await wait_for_cleanup(operation)
+            if publish is not None and not publish.done():
+                publish.cancel()
+                await wait_for_cleanup(publish)
+            heartbeat.cancel()
+            await wait_for_cleanup(heartbeat)
+            logger.warning("Pi agent request processing failed before ACK")
+            await nak_once()
+            return
+
+        heartbeat.cancel()
+        await wait_for_cleanup(heartbeat)
+    except asyncio.CancelledError:
         if publish is not None and not publish.done():
             publish.cancel()
             await asyncio.gather(publish, return_exceptions=True)
+        operation.cancel()
         heartbeat.cancel()
-        await asyncio.gather(heartbeat, return_exceptions=True)
+        try:
+            await nak_once()
+        except Exception:
+            logger.warning("Failed to NAK cancelled Pi agent request")
+        await asyncio.gather(operation, heartbeat, return_exceptions=True)
+        raise
 
     await msg.ack()
     labels = _metric_attributes(
@@ -486,9 +518,33 @@ async def run_once() -> int:
         await nc.close()
 
 
+async def _run_once_with_sigterm() -> int:
+    loop = asyncio.get_running_loop()
+    task = asyncio.create_task(run_once())
+    shutdown_requested = False
+
+    def cancel_run_once() -> None:
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
+        task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, cancel_run_once)
+    try:
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if not shutdown_requested:
+                raise
+            return 0
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    raise SystemExit(asyncio.run(run_once()))
+    raise SystemExit(asyncio.run(_run_once_with_sigterm()))
 
 
 if __name__ == "__main__":

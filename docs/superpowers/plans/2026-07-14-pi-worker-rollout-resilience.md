@@ -16,11 +16,11 @@
 - Modify: `server/tests/test_pi_agent_job.py`
 - Modify: `server/workflows/intus/pi_agent_job.py`
 
-- [ ] Add a test that cancels provider execution and blocks its cleanup, asserting NAK happens before cleanup is released.
-- [ ] Change the in-flight publication cancellation test to require one NAK and no ACK.
-- [ ] Run the focused tests and confirm they fail because cancellation currently does not NAK.
-- [ ] Handle `asyncio.CancelledError` separately: cancel publication and heartbeat, NAK once, await provider cleanup, then re-raise.
-- [ ] Run the focused worker tests and confirm they pass.
+- [x] Add a test that cancels provider execution and blocks its cleanup, asserting NAK happens before cleanup is released.
+- [x] Change the in-flight publication cancellation test to require one NAK and no ACK.
+- [x] Run the focused tests and confirm they fail because cancellation currently does not NAK.
+- [x] Handle `asyncio.CancelledError` separately: cancel publication and heartbeat, NAK once, await provider cleanup, then re-raise.
+- [x] Run the focused worker tests and confirm they pass.
 
 ### Task 2: Bridge SIGTERM to Async Cancellation
 
@@ -28,10 +28,10 @@
 - Modify: `server/tests/test_pi_agent_job.py`
 - Modify: `server/workflows/intus/pi_agent_job.py`
 
-- [ ] Add a test that captures the SIGTERM callback, invokes it while `run_once` blocks, and verifies cancellation cleanup plus handler removal.
-- [ ] Run the test and confirm it fails because no SIGTERM wrapper exists.
-- [ ] Add a small async wrapper that installs and removes the SIGTERM handler, cancels `run_once`, and converts expected shutdown cancellation to exit code zero.
-- [ ] Run focused tests and confirm success, publish failure, cancellation, and shutdown behavior all pass.
+- [x] Add a test that captures the SIGTERM callback, invokes it while `run_once` blocks, and verifies cancellation cleanup plus handler removal.
+- [x] Run the test and confirm it fails because no SIGTERM wrapper exists.
+- [x] Add a small async wrapper that installs and removes the SIGTERM handler, cancels `run_once`, and converts expected shutdown cancellation to exit code zero.
+- [x] Run focused tests and confirm success, publish failure, cancellation, and shutdown behavior all pass.
 
 ### Task 3: Preserve Jobs During ScaledJob Updates
 
@@ -55,4 +55,3 @@
 - [ ] Validate gradual rollout behavior in isolated k3s without invoking a provider request.
 - [ ] Review the final diff for scope, telemetry safety, and existing auth-helper guarantees.
 - [ ] Commit, push, open a PR, watch CI, merge when green, and verify Flux reconciliation.
-
