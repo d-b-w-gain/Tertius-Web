@@ -86,6 +86,7 @@ cleanup() {
   for file in $TEMP_FILES; do
     [ -f "$file" ] && rm -f "$file"
   done
+  return 0
 }
 trap cleanup EXIT
 

@@ -622,6 +622,10 @@ if ! rg -q 'maxReplicaCount: 1' <<<"$pi_worker" || ! rg -q 'type: nats-jetstream
   echo "Pi worker must render a serial KEDA NATS JetStream ScaledJob." >&2
   exit 1
 fi
+if ! printf '%s\n' "$pi_worker" | rg -A 2 '^  rollout:' | rg -q '^    strategy: gradual$'; then
+  echo "Pi worker must use KEDA's gradual rollout strategy." >&2
+  exit 1
+fi
 if ! rg -q 'activeDeadlineSeconds: 540' <<<"$pi_worker" || ! printf '%s\n' "$pi_worker" | rg -A 2 'name: workspace' | rg -q 'sizeLimit: "128Mi"'; then
   echo "Pi worker must use the fixed 540-second deadline and 128Mi workspace bound." >&2
   exit 1

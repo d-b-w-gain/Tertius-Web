@@ -14,6 +14,8 @@ metadata:
 spec:
   pollingInterval: 5
   maxReplicaCount: 1
+  rollout:
+    strategy: gradual
   successfulJobsHistoryLimit: {{ .Values.piAgent.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.piAgent.failedJobsHistoryLimit }}
   jobTargetRef:

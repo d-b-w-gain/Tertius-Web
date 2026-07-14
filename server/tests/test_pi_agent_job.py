@@ -552,7 +552,9 @@ async def test_worker_naks_persistent_publish_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handler_cancellation_stops_inflight_publish_without_ack(monkeypatch):
+async def test_handler_cancellation_stops_inflight_publish_then_naks_without_ack(
+    monkeypatch,
+):
     import workflows.intus.pi_agent_job as job
 
     request = command([source("model.py", "old")])
@@ -564,6 +566,7 @@ async def test_handler_cancellation_stops_inflight_publish_without_ack(monkeypat
     )
     started = asyncio.Event()
     cleaned = asyncio.Event()
+    actions = []
 
     class BlockingPublisher(FakePublisher):
         async def publish_json(self, subject, message, **kwargs):
@@ -571,18 +574,242 @@ async def test_handler_cancellation_stops_inflight_publish_without_ack(monkeypat
             try:
                 await asyncio.Event().wait()
             finally:
+                actions.append("publish_cancelled")
                 cleaned.set()
 
-    msg = FakeMessage(request.model_dump_json().encode())
+    class TrackingMessage(FakeMessage):
+        async def nak(self):
+            actions.append("nak")
+            await super().nak()
+
+    msg = TrackingMessage(request.model_dump_json().encode())
     handler = asyncio.create_task(
         job.handle_pi_agent_request_message(msg, BlockingPublisher(), worker_settings())
     )
     await started.wait()
     handler.cancel()
-    await asyncio.gather(handler, return_exceptions=True)
+    with pytest.raises(asyncio.CancelledError):
+        await handler
 
     assert cleaned.is_set()
-    assert msg.actions == []
+    assert actions == ["publish_cancelled", "nak"]
+    assert msg.actions == ["nak"]
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_naks_before_waiting_for_provider_cleanup(
+    monkeypatch,
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    nak_observed = asyncio.Event()
+
+    async def blocked_provider(*_):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    class TrackingMessage(FakeMessage):
+        async def nak(self):
+            await super().nak()
+            nak_observed.set()
+
+    monkeypatch.setattr(job, "execute_pi_agent_command", blocked_provider)
+    msg = TrackingMessage(request.model_dump_json().encode())
+    handler = asyncio.create_task(
+        job.handle_pi_agent_request_message(msg, FakePublisher(), worker_settings())
+    )
+    await started.wait()
+    handler.cancel()
+    try:
+        await asyncio.wait_for(nak_observed.wait(), timeout=2)
+        await cleanup_started.wait()
+        assert not handler.done()
+    finally:
+        release_cleanup.set()
+        outcome = await asyncio.gather(handler, return_exceptions=True)
+
+    assert msg.actions == ["nak"]
+    assert isinstance(outcome[0], asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_during_heartbeat_cleanup_naks_before_cleanup(
+    monkeypatch,
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    result = job._failure(
+        request, datetime.now(timezone.utc), "provider_auth", "failed", False
+    )
+    published = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    nak_observed = asyncio.Event()
+
+    async def blocked_heartbeat(*_):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            while not release_cleanup.is_set():
+                try:
+                    await release_cleanup.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    class ConfirmingPublisher(FakePublisher):
+        async def publish_json(self, subject, message, **kwargs):
+            await super().publish_json(subject, message, **kwargs)
+            published.set()
+
+    class TrackingMessage(FakeMessage):
+        async def nak(self):
+            await super().nak()
+            nak_observed.set()
+
+    monkeypatch.setattr(
+        job, "execute_pi_agent_command", lambda *_: asyncio.sleep(0, result=result)
+    )
+    monkeypatch.setattr(job, "_heartbeat", blocked_heartbeat)
+    msg = TrackingMessage(request.model_dump_json().encode())
+    handler = asyncio.create_task(
+        job.handle_pi_agent_request_message(
+            msg, ConfirmingPublisher(), worker_settings()
+        )
+    )
+    await published.wait()
+    await cleanup_started.wait()
+    handler.cancel()
+    try:
+        await asyncio.wait_for(nak_observed.wait(), timeout=2)
+        assert msg.actions == ["nak"]
+        assert not handler.done()
+    finally:
+        release_cleanup.set()
+        outcome = await asyncio.gather(handler, return_exceptions=True)
+
+    assert msg.actions == ["nak"]
+    assert isinstance(outcome[0], asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_propagates_when_nak_fails(monkeypatch):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    started = asyncio.Event()
+
+    async def blocked_provider(*_):
+        started.set()
+        await asyncio.Event().wait()
+
+    class FailingNakMessage(FakeMessage):
+        async def nak(self):
+            self.actions.append("nak")
+            raise ConnectionError("NAK unavailable")
+
+    monkeypatch.setattr(job, "execute_pi_agent_command", blocked_provider)
+    msg = FailingNakMessage(request.model_dump_json().encode())
+    handler = asyncio.create_task(
+        job.handle_pi_agent_request_message(msg, FakePublisher(), worker_settings())
+    )
+    await started.wait()
+    handler.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+
+    assert msg.actions == ["nak"]
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_during_failure_nak_awaits_same_nak(monkeypatch):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    nak_started = asyncio.Event()
+    release_nak = asyncio.Event()
+
+    async def failed_provider(*_):
+        raise RuntimeError("provider failed")
+
+    class BlockingNakMessage(FakeMessage):
+        def __init__(self, data):
+            super().__init__(data)
+            self.nak_calls = 0
+
+        async def nak(self):
+            self.nak_calls += 1
+            nak_started.set()
+            await release_nak.wait()
+            self.actions.append("nak")
+
+    monkeypatch.setattr(job, "execute_pi_agent_command", failed_provider)
+    msg = BlockingNakMessage(request.model_dump_json().encode())
+    handler = asyncio.create_task(
+        job.handle_pi_agent_request_message(msg, FakePublisher(), worker_settings())
+    )
+    await nak_started.wait()
+    handler.cancel()
+    await asyncio.sleep(0)
+    try:
+        assert not handler.done()
+        assert msg.nak_calls == 1
+    finally:
+        release_nak.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+
+    assert msg.nak_calls == 1
+    assert msg.actions == ["nak"]
+
+
+@pytest.mark.asyncio
+async def test_sigterm_wrapper_cancels_run_once_cleans_up_and_returns_zero(monkeypatch):
+    import workflows.intus.pi_agent_job as job
+
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+    callbacks = {}
+    removed = []
+
+    async def blocked_run_once():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(job, "run_once", blocked_run_once)
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda sig, callback: callbacks.setdefault(sig, callback),
+    )
+    monkeypatch.setattr(
+        loop,
+        "remove_signal_handler",
+        lambda sig: removed.append(sig) or True,
+    )
+
+    wrapper = asyncio.create_task(job._run_once_with_sigterm())
+    await started.wait()
+    callbacks[job.signal.SIGTERM]()
+
+    assert await wrapper == 0
+    assert cleaned.is_set()
+    assert removed == [job.signal.SIGTERM]
 
 
 @pytest.mark.asyncio

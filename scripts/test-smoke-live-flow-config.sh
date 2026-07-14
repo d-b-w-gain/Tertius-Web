@@ -30,6 +30,7 @@ grep -Fq 'canary_tmp=$(mktemp "${canary_dir}/live-flow-sensitive-canaries.XXXXXX
 grep -Fq 'TEMP_FILES="${TEMP_FILES} ${canary_tmp}"' "$SCRIPT"
 grep -Fq 'chmod 600 "$canary_tmp"' "$SCRIPT"
 grep -Fq 'mv -fT -- "$canary_tmp" "$canary_file"' "$SCRIPT"
+grep -Fq '  return 0' "$SCRIPT"
 grep -Fq "printf 'LIVE_FLOW_USER_CANARY=%q\\nLIVE_FLOW_ASSISTANT_CANARY=%q\\n'" "$SCRIPT"
 grep -Fq -- '-e "$LIVE_FLOW_USER_CANARY" -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then' "$SCRIPT"
 grep -Fq 'rg -F -e "$LIVE_FLOW_ASSISTANT_CANARY" >/dev/null; then' "$SCRIPT"
