@@ -287,8 +287,8 @@ describe('projectStorage', () => {
 
   it('returns the token-only fixed LLM model contract', async () => {
     const responseBody = {
-      default_model_id: 'gpt-5.6',
-      models: [{ id: 'gpt-5.6', label: 'GPT-5.6', model: 'gpt-5.6', enabled: true }],
+      default_model_id: 'gpt-5.6-sol',
+      models: [{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', model: 'gpt-5.6-sol', enabled: true }],
     }
     mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody)))
     const getAccessToken = vi.fn()

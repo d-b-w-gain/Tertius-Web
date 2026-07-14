@@ -255,7 +255,7 @@ async def run_pi_agent(
     executable: str = "pi",
     cwd: str | Path = "/workspace/repo",
     provider: str = "openai-codex",
-    model: str = "gpt-5.6",
+    model: str = "gpt-5.6-sol",
     thinking: str = "medium",
     system_prompt_path: Path,
     extension_path: str = "/opt/tertius-pi/workspace-guard.ts",

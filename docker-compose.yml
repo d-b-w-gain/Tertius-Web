@@ -16,8 +16,8 @@ services:
       COMPILE_RESULT_MAX_BYTES: 33554432
       PI_AGENT_ENABLED: "true"
       PI_AGENT_PROVIDER: openai-codex
-      PI_AGENT_MODEL: gpt-5.6
-      PI_AGENT_MODEL_LABEL: GPT-5.6
+      PI_AGENT_MODEL: gpt-5.6-sol
+      PI_AGENT_MODEL_LABEL: GPT-5.6 Sol
       PI_AGENT_THINKING: medium
       PI_AGENT_TIMEOUT_SECONDS: 480
       PI_AGENT_MAX_TURNS: 12
@@ -109,7 +109,7 @@ services:
     environment:
       NATS_URL: nats://nats:4222
       PI_AGENT_PROVIDER: openai-codex
-      PI_AGENT_MODEL: gpt-5.6
+      PI_AGENT_MODEL: gpt-5.6-sol
       PI_AGENT_THINKING: medium
       PI_AGENT_TIMEOUT_SECONDS: 480
       PI_AGENT_MAX_TURNS: 12
