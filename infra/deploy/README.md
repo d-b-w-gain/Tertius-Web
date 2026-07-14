@@ -152,7 +152,7 @@ The production cluster must already have:
 - CloudNativePG CRDs, including `clusters.postgresql.cnpg.io`.
 - Keycloak Operator CRDs, including `keycloaks.k8s.keycloak.org`.
 - A storage class suitable for Postgres, Keycloak Postgres, and Valkey.
-- Access to the API and UI container image registry.
+- Access to the API, Pi agent, and UI container image registry.
 - Any required image pull Secrets.
 - The `tertius-production-values` Secret in the `tertius` namespace.
 - A Cloudflare tunnel token Secret if `cloudflared.enabled=true`.
@@ -161,7 +161,7 @@ For node-level dependency setup, including k3s Cilium migration, gVisor `Runtime
 
 ## Local k3s Validation
 
-Use the local harness to test the Helm chart against an already-running k3s-compatible cluster. It builds the API and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the release, waits for app and platform resources, then runs smoke checks.
+Use the local harness to test the Helm chart against an already-running k3s-compatible cluster. It builds the API, Pi agent, and UI images, makes them available to k3s, updates chart dependencies, installs or upgrades the release, waits for app and platform resources, then runs smoke checks.
 
 The friendly local wrapper is:
 
@@ -287,7 +287,7 @@ scripts/test-deployment-config.sh
 
 ## Image Promotion GitHub App
 
-The `Build Images` workflow publishes the API and UI images, updates their chart tags on the fixed `image-promotion` branch, opens a PR, waits for `Chart render/config checks`, and merges the exact checked head. Flux only reads `master`; it does not hold a Git write credential.
+The `Build Images` workflow publishes the API, Pi agent, and UI images, updates their chart tags on the fixed `image-promotion` branch, opens a PR, waits for `Chart render/config checks`, and merges the exact checked head. Flux only reads `master`; it does not hold a Git write credential.
 
 The owner of the `d-b-w-gain` user account must create a private GitHub App for promotion:
 

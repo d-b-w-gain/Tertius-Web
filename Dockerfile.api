@@ -1,4 +1,15 @@
-FROM python:3.14-slim
+FROM node:24-bookworm-slim AS pi-build
+
+WORKDIR /build/pi
+
+COPY server/pi/package.json server/pi/package-lock.json server/pi/pi-install-security.ts ./
+
+RUN npm run install:hardened \
+    && npm prune --omit=dev --ignore-scripts \
+    && node pi-install-security.ts harden
+
+
+FROM python:3.14-slim AS python-app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -30,11 +41,37 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
-COPY server/ ./server/
+COPY server/alembic.ini server/main.py server/start-api.sh server/start-compile-job.sh server/start-pi-agent-job.sh ./server/
+COPY server/core/ ./server/core/
+RUN chmod 0444 /app/server/core/pi_agent_system_prompt.md
+COPY server/migrations/ ./server/migrations/
+COPY server/workflows/ ./server/workflows/
 
-RUN uv sync --no-dev --locked
+RUN uv sync --no-dev --locked \
+    && chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh /app/server/start-pi-agent-job.sh
 
-RUN chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh
+
+FROM python-app AS pi-agent
+
+ENV PATH="/app/server/pi/node_modules/.bin:${PATH}"
+
+COPY --from=pi-build /usr/local/bin/node /usr/local/bin/node
+COPY --chown=1000:1000 --from=pi-build /build/pi/node_modules /app/server/pi/node_modules
+COPY --chown=1000:1000 server/pi/package.json server/pi/oauth-cli.ts /app/server/pi/
+
+RUN install -d -o 1000 -g 1000 /opt/tertius-pi
+
+COPY --chown=1000:1000 server/pi/workspace-guard.ts /opt/tertius-pi/workspace-guard.ts
+
+RUN ln -s /app/server/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js /usr/local/bin/pi \
+    && install -d -o 1000 -g 1000 -m 0700 /workspace
+
+USER 1000:1000
+
+CMD ["sh", "/app/server/start-pi-agent-job.sh"]
+
+
+FROM python-app AS api
 
 USER 1000:1000
 

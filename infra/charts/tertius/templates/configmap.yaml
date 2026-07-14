@@ -60,22 +60,32 @@ data:
   COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
-  LLM_MODELS_JSON: {{ .Values.app.config.llmModels | toJson | quote }}
-  LLM_DEFAULT_MODEL_ID: {{ .Values.app.config.llmDefaultModelId | quote }}
-  LLM_WEEKLY_BUDGET_USD: {{ .Values.app.config.llmWeeklyBudgetUsd | quote }}
-  LLM_TIMEOUT_SECONDS: {{ .Values.app.config.llmTimeoutSeconds | quote }}
-  LLM_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmMaxOutputTokens | quote }}
-  LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: {{ .Values.app.config.llmFileEditMaxOutputTokens | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_FILES: {{ .Values.app.config.llmFileEditMaxContextFiles | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_CHARS: {{ .Values.app.config.llmFileEditMaxContextChars | quote }}
-  LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS: {{ .Values.app.config.llmFileEditMaxGenerationAttempts | quote }}
-  LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS: {{ .Values.app.config.llmFileEditMaxRateLimitAttempts | quote }}
-  LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS: {{ .Values.app.config.llmFileEditRateLimitBackoffBaseSeconds | quote }}
-  LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS: {{ .Values.app.config.llmFileEditRateLimitBackoffCapSeconds | quote }}
   LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
   LLM_TENANT_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmTenantRateLimitPerMinute | quote }}
   LLM_TENANT_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmTenantDailyTokenQuota | quote }}
   LLM_USER_DAILY_TOKEN_QUOTA: {{ .Values.app.config.llmUserDailyTokenQuota | quote }}
+  PI_AGENT_ENABLED: {{ .Values.piAgent.enabled | quote }}
+  PI_AGENT_PROVIDER: {{ .Values.app.config.piAgentProvider | quote }}
+  PI_AGENT_MODEL: {{ .Values.app.config.piAgentModel | quote }}
+  PI_AGENT_MODEL_LABEL: {{ .Values.app.config.piAgentModelLabel | quote }}
+  PI_AGENT_THINKING: {{ .Values.app.config.piAgentThinking | quote }}
+  PI_AGENT_TIMEOUT_SECONDS: {{ .Values.app.config.piAgentTimeoutSeconds | quote }}
+  PI_AGENT_MAX_TURNS: {{ .Values.app.config.piAgentMaxTurns | quote }}
+  PI_AGENT_MAX_TOOL_CALLS: {{ .Values.app.config.piAgentMaxToolCalls | quote }}
+  PI_AGENT_ESTIMATED_OUTPUT_TOKENS: {{ .Values.app.config.piAgentEstimatedOutputTokens | quote }}
+  PI_AGENT_STREAM_NAME: {{ .Values.app.config.piAgentStreamName | quote }}
+  PI_AGENT_REQUEST_SUBJECT: {{ .Values.app.config.piAgentRequestSubject | quote }}
+  PI_AGENT_RESULT_SUBJECT: {{ .Values.app.config.piAgentResultSubject | quote }}
+  PI_AGENT_WORKER_QUEUE: {{ .Values.app.config.piAgentWorkerQueue | quote }}
+  PI_AGENT_RESULT_CONSUMER: {{ .Values.app.config.piAgentResultConsumer | quote }}
+  PI_AGENT_ACK_WAIT_SECONDS: {{ .Values.app.config.piAgentAckWaitSeconds | quote }}
+  PI_AGENT_MAX_DELIVER: {{ .Values.app.config.piAgentMaxDeliver | quote }}
+  PI_AGENT_REQUEST_MAX_BYTES: {{ .Values.app.config.piAgentRequestMaxBytes | quote }}
+  PI_AGENT_RESULT_MAX_BYTES: {{ .Values.app.config.piAgentResultMaxBytes | quote }}
+  PI_AGENT_STREAM_MAX_AGE_SECONDS: {{ .Values.app.config.piAgentStreamMaxAgeSeconds | quote }}
+  PI_AGENT_STREAM_MAX_BYTES: {{ printf "%d" (.Values.app.config.piAgentStreamMaxBytes | int64) | quote }}
   BILLING_STREAM_NAME: {{ .Values.app.config.billingStreamName | quote }}
   BILLING_LLM_USAGE_SUBJECT: {{ .Values.app.config.billingLlmUsageSubject | quote }}
   BILLING_MAX_BYTES: {{ printf "%d" (.Values.app.config.billingMaxBytes | int64) | quote }}

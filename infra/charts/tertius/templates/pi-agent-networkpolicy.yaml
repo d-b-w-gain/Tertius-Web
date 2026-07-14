@@ -1,0 +1,97 @@
+{{- if and .Values.networkPolicy.enabled (or .Values.piAgent.auth.storage.enabled .Values.piAgent.auth.existingClaim) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tertius.fullname" . }}-pi-agent
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pi-agent-network
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      tertius.io/pi-agent-network: "true"
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
+              app.kubernetes.io/component: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    {{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "tertius.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.31.196.0/24
+              - 192.52.193.0/24
+              - 192.88.99.0/24
+              - 192.168.0.0/16
+              - 192.175.48.0/24
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::/128
+              - ::1/128
+              - 64:ff9b::/96
+              - 64:ff9b:1::/48
+              - 100::/64
+              - 2001::/32
+              - 2001:1::1/128
+              - 2001:1::2/128
+              - 2001:2::/48
+              - 2001:3::/32
+              - 2001:4:112::/48
+              - 2001:20::/28
+              - 2001:30::/28
+              - 2001:db8::/32
+              - 2002::/16
+              - 2620:4f:8000::/48
+              - 3fff::/20
+              - 5f00::/16
+              - fc00::/7
+              - fe80::/10
+              - ff00::/8
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

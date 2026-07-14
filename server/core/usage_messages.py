@@ -60,12 +60,6 @@ class LlmTodayUsageResponse(BaseModel):
     tenant_daily_token_quota: int
     tenant_tokens_used_today: int
     tenant_tokens_remaining_today: int
-    tenant_weekly_budget_usd: float
-    tenant_cost_used_this_week_usd: float
-    tenant_cost_remaining_this_week_usd: float
-    tenant_daily_budget_usd: float
-    tenant_cost_used_today_usd: float
-    tenant_cost_remaining_today_usd: float
     user_daily_token_quota: int
     user_tokens_used_today: int
     user_tokens_remaining_today: int
@@ -74,19 +68,11 @@ class LlmTodayUsageResponse(BaseModel):
 
 class LlmModelResponse(BaseModel):
     id: str
-    label: str
     model: str
-    api: str
-    endpoint: str
-    input_price_per_million: float
-    output_price_per_million: float
-    cached_read_price_per_million: float | None
-    cached_write_price_per_million: float | None
+    label: str
     enabled: bool
 
 
 class LlmModelsResponse(BaseModel):
     default_model_id: str
-    weekly_budget_usd: float
-    daily_budget_usd: float
     models: list[LlmModelResponse]

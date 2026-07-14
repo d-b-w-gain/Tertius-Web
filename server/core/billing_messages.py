@@ -17,6 +17,7 @@ class LlmTokenUsageEvent(BaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0, le=0.0)
     occurred_at: datetime
     provider_request_id: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)

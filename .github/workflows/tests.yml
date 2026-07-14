@@ -16,6 +16,91 @@ jobs:
       - name: Confirm workflow eligibility
         run: echo "Branch protection check registered for ${GITHUB_SHA}."
 
+  pi-agent:
+    name: Pi agent tests
+    runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/pi/package-lock.json
+
+      - name: Install Pi agent dependencies
+        working-directory: server/pi
+        run: npm run install:hardened
+
+      - name: Test Pi agent
+        working-directory: server/pi
+        run: npm test
+
+  images:
+    name: Image content and isolation
+    runs-on: ubuntu-latest
+    if: ${{ github.ref != 'refs/heads/image-promotion' && (github.event_name != 'pull_request' || github.head_ref != 'image-promotion') }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image targets
+        run: |
+          docker build --target api -t tertius-api:test -f Dockerfile.api .
+          docker build --target pi-agent -t tertius-pi-agent:test -f Dockerfile.api .
+
+      - name: Verify common prompt artifact and API tooling isolation
+        run: |
+          api_sha=$(docker run --rm --entrypoint sha256sum tertius-api:test /app/server/core/pi_agent_system_prompt.md | awk '{print $1}')
+          worker_sha=$(docker run --rm --entrypoint sha256sum tertius-pi-agent:test /app/server/core/pi_agent_system_prompt.md | awk '{print $1}')
+          test "$api_sha" = "$worker_sha"
+          docker run --rm --entrypoint sh tertius-api:test -c 'test "$(stat -c "%u:%g %a" /app/server/core/pi_agent_system_prompt.md)" = "0:0 444" && test ! -w /app/server/core/pi_agent_system_prompt.md && test ! -e /app/server/pi && ! command -v pi'
+          docker run --rm --entrypoint sh tertius-pi-agent:test -c 'test "$(stat -c "%u:%g %a" /app/server/core/pi_agent_system_prompt.md)" = "0:0 444" && test ! -w /app/server/core/pi_agent_system_prompt.md'
+
+      - name: Verify Pi runtime identity and secret isolation
+        run: |
+          docker run --rm tertius-pi-agent:test pi --version
+          if docker run --rm tertius-pi-agent:test node /app/server/pi/oauth-cli.ts invalid; then exit 1; fi
+          docker run --rm tertius-pi-agent:test sh -c 'test "$(id -u)" = 1000 && test "$(id -g)" = 1000 && test -z "${DATABASE_URL:-}" && test "$(stat -c %u:%g /workspace)" = 1000:1000 && test "$(stat -c %a /workspace)" = 700 && umask 077 && mkdir /workspace/image-smoke && printf smoke > /workspace/image-smoke/source.py && test "$(stat -c %a /workspace/image-smoke)" = 700 && test "$(stat -c %a /workspace/image-smoke/source.py)" = 600'
+          docker image inspect --format='Pi agent image size bytes: {{.Size}}' tertius-pi-agent:test
+
+      - name: Verify pinned Pi RPC loads the production guard
+        run: |
+          docker run --rm tertius-pi-agent:test node --input-type=module -e '
+            import { spawn } from "node:child_process";
+            import { createInterface } from "node:readline";
+            const child = spawn("pi", [
+              "--mode", "rpc", "--no-session", "--no-extensions",
+              "--extension", "/opt/tertius-pi/workspace-guard.ts",
+              "--no-skills", "--no-prompt-templates", "--no-themes",
+              "--no-context-files", "--no-approve",
+            ], { cwd: "/workspace", stdio: ["pipe", "pipe", "inherit"] });
+            const responses = new Map();
+            const lines = createInterface({ input: child.stdout });
+            lines.on("line", (line) => {
+              const message = JSON.parse(line);
+              if (message.id) responses.set(message.id, message);
+            });
+            child.stdin.write(JSON.stringify({ id: "state", type: "get_state" }) + "\n");
+            child.stdin.write(JSON.stringify({ id: "commands", type: "get_commands" }) + "\n");
+            const deadline = Date.now() + 10_000;
+            while ((!responses.has("state") || !responses.has("commands")) && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            const state = responses.get("state");
+            const commands = responses.get("commands");
+            child.kill("SIGTERM");
+            if (!state?.success) throw new Error("Pi RPC get_state failed");
+            if (!commands?.success || !commands.data.commands.some((command) => command.name === "tertius-workspace-guard")) {
+              throw new Error("production workspace guard extension was not loaded");
+            }
+          '
+
   ui:
     name: UI lint and build
     runs-on: ubuntu-latest
@@ -34,7 +119,7 @@ jobs:
 
       - name: Install UI dependencies
         working-directory: ui
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Lint UI
         working-directory: ui

@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 import asyncio
 from datetime import datetime, timezone
+from hashlib import sha256
 import importlib.util
 import logging
-import random
 from pathlib import Path
 from typing import Any, Optional, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 from pydantic import BaseModel
-from fastapi import BackgroundTasks, Depends, FastAPI, status
+from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from opentelemetry import propagate, trace
-from opentelemetry.trace import SpanKind
+from opentelemetry import propagate
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,51 +20,35 @@ from core.auth_types import AuthContext
 from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
-from core.billing_messages import (
-    LlmTokenUsageEvent,
-    assert_billing_message_size,
-    billing_usage_message_id,
-)
-from core.llm_client import (
-    BuildScriptGenerationInput,
-    LlmBillingError,
-    LlmEditableFile,
-    LlmFileEditTruncatedError,
-    LlmFileEditInput,
-    LlmGenerationError,
-    LlmInvalidFileEditError,
-    LlmNotConfiguredError,
-    LlmProviderAuthenticationError,
-    LlmProviderRateLimitError,
-    estimate_build_script_usage,
-    estimate_file_edit_usage,
-    generate_build_script,
-    generate_file_edits,
-    llm_usage_cost_usd,
-    select_llm_edit_context_files,
-    select_llm_model,
-)
-from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed, record_llm_usage
+from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
-from core.nats_client import NatsPublisher, connect_nats, ensure_billing_stream, ensure_compile_stream
+from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
+from core.pi_agent_conversation import next_conversation_context, render_conversation_context
+from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
+from core.pi_agent_prompt import (
+    PiAgentPromptError,
+    estimate_pi_agent_usage,
+    load_pi_agent_prompt,
+    render_pi_agent_user_prompt,
+)
+from core.pi_agent_telemetry import pi_agent_metric_attributes
+from core.llm_file_edit import (
+    LlmEditableFile as DomainEditableFile,
+    LlmFileEditInput,
+    select_llm_edit_context_files as select_domain_context_files,
+)
 from core.telemetry import (
     counter_add,
-    elapsed_seconds,
-    get_tracer,
-    histogram_record,
-    record_exception,
-    timed,
-    up_down_counter_add,
 )
 from core.repositories import (
     CompileRepository,
-    FileVersionConflictError,
     ProjectRepository,
     normalize_file_version,
     require_valid_python_filename,
     LlmEditRepository,
 )
 from workflows.intus.usage_server import llm_usage_router, router as usage_router
+from workflows.intus.pi_agent_result_consumer import reconcile_stale_pi_agent_job
 
 app = FastAPI(title="Intus Compiler Server")
 app.include_router(usage_router)
@@ -118,71 +101,11 @@ async def publish_compile_command(command: CompileCommand) -> None:
         await nc.close()
 
 
-async def create_billing_publisher(settings):
-    nc = None
-    try:
-        nc = await connect_nats(settings.nats_url)
-        js = await ensure_billing_stream(nc, settings)
-        return NatsPublisher(js), nc
-    except Exception:
-        if nc is not None:
-            try:
-                await nc.close()
-            except Exception:
-                logger.exception("Failed to close LLM billing NATS connection after setup failure")
-        logger.exception("Failed to create LLM billing publisher")
-        raise LlmBillingError("LLM billing failed")
+
 
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-async def publish_file_edit_billing_event(
-    *,
-    billing_publisher,
-    settings,
-    auth: AuthContext,
-    project_id: UUID,
-    request: LlmFileEditInput,
-    result,
-    event_id: UUID,
-    model_id: str,
-) -> None:
-    usage = result.usage
-    event = LlmTokenUsageEvent(
-        event_id=event_id,
-        tenant_id=auth.tenant_id,
-        user_id=auth.user_id,
-        project_id=project_id,
-        workflow="intus",
-        operation="files.llm_edit",
-        provider=result.provider,
-        model=result.model,
-        prompt=request.prompt,
-        prompt_tokens=usage.prompt_tokens,
-        completion_tokens=usage.completion_tokens,
-        total_tokens=usage.total_tokens,
-        occurred_at=datetime.now(timezone.utc),
-        provider_request_id=getattr(result, "provider_request_id", None),
-        metadata=request.metadata,
-    )
-    try:
-        assert_billing_message_size(event, settings.billing_max_bytes)
-        await billing_publisher.publish_json(
-            settings.billing_llm_usage_subject,
-            event,
-            message_id=billing_usage_message_id(event),
-        )
-    except Exception as exc:
-        counter_add(
-            "tertius.billing.publish.error.count",
-            1,
-            {
-                "provider": result.provider,
-                "model_id": model_id,
-                "operation": "files.llm_edit",
-            },
-        )
-        logger.exception("Failed to publish LLM billing usage event")
-        raise LlmBillingError("LLM billing failed") from exc
+
 
 
 @app.get("/health")
@@ -485,42 +408,7 @@ async def compile_project(
         })
 
 
-def _serialize_llm_edit_result(
-    result,
-    snapshot,
-    changed_files,
-):
-    by_id = {row.id: row for row in changed_files}
-    return {
-        "success": True,
-        "outcome": result.outcome,
-        "message": result.message,
-        "provider": result.provider,
-        "model": result.model,
-        "usage": result.usage.model_dump(),
-        "cost_usd": result.cost_usd,
-        "snapshot": (
-            {
-                "id": str(snapshot.id),
-                "message": snapshot.message,
-                "content_hash": snapshot.content_hash,
-            }
-            if snapshot is not None
-            else None
-        ),
-        "files": [
-            {
-                "id": str(edit.file_id),
-                "filename": by_id[edit.file_id].filename,
-                "content": edit.content,
-                "updated_at": by_id[edit.file_id].updated_at.isoformat(),
-                "changed": True,
-                "summary": edit.summary,
-            }
-            for edit in result.files
-            if edit.file_id in by_id
-        ],
-    }
+
 
 
 def _llm_edit_job_content(job: LlmEditJob) -> str:
@@ -605,571 +493,252 @@ def _serialize_llm_edit_history_message(
     }
 
 
-def _llm_edit_stale_after_seconds(settings) -> int:
-    # OpenAI-compatible clients retry provider timeouts by default. Keep the
-    # watchdog outside that retry window so polling cannot fail a live job.
-    provider_retry_window_seconds = settings.llm_timeout_seconds * 4 + 30
-    max_attempts = max(
-        settings.llm_file_edit_max_generation_attempts,
-        settings.llm_file_edit_max_rate_limit_attempts,
-    )
-    max_rate_limit_backoff_seconds = (
-        max(0, settings.llm_file_edit_max_rate_limit_attempts - 1)
-        * settings.llm_file_edit_rate_limit_backoff_cap_seconds
-    )
-    return int(provider_retry_window_seconds * max_attempts + max_rate_limit_backoff_seconds)
 
 
-async def _run_llm_file_edit_core(
-    *,
-    db,
-    repo: ProjectRepository,
-    settings,
-    req,
-    project,
-    ctx,
-    exclude_prompt_job_id: UUID | None = None,
-) -> tuple[Any, Any, list]:
-    request_files = req.files
-    for pointer in request_files:
-        require_valid_python_filename(pointer.filename)
-
-    seen_ids: set[UUID] = set()
-    for pointer in request_files:
-        if pointer.id in seen_ids:
-            raise ValueError("Duplicate file id in request")
-        seen_ids.add(pointer.id)
-
-    if req.active_file_id is not None and req.active_file_id not in seen_ids:
-        raise ValueError("Active file id is not in the request")
-
-    file_rows = repo.files_by_ids(project.name, [pointer.id for pointer in request_files])
-    if set(file_rows) != seen_ids:
-        raise FileNotFoundError("File not found")
-
-    for pointer in request_files:
-        if file_rows[pointer.id].filename != pointer.filename:
-            raise ValueError("File pointer does not match filename")
-        if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
-            raise FileVersionConflictError("Files changed while AI edit was running")
-
-    editable_files = [
-        LlmEditableFile(
-            id=row.id, filename=row.filename, content=row.content
-        )
-        for row in [file_rows[pointer.id] for pointer in request_files]
-    ]
-
-    if not settings.llm_api_key:
-        raise LlmNotConfiguredError("LLM provider is not configured")
-
-    model_config = select_llm_model(settings, req.model_id)
-    recent_prompts = LlmEditRepository(db, ctx.tenant_id).list_recent_prompts(
-        project.name,
-        limit=5,
-        exclude_job_id=exclude_prompt_job_id,
-    )
-    selected_files = select_llm_edit_context_files(
-        prompt=req.prompt,
-        active_file_id=req.active_file_id,
-        files=editable_files,
-        max_files=settings.llm_file_edit_max_context_files,
-        max_chars=settings.llm_file_edit_max_context_chars,
-    )
-    estimated_usage = estimate_file_edit_usage(
-        req,
-        selected_files,
-        max_output_tokens=settings.llm_file_edit_max_output_tokens,
-        system_prompt=settings.llm_file_edit_system_prompt,
-        prior_prompts=recent_prompts,
-    )
-    assert_llm_usage_allowed(
-        db,
-        settings,
-        tenant_id=ctx.tenant_id,
-        user_id=ctx.user_id,
-        estimated_tokens=estimated_usage.total_tokens,
-        estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
-    )
-    result = await generate_file_edits(
-        req,
-        files=selected_files,
-        settings=settings,
-        auth=ctx,
-        project_id=project.id,
-        prior_prompts=recent_prompts,
-    )
-
-    changed_files: list = []
-    snapshot = None
-    if result.outcome == "changed":
-        requested_versions = {pointer.id: pointer.updated_at for pointer in req.files}
-        changed_ids = {edit.file_id for edit in result.files}
-        requested_rows = repo.files_by_ids(project.name, list(changed_ids))
-        if set(requested_rows) != changed_ids:
-            raise FileNotFoundError("File not found")
-        for file_id in changed_ids:
-            expected_updated_at = requested_versions[file_id]
-            if normalize_file_version(requested_rows[file_id].updated_at) != normalize_file_version(expected_updated_at):
-                raise FileVersionConflictError("Files changed while AI edit was running")
-
-        updates = {edit.file_id: edit.content for edit in result.files}
-        changed_versions = {file_id: requested_versions[file_id] for file_id in updates}
-        stage_result = repo.stage_file_updates(
-            project.name,
-            updates,
-            ctx.user_id,
-            f"LLM edit: {req.prompt[:480]}",
-            expected_updated_at=changed_versions,
-        )
-        if stage_result is None:
-            raise ValueError("LLM returned no file changes")
-        snapshot, changed_files = stage_result
-        if not changed_files:
-            raise LlmInvalidFileEditError("changed outcome did not change any files")
-
-    billing_publisher, billing_nc = await create_billing_publisher(settings)
-    try:
-        billing_event_id = uuid4()
-        result.billing_event_id = billing_event_id
-        await publish_file_edit_billing_event(
-            billing_publisher=billing_publisher,
-            settings=settings,
-            auth=ctx,
-            project_id=project.id,
-            request=req,
-            result=result,
-            event_id=billing_event_id,
-            model_id=model_config.id,
-        )
-        record_llm_usage(
-            db,
-            auth=ctx,
-            project_id=project.id,
-            request=req,
-            result=result,
-            provider_request_id=getattr(result, "provider_request_id", None),
-            event_id=getattr(result, "billing_event_id", None),
-            settings=settings,
-            operation="files.llm_edit",
-        )
-    finally:
-        if billing_nc is not None:
-            try:
-                await billing_nc.flush()
-            except Exception:
-                logger.exception("Failed to flush LLM billing NATS connection")
-            finally:
-                try:
-                    await billing_nc.close()
-                except Exception:
-                    logger.exception("Failed to close LLM billing NATS connection")
-
-    return result, snapshot, changed_files
 
 
-def _record_retry(
-    *,
-    reason: str,
-    attempt: int,
-    backoff_seconds: float | None,
-    attributes: dict[str, Any],
-) -> None:
-    retry_attributes = {**attributes, "llm.retry_reason": reason}
-    counter_add("tertius.llm.retry.count", 1, retry_attributes)
-    event_attributes: dict[str, Any] = {
-        "llm.retry.reason": reason,
-        "llm.retry.attempt": attempt,
-    }
-    if backoff_seconds is not None:
-        event_attributes["llm.retry.backoff_seconds"] = backoff_seconds
-    trace.get_current_span().add_event("llm.retry", attributes=event_attributes)
+
+
+
 
 
 def _llm_file_edit_job_attributes() -> dict[str, str]:
     return {"llm.operation": "files.llm_edit", "workflow": "intus"}
 
 
-def _record_llm_file_edit_job_finished(
-    *,
-    duration_seconds: float,
-    job_status: str,
-    failure_category: str | None = None,
-    retryable: bool | None = None,
-) -> None:
-    attributes = {**_llm_file_edit_job_attributes(), "job_status": job_status}
-    if failure_category is not None:
-        attributes["failure_category"] = failure_category
-    if retryable is not None:
-        attributes["retryable"] = "true" if retryable else "false"
-    counter_add("tertius.llm.job.finished.count", 1, attributes)
-    if job_status == "failed":
-        counter_add("tertius.llm.job.failed.count", 1, attributes)
-    histogram_record("tertius.llm.job.duration", duration_seconds, attributes)
 
 
-async def _run_llm_file_edit_job(
-    *,
-    job_id: UUID,
-    project_name: str,
-    request_payload: dict[str, Any],
-    tenant_id: UUID,
-    user_id: UUID,
-    keycloak_subject: str,
-    email: str | None,
-    trace_headers: dict[str, str] | None = None,
-) -> None:
-    parent_context = propagate.extract(trace_headers or {})
-    job_attributes = _llm_file_edit_job_attributes()
-    start = timed()
-    outcome: tuple[str, str | None, bool | None] | None = None
-    up_down_counter_add("tertius.llm.jobs.active", 1, job_attributes)
-    with get_tracer(__name__).start_as_current_span(
-        "llm.file_edit.job",
-        context=parent_context,
-        kind=SpanKind.CONSUMER,
-        attributes=job_attributes,
-    ) as span:
-        try:
-            outcome = await _run_llm_file_edit_job_inner(
-                job_id=job_id,
-                project_name=project_name,
-                request_payload=request_payload,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                keycloak_subject=keycloak_subject,
-                email=email,
-            )
-        except Exception as exc:
-            outcome = ("failed", "unexpected", True)
-            record_exception(span, exc)
-            raise
-        finally:
-            if outcome is not None:
-                job_status, failure_category, retryable = outcome
-                _record_llm_file_edit_job_finished(
-                    duration_seconds=elapsed_seconds(start),
-                    job_status=job_status,
-                    failure_category=failure_category,
-                    retryable=retryable,
-                )
-            up_down_counter_add("tertius.llm.jobs.active", -1, job_attributes)
 
 
-async def _run_llm_file_edit_job_inner(
-    *,
-    job_id: UUID,
-    project_name: str,
-    request_payload: dict[str, Any],
-    tenant_id: UUID,
-    user_id: UUID,
-    keycloak_subject: str,
-    email: str | None,
-) -> tuple[str, str | None, bool | None] | None:
-    db = None
-    job: LlmEditJob | None = None
-    project: Project | None = None
-    job_repo: LlmEditRepository | None = None
 
-    def fail_job(
-        status: str,
-        *,
-        error: str | None = None,
-        error_code: str | None = None,
-        user_message: str | None = None,
-        retryable: bool = False,
-    ) -> None:
-        nonlocal job, project
-        if db is None or job is None or project is None:
-            return
-        if job_repo is None:
-            return
-        db.rollback()
-        job = job_repo.get_job(project.id, job_id)
-        if job is not None:
-            job_repo.finish_job(
-                job,
-                status=status,
-                error=error,
-                error_code=error_code,
-                user_message=user_message,
-                retryable=retryable,
-            )
-            db.commit()
 
+
+
+
+async def publish_pi_agent_command(settings, command: PiAgentCommand) -> None:
+    nc = await asyncio.wait_for(connect_nats(settings.nats_url), timeout=2)
     try:
-        from core.db import SessionLocal
-
-        db = SessionLocal()
-        settings = get_settings()
-        repo = ProjectRepository(db, tenant_id)
-        job_repo = LlmEditRepository(db, tenant_id)
-        project = repo.get_project(project_name)
-        if project is None:
-            return None
-
-        job = job_repo.get_job(project.id, job_id)
-        if job is None or job.status != "queued":
-            return None
-
-        job_repo.mark_job_dispatched(job)
-        db.commit()
-        counter_add("tertius.llm.job.started.count", 1, _llm_file_edit_job_attributes())
-
-        req = LlmFileEditInput.model_validate(request_payload)
-        ctx = AuthContext(user_id=user_id, tenant_id=tenant_id, keycloak_subject=keycloak_subject, email=email)
-        max_generation_attempts = settings.llm_file_edit_max_generation_attempts
-        max_rate_limit_attempts = settings.llm_file_edit_max_rate_limit_attempts
-        rate_limit_backoff_base_seconds = settings.llm_file_edit_rate_limit_backoff_base_seconds
-        rate_limit_backoff_cap_seconds = settings.llm_file_edit_rate_limit_backoff_cap_seconds
-        previous_backoff_seconds = rate_limit_backoff_base_seconds
-        retry_attributes = _llm_file_edit_job_attributes()
-        while True:
-            try:
-                result, snapshot, changed_files = await _run_llm_file_edit_core(
-                    db=db,
-                    repo=repo,
-                    settings=settings,
-                    req=req,
-                    project=project,
-                    ctx=ctx,
-                    exclude_prompt_job_id=job_id,
-                )
-                break
-            except LlmFileEditTruncatedError:
-                raise
-            except LlmProviderRateLimitError:
-                db.rollback()
-                job = job_repo.get_job(project.id, job_id)
-                if job is None or job.attempt_count >= max_rate_limit_attempts:
-                    raise
-                previous_backoff_seconds = min(
-                    rate_limit_backoff_cap_seconds,
-                    random.uniform(
-                        rate_limit_backoff_base_seconds,
-                        previous_backoff_seconds * 3,
-                    ),
-                )
-                _record_retry(
-                    reason="rate_limit",
-                    attempt=job.attempt_count,
-                    backoff_seconds=previous_backoff_seconds,
-                    attributes=retry_attributes,
-                )
-                await asyncio.sleep(previous_backoff_seconds)
-                job_repo.mark_job_dispatched(job)
-                db.commit()
-            except LlmGenerationError:
-                db.rollback()
-                job = job_repo.get_job(project.id, job_id)
-                if job is None or job.attempt_count >= max_generation_attempts:
-                    raise
-                _record_retry(
-                    reason="generation_error",
-                    attempt=job.attempt_count,
-                    backoff_seconds=None,
-                    attributes=retry_attributes,
-                )
-                job_repo.mark_job_dispatched(job)
-                db.commit()
-        db.commit()
-        job_repo.finish_job(
-            job=job,
-            status="succeeded",
-            result_payload=_serialize_llm_edit_result(result, snapshot, changed_files),
+        js = await ensure_pi_agent_stream(nc, settings)
+        await NatsPublisher(js).publish_json(
+            settings.pi_agent_request_subject,
+            command,
+            message_id=pi_agent_command_message_id(command),
         )
-        db.commit()
-        return ("succeeded", None, None)
-    except LlmUsageLimitExceeded:
-        fail_job(
-            status="failed",
-            error="LLM usage limit exceeded",
-            error_code="usage_limit_exceeded",
-            user_message="LLM generation limit exceeded.",
-            retryable=True,
-        )
-        return ("failed", "usage_limit", True)
-    except LlmNotConfiguredError:
-        fail_job(
-            status="failed",
-            error="LLM provider is not configured",
-            user_message="LLM provider is not configured",
-            retryable=False,
-        )
-        return ("failed", "not_configured", False)
-    except LlmProviderAuthenticationError:
-        fail_job(
-            status="failed",
-            error="LLM provider authentication failed",
-            user_message="LLM provider authentication failed",
-            retryable=False,
-        )
-        return ("failed", "auth", False)
-    except LlmProviderRateLimitError:
-        fail_job(
-            status="failed",
-            error="LLM provider rate limit exceeded",
-            user_message="LLM provider rate limit exceeded",
-            retryable=True,
-        )
-        return ("failed", "rate_limit", True)
-    except LlmFileEditTruncatedError as exc:
-        message = str(exc) or "LLM response was truncated"
-        fail_job(
-            status="failed",
-            error=message,
-            user_message=message,
-            retryable=True,
-        )
-        return ("failed", "truncated", True)
-    except LlmGenerationError as exc:
-        message = str(exc) or "LLM generation failed"
-        fail_job(
-            status="failed",
-            error=message,
-            user_message=message,
-            retryable=True,
-        )
-        return ("failed", "generation_error", True)
-    except LlmBillingError:
-        fail_job(
-            status="failed",
-            error="LLM billing failed",
-            user_message="LLM billing failed",
-            retryable=True,
-        )
-        return ("failed", "billing", True)
-    except LlmInvalidFileEditError:
-        fail_job(
-            status="failed",
-            error="LLM returned invalid file edits",
-            user_message="LLM returned invalid file edits",
-            retryable=True,
-        )
-        return ("failed", "invalid_response", True)
-    except FileVersionConflictError:
-        fail_job(
-            status="failed",
-            error="Files changed while AI edit was running. Reload and try again.",
-            user_message="Files changed while AI edit was running. Reload and try again.",
-            retryable=False,
-        )
-        return ("failed", "file_conflict", False)
-    except ValueError as exc:
-        fail_job(
-            status="failed",
-            error=str(exc),
-            user_message=str(exc),
-            retryable=False,
-        )
-        return ("failed", "validation", False)
-    except Exception:
-        logger.exception("LLM file edit job failed")
-        fail_job(
-            status="failed",
-            error="LLM generation failed",
-            user_message="LLM generation failed",
-            retryable=True,
-        )
-        return ("failed", "unexpected", True)
+        await nc.flush()
     finally:
-        if db is not None:
-            db.close()
+        await nc.close()
 
 
 @app.post("/projects/{name}/files/llm-edit/jobs")
-def start_llm_file_edit_job(
+async def start_llm_file_edit_job(
     name: str,
     req: LlmFileEditInput,
-    background_tasks: BackgroundTasks,
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
     repo = ProjectRepository(db, ctx.tenant_id)
-    llm_edit_repo = LlmEditRepository(db, ctx.tenant_id)
+    job_repo = LlmEditRepository(db, ctx.tenant_id)
+    settings = get_settings()
+    job = None
+    publication_attempted = False
     try:
+        if not settings.pi_agent_enabled:
+            return JSONResponse(status_code=503, content={"success": False, "error": "AI editing is not configured", "retryable": False})
         project = repo.get_project(name)
         if project is None:
             return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+        locked_project = db.scalar(
+            select(Project).where(Project.id == project.id).with_for_update()
+        )
+        if locked_project is None:
+            return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+        project = locked_project
+        active_job = db.scalar(
+            select(LlmEditJob)
+            .where(
+                LlmEditJob.tenant_id == ctx.tenant_id,
+                LlmEditJob.project_id == project.id,
+                LlmEditJob.status.in_(["queued", "running"]),
+            )
+            .limit(1)
+        )
+        if active_job is not None:
+            db.rollback()
+            return JSONResponse(status_code=409, content={"success": False, "error": "An AI edit is already running for this project", "retryable": True})
+        if req.model_id not in (None, "", settings.pi_agent_model):
+            return JSONResponse(status_code=400, content={"success": False, "error": "unsupported_model"})
 
         seen_ids: set[UUID] = set()
         for pointer in req.files:
             require_valid_python_filename(pointer.filename)
             if pointer.id in seen_ids:
-                return JSONResponse(
-                    status_code=400,
-                    content={"success": False, "error": "Duplicate file id in request"},
-                )
+                raise ValueError("Duplicate file id in request")
             seen_ids.add(pointer.id)
-
         if req.active_file_id is not None and req.active_file_id not in seen_ids:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "Active file id is not in the request"},
-            )
-
-        file_rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
-        if set(file_rows) != seen_ids:
+            raise ValueError("Active file id is not in the request")
+        rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
+        if set(rows) != seen_ids:
             return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
-
         for pointer in req.files:
-            if file_rows[pointer.id].filename != pointer.filename:
-                return JSONResponse(
-                    status_code=400,
-                    content={"success": False, "error": "File pointer does not match filename"},
-                )
-            if normalize_file_version(file_rows[pointer.id].updated_at) != normalize_file_version(pointer.updated_at):
-                return JSONResponse(
-                    status_code=status.HTTP_409_CONFLICT,
-                    content={
-                        "success": False,
-                        "error": "Files changed while AI edit was running. Reload and try again.",
-                        "retryable": False,
-                    },
-                )
+            row = rows[pointer.id]
+            if row.filename != pointer.filename:
+                raise ValueError("File pointer does not match filename")
+            if normalize_file_version(row.updated_at) != normalize_file_version(pointer.updated_at):
+                return JSONResponse(status_code=409, content={"success": False, "error": "Files changed while AI edit was running. Reload and try again.", "retryable": False})
 
-        request_payload = req.model_dump(mode="json")
-        job = llm_edit_repo.start_job(
-            project_id=project.id,
-            user_id=ctx.user_id,
-            request_payload=request_payload,
-            status="queued",
+        editable = [
+            DomainEditableFile(id=rows[p.id].id, filename=rows[p.id].filename, content=rows[p.id].content)
+            for p in req.files
+        ]
+        selected = select_domain_context_files(
+            prompt=req.prompt,
+            active_file_id=req.active_file_id,
+            files=editable,
+            max_files=settings.llm_file_edit_max_context_files,
+            max_chars=settings.llm_file_edit_max_context_chars,
         )
+        prompt_snapshot = load_pi_agent_prompt()
+        history_jobs = job_repo.list_recent_terminal_jobs(project.id)
+        conversation = next_conversation_context(history_jobs)
+        conversation_prompt = render_conversation_context(conversation, req.prompt)
+        selected_ids = {file.id for file in selected}
+        active_filename = next(
+            (
+                rows[pointer.id].filename
+                for pointer in req.files
+                if pointer.id == req.active_file_id
+                and pointer.id in selected_ids
+            ),
+            None,
+        )
+        user_prompt = render_pi_agent_user_prompt(
+            conversation_prompt=conversation_prompt,
+            editable_filenames=[
+                rows[pointer.id].filename
+                for pointer in req.files
+                if pointer.id in selected_ids
+            ],
+            active_filename=active_filename,
+        )
+        estimate = estimate_pi_agent_usage(
+            system_prompt=prompt_snapshot.content,
+            user_prompt=user_prompt,
+            source_bytes=sum(
+                len(file.content.encode("utf-8")) for file in selected
+            ),
+            metadata=req.metadata,
+            max_output_tokens=settings.pi_agent_estimated_output_tokens,
+        )
+        assert_llm_usage_allowed(
+            db,
+            settings,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            estimated_tokens=estimate.total_tokens,
+        )
+        command_files = [
+            PiAgentSourceFile(
+                id=row.id,
+                filename=row.filename,
+                content=row.content,
+                updated_at=row.updated_at,
+                sha256=sha256(row.content.encode("utf-8")).hexdigest(),
+            )
+            for pointer in req.files
+            if pointer.id in selected_ids
+            for row in [rows[pointer.id]]
+        ]
+        dispatch_created_at = datetime.now(timezone.utc)
+        request_payload = req.model_dump(mode="json")
+        request_payload.update(
+            {
+                "dispatched_provider": settings.pi_agent_provider,
+                "dispatched_model": settings.pi_agent_model,
+                "dispatched_thinking": settings.pi_agent_thinking,
+                "dispatched_command_schema_version": 2,
+                "dispatched_conversation": conversation.model_dump(mode="json"),
+                "dispatched_system_prompt_sha256": prompt_snapshot.sha256,
+                "dispatch_created_at": dispatch_created_at.isoformat(),
+                "dispatch_attempted_at": dispatch_created_at.isoformat(),
+                "dispatched_manifest": [
+                    {
+                        "id": str(file.id),
+                        "filename": file.filename,
+                        "updated_at": file.updated_at.isoformat(),
+                        "sha256": file.sha256,
+                    }
+                    for file in command_files
+                ],
+            }
+        )
+        trace_headers: dict[str, str] = {}
+        propagate.inject(trace_headers)
+        request_payload["dispatch_traceparent"] = trace_headers.get("traceparent")
+        request_payload["dispatch_tracestate"] = trace_headers.get("tracestate")
+        job = job_repo.start_job(project.id, ctx.user_id, request_payload, status="queued")
+        command = PiAgentCommand(
+            schema_version=2,
+            job_id=job.id,
+            tenant_id=ctx.tenant_id,
+            project_id=project.id,
+            provider=settings.pi_agent_provider,
+            model=settings.pi_agent_model,
+            thinking=settings.pi_agent_thinking,
+            prompt=req.prompt,
+            prior_prompts=[],
+            conversation=conversation,
+            system_prompt_sha256=prompt_snapshot.sha256,
+            active_file_id=req.active_file_id,
+            files=command_files,
+            created_at=dispatch_created_at,
+            traceparent=trace_headers.get("traceparent"),
+            tracestate=trace_headers.get("tracestate"),
+        )
+        assert_pi_agent_command_size(command, settings.pi_agent_request_max_bytes)
         db.commit()
         counter_add("tertius.llm.job.queued.count", 1, _llm_file_edit_job_attributes())
+        counter_add(
+            "tertius.pi_agent.job.queued.count",
+            1,
+            pi_agent_metric_attributes(
+                operation="pi_agent.api",
+                provider=settings.pi_agent_provider,
+                model=settings.pi_agent_model,
+                status="queued",
+            ),
+        )
+
+        publication_attempted = True
+        await publish_pi_agent_command(settings, command)
+        job = job_repo.get_job(project.id, job.id)
+        if job is not None:
+            job_repo.mark_job_dispatched(job)
+            db.commit()
+    except PiAgentPromptError:
+        db.rollback()
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "AI editing is not configured",
+                "retryable": False,
+            },
+        )
+    except LlmUsageLimitExceeded:
+        db.rollback()
+        return JSONResponse(status_code=429, content={"success": False, "error": "LLM generation limit exceeded.", "retryable": True})
     except ValueError as exc:
         db.rollback()
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
     except Exception:
-        logger.exception("Failed to enqueue LLM file edit job")
+        logger.exception("Failed to dispatch Pi agent job")
         db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "success": False,
-                "error": "Could not enqueue LLM file edit job",
-                "retryable": True,
-            },
-        )
+        if publication_attempted and job is not None:
+            return JSONResponse(status_code=202, content={"success": True, "job_id": str(job.id), "status": "queued"})
+        return JSONResponse(status_code=503, content={"success": False, "error": "Could not prepare AI edit job", "retryable": True})
 
-    trace_headers: dict[str, str] = {}
-    propagate.inject(trace_headers)
-
-    background_tasks.add_task(
-        _run_llm_file_edit_job,
-        job_id=job.id,
-        project_name=name,
-        request_payload=request_payload,
-        tenant_id=ctx.tenant_id,
-        user_id=ctx.user_id,
-        keycloak_subject=ctx.keycloak_subject,
-        email=ctx.email,
-        trace_headers=trace_headers,
-    )
-    return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED,
-        content={"success": True, "job_id": str(job.id), "status": "queued"},
-    )
+    assert job is not None
+    return JSONResponse(status_code=202, content={"success": True, "job_id": str(job.id), "status": "queued"})
 
 
 @app.get("/projects/{name}/files/llm-edit/jobs")
@@ -1190,10 +759,9 @@ def list_llm_file_edit_jobs(
         return JSONResponse(status_code=404, content={"error": "Project not found"})
 
     settings = get_settings()
-    llm_edit_repo.reconcile_stale_jobs_for_project(
-        project.id,
-        older_than_seconds=_llm_edit_stale_after_seconds(settings),
-    )
+    jobs = llm_edit_repo.list_jobs_for_project(project.id, limit=limit)
+    for candidate in jobs:
+        reconcile_stale_pi_agent_job(db, candidate, settings)
     db.commit()
 
     jobs = llm_edit_repo.list_jobs_for_project(project.id, limit=limit)
@@ -1229,12 +797,9 @@ def get_llm_file_edit_job_status(
         return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
 
     settings = get_settings()
-    job = llm_edit_repo.reconcile_stale_job(
-        project.id,
-        job.id,
-        older_than_seconds=_llm_edit_stale_after_seconds(settings),
-    )
+    reconcile_stale_pi_agent_job(db, job, settings)
     db.commit()
+    db.refresh(job)
     if job is None:
         return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
 
@@ -1251,130 +816,7 @@ def get_llm_file_edit_job_status(
     }
 
 
-@app.post("/projects/{name}/build-script/generate")
-async def generate_project_build_script(
-    name: str,
-    req: BuildScriptGenerationInput,
-    ctx: AuthContext = Depends(get_auth_context),
-    db: Session = Depends(get_db),
-):
-    repo = ProjectRepository(db, ctx.tenant_id)
-    try:
-        require_valid_python_filename(req.active_file)
-        project = repo.get_project(name)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
-    if project is None:
-        return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
 
-    settings = get_settings()
-    billing_publisher = None
-    billing_nc = None
-    try:
-        if not settings.llm_api_key:
-            raise LlmNotConfiguredError("LLM provider is not configured")
-        model_config = select_llm_model(settings, req.model_id)
-        estimated_usage = estimate_build_script_usage(
-            req,
-            max_output_tokens=settings.llm_max_output_tokens,
-        )
-        assert_llm_usage_allowed(
-            db,
-            settings,
-            tenant_id=ctx.tenant_id,
-            user_id=ctx.user_id,
-            estimated_tokens=estimated_usage.total_tokens,
-            estimated_cost_usd=llm_usage_cost_usd(estimated_usage, model_config),
-        )
-        billing_publisher, billing_nc = await create_billing_publisher(settings)
-        with get_tracer(__name__).start_as_current_span(
-            "llm.build_script.request",
-            attributes={"workflow": "intus", "llm.operation": "build_script.generate"},
-        ):
-            result = await generate_build_script(
-                req,
-                settings=settings,
-                auth=ctx,
-                project_id=project.id,
-                billing_publisher=billing_publisher,
-            )
-        record_llm_usage(
-            db,
-            auth=ctx,
-            project_id=project.id,
-            request=req,
-            result=result,
-            provider_request_id=getattr(result, "provider_request_id", None),
-            event_id=getattr(result, "billing_event_id", None),
-            settings=settings,
-        )
-        db.commit()
-    except LlmUsageLimitExceeded as exc:
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"success": False, "error": str(exc), "retryable": True},
-        )
-    except LlmNotConfiguredError as exc:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": False},
-        )
-    except LlmProviderAuthenticationError as exc:
-        logger.warning("LLM provider authentication failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": False},
-        )
-    except LlmProviderRateLimitError as exc:
-        logger.warning("LLM provider rate limit exceeded")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": str(exc), "retryable": True},
-        )
-    except LlmGenerationError as exc:
-        logger.exception("LLM build script generation failed")
-        db.rollback()
-        message = str(exc) or "LLM generation failed"
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": message, "retryable": True},
-        )
-    except LlmBillingError:
-        logger.exception("LLM billing failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM billing failed", "retryable": True},
-        )
-    except Exception:
-        logger.exception("LLM build script generation failed")
-        db.rollback()
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"success": False, "error": "LLM generation failed", "retryable": True},
-        )
-    finally:
-        if billing_nc is not None:
-            try:
-                await billing_nc.flush()
-            except Exception:
-                logger.exception("Failed to flush LLM billing NATS connection")
-            finally:
-                try:
-                    await billing_nc.close()
-                except Exception:
-                    logger.exception("Failed to close LLM billing NATS connection")
-
-    return {
-        "success": result.success,
-        "script": result.script,
-        "provider": result.provider,
-        "model": result.model,
-        "usage": result.usage.model_dump(),
-        "cost_usd": result.cost_usd,
-    }
 
 
 @app.get("/projects/{name}/compile/jobs/{job_id}")

@@ -1,0 +1,28 @@
+{{- if and .Values.piAgent.enabled (not (or .Values.piAgent.auth.storage.enabled .Values.piAgent.auth.existingClaim)) }}
+{{- fail "piAgent.enabled requires piAgent.auth.storage.enabled=true or piAgent.auth.existingClaim" }}
+{{- end }}
+{{- if and .Values.piAgent.enabled (not .Values.keda.enabled) }}
+{{- fail "piAgent.enabled requires keda.enabled=true" }}
+{{- end }}
+{{- if and .Values.piAgent.auth.storage.enabled (not .Values.piAgent.auth.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tertius.piAgentAuthClaimName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pi-agent-auth
+  {{- if .Values.piAgent.auth.storage.retain }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.piAgent.auth.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.piAgent.auth.storage.size | quote }}
+{{- end }}

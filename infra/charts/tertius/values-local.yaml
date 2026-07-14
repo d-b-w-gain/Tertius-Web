@@ -41,58 +41,8 @@ app:
     authSessionIdleSeconds: 604800
     authSessionMaxSeconds: 2592000
     natsUrl: ""
-    llmDefaultModelId: kimi-k2.7-code
-    llmWeeklyBudgetUsd: "14.00"
-    llmModels:
-      - id: glm-5.2
-        label: GLM-5.2
-        model: glm-5.2
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 1.40
-        output_price_per_million: 4.40
-        cached_read_price_per_million: 0.26
-        cached_write_price_per_million: null
-        enabled: true
-      - id: kimi-k2.7-code
-        label: Kimi K2.7 Code
-        model: kimi-k2.7-code
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 0.95
-        output_price_per_million: 4.00
-        cached_read_price_per_million: 0.19
-        cached_write_price_per_million: null
-        enabled: true
-      - id: deepseek-v4-pro
-        label: DeepSeek V4 Pro
-        model: deepseek-v4-pro
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 1.74
-        output_price_per_million: 3.48
-        cached_read_price_per_million: 0.0145
-        cached_write_price_per_million: null
-        enabled: true
-      - id: minimax-m3
-        label: MiniMax M3
-        model: minimax-m3
-        endpoint: https://opencode.ai/zen/go/v1/messages
-        api: anthropic-messages
-        input_price_per_million: 0.30
-        output_price_per_million: 1.20
-        cached_read_price_per_million: 0.06
-        cached_write_price_per_million: null
-        enabled: true
-    llmTimeoutSeconds: 480
-    llmMaxOutputTokens: 2048
-    llmFileEditMaxOutputTokens: 65536
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 80000
-    llmFileEditMaxGenerationAttempts: 2
-    llmFileEditMaxRateLimitAttempts: 4
-    llmFileEditRateLimitBackoffBaseSeconds: 2.0
-    llmFileEditRateLimitBackoffCapSeconds: 30.0
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"
@@ -101,11 +51,6 @@ app:
     billingLlmUsageSubject: tertius.billing.usage.llm.tokens
     billingMaxBytes: 262144
     oidcIssuerUrl: http://localhost:8081/realms/tertius
-  llmSecretName: ""
-  llmSecret:
-    create: false
-    apiKey: ""
-    fileEditSystemPrompt: ""
   secret:
     create: true
     databaseUrl: ""
@@ -139,6 +84,12 @@ compileJobs:
       cpu: "4"
       memory: 8Gi
       ephemeral-storage: 4Gi
+
+piAgent:
+  runtimeClassName: ""
+  auth:
+    storage:
+      storageClassName: local-path
 
 ui:
   replicaCount: 1

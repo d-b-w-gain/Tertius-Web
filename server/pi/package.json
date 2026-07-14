@@ -1,0 +1,25 @@
+{
+  "name": "tertius-pi-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "harden": "node pi-install-security.ts harden",
+    "install:hardened": "npm ci --ignore-scripts && npm run harden",
+    "pretest": "npm run harden",
+    "test": "node pi-install-security.ts verify && npm run typecheck && node --test workspace-guard.test.ts oauth-cli.test.ts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck oauth-cli.ts oauth-cli.test.ts pi-install-security.ts rpc-test-process.ts workspace-guard.ts workspace-guard.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.6",
+    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-tui": "0.80.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

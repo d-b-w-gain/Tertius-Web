@@ -295,59 +295,33 @@ def test_llm_edit_repository_lists_jobs_for_project_ordered_and_tenant_scoped(db
     assert repo_a.list_jobs_for_project(seeded["project_a"], limit=1)[0].id == first.id
 
 
-def test_llm_edit_repository_lists_last_five_prompts_in_chronological_order(db_session):
+def test_llm_edit_repository_lists_bounded_terminal_jobs_oldest_first(db_session):
     seeded = seed_two_tenants(db_session)
     repo_a = LlmEditRepository(db_session, seeded["tenant_a"])
     repo_b = LlmEditRepository(db_session, seeded["tenant_b"])
-    base_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
-
-    for index in range(6):
-        repo_a.start_job(
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    expected = []
+    for index, status in enumerate(["succeeded", "failed", "running", "succeeded"]):
+        job = repo_a.start_job(
             seeded["project_a"],
             seeded["user_a"],
-            {"prompt": f"old-prompt-{index}", "files": []},
-            status="succeeded",
+            {"prompt": f"request-{index}", "files": []},
+            status=status,
         )
-    for index in range(6):
-        job = repo_a.list_jobs_for_project(seeded["project_a"])[index]
-        job.created_at = base_time + timedelta(minutes=index)
+        job.created_at = base + timedelta(minutes=index)
+        if status in {"succeeded", "failed"}:
+            expected.append(job.id)
     repo_b.start_job(
         seeded["project_b"],
         seeded["user_b"],
-        {"prompt": "other-tenant-prompt", "files": []},
+        {"prompt": "other tenant", "files": []},
         status="succeeded",
     )
     db_session.flush()
 
-    prompts = repo_a.list_recent_prompts("same_name")
-
-    assert prompts == [
-        "old-prompt-1",
-        "old-prompt-2",
-        "old-prompt-3",
-        "old-prompt-4",
-        "old-prompt-5",
-    ]
-
-
-def test_llm_edit_repository_list_recent_prompts_respects_exclude_job_id(db_session):
-    seeded = seed_two_tenants(db_session)
-    repo = LlmEditRepository(db_session, seeded["tenant_a"])
-    jobs = [
-        repo.start_job(
-            seeded["project_a"],
-            seeded["user_a"],
-            {"prompt": f"prompt-{index}", "files": []},
-            status="succeeded",
-        )
-        for index in range(3)
-    ]
-    db_session.flush()
-
-    excluded = jobs[-1].id
-    prompts = repo.list_recent_prompts("same_name", limit=2, exclude_job_id=excluded)
-
-    assert prompts == ["prompt-0", "prompt-1"]
+    jobs = repo_a.list_recent_terminal_jobs(seeded["project_a"], limit=200)
+    assert [job.id for job in jobs] == expected
+    assert repo_a.list_recent_terminal_jobs(seeded["project_a"], limit=1)[0].id == expected[-1]
 
 
 def test_llm_edit_repository_gets_compile_job_for_llm_edit(db_session, seeded_tenant):

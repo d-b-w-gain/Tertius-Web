@@ -17,7 +17,7 @@ import {
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest } from '../shared/polling'
 import { LatestModelViewer, ModelViewerCanvas } from '../extus/ui/ViewerTab'
-import { recordAiBudgetUsage } from './AiBudgetGauge'
+import { recordAiUsage } from './AiUsageGauge'
 import { runWithInteractionSpan } from '../../telemetry'
 
 const AI_EDIT_FILE_LIMIT = 20
@@ -153,10 +153,6 @@ function isCompileRepairEntry(entry: LlmEditConversationEntry) {
   return entry.metadata?.source === 'generate_design_compile_repair'
 }
 
-function formatPrice(model: LlmModelOption) {
-  return `$${model.input_price_per_million.toFixed(2)} / $${model.output_price_per_million.toFixed(2)}`
-}
-
 export function GenerateDesignWindow({
   isActive = true,
   renderViewport = true,
@@ -177,7 +173,6 @@ export function GenerateDesignWindow({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [weeklyBudgetUsd, setWeeklyBudgetUsd] = useState(0)
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -402,8 +397,10 @@ export function GenerateDesignWindow({
       try {
         const response = await storage.listLlmModels()
         if (cancelled) return
+        if (response.models.length === 0) {
+          throw new Error('No AI model is configured.')
+        }
         setLlmModels(response.models)
-        setWeeklyBudgetUsd(response.weekly_budget_usd ?? response.daily_budget_usd * 7)
         setSelectedModelId(current => {
           if (current && response.models.some(model => model.id === current)) return current
           return response.default_model_id || response.models[0]?.id || ''
@@ -608,7 +605,7 @@ export function GenerateDesignWindow({
     originatingLlmEditJobId?: string,
     truncatedMessage?: string,
   ) => {
-    recordAiBudgetUsage(result.usage.total_tokens)
+    recordAiUsage(result.usage.total_tokens)
     const changedFiles = result.files.filter(file => file.changed !== false)
     const fileSummary = result.files
       .map(file => file.summary)
@@ -946,30 +943,14 @@ export function GenerateDesignWindow({
           <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
             <span className="min-w-0 text-sm text-slate-300">{statusText}</span>
             <span className="shrink-0 rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-              {weeklyBudgetUsd ? `$${weeklyBudgetUsd.toFixed(2)}/week` : `${COMPILE_FORMAT}/${COMPILE_QUALITY}`}
+              {COMPILE_FORMAT}/{COMPILE_QUALITY}
             </span>
           </div>
 
-          {llmModels.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto border-b border-slate-800 px-4 py-3">
-              {llmModels.map(model => (
-                <button
-                  key={model.id}
-                  type="button"
-                  onClick={() => setSelectedModelId(model.id)}
-                  className={`shrink-0 rounded border px-3 py-2 text-left text-xs transition-colors ${
-                    selectedModelId === model.id
-                      ? 'border-cyan-600 bg-cyan-950/50 text-cyan-100'
-                      : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
-                  }`}
-                  title={`${model.model} ${formatPrice(model)} per 1M tokens`}
-                >
-                  <span className="block whitespace-nowrap font-semibold">{model.label}</span>
-                  <span className="block whitespace-nowrap font-mono text-[10px] text-slate-500">
-                    {formatPrice(model)}
-                  </span>
-                </button>
-              ))}
+          {selectedModel && (
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
+              <span className="font-semibold text-slate-200">{selectedModel.label}</span>
+              <span className="font-mono text-slate-500">{selectedModel.model}</span>
             </div>
           )}
 

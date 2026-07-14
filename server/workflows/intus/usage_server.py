@@ -89,11 +89,14 @@ def llm_usage_today(ctx: AuthContext = Depends(get_auth_context), db: Session = 
 @llm_usage_router.get("/models", response_model=LlmModelsResponse)
 def llm_models(ctx: AuthContext = Depends(get_auth_context)):
     settings = get_settings()
-    models = settings.enabled_llm_models
-    default_model_id = settings.get_llm_model().id if models else ""
     return {
-        "default_model_id": default_model_id,
-        "weekly_budget_usd": settings.llm_weekly_budget_usd,
-        "daily_budget_usd": round(settings.llm_weekly_budget_usd / 7, 8),
-        "models": [model.model_dump() for model in models],
+        "default_model_id": settings.pi_agent_model,
+        "models": [
+            {
+                "id": settings.pi_agent_model,
+                "model": settings.pi_agent_model,
+                "label": settings.pi_agent_model_label,
+                "enabled": settings.pi_agent_enabled,
+            }
+        ],
     }

@@ -1,0 +1,58 @@
+# Pi agent jobs queued by the API.
+# name: pi_agent_queued_rate
+sum(rate(tertius_pi_agent_job_queued_count_total[5m])) or vector(0)
+
+# Pi agent worker starts.
+# name: pi_agent_started_rate
+sum(rate(tertius_pi_agent_job_started_count_total[5m])) or vector(0)
+
+# Results completed and published by workers, before API persistence.
+# name: pi_agent_worker_completed_rate
+sum(rate(tertius_pi_agent_worker_completed_count_total[5m])) or vector(0)
+
+# Pi agent terminal outcomes by bounded status and failure category.
+# name: pi_agent_terminal_rate
+sum by (status, failure_category, retryable) (rate(tertius_pi_agent_job_terminal_count_total{operation="pi_agent.api"}[5m])) or vector(0)
+
+# Pi agent provider authentication failures.
+# name: pi_agent_auth_failure_rate
+sum(rate(tertius_pi_agent_job_terminal_count_total{operation="pi_agent.api",failure_category="provider_auth"}[5m])) or vector(0)
+
+# Pi agent p95 worker duration.
+# name: pi_agent_duration_p95
+histogram_quantile(0.95, sum by (le) (rate(tertius_pi_agent_job_duration_bucket[5m]))) or vector(0)
+
+# Pi agent result consumer throughput.
+# name: pi_agent_result_processed_rate
+sum(rate(tertius_pi_agent_result_processed_count_total[5m])) or vector(0)
+
+# DB-observed queued/running jobs, refreshed by API reconciliation.
+# name: pi_agent_active_jobs
+max(tertius_pi_agent_jobs_active{operation="pi_agent.api",status="active"}) or vector(0)
+
+# Result-consumer liveness across API replicas.
+# name: pi_agent_result_consumer_heartbeat_rate
+sum(rate(tertius_pi_agent_result_consumer_heartbeat_count_total{operation="pi_agent.api",status="healthy"}[5m])) or vector(0)
+
+# Active jobs with no result-consumer heartbeat. Enable only when Pi is enabled.
+# name: pi_agent_result_consumer_missing
+(max(tertius_pi_agent_jobs_active{operation="pi_agent.api",status="active"}) > 0) and ((sum(increase(tertius_pi_agent_result_consumer_heartbeat_count_total{operation="pi_agent.api",status="healthy"}[5m])) or vector(0)) == 0)
+
+# Jobs reconciled after a worker or result was lost.
+# name: pi_agent_stale_job_rate
+sum(rate(tertius_pi_agent_job_stale_count_total[15m])) or vector(0)
+
+# Persisted worker-loss terminal outcomes; this includes the stale subset above.
+# name: pi_agent_worker_loss_rate
+sum(rate(tertius_pi_agent_job_terminal_count_total{operation="pi_agent.api",failure_category="worker_lost"}[15m])) or vector(0)
+
+# Token throughput by fixed token class metrics.
+# name: pi_agent_input_token_rate
+sum(rate(tertius_pi_agent_tokens_input_sum[5m])) or vector(0)
+
+# Pi agent turn and tool-call p95.
+# name: pi_agent_turns_p95
+histogram_quantile(0.95, sum by (le) (rate(tertius_pi_agent_turns_bucket[15m]))) or vector(0)
+
+# name: pi_agent_tool_calls_p95
+histogram_quantile(0.95, sum by (le) (rate(tertius_pi_agent_tool_calls_bucket[15m]))) or vector(0)

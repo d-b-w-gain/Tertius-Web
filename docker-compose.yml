@@ -14,19 +14,28 @@ services:
       COMPILE_RESULT_CONSUMER: compile-result-api
       COMPILE_REQUEST_MAX_BYTES: 8388608
       COMPILE_RESULT_MAX_BYTES: 33554432
-      LLM_MODELS_JSON: ${LLM_MODELS_JSON:-[]}
-      LLM_DEFAULT_MODEL_ID: ${LLM_DEFAULT_MODEL_ID:-}
-      LLM_WEEKLY_BUDGET_USD: ${LLM_WEEKLY_BUDGET_USD:-14.00}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
-      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-2048}
-      LLM_FILE_EDIT_MAX_OUTPUT_TOKENS: ${LLM_FILE_EDIT_MAX_OUTPUT_TOKENS:-65536}
+      PI_AGENT_ENABLED: "true"
+      PI_AGENT_PROVIDER: openai-codex
+      PI_AGENT_MODEL: gpt-5.5
+      PI_AGENT_MODEL_LABEL: GPT-5.5
+      PI_AGENT_THINKING: high
+      PI_AGENT_TIMEOUT_SECONDS: 480
+      PI_AGENT_MAX_TURNS: 12
+      PI_AGENT_MAX_TOOL_CALLS: 48
+      PI_AGENT_ESTIMATED_OUTPUT_TOKENS: 65536
+      PI_AGENT_STREAM_NAME: TERTIUS_PI_AGENT
+      PI_AGENT_REQUEST_SUBJECT: tertius.pi.request
+      PI_AGENT_RESULT_SUBJECT: tertius.pi.result
+      PI_AGENT_WORKER_QUEUE: pi-agent-workers
+      PI_AGENT_RESULT_CONSUMER: pi-agent-result-api
+      PI_AGENT_ACK_WAIT_SECONDS: 90
+      PI_AGENT_MAX_DELIVER: 2
+      PI_AGENT_REQUEST_MAX_BYTES: 524288
+      PI_AGENT_RESULT_MAX_BYTES: 524288
+      PI_AGENT_STREAM_MAX_AGE_SECONDS: 86400
+      PI_AGENT_STREAM_MAX_BYTES: 67108864
       LLM_FILE_EDIT_MAX_CONTEXT_FILES: ${LLM_FILE_EDIT_MAX_CONTEXT_FILES:-20}
       LLM_FILE_EDIT_MAX_CONTEXT_CHARS: ${LLM_FILE_EDIT_MAX_CONTEXT_CHARS:-80000}
-      LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS: ${LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS:-2}
-      LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS: ${LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS:-4}
-      LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS: ${LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS:-2.0}
-      LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS: ${LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS:-30.0}
       LLM_USER_RATE_LIMIT_PER_MINUTE: ${LLM_USER_RATE_LIMIT_PER_MINUTE:-10}
       LLM_TENANT_RATE_LIMIT_PER_MINUTE: ${LLM_TENANT_RATE_LIMIT_PER_MINUTE:-60}
       LLM_TENANT_DAILY_TOKEN_QUOTA: ${LLM_TENANT_DAILY_TOKEN_QUOTA:-3200000}
@@ -81,6 +90,59 @@ services:
       - nats
       - otel-collector
 
+  pi-agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      target: pi-agent
+    command: sh -c "while true; do sh /app/server/start-pi-agent-job.sh; sleep 2; done"
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2.0
+    environment:
+      NATS_URL: nats://nats:4222
+      PI_AGENT_PROVIDER: openai-codex
+      PI_AGENT_MODEL: gpt-5.5
+      PI_AGENT_THINKING: high
+      PI_AGENT_TIMEOUT_SECONDS: 480
+      PI_AGENT_MAX_TURNS: 12
+      PI_AGENT_MAX_TOOL_CALLS: 48
+      PI_AGENT_STREAM_NAME: TERTIUS_PI_AGENT
+      PI_AGENT_REQUEST_SUBJECT: tertius.pi.request
+      PI_AGENT_RESULT_SUBJECT: tertius.pi.result
+      PI_AGENT_WORKER_QUEUE: pi-agent-workers
+      PI_AGENT_ACK_WAIT_SECONDS: 90
+      PI_AGENT_MAX_DELIVER: 2
+      PI_AGENT_REQUEST_MAX_BYTES: 524288
+      PI_AGENT_RESULT_MAX_BYTES: 524288
+      PI_AGENT_STREAM_MAX_AGE_SECONDS: 86400
+      PI_AGENT_STREAM_MAX_BYTES: 67108864
+      PI_CODING_AGENT_DIR: /var/lib/pi-agent
+      PI_SKIP_VERSION_CHECK: "1"
+      PI_TELEMETRY: "0"
+      HOME: /tmp/home
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_SERVICE_NAME: tertius-pi-agent
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    volumes:
+      - pi-agent-auth:/var/lib/pi-agent
+    tmpfs:
+      - /workspace:rw,noexec,nosuid,nodev,size=128m,mode=0700,uid=1000,gid=1000
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000
+      - /tmp/home:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=1000,gid=1000
+    networks:
+      - pi-agent-egress
+    depends_on:
+      - nats
+
   frontend:
     image: node:20
     working_dir: /app
@@ -134,6 +196,9 @@ services:
     volumes:
       - tertius-nats:/data
       - ./infra/nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+    networks:
+      - default
+      - pi-agent-egress
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -145,6 +210,9 @@ services:
       - "8888:8888"
     volumes:
       - ./infra/otel/otel-collector-local.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks:
+      - default
+      - pi-agent-egress
 
   victoriametrics:
     image: victoriametrics/victoria-metrics:v1.129.1
@@ -179,3 +247,7 @@ volumes:
   tertius-nats:
   tertius-victoriametrics:
   tertius-victoriatraces:
+  pi-agent-auth:
+
+networks:
+  pi-agent-egress:

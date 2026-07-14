@@ -25,7 +25,7 @@ vi.mock('./workflows/artus/ArtusWindow', () => ({ ArtusWindow: () => <div>Artus 
 vi.mock('./workflows/timus/TimusWindow', () => ({ TimusWindow: () => <div>Timus mock</div> }))
 vi.mock('./workflows/octavus/OctavusWindow', () => ({ OctavusWindow: () => <div>Octavus mock</div> }))
 vi.mock('./workflows/generate/GenerateDesignWindow', () => ({ GenerateDesignWindow: () => <div>Generate mock</div> }))
-vi.mock('./workflows/generate/AiBudgetGauge', () => ({ AiBudgetGauge: () => <div>Budget mock</div> }))
+vi.mock('./workflows/generate/AiUsageGauge', () => ({ AiUsageGauge: () => <div>Usage mock</div> }))
 
 afterEach(() => {
   cleanup()
@@ -51,7 +51,7 @@ describe('App guest mode', () => {
     expect(screen.getByText('Tertius')).toBeInTheDocument()
     expect(screen.getByText('Guest')).toBeInTheDocument()
     expect(screen.getByText('Generate mock')).toBeInTheDocument()
-    expect(screen.getByText('Budget mock')).toBeInTheDocument()
+    expect(screen.getByText('Usage mock')).toBeInTheDocument()
     expect(screen.queryByText('Redirecting to login...')).not.toBeInTheDocument()
     expect(mocks.login).not.toHaveBeenCalled()
   })

@@ -42,6 +42,25 @@ dashboard panels so agent validation and dashboards stay aligned.
 - Trace drilldown from API request to provider span, excluding prompts and generated content
 - AI-edit-to-compile correlation via the `tertius.originating_llm_edit_job_hash` span attribute on compile consume spans
 
+## Pi Agent
+
+- Queued, started, worker-completed, API-terminal, and result-processed rates from
+  `docs/harness/queries/pi-agent.promql`, sliced only by operation, provider,
+  model, status, failure category, and retryability.
+- Worker duration p50/p95/p99, turns, tool calls, and separate input, output,
+  cache-read, and cache-write token histograms.
+- Auth failures, DB-observed active jobs, unique stale reconciliations, and
+  worker-loss rate. Add JetStream durable pending, ack-pending, ack-floor lag,
+  and oldest-unacked age only when the NATS monitoring endpoint is exported;
+  never derive these panels by subtracting retryable attempt counters.
+- Render DB-observed active jobs with `max` across API replicas, never `sum`.
+  This panel is informational: rolling scrapes and process restarts can briefly
+  show mixed replica values. Pair it with the summed result-consumer heartbeat
+  rate and unique stale/worker-loss increases for actionable state. The active
+  observer is independent of NATS consumer initialization.
+- Trace drilldown through `pi_agent.command.consume` and
+  `pi_agent.result.consume`; use trace IDs for correlation, never raw domain IDs.
+
 ## Browser
 
 - Document load spans for `tertius-ui`

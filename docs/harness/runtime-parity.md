@@ -15,6 +15,11 @@ image behavior, and environment contracts.
 | NATS | chart dependency | `nats` container | `nats` container | subject/max-payload parity required |
 | Valkey | chart dependency | not required for all dev flows | inherited/optional | document differences |
 | Compile worker model | KEDA `ScaledJob` | looped `compile-job-runner` | looped `compile-job-runner` | intentional adapter |
+| Pi agent worker model | serial KEDA `ScaledJob` | one looped `pi-agent-worker` | one looped `pi-agent-worker` | serial execution and transport parity required |
+| Pi OAuth storage | retained RWO PVC | retained `pi-agent-auth` volume | retained `pi-agent-auth` volume | never bind host `~/.pi`; explicit delete only |
+| Pi append policy | identical read-only image file in API and worker | bind-mounted API policy file and image-backed worker policy file; rebuild the worker after prompt changes | identical read-only image file in API and worker | intentional dev drift; no environment, Secret, ConfigMap, workspace, or OAuth-PVC copy |
+| Pi conversation continuity | bounded Postgres context, one `--no-session` worker per turn | bounded Postgres context, one `--no-session` worker per turn | bounded Postgres context, one `--no-session` worker per turn | Pi session files are not persisted |
+| Pi network isolation | NetworkPolicy permits DNS, NATS, OTLP, and provider HTTPS | dedicated bridge exposes only NATS/OTLP peers plus bridge internet egress | same as Compose dev | Compose bridge cannot enforce Helm's destination/CIDR policy; verify peer isolation |
 | KEDA ScaledJob | enabled by chart when CRD exists | not present | not present | k3s required |
 | CloudNativePG | app and Keycloak clusters | container Postgres | container Postgres | k3s required |
 | PVCs | chart/operator storage | Compose named volumes | Compose named volumes | intentional adapter |
@@ -28,3 +33,10 @@ image behavior, and environment contracts.
 New runtime env vars must be added to Helm values/templates, Compose dev if
 needed, Compose parity when production-shaped, and `scripts/check-runtime-parity.sh`
 when the value is a runtime contract.
+
+The Compose `pi-agent-egress` network deliberately has only the Pi worker,
+NATS, and the OTLP collector attached. The worker cannot resolve the API,
+Postgres, or Keycloak service names. Docker bridge networking still provides
+general outbound internet access required for the subscription provider, so it
+is a weaker egress boundary than the Helm NetworkPolicy and is not evidence of
+destination-level filtering.

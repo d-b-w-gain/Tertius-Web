@@ -34,6 +34,35 @@ labels.
 - Billing publish errors: page when `tertius.billing.publish.error.count` is non-zero for 10 minutes.
 - Cost anomaly: notify when `tertius.llm.cost.usd.total` (cumulative counter) exceeds the configured daily budget burn-rate threshold.
 
+## Pi Agent
+
+- Provider auth failure: page when `failure_category="provider_auth"` terminal
+  jobs remain non-zero for 5 minutes; the retained OAuth state needs operator
+  attention rather than automated retries.
+- No result consumer: the NATS monitoring endpoint exposes durable
+  `num_pending`, `num_ack_pending`, and ack-floor state, but the current
+  collector does not export those fields. Until a NATS exporter is configured,
+  alert only when `max(tertius.pi_agent.jobs.active) > 0` and the sum of the
+  five-minute increase in `tertius.pi_agent.result_consumer.heartbeat.count`
+  is zero. Enable this rule only when Pi is enabled. Do not subtract attempt
+  counters because retries can mask or inflate lag. Active observation runs in
+  a separate API lifespan task and therefore remains available when NATS
+  subscription initialization fails.
+- Stale jobs: notify on any `tertius.pi_agent.job.stale.count`; page when the
+  increase exceeds 3 in 15 minutes.
+- Repeated worker loss: page when `failure_category="worker_lost"` increases
+  more than 3 times in 15 minutes on `tertius.pi_agent.job.terminal.count`
+  with `operation="pi_agent.api"`, grouped only by provider and model. This
+  terminal series includes stale reconciliations; do not add the stale counter.
+- Queue lag: after a NATS exporter is configured, alert directly on the Pi
+  request and result durable consumers' pending, ack-pending, ack-floor lag, and
+  oldest unacked age. Until then, use sustained DB-observed active jobs plus the
+  unique stale counter; do not use attempt-counter subtraction.
+- Overdue jobs: notify on any increase in the unique
+  `tertius.pi_agent.job.stale.count` and page on repeated
+  `failure_category="worker_lost"` terminal increases. Active-job gauges alone
+  are never a timeout alert.
+
 ## Data Stores And Platform
 
 - Postgres connection saturation: page when active connections exceed 85% of the configured limit for 10 minutes.

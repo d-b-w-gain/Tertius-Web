@@ -13,6 +13,8 @@ spec:
       app.kubernetes.io/component: api
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "tertius.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
@@ -63,18 +65,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgres.appUserSecretName | quote }}
                   key: username
-                  optional: true
-            - name: LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ default (printf "%s-llm" (include "tertius.fullname" .)) .Values.app.llmSecretName | quote }}
-                  key: LLM_API_KEY
-                  optional: true
-            - name: LLM_FILE_EDIT_SYSTEM_PROMPT
-              valueFrom:
-                secretKeyRef:
-                  name: {{ default (printf "%s-llm" (include "tertius.fullname" .)) .Values.app.llmSecretName | quote }}
-                  key: LLM_FILE_EDIT_SYSTEM_PROMPT
                   optional: true
           startupProbe:
             httpGet:

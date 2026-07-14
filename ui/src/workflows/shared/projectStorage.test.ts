@@ -284,4 +284,17 @@ describe('projectStorage', () => {
     await expect(storage.listLlmEditConversation('demo')).resolves.toEqual([])
     expect(mocks.apiFetch).not.toHaveBeenCalled()
   })
+
+  it('returns the token-only fixed LLM model contract', async () => {
+    const responseBody = {
+      default_model_id: 'gpt-5.5',
+      models: [{ id: 'gpt-5.5', label: 'GPT-5.5', model: 'gpt-5.5', enabled: true }],
+    }
+    mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify(responseBody)))
+    const getAccessToken = vi.fn()
+    const storage = createProjectStorage({ authMode: 'authenticated', serverUrl: '/api/intus', getAccessToken })
+
+    await expect(storage.listLlmModels()).resolves.toEqual(responseBody)
+    expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/llm-usage/models', getAccessToken)
+  })
 })

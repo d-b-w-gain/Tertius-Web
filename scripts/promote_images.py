@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Promote the API and UI chart image tags to one immutable build tag."""
+"""Promote the API, Pi agent, and UI chart images to one immutable build tag."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import tempfile
 
 
 TAG_PATTERN = re.compile(r"master-[0-9]+-[0-9]+-[a-f0-9]{7}")
-IMAGE_NAMES = ("tertius-api", "tertius-ui")
+IMAGE_NAMES = ("tertius-api", "tertius-pi-agent", "tertius-ui")
 
 
 class PromotionError(Exception):
@@ -39,7 +39,7 @@ def _promoted_values(contents: bytes, tag: str) -> bytes:
     replacements: list[tuple[re.Match[bytes], bytes]] = []
 
     if contents.count(b"$imagepromoter") != len(IMAGE_NAMES):
-        raise PromotionError("expected exactly two image promoter markers")
+        raise PromotionError("expected exactly three image promoter markers")
 
     for image_name in IMAGE_NAMES:
         marker = _marker(image_name)

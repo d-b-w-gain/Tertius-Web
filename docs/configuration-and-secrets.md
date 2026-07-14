@@ -2,16 +2,17 @@
 
 This document is the operating reference for Tertius runtime configuration.
 Helm values are the source for ConfigMap-backed settings. Kubernetes Secrets
-are the source for credentials and prompts that must not be committed.
+are the source for credentials and other sensitive runtime values that must not
+be committed.
 
 ## ConfigMap
 
 The Helm chart renders non-secret runtime settings into the `tertius-config`
 ConfigMap. Most entries come from `app.config`; Keycloak session lifetime
 entries mirror `keycloak.realmImport` values so operators can inspect the
-active auth lifetime contract in one place. Only the API receives LLM settings.
-UI pods and compile jobs must not receive LLM provider settings, API keys, or
-prompts.
+active auth lifetime contract in one place. The API receives quota and dispatch
+settings; the isolated Pi worker receives its bounded execution settings.
+UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 
 | Helm value | Environment variable | Used by | Purpose |
 | --- | --- | --- | --- |
@@ -43,22 +44,15 @@ prompts.
 | `app.config.compileTimeoutSeconds` | `COMPILE_TIMEOUT_SECONDS` | API, compile worker | Compile timeout. |
 | `app.config.compileRequestMaxBytes` | `COMPILE_REQUEST_MAX_BYTES` | API, compile worker | Max compile command size. |
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
-| `app.config.llmModels` | `LLM_MODELS_JSON` | API | Full selectable LLM model catalog. |
-| `app.config.llmDefaultModelId` | `LLM_DEFAULT_MODEL_ID` | API | Default selected model id. |
-| `app.config.llmWeeklyBudgetUsd` | `LLM_WEEKLY_BUDGET_USD` | API | Tenant weekly AI spend limit in USD. |
-| `app.config.llmTimeoutSeconds` | `LLM_TIMEOUT_SECONDS` | API | Provider HTTP timeout. |
-| `app.config.llmMaxOutputTokens` | `LLM_MAX_OUTPUT_TOKENS` | API | Build-script generation output cap. |
-| `app.config.llmFileEditMaxOutputTokens` | `LLM_FILE_EDIT_MAX_OUTPUT_TOKENS` | API | File-edit output cap. |
 | `app.config.llmFileEditMaxContextFiles` | `LLM_FILE_EDIT_MAX_CONTEXT_FILES` | API | File-edit context file cap. |
 | `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | File-edit context character cap. |
-| `app.config.llmFileEditMaxGenerationAttempts` | `LLM_FILE_EDIT_MAX_GENERATION_ATTEMPTS` | API | File-edit transient generation attempt cap. |
-| `app.config.llmFileEditMaxRateLimitAttempts` | `LLM_FILE_EDIT_MAX_RATE_LIMIT_ATTEMPTS` | API | File-edit provider rate-limit attempt cap. |
-| `app.config.llmFileEditRateLimitBackoffBaseSeconds` | `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_BASE_SECONDS` | API | File-edit rate-limit backoff base seconds. |
-| `app.config.llmFileEditRateLimitBackoffCapSeconds` | `LLM_FILE_EDIT_RATE_LIMIT_BACKOFF_CAP_SECONDS` | API | File-edit rate-limit backoff cap seconds. |
 | `app.config.llmUserRateLimitPerMinute` | `LLM_USER_RATE_LIMIT_PER_MINUTE` | API | Per-user LLM request rate. |
 | `app.config.llmTenantRateLimitPerMinute` | `LLM_TENANT_RATE_LIMIT_PER_MINUTE` | API | Per-tenant LLM request rate. |
 | `app.config.llmTenantDailyTokenQuota` | `LLM_TENANT_DAILY_TOKEN_QUOTA` | API | Tenant daily token fallback quota. |
 | `app.config.llmUserDailyTokenQuota` | `LLM_USER_DAILY_TOKEN_QUOTA` | API | User daily token fallback quota. |
+| `app.config.piAgentProvider` | `PI_AGENT_PROVIDER` | API, Pi worker | Pi provider; fixed to `openai-codex`. |
+| `app.config.piAgentModel` | `PI_AGENT_MODEL` | API, Pi worker | Subscription model id. |
+| `app.config.piAgentThinking` | `PI_AGENT_THINKING` | Pi worker | Pi reasoning level. |
 | `app.config.billingStreamName` | `BILLING_STREAM_NAME` | API | Billing stream. |
 | `app.config.billingLlmUsageSubject` | `BILLING_LLM_USAGE_SUBJECT` | API | LLM billing subject. |
 | `app.config.billingMaxBytes` | `BILLING_MAX_BYTES` | API | Max billing message size. |
@@ -77,20 +71,24 @@ prompts.
 | `app.secret.valkeyUrl` | `VALKEY_URL` | API | Valkey URL. |
 | `app.secret.oidcClientSecret` | `OIDC_CLIENT_SECRET` | API | OIDC confidential client secret, if enabled. |
 | `app.secret.authSessionSecret` | `AUTH_SESSION_SECRET` | API | Stable signing secret for OAuth login state cookies. |
-| `app.llmSecret.apiKey` | `LLM_API_KEY` | API | LLM provider API key. |
-| `app.llmSecret.fileEditSystemPrompt` | `LLM_FILE_EDIT_SYSTEM_PROMPT` | API | File-edit system prompt. |
 | `cloudflared.tunnelTokenSecretName` | `TUNNEL_TOKEN` | cloudflared | Cloudflare tunnel token. |
 | `keycloak.database.appUserSecret.password` | Keycloak DB password | Keycloak | Keycloak database password. |
 
-Production should normally set `app.secretName`, `app.llmSecretName`, database
+Production should normally set `app.secretName`, database
 secret names, and tunnel token secret names to externally managed Secrets.
-`LLM_FILE_EDIT_SYSTEM_PROMPT` has no Python fallback; AI file edits require this
-key in the dedicated LLM Secret.
+Pi OAuth is not a Kubernetes Secret. It is mutable provider state on the retained
+Pi auth PVC and is mounted only by the Pi worker and operator auth pod. Provision,
+verify, rotate, and remove it with `scripts/pi-agent-auth.sh`; see
+`docs/operations/pi-agent-auth.md`.
 
-The configured file-edit system prompt is augmented at runtime with repo-owned
-build123d compatibility guardrails. The Secret remains required; the guardrails
-only add runtime-specific API constraints such as avoiding unavailable build123d
-helpers.
+The Tertius Pi append prompt is committed application policy at
+`server/core/pi_agent_system_prompt.md`; it is not a credential or runtime
+secret. Both API and Pi worker images contain identical read-only bytes, so a
+prompt change requires rebuilding and restarting both images. The retained Pi
+PVC contains OAuth state only. Tertius reconstructs bounded conversation
+context from Postgres for each `--no-session` worker invocation. System prompt
+text, current or historical user requests, assistant summaries, source text,
+and prompt hashes must never be added to logs, metrics, or trace attributes.
 
 ## Browser Auth Sessions
 
@@ -115,47 +113,3 @@ setting the same value as `OIDC_CLIENT_SECRET` in the app Secret. Also set
 across deploys. The local chart can run without `OIDC_CLIENT_SECRET` by using
 PKCE with the public client; browser sessions are backed by the API session
 cookie and database-backed `auth_sessions` rows.
-
-## LLM Model Schema
-
-`app.config.llmModels` is rendered to `LLM_MODELS_JSON` as an array of objects.
-Every model exposed in the UI and used by the API must be present here.
-
-```json
-{
-  "id": "string, required, stable UI/API id",
-  "label": "string, optional display label; defaults to id",
-  "model": "string, optional provider model id; defaults to id",
-  "endpoint": "string, required provider request URL",
-  "api": "openai-chat-completions | anthropic-messages",
-  "input_price_per_million": "number, required, USD per 1M uncached input tokens",
-  "output_price_per_million": "number, required, USD per 1M output tokens",
-  "cached_read_price_per_million": "number or null, optional USD per 1M cached-read tokens",
-  "cached_write_price_per_million": "number or null, optional USD per 1M cache-write tokens",
-  "enabled": "boolean, optional, defaults to true"
-}
-```
-
-Example:
-
-```yaml
-app:
-  config:
-    llmDefaultModelId: kimi-k2.7-code
-    llmWeeklyBudgetUsd: "14.00"
-    llmModels:
-      - id: kimi-k2.7-code
-        label: Kimi K2.7 Code
-        model: kimi-k2.7-code
-        endpoint: https://opencode.ai/zen/go/v1/chat/completions
-        api: openai-chat-completions
-        input_price_per_million: 0.95
-        output_price_per_million: 4.00
-        cached_read_price_per_million: 0.19
-        cached_write_price_per_million: null
-        enabled: true
-```
-
-`openai-chat-completions` endpoints are called with OpenAI-compatible
-`/chat/completions` semantics. `anthropic-messages` endpoints are called with
-Anthropic-compatible `/messages` semantics.

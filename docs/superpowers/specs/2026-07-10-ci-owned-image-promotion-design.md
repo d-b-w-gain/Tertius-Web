@@ -4,7 +4,7 @@
 
 Replace both personal access token dependencies in the production image promotion path. GitHub Actions owns image publication and promotion, while Flux reads `master` without any Git write credential.
 
-Success means every non-chart commit merged to `master` either produces a checked image-promotion PR for that exact commit or fails visibly before deployment. The deployed API and UI image tags must identify the GitHub run, run attempt, and source commit.
+Success means every non-chart commit merged to `master` either produces a checked image-promotion PR for that exact commit or fails visibly before deployment. The deployed API, Pi agent, and UI image tags must identify the GitHub run, run attempt, and source commit.
 
 ## 2. Architecture
 
@@ -12,7 +12,7 @@ The `Build Images` workflow is the single promotion orchestrator:
 
 1. Serialize runs with a repository-wide image-promotion concurrency group and cancel an older run when a newer `master` commit arrives.
 2. Verify `GITHUB_SHA` is still the live `master` SHA before publishing images.
-3. Publish API and UI images as `master-<run-number>-<run-attempt>-<short-sha>`.
+3. Publish API, Pi agent, and UI images as `master-<run-number>-<run-attempt>-<short-sha>`.
 4. Mint a one-hour installation token from a repository-scoped GitHub App only after both image builds succeed.
 5. Update both chart tags with `scripts/promote_images.py` on the fixed `image-promotion` branch.
 6. Create or reuse the branch's PR, then poll the exact PR head until `Chart render/config checks` completes successfully.
@@ -85,7 +85,7 @@ Missing, duplicate, malformed, or unexpected markers fail without writing the fi
 
 | ID | Component | Input | Expected Result | Edge Case |
 |---|---|---|---|---|
-| TC-001 | Tag updater | Valid run tag and production values | API and UI tags both change | Existing tags differ |
+| TC-001 | Tag updater | Valid run tag and production values | API, Pi agent, and UI tags all change | Existing tags differ |
 | TC-002 | Tag updater | `latest` | Non-zero exit and no file change | Mutable tag |
 | TC-003 | Tag updater | Missing marker | Non-zero exit and no file change | Partial configuration |
 | TC-004 | Deployment config | Production Kustomization | No image automation resources | Stray manifest remains |

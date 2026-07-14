@@ -20,8 +20,30 @@ source:
 
 ```bash
 docker compose up -d postgres keycloak nats otel-collector victoriametrics
-docker compose up backend compile-job-runner frontend
+docker compose up backend compile-job-runner pi-agent-worker frontend
 ```
+
+Authenticate Pi into the named `pi-agent-auth` volume before running AI edits:
+
+```bash
+docker compose run --rm --entrypoint pi pi-agent-worker
+```
+
+Run `/login` in Pi, select OpenAI Codex, complete the browser/device flow, and
+exit. Compose does not bind-mount host `~/.pi`; authentication stays isolated in
+the retained named volume.
+
+Before a full Compose live-flow, the harness runs the same minimal no-tool
+OpenAI Codex `gpt-5.5` canary used by the Kubernetes verifier. It accepts only
+the exact response `PI_AUTH_OK` and times out after 60 seconds by default. Set
+`PI_AGENT_AUTH_CANARY_TIMEOUT_SECONDS` only when a slower provider response is
+expected; canary output is not printed on failure.
+
+The Compose Pi worker runs as UID/GID 1000 with a read-only root filesystem,
+dropped capabilities, `no-new-privileges`, bounded CPU/memory/PIDs, and bounded
+`tmpfs` mounts for `/workspace`, `/tmp`, and `/tmp/home`. Each queued command
+uses a fresh temporary workspace and removes it on completion. The auth volume
+at `/var/lib/pi-agent` is its only persistent writable mount.
 
 Default URLs:
 
@@ -40,7 +62,7 @@ scripts/harness-compose.sh down
 Delete Compose data only when intended:
 
 ```bash
-DELETE_DATA=true scripts/harness-compose.sh down
+scripts/harness-compose.sh delete-data
 ```
 
 ## k3s Harness
@@ -118,6 +140,10 @@ UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 KEDA_ENABLED=true scripts/harness-k3s.sh up
 ```
+
+This first deploy leaves the Pi worker disabled while creating its retained auth
+PVC. Log in and verify as shown below, then redeploy with
+`KEDA_ENABLED=true PI_AGENT_ENABLED=true` before the full live-flow.
 
 Open the frontend at `http://127.0.0.1:18083`. The wrapper writes
 `.tmp/harness/k3s.env` with the UI, API, metrics, traces, and Keycloak token
@@ -199,6 +225,9 @@ scripts/harness-compose.sh live-flow
 scripts/harness-compose.sh down
 ```
 
+Ordinary `down` preserves `pi-agent-auth`. Use the confirmed `delete-data`
+command only when the OAuth state and all other Compose data should be removed.
+
 Defaults:
 
 - UI: `http://localhost:18080`
@@ -237,11 +266,27 @@ still need `KEYCLOAK_TOKEN_URL` in the environment. The smoke script tries the
 password grant first for local smoke clients and falls back to a
 non-interactive authorization-code login when direct access grants are disabled.
 
-Full compile plus live AI edit validation also requires the runtime API to have
-`LLM_API_KEY` and a file edit system prompt configured. k3s live-flow requires a
-compile worker; deploy validation releases with `KEDA_ENABLED=true` so the
-compile `ScaledJob` exists. To avoid a paid/provider call when the change only
-needs compile coverage:
+Full compile plus live AI edit validation requires the retained Pi OAuth claim
+to be provisioned before the Pi worker is enabled. With the worker paused or
+disabled, authenticate and verify the exact release image:
+
+```bash
+scripts/pi-agent-auth.sh login --namespace tertius --release tertius-live-flow-smoke
+scripts/pi-agent-auth.sh verify --namespace tertius --release tertius-live-flow-smoke
+
+NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
+UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
+METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
+KEDA_ENABLED=true PI_AGENT_ENABLED=true scripts/harness-k3s.sh up
+```
+
+Both harness wrappers fail before starting a full AI edit flow when the Pi auth
+storage is missing or unverified. They never downgrade a requested full flow to
+compile-only; `LIVE_FLOW_COMPILE_ONLY=true` must be selected explicitly.
+
+k3s live-flow requires Pi and compile workers; deploy validation releases with
+`KEDA_ENABLED=true`, set `PI_AGENT_ENABLED=true` after verification, and run the full flow. When a
+change genuinely needs compile coverage only and does not touch AI behavior:
 
 ```bash
 LIVE_FLOW_COMPILE_ONLY=true scripts/harness-k3s.sh live-flow
@@ -251,6 +296,15 @@ For AI-facing changes, do not use compile-only mode as final evidence. The full
 flow must show: auth token acquired, seed code saved through the UI origin,
 pre-edit compile succeeded, AI edit job succeeded, and post-edit compile
 succeeded.
+
+Override the default edit prompt and assert a specific successful outcome when
+running focused canaries. For example, this verifies that an already-satisfied
+request leaves the project unchanged:
+
+```bash
+LIVE_FLOW_AI_PROMPT='Do not modify any files. Report that no changes are needed.' \
+LIVE_FLOW_EXPECTED_AI_OUTCOME=no_changes scripts/harness-k3s.sh live-flow
+```
 
 For observability backend changes, run the live flow and then query both
 signals:

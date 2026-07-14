@@ -36,6 +36,7 @@ def test_llm_token_usage_event_serializes_trusted_billing_fields():
     assert '"operation":"build_script.generate"' in payload
     assert '"prompt":"make a bracket"' in payload
     assert '"total_tokens":30' in payload
+    assert '"cost_usd":0.0' in payload
     assert billing_usage_message_id(event).startswith("billing-usage:")
 
 
