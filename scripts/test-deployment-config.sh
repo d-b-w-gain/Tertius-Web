@@ -6,6 +6,12 @@ CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
+local_tool_prefix='r''tk'
+
+if rg -q "(^|[[:space:]])${local_tool_prefix}[[:space:]]" "${ROOT_DIR}/scripts" --glob '*.sh'; then
+  echo "Repository scripts must not depend on the local ${local_tool_prefix} command wrapper." >&2
+  exit 1
+fi
 
 "${ROOT_DIR}/scripts/check-runtime-parity.sh"
 bash "${ROOT_DIR}/scripts/test-k3s-wffc-wait.sh"
@@ -383,7 +389,7 @@ if ! rg -q ' delete pod ' "$pi_auth_test_dir/kubectl.log"; then
   echo "I-018: Pi login pod must be deleted after a normal exit." >&2
   exit 1
 fi
-PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" rtk uv run python -c '
+PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" uv run python -c '
 import json, os
 pod = json.load(open(os.environ["PI_AUTH_MANIFEST"]))
 assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "tertius"
@@ -399,7 +405,7 @@ long_pi_app_name="$(printf 'a%.0s' $(seq 1 62))-suffix"
 private_helm_values="$(jq -cn --arg name "$long_pi_app_name" '{nameOverride:$name,imagePullSecrets:[{name:"private-registry"}],piAgent:{runtimeClassName:"gvisor"}}')"
 MOCK_HELM_VALUES="$private_helm_values" \
   run_pi_auth_fixture verify --namespace test --release release --claim claim --image 'registry.invalid/pi:test' >/dev/null
-PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" rtk uv run python -c '
+PI_AUTH_MANIFEST="$pi_auth_test_dir/manifest.yaml" uv run python -c '
 import json, os
 pod = json.load(open(os.environ["PI_AUTH_MANIFEST"]))
 assert pod["metadata"]["labels"]["app.kubernetes.io/name"] == "a" * 62
@@ -645,7 +651,7 @@ fi
 rm -rf "$compose_canary_tmp"
 
 pi_stream_max_bytes="$(printf '%s\n' "$app_configmap" | awk '/PI_AGENT_STREAM_MAX_BYTES:/ {gsub(/"/, "", $2); print $2; exit}')"
-if [ "$pi_stream_max_bytes" != "67108864" ] || ! PYTHONPATH="${ROOT_DIR}/server" PI_AGENT_STREAM_MAX_BYTES="$pi_stream_max_bytes" rtk uv run python -c 'from core.config import Settings; assert Settings().pi_agent_stream_max_bytes == 67108864' 2>/dev/null; then
+if [ "$pi_stream_max_bytes" != "67108864" ] || ! PYTHONPATH="${ROOT_DIR}/server" PI_AGENT_STREAM_MAX_BYTES="$pi_stream_max_bytes" uv run python -c 'from core.config import Settings; assert Settings().pi_agent_stream_max_bytes == 67108864' 2>/dev/null; then
   echo "PI_AGENT_STREAM_MAX_BYTES must render as an exact decimal accepted by Pydantic Settings." >&2
   exit 1
 fi
@@ -697,7 +703,7 @@ for required in 'tertius.io/pi-agent-network: "true"' 'ingress: []' 'port: 53' '
     exit 1
   fi
 done
-if ! PI_NETWORK_POLICY_YAML="$pi_network_policy" rtk uv run python -c '
+if ! PI_NETWORK_POLICY_YAML="$pi_network_policy" uv run python -c '
 import os, yaml
 policy = yaml.safe_load(os.environ["PI_NETWORK_POLICY_YAML"])
 dns_rules = [rule for rule in policy["spec"]["egress"] if {p.get("port") for p in rule.get("ports", [])} == {53}]
@@ -716,7 +722,7 @@ other_release_rendered="$(RELEASE_NAME=other-tertius render_default)"
 other_pi_network_policy="$(extract_render_doc "$other_release_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
 if ! PI_NETWORK_POLICIES_YAML="$pi_network_policy
 ---
-$other_pi_network_policy" rtk uv run python -c '
+$other_pi_network_policy" uv run python -c '
 import os, yaml
 policies = list(yaml.safe_load_all(os.environ["PI_NETWORK_POLICIES_YAML"]))
 assert len(policies) == 2
@@ -1249,6 +1255,11 @@ PRODUCTION_KUSTOMIZATION="${PRODUCTION_DIR}/kustomization.yaml"
 FLUX_GIT_REPOSITORY="${PRODUCTION_DIR}/flux-system/gitrepository.yaml"
 IMAGE_WORKFLOW="${ROOT_DIR}/.github/workflows/images.yml"
 CHART_WORKFLOW="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+
+if ! rg -q 'astral-sh/setup-uv@v4' "$CHART_WORKFLOW"; then
+  echo ".github/workflows/chart-tests.yml must install uv before running Python-backed configuration checks." >&2
+  exit 1
+fi
 
 extract_workflow_job() {
   local workflow="$1"
