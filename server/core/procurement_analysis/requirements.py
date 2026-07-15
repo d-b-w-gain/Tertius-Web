@@ -333,6 +333,8 @@ def _visual_verified_source_call(
     call, reason = _visual_component_source_call(component, runtime_calls_by_id)
     if call is not None:
         return call, reason
+    if runtime_calls_by_id and not component.get("source_call_ids"):
+        return None, reason
     if _bom_metadata(component):
         return None, reason
     fallback_call, fallback_reason = _best_source_call(component, source_analysis)
@@ -400,6 +402,8 @@ def _bom_trace(component: dict[str, Any], key: str, value: Any) -> dict[str, Any
 
 
 def _is_visual_container_without_procurement_identity(component: dict[str, Any], call: dict[str, Any] | None) -> bool:
+    if component.get("visual_component_kind") == "named_leaf_component":
+        return False
     if call and (_resolved_input(call, "part_number") is not None or _resolved_input(call, "product_key") is not None):
         return False
     visual_part_number, _trace = _visual_label_part_number(component)
