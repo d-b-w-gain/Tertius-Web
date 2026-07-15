@@ -329,6 +329,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         visual_node_ids: list[str],
         source_call_ids: list[str] | None = None,
         bom_metadata: dict[str, Any] | None = None,
+        component_kind: str | None = None,
     ) -> None:
         component_id = _unique_id(_slug(path, "component"), used_ids)
         components.append({
@@ -340,6 +341,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
             "visual_instance_count": None,
             **({"source_call_ids": source_call_ids} if source_call_ids else {}),
             **({"bom_metadata": bom_metadata} if bom_metadata is not None else {}),
+            **({"visual_component_kind": component_kind} if component_kind else {}),
         })
 
     def parent_assembly_id(ancestors: list[dict[str, Any]]) -> str | None:
@@ -368,6 +370,17 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         if any(_is_named_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node)):
             return False
         return len(_mesh_descendants(node)) == 1
+
+    def is_named_leaf_component_wrapper(node: dict[str, Any]) -> bool:
+        name = _node_name(node)
+        if not _is_group(node) or not name or _is_generated_or_default(name):
+            return False
+        children = _bom_enabled_children(node)
+        if any(_is_group(child) and _has_mesh_descendant(child) for child in children):
+            return False
+        if any(_is_mesh(child) and not _is_generated_or_default(_node_name(child)) for child in children):
+            return False
+        return bool(_mesh_descendants(node))
 
     def is_generated_mesh_component_wrapper(node: dict[str, Any]) -> bool:
         name = _node_name(node)
@@ -462,8 +475,12 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 )
                 return
 
+            has_component_child_groups = any(
+                _is_named_group(child) and _has_mesh_descendant(child)
+                for child in _bom_enabled_children(node)
+            )
             own_product_call_id = best_own_product_source_call_id(node)
-            if own_product_call_id is not None:
+            if own_product_call_id is not None and not has_component_child_groups:
                 path = path_for(ancestors, node)
                 source_call_ids = [
                     call_id
@@ -531,6 +548,18 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                         visual_node_ids=[str(child.get("id") or child_path)],
                         source_call_ids=source_call_ids_for(child),
                     )
+                return
+
+            if is_named_leaf_component_wrapper(node):
+                path = path_for(ancestors, node)
+                add_component(
+                    label=name,
+                    path=path,
+                    assembly_id=parent_assembly_id(ancestors),
+                    visual_node_ids=visual_node_ids_for(node, ancestors),
+                    source_call_ids=source_call_ids_for(node),
+                    component_kind="named_leaf_component",
+                )
                 return
 
             grouped_fragments = {

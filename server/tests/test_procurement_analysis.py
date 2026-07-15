@@ -881,6 +881,158 @@ model = object()
     )
 
 
+def test_labelled_inline_geometry_inside_assembly_creates_visual_placeholder_requirement():
+    source = analyze_design_sources({
+        "design.py": """
+def lysaght_zc_purlin(part_number, length_mm):
+    return None
+
+wall_member = lysaght_zc_purlin(part_number="C10019", length_mm=2400)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "extras": {
+            "tertiusSourceMap": {
+                "source_calls": {
+                    "call_member": _runtime_source_call(
+                        "lysaght_zc_purlin",
+                        call_id="call_member",
+                        part_number="C10019",
+                        length_mm=2400,
+                    ),
+                },
+            },
+        },
+        "children": [
+            {
+                "name": "Wall Assembly",
+                "type": "Object3D",
+                "children": [
+                    {
+                        "name": "C10019",
+                        "type": "Object3D",
+                        "extras": {"tertiusSourceCallIds": ["call_member"]},
+                        "children": [{"name": "mesh_1", "type": "Mesh", "isMesh": True, "id": "member-mesh"}],
+                    },
+                    {
+                        "name": "BUNNINGS-1971828 Hume 2040 x 820 x 35mm External Door Duracote Flush X1",
+                        "type": "Object3D",
+                        "children": [
+                            {"name": "=>[0:1:1:1]", "type": "Mesh", "isMesh": True, "id": "door-front"},
+                            {"name": "=>[0:1:1:2]", "type": "Mesh", "isMesh": True, "id": "door-back"},
+                        ],
+                    },
+                ],
+            },
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+
+    requirements = {item["component_id"]: item for item in analysis["requirements"]}
+    door_component = next(
+        component
+        for component in analysis["components"]
+        if str(component["label"]).startswith("BUNNINGS-1971828")
+    )
+    door_requirement = requirements[door_component["id"]]
+
+    assert door_component["visual_node_ids"] == ["door-front", "door-back"]
+    assert door_requirement["part_number"] == "BHEDDF-BUNNINGS-HUME-35MM-EXTERNAL-DOOR-DURACOTE-FLUSH-X1-A"
+    assert door_requirement["part_number_placeholder"] is True
+    assert door_requirement["quantity_source"] == "visual_instances"
+    assert door_requirement["orderable"] is True
+    assert door_requirement["source_trace"]["function"] is None
+    assert any(
+        diagnostic["code"] == "auto_placeholder_part_number"
+        and diagnostic["component_id"] == door_component["id"]
+        for diagnostic in analysis["diagnostics"]
+    )
+    assert "C10019" in {item["part_number"] for item in analysis["requirements"]}
+
+
+def test_runtime_product_assembly_does_not_swallow_named_visual_children():
+    source = analyze_design_sources({
+        "design.py": """
+def door_frame_assembly(part_number):
+    return None
+
+def make_jamb(part_number, length_mm):
+    return None
+
+frame = door_frame_assembly(part_number="C10012")
+jamb = make_jamb(part_number="C10012", length_mm=2040)
+""",
+    })
+    tree = analyze_gltf_tree({
+        "name": "Scene",
+        "extras": {
+            "tertiusSourceMap": {
+                "source_calls": {
+                    "call_frame": _runtime_source_call(
+                        "door_frame_assembly",
+                        call_id="call_frame",
+                        part_number="C10012",
+                    ),
+                    "call_jamb": _runtime_source_call(
+                        "make_jamb",
+                        call_id="call_jamb",
+                        part_number="C10012",
+                        length_mm=2040,
+                    ),
+                },
+            },
+        },
+        "children": [
+            {
+                "name": "Front Gable Door Frame DF01",
+                "type": "Object3D",
+                "extras": {"tertiusSourceCallIds": ["call_frame"]},
+                "children": [
+                    {
+                        "name": "Door Frame C10012 Members",
+                        "type": "Object3D",
+                        "children": [
+                            {
+                                "name": "Door Frame Left Jamb Cee DF01LJ",
+                                "type": "Object3D",
+                                "extras": {"tertiusSourceCallIds": ["call_jamb"]},
+                                "children": [{"name": "mesh_1", "type": "Mesh", "isMesh": True, "id": "jamb-mesh"}],
+                            },
+                        ],
+                    },
+                    {
+                        "name": "Door Leaf",
+                        "type": "Object3D",
+                        "children": [
+                            {
+                                "name": "BUNNINGS-1971828 Hume 2040 x 820 x 35mm External Door Duracote Flush X1",
+                                "type": "Object3D",
+                                "children": [
+                                    {"name": "=>[0:1:1:1]", "type": "Mesh", "isMesh": True, "id": "door-front"},
+                                    {"name": "=>[0:1:1:2]", "type": "Mesh", "isMesh": True, "id": "door-back"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    })
+    analysis = build_procurement_analysis(source, tree)
+    labels = {component["label"]: component for component in analysis["components"]}
+    requirements = {requirement["component_id"]: requirement for requirement in analysis["requirements"]}
+
+    assert "Front Gable Door Frame DF01" not in labels
+    assert "Door Frame Left Jamb Cee DF01LJ" in labels
+    assert "BUNNINGS-1971828 Hume 2040 x 820 x 35mm External Door Duracote Flush X1" in labels
+    door_requirement = requirements[
+        labels["BUNNINGS-1971828 Hume 2040 x 820 x 35mm External Door Duracote Flush X1"]["id"]
+    ]
+    assert door_requirement["part_number_placeholder"] is True
+    assert door_requirement["source_trace"]["function"] is None
+
+
 def test_same_transform_named_mesh_fragments_are_one_visual_component():
     source = analyze_design_sources({
         "design.py": """
