@@ -216,6 +216,7 @@ widget = make_widget()
                         "unit": "each",
                         "dimensions": {"length_mm": 1200},
                         "material": "steel",
+                        "color": "Monument",
                     }
                 },
                 "children": [
@@ -233,6 +234,7 @@ widget = make_widget()
     assert requirement["part_number"] == "VISUAL-WIDGET"
     assert requirement["dimensions"] == {"length_mm": 1200}
     assert requirement["material"] == "steel"
+    assert requirement["colour"] == "Monument"
     assert requirement["quantity"] == 1
     assert requirement["quantity_source"] == "visual_instances"
     assert requirement["count_trace"]["visual_leaf_count"] == 2
@@ -1983,6 +1985,7 @@ class FastenerSpec:
     part_number: str
     length_max: float
     standard: str = "AS 3566.1"
+    color: str = "Surfmist"
     finish: str = "Climaseal 4"
 
 FASTENERS = {
@@ -2005,6 +2008,7 @@ def make_wall_cladding_screw(length=None):
 
     assert len(requirements) == 1
     assert requirements[0]["dimensions"] == {"length_mm": 15.5}
+    assert requirements[0]["colour"] == "Surfmist"
     assert requirements[0]["finish"] == "Climaseal 4"
     assert requirements[0]["resolution_trace"]["part_number"]["resolution"] == "static_product_table"
     assert all(item["source_trace"]["source_file"] == "design.py" for item in analysis["requirements"])

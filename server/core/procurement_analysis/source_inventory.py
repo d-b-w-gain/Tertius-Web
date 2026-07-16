@@ -34,6 +34,8 @@ def _infer_kind(function_name: str) -> str:
 
 
 def _standard_key(key: str) -> str:
+    if key == "color":
+        return "colour"
     if key in {"supplier_part_number"}:
         return "part_number"
     if key in {"span", "span_mm"}:

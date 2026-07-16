@@ -143,7 +143,7 @@ import build123d as bd
 from tertius_bom import bom_item
 
 @bom_item
-def make_plate(part_number="PLATE-001", quantity=1, unit="each", length_mm=120, width_mm=80, material="steel"):
+def make_plate(part_number="PLATE-001", quantity=1, unit="each", length_mm=120, width_mm=80, material="steel", color="Surfmist"):
     part = bd.Solid.make_box(width_mm, length_mm, 6)
     part.label = part_number
     return part
@@ -175,6 +175,7 @@ building = bd.Compound(children=[plate], label="BoM test assembly")
     assert metadata["quantity"] == 1
     assert metadata["unit"] == "each"
     assert metadata["material"] == "steel"
+    assert metadata["colour"] == "Surfmist"
     assert metadata["dimensions"] == {"length_mm": 120, "width_mm": 80}
 
 

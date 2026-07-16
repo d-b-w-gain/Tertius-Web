@@ -579,7 +579,7 @@ class StaticValueResolver:
         attrs = product.attrs
         dependencies = (source_function,)
         inferred: dict[str, dict[str, Any]] = {}
-        for field in ("part_number", "manufacturer", "standard", "material", "finish", "unit"):
+        for field in ("part_number", "manufacturer", "standard", "material", "colour", "finish", "unit"):
             if attrs.get(field) is not None:
                 inferred[field] = self._static_trace(
                     value=attrs[field],
@@ -589,6 +589,15 @@ class StaticValueResolver:
                     raw={"kind": "catalog_product", "key": product_key, "field": field},
                     dependencies=dependencies,
                 )
+        if "colour" not in inferred and attrs.get("color") is not None:
+            inferred["colour"] = self._static_trace(
+                value=attrs["color"],
+                resolution="static_product_table",
+                source_file=filename,
+                source_line=product_key_trace.get("source_line"),
+                raw={"kind": "catalog_product", "key": product_key, "field": "color"},
+                dependencies=dependencies,
+            )
 
         length_trace = parameters.get("length_mm") or parameters.get("length")
         if isinstance(length_trace, dict) and length_trace.get("resolved") is not None:

@@ -32,6 +32,8 @@ STANDARD_BOM_FIELDS = {
     "unit",
     "role",
     "material",
+    "colour",
+    "color",
     "finish",
     "grade",
     "source_library",
