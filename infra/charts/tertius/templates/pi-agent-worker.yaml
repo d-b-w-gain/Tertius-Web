@@ -84,9 +84,9 @@ spec:
               - name: PI_AGENT_MAX_DELIVER
                 value: {{ .Values.app.config.piAgentMaxDeliver | quote }}
               - name: PI_AGENT_REQUEST_MAX_BYTES
-                value: {{ .Values.app.config.piAgentRequestMaxBytes | quote }}
+                value: {{ printf "%d" (.Values.app.config.piAgentRequestMaxBytes | int64) | quote }}
               - name: PI_AGENT_RESULT_MAX_BYTES
-                value: {{ .Values.app.config.piAgentResultMaxBytes | quote }}
+                value: {{ printf "%d" (.Values.app.config.piAgentResultMaxBytes | int64) | quote }}
               - name: PI_AGENT_STREAM_MAX_AGE_SECONDS
                 value: {{ .Values.app.config.piAgentStreamMaxAgeSeconds | quote }}
               - name: PI_AGENT_STREAM_MAX_BYTES
