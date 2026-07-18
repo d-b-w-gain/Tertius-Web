@@ -92,8 +92,8 @@ app:
     piAgentModelLabel: GPT-5.6 Sol
     piAgentThinking: medium
     piAgentTimeoutSeconds: 480
-    piAgentMaxTurns: 12
-    piAgentMaxToolCalls: 48
+    piAgentMaxTurns: 24
+    piAgentMaxToolCalls: 96
     piAgentEstimatedOutputTokens: 65536
     piAgentStreamName: TERTIUS_PI_AGENT
     piAgentRequestSubject: tertius.pi.request

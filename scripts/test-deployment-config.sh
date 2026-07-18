@@ -944,7 +944,7 @@ if ! rg -q 'PI_AGENT_ESTIMATED_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q
   exit 1
 fi
 
-if ! rg -q 'PI_AGENT_MAX_TURNS: "12"' <<<"$rendered" || ! rg -q 'PI_AGENT_MAX_TOOL_CALLS: "48"' <<<"$rendered"; then
+if ! rg -q 'PI_AGENT_MAX_TURNS: "24"' <<<"$rendered" || ! rg -q 'PI_AGENT_MAX_TOOL_CALLS: "96"' <<<"$rendered"; then
   echo "ConfigMap must render bounded Pi execution controls." >&2
   exit 1
 fi
