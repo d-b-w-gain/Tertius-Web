@@ -40,6 +40,7 @@ for raw in sys.stdin:
         elif scenario=="assistant-mentions-guard": events=[{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The literal TERTIUS_GUARD_FAILURE is documented here."}],"stopReason":"stop"}}]
         elif scenario=="user-mentions-guard": events=[{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Explain TERTIUS_GUARD_FAILURE"}]}}]
         elif scenario=="successful-tool-mentions-guard": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TERTIUS_GUARD_FAILURE"}],"details":{}},"isError":False}]
+        elif scenario=="large-tool-output": events=[{"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"x"*100000}],"details":{}},"isError":False}]
         elif scenario=="assistant-summary": events=[
             {"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"UPDATE_SENTINEL"}]}},
             {"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"EARLIER_SENTINEL"}],"stopReason":"stop"}},
@@ -137,6 +138,7 @@ async def test_rpc_does_not_inject_prompt_bytes_into_child_argv_or_env(
     async def capture_spawn(*argv, **kwargs):
         captured["argv"] = argv
         captured["env"] = kwargs["env"]
+        captured["limit"] = kwargs["limit"]
         return await original_spawn(*argv, **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_spawn)
@@ -145,6 +147,7 @@ async def test_rpc_does_not_inject_prompt_bytes_into_child_argv_or_env(
 
     assert all(sentinel not in argument for argument in captured["argv"])
     assert all(sentinel not in value for value in captured["env"].values())
+    assert captured["limit"] >= 2_000_000
 
 
 @pytest.mark.asyncio
@@ -216,6 +219,12 @@ async def test_rpc_captures_only_bounded_final_assistant_text(fake_pi, tmp_path)
     assert "USER_SENTINEL" not in result.assistant_summary
     assert "TOOL_SENTINEL" not in result.assistant_summary
     assert "THINKING_SENTINEL" not in result.assistant_summary
+
+
+@pytest.mark.asyncio
+async def test_rpc_accepts_large_tool_result_lines(fake_pi):
+    result = await run_pi_agent("prompt", **settings(fake_pi, "large-tool-output"))
+    assert result.usage.total_tokens == 23
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from core.pi_agent_messages import PiAgentUsage
 
 _MAX_DIAGNOSTIC = 400
 _GUARD_SENTINEL = "TERTIUS_GUARD_FAILURE"
+_RPC_STREAM_LIMIT = 4 * 1024 * 1024
 
 
 class PiAgentRpcError(RuntimeError):
@@ -293,6 +294,7 @@ async def run_pi_agent(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        limit=_RPC_STREAM_LIMIT,
     )
     protocol = _RpcProtocol(process)
     turns = tool_calls = 0
