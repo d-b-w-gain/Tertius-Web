@@ -219,8 +219,8 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     assert settings.pi_agent_model_label == "GPT-5.6 Sol"
     assert settings.pi_agent_thinking == "medium"
     assert settings.pi_agent_timeout_seconds == 480
-    assert settings.pi_agent_max_turns == 12
-    assert settings.pi_agent_max_tool_calls == 48
+    assert settings.pi_agent_max_turns == 24
+    assert settings.pi_agent_max_tool_calls == 96
     assert settings.pi_agent_estimated_output_tokens == 65536
     assert settings.pi_agent_request_max_bytes == 3_000_000
     assert settings.pi_agent_result_max_bytes == 3_000_000
