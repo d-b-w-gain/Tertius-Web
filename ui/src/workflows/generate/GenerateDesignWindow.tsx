@@ -6,6 +6,7 @@ import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
   type LlmEditConversationEntry,
+  type LlmEditContextTier,
   type LlmFileEditResult,
   type LlmModelOption,
   type ProjectFileMetadata,
@@ -29,6 +30,13 @@ const COMPILE_STATUS_RETRY_MS = 3_000
 const LLM_EDIT_STATUS_INITIAL_DELAY_MS = 1_000
 const LLM_EDIT_STATUS_POLL_MS = 1_500
 const LLM_EDIT_STATUS_RETRY_MS = 2_000
+
+const LLM_EDIT_CONTEXT_TIERS: Array<{ value: LlmEditContextTier; label: string; chars: string }> = [
+  { value: 'low', label: 'Low', chars: '80k' },
+  { value: 'medium', label: 'Medium', chars: '160k' },
+  { value: 'high', label: 'High', chars: '250k' },
+  { value: 'very_high', label: 'Very High', chars: '350k' },
+]
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string
@@ -173,6 +181,7 @@ export function GenerateDesignWindow({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
+  const [contextTier, setContextTier] = useState<LlmEditContextTier>('low')
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -492,6 +501,7 @@ export function GenerateDesignWindow({
                   })),
                   active_file_id: activeFileId,
                   model_id: selectedModel?.id,
+                  context_tier: contextTier,
                   metadata: { source: 'generate_design_compile_repair' },
                 })
                 updateAssistantMessage(assistantMessageId, current => ({
@@ -547,7 +557,7 @@ export function GenerateDesignWindow({
 
     clearCompileTimer(jobId)
     compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS))
-  }, [buildLlmEditRequest, clearCompileTimer, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, selectedModel?.id, storage, updateAssistantMessage])
+  }, [buildLlmEditRequest, clearCompileTimer, contextTier, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, selectedModel?.id, storage, updateAssistantMessage])
 
   const startCompilePolling = useCallback((projectName: string, jobId: string, assistantMessageId: string) => {
     const requestId = (compileRequestRef.current.get(jobId) || 0) + 1
@@ -782,6 +792,7 @@ export function GenerateDesignWindow({
           })),
           active_file_id: activeFileId,
           model_id: selectedModel?.id,
+          context_tier: contextTier,
           metadata: { source: 'generate_design_window' },
         }))
       const stablePromptId = promptMessageId(job.job_id)
@@ -953,6 +964,25 @@ export function GenerateDesignWindow({
               <span className="font-mono text-slate-500">{selectedModel.model}</span>
             </div>
           )}
+
+          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
+            <label htmlFor="generate-design-context-tier" className="font-semibold text-slate-200">
+              AI context size
+            </label>
+            <select
+              id="generate-design-context-tier"
+              aria-label="AI context size"
+              value={contextTier}
+              onChange={event => setContextTier(event.currentTarget.value as LlmEditContextTier)}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500"
+            >
+              {LLM_EDIT_CONTEXT_TIERS.map(tier => (
+                <option key={tier.value} value={tier.value}>
+                  {tier.label} ({tier.chars})
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="min-h-0 flex-1 overflow-auto p-4">
             {messages.length === 0 ? (

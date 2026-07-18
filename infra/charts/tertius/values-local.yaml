@@ -42,7 +42,7 @@ app:
     authSessionMaxSeconds: 2592000
     natsUrl: ""
     llmFileEditMaxContextFiles: 20
-    llmFileEditMaxContextChars: 80000
+    llmFileEditMaxContextChars: 350000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"

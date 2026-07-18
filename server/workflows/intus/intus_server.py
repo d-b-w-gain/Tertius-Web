@@ -35,6 +35,7 @@ from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.llm_file_edit import (
     LlmEditableFile as DomainEditableFile,
     LlmFileEditInput,
+    llm_edit_context_chars_for_tier,
     select_llm_edit_context_files as select_domain_context_files,
 )
 from core.telemetry import (
@@ -595,7 +596,10 @@ async def start_llm_file_edit_job(
             active_file_id=req.active_file_id,
             files=editable,
             max_files=settings.llm_file_edit_max_context_files,
-            max_chars=settings.llm_file_edit_max_context_chars,
+            max_chars=min(
+                settings.llm_file_edit_max_context_chars,
+                llm_edit_context_chars_for_tier(req.context_tier),
+            ),
         )
         prompt_snapshot = load_pi_agent_prompt()
         history_jobs = job_repo.list_recent_terminal_jobs(project.id)

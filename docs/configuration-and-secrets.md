@@ -45,7 +45,7 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.compileRequestMaxBytes` | `COMPILE_REQUEST_MAX_BYTES` | API, compile worker | Max compile command size. |
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
 | `app.config.llmFileEditMaxContextFiles` | `LLM_FILE_EDIT_MAX_CONTEXT_FILES` | API | File-edit context file cap. |
-| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | File-edit context character cap. |
+| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | Maximum file-edit context character ceiling; Generate Design selects a per-request tier up to this value. |
 | `app.config.llmUserRateLimitPerMinute` | `LLM_USER_RATE_LIMIT_PER_MINUTE` | API | Per-user LLM request rate. |
 | `app.config.llmTenantRateLimitPerMinute` | `LLM_TENANT_RATE_LIMIT_PER_MINUTE` | API | Per-tenant LLM request rate. |
 | `app.config.llmTenantDailyTokenQuota` | `LLM_TENANT_DAILY_TOKEN_QUOTA` | API | Tenant daily token fallback quota. |

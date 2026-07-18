@@ -14,10 +14,21 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 LLM_FILE_EDIT_MAX_FILES = 20
+LLM_FILE_EDIT_CONTEXT_TIER_CHARS = {
+    "low": 80_000,
+    "medium": 160_000,
+    "high": 250_000,
+    "very_high": 350_000,
+}
 MAX_METADATA_ENTRIES = 50
 MAX_METADATA_KEY_CHARS = 200
 MAX_METADATA_VALUE_CHARS = 200
 LlmFileEditOutcome = Literal["changed", "no_change", "cannot_complete"]
+LlmFileEditContextTier = Literal["low", "medium", "high", "very_high"]
+
+
+def llm_edit_context_chars_for_tier(tier: LlmFileEditContextTier) -> int:
+    return LLM_FILE_EDIT_CONTEXT_TIER_CHARS[tier]
 
 
 def validate_filename(filename: str) -> str:
@@ -83,6 +94,7 @@ class LlmFileEditInput(BaseModel):
     files: list[LlmFilePointer] = Field(min_length=1, max_length=20)
     active_file_id: UUID | None = None
     model_id: str | None = Field(default=None, max_length=200)
+    context_tier: LlmFileEditContextTier = "low"
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("metadata", mode="before")

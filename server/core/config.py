@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     pi_agent_stream_max_age_seconds: int = Field(default=86400, gt=0)
     pi_agent_stream_max_bytes: int = Field(default=67108864, gt=0)
     llm_file_edit_max_context_files: int = Field(default=20, ge=1, le=20)
-    llm_file_edit_max_context_chars: int = Field(default=80000, gt=0)
+    llm_file_edit_max_context_chars: int = Field(default=350000, gt=0)
     llm_user_rate_limit_per_minute: int = Field(default=10, gt=0)
     llm_tenant_rate_limit_per_minute: int = Field(default=60, gt=0)
     llm_tenant_daily_token_quota: int = Field(default=3200000, gt=0)

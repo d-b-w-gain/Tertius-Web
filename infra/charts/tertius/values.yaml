@@ -82,7 +82,7 @@ app:
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
     llmFileEditMaxContextFiles: 20
-    llmFileEditMaxContextChars: 80000
+    llmFileEditMaxContextChars: 350000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"
