@@ -190,8 +190,8 @@ Add these settings and render them consistently through `.env.example`, Helm, Co
 | `PI_AGENT_MODEL_LABEL` | `GPT-5.5` |
 | `PI_AGENT_THINKING` | `high` |
 | `PI_AGENT_TIMEOUT_SECONDS` | `480` |
-| `PI_AGENT_MAX_TURNS` | `12` |
-| `PI_AGENT_MAX_TOOL_CALLS` | `48` |
+| `PI_AGENT_MAX_TURNS` | `24` |
+| `PI_AGENT_MAX_TOOL_CALLS` | `96` |
 | `PI_AGENT_ESTIMATED_OUTPUT_TOKENS` | `65536` |
 | `PI_AGENT_STREAM_NAME` | `TERTIUS_PI_AGENT` |
 | `PI_AGENT_REQUEST_SUBJECT` | `tertius.pi.request` |
