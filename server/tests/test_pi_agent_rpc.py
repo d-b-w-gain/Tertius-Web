@@ -138,6 +138,7 @@ async def test_rpc_does_not_inject_prompt_bytes_into_child_argv_or_env(
     async def capture_spawn(*argv, **kwargs):
         captured["argv"] = argv
         captured["env"] = kwargs["env"]
+        captured["limit"] = kwargs["limit"]
         return await original_spawn(*argv, **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_spawn)
