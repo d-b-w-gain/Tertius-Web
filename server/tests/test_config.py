@@ -222,8 +222,8 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     assert settings.pi_agent_max_turns == 12
     assert settings.pi_agent_max_tool_calls == 48
     assert settings.pi_agent_estimated_output_tokens == 65536
-    assert settings.pi_agent_request_max_bytes == 524288
-    assert settings.pi_agent_result_max_bytes == 524288
+    assert settings.pi_agent_request_max_bytes == 3_000_000
+    assert settings.pi_agent_result_max_bytes == 3_000_000
     assert settings.pi_agent_stream_name == "TERTIUS_PI_AGENT"
     assert settings.pi_agent_request_subject == "tertius.pi.request"
     assert settings.pi_agent_result_subject == "tertius.pi.result"

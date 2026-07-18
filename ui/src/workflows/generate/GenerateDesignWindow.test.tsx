@@ -194,6 +194,9 @@ describe('GenerateDesignWindow', () => {
     openGenerateDesignConversation()
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
+    expect(screen.getByRole('combobox', { name: 'AI context size' })).toHaveValue('low')
+    expect(screen.getByRole('option', { name: 'Very High (2.0m (~500k tokens))' })).toBeInTheDocument()
+
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'make a larger test cube' },
     })
@@ -213,6 +216,7 @@ describe('GenerateDesignWindow', () => {
       ],
       active_file_id: 'design-id',
       model_id: 'gpt-5.6-sol',
+      context_tier: 'low',
       metadata: { source: 'generate_design_window' },
     })
 

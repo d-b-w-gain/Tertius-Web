@@ -82,7 +82,7 @@ app:
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
     llmFileEditMaxContextFiles: 20
-    llmFileEditMaxContextChars: 80000
+    llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"
@@ -102,8 +102,8 @@ app:
     piAgentResultConsumer: pi-agent-result-api
     piAgentAckWaitSeconds: 90
     piAgentMaxDeliver: 2
-    piAgentRequestMaxBytes: 524288
-    piAgentResultMaxBytes: 524288
+    piAgentRequestMaxBytes: 3000000
+    piAgentResultMaxBytes: 3000000
     piAgentStreamMaxAgeSeconds: 86400
     piAgentStreamMaxBytes: 67108864
     billingStreamName: TERTIUS_BILLING

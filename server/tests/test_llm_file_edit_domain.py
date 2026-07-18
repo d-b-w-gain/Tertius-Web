@@ -4,7 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from core.llm_file_edit import (
+    LlmFileEditInput,
     LlmEditableFile,
+    llm_edit_context_chars_for_tier,
     select_llm_edit_context_files,
 )
 
@@ -43,3 +45,12 @@ def test_context_selection_is_stable_and_always_retains_active_file():
         max_files=20,
         max_chars=80_000,
     ) == selected
+
+
+def test_context_tiers_have_bounded_character_budgets_and_default_to_low():
+    assert [llm_edit_context_chars_for_tier(tier) for tier in ("low", "medium", "high", "very_high")] == [80_000, 160_000, 250_000, 2_000_000]
+    request = LlmFileEditInput(
+        prompt="make it taller",
+        files=[{"id": uuid4(), "filename": "design.py", "updated_at": "2026-07-18T00:00:00Z"}],
+    )
+    assert request.context_tier == "low"
