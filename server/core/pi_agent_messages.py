@@ -17,7 +17,7 @@ class StrictMessage(BaseModel):
 class PiAgentSourceFile(StrictMessage):
     id: UUID
     filename: str
-    content: str = Field(max_length=200000)
+    content: str = Field(max_length=2_000_000)
     updated_at: datetime
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -160,7 +160,7 @@ class PiAgentCommand(StrictMessage):
 class PiAgentChangedFile(StrictMessage):
     id: UUID
     filename: str
-    content: str = Field(max_length=200000)
+    content: str = Field(max_length=2_000_000)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("filename")

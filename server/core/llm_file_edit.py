@@ -18,7 +18,7 @@ LLM_FILE_EDIT_CONTEXT_TIER_CHARS = {
     "low": 80_000,
     "medium": 160_000,
     "high": 250_000,
-    "very_high": 350_000,
+    "very_high": 2_000_000,
 }
 MAX_METADATA_ENTRIES = 50
 MAX_METADATA_KEY_CHARS = 200
@@ -81,7 +81,7 @@ class LlmFilePointer(BaseModel):
 class LlmEditableFile(BaseModel):
     id: UUID
     filename: str
-    content: str = Field(max_length=200000)
+    content: str = Field(max_length=2_000_000)
 
     @field_validator("filename")
     @classmethod
@@ -106,7 +106,7 @@ class LlmFileEditInput(BaseModel):
 class LlmReturnedFileEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     file_id: UUID = Field(validation_alias=AliasChoices("file_id", "id"))
-    content: str = Field(max_length=200000)
+    content: str = Field(max_length=2_000_000)
     summary: str = Field(default="", max_length=500)
 
 

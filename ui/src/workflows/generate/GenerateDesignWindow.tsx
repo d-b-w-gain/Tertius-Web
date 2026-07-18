@@ -35,7 +35,7 @@ const LLM_EDIT_CONTEXT_TIERS: Array<{ value: LlmEditContextTier; label: string; 
   { value: 'low', label: 'Low', chars: '80k' },
   { value: 'medium', label: 'Medium', chars: '160k' },
   { value: 'high', label: 'High', chars: '250k' },
-  { value: 'very_high', label: 'Very High', chars: '350k' },
+  { value: 'very_high', label: 'Very High', chars: '2.0m (~500k tokens)' },
 ]
 
 type EditableFilePointer = ProjectFileMetadata & {

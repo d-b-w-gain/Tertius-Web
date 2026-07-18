@@ -195,7 +195,7 @@ describe('GenerateDesignWindow', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     expect(screen.getByRole('combobox', { name: 'AI context size' })).toHaveValue('low')
-    expect(screen.getByRole('option', { name: 'Very High (350k)' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Very High (2.0m (~500k tokens))' })).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'make a larger test cube' },
