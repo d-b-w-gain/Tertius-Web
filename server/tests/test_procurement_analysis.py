@@ -52,6 +52,18 @@ left = make_member(1200, part_number="TEST-A")
     assert requirement["resolution_trace"]["part_number"]["resolution"] == "literal"
 
 
+def test_sketch_make_calls_with_point_lists_are_not_procurement_candidates():
+    source = analyze_design_sources({
+        "design.py": """
+import build123d as bd
+
+profile = bd.Edge.make_line([(0, 0, 0), (100, 0, 0)])
+""",
+    })
+
+    assert source["calls"] == []
+
+
 def test_local_constant_part_number_and_length_are_resolved():
     requirement = first_requirement({
         "design.py": """

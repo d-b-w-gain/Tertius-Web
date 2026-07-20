@@ -99,10 +99,8 @@ def _should_record_call(
         return False
     if function_name[:1].isupper() and signature is None:
         return False
-    if qualified_function_name and "." in qualified_function_name and not function_name.startswith("make_") and _infer_kind(function_name) == "component":
+    if qualified_function_name and "." in qualified_function_name and _infer_kind(function_name) == "component":
         return False
-    if function_name.startswith("make_"):
-        return True
     if _infer_kind(function_name) != "component":
         return True
     if signature and set(parameters) & STANDARD_BOM_FIELDS:
