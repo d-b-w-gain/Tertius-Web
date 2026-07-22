@@ -312,6 +312,19 @@ function isViewerBatchMesh(object: THREE.Object3D): boolean {
   return object.name === "TertiusBatchedMesh" || object.name === "TertiusAppearanceBatchMesh";
 }
 
+export function isViewerObjectHidden(
+  root: THREE.Object3D,
+  object: THREE.Object3D,
+  appearanceByPath: SceneNodeAppearanceMap,
+): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current && current !== root) {
+    if (appearanceByPath[getSceneNodePathKey(root, current)]?.hidden) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
   if (meshes.length === 0) return null;
 
@@ -470,6 +483,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const modelLoadRequestRef = useRef<number>(0);
   const loadedModelUrlRef = useRef<string>('');
   const previousExternalSelectionKeyRef = useRef<string>('');
+  const appearanceByPathRef = useRef(appearanceByPath);
+
+  useEffect(() => {
+    appearanceByPathRef.current = appearanceByPath;
+  }, [appearanceByPath]);
 
   const clearCurrentModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -1049,14 +1067,17 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
        raycaster.setFromCamera(mouse, cameraRef.current!);
        
        if (meshRef.current) {
-          // Temporarily unhide individual meshes for raycasting checks
+          // Raycast source meshes, then ignore objects hidden in the Assembly Tree.
           meshRef.current.traverse(c => {
             if (!isViewerBatchMesh(c) && (c as THREE.Mesh).isMesh) c.visible = true;
           });
           
           const intersects = raycaster
             .intersectObject(meshRef.current, true)
-            .filter(intersection => !isViewerBatchMesh(intersection.object));
+            .filter(intersection => (
+              !isViewerBatchMesh(intersection.object)
+              && !isViewerObjectHidden(meshRef.current!, intersection.object, appearanceByPathRef.current)
+            ));
           
           // Re-hide them (they'll be unhidden by the selection effect if needed)
           meshRef.current.traverse(c => {

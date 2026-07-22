@@ -5,6 +5,7 @@ import {
   buildViewerBatch,
   createViewerMeshMaterials,
   hasAuthoredMaterialColor,
+  isViewerObjectHidden,
 } from './ViewerTab'
 
 function meshWithPositions(material: THREE.Material) {
@@ -76,5 +77,17 @@ describe('ViewerTab material batching', () => {
     expect((materials.transparent as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
     expect((materials.transparent as THREE.MeshStandardMaterial).transparent).toBe(true)
     expect((materials.transparentHighlight as THREE.MeshStandardMaterial).color.getHex()).toBe(0xff0000)
+  })
+
+  it('excludes Assembly Tree-hidden objects and their children from picker hits', () => {
+    const root = new THREE.Group()
+    const component = new THREE.Group()
+    const mesh = meshWithPositions(new THREE.MeshStandardMaterial())
+    root.add(component)
+    component.add(mesh)
+
+    expect(isViewerObjectHidden(root, mesh, {})).toBe(false)
+    expect(isViewerObjectHidden(root, mesh, { 'path:0': { hidden: true } })).toBe(true)
+    expect(isViewerObjectHidden(root, mesh, { 'path:0.0': { hidden: true } })).toBe(true)
   })
 })
