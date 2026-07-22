@@ -390,6 +390,10 @@ def _bom_dimensions(metadata: dict[str, Any]) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _bom_colour(metadata: dict[str, Any]) -> Any:
+    return metadata.get("colour") if metadata.get("colour") is not None else metadata.get("color")
+
+
 def _bom_trace(component: dict[str, Any], key: str, value: Any) -> dict[str, Any]:
     return {
         "raw": {"kind": "visual_bom_metadata", "field": key, "value": value},
@@ -483,6 +487,13 @@ def _resolved_standard_inputs(call: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _resolved_colour(call: dict[str, Any] | None) -> Any:
+    if call is None:
+        return None
+    colour = _resolved_input(call, "colour")
+    return colour if colour is not None else _resolved_input(call, "color")
+
+
 def _make_generated_part_key(component: dict[str, Any], call: dict[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
     resolved_inputs = _resolved_standard_inputs(call)
     mark_trace = call.get("standard_inputs", {}).get("mark") if call else None
@@ -505,6 +516,7 @@ def _make_placeholder_part_key(
     dimensions: dict[str, Any],
     unit: Any,
     material: Any,
+    colour: Any,
     finish: Any,
 ) -> tuple[str, dict[str, Any]]:
     prefix = _placeholder_prefix(component, call)
@@ -516,6 +528,8 @@ def _make_placeholder_part_key(
     ]
     if material is not None:
         token_values.append(material)
+    if colour is not None:
+        token_values.append(colour)
     if finish is not None:
         token_values.append(finish)
     if unit is not None and str(unit).strip().lower() not in {"", "each", "ea"}:
@@ -543,6 +557,7 @@ def _make_placeholder_part_key(
                 "dimensions": dimensions,
                 "unit": unit,
                 "material": material,
+                "colour": colour,
                 "finish": finish,
             }.items()
             if value is not None and value != "" and value != {}
@@ -924,6 +939,7 @@ def _fastener_assembly_requirements(
             "unit": "each",
             "dimensions": bolt_dimensions,
             "material": _resolved_input(call, "material"),
+            "colour": _resolved_colour(call),
             "finish": _resolved_input(call, "finish"),
             "source_trace": {
                 **component_record["source_trace"],
@@ -948,6 +964,7 @@ def _fastener_assembly_requirements(
             "unit": "each",
             "dimensions": nut_dimensions,
             "material": _resolved_input(call, "material"),
+            "colour": _resolved_colour(call),
             "finish": _resolved_input(call, "finish"),
             "source_trace": {
                 **component_record["source_trace"],
@@ -975,6 +992,7 @@ def _requirement_group_key(requirement: dict[str, Any]) -> tuple[Any, ...]:
         requirement.get("unit"),
         tuple(sorted(dimensions.items())),
         requirement.get("material"),
+        requirement.get("colour") or requirement.get("color"),
         requirement.get("finish"),
     )
 
@@ -1131,6 +1149,7 @@ def build_procurement_analysis(
             dimensions.update(_bom_dimensions(metadata))
             unit = metadata.get("unit") or (_resolved_input(call, "unit") if call else None) or "each"
             material = metadata.get("material") or (_resolved_input(call, "material") if call else None)
+            colour = _bom_colour(metadata) or (_resolved_colour(call) if call else None)
             finish = metadata.get("finish") or (_resolved_input(call, "finish") if call else None)
             grade = metadata.get("grade") or (_resolved_input(call, "grade") if call else None)
             standard = metadata.get("standard") or (_resolved_input(call, "standard") if call else None)
@@ -1215,6 +1234,7 @@ def build_procurement_analysis(
                     dimensions,
                     unit,
                     material,
+                    colour,
                     finish,
                 )
                 part_number_placeholder = True
@@ -1248,6 +1268,7 @@ def build_procurement_analysis(
                 "unit": unit,
                 "dimensions": dimensions,
                 "material": material,
+                "colour": colour,
                 "finish": finish,
                 "grade": grade,
                 "standard": standard,
@@ -1341,6 +1362,7 @@ def build_procurement_analysis(
         }
         unit = _resolved_input(call, "unit") if call and _resolved_input(call, "unit") else "each"
         material = _resolved_input(call, "material") if call else None
+        colour = _resolved_colour(call)
         finish = _resolved_input(call, "finish") if call else None
         if not part_number and not visual_container_without_identity and call and call.get("bom_kind") in {"bracket", "component"}:
             generated_part_number, generated_part_trace = _make_generated_part_key(component, call)
@@ -1358,6 +1380,7 @@ def build_procurement_analysis(
                 dimensions,
                 unit,
                 material,
+                colour,
                 finish,
             )
             part_number_placeholder = True
@@ -1390,6 +1413,7 @@ def build_procurement_analysis(
             "unit": unit,
             "dimensions": dimensions,
             "material": material,
+            "colour": colour,
             "finish": finish,
             "source_trace": component_record["source_trace"],
             "resolution_trace": resolution_trace,

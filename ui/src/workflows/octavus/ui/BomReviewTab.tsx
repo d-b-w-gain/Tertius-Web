@@ -57,7 +57,7 @@ Required outcome:
 - Wrap meaningful top-level collections in bom_scope calls, using stable ids and human labels from the design domain.
 - Bind visible build components, not faces/meshes, with bom_component calls.
 - Add requirement entries only for real end items. Do not invent assembly rows from GLB labels, function names, or generic keywords.
-- Where the design already contains a part number, material, length, finish, grade, or standard, carry that value into the requirement.
+- Where the design already contains a part number, material, length, colour, finish, grade, or standard, carry that value into the requirement.
 - Where a required commercial identity is unknown, use a clear placeholder such as TODO_PART_NUMBER and keep the quantity/unit/dimensions explicit.
 - Fasteners must remain separate bolt/nut/screw requirements when they are separate procurement items.
 - Bulk materials may use units such as L, kg, m3, or each as appropriate.
@@ -104,6 +104,8 @@ export interface ManifestRequirement {
   unit?: string | null;
   dimensions?: Record<string, unknown>;
   material?: string | null;
+  colour?: string | null;
+  color?: string | null;
   finish?: string | null;
   grade?: string | null;
   standard?: string | null;
@@ -216,6 +218,7 @@ export interface GroupedBomLine {
   unit: string;
   dimensions: Record<string, unknown>;
   material: string;
+  colour: string;
   finish: string;
   grade: string;
   standard: string;
@@ -310,6 +313,10 @@ const asNullableString = (value: unknown) => {
   const text = asString(value).trim();
   return text || null;
 };
+
+const requirementColour = (requirement: { colour?: unknown; color?: unknown }) => (
+  asString(requirement.colour ?? requirement.color).trim()
+);
 
 const hasList = (record: Record<string, unknown>, key: string) => Array.isArray(record[key]);
 
@@ -417,6 +424,7 @@ export const normalizeProcurementManifest = (rawManifest: BomManifest | Procurem
       unit: asString(requirement.unit).trim() || 'each',
       dimensions: asRecord(requirement.dimensions),
       material: asNullableString(requirement.material),
+      colour: asNullableString(requirement.colour ?? requirement.color),
       finish: asNullableString(requirement.finish),
       grade: asNullableString(requirement.grade),
       standard: asNullableString(requirement.standard),
@@ -815,6 +823,7 @@ export const canonicalRequirementKey = (requirement: ManifestRequirement) => [
   asString(requirement.unit || 'each').trim(),
   dimensionsKey(requirement.dimensions || {}),
   asString(requirement.material).trim(),
+  requirementColour(requirement),
   asString(requirement.finish).trim(),
   asString(requirement.grade).trim(),
   asString(requirement.standard).trim(),
@@ -960,6 +969,7 @@ export const groupManifestRequirements = (
         unit,
         dimensions,
         material: asString(requirement.material),
+        colour: requirementColour(requirement),
         finish: asString(requirement.finish),
         grade: asString(requirement.grade),
         standard: asString(requirement.standard),
@@ -1002,6 +1012,7 @@ const lineMetadata = (line: GroupedBomLine) => (
   [
     dimensionSummary(line.dimensions),
     line.material && `material ${line.material}`,
+    line.colour && `colour ${line.colour}`,
     line.finish && `finish ${line.finish}`,
     line.grade && `grade ${line.grade}`,
     line.standard && `standard ${line.standard}`,
@@ -1033,6 +1044,7 @@ export const quoteFocusForLine = (line: GroupedBomLine) => {
     line.displayName,
     line.partNumber,
     line.material,
+    line.colour,
     line.finish,
     line.grade,
     line.standard,
@@ -1076,6 +1088,7 @@ export const buildSupplierQuoteCsv = (
     'Length mm',
     'Dimensions / specification',
     'Material',
+    'Colour',
     'Finish',
     'Grade',
     'Standard',
@@ -1095,6 +1108,7 @@ export const buildSupplierQuoteCsv = (
     dimensionValue(line.dimensions, 'length_mm'),
     lineMetadata(line),
     line.material,
+    line.colour,
     line.finish,
     line.grade,
     line.standard,
@@ -1137,6 +1151,7 @@ export const buildSupplierQuoteHtml = (
           <div class="muted">${htmlCell(lineMetadata(line))}</div>
         </td>
         <td>${htmlCell(line.partNumber)}</td>
+        <td>${htmlCell(line.colour)}</td>
         <td class="num">${htmlCell(line.quantity)}</td>
         <td>${htmlCell(line.unit)}</td>
         <td class="num">${htmlCell(dimensionValue(line.dimensions, 'length_mm'))}</td>
@@ -1171,15 +1186,16 @@ export const buildSupplierQuoteHtml = (
     .preview { width: 7%; }
     .preview-cell { height: 56px; padding: 3px; text-align: center; vertical-align: middle; }
     .preview-cell img { max-width: 100%; max-height: 54px; object-fit: contain; }
-    .section { width: 11%; }
-    .item { width: 17%; }
-    .part { width: 9%; }
+    .section { width: 10%; }
+    .item { width: 16%; }
+    .part { width: 8%; }
+    .colour { width: 7%; }
     .qty { width: 5%; }
-    .unit { width: 5%; }
+    .unit { width: 4%; }
     .length { width: 6%; }
-    .focus { width: 17%; }
+    .focus { width: 15%; }
     .price { width: 7%; }
-    .lead { width: 7%; }
+    .lead { width: 6%; }
     footer { margin-top: 10px; color: #6b7280; font-size: 9px; }
   </style>
 </head>
@@ -1204,6 +1220,7 @@ export const buildSupplierQuoteHtml = (
         <th class="section">Section</th>
         <th class="item">Line item</th>
         <th class="part">Part number</th>
+        <th class="colour">Colour</th>
         <th class="qty">Qty</th>
         <th class="unit">Unit</th>
         <th class="length">Length mm</th>

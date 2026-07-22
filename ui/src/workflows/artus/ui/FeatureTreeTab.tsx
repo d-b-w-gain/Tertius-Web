@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { apiFetch } from '../../../api/client';
@@ -108,24 +108,43 @@ const TreeNode: React.FC<{
   const [expanded, setExpanded] = useState(depth < 2);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
+  const nodeRef = useRef<HTMLDivElement>(null);
   
   const isMesh = (node as THREE.Mesh).isMesh;
   const isGroup = node.type === 'Group' || node.type === 'Object3D';
   const visibleChildren = useMemo(() => node.children.filter(isAssemblyTreeNode), [node.children]);
   const hasChildren = visibleChildren.length > 0;
-  
-  if (!isAssemblyTreeNode(node) || (!isMesh && !isGroup)) return null;
-  
   const displayName = node.name || (isMesh ? 'Mesh' : 'Component');
   const isSelected = isSceneNodeSelectionMatch(root, node, selectedValue);
+  const containsSelectedNode = useMemo(() => {
+    let containsSelection = false;
+    node.traverse((child) => {
+      if (isSceneNodeSelectionMatch(root, child, selectedValue)) containsSelection = true;
+    });
+    return containsSelection;
+  }, [node, root, selectedValue]);
   const nodePathKey = getSceneNodePathKey(root, node);
   const appearance = appearanceByPath[nodePathKey] || {};
   const isHidden = appearance.hidden === true;
   const isTransparent = appearance.transparent === true;
   const showControls = isHovered || isFocused || isHidden || isTransparent;
 
+  useEffect(() => {
+    if (containsSelectedNode) setExpanded(true);
+  }, [containsSelectedNode]);
+
+  useEffect(() => {
+    if (!isSelected) return;
+    const frame = requestAnimationFrame(() => {
+      nodeRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isSelected]);
+
+  if (!isAssemblyTreeNode(node) || (!isMesh && !isGroup)) return null;
+
   return (
-    <div className="flex flex-col font-mono text-xs">
+    <div ref={nodeRef} className="flex flex-col font-mono text-xs">
        <div 
          className={`flex w-full items-center py-0.5 px-2 cursor-pointer transition-colors ${isSelected ? 'bg-indigo-900/40 border border-indigo-500/50 rounded shadow-[inset_0_0_10px_rgba(99,102,241,0.2)]' : 'hover:bg-slate-800/50'}`}
          style={{ paddingLeft: `${depth * 16 + 8}px` }}
