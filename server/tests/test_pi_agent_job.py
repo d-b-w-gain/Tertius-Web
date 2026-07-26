@@ -321,8 +321,8 @@ def worker_settings(**overrides):
         "pi_agent_result_subject": "tertius.pi.result",
         "pi_agent_ack_wait_seconds": 90,
         "pi_agent_timeout_seconds": 480,
-        "pi_agent_max_turns": 12,
-        "pi_agent_max_tool_calls": 48,
+        "pi_agent_max_turns": 24,
+        "pi_agent_max_tool_calls": 96,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

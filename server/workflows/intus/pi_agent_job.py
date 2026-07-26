@@ -54,7 +54,7 @@ from core.telemetry import (
 
 
 logger = logging.getLogger(__name__)
-_MAX_FILE_BYTES = 200_000
+_MAX_FILE_BYTES = 2_000_000
 
 
 def _metric_attributes(

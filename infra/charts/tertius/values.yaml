@@ -82,7 +82,7 @@ app:
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
     llmFileEditMaxContextFiles: 20
-    llmFileEditMaxContextChars: 80000
+    llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10
     llmTenantRateLimitPerMinute: 60
     llmTenantDailyTokenQuota: "3200000"
@@ -92,8 +92,8 @@ app:
     piAgentModelLabel: GPT-5.6 Sol
     piAgentThinking: medium
     piAgentTimeoutSeconds: 480
-    piAgentMaxTurns: 12
-    piAgentMaxToolCalls: 48
+    piAgentMaxTurns: 24
+    piAgentMaxToolCalls: 96
     piAgentEstimatedOutputTokens: 65536
     piAgentStreamName: TERTIUS_PI_AGENT
     piAgentRequestSubject: tertius.pi.request
@@ -102,8 +102,8 @@ app:
     piAgentResultConsumer: pi-agent-result-api
     piAgentAckWaitSeconds: 90
     piAgentMaxDeliver: 2
-    piAgentRequestMaxBytes: 524288
-    piAgentResultMaxBytes: 524288
+    piAgentRequestMaxBytes: 3000000
+    piAgentResultMaxBytes: 3000000
     piAgentStreamMaxAgeSeconds: 86400
     piAgentStreamMaxBytes: 67108864
     billingStreamName: TERTIUS_BILLING
@@ -128,7 +128,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api
-    tag: master-118-1-03fef5b # {"$imagepromoter": "tertius-api"}
+    tag: master-121-1-61eb562 # {"$imagepromoter": "tertius-api"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -155,7 +155,7 @@ piAgent:
   enabled: false
   image:
     repository: ghcr.io/d-b-w-gain/tertius-pi-agent
-    tag: master-118-1-03fef5b # {"$imagepromoter": "tertius-pi-agent"}
+    tag: master-121-1-61eb562 # {"$imagepromoter": "tertius-pi-agent"}
     pullPolicy: IfNotPresent
   auth:
     existingClaim: ""
@@ -204,7 +204,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui
-    tag: master-118-1-03fef5b # {"$imagepromoter": "tertius-ui"}
+    tag: master-121-1-61eb562 # {"$imagepromoter": "tertius-ui"}
     pullPolicy: IfNotPresent
   port: 80
   service:

@@ -939,12 +939,12 @@ if ! rg -q 'LLM_USER_RATE_LIMIT_PER_MINUTE: "10"' <<<"$rendered" || ! rg -q 'LLM
   exit 1
 fi
 
-if ! rg -q 'PI_AGENT_ESTIMATED_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "80000"' <<<"$rendered"; then
+if ! rg -q 'PI_AGENT_ESTIMATED_OUTPUT_TOKENS: "65536"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_FILES: "20"' <<<"$rendered" || ! rg -q 'LLM_FILE_EDIT_MAX_CONTEXT_CHARS: "2000000"' <<<"$rendered"; then
   echo "ConfigMap must render Pi output reservation and file-selection limits." >&2
   exit 1
 fi
 
-if ! rg -q 'PI_AGENT_MAX_TURNS: "12"' <<<"$rendered" || ! rg -q 'PI_AGENT_MAX_TOOL_CALLS: "48"' <<<"$rendered"; then
+if ! rg -q 'PI_AGENT_MAX_TURNS: "24"' <<<"$rendered" || ! rg -q 'PI_AGENT_MAX_TOOL_CALLS: "96"' <<<"$rendered"; then
   echo "ConfigMap must render bounded Pi execution controls." >&2
   exit 1
 fi

@@ -408,7 +408,7 @@ async def test_ensure_pi_agent_stream_reconciles_stale_stream_without_recreating
 
     stream_config = jetstream.streams["TERTIUS_PI_AGENT"]
     assert stream_config.subjects == ["tertius.pi.request", "tertius.pi.result"]
-    assert stream_config.max_msg_size == 524288
+    assert stream_config.max_msg_size == 3_000_000
     assert stream_config.max_age == 86400
     assert stream_config.max_bytes == 67108864
     assert jetstream.streams["TERTIUS_PI_AGENT"] is not stale
