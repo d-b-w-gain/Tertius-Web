@@ -153,7 +153,10 @@ try:
     elif export_format == "step":
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
-        deflection = 0.001
+        # The UI omits quality for its ordinary GLB preview.  Treat that as the
+        # established "normal" preview quality rather than an ultra-fine mesh.
+        # Explicit quality values below continue to take precedence.
+        deflection = 10.0
         if quality_arg == "sketch":
             deflection = 200.0
         elif quality_arg == "rough":
