@@ -1106,18 +1106,20 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const toModelCoordinates = (point: THREE.Vector3) => (
       new THREE.Vector3(point.x, point.z, -point.y)
     );
-    const maxOffsetMm = structuralOverlay.maxOffsetMm ?? 260;
+    // Build123D emits GLTF vertex coordinates in metres even though the CAD
+    // source is authored in millimetres.
+    const maxOffset = (structuralOverlay.maxOffsetMm ?? 260) / 1000;
     const axisPoints: THREE.Vector3[] = [];
     const diagramPoints: THREE.Vector3[] = [];
     const demandRatios: number[] = [];
     stations.forEach(({ position, moment_kNm: moment }) => {
       const sourcePoint = new THREE.Vector3(
-        position.x * 1000,
-        position.y * 1000,
-        position.z * 1000,
+        position.x,
+        position.y,
+        position.z,
       );
       const momentVector = new THREE.Vector3(moment.x, moment.y, moment.z);
-      const offset = axis.clone().cross(momentVector).multiplyScalar(maxOffsetMm / peakMoment);
+      const offset = axis.clone().cross(momentVector).multiplyScalar(maxOffset / peakMoment);
       axisPoints.push(toModelCoordinates(sourcePoint));
       diagramPoints.push(toModelCoordinates(sourcePoint.clone().add(offset)));
       demandRatios.push(Math.min(1, momentVector.length() / peakMoment));
