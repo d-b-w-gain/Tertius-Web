@@ -79,7 +79,8 @@ and result artifacts consumed by the workbench and calculation reports.
   dependencies, licence, units, axes, releases, and result conventions.
 - [x] Run a minimal PyNiteFEA 2.4.1 cantilever in the legacy Python 3.12
   environment and confirm force/moment reactions.
-- [ ] Prove install/import in the canonical Tertius compile image.
+- [x] Prove install/import in the canonical Tertius API/compile image via the
+  branch smoke image workflow and isolated Helm deployment.
 - [ ] Run a minimal stable frame and export nodes, member forces, reactions, and
   diagram stations deterministically.
 - [ ] Compare equilibrium and one independently calculated case.
@@ -157,10 +158,17 @@ and result artifacts consumed by the workbench and calculation reports.
 - [ ] Pass source-to-report coverage for every changed design detail.
 - [ ] Pass global force/moment equilibrium, reaction, stability, units, signs,
   and independent comparison checks.
-- [ ] Run backend, frontend, schema, and golden fixture tests.
+- [x] Run backend, frontend, schema, and golden fixture tests.
 - [ ] Run full authenticated `live-flow` in an isolated local-values k3s smoke
   release because this work changes model-viewer behaviour.
 - [ ] Verify Helm/Compose parity for every runtime dependency/configuration
   change.
 - [ ] Confirm reports distinguish pass, fail, warning, unsupported, stale, and
   not checked, and do not imply engineering certification.
+
+Validation evidence (2026-07-27): `smoke-8057697` ran in the isolated
+`tertius-fbd-smoke` Helm release. Authenticated browser validation confirmed the
+fixture contract, PyNite results, Build123D GLB, and named load/member selection
+without console errors. Full `live-flow` remains pending because this
+fixture-only release intentionally has Pi/LLM workers and provider credentials
+disabled.

@@ -90,8 +90,9 @@ The legacy `shed` virtual environment records:
 PyNiteFEA 2.4.1 metadata declares Python `>=3.11`, NumPy `>=2.4.0`,
 PrettyTable, SciPy, and Matplotlib. Its classifiers explicitly list Python
 3.11–3.13. The current Tertius lock uses Python 3.14, NumPy 2.4.6, and SciPy
-1.17.1. Dependency versions look compatible, but Python 3.14 installation and
-import must still be proven in the canonical Tertius image.
+1.17.1. The branch smoke image workflow and isolated
+`tertius-fbd-smoke` Helm release proved installation, import, and the
+deterministic cantilever solve in the canonical Python 3.14 API/compile image.
 
 A minimal cantilever was run directly against the legacy environment, without
 importing FBD. For a 1 kN tip load on a 2 m cantilever, PyNiteFEA 2.4.1 returned:
@@ -101,9 +102,8 @@ importing FBD. For a 1 kN tip load on a 2 m cantilever, PyNiteFEA 2.4.1 returned
 - tip displacement `DX = 0.013333... m` for the spike properties.
 
 This proves the package and the FBD-used API (`FEModel3D`, materials, sections,
-nodes, supports, members, nodal loads, combinations, and linear solve) in the
-legacy Python 3.12 environment. It does not yet prove the Tertius Python 3.14
-compile image.
+nodes, supports, members, nodal loads, combinations, and linear solve) in both
+the legacy Python 3.12 environment and the Tertius Python 3.14 image.
 
 ## Current analytical model
 
