@@ -2,9 +2,16 @@
 
 ## Status
 
-This is the kickoff architecture for [epic #330](https://github.com/d-b-w-gain/Tertius-Web/issues/330).
+This is the evolving architecture for [epic #330](https://github.com/d-b-w-gain/Tertius-Web/issues/330).
 It turns the useful parts of the legacy FBD Shed Designer into a Tertius
 workbench without treating the old application as the target architecture.
+
+The first runnable scaffold is now present: an authenticated **Structural** tab,
+a strict version `1.0` fixture contract, a deterministic PyNiteFEA 2.4.1
+cantilever, and a labelled Build123D GLB shown in the shared Extus viewer. The
+fixture verifies the UI/API/solver/render identity path, but it is deliberately
+not connected to a project `design.py` and is visibly marked as unsuitable for
+design, certification, or ordering.
 
 The legacy source is at
 `W:\ben\ContextUI\default\workflows\shed\FBD`. The first source/runtime audit is
@@ -153,6 +160,15 @@ package should not leak its private object model into UI or persistence schemas.
 - unsupported or not-checked conditions.
 
 Exact field names land only after the legacy inventory and minimal solver spike.
+
+The fixture establishes the first concrete subset in
+`server/core/structural/contracts.py`: nodes, six-degree restraints, members,
+sections, materials, nodal loads, load cases, reactions, member demands,
+illustrative checks, equilibrium diagnostics, solver metadata, source identity,
+and capability states. Contract validation rejects duplicate IDs, missing
+references, and zero-length members. This is a compatibility harness, not yet
+the complete persisted `structural-model.json`/`structural-results.json`
+contract.
 
 ## Current-order verification gate
 

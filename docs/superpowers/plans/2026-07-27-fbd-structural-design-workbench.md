@@ -96,8 +96,9 @@ and result artifacts consumed by the workbench and calculation reports.
 - Add: project authoring helpers usable from `design.py` imports
 - Add: focused schema, graph, units, and stability tests
 
-- [ ] Define stable IDs shared by source, Build123D components, structural
-  entities, viewer selection, procurement, and reports.
+- [x] Define the first stable IDs shared by Build123D fixture components,
+  structural entities, viewer selection, and fixture results.
+- [ ] Extend stable IDs across source, procurement, and reports.
 - [ ] Define nodes, members, sections, materials, supports, releases, offsets,
   rigid links, loads, cases, combinations, results, warnings, and provenance.
 - [ ] Define analytical centre-line to physical geometry mapping.
@@ -106,6 +107,10 @@ and result artifacts consumed by the workbench and calculation reports.
   results.
 - [ ] Add source/model/result hashes and deterministic serialization.
 - [ ] Keep the solver's private types behind the adapter.
+- [x] Add a strict version `1.0` fixture contract and keep PyNite private types
+  behind the fixture adapter.
+- [x] Reject duplicate IDs, dangling references, and zero-length fixture
+  members at the contract boundary.
 
 ### Task 5: Deliver the first Structural Design Workbench slice
 
@@ -115,7 +120,14 @@ and result artifacts consumed by the workbench and calculation reports.
 - Add: workbench route/shell and focused UI tests
 - Reuse: shared Extus viewer/tree selection primitives from #57
 
-- [ ] Add the workbench shell alongside the Procurement Workbench.
+- [x] Add the authenticated workbench shell alongside the Procurement
+  Workbench, with an explicit fixture/not-for-ordering banner.
+- [x] Mount a structural API and expose a deterministic PyNite cantilever plus
+  a Build123D GLB carrying the same member/node IDs.
+- [x] Reuse the Extus viewer, link tree selection to GLB entities, and show the
+  fixture load, reactions, equilibrium, moment, shear, displacement,
+  utilisation, solver version, and capability states.
+- [ ] Replace the static fixture with a project `design.py` capture.
 - [ ] Render actual Build123D profiles and placements with stable component IDs.
 - [ ] Add nodes, supports, local axes, releases, loads, tributary regions, and
   connectivity inspection.

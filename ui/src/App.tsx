@@ -3,6 +3,7 @@ import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { OctavusWindow } from './workflows/octavus/OctavusWindow'
+import { StructuralWorkbench } from './workflows/structural/StructuralWorkbench'
 import { GenerateDesignWindow, type GenerateViewportState } from './workflows/generate/GenerateDesignWindow'
 import { SharedExtusViewport, type SharedExtusViewportSource } from './workflows/extus/SharedExtusViewport'
 import { AiUsageGauge } from './workflows/generate/AiUsageGauge'
@@ -236,6 +237,12 @@ function App() {
           >
             🛒 Procurement
           </button>
+          <button
+            onClick={() => setActiveTab('structural')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'structural' ? 'bg-slate-950 text-orange-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+          >
+            🏗️ Structural
+          </button>
           <div className="ml-auto flex items-center space-x-2 mr-4">
             <div className="relative">
               <button 
@@ -312,6 +319,9 @@ function App() {
               onViewportFrameChange={handleProcurementViewportFrameChange}
               componentPreviewImage={procurementComponentPreview}
             />
+          </div>
+          <div className={activeTab === 'structural' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <StructuralWorkbench isActive={activeTab === 'structural'} />
           </div>
         </div>
       </div>
