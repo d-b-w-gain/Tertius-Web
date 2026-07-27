@@ -41,6 +41,7 @@ from core.auth import (
     clear_auth_cookies,
     decode_keycloak_token,
     get_auth_context,
+    keycloak_token_url,
     new_csrf_token,
     new_session_token,
     session_token_hash,
@@ -250,12 +251,7 @@ def _code_challenge(verifier: str) -> str:
 
 
 def _keycloak_token_url() -> str:
-    if settings.keycloak_jwks_url_override:
-        jwks_url = settings.keycloak_jwks_url_override.rstrip("/")
-        suffix = "/protocol/openid-connect/certs"
-        if jwks_url.endswith(suffix):
-            return f"{jwks_url[:-len(suffix)]}/protocol/openid-connect/token"
-    return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+    return keycloak_token_url(settings)
 
 
 @app.get("/api/auth/login")

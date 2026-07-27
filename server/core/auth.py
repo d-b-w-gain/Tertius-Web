@@ -124,6 +124,14 @@ def clear_auth_cookies(response: Response) -> None:
         response.delete_cookie(name, path="/")
 
 
+def keycloak_token_url(settings) -> str:
+    jwks_url = settings.keycloak_jwks_url.rstrip("/")
+    suffix = "/protocol/openid-connect/certs"
+    if jwks_url.endswith(suffix):
+        return f"{jwks_url[:-len(suffix)]}/protocol/openid-connect/token"
+    return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+
+
 def require_csrf(request: Request, session: AuthSession) -> None:
     if request.method.upper() in SAFE_METHODS:
         return
@@ -134,7 +142,7 @@ def require_csrf(request: Request, session: AuthSession) -> None:
 
 def refresh_session_access_token(session: AuthSession) -> None:
     settings = get_settings()
-    token_url = f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+    token_url = keycloak_token_url(settings)
     data = {
         "grant_type": "refresh_token",
         "client_id": settings.oidc_client_id,

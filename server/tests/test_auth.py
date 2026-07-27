@@ -12,7 +12,14 @@ from starlette.requests import Request
 from sqlalchemy.orm import Session
 
 import core.auth as auth
-from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context, get_cookie_auth_context, session_token_hash
+from core.auth import (
+    claims_to_principal,
+    decode_keycloak_token,
+    get_auth_context,
+    get_cookie_auth_context,
+    keycloak_token_url,
+    session_token_hash,
+)
 from core.auth_types import AuthContext
 from core.config import Settings
 from core.models import AuthSession
@@ -303,6 +310,21 @@ def test_keycloak_token_url_falls_back_to_issuer(monkeypatch):
     )
 
     assert app_main._keycloak_token_url() == "http://localhost:18080/realms/tertius/protocol/openid-connect/token"
+
+
+def test_refresh_token_url_uses_internal_jwks_service():
+    settings = Settings(
+        keycloak_issuer="http://127.0.0.1:18081/realms/tertius",
+        keycloak_jwks_url_override=(
+            "http://tertius-fbd-smoke-keycloak-service:8080"
+            "/realms/tertius/protocol/openid-connect/certs"
+        ),
+    )
+
+    assert keycloak_token_url(settings) == (
+        "http://tertius-fbd-smoke-keycloak-service:8080"
+        "/realms/tertius/protocol/openid-connect/token"
+    )
 
 
 def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):
