@@ -118,15 +118,15 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/tests/test_pi_agent_result_consumer.py`
 - Modify: `server/tests/test_pi_agent_pipeline_e2e.py`
 
-- [ ] Add failing tests for progress/result discrimination, strict size and
+- [x] Add failing tests for progress/result discrimination, strict size and
   provenance checks, idempotent ACK, invalid ACK/discard, database NAK/retry,
   and progress-before-result pipeline order.
-- [ ] Run focused consumer/pipeline tests and observe the red state.
-- [ ] Route `message_type=progress` to a dedicated progress handler; preserve
+- [x] Run focused consumer/pipeline tests and observe the red state.
+- [x] Route `message_type=progress` to a dedicated progress handler; preserve
   the existing result path unchanged.
-- [ ] Persist through `LlmEditRepository` and record only bounded kind/tool/state
+- [x] Persist through `LlmEditRepository` and record only bounded kind/tool/state
   telemetry.
-- [ ] Run focused tests, Ruff, and mypy.
+- [x] Run focused tests, Ruff, and mypy.
 
 ## Task 6: Return progress from status and history
 

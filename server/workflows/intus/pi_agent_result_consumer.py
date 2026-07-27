@@ -1,6 +1,8 @@
 import asyncio
 from hashlib import sha256
+import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -21,9 +23,11 @@ from core.pi_agent_messages import (
     PiAgentCommand,
     PiAgentConversationContext,
     PiAgentFileManifest,
+    PiAgentProgressBatch,
     PiAgentResult,
     PiAgentSourceFile,
     assert_pi_agent_command_size,
+    assert_pi_agent_progress_size,
     assert_pi_agent_result_size,
     pi_agent_command_message_id,
 )
@@ -31,6 +35,7 @@ from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.repositories import (
     FileVersionConflictError,
     LlmEditRepository,
+    ProgressBatchApplyOutcome,
     ProjectRepository,
     normalize_file_version,
 )
@@ -68,6 +73,109 @@ def _result_provenance(
     if result.provider != provider or result.model != model:
         return None
     return provider, model
+
+
+def _progress_provenance(
+    db: Session, progress: PiAgentProgressBatch, _settings
+) -> tuple[str, str] | None:
+    job = db.scalar(
+        select(LlmEditJob).where(
+            LlmEditJob.tenant_id == progress.tenant_id,
+            LlmEditJob.project_id == progress.project_id,
+            LlmEditJob.id == progress.job_id,
+        )
+    )
+    if job is None:
+        return None
+
+    payload = job.request_payload if isinstance(job.request_payload, dict) else {}
+    provider = payload.get("dispatched_provider")
+    model = payload.get("dispatched_model")
+    if provider != "openai-codex":
+        return None
+    if not isinstance(model, str) or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}", model
+    ) is None:
+        return None
+    return provider, model
+
+
+def _progress_parent_context(msg, progress: PiAgentProgressBatch):
+    headers = getattr(msg, "headers", None)
+    if headers is not None:
+        return extract_nats_context(headers)
+    carrier = {
+        key: value
+        for key, value in {
+            "traceparent": progress.traceparent,
+            "tracestate": progress.tracestate,
+        }.items()
+        if value is not None
+    }
+    return propagate.extract(carrier)
+
+
+async def _handle_pi_agent_progress_message(msg, db: Session, settings) -> None:
+    try:
+        progress = PiAgentProgressBatch.model_validate_json(msg.data)
+        assert_pi_agent_progress_size(progress, settings.pi_agent_result_max_bytes)
+    except (ValidationError, ValueError):
+        logger.warning("Discarding invalid or oversize Pi agent progress envelope")
+        await msg.ack()
+        return
+
+    provenance = _progress_provenance(db, progress, settings)
+    if provenance is None:
+        db.rollback()
+        logger.warning("Discarding Pi agent progress with invalid provenance")
+        await msg.ack()
+        return
+    provider, model = provenance
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span(
+        "pi_agent.progress.consume",
+        context=_progress_parent_context(msg, progress),
+        kind=SpanKind.CONSUMER,
+        attributes=_metric_attributes(
+            provider=provider,
+            model=model,
+            status="processing",
+            failure_category=None,
+            retryable=False,
+        ),
+    ):
+        try:
+            outcome = LlmEditRepository(db, progress.tenant_id).apply_progress_batch(
+                progress
+            )
+            if outcome == ProgressBatchApplyOutcome.APPLIED:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+            await msg.nak()
+            return
+
+        if outcome in {
+            ProgressBatchApplyOutcome.REJECTED_IDENTITY,
+            ProgressBatchApplyOutcome.REJECTED_SEQUENCE,
+            ProgressBatchApplyOutcome.REJECTED_SNAPSHOT,
+            ProgressBatchApplyOutcome.STALE_EXECUTION,
+        }:
+            logger.warning("Discarding rejected Pi agent progress batch")
+        counter_add(
+            "tertius.pi_agent.progress.processed.count",
+            1,
+            _metric_attributes(
+                provider=provider,
+                model=model,
+                status=outcome.value,
+                failure_category=None,
+                retryable=False,
+            ),
+        )
+    await msg.ack()
 
 
 def _record_api_terminal(
@@ -481,6 +589,23 @@ async def republish_queued_pi_agent_jobs(
 
 
 async def handle_pi_agent_result_message(msg, db: Session, settings, billing_publisher) -> None:
+    raw_data = msg.data
+    raw_size = (
+        len(raw_data.encode("utf-8")) if isinstance(raw_data, str) else len(raw_data)
+    )
+    if raw_size > settings.pi_agent_result_max_bytes:
+        logger.warning("Discarding oversize Pi agent message envelope")
+        await msg.ack()
+        return
+
+    try:
+        envelope = json.loads(raw_data)
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+        envelope = None
+    if isinstance(envelope, dict) and envelope.get("message_type") == "progress":
+        await _handle_pi_agent_progress_message(msg, db, settings)
+        return
+
     try:
         result = PiAgentResult.model_validate_json(msg.data)
         assert_pi_agent_result_size(result, settings.pi_agent_result_max_bytes)
