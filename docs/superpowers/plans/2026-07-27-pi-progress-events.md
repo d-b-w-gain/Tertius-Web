@@ -136,13 +136,14 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/tests/test_llm_file_edit.py`
 - Modify: `server/tests/test_intus_endpoints.py`
 
-- [ ] Add failing tests for optional progress in status and terminal
-  conversation history, tenant/project ownership, and unchanged legacy response
-  fields.
-- [ ] Run focused endpoint tests and observe the red state.
-- [ ] Serialize the validated bounded snapshot only after the existing scoped
-  job lookup succeeds.
-- [ ] Run focused tests, Ruff, and mypy.
+- [x] Add failing tests for full optional progress in status, an eight-event
+  compact terminal-history preview with 240-character reasoning bounds,
+  tenant/project ownership, and unchanged legacy response fields.
+- [x] Run focused endpoint tests and observe the red state.
+- [x] Serialize the validated full snapshot only after the existing scoped job
+  lookup succeeds; compact terminal history so a 200-job response cannot repeat
+  64-KiB snapshots.
+- [x] Run focused tests, Ruff, and mypy.
 
 ## Task 7: Add batched polling and Activity UI
 

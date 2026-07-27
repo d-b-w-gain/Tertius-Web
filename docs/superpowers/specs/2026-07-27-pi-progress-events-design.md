@@ -133,10 +133,14 @@ task.
 
 - `progress`: the full bounded snapshot, or `null` before the first event
 
-The conversation-history entry for a terminal job carries the same optional
-snapshot so Activity survives a reload. The existing status/result/error fields
-are unchanged. Tenant/project/job ownership continues to be enforced before
-progress is returned.
+The conversation-history entry for a terminal job carries an optional compact
+preview containing at most the eight most recent events, with reasoning text
+clipped to 240 characters. Its truncation marker records omitted events. The
+per-job status endpoint remains the source for the full bounded snapshot. This
+keeps Activity useful after reload without multiplying a 64-KiB snapshot across
+up to 200 history entries. Existing status/result/error fields are unchanged.
+Tenant/project/job ownership continues to be enforced before progress is
+returned.
 
 ## Failure Handling
 
@@ -173,8 +177,8 @@ Logs use fixed diagnostics and never serialize a progress envelope.
   idempotency, and the 128-event/64-KiB retention bounds.
 - Consumer tests cover envelope routing, provenance rejection, duplicate
   delivery, rollback/NAK, and unchanged terminal results.
-- Endpoint tests cover ownership, status/history response compatibility, and
-  terminal snapshots.
+- Endpoint tests cover ownership, full status snapshots, compact history
+  previews, response compatibility, and terminal snapshots.
 - UI tests cover snapshot merge/reset, deduplication, expanded running Activity,
   collapsed terminal Activity, truncation labels, tool error labels, and
   unchanged final result behavior.
