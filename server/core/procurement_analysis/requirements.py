@@ -113,6 +113,25 @@ def _best_source_call(component: dict[str, Any], source_analysis: dict[str, Any]
     return best[0], best[2] or "best source match"
 
 
+def _diagnostic_source_call(
+    component: dict[str, Any],
+    source_analysis: dict[str, Any],
+    procurement_call: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Find a source location for diagnostics without reviving procurement inference."""
+    if procurement_call is not None:
+        return procurement_call
+
+    best: tuple[dict[str, Any], int] | None = None
+    for call in source_analysis.get("diagnostic_calls", []):
+        if not isinstance(call, dict):
+            continue
+        score, _reason = _source_match_score(component, call)
+        if best is None or score > best[1]:
+            best = (call, score)
+    return best[0] if best is not None and best[1] >= 3 else None
+
+
 def _source_call_key(call: dict[str, Any] | None) -> tuple[Any, ...] | None:
     if not isinstance(call, dict):
         return None
@@ -1188,6 +1207,7 @@ def build_procurement_analysis(
                 part_number = None
                 visual_part_trace = None
                 dimensions = {}
+                diagnostic_call = _diagnostic_source_call(component, source_analysis, call)
                 diagnostics.append({
                     "code": "visual_container_without_procurement_identity",
                     "severity": "warning",
@@ -1197,8 +1217,8 @@ def build_procurement_analysis(
                         "product identity. It remains a procurement-required visual row unless marked reference/NTBO."
                     ),
                     "component_id": component["id"],
-                    "source_file": call.get("source_file") if call else None,
-                    "source_line": call.get("source_line") if call else None,
+                    "source_file": diagnostic_call.get("source_file") if diagnostic_call else None,
+                    "source_line": diagnostic_call.get("source_line") if diagnostic_call else None,
                 })
 
             part_number_placeholder = False
@@ -1342,6 +1362,7 @@ def build_procurement_analysis(
         if visual_container_without_identity:
             part_number = None
             visual_part_trace = None
+            diagnostic_call = _diagnostic_source_call(component, source_analysis, call)
             diagnostics.append({
                 "code": "visual_container_without_procurement_identity",
                 "severity": "warning",
@@ -1351,8 +1372,8 @@ def build_procurement_analysis(
                     "product identity. It remains a procurement-required visual row unless marked reference/NTBO."
                 ),
                 "component_id": component["id"],
-                "source_file": call.get("source_file") if call else None,
-                "source_line": call.get("source_line") if call else None,
+                "source_file": diagnostic_call.get("source_file") if diagnostic_call else None,
+                "source_line": diagnostic_call.get("source_line") if diagnostic_call else None,
             })
 
         dimensions = {

@@ -35,6 +35,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
     fastener_call_placement_counts = _collect_fastener_call_placement_counts(files, source_files, constants, static_resolver)
     return_product_counts = _collect_return_product_counts(files, source_files)
     calls: list[dict[str, Any]] = []
+    diagnostic_calls: list[dict[str, Any]] = []
     diagnostics: list[dict[str, Any]] = []
 
     for filename in source_files:
@@ -229,6 +230,24 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
                                 "line": signature.line,
                             } if signature else None,
                         })
+                    elif (
+                        signature is not None
+                        and not short_name.startswith("_")
+                        and "." not in (name or "")
+                        and assignment_target_scope
+                        and assignment_target_scope[-1]
+                    ):
+                        # Keep user-defined constructor call sites available for
+                        # visual diagnostics.  They are deliberately excluded
+                        # from procurement inference when they lack BoM inputs.
+                        diagnostic_calls.append({
+                            "function": short_name,
+                            "source_file": filename,
+                            "source_scope": "::".join(scope) or "<module>",
+                            "source_line": node.lineno,
+                            "assignment_targets": list(assignment_target_scope[-1]),
+                            "bom_kind": _infer_kind(short_name),
+                        })
 
             for child in ast.iter_child_nodes(node):
                 visit(child)
@@ -247,6 +266,7 @@ def analyze_design_sources(files: dict[str, str], entrypoint: str = "design.py")
         "entrypoint": entrypoint,
         "source_files": source_files,
         "calls": calls,
+        "diagnostic_calls": diagnostic_calls,
         "constants": [
             {
                 "name": value.name,

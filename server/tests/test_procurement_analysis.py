@@ -1553,6 +1553,7 @@ floor = make_floor_assembly()
         if item["code"] == "visual_container_without_procurement_identity"
     )
     assert diagnostic["component_id"] == "floor-assembly"
+    assert diagnostic["source_file"] == "design.py"
     assert diagnostic["source_line"] == 5
 
 
