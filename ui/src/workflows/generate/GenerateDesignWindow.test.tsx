@@ -813,9 +813,70 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByText('Read started')).toBeInTheDocument()
     expect(screen.getByText('Edit completed')).toBeInTheDocument()
     expect(screen.getByText('Write failed')).toBeInTheDocument()
-    expect(screen.getByText('parts/bearing.py')).toBeInTheDocument()
+    const fullToolTarget = screen.getByText('parts/bearing.py')
+    expect(fullToolTarget).toBeInTheDocument()
+    expect(fullToolTarget).toHaveClass('break-all')
+    expect(fullToolTarget).not.toHaveClass('truncate')
+    expect(fullToolTarget).not.toHaveAttribute('title')
     expect(details?.querySelector('[aria-live]')).toBeNull()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('announces capped active progress when the retained event count stays unchanged', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const cappedEvents = (startSequence: number) => Array.from({ length: 128 }, (_, index) => {
+      const sequence = startSequence + index
+      return {
+        sequence,
+        kind: 'tool_started' as const,
+        text: null,
+        tool_name: 'read' as const,
+        target: `private/part-${sequence}.py`,
+        is_error: null,
+        occurred_at: '2026-07-27T11:00:01Z',
+      }
+    })
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: piProgressSnapshot({
+          last_batch_sequence: 8,
+          last_sequence: 128,
+          events: cappedEvents(1),
+        }),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: piProgressSnapshot({
+          last_batch_sequence: 9,
+          last_sequence: 129,
+          truncated_before_sequence: 1,
+          events: cappedEvents(2),
+        }),
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'inspect the capped activity stream' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    await waitFor(() => expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'AI activity updated: 128 events. Latest: Read started. Sequence: 128.',
+    )
+    expect(screen.getByRole('status')).not.toHaveTextContent('private/part-128.py')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'AI activity updated: 128 events. Latest: Read started. Sequence: 129.',
+    )
+    expect(screen.getByRole('status')).not.toHaveTextContent('private/part-129.py')
   })
 
   it('merges polling snapshots, resets newer executions, ignores stale data, and collapses terminal Activity', async () => {

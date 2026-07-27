@@ -245,42 +245,42 @@ function ProgressActivity({
     <>
       {active && latestLabel && (
         <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-          AI activity updated: {progress.events.length} {progress.events.length === 1 ? 'event' : 'events'}. Latest: {latestLabel}.
+          AI activity updated: {progress.events.length} {progress.events.length === 1 ? 'event' : 'events'}. Latest: {latestLabel}. Sequence: {progress.last_sequence}.
         </p>
       )}
       <details ref={setInitialDetailsState} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
         <summary className="cursor-pointer select-none font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-        <span>Activity</span>
-        <span className="ml-2 text-slate-600">{progress.events.length}</span>
-      </summary>
-      <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
-        {progress.truncated_before_sequence !== null && (
-          <li className="relative text-[11px] leading-4 text-slate-500">
-            <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
-            Earlier activity was truncated.
-          </li>
-        )}
-        {progress.events.map(event => (
-          <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
-            <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
-              event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
-            }`} />
-            {event.kind === 'reasoning_delta' ? (
-              <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
-            ) : (
-              <div className="flex min-w-0 items-baseline gap-2">
-                <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
-                  {toolActivityLabel(event)}
-                </span>
-                {event.target && (
-                  <code className="min-w-0 truncate font-mono text-[10px] text-slate-500" title={event.target}>
-                    {event.target}
-                  </code>
-                )}
-              </div>
-            )}
-          </li>
-        ))}
+          <span>Activity</span>
+          <span className="ml-2 text-slate-300">{progress.events.length}</span>
+        </summary>
+        <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
+          {progress.truncated_before_sequence !== null && (
+            <li className="relative text-[11px] leading-4 text-slate-300">
+              <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
+              Earlier activity was truncated.
+            </li>
+          )}
+          {progress.events.map(event => (
+            <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
+              <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
+                event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
+              }`} />
+              {event.kind === 'reasoning_delta' ? (
+                <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
+              ) : (
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
+                    {toolActivityLabel(event)}
+                  </span>
+                  {event.target && (
+                    <code className="min-w-0 break-all font-mono text-[10px] text-slate-300">
+                      {event.target}
+                    </code>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
         </ol>
       </details>
     </>
