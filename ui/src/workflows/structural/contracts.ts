@@ -11,6 +11,57 @@ export type CapabilityState = {
   detail: string
 }
 
+export type DesignComponent = {
+  id: string
+  label: string
+  kind: 'ground' | 'member' | 'surface' | 'connector' | 'support'
+  visual_node_id: string
+  grounded: boolean
+  part_number: string | null
+}
+
+export type DesignConnection = {
+  id: string
+  label: string
+  from_component_id: string
+  to_component_id: string
+  connector_component_ids: string[]
+  transfers: Array<'force' | 'shear' | 'moment' | 'wind_normal'>
+}
+
+export type DesignSurfaceLoad = {
+  id: string
+  label: string
+  case: 'dead' | 'live' | 'wind'
+  component_id: string
+  pressure_kPa: number
+  area_m2: number
+  direction: Vector3
+  provenance: string
+}
+
+export type DesignLoadPath = {
+  load_id: string
+  status: 'complete' | 'blocked'
+  component_ids: string[]
+  connection_ids: string[]
+  grounded_component_id: string | null
+  detail: string
+}
+
+export type ProjectStructuralCapture = {
+  schema_version: '0.1'
+  project_name: string
+  design_hash: string
+  title: string
+  components: DesignComponent[]
+  connections: DesignConnection[]
+  loads: DesignSurfaceLoad[]
+  load_paths: DesignLoadPath[]
+  capabilities: CapabilityState[]
+  warnings: string[]
+}
+
 export type StructuralNode = {
   id: string
   label: string

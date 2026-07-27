@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiFetch } from '../../api/client'
 import { useAuth } from '../../auth/AuthProvider'
-import { ModelViewerCanvas } from '../extus/ui/ViewerTab'
+import { LatestModelViewer } from '../extus/ui/ViewerTab'
 import { resolveWorkflowServerUrl } from '../shared/apiConfig'
+import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
-import type { CapabilityState, StructuralSnapshot, Vector3 } from './contracts'
+import type {
+  CapabilityState,
+  DesignComponent,
+  ProjectStructuralCapture,
+  Vector3,
+} from './contracts'
 
 type StructuralWorkbenchProps = {
   isActive?: boolean
@@ -18,6 +24,14 @@ const capabilityStyle: Record<CapabilityState['status'], string> = {
   blocked: 'border-red-500/40 bg-red-500/10 text-red-300',
 }
 
+const componentStyle: Record<DesignComponent['kind'], string> = {
+  ground: 'border-emerald-500/50 bg-emerald-500/10',
+  member: 'border-cyan-500/50 bg-cyan-500/10',
+  surface: 'border-indigo-500/50 bg-indigo-500/10',
+  connector: 'border-amber-500/40 bg-amber-500/10',
+  support: 'border-violet-500/40 bg-violet-500/10',
+}
+
 function number(value: number, digits = 3) {
   return value.toLocaleString(undefined, {
     maximumFractionDigits: digits,
@@ -25,66 +39,80 @@ function number(value: number, digits = 3) {
   })
 }
 
-function vector(value: Vector3, unit: string) {
-  return `X ${number(value.x)} · Y ${number(value.y)} · Z ${number(value.z)} ${unit}`
-}
-
-function restraintLabel(snapshot: StructuralSnapshot, nodeId: string) {
-  const node = snapshot.nodes.find((candidate) => candidate.id === nodeId)
-  if (!node) return 'Missing node'
-  const restrained = Object.entries(node.restraints)
-    .filter(([, enabled]) => enabled)
-    .map(([degree]) => degree.toUpperCase())
-  return restrained.length ? restrained.join(', ') : 'Free'
+function vector(value: Vector3) {
+  return `X ${number(value.x)} · Y ${number(value.y)} · Z ${number(value.z)}`
 }
 
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
-  const [snapshot, setSnapshot] = useState<StructuralSnapshot | null>(null)
-  const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('fixture-member-cantilever')
+  const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
+  const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const captureRequestId = useRef(0)
   const serverUrl = resolveWorkflowServerUrl('structural', import.meta.env?.VITE_API_URL)
+  const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
 
-  useEffect(() => {
+  const loadCapture = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
-    let mounted = true
+    const requestId = ++captureRequestId.current
     setIsLoading(true)
     setError(null)
-    apiFetch(`${serverUrl}/fixture/cantilever`, getAccessToken)
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Structural fixture returned ${response.status}`)
-        return await response.json() as StructuralSnapshot
-      })
-      .then((payload) => {
-        if (!mounted) return
-        setSnapshot(payload)
-        setSelectedVisualNodeId(payload.members[0]?.visual_node_id || payload.nodes[0]?.visual_node_id || '')
-      })
-      .catch((loadError: unknown) => {
-        if (mounted) setError(loadError instanceof Error ? loadError.message : 'Structural fixture could not be loaded')
-      })
-      .finally(() => {
-        if (mounted) setIsLoading(false)
-      })
-    return () => {
-      mounted = false
+    try {
+      const response = await apiFetch(`${serverUrl}/active/capture`, getAccessToken)
+      const payload = await response.json().catch(() => null) as
+        | ProjectStructuralCapture
+        | { detail?: string }
+        | null
+      if (!response.ok) {
+        const detail = payload && 'detail' in payload ? payload.detail : undefined
+        throw new Error(detail || `Structural capture returned ${response.status}`)
+      }
+      const nextCapture = payload as ProjectStructuralCapture
+      if (requestId !== captureRequestId.current) return
+      setCapture(nextCapture)
+      const primaryLoad = nextCapture.loads[0]
+      setSelectedVisualNodeId(
+        primaryLoad
+          ? nextCapture.components.find(
+              (component) => component.id === primaryLoad.component_id,
+            )?.visual_node_id || ''
+          : nextCapture.components[0]?.visual_node_id || '',
+      )
+    } catch (loadError) {
+      if (requestId !== captureRequestId.current) return
+      setCapture(null)
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'The active project structural declaration could not be loaded',
+      )
+    } finally {
+      if (requestId === captureRequestId.current) {
+        setIsLoading(false)
+      }
     }
   }, [authMode, getAccessToken, isActive, serverUrl])
 
-  const selectedMember = useMemo(
-    () => snapshot?.members.find((member) => member.visual_node_id === selectedVisualNodeId) || snapshot?.members[0],
-    [selectedVisualNodeId, snapshot],
+  useEffect(() => {
+    void loadCapture()
+    const handleActiveProjectChange = () => {
+      void loadCapture()
+    }
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChange)
+    return () => {
+      window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleActiveProjectChange)
+      captureRequestId.current += 1
+    }
+  }, [loadCapture])
+
+  const componentsById = useMemo(
+    () => new Map(capture?.components.map((component) => [component.id, component]) || []),
+    [capture],
   )
-  const memberResult = snapshot?.member_results.find((result) => result.member_id === selectedMember?.id)
-  const memberCheck = snapshot?.member_checks.find((check) => check.member_id === selectedMember?.id)
-  const reaction = snapshot?.reactions[0]
-  const utilisationPercent = Math.min(100, Math.max(0, (memberCheck?.utilisation || 0) * 100))
-  const utilisationColour = (memberCheck?.utilisation || 0) > 1
-    ? 'bg-red-500'
-    : (memberCheck?.utilisation || 0) >= 0.8
-      ? 'bg-amber-400'
-      : 'bg-emerald-400'
+  const firstLoad = capture?.loads[0]
+  const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
+  const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
 
   if (authMode === 'guest') {
     return (
@@ -102,18 +130,20 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         <div className="min-w-0">
           <div className="flex items-center gap-3">
             <h1 className="truncate text-base font-semibold text-slate-100">
-              {snapshot?.title || 'Structural Workbench'}
+              {capture?.title || 'Structural Workbench'}
             </h1>
-            <span className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.16em] text-amber-300">
-              FIXTURE
-            </span>
+            {capture && (
+              <span className="rounded border border-cyan-500/50 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.16em] text-cyan-300">
+                {capture.project_name}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
-            {snapshot?.subtitle || 'Loading the structural test harness…'}
+            Active-project geometry with statically parsed structural connectivity
           </p>
         </div>
         <div className="ml-auto hidden items-center gap-2 lg:flex">
-          {snapshot?.capabilities.map((capability) => (
+          {capture?.capabilities.map((capability) => (
             <span
               key={capability.id}
               title={capability.detail}
@@ -126,174 +156,161 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       </header>
 
       <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
-        DEMONSTRATION FIXTURE — NOT FOR DESIGN, CERTIFICATION, OR ORDERING
+        LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="w-[25rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
-          {isLoading && <div className="p-5 text-sm text-slate-400">Solving fixture…</div>}
+        <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
+          {isLoading && <div className="p-5 text-sm text-slate-400">Parsing active design…</div>}
           {error && (
             <div className="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
-              {error}
+              <div className="font-semibold">Structural declaration unavailable</div>
+              <div className="mt-1 text-xs">{error}</div>
             </div>
           )}
-          {snapshot && (
+          {capture && (
             <div className="space-y-5 p-4">
               <section>
                 <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                  Traceable entities
+                  Declared components
                 </div>
-                <div className="mt-2 space-y-2">
-                  {snapshot.members.map((member) => (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {capture.components.map((component) => (
                     <button
-                      key={member.id}
+                      key={component.id}
                       type="button"
-                      onClick={() => setSelectedVisualNodeId(member.visual_node_id)}
-                      className={`w-full rounded border p-3 text-left transition-colors ${
-                        selectedVisualNodeId === member.visual_node_id
-                          ? 'border-cyan-500/70 bg-cyan-500/10'
-                          : 'border-slate-800 bg-slate-900/70 hover:border-slate-600'
+                      onClick={() => setSelectedVisualNodeId(component.visual_node_id)}
+                      className={`rounded border p-2 text-left transition-colors ${componentStyle[component.kind]} ${
+                        selectedVisualNodeId === component.visual_node_id
+                          ? 'ring-1 ring-cyan-300'
+                          : 'hover:border-slate-400'
                       }`}
                     >
-                      <div className="text-sm font-semibold text-slate-200">{member.label}</div>
-                      <div className="mt-1 truncate font-mono text-[10px] text-cyan-400">{member.id}</div>
+                      <div className="text-xs font-semibold text-slate-200">{component.label}</div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[9px] uppercase tracking-wide text-slate-400">
+                        <span>{component.kind}</span>
+                        {component.grounded && <span className="text-emerald-300">Grounded</span>}
+                      </div>
                     </button>
                   ))}
-                  <div className="grid grid-cols-2 gap-2">
-                    {snapshot.nodes.map((node) => (
-                      <button
-                        key={node.id}
-                        type="button"
-                        onClick={() => setSelectedVisualNodeId(node.visual_node_id)}
-                        className={`rounded border p-2 text-left text-xs transition-colors ${
-                          selectedVisualNodeId === node.visual_node_id
-                            ? 'border-cyan-500/70 bg-cyan-500/10'
-                            : 'border-slate-800 bg-slate-900/70 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="font-semibold text-slate-300">{node.label}</div>
-                        <div className="mt-1 text-[10px] text-slate-500">{restraintLabel(snapshot, node.id)}</div>
-                      </button>
-                    ))}
-                  </div>
                 </div>
               </section>
 
-              {selectedMember && memberResult && memberCheck && (
-                <section className="rounded border border-slate-800 bg-slate-900/60 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                        Member result
-                      </div>
-                      <div className="mt-1 text-sm font-semibold text-slate-200">{selectedMember.label}</div>
+              <section>
+                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                  Declared connections
+                </div>
+                <div className="mt-2 space-y-2">
+                  {capture.connections.map((connection) => {
+                    const from = componentsById.get(connection.from_component_id)
+                    const to = componentsById.get(connection.to_component_id)
+                    return (
+                      <button
+                        key={connection.id}
+                        type="button"
+                        onClick={() => setSelectedVisualNodeId(to?.visual_node_id || '')}
+                        className="w-full rounded border border-slate-800 bg-slate-900/70 p-3 text-left hover:border-slate-600"
+                      >
+                        <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                        <div className="mt-1 text-[10px] text-cyan-300">
+                          {from?.label || connection.from_component_id} → {to?.label || connection.to_component_id}
+                        </div>
+                        <div className="mt-1 text-[9px] uppercase tracking-wide text-slate-500">
+                          Via {connection.connector_component_ids.map(
+                            (id) => componentsById.get(id)?.label || id,
+                          ).join(', ') || 'direct declaration'} · {connection.transfers.join(', ')}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+
+              {firstLoad && (
+                <section className="rounded border border-indigo-500/40 bg-indigo-500/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-indigo-300">
+                      Applied {firstLoad.case} load
                     </div>
-                    <span className={`rounded px-2 py-1 text-xs font-bold ${
-                      memberCheck.status === 'pass' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'
-                    }`}>
-                      {number(memberCheck.utilisation, 2)} util.
+                    <span className="rounded bg-slate-950/60 px-2 py-1 font-mono text-[10px] text-slate-300">
+                      {number(resultantForce)} kN
                     </span>
                   </div>
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-800">
-                    <div className={`h-full ${utilisationColour}`} style={{ width: `${utilisationPercent}%` }} />
-                  </div>
-                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <div className="mt-2 text-sm font-semibold text-slate-100">{firstLoad.label}</div>
+                  <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                     <div>
-                      <dt className="text-slate-500">Moment</dt>
-                      <dd className="font-mono text-slate-200">{number(memberResult.max_moment_kNm)} kNm</dd>
+                      <dt className="text-slate-500">Pressure</dt>
+                      <dd className="font-mono">{number(firstLoad.pressure_kPa)} kPa</dd>
                     </div>
                     <div>
-                      <dt className="text-slate-500">Shear</dt>
-                      <dd className="font-mono text-slate-200">{number(memberResult.max_shear_kN)} kN</dd>
+                      <dt className="text-slate-500">Loaded area</dt>
+                      <dd className="font-mono">{number(firstLoad.area_m2)} m²</dd>
                     </div>
-                    <div>
-                      <dt className="text-slate-500">Tip displacement</dt>
-                      <dd className="font-mono text-slate-200">{number(memberResult.max_displacement_mm)} mm</dd>
-                    </div>
-                    <div>
-                      <dt className="text-slate-500">Capacity</dt>
-                      <dd className="font-mono text-slate-200">{number(memberCheck.capacity_kNm)} kNm</dd>
+                    <div className="col-span-2">
+                      <dt className="text-slate-500">Direction</dt>
+                      <dd className="font-mono">{vector(firstLoad.direction)}</dd>
                     </div>
                   </dl>
-                  <p className="mt-3 border-t border-slate-800 pt-2 text-[11px] text-amber-300">
-                    {memberCheck.basis}
+                  <p className="mt-3 border-t border-indigo-500/20 pt-2 text-[10px] text-slate-400">
+                    {firstLoad.provenance}
                   </p>
                 </section>
               )}
 
-              {reaction && (
-                <section className="rounded border border-slate-800 bg-slate-900/60 p-3">
+              {firstPath && (
+                <section className={`rounded border p-3 ${
+                  firstPath.status === 'complete'
+                    ? 'border-emerald-500/40 bg-emerald-500/10'
+                    : 'border-red-500/40 bg-red-500/10'
+                }`}>
                   <div className="flex items-center justify-between">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                      Base reaction
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                      Parsed load path
                     </div>
-                    <span className="text-[10px] font-semibold text-emerald-300">
-                      Equilibrium {snapshot.equilibrium.status}
+                    <span className={`text-[10px] font-bold uppercase ${
+                      firstPath.status === 'complete' ? 'text-emerald-300' : 'text-red-300'
+                    }`}>
+                      {firstPath.status === 'complete' ? 'Reaches ground' : 'Blocked'}
                     </span>
                   </div>
-                  <div className="mt-2 space-y-1 font-mono text-xs text-slate-300">
-                    <div>{vector(reaction.force, snapshot.units.force)}</div>
-                    <div>{vector(reaction.moment, snapshot.units.moment)}</div>
+                  <div className="mt-3 flex flex-wrap items-center gap-1 text-[10px] text-slate-200">
+                    {firstPath.component_ids.map((componentId, index) => (
+                      <span key={componentId} className="contents">
+                        {index > 0 && <span className="text-slate-500">→</span>}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedVisualNodeId(
+                            componentsById.get(componentId)?.visual_node_id || '',
+                          )}
+                          className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 hover:border-cyan-400"
+                        >
+                          {componentsById.get(componentId)?.label || componentId}
+                        </button>
+                      </span>
+                    ))}
                   </div>
+                  <p className="mt-2 text-[10px] text-slate-400">{firstPath.detail}</p>
                 </section>
               )}
 
-              <section>
-                <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                  Analysis provenance
-                </div>
-                <dl className="mt-2 space-y-1.5 text-xs">
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-slate-500">Solver</dt>
-                    <dd className="text-right font-mono text-slate-300">{snapshot.solver.name} {snapshot.solver.version}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-slate-500">Source</dt>
-                    <dd className="text-right text-slate-300">{snapshot.source.label}</dd>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <dt className="text-slate-500">Schema</dt>
-                    <dd className="font-mono text-slate-300">{snapshot.schema_version}</dd>
-                  </div>
-                </dl>
-              </section>
-
-              <section className="space-y-2 lg:hidden">
-                {snapshot.capabilities.map((capability) => (
-                  <div key={capability.id} className={`rounded border p-2 text-xs ${capabilityStyle[capability.status]}`}>
-                    <div className="font-semibold">{capability.label}</div>
-                    <div className="mt-0.5 opacity-80">{capability.detail}</div>
-                  </div>
-                ))}
+              <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
+                <div className="font-semibold">Capacity status: NOT CHECKED</div>
+                <p className="mt-1 text-[10px] text-amber-200/75">
+                  This proves declared connectivity only. It does not yet distribute the wind load,
+                  solve the C100 member, or check screws, bolts, bracket, anchors, or concrete.
+                </p>
               </section>
             </div>
           )}
         </aside>
 
         <main className="relative min-w-0 flex-1">
-          <ModelViewerCanvas
-            modelUrl={`${serverUrl}/fixture/cantilever/model`}
-            getAccessToken={getAccessToken}
-            statusText="Build123D fixture linked to the structural graph"
-            projectName="Cantilever fixture"
+          <LatestModelViewer
+            serverUrl={extusServerUrl}
             isActive={isActive}
+            statusTextOverride="Active-project model linked to parsed structural declarations"
             externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}
           />
-          {snapshot && (
-            <button
-              type="button"
-              onClick={() => setSelectedVisualNodeId(snapshot.loads[0]?.visual_node_id || '')}
-              className="absolute bottom-4 right-4 max-w-sm rounded border border-slate-700 bg-slate-950/85 p-3 text-left shadow-xl backdrop-blur transition-colors hover:border-red-400/70"
-            >
-              <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-400">
-                Applied load
-              </div>
-              <div className="mt-1 text-sm font-semibold text-slate-100">{snapshot.loads[0]?.label}</div>
-              <div className="mt-1 font-mono text-xs text-slate-300">
-                {snapshot.loads[0] ? vector(snapshot.loads[0].force, snapshot.units.force) : 'No load'}
-              </div>
-            </button>
-          )}
         </main>
       </div>
     </div>

@@ -6,12 +6,18 @@ This is the evolving architecture for [epic #330](https://github.com/d-b-w-gain/
 It turns the useful parts of the legacy FBD Shed Designer into a Tertius
 workbench without treating the old application as the target architecture.
 
-The first runnable scaffold is now present: an authenticated **Structural** tab,
-a strict version `1.0` fixture contract, a deterministic PyNiteFEA 2.4.1
-cantilever, and a labelled Build123D GLB shown in the shared Extus viewer. The
-fixture verifies the UI/API/solver/render identity path, but it is deliberately
-not connected to a project `design.py` and is visibly marked as unsuitable for
-design, certification, or ordering.
+The first active-project capture is now present. The authenticated
+**Structural** tab reads the same active project as Extus and displays its
+latest model artifact. A restricted `TERTIUS_STRUCTURAL` dictionary in
+`design.py` declares stable physical components, directed connections,
+connector components, loads, and grounded components. Tertius parses that
+declaration without executing the CAD script and traces every declared load to
+ground. This is connectivity capture only: member, connection, anchor, and
+concrete capacities remain visibly **not checked**.
+
+The earlier strict version `1.0` cantilever fixture and PyNiteFEA 2.4.1 solver
+remain as a backend compatibility harness, but the product workbench no longer
+shows fixture geometry or results against an active project.
 
 The legacy source is at
 `W:\ben\ContextUI\default\workflows\shed\FBD`. The first source/runtime audit is
@@ -169,6 +175,29 @@ and capability states. Contract validation rejects duplicate IDs, missing
 references, and zero-length members. This is a compatibility harness, not yet
 the complete persisted `structural-model.json`/`structural-results.json`
 contract.
+
+The active-project capture adds a deliberately smaller version `0.1` authoring
+surface. `design.py` declares `TERTIUS_STRUCTURAL` using literals, previously
+declared static names, and arithmetic only. Function calls, attributes, and
+other executable expressions are rejected. The parser validates:
+
+- unique stable component, connection, and load IDs;
+- physical viewer IDs and optional product/part numbers;
+- directed source/target component references;
+- the fastener/anchor component IDs used by each connection;
+- non-zero surface pressure, positive loaded area, direction, load case, and
+  provenance;
+- a deterministic connection path from each loaded component to a component
+  explicitly marked `grounded`.
+
+The reference `structural_test` design exercises:
+
+`Custom Orb sheet → Tek screws → C10019 → M12 bolts → 100GPB → M12 anchors → grounded concrete`
+
+Reaching ground proves only that the declared graph is connected. It does not
+prove that geometry is in contact, that the stated connection transfers are
+valid, or that any component has adequate strength, stiffness, embedment,
+edge distance, pull-out, bearing, or buckling capacity.
 
 ## Current-order verification gate
 

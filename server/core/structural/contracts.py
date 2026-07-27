@@ -132,6 +132,118 @@ class CapabilityState(StructuralContract):
     detail: str
 
 
+class DesignComponent(StructuralContract):
+    id: str
+    label: str
+    kind: Literal["ground", "member", "surface", "connector", "support"]
+    visual_node_id: str
+    grounded: bool = False
+    part_number: str | None = None
+
+
+class DesignConnection(StructuralContract):
+    id: str
+    label: str
+    from_component_id: str
+    to_component_id: str
+    connector_component_ids: list[str] = Field(default_factory=list)
+    transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
+
+
+class DesignSurfaceLoad(StructuralContract):
+    id: str
+    label: str
+    case: Literal["dead", "live", "wind"]
+    component_id: str
+    pressure_kPa: float
+    area_m2: float
+    direction: Vector3
+    provenance: str
+
+
+class DesignLoadPath(StructuralContract):
+    load_id: str
+    status: Literal["complete", "blocked"]
+    component_ids: list[str]
+    connection_ids: list[str]
+    grounded_component_id: str | None = None
+    detail: str
+
+
+class ProjectStructuralCapture(StructuralContract):
+    schema_version: Literal["0.1"] = "0.1"
+    project_name: str
+    design_hash: str
+    title: str
+    components: list[DesignComponent]
+    connections: list[DesignConnection]
+    loads: list[DesignSurfaceLoad]
+    load_paths: list[DesignLoadPath]
+    capabilities: list[CapabilityState]
+    warnings: list[str]
+
+    @model_validator(mode="after")
+    def validate_capture_references(self) -> ProjectStructuralCapture:
+        component_ids = _unique_ids("components", self.components)
+        _unique_ids("connections", self.connections)
+        _unique_ids("loads", self.loads)
+
+        for connection in self.connections:
+            _require_reference(
+                "connection source component",
+                connection.from_component_id,
+                component_ids,
+            )
+            _require_reference(
+                "connection target component",
+                connection.to_component_id,
+                component_ids,
+            )
+            if connection.from_component_id == connection.to_component_id:
+                raise ValueError(f"connection {connection.id!r} connects a component to itself")
+            for connector_id in connection.connector_component_ids:
+                _require_reference("connection connector component", connector_id, component_ids)
+
+        load_ids = {load.id for load in self.loads}
+        connection_ids = {connection.id for connection in self.connections}
+        for load in self.loads:
+            _require_reference("load component", load.component_id, component_ids)
+            if load.area_m2 <= 0:
+                raise ValueError(f"load {load.id!r} must have a positive area")
+            if load.pressure_kPa == 0:
+                raise ValueError(f"load {load.id!r} must have non-zero pressure")
+            if load.direction == Vector3(x=0, y=0, z=0):
+                raise ValueError(f"load {load.id!r} must have a non-zero direction")
+
+        for path in self.load_paths:
+            _require_reference("load path load", path.load_id, load_ids)
+            for component_id in path.component_ids:
+                _require_reference("load path component", component_id, component_ids)
+            for connection_id in path.connection_ids:
+                _require_reference("load path connection", connection_id, connection_ids)
+            if path.grounded_component_id is not None:
+                _require_reference(
+                    "load path grounded component",
+                    path.grounded_component_id,
+                    component_ids,
+                )
+            if path.status == "complete":
+                if path.grounded_component_id is None:
+                    raise ValueError(
+                        f"complete load path {path.load_id!r} has no grounded component"
+                    )
+                grounded = next(
+                    component
+                    for component in self.components
+                    if component.id == path.grounded_component_id
+                )
+                if not grounded.grounded:
+                    raise ValueError(
+                        f"complete load path {path.load_id!r} ends at an ungrounded component"
+                    )
+        return self
+
+
 class SnapshotSource(StructuralContract):
     kind: Literal["fixture", "design"]
     label: str

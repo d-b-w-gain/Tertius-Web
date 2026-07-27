@@ -128,8 +128,10 @@ and result artifacts consumed by the workbench and calculation reports.
 - [x] Reuse the Extus viewer, link tree selection to GLB entities, and show the
   fixture load, reactions, equilibrium, moment, shear, displacement,
   utilisation, solver version, and capability states.
-- [ ] Replace the static fixture with a project `design.py` capture.
-- [ ] Render actual Build123D profiles and placements with stable component IDs.
+- [x] Replace the static fixture with an active-project `design.py` load-path
+  capture while keeping unsolved capacities visibly not checked.
+- [x] Render the `structural_test` concrete/100GPB/C10019/Custom Orb microcosm
+  with stable component and fastener IDs in the active Extus model.
 - [ ] Add nodes, supports, local axes, releases, loads, tributary regions, and
   connectivity inspection.
 - [ ] Link tree/viewer selection to member inputs, results, warnings, and report
@@ -189,3 +191,13 @@ uses `sketch` as the interactive default. Moving large model bytes through a
 separate constrained blob/object-storage path, with NATS carrying only bounded
 metadata, is now a required hardening slice before full-quality output from this
 design can be returned reliably.
+
+Active-project capture evidence (2026-07-27): the local `structural_test`
+project reuses the shed's unchanged Lysaght, Custom Orb, flange-fastener, and
+Buildex modules. Its `design.py` produces a 433,596-byte sketch GLB containing
+stable names for the concrete block, four anchors, 100GPB, two web bolts,
+C10019, Custom Orb sheet, and three Tek screws. Static capture detects seven
+components, three directed connections, and an illustrative 0.8 kPa wind load
+over 0.9144 square metres (0.73152 kN resultant), then traces the load from the
+sheet through the C100 and 100GPB to the grounded concrete block. No strength or
+serviceability result is implied.
