@@ -9,11 +9,15 @@ workbench without treating the old application as the target architecture.
 The first active-project capture is now present. The authenticated
 **Structural** tab reads the same active project as Extus and displays its
 latest model artifact. A restricted `TERTIUS_STRUCTURAL` dictionary in
-`design.py` declares stable physical components, directed connections,
-connector components, loads, and grounded components. Tertius parses that
-declaration without executing the CAD script and traces every declared load to
-ground. This is connectivity capture only: member, connection, anchor, and
-concrete capacities remain visibly **not checked**.
+`design.py` remains the workbench interchange contract, but the reference
+project no longer authors that dictionary by hand. `StructuralModel` calls wrap
+the actual Build123D shape handles, own their GLB node identities, connect those
+handles, and generate the manifest. Tertius interprets that narrow authoring
+surface statically without executing the CAD script, then traces every declared
+load to ground. The compile sandbox separately executes the same helper and
+audits the generated assembly against the manifest. This is connectivity
+capture only: member, connection, anchor, and concrete capacities remain
+visibly **not checked**.
 
 The earlier strict version `1.0` cantilever fixture and PyNiteFEA 2.4.1 solver
 remain as a backend compatibility harness, but the product workbench no longer
@@ -177,18 +181,55 @@ the complete persisted `structural-model.json`/`structural-results.json`
 contract.
 
 The active-project capture adds a deliberately smaller version `0.1` authoring
-surface. `design.py` declares `TERTIUS_STRUCTURAL` using literals, previously
-declared static names, and arithmetic only. Function calls, attributes, and
-other executable expressions are rejected. The parser validates:
+surface. Legacy projects may still provide a literal `TERTIUS_STRUCTURAL`
+dictionary, but new projects use an injected `tertius_structural` helper:
+
+```python
+structure = StructuralModel(title="C100 connection")
+purlin = structure.member(purlin_shape, id="purlin", label="C10019")
+bracket = structure.support(bracket_shape, id="gpb", label="100GPB")
+bolts = structure.connector(bolt_shape, id="bolts", label="M12 bolts")
+structure.connect(
+    purlin,
+    bracket,
+    via=[bolts],
+    id="purlin-gpb",
+    label="C100 web bolted to 100GPB",
+    transfers=["force", "shear", "moment"],
+)
+structural_assembly = structure.assembly(
+    [purlin, bracket, bolts],
+    label="connection",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+```
+
+The same registered object handles drive the Build123D assembly and generated
+manifest. Connections cannot name arbitrary component strings. The restricted
+AST interpreter recognizes only this explicit helper surface plus literals,
+previously declared static names, and arithmetic; it does not execute geometry
+or arbitrary Python. The parser validates:
 
 - unique stable component, connection, and load IDs;
-- physical viewer IDs and optional product/part numbers;
+- unique physical viewer IDs and optional product/part numbers;
 - directed source/target component references;
-- the fastener/anchor component IDs used by each connection;
+- connector handles of the correct kind used by each connection;
+- registered components omitted from the assembly, raw/unregistered assembly
+  handles, unconnected members/supports/surfaces, and unused connectors;
 - non-zero surface pressure, positive loaded area, direction, load case, and
   provenance;
 - a deterministic connection path from each loaded component to a component
   explicitly marked `grounded`.
+
+At runtime, `StructuralModel.assembly(...)` accepts registered
+`StructuralPart` handles only and must contain every registered component
+exactly once. The compile sandbox requires that generated projects export that
+single marked assembly root and verifies that every declared viewer node occurs
+exactly once. It also walks Build123D shapes exposed through design lists,
+tuples, sets, and dictionaries and rejects any shape absent from the registered
+assembly. A new purlin added to the builder output but omitted from structural
+registration therefore fails compilation rather than silently disappearing or
+appearing beside an outdated structural graph.
 
 The reference `structural_test` design exercises:
 

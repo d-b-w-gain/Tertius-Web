@@ -82,11 +82,74 @@ TERTIUS_STRUCTURAL = {
 }
 """
 
+GENERATED_DESIGN = """
+from tertius_structural import StructuralModel
+
+sheet_width = 762.0
+sheet_length = 1200.0
+wind_pressure = 0.8
+sheet_area = sheet_width * sheet_length / 1000000.0
+
+structure = StructuralModel(title="Generated structural connection microcosm")
+sheet = structure.surface(
+    sheet_shape,
+    id="sheet",
+    label="Roof sheet",
+)
+screws = structure.connector(
+    screw_shape,
+    id="screws",
+    label="Tek screws",
+)
+purlin = structure.member(
+    purlin_shape,
+    id="purlin",
+    label="C100 purlin",
+    part_number="C10019",
+)
+block = structure.ground(
+    block_shape,
+    id="block",
+    label="Concrete block",
+)
+structure.connect(
+    sheet,
+    purlin,
+    via=[screws],
+    id="sheet-purlin",
+    label="Sheet to purlin",
+    transfers=["wind_normal", "force"],
+)
+structure.connect(
+    purlin,
+    block,
+    id="purlin-ground",
+    label="Purlin to ground",
+    transfers=["force", "shear", "moment"],
+)
+structure.surface_load(
+    sheet,
+    id="wind",
+    label="Illustrative wind pressure",
+    case="wind",
+    pressure_kPa=wind_pressure,
+    area_m2=sheet_area,
+    direction=(0, -1, 0),
+    provenance="Illustrative parser fixture",
+)
+structural_assembly = structure.assembly(
+    [sheet, screws, purlin, block],
+    label="structural-test",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+"""
+
 
 def test_static_capture_traces_wind_load_to_ground_without_running_design():
     capture = parse_project_structural_capture(DESIGN, project_name="structural_test")
 
     assert capture.project_name == "structural_test"
+    assert capture.authoring_mode == "legacy"
     assert capture.loads[0].area_m2 == pytest.approx(0.9144)
     assert capture.load_paths[0].status == "complete"
     assert capture.load_paths[0].component_ids == ["sheet", "purlin", "block"]
@@ -94,6 +157,63 @@ def test_static_capture_traces_wind_load_to_ground_without_running_design():
     assert capture.load_paths[0].grounded_component_id == "block"
     assert capture.capabilities[2].status == "pending"
     assert capture.design_hash
+
+
+def test_generated_capture_uses_object_handles_and_traces_load_to_ground():
+    capture = parse_project_structural_capture(
+        GENERATED_DESIGN,
+        project_name="structural_test",
+    )
+
+    assert capture.title == "Generated structural connection microcosm"
+    assert capture.authoring_mode == "generated"
+    assert [component.id for component in capture.components] == [
+        "sheet",
+        "screws",
+        "purlin",
+        "block",
+    ]
+    assert capture.connections[0].connector_component_ids == ["screws"]
+    assert capture.loads[0].area_m2 == pytest.approx(0.9144)
+    assert capture.load_paths[0].component_ids == ["sheet", "purlin", "block"]
+    assert capture.capabilities[0].detail.startswith(
+        "Generated structural authoring calls"
+    )
+    assert any("UNREGISTERED ASSEMBLY MEMBERS FAIL" in item for item in capture.warnings)
+
+
+def test_generated_capture_rejects_unregistered_assembly_handles():
+    source = GENERATED_DESIGN.replace(
+        "[sheet, screws, purlin, block]",
+        "[sheet, screws, purlin, new_purlin, block]",
+    )
+
+    with pytest.raises(
+        StructuralDeclarationError,
+        match="unregistered structural handle 'new_purlin'",
+    ):
+        parse_project_structural_capture(source, project_name="structural_test")
+
+
+def test_generated_capture_rejects_registered_but_unconnected_members():
+    source = GENERATED_DESIGN.replace(
+        "block = structure.ground(",
+        """orphan = structure.member(
+    orphan_shape,
+    id="orphan",
+    label="Unconnected purlin",
+)
+block = structure.ground(""",
+    ).replace(
+        "[sheet, screws, purlin, block]",
+        "[sheet, screws, purlin, orphan, block]",
+    )
+
+    with pytest.raises(
+        StructuralDeclarationError,
+        match=r"structural components have no declared connection: \['orphan'\]",
+    ):
+        parse_project_structural_capture(source, project_name="structural_test")
 
 
 def test_static_capture_reports_a_disconnected_load_path():

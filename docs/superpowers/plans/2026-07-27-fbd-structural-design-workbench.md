@@ -112,6 +112,13 @@ and result artifacts consumed by the workbench and calculation reports.
   behind the fixture adapter.
 - [x] Reject duplicate IDs, dangling references, and zero-length fixture
   members at the contract boundary.
+- [x] Add structural-aware Build123D authoring helpers that generate the
+  `TERTIUS_STRUCTURAL` manifest from registered object handles.
+- [x] Fail capture for unregistered assembly handles, omitted or unconnected
+  components, unused connectors, and duplicate viewer identities.
+- [x] Fail compilation when generated projects export raw shapes outside the
+  registered structural assembly or declared viewer nodes do not match the
+  Build123D tree.
 
 ### Task 5: Deliver the first Structural Design Workbench slice
 
@@ -132,6 +139,9 @@ and result artifacts consumed by the workbench and calculation reports.
   capture while keeping unsolved capacities visibly not checked.
 - [x] Render the `structural_test` concrete/100GPB/C10019/Custom Orb microcosm
   with stable component and fastener IDs in the active Extus model.
+- [x] Migrate `structural_test` from a handwritten structural dictionary to
+  handle-authored components, connections, loads, assembly, and generated
+  manifest output.
 - [ ] Add nodes, supports, local axes, releases, loads, tributary regions, and
   connectivity inspection.
 - [ ] Link tree/viewer selection to member inputs, results, warnings, and report
@@ -194,10 +204,21 @@ design can be returned reliably.
 
 Active-project capture evidence (2026-07-27): the local `structural_test`
 project reuses the shed's unchanged Lysaght, Custom Orb, flange-fastener, and
-Buildex modules. Its `design.py` produces a 433,596-byte sketch GLB containing
+Buildex modules. Its `design.py` produces a 436,772-byte sketch GLB containing
 stable names for the concrete block, four anchors, 100GPB, two web bolts,
 C10019, Custom Orb sheet, and three Tek screws. Static capture detects seven
 components, three directed connections, and an illustrative 0.8 kPa wind load
 over 0.9144 square metres (0.73152 kN resultant), then traces the load from the
 sheet through the C100 and 100GPB to the grounded concrete block. No strength or
 serviceability result is implied.
+
+Single-source authoring evidence (2026-07-27): `structural_test` now registers
+the actual Build123D sheet, fastener, C100, 100GPB, anchor, and concrete handles
+with `StructuralModel`, connects those handles directly, and generates
+`TERTIUS_STRUCTURAL` via `structure.manifest()`. Focused tests prove static
+capture rejects unknown assembly handles and registered-but-unconnected
+members. Runtime tests reject raw Build123D shapes in the structural assembly,
+and compile-sandbox tests reject extra raw global shapes plus unregistered
+shapes exposed inside design containers outside the marked assembly. The
+migrated model compiles successfully and every declared viewer identity occurs
+in the GLB.

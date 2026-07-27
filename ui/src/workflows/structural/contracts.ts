@@ -54,6 +54,7 @@ export type ProjectStructuralCapture = {
   project_name: string
   design_hash: string
   title: string
+  authoring_mode: 'legacy' | 'generated'
   components: DesignComponent[]
   connections: DesignConnection[]
   loads: DesignSurfaceLoad[]

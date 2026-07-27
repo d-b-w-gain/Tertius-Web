@@ -31,6 +31,7 @@ const capture: ProjectStructuralCapture = {
   project_name: 'structural_test',
   design_hash: 'abc123',
   title: 'Structural Workbench — C100 wall connection microcosm',
+  authoring_mode: 'generated',
   components: [
     {
       id: 'sheet',
@@ -171,6 +172,7 @@ describe('StructuralWorkbench', () => {
     expect(screen.getAllByText('Lysaght C10019 purlin').length).toBeGreaterThan(0)
     expect(screen.getByText('Reaches ground')).toBeInTheDocument()
     expect(screen.getByText('0.732 kN')).toBeInTheDocument()
+    expect(screen.getByText('HANDLE-AUTHORED')).toBeInTheDocument()
     expect(screen.getByText('Capacity status: NOT CHECKED')).toBeInTheDocument()
     expect(screen.getByText('Viewer selection: sheet')).toBeInTheDocument()
 

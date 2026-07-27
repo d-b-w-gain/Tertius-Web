@@ -175,6 +175,7 @@ class ProjectStructuralCapture(StructuralContract):
     project_name: str
     design_hash: str
     title: str
+    authoring_mode: Literal["legacy", "generated"]
     components: list[DesignComponent]
     connections: list[DesignConnection]
     loads: list[DesignSurfaceLoad]

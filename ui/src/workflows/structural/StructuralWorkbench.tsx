@@ -137,6 +137,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 {capture.project_name}
               </span>
             )}
+            {capture?.authoring_mode === 'generated' && (
+              <span className="rounded border border-emerald-500/50 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] text-emerald-300">
+                HANDLE-AUTHORED
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             Active-project geometry with statically parsed structural connectivity
