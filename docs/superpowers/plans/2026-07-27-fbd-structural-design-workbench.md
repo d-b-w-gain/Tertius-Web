@@ -83,7 +83,7 @@ and result artifacts consumed by the workbench and calculation reports.
   branch smoke image workflow and isolated Helm deployment.
 - [ ] Run a minimal stable frame and export nodes, member forces, reactions, and
   diagram stations deterministically.
-- [ ] Compare equilibrium and one independently calculated case.
+- [x] Compare equilibrium and one independently calculated case.
 - [ ] Decide with evidence whether to adapt, isolate, patch, or replace the
   package.
 - [ ] Consider all new runtime configuration across Helm, Compose dev, Compose
@@ -222,3 +222,16 @@ and compile-sandbox tests reject extra raw global shapes plus unregistered
 shapes exposed inside design containers outside the marked assembly. The
 migrated model compiles successfully and every declared viewer identity occurs
 in the GLB.
+
+Active-project PyNite evidence (2026-07-27): `structural_test` now authors the
+C10019 analytical centreline, gross elastic section properties, G450 elastic
+material, idealised fixed-base restraints, and three screw locations through
+the same handle API as its Build123D assembly. The 0.8 kPa surface pressure over
+0.9144 square metres is distributed from the registered surface-load handle,
+so its three PyNite member loads sum to 0.73152 kN without a second hand-entered
+resultant. PyNite returns 0.73152 kN base shear, 0.585216 kN.m base moment, and
+2.612313 mm free-end displacement. Independent force and moment sums give the
+same reactions with zero reported global residual. The workbench publishes the
+solver stations as a signed moment ribbon and demand colour ramp while keeping
+C100 capacity, local buckling, restraint adequacy, screws, bolts, GPB, anchors,
+and concrete explicitly `NOT CHECKED`.

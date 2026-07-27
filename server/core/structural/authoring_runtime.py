@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from math import sqrt
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
@@ -25,6 +26,27 @@ class StructuralPart:
     kind: ComponentKind
 
 
+@dataclass(frozen=True)
+class StructuralMaterialSpec:
+    """A registered elastic material used by an analytical member."""
+
+    id: str
+
+
+@dataclass(frozen=True)
+class StructuralSectionSpec:
+    """A registered member section used by an analytical member."""
+
+    id: str
+
+
+@dataclass(frozen=True)
+class StructuralSurfaceLoad:
+    """A registered surface load that can be distributed to member handles."""
+
+    id: str
+
+
 class StructuralModel:
     """Build a structural manifest from the same handles used to assemble CAD."""
 
@@ -34,6 +56,13 @@ class StructuralModel:
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
         self._loads: list[dict[str, Any]] = []
+        self._materials: list[dict[str, Any]] = []
+        self._material_handles: dict[str, StructuralMaterialSpec] = {}
+        self._sections: list[dict[str, Any]] = []
+        self._section_handles: dict[str, StructuralSectionSpec] = {}
+        self._analytical_members: list[dict[str, Any]] = []
+        self._member_loads: list[dict[str, Any]] = []
+        self._surface_load_handles: dict[str, StructuralSurfaceLoad] = {}
         self._assembled_ids: list[str] | None = None
         self._assembly: bd.Compound | None = None
 
@@ -200,7 +229,7 @@ class StructuralModel:
         area_m2: float,
         direction: Sequence[float] | dict[str, float],
         provenance: str,
-    ) -> None:
+    ) -> StructuralSurfaceLoad:
         registered = self._require_registered(component)
         if registered.kind != "surface":
             raise StructuralAuthoringError(
@@ -233,6 +262,228 @@ class StructuralModel:
                 "provenance": _required_text("load provenance", provenance),
             }
         )
+        handle = StructuralSurfaceLoad(id=load_id)
+        self._surface_load_handles[load_id] = handle
+        return handle
+
+    def material(
+        self,
+        *,
+        id: str,
+        label: str,
+        elastic_modulus_kN_m2: float,
+        shear_modulus_kN_m2: float,
+        poisson_ratio: float,
+        density_kg_m3: float,
+    ) -> StructuralMaterialSpec:
+        material_id = _required_text("material ID", id)
+        if material_id in self._material_handles:
+            raise StructuralAuthoringError(
+                f"material ID {material_id!r} is already registered"
+            )
+        values = {
+            "elastic_modulus_kN_m2": float(elastic_modulus_kN_m2),
+            "shear_modulus_kN_m2": float(shear_modulus_kN_m2),
+            "density_kg_m3": float(density_kg_m3),
+        }
+        if any(value <= 0 for value in values.values()):
+            raise StructuralAuthoringError(
+                f"material {material_id!r} properties must be positive"
+            )
+        poisson = float(poisson_ratio)
+        if not -1 < poisson < 0.5:
+            raise StructuralAuthoringError(
+                f"material {material_id!r} has invalid Poisson ratio"
+            )
+        handle = StructuralMaterialSpec(id=material_id)
+        self._material_handles[material_id] = handle
+        self._materials.append(
+            {
+                "id": material_id,
+                "label": _required_text("material label", label),
+                **values,
+                "poisson_ratio": poisson,
+            }
+        )
+        return handle
+
+    def section(
+        self,
+        *,
+        id: str,
+        label: str,
+        area_m2: float,
+        iy_m4: float,
+        iz_m4: float,
+        torsion_j_m4: float,
+    ) -> StructuralSectionSpec:
+        section_id = _required_text("section ID", id)
+        if section_id in self._section_handles:
+            raise StructuralAuthoringError(
+                f"section ID {section_id!r} is already registered"
+            )
+        values = {
+            "area_m2": float(area_m2),
+            "iy_m4": float(iy_m4),
+            "iz_m4": float(iz_m4),
+            "torsion_j_m4": float(torsion_j_m4),
+        }
+        if any(value <= 0 for value in values.values()):
+            raise StructuralAuthoringError(
+                f"section {section_id!r} properties must be positive"
+            )
+        handle = StructuralSectionSpec(id=section_id)
+        self._section_handles[section_id] = handle
+        self._sections.append(
+            {
+                "id": section_id,
+                "label": _required_text("section label", label),
+                **values,
+            }
+        )
+        return handle
+
+    def member_axis(
+        self,
+        component: StructuralPart,
+        *,
+        id: str,
+        label: str,
+        start: Sequence[float] | dict[str, float],
+        end: Sequence[float] | dict[str, float],
+        section: StructuralSectionSpec,
+        material: StructuralMaterialSpec,
+        start_restraints: Sequence[bool] | dict[str, bool] = (),
+        end_restraints: Sequence[bool] | dict[str, bool] = (),
+        assumption: str,
+    ) -> None:
+        registered = self._require_registered(component)
+        if registered.kind != "member":
+            raise StructuralAuthoringError(
+                f"analytical component {registered.component_id!r} is not a member"
+            )
+        member_id = _required_text("analytical member ID", id)
+        if any(item["id"] == member_id for item in self._analytical_members):
+            raise StructuralAuthoringError(
+                f"analytical member ID {member_id!r} is already registered"
+            )
+        if any(
+            item["component_id"] == registered.component_id
+            for item in self._analytical_members
+        ):
+            raise StructuralAuthoringError(
+                f"component {registered.component_id!r} already has an analytical axis"
+            )
+        section_spec = self._require_section(section)
+        material_spec = self._require_material(material)
+        start_vector = _vector3(start)
+        end_vector = _vector3(end)
+        if start_vector == end_vector:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} has zero length"
+            )
+        self._analytical_members.append(
+            {
+                "id": member_id,
+                "label": _required_text("analytical member label", label),
+                "component_id": registered.component_id,
+                "start": start_vector,
+                "end": end_vector,
+                "start_restraints": _restraints(start_restraints),
+                "end_restraints": _restraints(end_restraints),
+                "section_id": section_spec.id,
+                "material_id": material_spec.id,
+                "assumption": _required_text("analytical member assumption", assumption),
+            }
+        )
+
+    def distribute_surface_load(
+        self,
+        load: StructuralSurfaceLoad,
+        member: StructuralPart,
+        *,
+        id: str,
+        label: str,
+        positions_m: Sequence[float],
+        weights: Sequence[float] = (),
+        provenance: str,
+    ) -> None:
+        source = self._require_surface_load(load)
+        registered_member = self._require_registered(member)
+        analytical_member = next(
+            (
+                item
+                for item in self._analytical_members
+                if item["component_id"] == registered_member.component_id
+            ),
+            None,
+        )
+        if analytical_member is None:
+            raise StructuralAuthoringError(
+                f"component {registered_member.component_id!r} has no analytical axis"
+            )
+        distribution_id = _required_text("load distribution ID", id)
+        if any(
+            item["id"] == distribution_id
+            or item["id"].startswith(f"{distribution_id}-")
+            for item in self._member_loads
+        ):
+            raise StructuralAuthoringError(
+                f"load distribution ID {distribution_id!r} is already registered"
+            )
+        positions = [float(position) for position in positions_m]
+        if not positions or len(positions) != len(set(positions)):
+            raise StructuralAuthoringError(
+                f"load distribution {distribution_id!r} needs unique positions"
+            )
+        start = analytical_member["start"]
+        end = analytical_member["end"]
+        member_length = sqrt(
+            sum((end[axis] - start[axis]) ** 2 for axis in ("x", "y", "z"))
+        )
+        if any(position <= 0 or position >= member_length for position in positions):
+            raise StructuralAuthoringError(
+                f"load distribution {distribution_id!r} positions must lie within "
+                f"the {member_length:g} m member"
+            )
+        weight_values = (
+            [1.0] * len(positions) if not weights else [float(value) for value in weights]
+        )
+        if len(weight_values) != len(positions) or any(
+            value <= 0 for value in weight_values
+        ):
+            raise StructuralAuthoringError(
+                f"load distribution {distribution_id!r} weights must be positive "
+                "and match the positions"
+            )
+        weight_total = sum(weight_values)
+        source_data = next(item for item in self._loads if item["id"] == source.id)
+        direction = source_data["direction"]
+        direction_length = sqrt(sum(direction[axis] ** 2 for axis in ("x", "y", "z")))
+        resultant = source_data["pressure_kPa"] * source_data["area_m2"]
+        case_id = f"case-{source_data['case']}"
+        load_label = _required_text("load distribution label", label)
+        load_provenance = _required_text("load distribution provenance", provenance)
+        for index, (position, weight) in enumerate(
+            zip(positions, weight_values, strict=True),
+            start=1,
+        ):
+            scale = resultant * weight / weight_total / direction_length
+            self._member_loads.append(
+                {
+                    "id": f"{distribution_id}-{index}",
+                    "label": f"{load_label} {index}",
+                    "member_id": analytical_member["id"],
+                    "case_id": case_id,
+                    "distance_m": position,
+                    "force": {
+                        axis: direction[axis] * scale for axis in ("x", "y", "z")
+                    },
+                    "moment": {"x": 0.0, "y": 0.0, "z": 0.0},
+                    "source_load_id": source.id,
+                    "provenance": load_provenance,
+                }
+            )
 
     def assembly(
         self,
@@ -295,6 +546,36 @@ class StructuralModel:
             "loads": [
                 {**load, "direction": dict(load["direction"])} for load in self._loads
             ],
+            "analysis": {
+                "materials": [dict(material) for material in self._materials],
+                "sections": [dict(section) for section in self._sections],
+                "members": [
+                    {
+                        **member,
+                        "start": dict(member["start"]),
+                        "end": dict(member["end"]),
+                        "start_restraints": dict(member["start_restraints"]),
+                        "end_restraints": dict(member["end_restraints"]),
+                    }
+                    for member in self._analytical_members
+                ],
+                "load_cases": [
+                    {
+                        "id": f"case-{case}",
+                        "label": f"{case.title()} load",
+                        "category": case,
+                    }
+                    for case in dict.fromkeys(load["case"] for load in self._loads)
+                ],
+                "member_loads": [
+                    {
+                        **load,
+                        "force": dict(load["force"]),
+                        "moment": dict(load["moment"]),
+                    }
+                    for load in self._member_loads
+                ],
+            },
         }
         self._assembly.tertius_structural_manifest = manifest
         self._assembly.tertius_structural_component_ids = tuple(self._assembled_ids)
@@ -361,6 +642,40 @@ class StructuralModel:
             )
         return registered
 
+    def _require_material(
+        self, material: StructuralMaterialSpec
+    ) -> StructuralMaterialSpec:
+        if (
+            not isinstance(material, StructuralMaterialSpec)
+            or self._material_handles.get(material.id) is not material
+        ):
+            raise StructuralAuthoringError(
+                "analytical members accept registered material handles only"
+            )
+        return material
+
+    def _require_section(self, section: StructuralSectionSpec) -> StructuralSectionSpec:
+        if (
+            not isinstance(section, StructuralSectionSpec)
+            or self._section_handles.get(section.id) is not section
+        ):
+            raise StructuralAuthoringError(
+                "analytical members accept registered section handles only"
+            )
+        return section
+
+    def _require_surface_load(
+        self, load: StructuralSurfaceLoad
+    ) -> StructuralSurfaceLoad:
+        if (
+            not isinstance(load, StructuralSurfaceLoad)
+            or self._surface_load_handles.get(load.id) is not load
+        ):
+            raise StructuralAuthoringError(
+                "load distributions accept registered surface-load handles only"
+            )
+        return load
+
     def _validate_topology(self) -> None:
         connected_ids = {
             component_id
@@ -410,6 +725,10 @@ class StructuralModel:
                 raise StructuralAuthoringError(
                     f"load {load['id']!r} does not reach a grounded component"
                 )
+        if self._analytical_members and not self._member_loads:
+            raise StructuralAuthoringError(
+                "analytical members require at least one distributed member load"
+            )
 
 
 def helper_source() -> str:
@@ -429,16 +748,33 @@ def _vector3(value: Sequence[float] | dict[str, float]) -> dict[str, float]:
     if isinstance(value, dict):
         if set(value) != {"x", "y", "z"}:
             raise StructuralAuthoringError(
-                "load direction mapping must contain exactly x, y, and z"
+                "vector mapping must contain exactly x, y, and z"
             )
         return {axis: float(value[axis]) for axis in ("x", "y", "z")}
     if isinstance(value, (str, bytes)) or len(value) != 3:
-        raise StructuralAuthoringError("load direction must contain three values")
+        raise StructuralAuthoringError("vector must contain three values")
     return {
         "x": float(value[0]),
         "y": float(value[1]),
         "z": float(value[2]),
     }
+
+
+def _restraints(
+    value: Sequence[bool] | dict[str, bool],
+) -> dict[str, bool]:
+    axes = ("dx", "dy", "dz", "rx", "ry", "rz")
+    if isinstance(value, dict):
+        if set(value) != set(axes):
+            raise StructuralAuthoringError(
+                "restraint mapping must contain exactly dx, dy, dz, rx, ry, and rz"
+            )
+        return {axis: bool(value[axis]) for axis in axes}
+    if not value:
+        return {axis: False for axis in axes}
+    if isinstance(value, (str, bytes)) or len(value) != len(axes):
+        raise StructuralAuthoringError("restraints must contain six boolean values")
+    return {axis: bool(value[index]) for index, axis in enumerate(axes)}
 
 
 def _reaches_ground(

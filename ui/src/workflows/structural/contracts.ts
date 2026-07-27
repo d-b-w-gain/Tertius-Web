@@ -59,8 +59,46 @@ export type ProjectStructuralCapture = {
   connections: DesignConnection[]
   loads: DesignSurfaceLoad[]
   load_paths: DesignLoadPath[]
+  analysis: {
+    materials: StructuralSnapshot['materials']
+    sections: StructuralSnapshot['sections']
+    members: Array<{
+      id: string
+      label: string
+      component_id: string
+      start: Vector3
+      end: Vector3
+      start_restraints: StructuralNode['restraints']
+      end_restraints: StructuralNode['restraints']
+      section_id: string
+      material_id: string
+      assumption: string
+    }>
+    load_cases: StructuralSnapshot['load_cases']
+    member_loads: MemberPointLoad[]
+  } | null
   capabilities: CapabilityState[]
   warnings: string[]
+}
+
+export type MemberPointLoad = {
+  id: string
+  label: string
+  member_id: string
+  case_id: string
+  distance_m: number
+  force: Vector3
+  moment: Vector3
+  source_load_id: string
+  provenance: string
+}
+
+export type MemberDiagramStation = {
+  distance_m: number
+  position: Vector3
+  moment_kNm: Vector3
+  shear_kN: Vector3
+  displacement_mm: Vector3
 }
 
 export type StructuralNode = {
@@ -138,6 +176,7 @@ export type StructuralSnapshot = {
     moment: Vector3
     visual_node_id: string
   }>
+  member_loads: MemberPointLoad[]
   reactions: Array<{
     node_id: string
     combination_id: string
@@ -152,12 +191,17 @@ export type StructuralSnapshot = {
     max_axial_kN: number
     max_displacement_mm: number
   }>
+  member_diagrams: Array<{
+    member_id: string
+    visual_node_id: string
+    stations: MemberDiagramStation[]
+  }>
   member_checks: Array<{
     member_id: string
     label: string
     demand_kNm: number
-    capacity_kNm: number
-    utilisation: number
+    capacity_kNm: number | null
+    utilisation: number | null
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
   }>

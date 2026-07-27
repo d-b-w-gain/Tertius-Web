@@ -14,6 +14,10 @@ from core.structural.design_capture import (
     StructuralDeclarationError,
     parse_project_structural_capture,
 )
+from core.structural.project_analysis import (
+    StructuralAnalysisError,
+    solve_project_structural,
+)
 from core.models import Project, UserWorkspaceState
 from core.repositories import ProjectRepository
 
@@ -55,6 +59,18 @@ def get_active_capture(
             project_name=project.name,
         )
     except StructuralDeclarationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/active/analysis", response_model=StructuralSnapshot)
+def get_active_analysis(
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> StructuralSnapshot:
+    capture = get_active_capture(ctx=ctx, db=db)
+    try:
+        return solve_project_structural(capture)
+    except StructuralAnalysisError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

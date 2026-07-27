@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .contracts import (
     CapabilityState,
+    DesignAnalysisDefinition,
     DesignComponent,
     DesignConnection,
     DesignLoadPath,
@@ -55,6 +56,12 @@ class _ComponentHandle:
     component_id: str
 
 
+@dataclass(frozen=True)
+class _SpecHandle:
+    model_name: str
+    id: str
+
+
 @dataclass
 class _GeneratedModel:
     name: str
@@ -62,6 +69,10 @@ class _GeneratedModel:
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
     loads: list[dict[str, Any]] = field(default_factory=list)
+    materials: list[dict[str, Any]] = field(default_factory=list)
+    sections: list[dict[str, Any]] = field(default_factory=list)
+    analytical_members: list[dict[str, Any]] = field(default_factory=list)
+    member_loads: list[dict[str, Any]] = field(default_factory=list)
     assembled_component_ids: list[str] | None = None
 
     def declaration(self) -> dict[str, Any]:
@@ -91,6 +102,20 @@ class _GeneratedModel:
             "components": self.components,
             "connections": self.connections,
             "loads": self.loads,
+            "analysis": {
+                "materials": self.materials,
+                "sections": self.sections,
+                "members": self.analytical_members,
+                "load_cases": [
+                    {
+                        "id": f"case-{case}",
+                        "label": f"{case.title()} load",
+                        "category": case,
+                    }
+                    for case in dict.fromkeys(load["case"] for load in self.loads)
+                ],
+                "member_loads": self.member_loads,
+            },
         }
 
 
@@ -208,14 +233,51 @@ def _direction_value(value: Any) -> dict[str, float]:
     ):
         return {"x": float(value[0]), "y": float(value[1]), "z": float(value[2])}
     raise StructuralDeclarationError(
-        "StructuralModel.surface_load(...) direction must contain x, y, and z"
+        "structural vector must contain x, y, and z"
     )
+
+
+def _restraints_value(value: Any) -> dict[str, bool]:
+    axes = ("dx", "dy", "dz", "rx", "ry", "rz")
+    if isinstance(value, dict) and set(value) == set(axes):
+        return {axis: bool(value[axis]) for axis in axes}
+    if isinstance(value, (list, tuple)) and len(value) == len(axes):
+        return {axis: bool(value[index]) for index, axis in enumerate(axes)}
+    if value in ((), []):
+        return {axis: False for axis in axes}
+    raise StructuralDeclarationError(
+        "StructuralModel.member_axis(...) restraints must contain "
+        "dx, dy, dz, rx, ry, and rz"
+    )
+
+
+def _spec_handle(
+    node: ast.AST,
+    handles: dict[str, _SpecHandle],
+    *,
+    model_name: str,
+    context: str,
+) -> _SpecHandle:
+    if not isinstance(node, ast.Name) or node.id not in handles:
+        name = node.id if isinstance(node, ast.Name) else type(node).__name__
+        raise StructuralDeclarationError(
+            f"{context} references unregistered handle {name!r}"
+        )
+    handle = handles[node.id]
+    if handle.model_name != model_name:
+        raise StructuralDeclarationError(
+            f"{context} references {handle.id!r} from another model"
+        )
+    return handle
 
 
 def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None:
     names: dict[str, Any] = {}
     models: dict[str, _GeneratedModel] = {}
     handles: dict[str, _ComponentHandle] = {}
+    material_handles: dict[str, _SpecHandle] = {}
+    section_handles: dict[str, _SpecHandle] = {}
+    surface_load_handles: dict[str, _SpecHandle] = {}
     legacy_declaration: dict[str, Any] | None = None
 
     for statement in tree.body:
@@ -258,6 +320,148 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                 model = models[model_name]
                 method = call.func.attr
                 keywords = _call_keywords(call)
+                if method == "material":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.material(...) accepts keywords only"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "elastic_modulus_kN_m2",
+                        "shear_modulus_kN_m2",
+                        "poisson_ratio",
+                        "density_kg_m3",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.material(...) has unsupported keywords "
+                            f"{unexpected}"
+                        )
+                    material_id = str(_keyword_value(keywords, "id", names))
+                    model.materials.append(
+                        {
+                            "id": material_id,
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "elastic_modulus_kN_m2": float(
+                                _keyword_value(
+                                    keywords,
+                                    "elastic_modulus_kN_m2",
+                                    names,
+                                )
+                            ),
+                            "shear_modulus_kN_m2": float(
+                                _keyword_value(
+                                    keywords,
+                                    "shear_modulus_kN_m2",
+                                    names,
+                                )
+                            ),
+                            "poisson_ratio": float(
+                                _keyword_value(keywords, "poisson_ratio", names)
+                            ),
+                            "density_kg_m3": float(
+                                _keyword_value(keywords, "density_kg_m3", names)
+                            ),
+                        }
+                    )
+                    material_handles[target_name] = _SpecHandle(
+                        model_name=model_name,
+                        id=material_id,
+                    )
+                    continue
+                if method == "section":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.section(...) accepts keywords only"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "area_m2",
+                        "iy_m4",
+                        "iz_m4",
+                        "torsion_j_m4",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.section(...) has unsupported keywords "
+                            f"{unexpected}"
+                        )
+                    section_id = str(_keyword_value(keywords, "id", names))
+                    model.sections.append(
+                        {
+                            "id": section_id,
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "area_m2": float(
+                                _keyword_value(keywords, "area_m2", names)
+                            ),
+                            "iy_m4": float(_keyword_value(keywords, "iy_m4", names)),
+                            "iz_m4": float(_keyword_value(keywords, "iz_m4", names)),
+                            "torsion_j_m4": float(
+                                _keyword_value(keywords, "torsion_j_m4", names)
+                            ),
+                        }
+                    )
+                    section_handles[target_name] = _SpecHandle(
+                        model_name=model_name,
+                        id=section_id,
+                    )
+                    continue
+                if method == "surface_load":
+                    if len(call.args) != 1:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.surface_load(...) requires one surface handle"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "case",
+                        "pressure_kPa",
+                        "area_m2",
+                        "direction",
+                        "provenance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.surface_load(...) has unsupported keywords "
+                            f"{unexpected}"
+                        )
+                    loaded_component = _component_handle(
+                        call.args[0],
+                        handles,
+                        model_name=model_name,
+                        context="StructuralModel.surface_load(...)",
+                    )
+                    load_id = str(_keyword_value(keywords, "id", names))
+                    model.loads.append(
+                        {
+                            "id": load_id,
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "case": str(_keyword_value(keywords, "case", names)),
+                            "component_id": loaded_component.component_id,
+                            "pressure_kPa": float(
+                                _keyword_value(keywords, "pressure_kPa", names)
+                            ),
+                            "area_m2": float(
+                                _keyword_value(keywords, "area_m2", names)
+                            ),
+                            "direction": _direction_value(
+                                _keyword_value(keywords, "direction", names)
+                            ),
+                            "provenance": str(
+                                _keyword_value(keywords, "provenance", names)
+                            ),
+                        }
+                    )
+                    surface_load_handles[target_name] = _SpecHandle(
+                        model_name=model_name,
+                        id=load_id,
+                    )
+                    continue
                 if method in _COMPONENT_METHOD_KINDS:
                     if len(call.args) != 1:
                         raise StructuralDeclarationError(
@@ -436,6 +640,218 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             ),
                         }
                     )
+                    continue
+                if method == "member_axis":
+                    if len(call.args) != 1:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_axis(...) requires one member handle"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "start",
+                        "end",
+                        "section",
+                        "material",
+                        "start_restraints",
+                        "end_restraints",
+                        "assumption",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_axis(...) has unsupported keywords "
+                            f"{unexpected}"
+                        )
+                    axis_component = _component_handle(
+                        call.args[0],
+                        handles,
+                        model_name=model_name,
+                        context="StructuralModel.member_axis(...)",
+                    )
+                    section_node = keywords.get("section")
+                    material_node = keywords.get("material")
+                    if section_node is None or material_node is None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_axis(...) requires section and material"
+                        )
+                    axis_section = _spec_handle(
+                        section_node,
+                        section_handles,
+                        model_name=model_name,
+                        context="StructuralModel.member_axis(...) section",
+                    )
+                    axis_material = _spec_handle(
+                        material_node,
+                        material_handles,
+                        model_name=model_name,
+                        context="StructuralModel.member_axis(...) material",
+                    )
+                    model.analytical_members.append(
+                        {
+                            "id": str(_keyword_value(keywords, "id", names)),
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "component_id": axis_component.component_id,
+                            "start": _direction_value(
+                                _keyword_value(keywords, "start", names)
+                            ),
+                            "end": _direction_value(
+                                _keyword_value(keywords, "end", names)
+                            ),
+                            "start_restraints": _restraints_value(
+                                _keyword_value(
+                                    keywords,
+                                    "start_restraints",
+                                    names,
+                                    default=(),
+                                )
+                            ),
+                            "end_restraints": _restraints_value(
+                                _keyword_value(
+                                    keywords,
+                                    "end_restraints",
+                                    names,
+                                    default=(),
+                                )
+                            ),
+                            "section_id": axis_section.id,
+                            "material_id": axis_material.id,
+                            "assumption": str(
+                                _keyword_value(keywords, "assumption", names)
+                            ),
+                        }
+                    )
+                    continue
+                if method == "distribute_surface_load":
+                    if len(call.args) != 2:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) requires "
+                            "surface-load and member handles"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "positions_m",
+                        "weights",
+                        "provenance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) has "
+                            f"unsupported keywords {unexpected}"
+                        )
+                    distributed_source = _spec_handle(
+                        call.args[0],
+                        surface_load_handles,
+                        model_name=model_name,
+                        context="StructuralModel.distribute_surface_load(...) load",
+                    )
+                    distributed_component = _component_handle(
+                        call.args[1],
+                        handles,
+                        model_name=model_name,
+                        context="StructuralModel.distribute_surface_load(...) member",
+                    )
+                    analytical_member = next(
+                        (
+                            member
+                            for member in model.analytical_members
+                            if member["component_id"]
+                            == distributed_component.component_id
+                        ),
+                        None,
+                    )
+                    if analytical_member is None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) member "
+                            "has no analytical axis"
+                        )
+                    source_load = next(
+                        load
+                        for load in model.loads
+                        if load["id"] == distributed_source.id
+                    )
+                    positions = [
+                        float(value)
+                        for value in _keyword_value(keywords, "positions_m", names)
+                    ]
+                    weights = [
+                        float(value)
+                        for value in _keyword_value(
+                            keywords,
+                            "weights",
+                            names,
+                            default=[1.0] * len(positions),
+                        )
+                    ]
+                    if len(weights) != len(positions) or not positions:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) positions "
+                            "and weights must have equal non-zero length"
+                        )
+                    if len(positions) != len(set(positions)) or any(
+                        position <= 0 for position in positions
+                    ):
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) positions "
+                            "must be unique and positive"
+                        )
+                    member_start = analytical_member["start"]
+                    member_end = analytical_member["end"]
+                    member_length = sum(
+                        (member_end[axis] - member_start[axis]) ** 2
+                        for axis in ("x", "y", "z")
+                    ) ** 0.5
+                    if any(position >= member_length for position in positions):
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) positions "
+                            "must lie within the analytical member"
+                        )
+                    if any(weight <= 0 for weight in weights):
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) weights "
+                            "must be positive"
+                        )
+                    direction = source_load["direction"]
+                    direction_length = sum(
+                        direction[axis] ** 2 for axis in ("x", "y", "z")
+                    ) ** 0.5
+                    if direction_length == 0:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.distribute_surface_load(...) source "
+                            "load has a zero direction"
+                        )
+                    total_force = source_load["pressure_kPa"] * source_load["area_m2"]
+                    weight_total = sum(weights)
+                    distribution_id = str(_keyword_value(keywords, "id", names))
+                    distribution_label = str(
+                        _keyword_value(keywords, "label", names)
+                    )
+                    provenance = str(
+                        _keyword_value(keywords, "provenance", names)
+                    )
+                    for index, (position, weight) in enumerate(
+                        zip(positions, weights, strict=True),
+                        start=1,
+                    ):
+                        scale = total_force * weight / weight_total / direction_length
+                        model.member_loads.append(
+                            {
+                                "id": f"{distribution_id}-{index}",
+                                "label": f"{distribution_label} {index}",
+                                "member_id": analytical_member["id"],
+                                "case_id": f"case-{source_load['case']}",
+                                "distance_m": position,
+                                "force": {
+                                    axis: direction[axis] * scale
+                                    for axis in ("x", "y", "z")
+                                },
+                                "moment": {"x": 0.0, "y": 0.0, "z": 0.0},
+                                "source_load_id": distributed_source.id,
+                                "provenance": provenance,
+                            }
+                        )
                     continue
 
         if target_name is None or value_node is None:
@@ -636,6 +1052,12 @@ def parse_project_structural_capture(
             DesignSurfaceLoad.model_validate(value)
             for value in declaration.get("loads", [])
         ]
+        analysis_value = declaration.get("analysis")
+        analysis = (
+            DesignAnalysisDefinition.model_validate(analysis_value)
+            if analysis_value is not None
+            else None
+        )
     except (TypeError, ValidationError) as exc:
         raise StructuralDeclarationError(f"invalid {DECLARATION_NAME}: {exc}") from exc
 
@@ -645,6 +1067,13 @@ def parse_project_structural_capture(
     generated_authoring = (
         isinstance(declaration.get("authoring"), dict)
         and declaration["authoring"].get("mode") == "generated"
+    )
+    solver_ready = bool(
+        analysis is not None
+        and analysis.members
+        and analysis.member_loads
+        and analysis.sections
+        and analysis.materials
     )
     capabilities = [
         CapabilityState(
@@ -669,9 +1098,14 @@ def parse_project_structural_capture(
         ),
         CapabilityState(
             id="solver",
-            label="Member checks",
-            status="pending",
-            detail="Connectivity captured; force distribution and capacities are not solved yet.",
+            label="PyNite demand",
+            status="online" if solver_ready else "pending",
+            detail=(
+                "Analytical axes and member point loads are ready for PyNite."
+                if solver_ready
+                else "Connectivity captured; analytical axes and force distribution "
+                "are not declared yet."
+            ),
         ),
         CapabilityState(
             id="reports",
@@ -701,6 +1135,7 @@ def parse_project_structural_capture(
             connections=connections,
             loads=loads,
             load_paths=paths,
+            analysis=analysis,
             capabilities=capabilities,
             warnings=warnings,
         )

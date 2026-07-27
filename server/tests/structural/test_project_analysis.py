@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import pytest
+
+from core.structural.design_capture import parse_project_structural_capture
+from core.structural.project_analysis import solve_project_structural
+
+
+ANALYTICAL_DESIGN = """
+from tertius_structural import StructuralModel
+
+sheet_width = 762.0
+sheet_length = 1200.0
+sheet_area = sheet_width * sheet_length / 1000000.0
+
+structure = StructuralModel(title="C100 structural microcosm")
+steel = structure.material(
+    id="steel",
+    label="G450 steel",
+    elastic_modulus_kN_m2=200000000.0,
+    shear_modulus_kN_m2=80000000.0,
+    poisson_ratio=0.3,
+    density_kg_m3=7850.0,
+)
+c100 = structure.section(
+    id="c10019",
+    label="C10019 gross section",
+    area_m2=409e-6,
+    iy_m4=142000e-12,
+    iz_m4=673000e-12,
+    torsion_j_m4=492e-12,
+)
+sheet = structure.surface(sheet_shape, id="sheet", label="Roof sheet")
+screws = structure.connector(screw_shape, id="screws", label="Tek screws")
+purlin = structure.member(purlin_shape, id="purlin", label="C100 purlin")
+block = structure.ground(block_shape, id="block", label="Concrete block")
+structure.member_axis(
+    purlin,
+    id="purlin-axis",
+    label="C100 purlin",
+    start=(0, 0, 0),
+    end=(0, 0, 1.6),
+    section=c100,
+    material=steel,
+    start_restraints=(True, True, True, True, True, True),
+    assumption="Idealised fixed GPB base; connection capacity is not checked.",
+)
+structure.connect(
+    sheet,
+    purlin,
+    via=[screws],
+    id="sheet-purlin",
+    label="Sheet to purlin",
+    transfers=["wind_normal", "force", "shear"],
+)
+structure.connect(
+    purlin,
+    block,
+    id="purlin-ground",
+    label="Purlin to ground",
+    transfers=["force", "shear", "moment"],
+)
+wind = structure.surface_load(
+    sheet,
+    id="wind",
+    label="Wind pressure",
+    case="wind",
+    pressure_kPa=0.8,
+    area_m2=sheet_area,
+    direction=(0, -1, 0),
+    provenance="Test pressure",
+)
+structure.distribute_surface_load(
+    wind,
+    purlin,
+    id="wind-to-purlin",
+    label="Wind at screw",
+    positions_m=(0.35, 0.8, 1.25),
+    provenance="Equal tributary load at three screws.",
+)
+structural_assembly = structure.assembly(
+    [sheet, screws, purlin, block],
+    label="structural-test",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+"""
+
+
+def test_surface_pressure_is_distributed_to_pynite_and_matches_hand_equilibrium():
+    capture = parse_project_structural_capture(
+        ANALYTICAL_DESIGN,
+        project_name="structural_test",
+    )
+    assert capture.analysis is not None
+    assert [load.force.y for load in capture.analysis.member_loads] == pytest.approx(
+        [-0.24384, -0.24384, -0.24384]
+    )
+
+    snapshot = solve_project_structural(capture)
+
+    result = snapshot.member_results[0]
+    reaction = snapshot.reactions[0]
+    assert result.max_shear_kN == pytest.approx(0.73152, abs=1e-10)
+    assert result.max_moment_kNm == pytest.approx(0.585216, abs=1e-10)
+    assert result.max_displacement_mm == pytest.approx(2.61231263, abs=1e-8)
+    assert reaction.force.y == pytest.approx(0.73152, abs=1e-10)
+    assert reaction.moment.x == pytest.approx(-0.585216, abs=1e-10)
+    assert snapshot.equilibrium.status == "pass"
+    assert snapshot.equilibrium.force_residual_kN.x == pytest.approx(0, abs=1e-10)
+    assert snapshot.equilibrium.force_residual_kN.y == pytest.approx(0, abs=1e-10)
+    assert snapshot.equilibrium.force_residual_kN.z == pytest.approx(0, abs=1e-10)
+    assert snapshot.member_checks[0].status == "not_checked"
+    assert snapshot.member_checks[0].capacity_kNm is None
+
+
+def test_moment_diagram_is_solver_output_with_load_stations_and_zero_free_end():
+    snapshot = solve_project_structural(
+        parse_project_structural_capture(
+            ANALYTICAL_DESIGN,
+            project_name="structural_test",
+        )
+    )
+    stations = snapshot.member_diagrams[0].stations
+    by_distance = {round(station.distance_m, 6): station for station in stations}
+
+    assert by_distance[0].moment_kNm.x == pytest.approx(-0.585216, abs=1e-10)
+    assert by_distance[0.35].moment_kNm.x == pytest.approx(-0.329184, abs=1e-10)
+    assert by_distance[0.8].moment_kNm.x == pytest.approx(-0.109728, abs=1e-10)
+    assert by_distance[1.25].moment_kNm.x == pytest.approx(0, abs=1e-10)
+    assert by_distance[1.6].moment_kNm.x == pytest.approx(0, abs=1e-10)

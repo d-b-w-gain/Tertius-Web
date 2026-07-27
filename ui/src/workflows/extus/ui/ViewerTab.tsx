@@ -27,6 +27,7 @@ interface ViewerProps {
   isActive?: boolean;
   statusTextOverride?: string;
   externalSelectedNodeIds?: string[];
+  structuralOverlay?: StructuralViewerOverlay;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
@@ -37,11 +38,23 @@ interface ModelViewerCanvasProps {
   projectName?: string;
   isActive?: boolean;
   externalSelectedNodeIds?: string[];
+  structuralOverlay?: StructuralViewerOverlay;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
+export type StructuralViewerOverlay = {
+  id: string;
+  label: string;
+  stations: Array<{
+    position: { x: number; y: number; z: number };
+    moment_kNm: { x: number; y: number; z: number };
+  }>;
+  maxOffsetMm?: number;
+};
+
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 const COMPONENT_PREVIEW_SIZE = 512;
+const STRUCTURAL_OVERLAY_NAME = 'TertiusStructuralMomentOverlay';
 
 const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 
@@ -288,6 +301,10 @@ function disposeObjectTree(object: THREE.Object3D): void {
       disposeMaterial(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
       disposeViewerMeshMaterials(mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined);
       (mesh.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined)?.dispose();
+    } else if ((child as THREE.Line).isLine || (child as THREE.LineSegments).isLineSegments) {
+      const line = child as THREE.Line;
+      line.geometry.dispose();
+      disposeMaterial(line.material);
     }
   });
 }
@@ -382,6 +399,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
   isActive = true,
   statusTextOverride,
   externalSelectedNodeIds,
+  structuralOverlay,
   onExternalSelectionPreviewChange,
 }) => {
   const { getAccessToken } = useAuth();
@@ -442,6 +460,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
       projectName={projectName}
       isActive={isActive}
       externalSelectedNodeIds={externalSelectedNodeIds}
+      structuralOverlay={structuralOverlay}
       onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
     />
   );
@@ -454,6 +473,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   projectName = '',
   isActive = true,
   externalSelectedNodeIds,
+  structuralOverlay,
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -1051,6 +1071,157 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     frameCameraOnBox(selection.focusBounds, 1.08);
   }, [externalSelectedNodeIds, externalSelectionKey, frameCameraOnBox, frameModelRoot, sceneGraph]);
 
+  useEffect(() => {
+    const model = meshRef.current;
+    if (!model) return;
+
+    const previous = model.getObjectByName(STRUCTURAL_OVERLAY_NAME);
+    if (previous) {
+      model.remove(previous);
+      disposeObjectTree(previous);
+    }
+    if (!structuralOverlay || structuralOverlay.stations.length < 2) return;
+
+    const stations = structuralOverlay.stations;
+    const first = stations[0]!;
+    const last = stations[stations.length - 1]!;
+    const axis = new THREE.Vector3(
+      last.position.x - first.position.x,
+      last.position.y - first.position.y,
+      last.position.z - first.position.z,
+    );
+    if (axis.lengthSq() === 0) return;
+    axis.normalize();
+
+    const peakMoment = Math.max(
+      ...stations.map(({ moment_kNm: moment }) => (
+        Math.hypot(moment.x, moment.y, moment.z)
+      )),
+    );
+    if (peakMoment <= Number.EPSILON) return;
+
+    // Build123D source coordinates are Z-up. GLTF stores them Y-up and the
+    // viewer rotates the loaded model back to Z-up, so overlay points are
+    // authored in the model's pre-rotation coordinate system.
+    const toModelCoordinates = (point: THREE.Vector3) => (
+      new THREE.Vector3(point.x, point.z, -point.y)
+    );
+    const maxOffsetMm = structuralOverlay.maxOffsetMm ?? 260;
+    const axisPoints: THREE.Vector3[] = [];
+    const diagramPoints: THREE.Vector3[] = [];
+    const demandRatios: number[] = [];
+    stations.forEach(({ position, moment_kNm: moment }) => {
+      const sourcePoint = new THREE.Vector3(
+        position.x * 1000,
+        position.y * 1000,
+        position.z * 1000,
+      );
+      const momentVector = new THREE.Vector3(moment.x, moment.y, moment.z);
+      const offset = axis.clone().cross(momentVector).multiplyScalar(maxOffsetMm / peakMoment);
+      axisPoints.push(toModelCoordinates(sourcePoint));
+      diagramPoints.push(toModelCoordinates(sourcePoint.clone().add(offset)));
+      demandRatios.push(Math.min(1, momentVector.length() / peakMoment));
+    });
+
+    const group = new THREE.Group();
+    group.name = STRUCTURAL_OVERLAY_NAME;
+    group.userData.tertiusStructuralOverlay = true;
+
+    const ribbonPositions: number[] = [];
+    const ribbonColors: number[] = [];
+    const cool = new THREE.Color(0x38bdf8);
+    const hot = new THREE.Color(0xf59e0b);
+    const pushVertex = (point: THREE.Vector3, demandRatio: number) => {
+      const color = cool.clone().lerp(hot, demandRatio);
+      ribbonPositions.push(point.x, point.y, point.z);
+      ribbonColors.push(color.r, color.g, color.b);
+    };
+    for (let index = 0; index < stations.length - 1; index += 1) {
+      const axisStart = axisPoints[index]!;
+      const axisEnd = axisPoints[index + 1]!;
+      const diagramStart = diagramPoints[index]!;
+      const diagramEnd = diagramPoints[index + 1]!;
+      const startDemand = demandRatios[index]!;
+      const endDemand = demandRatios[index + 1]!;
+      pushVertex(axisStart, startDemand);
+      pushVertex(diagramStart, startDemand);
+      pushVertex(axisEnd, endDemand);
+      pushVertex(diagramStart, startDemand);
+      pushVertex(diagramEnd, endDemand);
+      pushVertex(axisEnd, endDemand);
+    }
+    const ribbonGeometry = new THREE.BufferGeometry();
+    ribbonGeometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(ribbonPositions, 3),
+    );
+    ribbonGeometry.setAttribute(
+      'color',
+      new THREE.Float32BufferAttribute(ribbonColors, 3),
+    );
+    const ribbon = new THREE.Mesh(
+      ribbonGeometry,
+      new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.48,
+        side: THREE.DoubleSide,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    ribbon.name = `${STRUCTURAL_OVERLAY_NAME}Ribbon`;
+    ribbon.renderOrder = 30;
+    ribbon.userData.tertiusStructuralOverlay = true;
+    group.add(ribbon);
+
+    const diagramGeometry = new THREE.BufferGeometry().setFromPoints(diagramPoints);
+    const diagramLine = new THREE.Line(
+      diagramGeometry,
+      new THREE.LineBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.95,
+        depthTest: false,
+      }),
+    );
+    diagramLine.name = `${STRUCTURAL_OVERLAY_NAME}Edge`;
+    diagramLine.renderOrder = 31;
+    diagramLine.userData.tertiusStructuralOverlay = true;
+    group.add(diagramLine);
+
+    const connectorPoints: THREE.Vector3[] = [];
+    const connectorInterval = Math.max(1, Math.floor(stations.length / 8));
+    axisPoints.forEach((point, index) => {
+      if (
+        index === 0
+        || index === axisPoints.length - 1
+        || index % connectorInterval === 0
+      ) {
+        connectorPoints.push(point, diagramPoints[index]!);
+      }
+    });
+    const connectors = new THREE.LineSegments(
+      new THREE.BufferGeometry().setFromPoints(connectorPoints),
+      new THREE.LineBasicMaterial({
+        color: 0x7dd3fc,
+        transparent: true,
+        opacity: 0.55,
+        depthTest: false,
+      }),
+    );
+    connectors.name = `${STRUCTURAL_OVERLAY_NAME}Stations`;
+    connectors.renderOrder = 29;
+    connectors.userData.tertiusStructuralOverlay = true;
+    group.add(connectors);
+
+    model.add(group);
+    return () => {
+      if (group.parent) group.parent.remove(group);
+      disposeObjectTree(group);
+    };
+  }, [sceneGraph, structuralOverlay]);
+
   // 4. Handle Raycasting Interactions
   useEffect(() => {
     if (!canvasRef.current || !sceneRef.current || !cameraRef.current) return;
@@ -1069,6 +1240,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
        if (meshRef.current) {
           // Raycast source meshes, then ignore objects hidden in the Assembly Tree.
           meshRef.current.traverse(c => {
+            if (c.userData.tertiusStructuralOverlay) return;
             if (!isViewerBatchMesh(c) && (c as THREE.Mesh).isMesh) c.visible = true;
           });
           
@@ -1081,6 +1253,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           
           // Re-hide them (they'll be unhidden by the selection effect if needed)
           meshRef.current.traverse(c => {
+            if (c.userData.tertiusStructuralOverlay) return;
             if (!isViewerBatchMesh(c) && (c as THREE.Mesh).isMesh) c.visible = false;
           });
           if (intersects.length > 0) {
@@ -1199,6 +1372,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
         const opaqueMeshes: THREE.Mesh[] = [];
         model.traverse((child) => {
+           if (child.userData.tertiusStructuralOverlay) return;
            if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
 
            let isHidden = false;
@@ -1239,6 +1413,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {
+        if (child.userData.tertiusStructuralOverlay) return;
         if (isViewerBatchMesh(child)) return;
         
         if ((child as THREE.Mesh).isMesh) {
@@ -1287,7 +1462,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
      });
 
-   }, [selectedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
+   }, [
+     selectedNodeId,
+     sceneGraph,
+     appearanceByPath,
+     renderQuality,
+     externalSelectedNodeIds,
+     externalSelectionKey,
+   ]);
 
   useEffect(() => {
     if (!onExternalSelectionPreviewChange) return;
@@ -1315,6 +1497,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           {projectName && (
             <div className="text-xs font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
               {projectName}
+            </div>
+          )}
+          {structuralOverlay && (
+            <div
+              className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
+              title={structuralOverlay.label}
+            >
+              PyNite moment
             </div>
           )}
           <button

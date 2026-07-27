@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import sqrt
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -69,6 +70,19 @@ class StructuralMaterial(StructuralContract):
     density_kg_m3: float
 
 
+class AnalyticalMemberDeclaration(StructuralContract):
+    id: str
+    label: str
+    component_id: str
+    start: Vector3
+    end: Vector3
+    start_restraints: Restraints = Field(default_factory=Restraints)
+    end_restraints: Restraints = Field(default_factory=Restraints)
+    section_id: str
+    material_id: str
+    assumption: str
+
+
 class LoadCase(StructuralContract):
     id: str
     label: str
@@ -83,6 +97,18 @@ class NodalLoad(StructuralContract):
     force: Vector3
     moment: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
     visual_node_id: str
+
+
+class MemberPointLoad(StructuralContract):
+    id: str
+    label: str
+    member_id: str
+    case_id: str
+    distance_m: float
+    force: Vector3
+    moment: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
+    source_load_id: str
+    provenance: str
 
 
 class NodeReaction(StructuralContract):
@@ -101,12 +127,26 @@ class MemberResult(StructuralContract):
     max_displacement_mm: float
 
 
+class MemberDiagramStation(StructuralContract):
+    distance_m: float
+    position: Vector3
+    moment_kNm: Vector3
+    shear_kN: Vector3
+    displacement_mm: Vector3
+
+
+class MemberDiagram(StructuralContract):
+    member_id: str
+    visual_node_id: str
+    stations: list[MemberDiagramStation]
+
+
 class MemberCheck(StructuralContract):
     member_id: str
     label: str
     demand_kNm: float
-    capacity_kNm: float
-    utilisation: float
+    capacity_kNm: float | None
+    utilisation: float | None
     status: Literal["pass", "fail", "not_checked"]
     basis: str
 
@@ -170,6 +210,14 @@ class DesignLoadPath(StructuralContract):
     detail: str
 
 
+class DesignAnalysisDefinition(StructuralContract):
+    materials: list[StructuralMaterial]
+    sections: list[SectionProperties]
+    members: list[AnalyticalMemberDeclaration]
+    load_cases: list[LoadCase]
+    member_loads: list[MemberPointLoad]
+
+
 class ProjectStructuralCapture(StructuralContract):
     schema_version: Literal["0.1"] = "0.1"
     project_name: str
@@ -180,6 +228,7 @@ class ProjectStructuralCapture(StructuralContract):
     connections: list[DesignConnection]
     loads: list[DesignSurfaceLoad]
     load_paths: list[DesignLoadPath]
+    analysis: DesignAnalysisDefinition | None = None
     capabilities: list[CapabilityState]
     warnings: list[str]
 
@@ -242,6 +291,46 @@ class ProjectStructuralCapture(StructuralContract):
                     raise ValueError(
                         f"complete load path {path.load_id!r} ends at an ungrounded component"
                     )
+        if self.analysis is not None:
+            material_ids = _unique_ids("analysis materials", self.analysis.materials)
+            section_ids = _unique_ids("analysis sections", self.analysis.sections)
+            member_ids = _unique_ids("analysis members", self.analysis.members)
+            load_case_ids = _unique_ids("analysis load cases", self.analysis.load_cases)
+            _unique_ids("analysis member loads", self.analysis.member_loads)
+            surface_load_ids = {load.id for load in self.loads}
+            components_by_id = {component.id: component for component in self.components}
+            member_lengths: dict[str, float] = {}
+            for member in self.analysis.members:
+                _require_reference("analysis member component", member.component_id, component_ids)
+                _require_reference("analysis member section", member.section_id, section_ids)
+                _require_reference("analysis member material", member.material_id, material_ids)
+                if member.start == member.end:
+                    raise ValueError(f"analysis member {member.id!r} has zero length")
+                if components_by_id[member.component_id].kind != "member":
+                    raise ValueError(
+                        f"analysis member {member.id!r} component is not a member"
+                    )
+                member_lengths[member.id] = sqrt(
+                    (member.end.x - member.start.x) ** 2
+                    + (member.end.y - member.start.y) ** 2
+                    + (member.end.z - member.start.z) ** 2
+                )
+            for member_load in self.analysis.member_loads:
+                _require_reference(
+                    "analysis load member", member_load.member_id, member_ids
+                )
+                _require_reference(
+                    "analysis load case", member_load.case_id, load_case_ids
+                )
+                _require_reference(
+                    "analysis load source",
+                    member_load.source_load_id,
+                    surface_load_ids,
+                )
+                if not 0 < member_load.distance_m < member_lengths[member_load.member_id]:
+                    raise ValueError(
+                        f"analysis load {member_load.id!r} lies outside its member"
+                    )
         return self
 
 
@@ -265,8 +354,10 @@ class StructuralSnapshot(StructuralContract):
     materials: list[StructuralMaterial]
     load_cases: list[LoadCase]
     loads: list[NodalLoad]
+    member_loads: list[MemberPointLoad] = Field(default_factory=list)
     reactions: list[NodeReaction]
     member_results: list[MemberResult]
+    member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
     equilibrium: EquilibriumDiagnostic
     solver: SolverMetadata
@@ -293,10 +384,15 @@ class StructuralSnapshot(StructuralContract):
         for load in self.loads:
             _require_reference("load node", load.node_id, node_ids)
             _require_reference("load case", load.case_id, load_case_ids)
+        for member_load in self.member_loads:
+            _require_reference("member load member", member_load.member_id, member_ids)
+            _require_reference("member load case", member_load.case_id, load_case_ids)
         for reaction in self.reactions:
             _require_reference("reaction node", reaction.node_id, node_ids)
         for result in self.member_results:
             _require_reference("result member", result.member_id, member_ids)
+        for diagram in self.member_diagrams:
+            _require_reference("diagram member", diagram.member_id, member_ids)
         for check in self.member_checks:
             _require_reference("check member", check.member_id, member_ids)
         return self

@@ -10,6 +10,7 @@ import type {
   CapabilityState,
   DesignComponent,
   ProjectStructuralCapture,
+  StructuralSnapshot,
   Vector3,
 } from './contracts'
 
@@ -46,9 +47,11 @@ function vector(value: Vector3) {
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
+  const [analysis, setAnalysis] = useState<StructuralSnapshot | null>(null)
   const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
   const captureRequestId = useRef(0)
   const serverUrl = resolveWorkflowServerUrl('structural', import.meta.env?.VITE_API_URL)
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
@@ -58,30 +61,42 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     const requestId = ++captureRequestId.current
     setIsLoading(true)
     setError(null)
+    setAnalysisError(null)
     try {
-      const response = await apiFetch(`${serverUrl}/active/capture`, getAccessToken)
-      const payload = await response.json().catch(() => null) as
+      const [captureResponse, analysisResponse] = await Promise.all([
+        apiFetch(`${serverUrl}/active/capture`, getAccessToken),
+        apiFetch(`${serverUrl}/active/analysis`, getAccessToken),
+      ])
+      const payload = await captureResponse.json().catch(() => null) as
         | ProjectStructuralCapture
         | { detail?: string }
         | null
-      if (!response.ok) {
+      if (!captureResponse.ok) {
         const detail = payload && 'detail' in payload ? payload.detail : undefined
-        throw new Error(detail || `Structural capture returned ${response.status}`)
+        throw new Error(detail || `Structural capture returned ${captureResponse.status}`)
       }
+      const analysisPayload = await analysisResponse.json().catch(() => null) as
+        | StructuralSnapshot
+        | { detail?: string }
+        | null
       const nextCapture = payload as ProjectStructuralCapture
       if (requestId !== captureRequestId.current) return
       setCapture(nextCapture)
-      const primaryLoad = nextCapture.loads[0]
-      setSelectedVisualNodeId(
-        primaryLoad
-          ? nextCapture.components.find(
-              (component) => component.id === primaryLoad.component_id,
-            )?.visual_node_id || ''
-          : nextCapture.components[0]?.visual_node_id || '',
-      )
+      setSelectedVisualNodeId('')
+      if (analysisResponse.ok) {
+        setAnalysis(analysisPayload as StructuralSnapshot)
+      } else {
+        setAnalysis(null)
+        setAnalysisError(
+          analysisPayload && 'detail' in analysisPayload
+            ? analysisPayload.detail || `Structural analysis returned ${analysisResponse.status}`
+            : `Structural analysis returned ${analysisResponse.status}`,
+        )
+      }
     } catch (loadError) {
       if (requestId !== captureRequestId.current) return
       setCapture(null)
+      setAnalysis(null)
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -113,6 +128,24 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const firstLoad = capture?.loads[0]
   const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
   const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
+  const firstMemberResult = analysis?.member_results[0]
+  const firstMember = analysis?.members[0]
+  const firstReaction = analysis?.reactions[0]
+  const firstCheck = analysis?.member_checks[0]
+  const structuralOverlay = useMemo(() => {
+    const diagram = analysis?.member_diagrams[0]
+    if (!diagram) return undefined
+    return {
+      id: diagram.member_id,
+      label: `${firstMember?.label || diagram.member_id} signed bending moment`,
+      stations: diagram.stations.map((station) => ({
+        position: station.position,
+        moment_kNm: station.moment_kNm,
+      })),
+      maxOffsetMm: 260,
+    }
+  }, [analysis, firstMember?.label])
+  const capabilities = analysis?.capabilities || capture?.capabilities || []
 
   if (authMode === 'guest') {
     return (
@@ -144,11 +177,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
-            Active-project geometry with statically parsed structural connectivity
+            {analysis
+              ? 'Active-project geometry with PyNite member demand and signed diagrams'
+              : 'Active-project geometry with statically parsed structural connectivity'}
           </p>
         </div>
         <div className="ml-auto hidden items-center gap-2 lg:flex">
-          {capture?.capabilities.map((capability) => (
+          {capabilities.map((capability) => (
             <span
               key={capability.id}
               title={capability.detail}
@@ -161,7 +196,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       </header>
 
       <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
-        LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED
+        {analysis
+          ? 'ELASTIC MEMBER DEMAND ONLINE — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'
+          : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -171,6 +208,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             <div className="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
               <div className="font-semibold">Structural declaration unavailable</div>
               <div className="mt-1 text-xs">{error}</div>
+            </div>
+          )}
+          {analysisError && capture && (
+            <div className="m-4 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+              <div className="font-semibold">Member analysis unavailable</div>
+              <div className="mt-1 text-xs">{analysisError}</div>
             </div>
           )}
           {capture && (
@@ -298,11 +341,83 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </section>
               )}
 
+              {analysis && firstMemberResult && firstMember && firstReaction && (
+                <section className="rounded border border-cyan-500/40 bg-cyan-500/10 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                        PyNite elastic demand
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-100">
+                        {firstMember.label}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedVisualNodeId(firstMember.visual_node_id)}
+                      className="rounded border border-cyan-500/40 bg-slate-950/50 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:border-cyan-300"
+                    >
+                      Focus member
+                    </button>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <dt className="text-slate-500">Max moment</dt>
+                      <dd className="font-mono text-amber-200">
+                        {number(firstMemberResult.max_moment_kNm, 4)} kN·m
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Max shear</dt>
+                      <dd className="font-mono">
+                        {number(firstMemberResult.max_shear_kN, 4)} kN
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Max displacement</dt>
+                      <dd className="font-mono">
+                        {number(firstMemberResult.max_displacement_mm, 3)} mm
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Load points</dt>
+                      <dd className="font-mono">{analysis.member_loads.length} screws</dd>
+                    </div>
+                  </dl>
+                  <div className="mt-3 border-t border-cyan-500/20 pt-3">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
+                        Fixed-base reaction
+                      </span>
+                      <span className={
+                        analysis.equilibrium.status === 'pass'
+                          ? 'text-emerald-300'
+                          : 'text-red-300'
+                      }>
+                        Equilibrium {analysis.equilibrium.status}
+                      </span>
+                    </div>
+                    <div className="mt-2 font-mono text-[10px] text-slate-300">
+                      Force {vector(firstReaction.force)} kN
+                    </div>
+                    <div className="mt-1 font-mono text-[10px] text-slate-300">
+                      Moment {vector(firstReaction.moment)} kN·m
+                    </div>
+                  </div>
+                  <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
+                    Signed ribbon: blue is low demand and amber is peak demand. Its width is
+                    scaled for visibility; values above are the solver results.
+                  </p>
+                </section>
+              )}
+
               <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
                 <div className="font-semibold">Capacity status: NOT CHECKED</div>
                 <p className="mt-1 text-[10px] text-amber-200/75">
-                  This proves declared connectivity only. It does not yet distribute the wind load,
-                  solve the C100 member, or check screws, bolts, bracket, anchors, or concrete.
+                  {firstCheck?.basis || (
+                    'This proves declared connectivity only. It does not yet solve the C100 member '
+                    + 'or check screws, bolts, bracket, anchors, or concrete.'
+                  )}
                 </p>
               </section>
             </div>
@@ -313,8 +428,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           <LatestModelViewer
             serverUrl={extusServerUrl}
             isActive={isActive}
-            statusTextOverride="Active-project model linked to parsed structural declarations"
+            statusTextOverride={
+              analysis
+                ? 'Active-project model with PyNite signed moment ribbon'
+                : 'Active-project model linked to parsed structural declarations'
+            }
             externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}
+            structuralOverlay={structuralOverlay}
           />
         </main>
       </div>

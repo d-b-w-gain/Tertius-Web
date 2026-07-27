@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { StructuralWorkbench } from './StructuralWorkbench'
-import type { ProjectStructuralCapture } from './contracts'
+import type { ProjectStructuralCapture, StructuralSnapshot } from './contracts'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -21,9 +21,17 @@ vi.mock('../../auth/AuthProvider', () => ({
 vi.mock('../extus/ui/ViewerTab', () => ({
   LatestModelViewer: ({
     externalSelectedNodeIds,
+    structuralOverlay,
   }: {
     externalSelectedNodeIds?: string[]
-  }) => <div>Viewer selection: {externalSelectedNodeIds?.join(',')}</div>,
+    structuralOverlay?: { stations: unknown[] }
+  }) => (
+    <div>
+      Viewer selection: {externalSelectedNodeIds?.join(',')}
+      {' · '}
+      Ribbon stations: {structuralOverlay?.stations.length || 0}
+    </div>
+  ),
 }))
 
 const capture: ProjectStructuralCapture = {
@@ -130,6 +138,7 @@ const capture: ProjectStructuralCapture = {
       detail: 'Load reaches grounded component Grounded concrete block.',
     },
   ],
+  analysis: null,
   capabilities: [
     {
       id: 'capture',
@@ -147,15 +156,167 @@ const capture: ProjectStructuralCapture = {
   warnings: ['LOAD PATH CAPTURE ONLY'],
 }
 
+const analysis: StructuralSnapshot = {
+  schema_version: '1.0',
+  mode: 'design',
+  title: capture.title,
+  subtitle: 'Active-project first-order elastic member demand',
+  source: {
+    kind: 'design',
+    label: 'structural_test',
+    design_id: 'structural_test',
+    design_hash: 'abc123',
+  },
+  units: {
+    length: 'm',
+    force: 'kN',
+    moment: 'kN.m',
+    displacement: 'mm',
+    render_length: 'mm',
+  },
+  nodes: [
+    {
+      id: 'purlin-start',
+      label: 'Purlin start',
+      position: { x: 0, y: 0, z: 0 },
+      restraints: { dx: true, dy: true, dz: true, rx: true, ry: true, rz: true },
+      visual_node_id: 'purlin',
+    },
+    {
+      id: 'purlin-end',
+      label: 'Purlin end',
+      position: { x: 0, y: 0, z: 1.6 },
+      restraints: { dx: false, dy: false, dz: false, rx: false, ry: false, rz: false },
+      visual_node_id: 'purlin',
+    },
+  ],
+  members: [
+    {
+      id: 'purlin-axis',
+      label: 'Lysaght C10019 purlin',
+      start_node_id: 'purlin-start',
+      end_node_id: 'purlin-end',
+      section_id: 'c10019',
+      material_id: 'steel',
+      visual_node_id: 'purlin',
+    },
+  ],
+  sections: [
+    {
+      id: 'c10019',
+      label: 'C10019',
+      area_m2: 409e-6,
+      iy_m4: 142000e-12,
+      iz_m4: 673000e-12,
+      torsion_j_m4: 492e-12,
+    },
+  ],
+  materials: [
+    {
+      id: 'steel',
+      label: 'Steel',
+      elastic_modulus_kN_m2: 200000000,
+      shear_modulus_kN_m2: 80000000,
+      poisson_ratio: 0.3,
+      density_kg_m3: 7850,
+    },
+  ],
+  load_cases: [{ id: 'case-wind', label: 'Wind load', category: 'wind' }],
+  loads: [],
+  member_loads: [0.35, 0.8, 1.25].map((distance, index) => ({
+    id: `wind-${index}`,
+    label: `Wind ${index}`,
+    member_id: 'purlin-axis',
+    case_id: 'case-wind',
+    distance_m: distance,
+    force: { x: 0, y: -0.24384, z: 0 },
+    moment: { x: 0, y: 0, z: 0 },
+    source_load_id: 'wind',
+    provenance: 'Equal screws',
+  })),
+  reactions: [
+    {
+      node_id: 'purlin-start',
+      combination_id: 'SLS-1.0',
+      force: { x: 0, y: 0.73152, z: 0 },
+      moment: { x: -0.585216, y: 0, z: 0 },
+    },
+  ],
+  member_results: [
+    {
+      member_id: 'purlin-axis',
+      combination_id: 'SLS-1.0',
+      max_moment_kNm: 0.585216,
+      max_shear_kN: 0.73152,
+      max_axial_kN: 0,
+      max_displacement_mm: 2.61231263,
+    },
+  ],
+  member_diagrams: [
+    {
+      member_id: 'purlin-axis',
+      visual_node_id: 'purlin',
+      stations: [
+        {
+          distance_m: 0,
+          position: { x: 0, y: 0, z: 0 },
+          moment_kNm: { x: -0.585216, y: 0, z: 0 },
+          shear_kN: { x: 0, y: 0.73152, z: 0 },
+          displacement_mm: { x: 0, y: 0, z: 0 },
+        },
+        {
+          distance_m: 1.6,
+          position: { x: 0, y: 0, z: 1.6 },
+          moment_kNm: { x: 0, y: 0, z: 0 },
+          shear_kN: { x: 0, y: 0, z: 0 },
+          displacement_mm: { x: 0, y: -2.61231263, z: 0 },
+        },
+      ],
+    },
+  ],
+  member_checks: [
+    {
+      member_id: 'purlin-axis',
+      label: 'C100 bending demand',
+      demand_kNm: 0.585216,
+      capacity_kNm: null,
+      utilisation: null,
+      status: 'not_checked',
+      basis: 'Elastic demand only — no AS 4600 member capacity is connected.',
+    },
+  ],
+  equilibrium: {
+    force_residual_kN: { x: 0, y: 0, z: 0 },
+    moment_residual_kNm: { x: 0, y: 0, z: 0 },
+    tolerance: 1e-8,
+    status: 'pass',
+  },
+  solver: {
+    name: 'PyNiteFEA',
+    version: '2.4.1',
+    analysis: '3D first-order elastic',
+    combination_id: 'SLS-1.0',
+  },
+  capabilities: [
+    {
+      id: 'solver',
+      label: 'PyNite demand',
+      status: 'online',
+      detail: 'Solved.',
+    },
+  ],
+  warnings: ['ELASTIC MEMBER DEMAND ONLY'],
+}
+
 describe('StructuralWorkbench', () => {
   beforeEach(() => {
     mocks.apiFetch.mockReset()
-    mocks.apiFetch.mockResolvedValue(
-      new Response(JSON.stringify(capture), {
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(url.endsWith('/active/analysis') ? analysis : capture), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    )
+    ))
   })
 
   it('uses the active project capture and never presents connectivity as a capacity check', async () => {
@@ -168,16 +329,22 @@ describe('StructuralWorkbench', () => {
       '/api/structural/active/capture',
       mocks.getAccessToken,
     )
+    expect(mocks.apiFetch).toHaveBeenCalledWith(
+      '/api/structural/active/analysis',
+      mocks.getAccessToken,
+    )
     expect(screen.getAllByText('Custom Orb roofing iron').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Lysaght C10019 purlin').length).toBeGreaterThan(0)
     expect(screen.getByText('Reaches ground')).toBeInTheDocument()
     expect(screen.getByText('0.732 kN')).toBeInTheDocument()
     expect(screen.getByText('HANDLE-AUTHORED')).toBeInTheDocument()
     expect(screen.getByText('Capacity status: NOT CHECKED')).toBeInTheDocument()
-    expect(screen.getByText('Viewer selection: sheet')).toBeInTheDocument()
+    expect(screen.getByText(/Ribbon stations: 2/)).toBeInTheDocument()
+    expect(screen.getByText('0.5852 kN·m')).toBeInTheDocument()
+    expect(screen.getByText('Equilibrium pass')).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
-    expect(screen.getByText('Viewer selection: block')).toBeInTheDocument()
+    expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()
   })
 
   it('reloads the structural declaration when the shared active project changes', async () => {
