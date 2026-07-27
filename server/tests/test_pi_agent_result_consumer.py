@@ -290,8 +290,10 @@ async def test_progress_database_failure_rolls_back_and_naks(
 
 @pytest.mark.asyncio
 async def test_raw_oversize_messages_are_acked_before_envelope_discrimination(
-    db_session, seeded_tenant, caplog
+    db_session, seeded_tenant, monkeypatch
 ):
+    warnings: list[str] = []
+    monkeypatch.setattr(consumer_module.logger, "warning", warnings.append)
     file = db_session.scalar(
         select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
     )
@@ -325,8 +327,11 @@ async def test_raw_oversize_messages_are_acked_before_envelope_discrimination(
     assert progress_message.acked == 1 and progress_message.nacked == 0
     assert terminal_job.status not in {"succeeded", "failed"}
     assert progress_job.progress_payload == {}
-    assert "Discarding oversize Pi agent message envelope" in caplog.text
-    assert "SENSITIVE_PROGRESS_TEXT" not in caplog.text
+    assert warnings == [
+        "Discarding oversize Pi agent message envelope",
+        "Discarding oversize Pi agent message envelope",
+    ]
+    assert "SENSITIVE_PROGRESS_TEXT" not in " ".join(warnings)
 
 
 @pytest.mark.asyncio

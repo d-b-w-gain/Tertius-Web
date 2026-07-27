@@ -430,13 +430,15 @@ async def test_progress_batcher_flushes_on_timer_and_tool_milestones():
 
 @pytest.mark.asyncio
 async def test_progress_batcher_retries_then_logs_fixed_content_free_warning(
-    monkeypatch, caplog
+    monkeypatch,
 ):
     import workflows.intus.pi_agent_job as job
 
     request = command([source("model.py", "old")])
     publisher = FakePublisher(fail=True)
+    warnings: list[str] = []
     monkeypatch.setattr(job, "_PROGRESS_RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(job.logger, "warning", warnings.append)
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
@@ -447,22 +449,19 @@ async def test_progress_batcher_retries_then_logs_fixed_content_free_warning(
     )
     sentinel = "PRIVATE_PROGRESS_SENTINEL"
 
-    with caplog.at_level("WARNING"):
-        await batcher.add(
-            PiAgentRpcProgressEvent(
-                kind="tool_finished",
-                tool_name="edit",
-                target=sentinel,
-                is_error=True,
-            )
+    await batcher.add(
+        PiAgentRpcProgressEvent(
+            kind="tool_finished",
+            tool_name="edit",
+            target=sentinel,
+            is_error=True,
         )
-        await batcher.close()
+    )
+    await batcher.close()
 
     assert len(publisher.calls) == 3
-    assert [record.getMessage() for record in caplog.records] == [
-        "Pi agent progress publish failed"
-    ]
-    assert sentinel not in caplog.text
+    assert warnings == ["Pi agent progress publish failed"]
+    assert sentinel not in " ".join(warnings)
     kwargs = publisher.calls[0][2]
     assert kwargs["message_id"].startswith("pi-progress:")
     assert str(request.job_id) not in kwargs["telemetry_message_id"]
