@@ -10,12 +10,16 @@ from core.pi_agent_messages import (
     PiAgentCommand,
     PiAgentConversationContext,
     PiAgentConversationTurn,
+    PiAgentProgressBatch,
+    PiAgentProgressEvent,
     PiAgentResult,
     PiAgentSourceFile,
     PiAgentUsage,
     assert_pi_agent_command_size,
+    assert_pi_agent_progress_size,
     assert_pi_agent_result_size,
     pi_agent_command_message_id,
+    pi_agent_progress_message_id,
     pi_agent_result_message_id,
 )
 
@@ -278,3 +282,173 @@ def test_message_byte_size_enforcement_uses_serialized_utf8_bytes():
     assert_pi_agent_result_size(result, result_size)
     with pytest.raises(ValueError, match="above .* byte limit"):
         assert_pi_agent_result_size(result, result_size - 1)
+
+
+def progress_event(**overrides):
+    values = {
+        "sequence": 1,
+        "kind": "reasoning_delta",
+        "text": "Inspecting the current design.",
+        "occurred_at": NOW,
+    }
+    values.update(overrides)
+    return PiAgentProgressEvent(**values)
+
+
+def progress_batch(**overrides):
+    values = {
+        "message_type": "progress",
+        "schema_version": 1,
+        "execution_id": uuid4(),
+        "job_id": uuid4(),
+        "tenant_id": uuid4(),
+        "project_id": uuid4(),
+        "batch_sequence": 1,
+        "events": [progress_event()],
+    }
+    values.update(overrides)
+    return PiAgentProgressBatch(**values)
+
+
+def test_progress_event_accepts_strict_reasoning_and_tool_states():
+    reasoning = progress_event()
+    started = progress_event(
+        sequence=2,
+        kind="tool_started",
+        text=None,
+        tool_name="read",
+        target="parts//design.py",
+    )
+    finished = progress_event(
+        sequence=3,
+        kind="tool_finished",
+        text=None,
+        tool_name="edit",
+        target="parts/design.py",
+        is_error=False,
+    )
+
+    assert reasoning.text == "Inspecting the current design."
+    assert started.target == "parts/design.py"
+    assert finished.is_error is False
+    assert PiAgentProgressEvent.model_validate_json(reasoning.model_dump_json()) == reasoning
+    with pytest.raises(ValidationError):
+        progress_event(unexpected=True)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"kind": "reasoning_delta", "text": None},
+        {"kind": "reasoning_delta", "text": ""},
+        {"kind": "reasoning_delta", "tool_name": "read"},
+        {"kind": "reasoning_delta", "is_error": False},
+        {"kind": "tool_started", "text": "private thought", "tool_name": "read"},
+        {"kind": "tool_started", "text": None},
+        {"kind": "tool_started", "text": None, "tool_name": "read", "is_error": False},
+        {"kind": "tool_finished", "text": None, "tool_name": "read"},
+        {"kind": "tool_finished", "text": None, "is_error": False},
+        {
+            "kind": "tool_finished",
+            "text": "raw tool result",
+            "tool_name": "read",
+            "is_error": False,
+        },
+    ],
+)
+def test_progress_event_rejects_invalid_cross_field_states(values):
+    with pytest.raises(ValidationError):
+        progress_event(**values)
+
+
+@pytest.mark.parametrize("tool_name", ["read", "edit", "write", "grep", "find", "ls"])
+def test_progress_event_accepts_only_allow_listed_tool_names(tool_name):
+    assert (
+        progress_event(
+            kind="tool_started",
+            text=None,
+            tool_name=tool_name,
+        ).tool_name
+        == tool_name
+    )
+
+    with pytest.raises(ValidationError):
+        progress_event(kind="tool_started", text=None, tool_name=f"{tool_name}_unsafe")
+
+
+def test_progress_event_enforces_sequence_text_target_and_utc_bounds():
+    assert len(progress_event(text="x" * 1000).text or "") == 1000
+    assert (
+        len(
+            progress_event(
+                kind="tool_started",
+                text=None,
+                tool_name="read",
+                target="x" * 512,
+            ).target
+            or ""
+        )
+        == 512
+    )
+
+    invalid_values = (
+        {"sequence": 0},
+        {"text": "x" * 1001},
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "read",
+            "target": "x" * 513,
+        },
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "read",
+            "target": "../secret.py",
+        },
+        {"occurred_at": NOW.replace(tzinfo=None)},
+        {"occurred_at": NOW.astimezone(timezone(timedelta(hours=10)))},
+    )
+    for values in invalid_values:
+        with pytest.raises(ValidationError):
+            progress_event(**values)
+
+
+def test_progress_batch_enforces_bounds_order_and_strict_envelope():
+    events = [progress_event(sequence=index) for index in range(1, 17)]
+    batch = progress_batch(events=events)
+    assert batch.message_type == "progress"
+    assert len(batch.events) == 16
+    assert PiAgentProgressBatch.model_validate_json(batch.model_dump_json()) == batch
+
+    for values in (
+        {"batch_sequence": 0},
+        {"events": []},
+        {"events": [progress_event(sequence=index) for index in range(1, 18)]},
+        {"events": [progress_event(sequence=2), progress_event(sequence=1)]},
+        {"events": [progress_event(sequence=1), progress_event(sequence=1)]},
+        {"message_type": "result"},
+        {"schema_version": 2},
+        {"unexpected": True},
+    ):
+        with pytest.raises(ValidationError):
+            progress_batch(**values)
+
+
+def test_progress_message_id_is_deterministic_per_batch():
+    batch = progress_batch(batch_sequence=7)
+    assert pi_agent_progress_message_id(batch) == (
+        f"pi-progress:{batch.job_id}:{batch.execution_id}:7"
+    )
+    assert pi_agent_progress_message_id(batch) == pi_agent_progress_message_id(batch)
+    assert pi_agent_progress_message_id(
+        batch.model_copy(update={"batch_sequence": 8})
+    ) != pi_agent_progress_message_id(batch)
+
+
+def test_progress_message_byte_size_enforcement_uses_serialized_utf8_bytes():
+    batch = progress_batch(events=[progress_event(text="é")])
+    exact_size = len(batch.model_dump_json().encode("utf-8"))
+    assert_pi_agent_progress_size(batch, exact_size)
+    with pytest.raises(ValueError, match="Pi agent progress message is .* above .* byte limit"):
+        assert_pi_agent_progress_size(batch, exact_size - 1)

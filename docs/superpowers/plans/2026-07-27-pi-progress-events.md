@@ -43,13 +43,13 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/tests/test_pi_agent_messages.py`
 - Modify: `server/tests/test_pi_agent_telemetry_safety.py`
 
-- [ ] Add failing model tests for valid reasoning/tool events, invalid
+- [x] Add failing model tests for valid reasoning/tool events, invalid
   cross-field combinations, allow-listed tool names, character/event bounds,
   UTC timestamps, deterministic IDs, and message size.
-- [ ] Run the focused tests and confirm the new tests fail for missing symbols.
-- [ ] Implement `PiAgentProgressEvent`, `PiAgentProgressBatch`, size assertion,
+- [x] Run the focused tests and confirm the new tests fail for missing symbols.
+- [x] Implement `PiAgentProgressEvent`, `PiAgentProgressBatch`, size assertion,
   and deterministic progress message ID.
-- [ ] Run focused tests and Ruff for the touched files.
+- [x] Run focused tests and Ruff for the touched files.
 
 ## Task 2: Preserve only safe Pi RPC events
 
