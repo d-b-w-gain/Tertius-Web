@@ -172,3 +172,20 @@ fixture contract, PyNite results, Build123D GLB, and named load/member selection
 without console errors. Full `live-flow` remains pending because this
 fixture-only release intentionally has Pi/LLM workers and provider credentials
 disabled.
+
+Runtime recovery evidence (2026-07-27): the isolated release was upgraded to
+the branch image `smoke-6526603` with KEDA compile Jobs enabled. Internal
+Keycloak refresh now uses the cluster-local JWKS-derived endpoint, and compile
+execution runs off the async NATS event loop so long Build123D work does not
+starve JetStream keepalives. An authenticated upload of the current ten-file
+`shed` project compiled as GLB/`sketch` in 89 seconds and rendered in Extus as
+artifact `aa3e6199-3d7f-4571-b41e-cbebeda91b0a`; the Structural fixture also
+remained healthy after the rollout.
+
+The same source completed full-quality CAD generation, but its serialized model
+result was about 62.6 MB. That is not a safe inline NATS/JetStream artifact
+payload, so the isolated release retains a 32 MiB application guardrail and
+uses `sketch` as the interactive default. Moving large model bytes through a
+separate constrained blob/object-storage path, with NATS carrying only bounded
+metadata, is now a required hardening slice before full-quality output from this
+design can be returned reliably.
