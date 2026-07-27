@@ -27,7 +27,7 @@ from core.pi_agent_prompt import (
     load_pi_agent_prompt,
     render_pi_agent_user_prompt,
 )
-from core.pi_agent_rpc import PiAgentRpcResult
+from core.pi_agent_rpc import PiAgentRpcProgressEvent, PiAgentRpcResult
 from workflows.intus.pi_agent_job import (
     WorkspaceError,
     hydrate_workspace,
@@ -326,6 +326,352 @@ def worker_settings(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_progress_batcher_losslessly_coalesces_and_splits_reasoning():
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    publisher = FakePublisher()
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=60,
+    )
+
+    await batcher.add(PiAgentRpcProgressEvent(kind="reasoning_delta", text="a" * 600))
+    await batcher.add(PiAgentRpcProgressEvent(kind="reasoning_delta", text="b" * 600))
+    await batcher.close()
+
+    assert len(publisher.calls) == 1
+    batch = publisher.calls[0][1]
+    assert [len(event.text or "") for event in batch.events] == [1000, 200]
+    assert "".join(event.text or "" for event in batch.events) == (
+        "a" * 600 + "b" * 600
+    )
+    assert [event.sequence for event in batch.events] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_progress_batcher_limits_batches_to_sixteen_events():
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    publisher = FakePublisher()
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=60,
+    )
+
+    for index in range(17):
+        await batcher.add(
+            PiAgentRpcProgressEvent(
+                kind="reasoning_delta",
+                text=str(index % 10) * 1000,
+            )
+        )
+    await batcher.close()
+
+    batches = [call[1] for call in publisher.calls]
+    assert [len(batch.events) for batch in batches] == [16, 1]
+    assert [batch.batch_sequence for batch in batches] == [1, 2]
+    assert [event.sequence for batch in batches for event in batch.events] == list(
+        range(1, 18)
+    )
+
+
+@pytest.mark.asyncio
+async def test_progress_batcher_flushes_on_timer_and_tool_milestones():
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    publisher = FakePublisher()
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=0.01,
+    )
+
+    await batcher.add(PiAgentRpcProgressEvent(kind="reasoning_delta", text="first"))
+    await asyncio.sleep(0.03)
+    assert [event.kind for event in publisher.calls[0][1].events] == [
+        "reasoning_delta"
+    ]
+
+    await batcher.add(PiAgentRpcProgressEvent(kind="reasoning_delta", text="second"))
+    await batcher.add(
+        PiAgentRpcProgressEvent(
+            kind="tool_started",
+            tool_name="read",
+            target="model.py",
+        )
+    )
+    await batcher.close()
+
+    assert [event.kind for event in publisher.calls[1][1].events] == [
+        "reasoning_delta",
+        "tool_started",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_progress_batcher_retries_then_logs_fixed_content_free_warning(
+    monkeypatch, caplog
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+    publisher = FakePublisher(fail=True)
+    monkeypatch.setattr(job, "_PROGRESS_RETRY_DELAYS", (0, 0))
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=60,
+    )
+    sentinel = "PRIVATE_PROGRESS_SENTINEL"
+
+    with caplog.at_level("WARNING"):
+        await batcher.add(
+            PiAgentRpcProgressEvent(
+                kind="tool_finished",
+                tool_name="edit",
+                target=sentinel,
+                is_error=True,
+            )
+        )
+        await batcher.close()
+
+    assert len(publisher.calls) == 3
+    assert [record.getMessage() for record in caplog.records] == [
+        "Pi agent progress publish failed"
+    ]
+    assert sentinel not in caplog.text
+    kwargs = publisher.calls[0][2]
+    assert kwargs["message_id"].startswith("pi-progress:")
+    assert str(request.job_id) not in kwargs["telemetry_message_id"]
+
+
+@pytest.mark.asyncio
+async def test_worker_flushes_progress_before_terminal_result(monkeypatch, tmp_path):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+
+    async def fake_rpc(_prompt, **kwargs):
+        await kwargs["progress_callback"](
+            PiAgentRpcProgressEvent(kind="reasoning_delta", text="working")
+        )
+        return PiAgentRpcResult(
+            usage=PiAgentUsage(),
+            assistant_summary="finished",
+            turns=1,
+            tool_calls=0,
+            argv=["pi"],
+        )
+
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = FakePublisher()
+
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
+
+    assert msg.actions == ["ack"]
+    assert [getattr(call[1], "message_type", "result") for call in publisher.calls] == [
+        "progress",
+        "result",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_progress_publish_failure_does_not_fail_edit(monkeypatch, tmp_path):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+
+    async def fake_rpc(_prompt, **kwargs):
+        await kwargs["progress_callback"](
+            PiAgentRpcProgressEvent(
+                kind="tool_started",
+                tool_name="read",
+                target="model.py",
+            )
+        )
+        return PiAgentRpcResult(
+            usage=PiAgentUsage(),
+            assistant_summary="finished",
+            turns=1,
+            tool_calls=1,
+            argv=["pi"],
+        )
+
+    class ProgressFailingPublisher(FakePublisher):
+        async def publish_json(self, subject, message, **kwargs):
+            self.calls.append((subject, message, kwargs))
+            if getattr(message, "message_type", None) == "progress":
+                raise TimeoutError
+
+    monkeypatch.setattr(job, "_PROGRESS_RETRY_DELAYS", (0, 0))
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = ProgressFailingPublisher()
+
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
+
+    assert msg.actions == ["ack"]
+    assert len(publisher.calls) == 4
+    assert publisher.calls[-1][1].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_progress_callback_stays_nonblocking_when_publisher_hangs():
+    import workflows.intus.pi_agent_job as job
+
+    class HungProgressPublisher(FakePublisher):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+
+        async def publish_json(self, subject, message, **kwargs):
+            self.calls.append((subject, message, kwargs))
+            self.started.set()
+            await asyncio.Event().wait()
+
+    request = command([source("model.py", "old")])
+    publisher = HungProgressPublisher()
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=60,
+        publish_timeout_seconds=60,
+    )
+
+    await asyncio.wait_for(
+        batcher.add(
+            PiAgentRpcProgressEvent(
+                kind="tool_started",
+                tool_name="read",
+                target="model.py",
+            )
+        ),
+        timeout=0.05,
+    )
+    await asyncio.wait_for(publisher.started.wait(), timeout=0.05)
+    await batcher.cancel()
+
+
+@pytest.mark.asyncio
+async def test_successful_progress_batches_publish_in_sequence():
+    import workflows.intus.pi_agent_job as job
+
+    class OrderedPublisher(FakePublisher):
+        def __init__(self):
+            super().__init__()
+            self.completed_sequences = []
+
+        async def publish_json(self, subject, message, **kwargs):
+            self.calls.append((subject, message, kwargs))
+            await asyncio.sleep(0)
+            self.completed_sequences.append(message.batch_sequence)
+
+    request = command([source("model.py", "old")])
+    publisher = OrderedPublisher()
+    batcher = job._PiAgentProgressBatcher(
+        request,
+        uuid4(),
+        publisher,
+        worker_settings(),
+        flush_seconds=60,
+    )
+
+    await batcher.add(
+        PiAgentRpcProgressEvent(
+            kind="tool_started",
+            tool_name="read",
+            target="model.py",
+        )
+    )
+    await batcher.add(
+        PiAgentRpcProgressEvent(
+            kind="tool_finished",
+            tool_name="read",
+            target="model.py",
+            is_error=False,
+        )
+    )
+    await batcher.close()
+
+    assert publisher.completed_sequences == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_hung_progress_publish_times_out_before_terminal_result(
+    monkeypatch, tmp_path
+):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")])
+
+    async def fake_rpc(_prompt, **kwargs):
+        for _ in range(25):
+            await kwargs["progress_callback"](
+                PiAgentRpcProgressEvent(
+                    kind="tool_started",
+                    tool_name="read",
+                    target="model.py",
+                )
+            )
+        return PiAgentRpcResult(
+            usage=PiAgentUsage(),
+            assistant_summary="finished",
+            turns=1,
+            tool_calls=25,
+            argv=["pi"],
+        )
+
+    class HungProgressPublisher(FakePublisher):
+        async def publish_json(self, subject, message, **kwargs):
+            self.calls.append((subject, message, kwargs))
+            if getattr(message, "message_type", None) == "progress":
+                await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        job, "_PROGRESS_PUBLISH_TIMEOUT_SECONDS", 0.005, raising=False
+    )
+    monkeypatch.setattr(
+        job, "_PROGRESS_DRAIN_TIMEOUT_SECONDS", 0.05, raising=False
+    )
+    monkeypatch.setattr(job, "_PROGRESS_RETRY_DELAYS", (0, 0))
+    monkeypatch.setenv("TERTIUS_PI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setattr(job, "run_pi_agent", fake_rpc)
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = HungProgressPublisher()
+
+    await asyncio.wait_for(
+        job.handle_pi_agent_request_message(msg, publisher, worker_settings()),
+        timeout=0.2,
+    )
+
+    assert msg.actions == ["ack"]
+    assert [getattr(call[1], "message_type", "result") for call in publisher.calls] == [
+        "progress",
+        "progress",
+        "progress",
+        "result",
+    ]
 
 
 @pytest.mark.asyncio

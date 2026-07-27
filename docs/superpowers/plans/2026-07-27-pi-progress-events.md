@@ -76,17 +76,17 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/workflows/intus/pi_agent_job.py`
 - Modify: `server/tests/test_pi_agent_job.py`
 
-- [ ] Add failing tests for adjacent-reasoning coalescing, 16-event/1,000-char
+- [x] Add failing tests for adjacent-reasoning coalescing, 16-event/1,000-char
   bounds, timed flush, tool milestone flush, three publish attempts, fixed
   content-free warnings, progress failure isolation, and final
   flush-before-terminal-result ordering.
-- [ ] Run the focused worker tests and observe the red state.
-- [ ] Implement a worker-local progress batcher with one execution ID and
+- [x] Run the focused worker tests and observe the red state.
+- [x] Implement a worker-local progress batcher with one execution ID and
   monotonic sequence.
-- [ ] Pass its callback into `run_pi_agent`; flush/close it in every completion,
+- [x] Pass its callback into `run_pi_agent`; flush/close it in every completion,
   failure, and cancellation path.
-- [ ] Publish batches to `pi_agent_result_subject` with safe telemetry IDs.
-- [ ] Run focused tests, Ruff, and mypy.
+- [x] Publish batches to `pi_agent_result_subject` with safe telemetry IDs.
+- [x] Run focused tests, Ruff, and mypy.
 
 ## Task 4: Persist a bounded progress snapshot idempotently
 
