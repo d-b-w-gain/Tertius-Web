@@ -211,7 +211,7 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
   truncation notice, and absence of token-like local-storage keys. The old
   smoke artifact produced pre-existing GLTF/STL parse errors; no network
   failures occurred.
-- [ ] Request specification and code-quality reviews; resolve findings and rerun
+- [x] Request specification and code-quality reviews; resolve findings and rerun
   affected gates.
 - [ ] Run fresh final verification, commit the intentional diff, push
   `feat/pi-progress-events`, open the PR, and confirm the hosted check rollup.
