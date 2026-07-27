@@ -87,7 +87,10 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
         counter_add("tertius.compile.job.started.count", 1, {"export_format": command.export_format})
         start = perf_counter()
         try:
-            result = execute_compile_command(command, settings)
+            # Keep the NATS event loop responsive while CAD runs in its bounded
+            # subprocess. Otherwise a long Build123D compile prevents client
+            # keepalives and the result publish loses its connection.
+            result = await asyncio.to_thread(execute_compile_command, command, settings)
             assert_message_size(result, settings.compile_result_max_bytes, "result")
             await publisher.publish_json(
                 settings.compile_result_subject,
