@@ -55,16 +55,22 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 
 **Files**
 
+- Modify: `server/pi/pi-install-security.ts`
+- Create: `server/pi/pi-install-security.test.ts`
+- Modify: `server/pi/package.json`
 - Modify: `server/core/pi_agent_rpc.py`
 - Modify: `server/tests/test_pi_agent_rpc.py`
 
-- [x] Add failing tests for Pi `thinking_delta`, safe tool start/end events,
-  workspace-relative targets, traversal/absolute-outside rejection, ignored
-  tool updates, and raw args/results/source exclusion.
+- [x] Add failing tests for summary/raw Pi reasoning provenance,
+  `thinking_delta`, safe tool start/end events, workspace-relative targets,
+  traversal/absolute-outside rejection, ignored tool updates, and raw
+  args/results/source exclusion.
 - [x] Run the focused RPC tests and observe the red state.
+- [x] Harden the pinned Pi OpenAI adapter to mark summary versus raw-reasoning
+  deltas, verify the exact installed source shape, and fail closed on drift.
 - [x] Add a typed async progress callback to `run_pi_agent`.
-- [x] Normalize reasoning deltas and tool milestones while retaining only the
-  allow-listed tool name and safe target.
+- [x] Normalize only provenance-marked reasoning summaries and tool milestones
+  while retaining only the allow-listed tool name and safe target.
 - [x] Preserve existing turn/tool limits, error classification, and final
   assistant summary.
 - [x] Run focused tests, Ruff, and mypy for the touched module.
@@ -178,23 +184,33 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
   `docs/harness/browser-validation.md`,
   `docs/harness/runtime-parity.md`
 
-- [ ] Run the complete backend test suite.
-- [ ] Run Ruff and mypy.
-- [ ] Run the complete frontend test, typecheck, lint, and build gates.
-- [ ] Run deployment-config and runtime-parity scripts; no new runtime
+- [x] Run the complete backend test suite.
+- [x] Run Ruff and mypy. Changed-file Ruff and full mypy pass; repository-wide
+  Ruff still reports 32 pre-existing errors in unrelated files.
+- [x] Run the complete frontend test, typecheck, lint, and build gates.
+- [x] Run deployment-config and runtime-parity scripts; no new runtime
   environment variable is expected.
-- [ ] Search logs/telemetry code and run sentinel safety tests to confirm event
+- [x] Search logs/telemetry code and run sentinel safety tests to confirm event
   text/paths/args/results never enter telemetry or fixed warnings.
-- [ ] Inspect the final diff for unrelated or generated changes.
+- [x] Inspect the final diff for unrelated or generated changes.
 
 ## Task 9: Runtime validation, review, and PR
 
-- [ ] Build/deploy the isolated local-values k3s smoke release.
+- [x] Build/deploy the isolated local-values k3s smoke release.
 - [ ] Run full authenticated `scripts/harness-k3s.sh live-flow` with AI edit;
   compile-only is not acceptable.
 - [ ] In the browser, confirm Activity updates during Pi execution, terminal
   Activity collapses, final files/message still update, and console/network
   inspection is clean.
+- Full live AI submission was blocked by the execution environment because it
+  would send generated project content to the external Pi/OpenAI provider
+  without separate approval. The deployed stack passed its compile smoke, the
+  exact Pi image passed the OAuth canary, and authenticated browser validation
+  with a bounded synthetic terminal snapshot confirmed the collapsed history
+  disclosure, reasoning summary, safe tool labels/paths, error state,
+  truncation notice, and absence of token-like local-storage keys. The old
+  smoke artifact produced pre-existing GLTF/STL parse errors; no network
+  failures occurred.
 - [ ] Request specification and code-quality reviews; resolve findings and rerun
   affected gates.
 - [ ] Run fresh final verification, commit the intentional diff, push

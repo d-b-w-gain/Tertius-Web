@@ -228,6 +228,7 @@ def _normalized_event(
                 if (
                     isinstance(assistant_event, dict)
                     and assistant_event.get("type") == "thinking_delta"
+                    and assistant_event.get("tertiusReasoningSummary") is True
                     and isinstance(assistant_event.get("delta"), str)
                     and assistant_event["delta"]
                 ):

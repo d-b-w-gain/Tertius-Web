@@ -23,22 +23,29 @@ process model, terminal result contract, polling fallback, and privacy boundary.
 
 ## Architecture
 
-Pi 0.80.6 already emits the required JSONL RPC events. Tertius will preserve a
-strictly sanitized subset:
+Pi 0.80.6 already emits the required JSONL RPC events, but its OpenAI adapter
+collapses both reasoning-summary and raw-reasoning provider events into
+`thinking_delta`. The pinned install hardener therefore adds a strict
+source-provenance boolean before Pi starts. Tertius will preserve a strictly
+sanitized subset:
 
-1. `server/core/pi_agent_rpc.py` recognizes Pi `thinking_delta`,
-   `tool_execution_start`, and `tool_execution_end` events.
-2. A worker-side batcher coalesces adjacent reasoning deltas, assigns
+1. `server/pi/pi-install-security.ts` marks summary-derived
+   `thinking_delta` events as safe and raw-reasoning events as unsafe. The
+   hardener fails when the pinned source shape changes.
+2. `server/core/pi_agent_rpc.py` recognizes only provenance-marked summary
+   deltas plus `tool_execution_start` and `tool_execution_end` events. Missing
+   or false provenance fails closed and emits no reasoning progress.
+3. A worker-side batcher coalesces adjacent reasoning deltas, assigns
    per-execution sequence numbers, and publishes bounded progress batches.
-3. Progress batches use the existing ordered Pi result JetStream subject and
+4. Progress batches use the existing ordered Pi result JetStream subject and
    durable API consumer. This avoids a new runtime setting and preserves publish
    order: all acknowledged progress batches precede the terminal result.
-4. The API consumer discriminates progress envelopes from existing result
+5. The API consumer discriminates progress envelopes from existing result
    envelopes and idempotently updates a bounded progress snapshot on the
    existing job row.
-5. The existing job-status and conversation-history endpoints return that
+6. The existing job-status and conversation-history endpoints return that
    tenant/project-scoped snapshot.
-6. The React conversation reducer replaces or merges the snapshot and renders
+7. The React conversation reducer replaces or merges the snapshot and renders
    it in a native disclosure.
 
 The terminal result remains authoritative. Progress publishing is
@@ -67,8 +74,9 @@ Each event contains:
 - `is_error`: only for a tool-finished event
 - `occurred_at`: UTC timestamp
 
-No raw tool arguments, tool results, user prompts, source text, assistant text
-deltas, provider errors, or Pi session data enter the progress contract.
+No raw reasoning, raw tool arguments, tool results, user prompts, source text,
+assistant text deltas, provider errors, or Pi session data enter the progress
+contract.
 
 The worker publishes progress to the existing `pi_agent_result_subject`.
 Existing `PiAgentResult` JSON remains unchanged for rolling compatibility.

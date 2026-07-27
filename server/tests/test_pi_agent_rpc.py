@@ -51,7 +51,7 @@ for raw in sys.stdin:
             {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_SENTINEL"*210},{"type":"text","text":"FINAL_FIRST_BLOCK "},{"type":"text","text":"F"*2100},{"type":"text","text":" FINAL_SECOND_BLOCK"}],"stopReason":"stop"}},
         ]
         elif scenario=="progress": events=[
-            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"Checking workspace"}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"Checking workspace","tertiusReasoningSummary":True}},
             {"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"SOURCE_SENTINEL"}]},"assistantMessageEvent":{"type":"text_delta","delta":"ASSISTANT_SENTINEL"}},
             {"type":"tool_execution_start","toolCallId":"call-read","toolName":"read","args":{"path":"nested/model.py","content":"ARG_SOURCE_SENTINEL"}},
             {"type":"tool_execution_update","toolCallId":"call-read","toolName":"read","args":{"path":"nested/model.py"},"partialResult":{"content":[{"type":"text","text":"UPDATE_RESULT_SENTINEL"}]}},
@@ -67,7 +67,12 @@ for raw in sys.stdin:
             {"type":"tool_execution_end","toolCallId":"call-orphan","toolName":"read","result":{"content":[{"type":"text","text":"ORPHAN_RESULT_SENTINEL"}]},"isError":False},
         ]
         elif scenario=="long-reasoning": events=[
-            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"R"*1201}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"R"*1201,"tertiusReasoningSummary":True}},
+        ]
+        elif scenario=="mixed-reasoning": events=[
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"SAFE_SUMMARY_SENTINEL","tertiusReasoningSummary":True}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"RAW_REASONING_SENTINEL","tertiusReasoningSummary":False}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"UNMARKED_REASONING_SENTINEL"}},
         ]
         elif scenario=="unsafe-targets": events=[
             {"type":"tool_execution_start","toolCallId":"call-contained","toolName":"read","args":{"path":"nested/../model.py"}},
@@ -240,6 +245,24 @@ async def test_rpc_preserves_full_thinking_delta_for_worker_batch_splitting(fake
 
     assert len(progress) == 1
     assert progress[0].text == "R" * 1201
+
+
+@pytest.mark.asyncio
+async def test_rpc_emits_only_provenance_marked_reasoning_summaries(fake_pi):
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        progress.append(event)
+
+    await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "mixed-reasoning"),
+        progress_callback=capture,
+    )
+
+    assert [event.text for event in progress] == ["SAFE_SUMMARY_SENTINEL"]
+    assert "RAW_REASONING_SENTINEL" not in repr(progress)
+    assert "UNMARKED_REASONING_SENTINEL" not in repr(progress)
 
 
 @pytest.mark.asyncio
