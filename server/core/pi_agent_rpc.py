@@ -5,7 +5,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping
 from uuid import uuid4
 
 from core.pi_agent_messages import PiAgentUsage
@@ -14,6 +14,9 @@ from core.pi_agent_messages import PiAgentUsage
 _MAX_DIAGNOSTIC = 400
 _GUARD_SENTINEL = "TERTIUS_GUARD_FAILURE"
 _RPC_STREAM_LIMIT = 4 * 1024 * 1024
+_SAFE_TOOL_NAMES = frozenset({"read", "edit", "write", "grep", "find", "ls"})
+_MAX_PROGRESS_TARGET = 512
+_MAX_RAW_TARGET = 4096
 
 
 class PiAgentRpcError(RuntimeError):
@@ -30,6 +33,33 @@ class PiAgentRpcResult:
     turns: int
     tool_calls: int
     argv: list[str]
+
+
+PiAgentToolName = Literal["read", "edit", "write", "grep", "find", "ls"]
+
+
+@dataclass(frozen=True, slots=True)
+class PiAgentRpcProgressEvent:
+    kind: Literal["reasoning_delta", "tool_started", "tool_finished"]
+    text: str | None = None
+    tool_name: PiAgentToolName | None = None
+    target: str | None = None
+    is_error: bool | None = None
+
+
+PiAgentProgressCallback = Callable[[PiAgentRpcProgressEvent], Awaitable[None]]
+
+
+async def _notify_progress(
+    callback: PiAgentProgressCallback | None,
+    event: PiAgentRpcProgressEvent,
+) -> None:
+    if callback is None:
+        return
+    try:
+        await callback(event)
+    except Exception:
+        return
 
 
 def build_pi_argv(
@@ -107,14 +137,63 @@ def _assistant_text(message: object) -> str | None:
     return text[:2000] or None
 
 
-def _normalized_event(value: dict[str, Any]) -> dict[str, Any] | None:
+def _safe_tool_target(args: object, workspace_root: Path) -> str | None:
+    if not isinstance(args, dict):
+        return None
+    raw_target = args.get("path") if "path" in args else args.get("file_path")
+    if (
+        not isinstance(raw_target, str)
+        or not raw_target
+        or "\0" in raw_target
+        or len(raw_target) > _MAX_RAW_TARGET
+    ):
+        return None
+    try:
+        target_path = Path(raw_target)
+        if ".." in target_path.parts:
+            return None
+        resolved = (
+            target_path if target_path.is_absolute() else workspace_root / target_path
+        ).resolve()
+        target = resolved.relative_to(workspace_root).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return target if len(target) <= _MAX_PROGRESS_TARGET else None
+
+
+def _normalized_event(
+    value: dict[str, Any], workspace_root: Path
+) -> dict[str, Any] | None:
     event_type = value.get("type")
     if _is_guard_failure(value):
         return {"type": "_guard_failure"}
     if event_type == "turn_end":
         return {"type": "turn_end"}
     if event_type == "tool_execution_start":
-        return {"type": "tool_execution_start"}
+        event: dict[str, Any] = {"type": "tool_execution_start"}
+        tool_call_id = value.get("toolCallId")
+        tool_name = value.get("toolName")
+        if (
+            isinstance(tool_call_id, str)
+            and tool_call_id
+            and tool_name in _SAFE_TOOL_NAMES
+        ):
+            event.update(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                target=_safe_tool_target(value.get("args"), workspace_root),
+            )
+        return event
+    if event_type == "tool_execution_end":
+        tool_call_id = value.get("toolCallId")
+        is_error = value.get("isError")
+        if isinstance(tool_call_id, str) and tool_call_id and isinstance(is_error, bool):
+            return {
+                "type": "tool_execution_end",
+                "tool_call_id": tool_call_id,
+                "is_error": is_error,
+            }
+        return None
     if event_type == "agent_settled":
         return {"type": "agent_settled"}
     if event_type in {"agent_error", "error"}:
@@ -144,14 +223,27 @@ def _normalized_event(value: dict[str, Any]) -> dict[str, Any] | None:
                     "code": failure.code,
                     "retryable": failure.retryable,
                 }
+            if event_type == "message_update":
+                assistant_event = value.get("assistantMessageEvent")
+                if (
+                    isinstance(assistant_event, dict)
+                    and assistant_event.get("type") == "thinking_delta"
+                    and isinstance(assistant_event.get("delta"), str)
+                    and assistant_event["delta"]
+                ):
+                    return {
+                        "type": "_progress_reasoning",
+                        "text": assistant_event["delta"],
+                    }
             if event_type == "message_end" and (text := _assistant_text(message)):
                 return {"type": "_assistant_message", "text": text}
     return None
 
 
 class _RpcProtocol:
-    def __init__(self, process: asyncio.subprocess.Process):
+    def __init__(self, process: asyncio.subprocess.Process, workspace_root: Path):
         self.process = process
+        self.workspace_root = workspace_root
         self.responses: dict[str, dict[str, Any]] = {}
         self.waiting_ids: set[str] = set()
         self.events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
@@ -183,7 +275,7 @@ class _RpcProtocol:
                     if value["id"] in self.waiting_ids:
                         self.responses[value["id"]] = value
                 else:
-                    event = _normalized_event(value)
+                    event = _normalized_event(value, self.workspace_root)
                     if event is not None:
                         self._signal(event)
         except ValueError, asyncio.LimitOverrunError:
@@ -264,6 +356,7 @@ async def run_pi_agent(
     max_turns: int = 12,
     max_tool_calls: int = 48,
     environment: Mapping[str, str] | None = None,
+    progress_callback: PiAgentProgressCallback | None = None,
 ) -> PiAgentRpcResult:
     if not system_prompt_path.is_file() or not os.access(system_prompt_path, os.R_OK):
         raise PiAgentRpcError(
@@ -287,6 +380,7 @@ async def run_pi_agent(
     }
     if environment:
         env.update(environment)
+    workspace_root = Path(cwd).resolve()
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
@@ -296,9 +390,10 @@ async def run_pi_agent(
         stderr=asyncio.subprocess.DEVNULL,
         limit=_RPC_STREAM_LIMIT,
     )
-    protocol = _RpcProtocol(process)
+    protocol = _RpcProtocol(process, workspace_root)
     turns = tool_calls = 0
     assistant_summary = ""
+    active_tools: dict[str, PiAgentRpcProgressEvent] = {}
     try:
         async with asyncio.timeout(timeout_seconds):
             state_response = await protocol.request("get_state")
@@ -341,12 +436,51 @@ async def run_pi_agent(
                         raise PiAgentRpcError(
                             "agent_limit_exceeded", "Agent turn limit exceeded"
                         )
+                if event_type == "_progress_reasoning":
+                    await _notify_progress(
+                        progress_callback,
+                        PiAgentRpcProgressEvent(
+                            kind="reasoning_delta",
+                            text=event["text"],
+                        ),
+                    )
                 if event_type == "tool_execution_start":
                     tool_calls += 1
                     if tool_calls > max_tool_calls:
                         await protocol.request("abort")
                         raise PiAgentRpcError(
                             "agent_limit_exceeded", "Agent tool-call limit exceeded"
+                        )
+                    tool_call_id = event.get("tool_call_id")
+                    tool_name = event.get("tool_name")
+                    if (
+                        progress_callback is not None
+                        and isinstance(tool_call_id, str)
+                        and tool_name in _SAFE_TOOL_NAMES
+                    ):
+                        progress_event = PiAgentRpcProgressEvent(
+                            kind="tool_started",
+                            tool_name=tool_name,
+                            target=event.get("target"),
+                        )
+                        active_tools[tool_call_id] = progress_event
+                        await _notify_progress(progress_callback, progress_event)
+                if event_type == "tool_execution_end" and progress_callback is not None:
+                    tool_call_id = event.get("tool_call_id")
+                    started = (
+                        active_tools.pop(tool_call_id, None)
+                        if isinstance(tool_call_id, str)
+                        else None
+                    )
+                    if started is not None:
+                        await _notify_progress(
+                            progress_callback,
+                            PiAgentRpcProgressEvent(
+                                kind="tool_finished",
+                                tool_name=started.tool_name,
+                                target=started.target,
+                                is_error=event["is_error"],
+                            ),
                         )
                 if event_type == "_assistant_message":
                     assistant_summary = event["text"]

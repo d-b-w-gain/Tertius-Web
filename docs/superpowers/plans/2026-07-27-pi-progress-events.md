@@ -58,16 +58,16 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/core/pi_agent_rpc.py`
 - Modify: `server/tests/test_pi_agent_rpc.py`
 
-- [ ] Add failing tests for Pi `thinking_delta`, safe tool start/end events,
+- [x] Add failing tests for Pi `thinking_delta`, safe tool start/end events,
   workspace-relative targets, traversal/absolute-outside rejection, ignored
   tool updates, and raw args/results/source exclusion.
-- [ ] Run the focused RPC tests and observe the red state.
-- [ ] Add a typed async progress callback to `run_pi_agent`.
-- [ ] Normalize reasoning deltas and tool milestones while retaining only the
+- [x] Run the focused RPC tests and observe the red state.
+- [x] Add a typed async progress callback to `run_pi_agent`.
+- [x] Normalize reasoning deltas and tool milestones while retaining only the
   allow-listed tool name and safe target.
-- [ ] Preserve existing turn/tool limits, error classification, and final
+- [x] Preserve existing turn/tool limits, error classification, and final
   assistant summary.
-- [ ] Run focused tests, Ruff, and mypy for the touched module.
+- [x] Run focused tests, Ruff, and mypy for the touched module.
 
 ## Task 3: Batch and publish progress without risking the edit
 
