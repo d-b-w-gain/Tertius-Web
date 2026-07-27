@@ -231,6 +231,7 @@ class PiAgentProgressBatch(StrictMessage):
     message_type: Literal["progress"]
     schema_version: Literal[1]
     execution_id: UUID
+    execution_started_at: datetime
     job_id: UUID
     tenant_id: UUID
     project_id: UUID
@@ -238,6 +239,14 @@ class PiAgentProgressBatch(StrictMessage):
     events: list[PiAgentProgressEvent] = Field(min_length=1, max_length=16)
     traceparent: str | None = Field(default=None, max_length=512)
     tracestate: str | None = Field(default=None, max_length=512)
+
+    @field_validator("execution_started_at")
+    @classmethod
+    def utc_execution_started_at(cls, value: datetime) -> datetime:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None or offset.total_seconds() != 0:
+            raise ValueError("execution_started_at must be UTC")
+        return value
 
     @field_validator("events")
     @classmethod
@@ -248,6 +257,47 @@ class PiAgentProgressBatch(StrictMessage):
         if any(current <= previous for previous, current in zip(sequences, sequences[1:])):
             raise ValueError("progress event sequences must be strictly increasing")
         return values
+
+
+class PiAgentProgressSnapshot(StrictMessage):
+    schema_version: Literal[1]
+    execution_id: UUID
+    execution_started_at: datetime
+    last_batch_sequence: int = Field(ge=1, le=2**63 - 1)
+    last_sequence: int = Field(ge=1, le=2**63 - 1)
+    truncated_before_sequence: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+    )
+    events: list[PiAgentProgressEvent] = Field(min_length=1, max_length=128)
+
+    @field_validator("execution_started_at")
+    @classmethod
+    def utc_execution_started_at(cls, value: datetime) -> datetime:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None or offset.total_seconds() != 0:
+            raise ValueError("execution_started_at must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def consistent_sequences(self):
+        sequences = [event.sequence for event in self.events]
+        if any(
+            current <= previous
+            for previous, current in zip(sequences, sequences[1:])
+        ):
+            raise ValueError("progress snapshot sequences must be strictly increasing")
+        if self.last_sequence != sequences[-1]:
+            raise ValueError("last_sequence must match the final progress event")
+        if (
+            self.truncated_before_sequence is not None
+            and self.truncated_before_sequence >= sequences[0]
+        ):
+            raise ValueError(
+                "truncated_before_sequence must precede retained progress events"
+            )
+        return self
 
 
 class PiAgentResult(StrictMessage):

@@ -228,6 +228,7 @@ class _PiAgentProgressBatcher:
         self,
         command: PiAgentCommand,
         execution_id: UUID,
+        execution_started_at: datetime,
         publisher: Publisher,
         settings,
         *,
@@ -237,6 +238,7 @@ class _PiAgentProgressBatcher:
     ) -> None:
         self._command = command
         self._execution_id = execution_id
+        self._execution_started_at = execution_started_at
         self._publisher = publisher
         self._subject = settings.pi_agent_result_subject
         self._max_bytes = settings.pi_agent_result_max_bytes
@@ -420,6 +422,7 @@ class _PiAgentProgressBatcher:
             message_type="progress",
             schema_version=1,
             execution_id=self._execution_id,
+            execution_started_at=self._execution_started_at,
             job_id=self._command.job_id,
             tenant_id=self._command.tenant_id,
             project_id=self._command.project_id,
@@ -503,7 +506,13 @@ async def execute_pi_agent_command(
     started_at = datetime.now(timezone.utc)
     execution_id = uuid4()
     batcher = (
-        _PiAgentProgressBatcher(command, execution_id, publisher, settings)
+        _PiAgentProgressBatcher(
+            command,
+            execution_id,
+            started_at,
+            publisher,
+            settings,
+        )
         if publisher is not None
         else None
     )

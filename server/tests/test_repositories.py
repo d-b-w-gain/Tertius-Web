@@ -21,6 +21,11 @@ from core.models import (
     UserWorkspaceState,
     now_utc,
 )
+from core.pi_agent_messages import (
+    PiAgentProgressBatch,
+    PiAgentProgressEvent,
+    PiAgentProgressSnapshot,
+)
 from core.repositories import (
     CompileRepository,
     FileVersionConflictError,
@@ -29,6 +34,40 @@ from core.repositories import (
     require_valid_project_name,
     require_valid_python_filename,
 )
+
+
+PROGRESS_NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
+
+
+def progress_batch(
+    seeded_tenant,
+    job_id,
+    *,
+    execution_id=None,
+    execution_started_at=PROGRESS_NOW,
+    batch_sequence=1,
+    event_sequences=(1,),
+    text="Inspecting the project.",
+):
+    return PiAgentProgressBatch(
+        message_type="progress",
+        schema_version=1,
+        execution_id=execution_id or uuid4(),
+        execution_started_at=execution_started_at,
+        job_id=job_id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        batch_sequence=batch_sequence,
+        events=[
+            PiAgentProgressEvent(
+                sequence=sequence,
+                kind="reasoning_delta",
+                text=text,
+                occurred_at=PROGRESS_NOW,
+            )
+            for sequence in event_sequences
+        ],
+    )
 
 
 def seed_two_tenants(db: Session):
@@ -348,6 +387,330 @@ def test_llm_edit_repository_gets_compile_job_for_llm_edit(db_session, seeded_te
     assert fetched is not None
     assert fetched.id == linked_compile.id
     assert llm_repo.get_compile_job_for_llm_edit(seeded_tenant.project_id, uuid4()) is None
+
+
+def test_llm_edit_repository_applies_progress_in_order_and_dedupes_batches(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {"prompt": "Generate a fixture", "files": []},
+        status="running",
+    )
+    execution_id = uuid4()
+    first = progress_batch(
+        seeded_tenant,
+        job.id,
+        execution_id=execution_id,
+        batch_sequence=1,
+        event_sequences=(1, 2),
+    )
+    second = progress_batch(
+        seeded_tenant,
+        job.id,
+        execution_id=execution_id,
+        batch_sequence=2,
+        event_sequences=(3, 5),
+    )
+
+    assert repo.apply_progress_batch(first) == "applied"
+    assert repo.apply_progress_batch(first) == "duplicate"
+    assert repo.apply_progress_batch(second) == "applied"
+    db_session.flush()
+    db_session.refresh(job)
+
+    assert job.request_payload == {"prompt": "Generate a fixture", "files": []}
+    assert job.result_payload is None
+    assert job.progress_payload["last_batch_sequence"] == 2
+    assert job.progress_payload["last_sequence"] == 5
+    assert [event["sequence"] for event in job.progress_payload["events"]] == [
+        1,
+        2,
+        3,
+        5,
+    ]
+
+
+def test_llm_edit_repository_resets_progress_for_new_execution(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    first_execution = uuid4()
+    second_execution = uuid4()
+    assert (
+        repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                execution_id=first_execution,
+                batch_sequence=4,
+                event_sequences=(7,),
+            )
+        )
+        == "applied"
+    )
+
+    assert (
+        repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                execution_id=second_execution,
+                execution_started_at=PROGRESS_NOW + timedelta(seconds=1),
+                batch_sequence=1,
+                event_sequences=(1,),
+            )
+        )
+        == "applied"
+    )
+    db_session.refresh(job)
+
+    assert job.progress_payload["execution_id"] == str(second_execution)
+    assert job.progress_payload["last_batch_sequence"] == 1
+    assert job.progress_payload["truncated_before_sequence"] is None
+    assert [event["sequence"] for event in job.progress_payload["events"]] == [1]
+
+
+def test_llm_edit_repository_rejects_stale_different_execution(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    newest_execution = uuid4()
+    newest_started_at = PROGRESS_NOW + timedelta(minutes=1)
+    assert (
+        repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                execution_id=newest_execution,
+                execution_started_at=newest_started_at,
+            )
+        )
+        == "applied"
+    )
+
+    assert (
+        repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                execution_started_at=PROGRESS_NOW,
+                batch_sequence=9,
+                event_sequences=(99,),
+            )
+        )
+        == "stale_execution"
+    )
+    db_session.refresh(job)
+    snapshot = PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    assert snapshot.execution_id == newest_execution
+    assert snapshot.execution_started_at == newest_started_at
+    assert snapshot.last_sequence == 1
+
+
+def test_llm_edit_repository_rejects_invalid_persisted_progress_snapshot(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    job.progress_payload = {"schema_version": 99, "events": []}
+    db_session.flush()
+
+    assert (
+        repo.apply_progress_batch(progress_batch(seeded_tenant, job.id))
+        == "rejected_snapshot"
+    )
+    db_session.refresh(job)
+    assert job.progress_payload == {"schema_version": 99, "events": []}
+
+
+def test_llm_edit_repository_does_not_mark_an_unseen_sequence_gap_as_truncated(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+
+    assert (
+        repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                event_sequences=(7,),
+            )
+        )
+        == "applied"
+    )
+    db_session.refresh(job)
+    assert job.progress_payload["truncated_before_sequence"] is None
+
+
+def test_llm_edit_repository_rejects_wrong_scope_and_non_forward_events(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    execution_id = uuid4()
+    first = progress_batch(
+        seeded_tenant,
+        job.id,
+        execution_id=execution_id,
+        event_sequences=(2,),
+    )
+    assert repo.apply_progress_batch(first) == "applied"
+
+    wrong_project = first.model_copy(
+        update={"project_id": uuid4(), "batch_sequence": 2}
+    )
+    wrong_job = first.model_copy(update={"job_id": uuid4(), "batch_sequence": 2})
+    wrong_tenant = first.model_copy(
+        update={"tenant_id": uuid4(), "batch_sequence": 2}
+    )
+    stale_event = first.model_copy(
+        update={
+            "batch_sequence": 2,
+            "events": [
+                PiAgentProgressEvent(
+                    sequence=2,
+                    kind="reasoning_delta",
+                    text="Repeated.",
+                    occurred_at=PROGRESS_NOW,
+                )
+            ],
+        }
+    )
+
+    assert repo.apply_progress_batch(wrong_project) == "rejected_identity"
+    assert repo.apply_progress_batch(wrong_job) == "rejected_identity"
+    assert repo.apply_progress_batch(wrong_tenant) == "rejected_identity"
+    assert repo.apply_progress_batch(stale_event) == "rejected_sequence"
+    db_session.refresh(job)
+    assert job.progress_payload["last_batch_sequence"] == 1
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_llm_edit_repository_ignores_progress_for_terminal_jobs(
+    status, db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status=status,
+    )
+
+    assert (
+        repo.apply_progress_batch(progress_batch(seeded_tenant, job.id))
+        == "ignored_terminal"
+    )
+    db_session.refresh(job)
+    assert job.progress_payload == {}
+
+
+def test_llm_edit_repository_trims_progress_by_count(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    execution_id = uuid4()
+
+    for batch_sequence in range(1, 10):
+        start = (batch_sequence - 1) * 16 + 1
+        outcome = repo.apply_progress_batch(
+            progress_batch(
+                seeded_tenant,
+                job.id,
+                execution_id=execution_id,
+                batch_sequence=batch_sequence,
+                event_sequences=tuple(range(start, start + 16)),
+            )
+        )
+        assert outcome == "applied"
+
+    db_session.flush()
+    db_session.refresh(job)
+    snapshot = PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    assert len(snapshot.events) == 128
+    assert len(snapshot.model_dump_json().encode("utf-8")) <= 64 * 1024
+    assert snapshot.truncated_before_sequence == 16
+    assert snapshot.events[0].sequence == 17
+    assert snapshot.events[-1].sequence == 144
+
+
+def test_llm_edit_repository_trims_progress_by_bytes_using_last_discarded_sequence(
+    db_session, seeded_tenant
+):
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id,
+        seeded_tenant.user_id,
+        {},
+        status="running",
+    )
+    execution_id = uuid4()
+    all_sequences = list(range(1, 160, 2))
+
+    for batch_index in range(5):
+        batch_sequences = tuple(
+            all_sequences[batch_index * 16 : (batch_index + 1) * 16]
+        )
+        assert (
+            repo.apply_progress_batch(
+                progress_batch(
+                    seeded_tenant,
+                    job.id,
+                    execution_id=execution_id,
+                    batch_sequence=batch_index + 1,
+                    event_sequences=batch_sequences,
+                    text="é" * 1000,
+                )
+            )
+            == "applied"
+        )
+
+    db_session.refresh(job)
+    snapshot = PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    first_retained_index = all_sequences.index(snapshot.events[0].sequence)
+    assert first_retained_index > 0
+    assert snapshot.truncated_before_sequence == all_sequences[
+        first_retained_index - 1
+    ]
+    assert snapshot.truncated_before_sequence != snapshot.events[0].sequence - 1
+    assert len(snapshot.model_dump_json().encode("utf-8")) <= 64 * 1024
 
 
 def test_compile_repository_persists_structured_failure(db_session, seeded_tenant):

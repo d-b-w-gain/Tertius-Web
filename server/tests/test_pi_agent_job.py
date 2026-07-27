@@ -34,6 +34,8 @@ from workflows.intus.pi_agent_job import (
     scan_workspace,
 )
 
+PROGRESS_STARTED_AT = datetime(2026, 7, 28, tzinfo=timezone.utc)
+
 
 def command(files):
     return PiAgentCommand(
@@ -337,6 +339,7 @@ async def test_progress_batcher_losslessly_coalesces_and_splits_reasoning():
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=60,
@@ -353,6 +356,7 @@ async def test_progress_batcher_losslessly_coalesces_and_splits_reasoning():
         "a" * 600 + "b" * 600
     )
     assert [event.sequence for event in batch.events] == [1, 2]
+    assert batch.execution_started_at == PROGRESS_STARTED_AT
 
 
 @pytest.mark.asyncio
@@ -364,6 +368,7 @@ async def test_progress_batcher_limits_batches_to_sixteen_events():
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=60,
@@ -395,6 +400,7 @@ async def test_progress_batcher_flushes_on_timer_and_tool_milestones():
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=0.01,
@@ -434,6 +440,7 @@ async def test_progress_batcher_retries_then_logs_fixed_content_free_warning(
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=60,
@@ -553,6 +560,7 @@ async def test_progress_callback_stays_nonblocking_when_publisher_hangs():
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=60,
@@ -592,6 +600,7 @@ async def test_successful_progress_batches_publish_in_sequence():
     batcher = job._PiAgentProgressBatcher(
         request,
         uuid4(),
+        PROGRESS_STARTED_AT,
         publisher,
         worker_settings(),
         flush_seconds=60,
@@ -672,6 +681,11 @@ async def test_hung_progress_publish_times_out_before_terminal_result(
         "progress",
         "result",
     ]
+    terminal_result = publisher.calls[-1][1]
+    assert all(
+        call[1].execution_started_at == terminal_result.worker_started_at
+        for call in publisher.calls[:-1]
+    )
 
 
 @pytest.mark.asyncio

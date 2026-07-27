@@ -12,6 +12,7 @@ from core.pi_agent_messages import (
     PiAgentConversationTurn,
     PiAgentProgressBatch,
     PiAgentProgressEvent,
+    PiAgentProgressSnapshot,
     PiAgentResult,
     PiAgentSourceFile,
     PiAgentUsage,
@@ -300,6 +301,7 @@ def progress_batch(**overrides):
         "message_type": "progress",
         "schema_version": 1,
         "execution_id": uuid4(),
+        "execution_started_at": NOW,
         "job_id": uuid4(),
         "tenant_id": uuid4(),
         "project_id": uuid4(),
@@ -423,6 +425,12 @@ def test_progress_batch_enforces_bounds_order_and_strict_envelope():
 
     for values in (
         {"batch_sequence": 0},
+        {"execution_started_at": NOW.replace(tzinfo=None)},
+        {
+            "execution_started_at": NOW.astimezone(
+                timezone(timedelta(hours=10))
+            )
+        },
         {"events": []},
         {"events": [progress_event(sequence=index) for index in range(1, 18)]},
         {"events": [progress_event(sequence=2), progress_event(sequence=1)]},
@@ -452,3 +460,78 @@ def test_progress_message_byte_size_enforcement_uses_serialized_utf8_bytes():
     assert_pi_agent_progress_size(batch, exact_size)
     with pytest.raises(ValueError, match="Pi agent progress message is .* above .* byte limit"):
         assert_pi_agent_progress_size(batch, exact_size - 1)
+
+
+def test_progress_snapshot_is_non_empty_ordered_and_strict():
+    execution_id = uuid4()
+    events = [
+        progress_event(sequence=2, text="Inspecting."),
+        progress_event(
+            sequence=4,
+            kind="tool_started",
+            text=None,
+            tool_name="read",
+            target="design.py",
+        ),
+    ]
+
+    snapshot = PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=execution_id,
+        execution_started_at=NOW,
+        last_batch_sequence=3,
+        last_sequence=4,
+        truncated_before_sequence=None,
+        events=events,
+    )
+
+    assert snapshot.execution_id == execution_id
+    assert snapshot.last_sequence == snapshot.events[-1].sequence
+    assert PiAgentProgressSnapshot.model_validate_json(
+        snapshot.model_dump_json()
+    ) == snapshot
+
+    for values in (
+        {"events": [], "last_sequence": 0},
+        {"events": list(reversed(events))},
+        {"events": [events[0], events[0]]},
+        {"last_sequence": 5},
+        {"truncated_before_sequence": 2},
+        {"last_batch_sequence": 0},
+        {"execution_started_at": NOW.replace(tzinfo=None)},
+        {
+            "execution_started_at": NOW.astimezone(
+                timezone(timedelta(hours=10))
+            )
+        },
+        {"schema_version": 2},
+        {"unexpected": True},
+    ):
+        payload = {
+            "schema_version": 1,
+            "execution_id": execution_id,
+            "execution_started_at": NOW,
+            "last_batch_sequence": 3,
+            "last_sequence": 4,
+            "truncated_before_sequence": None,
+            "events": events,
+        }
+        payload.update(values)
+        with pytest.raises(ValidationError):
+            PiAgentProgressSnapshot(**payload)
+
+
+def test_progress_snapshot_limits_retained_events():
+    with pytest.raises(ValidationError):
+        PiAgentProgressSnapshot(
+            schema_version=1,
+            execution_id=uuid4(),
+            execution_started_at=NOW,
+            last_batch_sequence=9,
+            last_sequence=129,
+            truncated_before_sequence=None,
+            events=[
+                progress_event(sequence=sequence)
+                for sequence in range(1, 130)
+            ],
+        )

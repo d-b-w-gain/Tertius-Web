@@ -262,6 +262,7 @@ class LlmEditJob(Base):
     retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     request_payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    progress_payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

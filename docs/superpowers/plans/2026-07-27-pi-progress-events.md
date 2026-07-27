@@ -98,15 +98,17 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `server/tests/test_repositories.py`
 - Modify: `server/tests/test_migrations.py`
 
-- [ ] Add failing tests for batch-sequence idempotency, new-execution reset,
+- [x] Add failing tests for batch-sequence idempotency, newer-execution reset,
+  delayed older-execution rejection, corrupt-snapshot rejection,
   tenant/project scope, terminal-job ignore, ordered merge, and
   128-event/64-KiB trimming.
-- [ ] Run the focused repository tests and observe the red state.
-- [ ] Add a non-null `progress_payload` JSON field and Alembic migration with an
+- [x] Run the focused repository tests and observe the red state.
+- [x] Add a non-null `progress_payload` JSON field and Alembic migration with an
   empty-object default/backfill.
-- [ ] Add a repository method that locks the scoped job row, validates the
-  execution/batch order, merges the strict snapshot, and marks JSON modified.
-- [ ] Run focused repository/migration tests, Ruff, and mypy.
+- [x] Add a repository method that locks the scoped job row, validates
+  execution start time and batch order, merges the strict snapshot, rejects
+  malformed persisted state without redelivery loops, and marks JSON modified.
+- [x] Run focused repository/migration tests, Ruff, and mypy.
 
 ## Task 5: Route progress through the durable result consumer
 

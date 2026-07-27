@@ -51,7 +51,7 @@ not turn a successful edit into a failed edit.
 
 - `message_type`: literal `progress`
 - `schema_version`: literal `1`
-- `execution_id`, `job_id`, `tenant_id`, `project_id`
+- `execution_id`, `execution_started_at`, `job_id`, `tenant_id`, `project_id`
 - optional W3C trace context
 - `batch_sequence`: positive and monotonic within one execution
 - `events`: 1 to 16 `PiAgentProgressEvent` values
@@ -107,14 +107,17 @@ an empty-object default. The persisted snapshot contains:
 
 - `schema_version`
 - current `execution_id`
+- current `execution_started_at`
 - `last_batch_sequence`
 - `last_sequence`
 - `truncated_before_sequence`
 - the bounded safe `events` array
 
 The repository locks the already tenant/project-scoped job row before applying
-a batch. A new execution ID resets the snapshot. A batch sequence at or below
-the persisted `last_batch_sequence` is a redelivery and becomes a no-op.
+a batch. A different execution ID resets the snapshot only when its
+`execution_started_at` is newer than the persisted execution; delayed batches
+from older executions are acknowledged and ignored. A batch sequence at or
+below the persisted `last_batch_sequence` is a redelivery and becomes a no-op.
 Events are merged in sequence order and trimmed to both the event-count and
 serialized-byte bounds. Progress is ignored for terminal jobs.
 
@@ -144,6 +147,8 @@ progress is returned.
 | Oversize progress envelope | Split/drop the affected safe batch; terminal execution continues. |
 | Progress publish failure | Retry three times, log a fixed warning, continue. |
 | Invalid progress provenance | ACK and discard with a fixed warning. |
+| Delayed batch from an older execution | ACK and discard without replacing newer progress. |
+| Corrupt/unsupported persisted snapshot | ACK and reject progress with a fixed warning; do not redeliver forever. |
 | Duplicate/old progress batch | ACK after idempotent no-op. |
 | Progress database failure | Roll back and NAK for JetStream redelivery. |
 | UI progress poll failure | Use existing transient retry behavior; keep accumulated activity. |
