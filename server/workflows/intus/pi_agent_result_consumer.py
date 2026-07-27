@@ -266,6 +266,21 @@ def _result_payload(result: PiAgentResult, snapshot, changed_rows) -> dict:
     }
 
 
+def _clear_progress_from_other_execution(
+    job: LlmEditJob, execution_id: UUID
+) -> None:
+    payload = job.progress_payload
+    if not payload:
+        return
+    persisted_execution_id = (
+        payload.get("execution_id") if isinstance(payload, dict) else None
+    )
+    if persisted_execution_id == str(execution_id):
+        return
+    job.progress_payload = {}
+    flag_modified(job, "progress_payload")
+
+
 async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, billing_publisher) -> str:
     def validate_locked_job(job: LlmEditJob | None):
         if job is None:
@@ -397,6 +412,7 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
         usage_record = _usage_record(job, result, payload, event_id)
         usage_record.status = "failed"
         db.add(usage_record)
+        _clear_progress_from_other_execution(job, result.execution_id)
         LlmEditRepository(db, job.tenant_id).finish_job(
             job,
             "failed",
@@ -409,6 +425,7 @@ async def apply_pi_agent_result(db: Session, result: PiAgentResult, settings, bi
 
     db.add(_usage_record(job, result, payload, event_id))
     repo = LlmEditRepository(db, job.tenant_id)
+    _clear_progress_from_other_execution(job, result.execution_id)
     if result.status == "failed":
         repo.finish_job(
             job,

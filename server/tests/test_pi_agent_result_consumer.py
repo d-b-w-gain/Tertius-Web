@@ -549,6 +549,41 @@ async def test_valid_changed_result_stages_usage_and_terminal_job_atomically(db_
 
 
 @pytest.mark.asyncio
+async def test_terminal_result_clears_progress_from_different_worker_execution(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    progress = _progress(
+        seeded_tenant,
+        job.id,
+        execution_id=uuid4(),
+        execution_started_at=result.worker_started_at - timedelta(seconds=1),
+    )
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    assert repo.apply_progress_batch(progress) is ProgressBatchApplyOutcome.APPLIED
+    db_session.commit()
+
+    outcome = await apply_pi_agent_result(
+        db_session,
+        result,
+        SimpleNamespace(
+            billing_llm_usage_subject="billing", billing_max_bytes=524288
+        ),
+        Publisher(),
+    )
+    db_session.commit()
+
+    assert outcome == "applied"
+    db_session.refresh(job)
+    assert job.status == "succeeded"
+    assert job.progress_payload == {}
+
+
+@pytest.mark.asyncio
 async def test_valid_no_changes_result_persists_bounded_conversation_turn(
     db_session, seeded_tenant
 ):
