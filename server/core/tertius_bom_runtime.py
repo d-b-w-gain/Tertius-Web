@@ -22,6 +22,8 @@ STANDARD_BOM_FIELDS = {
     "unit",
     "dimensions",
     "material",
+    "colour",
+    "color",
     "finish",
     "grade",
     "standard",
@@ -132,6 +134,8 @@ def _bom_metadata_from_bound_arguments(arguments: dict[str, Any]) -> dict[str, A
     for key, value in arguments.items():
         if key in DIMENSION_FIELD_ALIASES and value is not None:
             dimensions[DIMENSION_FIELD_ALIASES[key]] = _jsonish(value)
+        elif key in {"colour", "color"} and value is not None:
+            metadata["colour"] = _jsonish(value)
         elif key in STANDARD_BOM_FIELDS and key != "dimensions" and value is not None:
             metadata[key] = _jsonish(value)
 
@@ -210,6 +214,8 @@ def requirement(
     unit: str = "each",
     dimensions: dict[str, Any] | None = None,
     material: str | None = None,
+    colour: str | None = None,
+    color: str | None = None,
     finish: str | None = None,
     grade: str | None = None,
     standard: str | None = None,
@@ -223,6 +229,7 @@ def requirement(
         "unit": unit,
         "dimensions": dimensions or {},
         "material": material,
+        "colour": colour if colour is not None else color,
         "finish": finish,
         "grade": grade,
         "standard": standard,

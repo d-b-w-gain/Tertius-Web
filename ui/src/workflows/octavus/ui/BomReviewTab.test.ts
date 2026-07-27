@@ -53,6 +53,28 @@ describe('Procurement manifest grouping', () => {
     expect(canonicalRequirementKey(manifest.requirements[0]!)).toContain('length_mm=2400');
   });
 
+  it('keeps otherwise matching requirements separate when colour differs', () => {
+    const manifest: BomManifest = {
+      version: 1,
+      source_snapshot_hash: 'snapshot-a',
+      scopes: [],
+      components: [
+        { id: 'sheet.surfmist', scope_id: null, label: 'Roof Sheet Surfmist', role: 'Sheet', visual_node_ids: [] },
+        { id: 'sheet.monument', scope_id: null, label: 'Roof Sheet Monument', role: 'Sheet', visual_node_ids: [] },
+      ],
+      requirements: [
+        { id: 'r1', component_id: 'sheet.surfmist', part_number: 'CUSTOM-ORB', quantity: 1, unit: 'sheet', dimensions: { length_mm: 2400 }, colour: 'Surfmist' },
+        { id: 'r2', component_id: 'sheet.monument', part_number: 'CUSTOM-ORB', quantity: 1, unit: 'sheet', dimensions: { length_mm: 2400 }, color: 'Monument' },
+      ],
+      diagnostics: [],
+    };
+
+    const grouped = groupManifestRequirements(manifest, '__all__');
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((line) => line.colour).sort()).toEqual(['Monument', 'Surfmist']);
+  });
+
   it('does not create rows when the manifest has no explicit requirements', () => {
     const manifest: BomManifest = {
       version: 1,
@@ -279,6 +301,7 @@ describe('Procurement manifest grouping', () => {
         unit: 'sheet',
         dimensions: { length_mm: 2800 },
         material: 'steel',
+        color: 'Woodland Grey',
         finish: 'zincalume',
       }],
       diagnostics: [],
@@ -291,6 +314,7 @@ describe('Procurement manifest grouping', () => {
     expect(grouped[0]?.displayName).toBe('CUSTOM-ORBx28');
     expect(grouped[0]?.quantity).toBe(1);
     expect(grouped[0]?.unit).toBe('sheet');
+    expect(grouped[0]?.colour).toBe('Woodland Grey');
     expect(groupManifestRequirements(manifest, '__all__')[0]?.quantity).toBe(14);
     expect(groupManifestRequirements(manifest, 'missing-scope')).toEqual([]);
   });
@@ -365,7 +389,7 @@ describe('Procurement manifest grouping', () => {
         { id: 'bolt', scope_id: null, label: 'Bolt', role: 'Fastener', visual_node_ids: ['bolt-node'] },
       ],
       requirements: [
-        { id: 'r1', component_id: 'purlin', part_number: 'C10012', quantity: 1, unit: 'each', dimensions: { length_mm: 9000 }, material: 'galvanised steel' },
+        { id: 'r1', component_id: 'purlin', part_number: 'C10012', quantity: 1, unit: 'each', dimensions: { length_mm: 9000 }, material: 'galvanised steel', colour: 'Surfmist' },
         { id: 'r2', component_id: 'bolt', part_number: 'M12_BOLT', quantity: 84, unit: 'each', dimensions: { size: 'M12' } },
       ],
       diagnostics: [],
@@ -395,8 +419,12 @@ describe('Procurement manifest grouping', () => {
     expect(csv).toContain('"Small hardware / general"');
     expect(csv).toContain('"Supplier unit price ex GST"');
     expect(csv).toContain('"C10012"');
+    expect(csv).toContain('"Colour"');
+    expect(csv).toContain('"Surfmist"');
     expect(csv).toContain('"9000"');
     expect(html).toContain('Shed BoM Quote Request');
+    expect(html).toContain('Colour');
+    expect(html).toContain('Surfmist');
     expect(html).toContain('Unit $ ex GST');
     expect(html).toContain('Notes / substitutions');
     expect(html).toContain('Optional small hardware');

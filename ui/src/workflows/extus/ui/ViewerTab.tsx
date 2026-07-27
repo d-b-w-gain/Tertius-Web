@@ -312,6 +312,19 @@ function isViewerBatchMesh(object: THREE.Object3D): boolean {
   return object.name === "TertiusBatchedMesh" || object.name === "TertiusAppearanceBatchMesh";
 }
 
+export function isViewerObjectHidden(
+  root: THREE.Object3D,
+  object: THREE.Object3D,
+  appearanceByPath: SceneNodeAppearanceMap,
+): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current && current !== root) {
+    if (appearanceByPath[getSceneNodePathKey(root, current)]?.hidden) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
   if (meshes.length === 0) return null;
 
@@ -451,7 +464,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [isolatedNodeId, setIsolatedNodeId] = useState<string | null>(null);
   const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>(() => (
     readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY))
   ));
@@ -471,6 +483,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const modelLoadRequestRef = useRef<number>(0);
   const loadedModelUrlRef = useRef<string>('');
   const previousExternalSelectionKeyRef = useRef<string>('');
+  const appearanceByPathRef = useRef(appearanceByPath);
+
+  useEffect(() => {
+    appearanceByPathRef.current = appearanceByPath;
+  }, [appearanceByPath]);
 
   const clearCurrentModel = useCallback(() => {
     const scene = sceneRef.current;
@@ -481,7 +498,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     meshRef.current = null;
     setSceneGraph(null);
     setSelectedNodeId(null);
-    setIsolatedNodeId(null);
   }, []);
 
   const resizeRendererToContainer = useCallback(() => {
@@ -629,7 +645,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       loadedModelUrlRef.current = '';
       setSceneGraph(null);
       setSelectedNodeId(null);
-      setIsolatedNodeId(null);
     };
   }, [isActive, resizeRendererToContainer]);
 
@@ -892,7 +907,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       // Unpack the hierarchy
       setSceneGraph(model);
       setSelectedNodeId(null);
-      setIsolatedNodeId(null);
       finishLoad();
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
@@ -1042,9 +1056,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     if (!canvasRef.current || !sceneRef.current || !cameraRef.current) return;
     const canvas = canvasRef.current;
     
-    let clickTimeout: ReturnType<typeof setTimeout> | null = null;
-    let clickCount = 0;
-    
     const onMouseClick = (e: MouseEvent) => {
        const rect = canvas.getBoundingClientRect();
        const mouse = new THREE.Vector2(
@@ -1056,14 +1067,17 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
        raycaster.setFromCamera(mouse, cameraRef.current!);
        
        if (meshRef.current) {
-          // Temporarily unhide individual meshes for raycasting checks
+          // Raycast source meshes, then ignore objects hidden in the Assembly Tree.
           meshRef.current.traverse(c => {
             if (!isViewerBatchMesh(c) && (c as THREE.Mesh).isMesh) c.visible = true;
           });
           
           const intersects = raycaster
             .intersectObject(meshRef.current, true)
-            .filter(intersection => !isViewerBatchMesh(intersection.object));
+            .filter(intersection => (
+              !isViewerBatchMesh(intersection.object)
+              && !isViewerObjectHidden(meshRef.current!, intersection.object, appearanceByPathRef.current)
+            ));
           
           // Re-hide them (they'll be unhidden by the selection effect if needed)
           meshRef.current.traverse(c => {
@@ -1071,38 +1085,23 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           });
           if (intersects.length > 0) {
              const node = closestSelectableSceneNode(intersects[0]!.object, meshRef.current);
-             
-             clickCount++;
-             if (clickCount === 1) {
-                clickTimeout = setTimeout(() => {
-                   handleSelectNode(node!, false);
-                   clickCount = 0;
-                }, 250);
-             } else if (clickCount === 2) {
-                clearTimeout(clickTimeout!);
-                handleSelectNode(node!, true);
-                clickCount = 0;
-             }
+             handleSelectNode(node);
           } else {
-             handleSelectNode(null, false);
+             handleSelectNode(null);
           }
        }
     };
     
     canvas.addEventListener('click', onMouseClick);
-    const preventDefault = (e: Event) => e.preventDefault();
-    canvas.addEventListener('dblclick', preventDefault);
     
     return () => {
        canvas.removeEventListener('click', onMouseClick);
-       canvas.removeEventListener('dblclick', preventDefault);
     };
   }, []);
 
-  const handleSelectNode = (node: THREE.Object3D | null, isDouble: boolean) => {
+  const handleSelectNode = (node: THREE.Object3D | null) => {
      if (!node) {
         setSelectedNodeId(null);
-        setIsolatedNodeId(null);
         localStorage.removeItem(SCENE_NODE_SELECTION_STORAGE_KEY);
         window.dispatchEvent(new Event('storage'));
         return;
@@ -1110,14 +1109,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      
      localStorage.setItem(SCENE_NODE_SELECTION_STORAGE_KEY, createSceneNodeSelectionValue(meshRef.current, node));
      window.dispatchEvent(new Event('storage'));
-     
-     if (isDouble) {
-        // Toggle isolation
-        setIsolatedNodeId(prev => prev === node.uuid ? null : node.uuid);
-        setSelectedNodeId(node.uuid);
-     } else {
-        setSelectedNodeId(node.uuid);
-     }
+     setSelectedNodeId(node.uuid);
   };
 
   useEffect(() => {
@@ -1202,7 +1194,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         model.userData.appearanceBatchKey = '';
      };
 
-     if (hasAppearanceOverrides && !isolatedNodeId && model.userData.appearanceBatchKey !== appearanceBatchKey) {
+     if (hasAppearanceOverrides && model.userData.appearanceBatchKey !== appearanceBatchKey) {
         removeAppearanceBatch();
 
         const opaqueMeshes: THREE.Mesh[] = [];
@@ -1237,13 +1229,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            model.userData.appearanceBatchMesh = appearanceBatch.mesh;
            model.userData.appearanceBatchKey = appearanceBatchKey;
         }
-     } else if (!hasAppearanceOverrides || isolatedNodeId) {
+     } else if (!hasAppearanceOverrides) {
         removeAppearanceBatch();
      }
      
      // Reset batched mesh
-     if (batchedMesh) batchedMesh.visible = !isolatedNodeId && !hasAppearanceOverrides && !hasRenderableExternalSelection;
-     if (appearanceBatchMesh) appearanceBatchMesh.visible = !isolatedNodeId && hasAppearanceOverrides && !hasRenderableExternalSelection;
+     if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection;
+     if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection;
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {
@@ -1253,7 +1245,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            const mesh = child as THREE.Mesh;
            
            let isSelected = false;
-           let isIsolated = false;
            let isHidden = false;
            let isTransparent = false;
            const hasModelTransparency = hasSourceMaterialTransparency(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
@@ -1261,17 +1252,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
             while (p && p !== model) {
                if (isNodeSelected(p)) isSelected = true;
-               if (p.uuid === isolatedNodeId) isIsolated = true;
                const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
                if (appearance?.hidden) isHidden = true;
               if (appearance?.transparent) isTransparent = true;
               p = p.parent;
            }
            
-           if (isolatedNodeId) {
-              // If we are in isolation mode, only isolated parts are visible
-              mesh.visible = isIsolated && !isHidden;
-           } else if (hasRenderableExternalSelection) {
+           if (hasRenderableExternalSelection) {
               mesh.visible = Boolean(externalSelection?.meshes.has(mesh)) && !isHidden;
            } else if (hasAppearanceOverrides) {
               mesh.visible = !isHidden && (isTransparent || isSelected || hasModelTransparency);
@@ -1300,7 +1287,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
      });
 
-   }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
+   }, [selectedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
 
   useEffect(() => {
     if (!onExternalSelectionPreviewChange) return;
