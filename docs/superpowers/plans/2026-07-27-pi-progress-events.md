@@ -154,19 +154,19 @@ NATS JetStream, Pi RPC 0.80.6, React 19, TypeScript, Vitest, Helm/local k3s.
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.tsx`
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.test.tsx`
 
-- [ ] Add failing client tests for typed progress snapshot fields in status and
+- [x] Add failing client tests for typed progress snapshot fields in status and
   history responses.
-- [ ] Add failing UI tests for snapshot merge/reset, expanded running
+- [x] Add failing UI tests for snapshot merge/reset, expanded running
   disclosure, collapsed terminal disclosure, truncation notice, reasoning
   text, safe tool labels, and error status.
-- [ ] Run focused Vitest and observe the red state.
-- [ ] Add the optional progress snapshot to the existing typed client contracts.
-- [ ] Keep per-turn progress in the existing conversation model; reset on a new
+- [x] Run focused Vitest and observe the red state.
+- [x] Add the optional progress snapshot to the existing typed client contracts.
+- [x] Keep per-turn progress in the existing conversation model; reset on a new
   execution and otherwise merge by sequence within the server-provided
   truncation boundary.
-- [ ] Render accessible native `details/summary`; default it open while active
+- [x] Render accessible native `details/summary`; default it open while active
   and remount it collapsed when the turn becomes terminal.
-- [ ] Run focused Vitest, frontend typecheck, lint, and build.
+- [x] Run focused Vitest, frontend typecheck, lint, and build.
 
 ## Task 8: Cross-cutting safety and regression verification
 
