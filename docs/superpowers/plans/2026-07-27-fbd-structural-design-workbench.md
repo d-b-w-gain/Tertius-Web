@@ -28,6 +28,7 @@ and result artifacts consumed by the workbench and calculation reports.
 - Add: `scripts/spikes/structural_source_inventory.py`
 - Add: `server/tests/structural/test_source_inventory.py`
 - Add: `docs/structural/fbd-structural-workbench.md`
+- Add: `docs/structural/fbd-source-inventory.md`
 
 - [x] Create #330, add it to GitHub Project 1, and set it to In Progress.
 - [x] Create an isolated `codex/fbd-structural-workbench` branch/worktree from
@@ -39,12 +40,12 @@ and result artifacts consumed by the workbench and calculation reports.
   Python files.
 - [x] Add focused inventory tests proving local/package/relative/dynamic import
   handling, non-execution, diagnostics, and deterministic hashes.
-- [ ] Run the inventory against
-  `W:\ben\ContextUI\default\workflows\shed\FBD`. Blocked on 2026-07-27 because
-  the remembered `W:` mapping was disconnected and
-  `\\192.168.88.29\winusers` was unavailable.
-- [ ] Attach the redacted inventory summary to #330 and confirm the source of
-  truth with #55.
+- [x] Run the inventory against the actual legacy entrypoint,
+  `portal_frame_fbd_server.py`, under
+  `W:\ben\ContextUI\default\workflows\shed\FBD`.
+- [x] Record the redacted source/runtime/model summary and closure digest in
+  `docs/structural/fbd-source-inventory.md`.
+- [ ] Confirm the preserved source of truth with #55.
 
 ### Task 2: Capture the current-order baseline
 
@@ -74,8 +75,10 @@ and result artifacts consumed by the workbench and calculation reports.
 - Add: a minimal compatibility runner and deterministic portal-frame fixture
 - Modify: API compile image dependencies only after the spike identifies them
 
-- [ ] Identify the exact structural package, version, Python constraint, native
+- [x] Identify the exact structural package, version, Python constraint, native
   dependencies, licence, units, axes, releases, and result conventions.
+- [x] Run a minimal PyNiteFEA 2.4.1 cantilever in the legacy Python 3.12
+  environment and confirm force/moment reactions.
 - [ ] Prove install/import in the canonical Tertius compile image.
 - [ ] Run a minimal stable frame and export nodes, member forces, reactions, and
   diagram stations deterministically.

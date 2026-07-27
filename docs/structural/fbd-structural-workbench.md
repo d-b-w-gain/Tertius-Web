@@ -6,10 +6,14 @@ This is the kickoff architecture for [epic #330](https://github.com/d-b-w-gain/T
 It turns the useful parts of the legacy FBD Shed Designer into a Tertius
 workbench without treating the old application as the target architecture.
 
-The immediate source is expected at
-`W:\ben\ContextUI\default\workflows\shed\FBD`. The share was unavailable during
-the 2026-07-27 kickoff, so the exact solver package, version, runtime files, and
-legacy module split remain evidence-gathering tasks.
+The legacy source is at
+`W:\ben\ContextUI\default\workflows\shed\FBD`. The first source/runtime audit is
+recorded in `docs/structural/fbd-source-inventory.md`.
+
+The legacy workflow has no `design.py`; its entrypoint is
+`portal_frame_fbd_server.py` plus 11 local imports. `design.py` plus local
+imports remains the target Tertius project boundary and must be created around
+the extracted domain/solver adapter rather than around the legacy FastAPI app.
 
 ## Product question
 
@@ -41,6 +45,7 @@ legacy project:
 ```powershell
 uv run python scripts/spikes/structural_source_inventory.py `
   W:\ben\ContextUI\default\workflows\shed\FBD `
+  --entrypoint portal_frame_fbd_server.py `
   --pretty
 ```
 
@@ -181,9 +186,11 @@ visibly **not checked**. Tertius output alone is not engineering certification.
 
 ## Open evidence questions
 
-- What exact structural package and version does FBD import?
-- Does it require native binaries, a particular Python version, or a licence?
-- Which files and runtime data are in the real `design.py` closure?
+- Can PyNiteFEA 2.4.1 install and run under the canonical Tertius Python 3.14
+  image? Its metadata allows Python `>=3.11` but explicitly classifies through
+  Python 3.13.
+- Which current Tertius `design.py` represents the changed shed that is about
+  to be ordered?
 - Which calculations are package-provided versus custom FBD formulas?
 - What units, local-axis rules, release conventions, and load-combination rules
   are currently assumed?
