@@ -15,6 +15,9 @@ and result artifacts consumed by the workbench and calculation reports.
 
 **Primary design:** `docs/structural/fbd-structural-workbench.md`
 
+**Working calculation process:**
+`docs/structural/p399-working-basis.md`
+
 **Tracking epic:** [#330](https://github.com/d-b-w-gain/Tertius-Web/issues/330)
 
 ---
@@ -66,6 +69,22 @@ and result artifacts consumed by the workbench and calculation reports.
   structural effects.
 - [ ] Establish independent equilibrium, member, and opening/load-path hand
   checks for the imminent order.
+
+### Task 2A: Adopt SCI P399 as the calculation workflow
+
+- [x] Review the local SCI P399 reference and record its complete design
+  sequence from actions through serviceability.
+- [x] Define the boundary between P399 process/analysis guidance and the
+  Australian actions, combinations, materials, resistance, connection,
+  anchorage, concrete, cladding, and project rules.
+- [x] Map the legacy FBD modules into the P399 stages.
+- [x] Record that the current `Zxe x fy` colour threshold is only a renderer
+  regression fixture and not a design pass.
+- [ ] Select and record the exact Australian standards editions, amendments,
+  project criteria, and manufacturer data for calculation-pack version `1`.
+- [ ] Add stage/prerequisite status to the structural result contract so a
+  member cannot pass while stability, restraint, connection, or another
+  required stage is missing.
 
 ### Task 3: Clear the legacy solver compatibility hurdle
 
@@ -156,7 +175,25 @@ and result artifacts consumed by the workbench and calculation reports.
   unmapped, stale, unsupported, and not checked.
 - [ ] Preserve guest/auth isolation, tenant boundaries, and bounded telemetry.
 
-### Task 6: Migrate and reconcile the current shed
+### Task 6: Port the working FBD calculation path in P399 order
+
+- [ ] Preserve one representative FBD job input, intermediate calculation
+  values, calculation sheets, and outputs with the exact source digest and
+  runtime.
+- [ ] Port permanent actions, wind actions, mutually exclusive cases, and the
+  actual FBD ULS/SLS combinations before adding new member checks.
+- [ ] Reproduce the corresponding elastic frame nodes, members, supports,
+  releases, member loads, reactions, end forces, diagrams, and deflections.
+- [ ] Add P399 imperfections, base-stiffness cases, global stability
+  assessment, and first-/second-order decision to the solver adapter.
+- [ ] Port and independently verify the applicable FBD cross-section/member
+  calculations into a versioned Australian calculation pack.
+- [ ] Model restraint segments, load reversal, purlin/girt/batten continuity,
+  opening interruptions, and bracing before activating member pass/fail.
+- [ ] Port connection, base, anchor, concrete, and serviceability checks with
+  the correct responsibility and evidence boundaries.
+
+### Task 7: Migrate and reconcile the current shed
 
 - [ ] Port site capture and job-specific wind inputs with provenance.
 - [ ] Rebuild current member/opening/cladding geometry in Build123D.
@@ -169,7 +206,7 @@ and result artifacts consumed by the workbench and calculation reports.
 - [ ] Resolve every baseline difference explicitly; do not tune the new model
   silently to match a legacy number.
 
-### Task 7: Validate the ordering gate and production path
+### Task 8: Validate the ordering gate and production path
 
 - [ ] Pass source-to-report coverage for every changed design detail.
 - [ ] Pass global force/moment equilibrium, reaction, stability, units, signs,

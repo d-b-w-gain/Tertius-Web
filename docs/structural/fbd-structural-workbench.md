@@ -6,6 +6,13 @@ This is the evolving architecture for [epic #330](https://github.com/d-b-w-gain/
 It turns the useful parts of the legacy FBD Shed Designer into a Tertius
 workbench without treating the old application as the target architecture.
 
+SCI Publication P399 is now the working process guide. The binding design
+sequence, Australian adaptation boundary, legacy-module migration map, and
+current-shed acceptance matrix are defined in
+[`p399-working-basis.md`](p399-working-basis.md). The structural workbench must
+follow that calculation sequence; it is not acceptable to infer a design pass
+from an elastic demand diagram or a nominal yield reference.
+
 The first active-project capture is now present. The authenticated
 **Structural** tab reads the same active project as Extus and displays its
 latest model artifact. A restricted `TERTIUS_STRUCTURAL` dictionary in
@@ -240,6 +247,12 @@ prove that geometry is in contact, that the stated connection transfers are
 valid, or that any component has adequate strength, stiffness, embedment,
 edge distance, pull-out, bearing, or buckling capacity.
 
+The later `Zxe x fy` colour threshold is a renderer regression fixture only.
+It is not a P399 cross-section/member verification and is not an Australian
+design capacity. Product pass/fail status must come from a versioned
+calculation pack after actions, combinations, stability and restraints have
+been resolved.
+
 ## Current-order verification gate
 
 Before relying on the workbench for the imminent shed order, the baseline must
@@ -272,9 +285,6 @@ visibly **not checked**. Tertius output alone is not engineering certification.
 
 ## Open evidence questions
 
-- Can PyNiteFEA 2.4.1 install and run under the canonical Tertius Python 3.14
-  image? Its metadata allows Python `>=3.11` but explicitly classifies through
-  Python 3.13.
 - Which current Tertius `design.py` represents the changed shed that is about
   to be ordered?
 - Which calculations are package-provided versus custom FBD formulas?
@@ -282,3 +292,5 @@ visibly **not checked**. Tertius output alone is not engineering certification.
   are currently assumed?
 - Which legacy results are trusted enough to become golden fixtures, and which
   require independent correction before migration?
+- Which Australian standards editions, amendments, project criteria, and
+  manufacturer capacity sources form the first versioned calculation pack?
