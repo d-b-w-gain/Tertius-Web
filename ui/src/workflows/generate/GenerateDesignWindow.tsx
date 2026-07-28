@@ -64,6 +64,8 @@ type ChatMessage = {
   repairForCompileJobId?: string
   progress?: LlmEditProgressSnapshot
   progressActive?: boolean
+  progressDisclosure?: boolean
+  renderKey?: string
 }
 
 export type GenerateViewportState = {
@@ -228,60 +230,77 @@ function toolActivityLabel(event: LlmEditProgressEvent) {
 
 function ProgressActivity({
   progress,
-  active,
+  active = false,
+  defaultOpen = false,
 }: {
-  progress: LlmEditProgressSnapshot
-  active: boolean
+  progress?: LlmEditProgressSnapshot
+  active?: boolean
+  defaultOpen?: boolean
 }) {
-  const setInitialDetailsState = useCallback((node: HTMLDetailsElement | null) => {
-    if (node && active) node.open = true
-  }, [active])
-  if (progress.events.length === 0) return null
-  const latestEvent = progress.events.at(-1)
+  // React has no native <details> defaultOpen prop. This mount-stable value
+  // initializes `open`, then leaves the disclosure browser-controlled so later
+  // progress renders do not overwrite the user's toggle.
+  const [initiallyOpen] = useState(defaultOpen)
+  const eventCount = progress?.events.length || 0
+  const progressState = active
+    ? eventCount > 0 ? 'Working' : 'Starting'
+    : 'Complete'
+  const latestEvent = progress?.events.at(-1)
   const latestLabel = latestEvent?.kind === 'reasoning_delta'
     ? 'Reasoning updated'
     : latestEvent ? toolActivityLabel(latestEvent) : ''
   return (
     <>
-      {active && latestLabel && (
+      {active && progress && latestLabel && (
         <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
           AI activity updated: {progress.events.length} {progress.events.length === 1 ? 'event' : 'events'}. Latest: {latestLabel}. Sequence: {progress.last_sequence}.
         </p>
       )}
-      <details ref={setInitialDetailsState} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
-        <summary className="cursor-pointer select-none font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-          <span>Activity</span>
-          <span className="ml-2 text-slate-300">{progress.events.length}</span>
+      <details open={initiallyOpen} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
+        <summary className="flex cursor-pointer select-none items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+          <span className="font-sans font-semibold text-slate-300">Thinking &amp; activity</span>
+          <span className={`ml-auto font-mono font-semibold ${active ? 'text-cyan-300' : 'text-slate-400'}`}>
+            {progressState}
+          </span>
+          <span className="font-mono text-slate-400">
+            {eventCount} {eventCount === 1 ? 'update' : 'updates'}
+          </span>
         </summary>
-        <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
-          {progress.truncated_before_sequence !== null && (
-            <li className="relative text-[11px] leading-4 text-slate-300">
-              <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
-              Earlier activity was truncated.
-            </li>
-          )}
-          {progress.events.map(event => (
-            <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
-              <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
-                event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
-              }`} />
-              {event.kind === 'reasoning_delta' ? (
-                <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
-              ) : (
-                <div className="flex min-w-0 items-baseline gap-2">
-                  <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
-                    {toolActivityLabel(event)}
-                  </span>
-                  {event.target && (
-                    <code className="min-w-0 break-all font-mono text-[10px] text-slate-300">
-                      {event.target}
-                    </code>
-                  )}
-                </div>
-              )}
-            </li>
-          ))}
-        </ol>
+        {progress && progress.events.length > 0 ? (
+          <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
+            {progress.truncated_before_sequence !== null && (
+              <li className="relative text-[11px] leading-4 text-slate-300">
+                <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
+                Earlier activity was truncated.
+              </li>
+            )}
+            {progress.events.map(event => (
+              <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
+                <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
+                  event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
+                }`} />
+                {event.kind === 'reasoning_delta' ? (
+                  <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
+                ) : (
+                  <div className="flex min-w-0 items-baseline gap-2">
+                    <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
+                      {toolActivityLabel(event)}
+                    </span>
+                    {event.target && (
+                      <code className="min-w-0 break-all font-mono text-[10px] text-slate-300">
+                        {event.target}
+                      </code>
+                    )}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="mt-3 text-[11px] leading-4 text-slate-400">
+            {active ? 'Waiting for the first progress update…' : 'No activity details were received.'}
+          </p>
+        )}
       </details>
     </>
   )
@@ -315,6 +334,7 @@ export function GenerateDesignWindow({
 
   const activeProjectRef = useRef('')
   const messagesRef = useRef<ChatMessage[]>([])
+  const pendingScrollMessageIdRef = useRef<string | null>(null)
   const startLlmEditPollingRef = useRef<(projectName: string, jobId: string, assistantId: string) => void>(() => {})
   const compileRequestRef = useRef(new Map<string, number>())
   const compileTimerRef = useRef(new Map<string, number>())
@@ -328,6 +348,15 @@ export function GenerateDesignWindow({
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+
+  const scrollSubmittedMessageIntoView = useCallback((
+    node: HTMLDivElement | null,
+    messageIdToScroll: string,
+  ) => {
+    if (!node || pendingScrollMessageIdRef.current !== messageIdToScroll) return
+    pendingScrollMessageIdRef.current = null
+    node.scrollIntoView?.({ block: 'nearest' })
+  }, [])
 
   const clearCompileTimer = useCallback((jobId: string) => {
     const timer = compileTimerRef.current.get(jobId)
@@ -639,6 +668,7 @@ export function GenerateDesignWindow({
                   repairAttempted: true,
                   repairForCompileJobId: jobId,
                   repairJobId: repairJob.job_id,
+                  progressActive: true,
                 }))
                 clearCompileTimer(jobId)
                 compileRequestRef.current.delete(jobId)
@@ -903,8 +933,12 @@ export function GenerateDesignWindow({
       content: 'Generating design edit...',
       createdAt: Date.now(),
       compileStatus: 'queued',
+      progressActive: true,
+      progressDisclosure: true,
+      renderKey: messageId('render'),
     }
 
+    pendingScrollMessageIdRef.current = assistantMessage.id
     setMessages(prev => [...prev, userMessage, assistantMessage])
     setSelectedMessageId(assistantMessage.id)
     setPrompt('')
@@ -968,12 +1002,17 @@ export function GenerateDesignWindow({
         ...current,
         content: `Error: ${message}`,
         compileStatus: 'failed',
+        progressActive: false,
       }))
       setStatusText(message)
     } finally {
       setIsSubmitting(false)
     }
   }
+
+  const hasActiveProgress = messages.some(message => (
+    message.role === 'assistant' && message.progressActive
+  ))
 
   if (authMode === 'guest') {
     return (
@@ -1047,7 +1086,13 @@ export function GenerateDesignWindow({
             onClick={() => setIsConversationOpen(true)}
             className="pointer-events-auto rounded border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs font-semibold text-slate-100 shadow-xl shadow-slate-950/40 transition-colors hover:bg-slate-800"
           >
-            Open Generate Design conversation
+            <span>Open Generate Design conversation</span>
+            {hasActiveProgress && (
+              <span className="ml-2 inline-flex items-center gap-1 text-cyan-300">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                AI working
+              </span>
+            )}
           </button>
         </div>
       )}
@@ -1127,10 +1172,17 @@ export function GenerateDesignWindow({
             ) : (
               <div className="space-y-3">
                 {messages.map(message => {
-                  const hasActivity = message.role === 'assistant' && Boolean(message.progress?.events.length)
+                  const hasActivity = message.role === 'assistant' && Boolean(
+                    message.progressDisclosure
+                    || message.progressActive
+                    || message.progress?.events.length
+                  )
                   return (
                     <div
-                      key={message.id}
+                      ref={message.role === 'assistant'
+                        ? node => scrollSubmittedMessageIntoView(node, message.id)
+                        : undefined}
+                      key={message.renderKey || message.id}
                       className={`overflow-hidden rounded border transition-colors ${
                         selectedMessageId === message.id
                           ? 'border-cyan-700 bg-cyan-950/30'
@@ -1159,11 +1211,11 @@ export function GenerateDesignWindow({
                           </div>
                         )}
                       </button>
-                      {hasActivity && message.progress && (
+                      {hasActivity && (
                         <ProgressActivity
-                          key={`${message.progress.execution_id}:${message.progressActive ? 'active' : 'terminal'}`}
                           progress={message.progress}
                           active={Boolean(message.progressActive)}
+                          defaultOpen={Boolean(message.progressDisclosure || message.progressActive)}
                         />
                       )}
                     </div>

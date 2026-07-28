@@ -193,6 +193,104 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByRole('button', { name: 'Close Generate Design conversation' })).toBeInTheDocument()
   })
 
+  it('shows AI working on the closed conversation control only while progress is active', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: null,
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        progress: null,
+        result: {
+          success: true,
+          outcome: 'no_change',
+          message: 'No edits needed.',
+          model: 'test-model',
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+          snapshot: null,
+          files: [],
+        },
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(
+      screen.getByPlaceholderText('Describe the CAD design or modification...'),
+      { target: { value: 'inspect the model' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close Generate Design conversation' }))
+
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Open Generate Design conversation',
+      })).toBeInTheDocument()
+    })
+  })
+
+  it('scrolls the submitted assistant card once without moving focus or following progress updates', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob.mockResolvedValue({
+      job_id: 'llm-job-1',
+      status: 'running',
+      progress: piProgressSnapshot(),
+    })
+    const scrollIntoView = vi.fn()
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const originalScrollIntoView = Element.prototype.scrollIntoView
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    try {
+      render(<GenerateDesignWindow />)
+      await screen.findByText('Latest model viewer')
+      openGenerateDesignConversation()
+      fireEvent.change(
+        screen.getByPlaceholderText('Describe the CAD design or modification...'),
+        { target: { value: 'inspect the model' } },
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1))
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+      expect(focus).not.toHaveBeenCalled()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      await waitFor(() => {
+        expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
+      })
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(focus).not.toHaveBeenCalled()
+    } finally {
+      focus.mockRestore()
+      if (originalScrollIntoView) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', {
+          configurable: true,
+          value: originalScrollIntoView,
+        })
+      } else {
+        delete (Element.prototype as { scrollIntoView?: Element['scrollIntoView'] }).scrollIntoView
+      }
+    }
+  })
+
   it('shows the configured fixed model without pricing controls', async () => {
     render(<GenerateDesignWindow />)
     await screen.findByText('Latest model viewer')
@@ -372,6 +470,7 @@ describe('GenerateDesignWindow', () => {
         content: '',
         created_at: '2026-06-19T00:01:00Z',
         status: 'running',
+        progress: piProgressSnapshot(),
         compile: null,
       },
       {
@@ -406,6 +505,9 @@ describe('GenerateDesignWindow', () => {
     openGenerateDesignConversation()
 
     expect(await screen.findByText('still editing')).toBeInTheDocument()
+    const hydratedActivity = screen.getByText('Thinking & activity').closest('details')
+    expect(hydratedActivity).toHaveAttribute('open')
+    expect(screen.getByText('Working')).toBeInTheDocument()
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
@@ -613,6 +715,130 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-repaired\/model\?t=.*&project=project_a/)).toBeInTheDocument()
   })
 
+  it('keeps an automatic repair discoverable while closed until the repair job completes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'llm-job-1',
+        status: 'queued',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'repair-job-1',
+        status: 'queued',
+      })
+
+    let repairPollCount = 0
+    storage.getLlmFileEditJob.mockImplementation((_projectName: string, jobId: string) => {
+      if (jobId === 'repair-job-1') {
+        repairPollCount += 1
+        if (repairPollCount === 1) {
+          return Promise.resolve({
+            job_id: 'repair-job-1',
+            status: 'running',
+            progress: null,
+          })
+        }
+        return Promise.resolve({
+          job_id: 'repair-job-1',
+          status: 'succeeded',
+          progress: null,
+          result: {
+            success: true,
+            outcome: 'no_change',
+            message: 'No repair changes needed.',
+            model: 'test-model',
+            usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+            snapshot: null,
+            files: [],
+          },
+        })
+      }
+      return Promise.resolve({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: 'updated',
+          model: 'test-model',
+          usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'abc' },
+          files: [
+            {
+              id: 'design-id',
+              filename: 'design.py',
+              content: 'lever = bd.RoundedPolygon([])',
+              updated_at: '2026-06-19T00:01:00Z',
+              changed: true,
+              summary: 'Generated a lever.',
+            },
+          ],
+        },
+      })
+    })
+
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
+      if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          success: true,
+          job_id: 'compile-job-1',
+          status: 'queued',
+        }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/compile-job-1') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'compile-job-1',
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: "Traceback:\nAttributeError: module 'build123d' has no attribute 'RoundedPolygon'",
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'Generate a printable handle' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/intus/projects/project_a/compile',
+        mocks.getAccessToken,
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => {
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Generate Design conversation' }))
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Open Generate Design conversation',
+      })).toBeInTheDocument()
+    })
+  })
+
   it('does not auto-repair non-sandbox compile failures', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
@@ -770,7 +996,7 @@ describe('GenerateDesignWindow', () => {
     expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
   })
 
-  it('hydrates a compact terminal Activity log with safe labels and truncation notice', async () => {
+  it('hydrates a compact collapsed terminal activity log with safe labels and truncation notice', async () => {
     storage.listLlmEditConversation.mockResolvedValueOnce([
       {
         job_id: 'llm-job-history-progress',
@@ -796,10 +1022,12 @@ describe('GenerateDesignWindow', () => {
     render(<GenerateDesignWindow />)
     openGenerateDesignConversation()
 
-    const activitySummary = await screen.findByText('Activity')
+    const activitySummary = await screen.findByText('Thinking & activity')
     const details = activitySummary.closest('details')
     expect(details).not.toBeNull()
     expect(details).not.toHaveAttribute('open')
+    expect(screen.getByText('Complete')).toBeInTheDocument()
+    expect(screen.getByText('4 updates')).toBeInTheDocument()
     const selectionButton = screen.getAllByText('Updated 1 file.')
       .map(element => element.closest('button'))
       .find(Boolean)
@@ -879,7 +1107,7 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByRole('status')).not.toHaveTextContent('private/part-129.py')
   })
 
-  it('merges polling snapshots, resets newer executions, ignores stale data, and collapses terminal Activity', async () => {
+  it('merges progress snapshots while preserving the open disclosure through completion', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const firstExecution = '7d364c43-45d4-4c66-9565-7885f65e6730'
     const secondExecution = '503ecbd5-6c5a-4564-88df-456ab503a207'
@@ -923,11 +1151,19 @@ describe('GenerateDesignWindow', () => {
     openGenerateDesignConversation()
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), { target: { value: 'inspect and refine the model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    const initialDetails = screen.getByText('Thinking & activity').closest('details')
+    expect(initialDetails).toHaveAttribute('open')
+    expect(screen.getByText('Starting')).toBeInTheDocument()
+    expect(screen.getByText('0 updates')).toBeInTheDocument()
+    expect(screen.getByText('Waiting for the first progress update…')).toBeInTheDocument()
     await waitFor(() => expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1))
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-    let details = screen.getByText('Activity').closest('details')
+    let details = screen.getByText('Thinking & activity').closest('details')
+    expect(details).toBe(initialDetails)
     expect(details).toHaveAttribute('open')
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(screen.getByText('1 update')).toHaveClass('text-slate-400')
     expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('AI activity updated: 1 event. Latest: Reasoning updated.')
     expect(screen.getByRole('status')).not.toHaveTextContent('Inspecting the model structure.')
@@ -943,21 +1179,119 @@ describe('GenerateDesignWindow', () => {
     expect(screen.queryByText('Inspecting the model structure.')).not.toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
     await waitFor(() => expect(screen.getAllByText('No edits needed.').length).toBeGreaterThan(0))
-    details = screen.getByText('Activity').closest('details')
-    expect(details).not.toHaveAttribute('open')
+    details = screen.getByText('Thinking & activity').closest('details')
+    expect(details).toBe(initialDetails)
+    expect(details).toHaveAttribute('open')
+    expect(screen.getByText('Complete')).toBeInTheDocument()
+    expect(screen.getByText('2 updates')).toBeInTheDocument()
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
     expect(screen.getAllByText('Fresh execution reasoning.')).toHaveLength(1)
-    fireEvent.click(screen.getByText('Activity'))
     expect(screen.getByText('Write failed')).toBeInTheDocument()
   })
 
-  it('does not render Activity when an assistant turn has no progress events', async () => {
+  it('preserves a manual activity close when the current turn completes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: piProgressSnapshot(),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        progress: piProgressSnapshot(),
+        result: {
+          success: true,
+          outcome: 'no_change',
+          message: 'No edits needed.',
+          model: 'test-model',
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+          snapshot: null,
+          files: [],
+        },
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'inspect without changing the model' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    const details = screen.getByText('Thinking & activity').closest('details')
+    expect(details).toHaveAttribute('open')
+    fireEvent.click(screen.getByText('Thinking & activity'))
+    expect(details).not.toHaveAttribute('open')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByText('Thinking & activity').closest('details')).toBe(details)
+    expect(screen.getByText('Working')).toBeInTheDocument()
+    expect(details).not.toHaveAttribute('open')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => expect(screen.getByText('Complete')).toBeInTheDocument())
+    expect(screen.getByText('Thinking & activity').closest('details')).toBe(details)
+    expect(details).not.toHaveAttribute('open')
+  })
+
+  it('keeps a current terminal disclosure visible when no activity details arrive', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob.mockResolvedValueOnce({
+      job_id: 'llm-job-1',
+      status: 'succeeded',
+      progress: null,
+      result: {
+        success: true,
+        outcome: 'no_change',
+        message: 'No edits needed.',
+        model: 'test-model',
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        snapshot: null,
+        files: [],
+      },
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'check whether an edit is needed' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => expect(screen.getByText('Complete')).toBeInTheDocument())
+    expect(screen.getByText('0 updates')).toBeInTheDocument()
+    expect(screen.getByText('No activity details were received.')).toBeInTheDocument()
+    expect(screen.getByText('Thinking & activity').closest('details')).toHaveAttribute('open')
+  })
+
+  it('marks the pending disclosure complete when submission fails', async () => {
+    storage.applyLlmFileEditJob.mockRejectedValueOnce(new Error('Provider unavailable.'))
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'submit an edit that cannot start' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    expect(screen.getByText('Starting')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Complete')).toBeInTheDocument())
+    expect(screen.getByText('No activity details were received.')).toBeInTheDocument()
+    expect(screen.getAllByText('Error: Provider unavailable.').length).toBeGreaterThan(0)
+  })
+
+  it('does not render activity for terminal history without a progress snapshot', async () => {
     storage.listLlmEditConversation.mockResolvedValueOnce([
       { job_id: 'llm-job-without-progress', prompt: 'keep this simple', content: 'No edits needed.', created_at: '2026-07-27T11:00:00Z', status: 'succeeded', progress: null, compile: null },
     ])
     render(<GenerateDesignWindow />)
     openGenerateDesignConversation()
     expect((await screen.findAllByText('No edits needed.')).length).toBeGreaterThan(0)
-    expect(screen.queryByText('Activity')).not.toBeInTheDocument()
+    expect(screen.queryByText('Thinking & activity')).not.toBeInTheDocument()
   })
 })
