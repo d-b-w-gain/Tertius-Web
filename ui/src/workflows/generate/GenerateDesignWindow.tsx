@@ -668,6 +668,7 @@ export function GenerateDesignWindow({
                   repairAttempted: true,
                   repairForCompileJobId: jobId,
                   repairJobId: repairJob.job_id,
+                  progressActive: true,
                 }))
                 clearCompileTimer(jobId)
                 compileRequestRef.current.delete(jobId)

@@ -715,6 +715,130 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByText(/Model viewer \/api\/extus\/artifacts\/artifact-repaired\/model\?t=.*&project=project_a/)).toBeInTheDocument()
   })
 
+  it('keeps an automatic repair discoverable while closed until the repair job completes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.applyLlmFileEditJob
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'llm-job-1',
+        status: 'queued',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        job_id: 'repair-job-1',
+        status: 'queued',
+      })
+
+    let repairPollCount = 0
+    storage.getLlmFileEditJob.mockImplementation((_projectName: string, jobId: string) => {
+      if (jobId === 'repair-job-1') {
+        repairPollCount += 1
+        if (repairPollCount === 1) {
+          return Promise.resolve({
+            job_id: 'repair-job-1',
+            status: 'running',
+            progress: null,
+          })
+        }
+        return Promise.resolve({
+          job_id: 'repair-job-1',
+          status: 'succeeded',
+          progress: null,
+          result: {
+            success: true,
+            outcome: 'no_change',
+            message: 'No repair changes needed.',
+            model: 'test-model',
+            usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+            snapshot: null,
+            files: [],
+          },
+        })
+      }
+      return Promise.resolve({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        result: {
+          success: true,
+          outcome: 'changed',
+          message: 'updated',
+          model: 'test-model',
+          usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+          snapshot: { id: 'snap-1', message: 'edit', content_hash: 'abc' },
+          files: [
+            {
+              id: 'design-id',
+              filename: 'design.py',
+              content: 'lever = bd.RoundedPolygon([])',
+              updated_at: '2026-06-19T00:01:00Z',
+              changed: true,
+              summary: 'Generated a lever.',
+            },
+          ],
+        },
+      })
+    })
+
+    mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
+      if (url === '/api/intus/projects/project_a/compile' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          success: true,
+          job_id: 'compile-job-1',
+          status: 'queued',
+        }, true))
+      }
+      if (url === '/api/intus/projects/project_a/compile/jobs/compile-job-1') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'compile-job-1',
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: "Traceback:\nAttributeError: module 'build123d' has no attribute 'RoundedPolygon'",
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'Generate a printable handle' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/intus/projects/project_a/compile',
+        mocks.getAccessToken,
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => {
+      expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Generate Design conversation' }))
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Open Generate Design conversation',
+      })).toBeInTheDocument()
+    })
+  })
+
   it('does not auto-repair non-sandbox compile failures', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     mocks.apiFetch.mockImplementation((url: string, _token: unknown, init?: RequestInit) => {
