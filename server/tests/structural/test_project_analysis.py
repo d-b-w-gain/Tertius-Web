@@ -288,6 +288,64 @@ def test_unknown_load_combination_fails_closed():
         solve_project_structural(capture, combination_id="SLS-missing")
 
 
+def test_authored_imperfection_runs_linear_and_pdelta_stability_comparison():
+    stability_source = GRAVITY_FRAME_DESIGN.replace(
+        "structural_assembly = structure.assembly",
+        """structure.member_point_load(
+    column,
+    id="notional-horizontal-load",
+    label="Notional horizontal load",
+    case="imperfection",
+    case_id="imperfection-x",
+    distance_m=2.0,
+    force=(0.001, 0, 0),
+    provenance="Explicit test equivalent horizontal force.",
+)
+structure.load_combination(
+    id="ULS-STABILITY",
+    label="Permanent action plus imperfection",
+    limit_state="ultimate",
+    factors={"dead": 1.35, "imperfection-x": 1.0},
+)
+structure.stability(
+    method="p_delta",
+    stability_combination_id="ULS-STABILITY",
+    imperfection_case_id="imperfection-x",
+    imperfection_basis="Explicit test equivalent horizontal force.",
+    base_stiffness_basis="Fixed base is an unverified test assumption.",
+    base_stiffness_status="assumed",
+    amplification_warning_ratio=1.10,
+)
+structural_assembly = structure.assembly""",
+    )
+    capture = parse_project_structural_capture(
+        stability_source,
+        project_name="stability_frame",
+    )
+
+    snapshot = solve_project_structural(
+        capture,
+        combination_id="ULS-STABILITY",
+    )
+
+    assert snapshot.stability is not None
+    assert snapshot.stability.converged
+    assert snapshot.stability.governing_moment_amplification > 1.0
+    assert snapshot.stability.governing_displacement_amplification > 1.0
+    assert "P-Delta" in snapshot.solver.analysis
+    stages = {stage.id: stage for stage in snapshot.verification_stages}
+    assert stages["stability"].status == "warning"
+    stability_sheet = next(
+        sheet for sheet in snapshot.calculation_sheets if sheet.stage_id == "stability"
+    )
+    assert stability_sheet.status == "warning"
+    assert any(
+        equation.expression == "η_M = M_II / M_I"
+        for equation in stability_sheet.equations
+    )
+    assert any(output.symbol == "converged" for output in stability_sheet.outputs)
+
+
 def test_catalogue_yield_reference_is_renderer_only_not_a_design_pass():
     source = GRAVITY_FRAME_DESIGN.replace(
         "mass_kg_m=3.29,\n)",

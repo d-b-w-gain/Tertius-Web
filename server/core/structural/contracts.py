@@ -124,7 +124,7 @@ class AnalyticalMemberDeclaration(StructuralContract):
 class LoadCase(StructuralContract):
     id: str
     label: str
-    category: Literal["dead", "live", "wind", "fixture"]
+    category: Literal["dead", "live", "wind", "imperfection", "fixture"]
 
 
 class NodalLoad(StructuralContract):
@@ -145,7 +145,7 @@ class MemberPointLoad(StructuralContract):
     distance_m: float
     force: Vector3
     moment: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
-    source_load_id: str
+    source_load_id: str | None = None
     provenance: str
 
 
@@ -168,6 +168,37 @@ class LoadCombination(StructuralContract):
     label: str
     limit_state: Literal["serviceability", "ultimate"]
     factors: dict[str, float]
+
+
+class StabilityDefinition(StructuralContract):
+    method: Literal["p_delta"]
+    stability_combination_id: str
+    imperfection_case_id: str
+    imperfection_basis: str
+    base_stiffness_basis: str
+    base_stiffness_status: Literal["verified", "assumed"]
+    amplification_warning_ratio: float = Field(default=1.1, gt=1.0)
+
+
+class MemberStabilityComparison(StructuralContract):
+    member_id: str
+    first_order_max_moment_kNm: float
+    second_order_max_moment_kNm: float
+    moment_amplification: float
+    first_order_max_displacement_mm: float
+    second_order_max_displacement_mm: float
+    displacement_amplification: float
+
+
+class StabilityResult(StructuralContract):
+    method: Literal["p_delta"]
+    combination_id: str
+    imperfection_case_id: str
+    converged: bool
+    amplification_warning_ratio: float
+    governing_moment_amplification: float
+    governing_displacement_amplification: float
+    member_comparisons: list[MemberStabilityComparison]
 
 
 class NodeReaction(StructuralContract):
@@ -361,6 +392,7 @@ class DesignAnalysisDefinition(StructuralContract):
     member_loads: list[MemberPointLoad]
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    stability: StabilityDefinition | None = None
 
 
 class ProjectStructuralCapture(StructuralContract):
@@ -490,15 +522,16 @@ class ProjectStructuralCapture(StructuralContract):
                 _require_reference(
                     "analysis load case", member_point_load.case_id, load_case_ids
                 )
-                _require_reference(
-                    "analysis load source",
-                    member_point_load.source_load_id,
-                    surface_load_ids,
-                )
+                if member_point_load.source_load_id is not None:
+                    _require_reference(
+                        "analysis load source",
+                        member_point_load.source_load_id,
+                        surface_load_ids,
+                    )
                 if (
                     not 0
-                    < member_point_load.distance_m
-                    < member_lengths[member_point_load.member_id]
+                    <= member_point_load.distance_m
+                    <= member_lengths[member_point_load.member_id]
                 ):
                     raise ValueError(
                         f"analysis load {member_point_load.id!r} lies outside its member"
@@ -541,6 +574,27 @@ class ProjectStructuralCapture(StructuralContract):
                         "analysis load combination factor",
                         case_id,
                         load_case_ids,
+                    )
+            if self.analysis.stability is not None:
+                stability = self.analysis.stability
+                _require_reference(
+                    "stability combination",
+                    stability.stability_combination_id,
+                    {item.id for item in self.analysis.load_combinations},
+                )
+                _require_reference(
+                    "stability imperfection case",
+                    stability.imperfection_case_id,
+                    load_case_ids,
+                )
+                imperfection_case = next(
+                    item
+                    for item in self.analysis.load_cases
+                    if item.id == stability.imperfection_case_id
+                )
+                if imperfection_case.category != "imperfection":
+                    raise ValueError(
+                        "stability imperfection case must use category 'imperfection'"
                     )
         return self
 
@@ -592,6 +646,7 @@ class StructuralSnapshot(StructuralContract):
     )
     equilibrium: EquilibriumDiagnostic
     solver: SolverMetadata
+    stability: StabilityResult | None = None
     verification_stages: list[VerificationStage] = Field(default_factory=list)
     calculation_sheets: list[CalculationSheet] = Field(default_factory=list)
     capabilities: list[CapabilityState]

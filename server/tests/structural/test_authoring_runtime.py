@@ -169,6 +169,77 @@ def test_surface_load_distribution_derives_member_loads_from_the_same_load_handl
     assert sum(load["force"]["y"] for load in point_loads) == pytest.approx(-0.73152)
 
 
+def test_authored_point_load_and_stability_basis_are_emitted_together():
+    model = StructuralModel(title="P-Delta frame")
+    column = model.member(bd.Box(10, 10, 2000), id="column", label="Column")
+    block = model.ground(bd.Box(100, 100, 100), id="block", label="Block")
+    steel = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000,
+        shear_modulus_kN_m2=80_000_000,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+    )
+    section = model.section(
+        id="section",
+        label="Test section",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+    )
+    model.member_axis(
+        column,
+        id="column-axis",
+        label="Column",
+        start=(0, 0, 0),
+        end=(0, 0, 2),
+        section=section,
+        material=steel,
+        start_restraints=(True, True, True, True, True, True),
+        assumption="Fixed-base test.",
+    )
+    model.connect(
+        column,
+        block,
+        id="column-ground",
+        label="Column to ground",
+        transfers=["force", "shear", "moment"],
+    )
+    model.member_point_load(
+        column,
+        id="notional",
+        label="Notional horizontal force",
+        case="imperfection",
+        case_id="imperfection-x",
+        distance_m=2.0,
+        force=(0.001, 0, 0),
+        provenance="Explicit test imperfection.",
+    )
+    model.load_combination(
+        id="ULS-STABILITY",
+        label="Stability combination",
+        limit_state="ultimate",
+        factors={"imperfection-x": 1.0},
+    )
+    model.stability(
+        method="p_delta",
+        stability_combination_id="ULS-STABILITY",
+        imperfection_case_id="imperfection-x",
+        imperfection_basis="Explicit test imperfection.",
+        base_stiffness_basis="Assumed fixed base.",
+        base_stiffness_status="assumed",
+    )
+    model.assembly([column, block], label="frame")
+
+    analysis = model.manifest()["analysis"]
+
+    assert analysis["member_loads"][0]["source_load_id"] is None
+    assert analysis["load_cases"][0]["category"] == "imperfection"
+    assert analysis["stability"]["stability_combination_id"] == "ULS-STABILITY"
+
+
 def test_catalogue_section_registers_normalized_solver_data_and_provenance():
     model = StructuralModel(title="Catalogue-backed member")
     resolved = model.section_from_catalog(

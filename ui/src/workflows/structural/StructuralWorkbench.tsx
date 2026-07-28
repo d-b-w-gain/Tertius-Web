@@ -315,6 +315,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!sheet) return
     setSelectedSheetId(sheet.id)
+    if (stageId === 'stability' && analysis.stability) {
+      setDiagramMode('displacement')
+      if (selectedCombinationId !== analysis.stability.combination_id) {
+        void selectCombination(analysis.stability.combination_id)
+      }
+    }
     const memberId = sheet.related_member_ids[0]
     const member = analysis.members.find((candidate) => candidate.id === memberId)
     if (member) {
@@ -328,6 +334,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       source: analysis.source,
       design_basis: analysis.design_basis,
       active_combination: analysis.solver.combination_id,
+      stability: analysis.stability ?? null,
       verification_stages: analysis.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
     }
@@ -427,7 +434,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
 
       <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
         {analysis
-          ? 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
+          ? analysis.stability
+            ? 'P399 PROCESS ACTIVE — LINEAR/P-DELTA DEMAND IS VISIBLE; ASSUMPTIONS AND INCOMPLETE VERIFICATION STAGES REMAIN'
+            : 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
@@ -768,6 +777,40 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {analysis.members.length} members · {analysis.nodes.length} shared nodes ·{' '}
                     {analysis.member_distributed_loads.length} distributed loads
                   </div>
+                </section>
+              )}
+
+              {analysis?.stability && (
+                <section className="rounded border border-fuchsia-500/40 bg-fuchsia-950/20 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-fuchsia-300">
+                      First / second order
+                    </div>
+                    <span className="rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-fuchsia-200">
+                      {analysis.stability.converged ? 'P-DELTA CONVERGED' : 'NOT CONVERGED'}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <dt className="text-slate-500">Moment amplification ηM</dt>
+                      <dd className="font-mono text-slate-100">
+                        {number(analysis.stability.governing_moment_amplification, 4)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Displacement amplification ηδ</dt>
+                      <dd className="font-mono text-slate-100">
+                        {number(analysis.stability.governing_displacement_amplification, 4)}
+                      </dd>
+                    </div>
+                  </dl>
+                  <button
+                    type="button"
+                    onClick={() => selectVerificationStage('stability')}
+                    className="mt-3 w-full rounded border border-fuchsia-500/30 bg-slate-950/50 px-2 py-1.5 text-[10px] font-semibold text-fuchsia-200 hover:border-fuchsia-300"
+                  >
+                    Show stability combination + displaced shape
+                  </button>
                 </section>
               )}
 

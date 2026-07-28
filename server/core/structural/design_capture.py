@@ -75,6 +75,7 @@ class _GeneratedModel:
     name: str
     title: str
     design_basis: dict[str, Any] | None = None
+    stability: dict[str, Any] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
     loads: list[dict[str, Any]] = field(default_factory=list)
@@ -147,6 +148,7 @@ class _GeneratedModel:
                 ),
                 "member_loads": self.member_loads,
                 "member_distributed_loads": self.member_distributed_loads,
+                "stability": self.stability,
             },
         }
 
@@ -743,6 +745,57 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         },
                     }
                     continue
+                if method == "stability":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.stability(...) accepts keywords only"
+                        )
+                    allowed = {
+                        "method",
+                        "stability_combination_id",
+                        "imperfection_case_id",
+                        "imperfection_basis",
+                        "base_stiffness_basis",
+                        "base_stiffness_status",
+                        "amplification_warning_ratio",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.stability(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    if model.stability is not None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.stability(...) may only be called once"
+                        )
+                    model.stability = {
+                        "method": str(_keyword_value(keywords, "method", names)),
+                        "stability_combination_id": str(
+                            _keyword_value(keywords, "stability_combination_id", names)
+                        ),
+                        "imperfection_case_id": _load_case_id(
+                            str(_keyword_value(keywords, "imperfection_case_id", names))
+                        ),
+                        "imperfection_basis": str(
+                            _keyword_value(keywords, "imperfection_basis", names)
+                        ),
+                        "base_stiffness_basis": str(
+                            _keyword_value(keywords, "base_stiffness_basis", names)
+                        ),
+                        "base_stiffness_status": str(
+                            _keyword_value(keywords, "base_stiffness_status", names)
+                        ),
+                        "amplification_warning_ratio": float(
+                            _keyword_value(
+                                keywords,
+                                "amplification_warning_ratio",
+                                names,
+                                default=1.1,
+                            )
+                        ),
+                    }
+                    continue
                 if method == "connect":
                     if len(call.args) != 2:
                         raise StructuralDeclarationError(
@@ -1125,6 +1178,87 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 "provenance": provenance,
                             }
                         )
+                    continue
+                if method == "member_point_load":
+                    if len(call.args) != 1:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_point_load(...) requires one member handle"
+                        )
+                    allowed = {
+                        "id",
+                        "label",
+                        "case",
+                        "distance_m",
+                        "force",
+                        "moment",
+                        "case_id",
+                        "case_label",
+                        "provenance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_point_load(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    loaded_component = _component_handle(
+                        call.args[0],
+                        handles,
+                        model_name=model_name,
+                        context="StructuralModel.member_point_load(...) member",
+                    )
+                    analytical_member = next(
+                        (
+                            member
+                            for member in model.analytical_members
+                            if member["component_id"] == loaded_component.component_id
+                        ),
+                        None,
+                    )
+                    if analytical_member is None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_point_load(...) member has no "
+                            "analytical axis"
+                        )
+                    case = str(_keyword_value(keywords, "case", names))
+                    case_id_value = _keyword_value(
+                        keywords, "case_id", names, default=case
+                    )
+                    resolved_case_id = _load_case_id(str(case_id_value))
+                    case_label_value = _keyword_value(
+                        keywords,
+                        "case_label",
+                        names,
+                        default=f"{case.title()} load",
+                    )
+                    model.load_case_categories[resolved_case_id] = case
+                    model.load_case_labels[resolved_case_id] = str(case_label_value)
+                    model.member_loads.append(
+                        {
+                            "id": str(_keyword_value(keywords, "id", names)),
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "member_id": analytical_member["id"],
+                            "case_id": resolved_case_id,
+                            "distance_m": float(
+                                _keyword_value(keywords, "distance_m", names)
+                            ),
+                            "force": _direction_value(
+                                _keyword_value(keywords, "force", names)
+                            ),
+                            "moment": _direction_value(
+                                _keyword_value(
+                                    keywords,
+                                    "moment",
+                                    names,
+                                    default=(0.0, 0.0, 0.0),
+                                )
+                            ),
+                            "source_load_id": None,
+                            "provenance": str(
+                                _keyword_value(keywords, "provenance", names)
+                            ),
+                        }
+                    )
                     continue
                 if method in {"member_distributed_load", "member_self_weight"}:
                     if len(call.args) != 1:

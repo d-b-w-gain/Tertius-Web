@@ -272,7 +272,7 @@ export type StructuralSnapshot = {
   load_cases: Array<{
     id: string
     label: string
-    category: 'dead' | 'live' | 'wind' | 'fixture'
+    category: 'dead' | 'live' | 'wind' | 'imperfection' | 'fixture'
   }>
   load_combinations: LoadCombination[]
   loads: Array<{
@@ -343,6 +343,24 @@ export type StructuralSnapshot = {
     analysis: string
     combination_id: string
   }
+  stability?: {
+    method: 'p_delta'
+    combination_id: string
+    imperfection_case_id: string
+    converged: boolean
+    amplification_warning_ratio: number
+    governing_moment_amplification: number
+    governing_displacement_amplification: number
+    member_comparisons: Array<{
+      member_id: string
+      first_order_max_moment_kNm: number
+      second_order_max_moment_kNm: number
+      moment_amplification: number
+      first_order_max_displacement_mm: number
+      second_order_max_displacement_mm: number
+      displacement_amplification: number
+    }>
+  } | null
   verification_stages: VerificationStage[]
   calculation_sheets: CalculationSheet[]
   capabilities: CapabilityState[]

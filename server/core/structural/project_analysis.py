@@ -18,6 +18,7 @@ from .contracts import (
     MemberDiagramStation,
     MemberDistributedLoad,
     MemberResult,
+    MemberStabilityComparison,
     NodeReaction,
     ProjectStructuralCapture,
     ServiceabilityCheck,
@@ -26,6 +27,7 @@ from .contracts import (
     StructuralMember,
     StructuralNode,
     StructuralSnapshot,
+    StabilityResult,
     Vector3,
     VerificationStage,
 )
@@ -104,6 +106,54 @@ def _plus(left: Vector3, right: Vector3) -> Vector3:
 
 def _magnitude(value: Vector3) -> float:
     return sqrt(value.x**2 + value.y**2 + value.z**2)
+
+
+def _amplification(second_order: float, first_order: float) -> float:
+    if abs(first_order) <= 1e-12:
+        return 1.0 if abs(second_order) <= 1e-12 else second_order / 1e-12
+    return second_order / first_order
+
+
+def _member_extrema(
+    model,
+    declaration,
+    *,
+    combination_id: str,
+    point_loads,
+    distributed_loads,
+) -> tuple[float, float]:
+    """Sample resultant bending and displacement for one solved member."""
+
+    member_length = _length(declaration.start, declaration.end)
+    station_distances = {
+        member_length * index / STATION_INTERVALS
+        for index in range(STATION_INTERVALS + 1)
+    }
+    station_distances.update(load.distance_m for load in point_loads)
+    for line_load in distributed_loads:
+        station_distances.update((line_load.start_distance_m, line_load.end_distance_m))
+    member = model.members[declaration.id]
+    max_moment = 0.0
+    max_displacement = 0.0
+    for distance in sorted(station_distances):
+        local_moment = (
+            member.moment("My", distance, combination_id),
+            member.moment("Mz", distance, combination_id),
+        )
+        local_displacement_mm = (
+            member.deflection("dx", distance, combination_id) * 1000.0,
+            member.deflection("dy", distance, combination_id) * 1000.0,
+            member.deflection("dz", distance, combination_id) * 1000.0,
+        )
+        max_moment = max(
+            max_moment,
+            sqrt(sum(value**2 for value in local_moment)),
+        )
+        max_displacement = max(
+            max_displacement,
+            sqrt(sum(value**2 for value in local_displacement_mm)),
+        )
+    return max_moment, max_displacement
 
 
 def _local_to_global(rotation, values: tuple[float, float, float]) -> Vector3:
@@ -270,6 +320,7 @@ def _p399_evidence(
     serviceability_checks: list[ServiceabilityCheck],
     equilibrium_status: Literal["pass", "fail"],
     residual: float,
+    stability_result: StabilityResult | None,
 ) -> tuple[list[VerificationStage], list[CalculationSheet]]:
     """Build inspectable evidence for every P399 process stage.
 
@@ -282,10 +333,7 @@ def _p399_evidence(
     basis_references = (
         [
             f"{basis.framework_label} — {basis.framework_reference}",
-            *(
-                f"{role}: {reference}"
-                for role, reference in basis.standards.items()
-            ),
+            *(f"{role}: {reference}" for role, reference in basis.standards.items()),
         ]
         if basis is not None
         else ["No design basis declared in design.py."]
@@ -387,7 +435,9 @@ def _p399_evidence(
         CalculationInput(
             symbol=f"M_ref,{check.member_id}",
             label=f"{check.member_id} renderer-only bending reference",
-            value=check.capacity_kNm if check.capacity_kNm is not None else "not supplied",
+            value=check.capacity_kNm
+            if check.capacity_kNm is not None
+            else "not supplied",
             unit="kN.m" if check.capacity_kNm is not None else None,
             source=check.basis,
         )
@@ -403,15 +453,16 @@ def _p399_evidence(
         if any(check.status == "fail" for check in checked_serviceability)
         else "pass"
     )
-    basis_status: Literal["pass", "blocked"] = "pass" if basis is not None else "blocked"
+    basis_status: Literal["pass", "blocked"] = (
+        "pass" if basis is not None else "blocked"
+    )
     action_standard_references = [
         reference
         for role, reference in (basis.standards.items() if basis else [])
         if "action" in role or "wind" in role
     ]
     action_basis_ready = bool(action_standard_references) and all(
-        "confirm" not in reference.lower()
-        and "not yet active" not in reference.lower()
+        "confirm" not in reference.lower() and "not yet active" not in reference.lower()
         for reference in action_standard_references
     )
     actions_status: Literal["pass", "warning", "blocked"] = (
@@ -448,6 +499,82 @@ def _p399_evidence(
         if equilibrium_status == "pass"
         else "fail"
     )
+    stability_definition = analysis.stability
+    stability_status: Literal["pass", "fail", "warning", "blocked"]
+    if stability_definition is None or stability_result is None:
+        stability_status = "blocked"
+    elif (
+        stability_result.governing_moment_amplification
+        > stability_result.amplification_warning_ratio
+        or stability_result.governing_displacement_amplification
+        > stability_result.amplification_warning_ratio
+    ):
+        stability_status = "fail"
+    elif (
+        stability_definition.base_stiffness_status == "assumed"
+        or actions_status != "pass"
+        or combinations_status != "pass"
+    ):
+        stability_status = "warning"
+    else:
+        stability_status = "pass"
+
+    stability_assumptions = (
+        [
+            "Equivalent horizontal forces/geometric imperfections are not authored.",
+            "First-/second-order amplification is not available.",
+            "Base rotational stiffness has not been declared.",
+        ]
+        if stability_definition is None or stability_result is None
+        else [
+            stability_definition.imperfection_basis,
+            stability_definition.base_stiffness_basis,
+            *(
+                [
+                    "Base stiffness is an authored analytical assumption, not a "
+                    "verified connection stiffness."
+                ]
+                if stability_definition.base_stiffness_status == "assumed"
+                else []
+            ),
+            *(
+                [
+                    "Action inputs and combinations remain provisional, so this "
+                    "stability result cannot become a design pass."
+                ]
+                if actions_status != "pass" or combinations_status != "pass"
+                else []
+            ),
+        ]
+    )
+    stability_equations = (
+        []
+        if stability_result is None
+        else [
+            equation
+            for comparison in stability_result.member_comparisons
+            for equation in (
+                CalculationEquation(
+                    label=f"{comparison.member_id} moment amplification",
+                    expression="η_M = M_II / M_I",
+                    substitution=(
+                        f"{comparison.second_order_max_moment_kNm:g} / "
+                        f"{comparison.first_order_max_moment_kNm:g}"
+                    ),
+                    result=comparison.moment_amplification,
+                ),
+                CalculationEquation(
+                    label=f"{comparison.member_id} displacement amplification",
+                    expression="η_δ = δ_II / δ_I",
+                    substitution=(
+                        f"{comparison.second_order_max_displacement_mm:g} / "
+                        f"{comparison.first_order_max_displacement_mm:g}"
+                    ),
+                    result=comparison.displacement_amplification,
+                ),
+            )
+        ]
+    )
 
     sheets = [
         CalculationSheet(
@@ -457,7 +584,9 @@ def _p399_evidence(
             status=basis_status,
             p399_reference="SCI P399 Sections 3 and 6.1",
             purpose="Prove which design.py geometry became nodes, members, and supports.",
-            assumptions=list(dict.fromkeys(member.assumption for member in analysis.members)),
+            assumptions=list(
+                dict.fromkeys(member.assumption for member in analysis.members)
+            ),
             inputs=[
                 CalculationInput(
                     symbol="n_member",
@@ -474,7 +603,9 @@ def _p399_evidence(
                 CalculationInput(
                     symbol="n_support",
                     label="Restrained nodes",
-                    value=sum(any(node.restraints.model_dump().values()) for node in nodes),
+                    value=sum(
+                        any(node.restraints.model_dump().values()) for node in nodes
+                    ),
                     source="design.py authored end restraints",
                 ),
             ],
@@ -565,18 +696,93 @@ def _p399_evidence(
             id="sheet-p399-stability",
             stage_id="stability",
             title="Imperfections and global stability",
-            status="blocked",
+            status=stability_status,
             p399_reference="SCI P399 Sections 7.2–7.8",
-            purpose="Determine first/second-order applicability and frame stability.",
-            assumptions=[
-                "Equivalent horizontal forces/geometric imperfections are not authored.",
-                "Elastic critical factor and second-order amplification are not implemented.",
-                "Base rotational stiffness has not been verified for stability analysis.",
-            ],
+            purpose=(
+                "Compare first-order elastic and iterative P-Delta response for the "
+                "authored imperfection combination."
+            ),
+            assumptions=stability_assumptions,
+            inputs=(
+                []
+                if stability_definition is None
+                else [
+                    CalculationInput(
+                        symbol="method",
+                        label="Second-order method",
+                        value=stability_definition.method,
+                        source="design.py StructuralModel.stability",
+                    ),
+                    CalculationInput(
+                        symbol="combination",
+                        label="Stability combination",
+                        value=stability_definition.stability_combination_id,
+                        source="design.py StructuralModel.stability",
+                    ),
+                    CalculationInput(
+                        symbol="imperfection_case",
+                        label="Imperfection load case",
+                        value=stability_definition.imperfection_case_id,
+                        source=stability_definition.imperfection_basis,
+                    ),
+                    CalculationInput(
+                        symbol="base_stiffness",
+                        label="Base stiffness status",
+                        value=stability_definition.base_stiffness_status,
+                        source=stability_definition.base_stiffness_basis,
+                    ),
+                    CalculationInput(
+                        symbol="η_warning",
+                        label="Amplification warning ratio",
+                        value=stability_definition.amplification_warning_ratio,
+                        source="design.py StructuralModel.stability",
+                    ),
+                ]
+            ),
+            equations=stability_equations,
+            outputs=(
+                []
+                if stability_result is None
+                else [
+                    CalculationInput(
+                        symbol="η_M,max",
+                        label="Governing moment amplification",
+                        value=stability_result.governing_moment_amplification,
+                        source=(
+                            f"PyNite linear/P-Delta comparison for "
+                            f"{stability_result.combination_id}"
+                        ),
+                    ),
+                    CalculationInput(
+                        symbol="η_δ,max",
+                        label="Governing displacement amplification",
+                        value=stability_result.governing_displacement_amplification,
+                        source=(
+                            f"PyNite linear/P-Delta comparison for "
+                            f"{stability_result.combination_id}"
+                        ),
+                    ),
+                    CalculationInput(
+                        symbol="converged",
+                        label="P-Delta convergence",
+                        value=stability_result.converged,
+                        source="PyNite iterative P-Delta solve",
+                    ),
+                ]
+            ),
             references=basis_references,
             related_member_ids=member_ids,
             related_node_ids=node_ids,
-            related_combination_ids=[combination.id],
+            related_load_case_ids=(
+                [stability_definition.imperfection_case_id]
+                if stability_definition is not None
+                else []
+            ),
+            related_combination_ids=(
+                [stability_definition.stability_combination_id]
+                if stability_definition is not None
+                else [combination.id]
+            ),
         ),
         CalculationSheet(
             id="sheet-p399-cross-section",
@@ -709,7 +915,9 @@ def _p399_evidence(
             status=combinations_status,
             summary=f"{combination.id}: {len(combination.factors)} explicit factors.",
             sheet_ids=["sheet-p399-combinations"],
-            blocking_stage_ids=[] if actions_status in {"pass", "warning"} else ["actions"],
+            blocking_stage_ids=[]
+            if actions_status in {"pass", "warning"}
+            else ["actions"],
         ),
         VerificationStage(
             id="analysis",
@@ -728,10 +936,19 @@ def _p399_evidence(
             order=5,
             label="Global stability",
             p399_reference="§7.2–§7.8",
-            status="blocked",
-            summary="Imperfections, αcr/second-order effects, and base stiffness are missing.",
+            status=stability_status,
+            summary=(
+                "Imperfection load and P-Delta comparison are missing."
+                if stability_result is None
+                else (
+                    f"{stability_result.combination_id}: "
+                    f"ηM={stability_result.governing_moment_amplification:.3f}, "
+                    f"ηδ={stability_result.governing_displacement_amplification:.3f}; "
+                    f"base stiffness {stability_definition.base_stiffness_status}."
+                )
+            ),
             sheet_ids=["sheet-p399-stability"],
-            blocking_stage_ids=["analysis"],
+            blocking_stage_ids=[] if analysis_status == "pass" else ["analysis"],
         ),
         VerificationStage(
             id="cross_section",
@@ -968,12 +1185,87 @@ def solve_project_structural(
 
     for combination in combinations:
         model.add_load_combo(combination.id, dict(combination.factors))
+    first_order_stability: dict[str, tuple[float, float]] = {}
+    stability_result: StabilityResult | None = None
     try:
-        model.analyze(check_statics=False, log=False)
+        if analysis.stability is None:
+            model.analyze(check_statics=False, log=False)
+        else:
+            stability_combination_id = analysis.stability.stability_combination_id
+            model.analyze_linear(check_statics=False, log=False)
+            for declaration in analysis.members:
+                first_order_stability[declaration.id] = _member_extrema(
+                    model,
+                    declaration,
+                    combination_id=stability_combination_id,
+                    point_loads=[
+                        load
+                        for load in analysis.member_loads
+                        if load.member_id == declaration.id
+                    ],
+                    distributed_loads=[
+                        load
+                        for load in analysis.member_distributed_loads
+                        if load.member_id == declaration.id
+                    ],
+                )
+            model.analyze_PDelta(log=False)
     except Exception as exc:
         raise StructuralAnalysisError(
             f"PyNite could not solve the active design: {exc}"
         ) from exc
+
+    if analysis.stability is not None:
+        member_comparisons: list[MemberStabilityComparison] = []
+        for declaration in analysis.members:
+            point_loads = [
+                load
+                for load in analysis.member_loads
+                if load.member_id == declaration.id
+            ]
+            distributed_loads = [
+                load
+                for load in analysis.member_distributed_loads
+                if load.member_id == declaration.id
+            ]
+            second_moment, second_displacement = _member_extrema(
+                model,
+                declaration,
+                combination_id=analysis.stability.stability_combination_id,
+                point_loads=point_loads,
+                distributed_loads=distributed_loads,
+            )
+            first_moment, first_displacement = first_order_stability[declaration.id]
+            member_comparisons.append(
+                MemberStabilityComparison(
+                    member_id=declaration.id,
+                    first_order_max_moment_kNm=first_moment,
+                    second_order_max_moment_kNm=second_moment,
+                    moment_amplification=_amplification(second_moment, first_moment),
+                    first_order_max_displacement_mm=first_displacement,
+                    second_order_max_displacement_mm=second_displacement,
+                    displacement_amplification=_amplification(
+                        second_displacement, first_displacement
+                    ),
+                )
+            )
+        stability_result = StabilityResult(
+            method=analysis.stability.method,
+            combination_id=analysis.stability.stability_combination_id,
+            imperfection_case_id=analysis.stability.imperfection_case_id,
+            converged=True,
+            amplification_warning_ratio=(
+                analysis.stability.amplification_warning_ratio
+            ),
+            governing_moment_amplification=max(
+                comparison.moment_amplification for comparison in member_comparisons
+            ),
+            governing_displacement_amplification=max(
+                comparison.displacement_amplification
+                for comparison in member_comparisons
+            ),
+            member_comparisons=member_comparisons,
+        )
 
     structural_nodes = [
         StructuralNode(
@@ -1327,13 +1619,19 @@ def solve_project_structural(
         serviceability_checks=serviceability_checks,
         equilibrium_status=equilibrium_status,
         residual=residual,
+        stability_result=stability_result,
     )
 
     return StructuralSnapshot(
         mode="design",
         title=capture.title,
         subtitle=(
-            f"Multi-member first-order elastic analysis — {active_combination.label}"
+            (
+                "Multi-member iterative P-Delta analysis"
+                if analysis.stability is not None
+                else "Multi-member first-order elastic analysis"
+            )
+            + f" — {active_combination.label}"
         ),
         source=SnapshotSource(
             kind="design",
@@ -1367,11 +1665,16 @@ def solve_project_structural(
             name="PyNiteFEA",
             version=version("PyNiteFEA"),
             analysis=(
-                "3D first-order elastic frame; shared-coordinate nodes, "
-                "point loads, and global distributed loads"
+                (
+                    "3D iterative P-Delta frame with captured first-order comparison; "
+                    if analysis.stability is not None
+                    else "3D first-order elastic frame; "
+                )
+                + "shared-coordinate nodes, point loads, and global distributed loads"
             ),
             combination_id=active_combination.id,
         ),
+        stability=stability_result,
         verification_stages=verification_stages,
         calculation_sheets=calculation_sheets,
         capabilities=[
@@ -1399,6 +1702,22 @@ def solve_project_structural(
                 detail=(
                     f"{len(structural_members)} members and "
                     f"{len(structural_nodes)} shared nodes are solved."
+                ),
+            ),
+            CapabilityState(
+                id="stability",
+                label="P-Delta",
+                status="online" if stability_result is not None else "pending",
+                detail=(
+                    (
+                        f"{stability_result.combination_id} converged with governing "
+                        f"moment amplification "
+                        f"{stability_result.governing_moment_amplification:.4f} and "
+                        f"displacement amplification "
+                        f"{stability_result.governing_displacement_amplification:.4f}."
+                    )
+                    if stability_result is not None
+                    else "No authored imperfection case and stability combination."
                 ),
             ),
             CapabilityState(

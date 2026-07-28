@@ -14,7 +14,7 @@ import build123d as bd
 
 ComponentKind = Literal["ground", "member", "surface", "connector", "support"]
 TransferKind = Literal["force", "shear", "moment", "wind_normal"]
-LoadCategory = Literal["dead", "live", "wind"]
+LoadCategory = Literal["dead", "live", "wind", "imperfection"]
 DistributedLoadSource = Literal["self_weight", "surface", "authored"]
 
 
@@ -66,6 +66,7 @@ class StructuralModel:
     def __init__(self, *, title: str) -> None:
         self.title = _required_text("model title", title)
         self._design_basis: dict[str, Any] | None = None
+        self._stability: dict[str, Any] | None = None
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
@@ -96,7 +97,9 @@ class StructuralModel:
     ) -> None:
         """Declare the verification framework without hiding local design rules."""
         if self._design_basis is not None:
-            raise StructuralAuthoringError("the structural design basis is already defined")
+            raise StructuralAuthoringError(
+                "the structural design basis is already defined"
+            )
         if not isinstance(standards, dict) or not standards:
             raise StructuralAuthoringError(
                 "the structural design basis requires at least one named standard"
@@ -115,6 +118,52 @@ class StructuralModel:
                 )
                 for role, reference in standards.items()
             },
+        }
+
+    def stability(
+        self,
+        *,
+        method: Literal["p_delta"],
+        stability_combination_id: str,
+        imperfection_case_id: str,
+        imperfection_basis: str,
+        base_stiffness_basis: str,
+        base_stiffness_status: Literal["verified", "assumed"],
+        amplification_warning_ratio: float = 1.1,
+    ) -> None:
+        """Declare the assumptions and acceptance trigger for a second-order solve."""
+
+        if self._stability is not None:
+            raise StructuralAuthoringError(
+                "the structural stability basis is already defined"
+            )
+        if method != "p_delta":
+            raise StructuralAuthoringError(
+                f"unsupported structural stability method {method!r}"
+            )
+        if base_stiffness_status not in {"verified", "assumed"}:
+            raise StructuralAuthoringError(
+                "base_stiffness_status must be 'verified' or 'assumed'"
+            )
+        warning_ratio = float(amplification_warning_ratio)
+        if warning_ratio <= 1.0:
+            raise StructuralAuthoringError(
+                "amplification_warning_ratio must be greater than 1.0"
+            )
+        self._stability = {
+            "method": method,
+            "stability_combination_id": _required_text(
+                "stability combination ID", stability_combination_id
+            ),
+            "imperfection_case_id": _load_case_id(imperfection_case_id),
+            "imperfection_basis": _required_text(
+                "imperfection basis", imperfection_basis
+            ),
+            "base_stiffness_basis": _required_text(
+                "base stiffness basis", base_stiffness_basis
+            ),
+            "base_stiffness_status": base_stiffness_status,
+            "amplification_warning_ratio": warning_ratio,
         }
 
     def ground(
@@ -747,6 +796,85 @@ class StructuralModel:
                 }
             )
 
+    def member_point_load(
+        self,
+        member: StructuralPart,
+        *,
+        id: str,
+        label: str,
+        case: LoadCategory,
+        distance_m: float,
+        force: Sequence[float] | dict[str, float],
+        moment: Sequence[float] | dict[str, float] = (0.0, 0.0, 0.0),
+        case_id: str | None = None,
+        case_label: str | None = None,
+        provenance: str,
+    ) -> None:
+        """Apply an authored global point force/moment to a CAD-linked member axis."""
+
+        if case not in {"dead", "live", "wind", "imperfection"}:
+            raise StructuralAuthoringError(f"unsupported load case {case!r}")
+        registered_member = self._require_registered(member)
+        analytical_member = self._analytical_member(registered_member)
+        load_id = _required_text("member point load ID", id)
+        if any(
+            item["id"] == load_id
+            for item in (*self._member_loads, *self._member_distributed_loads)
+        ):
+            raise StructuralAuthoringError(
+                f"member load ID {load_id!r} is already registered"
+            )
+        member_length = _member_length(analytical_member)
+        distance = float(distance_m)
+        if not 0 <= distance <= member_length:
+            raise StructuralAuthoringError(
+                f"member point load {load_id!r} must lie within the "
+                f"{member_length:g} m member"
+            )
+        force_vector = _vector3(force)
+        moment_vector = _vector3(moment)
+        if all(
+            force_vector[axis] == 0 and moment_vector[axis] == 0
+            for axis in ("x", "y", "z")
+        ):
+            raise StructuralAuthoringError(
+                f"member point load {load_id!r} has zero force and moment"
+            )
+        resolved_case_id = _load_case_id(case_id or case)
+        resolved_case_label = (
+            _required_text("load case label", case_label)
+            if case_label is not None
+            else f"{case.title()} load"
+        )
+        existing_category = self._load_case_categories.get(resolved_case_id)
+        if existing_category is not None and existing_category != case:
+            raise StructuralAuthoringError(
+                f"load case {resolved_case_id!r} is already registered as "
+                f"{existing_category!r}"
+            )
+        existing_label = self._load_case_labels.get(resolved_case_id)
+        if existing_label is not None and existing_label != resolved_case_label:
+            raise StructuralAuthoringError(
+                f"load case {resolved_case_id!r} is already labelled {existing_label!r}"
+            )
+        self._load_case_categories[resolved_case_id] = case
+        self._load_case_labels[resolved_case_id] = resolved_case_label
+        self._member_loads.append(
+            {
+                "id": load_id,
+                "label": _required_text("member point load label", label),
+                "member_id": analytical_member["id"],
+                "case_id": resolved_case_id,
+                "distance_m": distance,
+                "force": force_vector,
+                "moment": moment_vector,
+                "source_load_id": None,
+                "provenance": _required_text(
+                    "member point load provenance", provenance
+                ),
+            }
+        )
+
     def member_distributed_load(
         self,
         member: StructuralPart,
@@ -1101,6 +1229,9 @@ class StructuralModel:
                     }
                     for load in self._member_distributed_loads
                 ],
+                "stability": (
+                    dict(self._stability) if self._stability is not None else None
+                ),
             },
         }
         self._assembly.tertius_structural_manifest = manifest
@@ -1286,6 +1417,19 @@ class StructuralModel:
                 raise StructuralAuthoringError(
                     f"load combination {combination['id']!r} references missing "
                     f"load cases {missing_cases}"
+                )
+        if self._stability is not None:
+            combination_ids = {
+                combination["id"] for combination in self._load_combinations
+            }
+            if self._stability["stability_combination_id"] not in combination_ids:
+                raise StructuralAuthoringError(
+                    "stability_combination_id must reference an authored load combination"
+                )
+            imperfection_case_id = self._stability["imperfection_case_id"]
+            if self._load_case_categories.get(imperfection_case_id) != "imperfection":
+                raise StructuralAuthoringError(
+                    "imperfection_case_id must reference an authored imperfection load"
                 )
 
 
