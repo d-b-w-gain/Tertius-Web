@@ -183,25 +183,88 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedServiceability = analysis?.serviceability_checks.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const structuralOverlay = useMemo(() => {
-    const diagram = analysis?.member_diagrams.find(
-      (candidate) => candidate.member_id === selectedMember?.id,
-    )
-    if (!diagram) return undefined
-    return {
-      id: diagram.member_id,
-      label: diagramMode === 'displacement'
-        ? `${selectedMember?.label || diagram.member_id} amplified displacement`
-        : `${selectedMember?.label || diagram.member_id} signed bending moment`,
-      mode: diagramMode,
-      stations: diagram.stations.map((station) => ({
-        position: station.position,
-        moment_kNm: station.moment_kNm,
-        displacement_mm: station.displacement_mm,
-      })),
-      maxOffsetMm: 260,
-    }
-  }, [analysis, diagramMode, selectedMember?.id, selectedMember?.label])
+  const activeCombination = analysis?.load_combinations.find(
+    (combination) => combination.id === selectedCombinationId,
+  ) || analysis?.load_combinations[0]
+  const structuralOverlays = useMemo(() => {
+    if (!analysis || !activeCombination) return undefined
+    const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
+    return analysis.member_diagrams.map((diagram) => {
+      const member = analysis.members.find(
+        (candidate) => candidate.id === diagram.member_id,
+      )
+      const start = member ? nodes.get(member.start_node_id)?.position : undefined
+      const end = member ? nodes.get(member.end_node_id)?.position : undefined
+      const memberLength = start && end
+        ? Math.hypot(end.x - start.x, end.y - start.y, end.z - start.z)
+        : 0
+      const positionAt = (distanceM: number) => {
+        const ratio = memberLength > 0 ? distanceM / memberLength : 0
+        return {
+          x: (start?.x ?? 0) + ((end?.x ?? 0) - (start?.x ?? 0)) * ratio,
+          y: (start?.y ?? 0) + ((end?.y ?? 0) - (start?.y ?? 0)) * ratio,
+          z: (start?.z ?? 0) + ((end?.z ?? 0) - (start?.z ?? 0)) * ratio,
+        }
+      }
+      const pointArrows = analysis.member_loads
+        .filter((load) => load.member_id === diagram.member_id)
+        .flatMap((load) => {
+          const factor = activeCombination.factors[load.case_id] ?? 0
+          if (factor === 0) return []
+          return [{
+            id: load.id,
+            label: load.label,
+            position: positionAt(load.distance_m),
+            force_kN: {
+              x: load.force.x * factor,
+              y: load.force.y * factor,
+              z: load.force.z * factor,
+            },
+          }]
+        })
+      const lineArrows = analysis.member_distributed_loads
+        .filter((load) => load.member_id === diagram.member_id)
+        .flatMap((load) => {
+          const factor = activeCombination.factors[load.case_id] ?? 0
+          if (factor === 0) return []
+          return [{
+            id: load.id,
+            label: load.label,
+            position: positionAt(
+              (load.start_distance_m + load.end_distance_m) / 2,
+            ),
+            force_kN: {
+              x: (load.start_force_kN_m.x + load.end_force_kN_m.x) / 2 * factor,
+              y: (load.start_force_kN_m.y + load.end_force_kN_m.y) / 2 * factor,
+              z: (load.start_force_kN_m.z + load.end_force_kN_m.z) / 2 * factor,
+            },
+          }]
+        })
+      const check = diagramMode === 'moment'
+        ? analysis.member_checks.find(
+          (candidate) => candidate.member_id === diagram.member_id,
+        )
+        : analysis.serviceability_checks.find(
+          (candidate) => candidate.member_id === diagram.member_id,
+        )
+      return {
+        id: diagram.member_id,
+        label: diagramMode === 'displacement'
+          ? `${member?.label || diagram.member_id} amplified displacement`
+          : `${member?.label || diagram.member_id} signed bending moment`,
+        mode: diagramMode,
+        status: check?.status ?? 'not_checked',
+        utilisation: check?.utilisation,
+        stations: diagram.stations.map((station) => ({
+          position: station.position,
+          moment_kNm: station.moment_kNm,
+          displacement_mm: station.displacement_mm,
+        })),
+        loadArrows: [...pointArrows, ...lineArrows],
+        maxOffsetMm: 260,
+      }
+    })
+  }, [activeCombination, analysis, diagramMode])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
 
   if (authMode === 'guest') {
@@ -476,6 +539,46 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </section>
               )}
 
+              {analysis && activeCombination && (
+                <section className="rounded border border-sky-500/30 bg-sky-950/20 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-300">
+                      Authored action cases
+                    </div>
+                    <span className="text-[9px] text-sky-200">
+                      arrows show active directions
+                    </span>
+                  </div>
+                  <div className="mt-3 space-y-1">
+                    {analysis.load_cases.map((loadCase) => {
+                      const factor = activeCombination.factors[loadCase.id] ?? 0
+                      return (
+                        <div
+                          key={loadCase.id}
+                          className="flex items-center justify-between rounded border border-slate-800 bg-slate-950/50 px-2 py-1.5"
+                        >
+                          <div>
+                            <div className="text-[10px] font-semibold text-slate-200">
+                              {loadCase.label}
+                            </div>
+                            <div className="font-mono text-[9px] text-slate-500">
+                              {loadCase.id}
+                            </div>
+                          </div>
+                          <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
+                            factor === 0
+                              ? 'bg-slate-800 text-slate-500'
+                              : 'bg-sky-500/15 text-sky-200'
+                          }`}>
+                            × {number(factor, factor % 1 === 0 ? 0 : 2)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </section>
+              )}
+
               {analysis && analysis.members.length > 1 && (
                 <section>
                   <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
@@ -486,6 +589,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       const result = analysis.member_results.find(
                         (candidate) => candidate.member_id === member.id,
                       )
+                      const check = diagramMode === 'moment'
+                        ? analysis.member_checks.find(
+                          (candidate) => candidate.member_id === member.id,
+                        )
+                        : analysis.serviceability_checks.find(
+                          (candidate) => candidate.member_id === member.id,
+                        )
                       return (
                         <button
                           key={member.id}
@@ -503,8 +613,22 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           <span className="text-xs font-semibold text-slate-200">
                             {member.label}
                           </span>
-                          <span className="font-mono text-[9px] text-slate-400">
-                            {result ? `${number(result.max_displacement_mm, 2)} mm` : '—'}
+                          <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
+                            check?.status === 'pass'
+                              ? 'bg-emerald-500/15 text-emerald-300'
+                              : check?.status === 'fail'
+                                ? 'bg-red-500/15 text-red-300'
+                                : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {check?.status === 'not_checked' || !check
+                              ? 'NOT CHECKED'
+                              : `${check.status.toUpperCase()} · ${number(
+                                (check.utilisation ?? 0) * 100,
+                                1,
+                              )}%`}
+                            {result && diagramMode === 'displacement'
+                              ? ` · ${number(result.max_displacement_mm, 2)} mm`
+                              : ''}
                           </span>
                         </button>
                       )
@@ -535,7 +659,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
                     <div>
                       <dt className="text-slate-500">Max moment</dt>
-                      <dd className="font-mono text-amber-200">
+                      <dd className={`font-mono ${
+                        selectedCheck?.status === 'pass'
+                          ? 'text-emerald-300'
+                          : selectedCheck?.status === 'fail'
+                            ? 'text-red-300'
+                            : 'text-slate-300'
+                      }`}>
                         {number(selectedMemberResult.max_moment_kNm, 4)} kN·m
                       </dd>
                     </div>
@@ -563,6 +693,44 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </dd>
                     </div>
                   </dl>
+                  {selectedCheck && (
+                    <div className={`mt-3 rounded border p-3 ${
+                      selectedCheck.status === 'pass'
+                        ? 'border-emerald-500/40 bg-emerald-950/30'
+                        : selectedCheck.status === 'fail'
+                          ? 'border-red-500/50 bg-red-950/30'
+                          : 'border-slate-700 bg-slate-950/40'
+                    }`}>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
+                          Effective-section yield reference
+                        </span>
+                        <span className={`font-bold uppercase ${
+                          selectedCheck.status === 'pass'
+                            ? 'text-emerald-300'
+                            : selectedCheck.status === 'fail'
+                              ? 'text-red-300'
+                              : 'text-slate-400'
+                        }`}>
+                          {selectedCheck.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <div className="mt-2 font-mono text-xs text-slate-200">
+                        {number(selectedCheck.demand_kNm, 4)} kN·m /{' '}
+                        {selectedCheck.capacity_kNm === null
+                          ? 'no reference'
+                          : `${number(selectedCheck.capacity_kNm, 4)} kN·m`}
+                      </div>
+                      {selectedCheck.utilisation !== null && (
+                        <div className="mt-1 font-mono text-[10px] text-slate-400">
+                          {number(selectedCheck.utilisation * 100, 1)}% reference utilisation
+                        </div>
+                      )}
+                      <p className="mt-2 text-[9px] text-slate-500">
+                        {selectedCheck.basis}
+                      </p>
+                    </div>
+                  )}
                   {selectedServiceability && (
                     <div className={`mt-3 rounded border p-3 ${
                       selectedServiceability.status === 'pass'
@@ -662,18 +830,17 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
                     {diagramMode === 'displacement'
                       ? 'Displacement is amplified for visibility; the reported millimetres are unscaled.'
-                      : 'Signed moment ribbon: blue is low demand and amber is peak demand.'}
+                      : 'Signed moment ribbons: green is below the effective-section yield reference, red exceeds it, and grey is not checked. Cyan arrows show the active load direction.'}
                   </p>
                 </section>
               )}
 
               <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
-                <div className="font-semibold">Capacity status: NOT CHECKED</div>
+                <div className="font-semibold">Design capacity status: NOT CHECKED</div>
                 <p className="mt-1 text-[10px] text-amber-200/75">
-                  {selectedCheck?.basis || (
-                    'This proves declared connectivity only. It does not yet solve the C100 member '
-                    + 'or check screws, bolts, bracket, anchors, or concrete.'
-                  )}
+                  The green/red threshold is a nominal Zxe × fy yield reference. It does not
+                  include an AS/NZS 4600 capacity factor, lateral-torsional buckling,
+                  restraint, interaction, screws, bolts, bracket, anchors, or concrete.
                 </p>
               </section>
             </div>
@@ -690,7 +857,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 : 'Active-project model linked to parsed structural declarations'
             }
             externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}
-            structuralOverlay={structuralOverlay}
+            structuralOverlays={structuralOverlays}
           />
         </main>
       </div>

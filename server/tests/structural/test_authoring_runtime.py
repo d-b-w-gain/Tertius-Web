@@ -189,6 +189,9 @@ def test_catalogue_section_registers_normalized_solver_data_and_provenance():
                 "iz_m4": 673000e-12,
                 "torsion_j_m4": 492e-12,
                 "mass_kg_m": 3.29,
+                "bending_reference_kNm": 5.535,
+                "bending_reference_axis": "local_z",
+                "bending_reference_basis": "Nominal Zxe times fy reference only.",
             },
             "material": {
                 "label": "G450 steel",
@@ -217,6 +220,9 @@ def test_catalogue_section_registers_normalized_solver_data_and_provenance():
     section = model._sections[0]
     assert section["area_m2"] == pytest.approx(409e-6)
     assert section["mass_kg_m"] == pytest.approx(3.29)
+    assert section["bending_reference_kNm"] == pytest.approx(5.535)
+    assert section["bending_reference_axis"] == "local_z"
+    assert section["bending_reference_basis"].startswith("Nominal Zxe")
     assert section["catalog"]["catalog_id"] == "lysaght-zc-v2"
     assert section["catalog"]["axis_mapping"]["local_z_inertia"] == "Ix_mm4"
     assert section["catalog"]["properties"]["Zxe_mm3"] == 12300
@@ -284,3 +290,70 @@ def test_catalogue_member_self_weight_and_service_combination_are_authored():
     assert line_load["end_distance_m"] == pytest.approx(2.0)
     assert line_load["source_kind"] == "self_weight"
     assert manifest["analysis"]["load_combinations"][0]["factors"] == {"case-dead": 1.0}
+
+
+def test_named_opposite_wind_cases_remain_distinct_in_manifest():
+    model = StructuralModel(title="Opposite wind cases")
+    sheet = model.surface(bd.Box(100, 2, 100), id="sheet", label="Sheet")
+    block = model.ground(bd.Box(100, 100, 100), id="block", label="Block")
+    model.connect(
+        sheet,
+        block,
+        id="sheet-ground",
+        label="Sheet to ground",
+        transfers=["force"],
+    )
+    model.surface_load(
+        sheet,
+        id="wind-inward",
+        label="Inward pressure",
+        case="wind",
+        case_id="wind-inward",
+        case_label="Inward wind pressure",
+        pressure_kPa=0.8,
+        area_m2=0.5,
+        direction=(0, -1, 0),
+        provenance="Opposite-direction test.",
+    )
+    model.surface_load(
+        sheet,
+        id="wind-outward",
+        label="Outward suction",
+        case="wind",
+        case_id="wind-outward",
+        case_label="Outward wind suction",
+        pressure_kPa=0.8,
+        area_m2=0.5,
+        direction=(0, 1, 0),
+        provenance="Opposite-direction test.",
+    )
+    model.load_combination(
+        id="SLS-WIN",
+        label="Inward",
+        limit_state="serviceability",
+        factors={"wind-inward": 1.0},
+    )
+    model.load_combination(
+        id="SLS-WOUT",
+        label="Outward",
+        limit_state="serviceability",
+        factors={"wind-outward": 1.0},
+    )
+    model.assembly([sheet, block], label="opposite-wind")
+
+    manifest = model.manifest()
+
+    assert manifest["loads"][0]["case_id"] == "case-wind-inward"
+    assert manifest["loads"][1]["case_id"] == "case-wind-outward"
+    assert manifest["analysis"]["load_cases"] == [
+        {
+            "id": "case-wind-inward",
+            "label": "Inward wind pressure",
+            "category": "wind",
+        },
+        {
+            "id": "case-wind-outward",
+            "label": "Outward wind suction",
+            "category": "wind",
+        },
+    ]

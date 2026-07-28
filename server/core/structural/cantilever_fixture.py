@@ -108,7 +108,9 @@ def cantilever_snapshot() -> StructuralSnapshot:
     force_residual_x = 1.0 + solution.reaction_fx_kN
     moment_residual_y = 2.0 + solution.reaction_my_kNm
     residual_tolerance = 1e-8
-    equilibrium_passes = max(abs(force_residual_x), abs(moment_residual_y)) <= residual_tolerance
+    equilibrium_passes = (
+        max(abs(force_residual_x), abs(moment_residual_y)) <= residual_tolerance
+    )
 
     return StructuralSnapshot(
         mode="fixture",
@@ -125,7 +127,9 @@ def cantilever_snapshot() -> StructuralSnapshot:
                 id=BASE_NODE_ID,
                 label="Fixed base",
                 position=Vector3(x=0, y=0, z=0),
-                restraints=Restraints(dx=True, dy=True, dz=True, rx=True, ry=True, rz=True),
+                restraints=Restraints(
+                    dx=True, dy=True, dz=True, rx=True, ry=True, rz=True
+                ),
                 visual_node_id=BASE_NODE_ID,
             ),
             StructuralNode(

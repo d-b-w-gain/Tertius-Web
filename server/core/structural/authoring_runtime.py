@@ -78,6 +78,7 @@ class StructuralModel:
         self._member_distributed_loads: list[dict[str, Any]] = []
         self._load_combinations: list[dict[str, Any]] = []
         self._load_case_categories: dict[str, LoadCategory] = {}
+        self._load_case_labels: dict[str, str] = {}
         self._surface_load_handles: dict[str, StructuralSurfaceLoad] = {}
         self._assembled_ids: list[str] | None = None
         self._assembly: bd.Compound | None = None
@@ -243,6 +244,8 @@ class StructuralModel:
         id: str,
         label: str,
         case: Literal["dead", "live", "wind"],
+        case_id: str | None = None,
+        case_label: str | None = None,
         pressure_kPa: float,
         area_m2: float,
         direction: Sequence[float] | dict[str, float],
@@ -268,11 +271,29 @@ class StructuralModel:
         vector = _vector3(direction)
         if vector == {"x": 0.0, "y": 0.0, "z": 0.0}:
             raise StructuralAuthoringError(f"load {load_id!r} has a zero direction")
+        resolved_case_id = _load_case_id(case_id or case)
+        resolved_case_label = (
+            _required_text("load case label", case_label)
+            if case_label is not None
+            else f"{case.title()} load"
+        )
+        existing_category = self._load_case_categories.get(resolved_case_id)
+        if existing_category is not None and existing_category != case:
+            raise StructuralAuthoringError(
+                f"load case {resolved_case_id!r} is already registered as "
+                f"{existing_category!r}"
+            )
+        existing_label = self._load_case_labels.get(resolved_case_id)
+        if existing_label is not None and existing_label != resolved_case_label:
+            raise StructuralAuthoringError(
+                f"load case {resolved_case_id!r} is already labelled {existing_label!r}"
+            )
         self._loads.append(
             {
                 "id": load_id,
                 "label": _required_text("load label", label),
                 "case": case,
+                "case_id": resolved_case_id,
                 "component_id": registered.component_id,
                 "pressure_kPa": pressure,
                 "area_m2": area,
@@ -280,7 +301,8 @@ class StructuralModel:
                 "provenance": _required_text("load provenance", provenance),
             }
         )
-        self._load_case_categories[f"case-{case}"] = case
+        self._load_case_categories[resolved_case_id] = case
+        self._load_case_labels[resolved_case_id] = resolved_case_label
         handle = StructuralSurfaceLoad(id=load_id)
         self._surface_load_handles[load_id] = handle
         return handle
@@ -336,6 +358,14 @@ class StructuralModel:
         iz_m4: float,
         torsion_j_m4: float,
         mass_kg_m: float | None = None,
+        bending_reference_kNm: float | None = None,
+        bending_reference_axis: Literal[
+            "local_y",
+            "local_z",
+            "resultant",
+        ]
+        | None = None,
+        bending_reference_basis: str | None = None,
         catalog: Mapping[str, Any] | None = None,
     ) -> StructuralSectionSpec:
         section_id = _required_text("section ID", id)
@@ -360,12 +390,53 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 f"section {section_id!r} mass_kg_m must be positive"
             )
+        bending_reference = (
+            None if bending_reference_kNm is None else float(bending_reference_kNm)
+        )
+        reference_fields = (
+            bending_reference,
+            bending_reference_axis,
+            bending_reference_basis,
+        )
+        if any(value is None for value in reference_fields) and any(
+            value is not None for value in reference_fields
+        ):
+            raise StructuralAuthoringError(
+                f"section {section_id!r} bending reference requires "
+                "bending_reference_kNm, bending_reference_axis, and "
+                "bending_reference_basis"
+            )
+        if bending_reference is not None and bending_reference <= 0:
+            raise StructuralAuthoringError(
+                f"section {section_id!r} bending reference must be positive"
+            )
+        if bending_reference_axis not in {
+            None,
+            "local_y",
+            "local_z",
+            "resultant",
+        }:
+            raise StructuralAuthoringError(
+                f"section {section_id!r} has unsupported bending reference axis"
+            )
         self._sections.append(
             {
                 "id": section_id,
                 "label": _required_text("section label", label),
                 **values,
                 **({"mass_kg_m": mass} if mass is not None else {}),
+                **(
+                    {
+                        "bending_reference_kNm": bending_reference,
+                        "bending_reference_axis": bending_reference_axis,
+                        "bending_reference_basis": _required_text(
+                            "section bending reference basis",
+                            bending_reference_basis,
+                        ),
+                    }
+                    if bending_reference is not None
+                    else {}
+                ),
                 **(
                     {"catalog": _json_mapping("section catalogue", catalog)}
                     if catalog
@@ -443,6 +514,16 @@ class StructuralModel:
                 solver,
                 "mass_kg_m",
                 fallback=properties.get("mass_kg_m"),
+            ),
+            bending_reference_kNm=_optional_positive_number(
+                solver,
+                "bending_reference_kNm",
+            ),
+            bending_reference_axis=_optional_bending_reference_axis(solver),
+            bending_reference_basis=(
+                str(solver["bending_reference_basis"])
+                if solver.get("bending_reference_basis") is not None
+                else None
             ),
             catalog=catalog_reference,
         )
@@ -608,7 +689,7 @@ class StructuralModel:
         direction = source_data["direction"]
         direction_length = sqrt(sum(direction[axis] ** 2 for axis in ("x", "y", "z")))
         resultant = source_data["pressure_kPa"] * source_data["area_m2"]
-        case_id = f"case-{source_data['case']}"
+        case_id = source_data["case_id"]
         load_label = _required_text("load distribution label", label)
         load_provenance = _required_text("load distribution provenance", provenance)
         for index, (position, weight) in enumerate(
@@ -706,8 +787,9 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "member self-weight must use the dead load case"
             )
-        case_id = f"case-{case}"
+        case_id = _load_case_id(case)
         self._load_case_categories[case_id] = case
+        self._load_case_labels.setdefault(case_id, f"{case.title()} load")
         self._member_distributed_loads.append(
             {
                 "id": load_id,
@@ -847,9 +929,7 @@ class StructuralModel:
             )
         normalized_factors: dict[str, float] = {}
         for key, raw_factor in factors.items():
-            case_id = str(key)
-            if not case_id.startswith("case-"):
-                case_id = f"case-{case_id}"
+            case_id = _load_case_id(str(key))
             factor = float(raw_factor)
             if factor == 0:
                 continue
@@ -946,7 +1026,10 @@ class StructuralModel:
                 "load_cases": [
                     {
                         "id": case_id,
-                        "label": f"{category.title()} load",
+                        "label": self._load_case_labels.get(
+                            case_id,
+                            f"{category.title()} load",
+                        ),
                         "category": category,
                     }
                     for case_id, category in self._load_case_categories.items()
@@ -1184,6 +1267,11 @@ def _required_text(label: str, value: Any) -> str:
     return text
 
 
+def _load_case_id(value: str) -> str:
+    case_id = _required_text("load case ID", value)
+    return case_id if case_id.startswith("case-") else f"case-{case_id}"
+
+
 def _json_mapping(label: str, value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise StructuralAuthoringError(f"{label} must be a mapping")
@@ -1253,6 +1341,25 @@ def _optional_positive_number(
             f"catalogue section value {key!r} must be positive"
         )
     return number
+
+
+def _optional_bending_reference_axis(
+    value: Mapping[str, Any],
+) -> Literal["local_y", "local_z", "resultant"] | None:
+    raw = value.get("bending_reference_axis")
+    if raw is None:
+        return None
+    axis = str(raw)
+    if axis == "local_y":
+        return "local_y"
+    if axis == "local_z":
+        return "local_z"
+    if axis == "resultant":
+        return "resultant"
+    raise StructuralAuthoringError(
+        "catalogue section bending_reference_axis must be "
+        "'local_y', 'local_z', or 'resultant'"
+    )
 
 
 def _member_length(member: Mapping[str, Any]) -> float:

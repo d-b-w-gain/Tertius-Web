@@ -27,7 +27,7 @@ interface ViewerProps {
   isActive?: boolean;
   statusTextOverride?: string;
   externalSelectedNodeIds?: string[];
-  structuralOverlay?: StructuralViewerOverlay;
+  structuralOverlays?: StructuralViewerOverlay[];
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
@@ -38,7 +38,7 @@ interface ModelViewerCanvasProps {
   projectName?: string;
   isActive?: boolean;
   externalSelectedNodeIds?: string[];
-  structuralOverlay?: StructuralViewerOverlay;
+  structuralOverlays?: StructuralViewerOverlay[];
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
@@ -46,13 +46,29 @@ export type StructuralViewerOverlay = {
   id: string;
   label: string;
   mode?: 'moment' | 'displacement';
+  status?: 'pass' | 'fail' | 'not_checked';
+  utilisation?: number | null;
   stations: Array<{
     position: { x: number; y: number; z: number };
     moment_kNm?: { x: number; y: number; z: number };
     displacement_mm?: { x: number; y: number; z: number };
   }>;
+  loadArrows?: Array<{
+    id: string;
+    label: string;
+    position: { x: number; y: number; z: number };
+    force_kN: { x: number; y: number; z: number };
+  }>;
   maxOffsetMm?: number;
 };
+
+export function structuralCheckColor(
+  status: StructuralViewerOverlay['status'],
+): number {
+  if (status === 'pass') return 0x22c55e;
+  if (status === 'fail') return 0xef4444;
+  return 0x94a3b8;
+}
 
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 const COMPONENT_PREVIEW_SIZE = 512;
@@ -401,7 +417,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
   isActive = true,
   statusTextOverride,
   externalSelectedNodeIds,
-  structuralOverlay,
+  structuralOverlays,
   onExternalSelectionPreviewChange,
 }) => {
   const { getAccessToken } = useAuth();
@@ -462,7 +478,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
       projectName={projectName}
       isActive={isActive}
       externalSelectedNodeIds={externalSelectedNodeIds}
-      structuralOverlay={structuralOverlay}
+      structuralOverlays={structuralOverlays}
       onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
     />
   );
@@ -475,7 +491,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   projectName = '',
   isActive = true,
   externalSelectedNodeIds,
-  structuralOverlay,
+  structuralOverlays,
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -1082,28 +1098,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       model.remove(previous);
       disposeObjectTree(previous);
     }
-    if (!structuralOverlay || structuralOverlay.stations.length < 2) return;
-
-    const stations = structuralOverlay.stations;
-    const first = stations[0]!;
-    const last = stations[stations.length - 1]!;
-    const axis = new THREE.Vector3(
-      last.position.x - first.position.x,
-      last.position.y - first.position.y,
-      last.position.z - first.position.z,
-    );
-    if (axis.lengthSq() === 0) return;
-    axis.normalize();
-
-    const overlayMode = structuralOverlay.mode ?? 'moment';
-    const values = stations.map((station) => {
-      const value = overlayMode === 'displacement'
-        ? station.displacement_mm
-        : station.moment_kNm;
-      return new THREE.Vector3(value?.x ?? 0, value?.y ?? 0, value?.z ?? 0);
-    });
-    const peakValue = Math.max(...values.map((value) => value.length()));
-    if (peakValue <= Number.EPSILON) return;
+    if (!structuralOverlays?.length) return;
 
     // Build123D source coordinates are Z-up. GLTF stores them Y-up and the
     // viewer rotates the loaded model back to Z-up, so overlay points are
@@ -1111,127 +1106,226 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const toModelCoordinates = (point: THREE.Vector3) => (
       new THREE.Vector3(point.x, point.z, -point.y)
     );
-    // Build123D emits GLTF vertex coordinates in metres even though the CAD
-    // source is authored in millimetres.
-    const maxOffset = (structuralOverlay.maxOffsetMm ?? 260) / 1000;
-    const axisPoints: THREE.Vector3[] = [];
-    const diagramPoints: THREE.Vector3[] = [];
-    const demandRatios: number[] = [];
-    stations.forEach(({ position }, index) => {
-      const sourcePoint = new THREE.Vector3(
-        position.x,
-        position.y,
-        position.z,
-      );
-      const value = values[index]!;
-      const offset = overlayMode === 'displacement'
-        ? value.clone().multiplyScalar(maxOffset / peakValue)
-        : axis.clone().cross(value).multiplyScalar(maxOffset / peakValue);
-      axisPoints.push(toModelCoordinates(sourcePoint));
-      diagramPoints.push(toModelCoordinates(sourcePoint.clone().add(offset)));
-      demandRatios.push(Math.min(1, value.length() / peakValue));
-    });
-
     const group = new THREE.Group();
     group.name = STRUCTURAL_OVERLAY_NAME;
     group.userData.tertiusStructuralOverlay = true;
+    const loadArrowPeak = Math.max(
+      Number.EPSILON,
+      ...structuralOverlays.flatMap((overlay) => (
+        (overlay.loadArrows ?? []).map(({ force_kN: force }) => (
+          Math.hypot(force.x, force.y, force.z)
+        ))
+      )),
+    );
 
-    const ribbonPositions: number[] = [];
-    const ribbonColors: number[] = [];
-    const cool = new THREE.Color(0x38bdf8);
-    const hot = new THREE.Color(
-      overlayMode === 'displacement' ? 0xf472b6 : 0xf59e0b,
-    );
-    const pushVertex = (point: THREE.Vector3, demandRatio: number) => {
-      const color = cool.clone().lerp(hot, demandRatio);
-      ribbonPositions.push(point.x, point.y, point.z);
-      ribbonColors.push(color.r, color.g, color.b);
-    };
-    for (let index = 0; index < stations.length - 1; index += 1) {
-      const axisStart = axisPoints[index]!;
-      const axisEnd = axisPoints[index + 1]!;
-      const diagramStart = diagramPoints[index]!;
-      const diagramEnd = diagramPoints[index + 1]!;
-      const startDemand = demandRatios[index]!;
-      const endDemand = demandRatios[index + 1]!;
-      pushVertex(axisStart, startDemand);
-      pushVertex(diagramStart, startDemand);
-      pushVertex(axisEnd, endDemand);
-      pushVertex(diagramStart, startDemand);
-      pushVertex(diagramEnd, endDemand);
-      pushVertex(axisEnd, endDemand);
-    }
-    const ribbonGeometry = new THREE.BufferGeometry();
-    ribbonGeometry.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute(ribbonPositions, 3),
-    );
-    ribbonGeometry.setAttribute(
-      'color',
-      new THREE.Float32BufferAttribute(ribbonColors, 3),
-    );
-    const ribbon = new THREE.Mesh(
-      ribbonGeometry,
-      new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.48,
-        side: THREE.DoubleSide,
-        depthTest: false,
-        depthWrite: false,
-      }),
-    );
-    ribbon.name = `${STRUCTURAL_OVERLAY_NAME}Ribbon`;
-    ribbon.renderOrder = 30;
-    ribbon.userData.tertiusStructuralOverlay = true;
-    group.add(ribbon);
+    for (const structuralOverlay of structuralOverlays) {
+      const memberGroup = new THREE.Group();
+      memberGroup.name = `${STRUCTURAL_OVERLAY_NAME}-${structuralOverlay.id}`;
+      memberGroup.userData.tertiusStructuralOverlay = true;
+      const overlayMode = structuralOverlay.mode ?? 'moment';
+      const statusColor = structuralCheckColor(structuralOverlay.status);
 
-    const diagramGeometry = new THREE.BufferGeometry().setFromPoints(diagramPoints);
-    const diagramLine = new THREE.Line(
-      diagramGeometry,
-      new THREE.LineBasicMaterial({
-        color: overlayMode === 'displacement' ? 0xf9a8d4 : 0xfbbf24,
-        transparent: true,
-        opacity: 0.95,
-        depthTest: false,
-      }),
-    );
-    diagramLine.name = `${STRUCTURAL_OVERLAY_NAME}Edge`;
-    diagramLine.renderOrder = 31;
-    diagramLine.userData.tertiusStructuralOverlay = true;
-    group.add(diagramLine);
-
-    const connectorPoints: THREE.Vector3[] = [];
-    const connectorInterval = Math.max(1, Math.floor(stations.length / 8));
-    axisPoints.forEach((point, index) => {
-      if (
-        index === 0
-        || index === axisPoints.length - 1
-        || index % connectorInterval === 0
-      ) {
-        connectorPoints.push(point, diagramPoints[index]!);
+      for (const loadArrow of structuralOverlay.loadArrows ?? []) {
+        const sourceForce = new THREE.Vector3(
+          loadArrow.force_kN.x,
+          loadArrow.force_kN.y,
+          loadArrow.force_kN.z,
+        );
+        const magnitude = sourceForce.length();
+        if (magnitude <= Number.EPSILON) continue;
+        const direction = toModelCoordinates(sourceForce).normalize();
+        const origin = toModelCoordinates(new THREE.Vector3(
+          loadArrow.position.x,
+          loadArrow.position.y,
+          loadArrow.position.z,
+        ));
+        const length = 0.08 + 0.18 * Math.min(1, magnitude / loadArrowPeak);
+        const arrow = new THREE.ArrowHelper(
+          direction,
+          origin,
+          length,
+          0x38bdf8,
+          Math.min(0.06, length * 0.35),
+          Math.min(0.035, length * 0.2),
+        );
+        arrow.name = `${STRUCTURAL_OVERLAY_NAME}Load-${loadArrow.id}`;
+        arrow.renderOrder = 33;
+        arrow.traverse((object) => {
+          object.userData.tertiusStructuralOverlay = true;
+          object.renderOrder = 33;
+          const material = (object as THREE.Mesh | THREE.Line).material;
+          const materials = Array.isArray(material) ? material : material ? [material] : [];
+          for (const candidate of materials) {
+            candidate.depthTest = false;
+            candidate.transparent = true;
+            candidate.opacity = 0.95;
+          }
+        });
+        memberGroup.add(arrow);
       }
-    });
-    const connectors = new THREE.LineSegments(
-      new THREE.BufferGeometry().setFromPoints(connectorPoints),
-      new THREE.LineBasicMaterial({
-        color: 0x7dd3fc,
-        transparent: true,
-        opacity: 0.55,
-        depthTest: false,
-      }),
-    );
-    connectors.name = `${STRUCTURAL_OVERLAY_NAME}Stations`;
-    connectors.renderOrder = 29;
-    connectors.userData.tertiusStructuralOverlay = true;
-    group.add(connectors);
+
+      const stations = structuralOverlay.stations;
+      if (stations.length < 2) {
+        group.add(memberGroup);
+        continue;
+      }
+      const first = stations[0]!;
+      const last = stations[stations.length - 1]!;
+      const axis = new THREE.Vector3(
+        last.position.x - first.position.x,
+        last.position.y - first.position.y,
+        last.position.z - first.position.z,
+      );
+      if (axis.lengthSq() === 0) {
+        group.add(memberGroup);
+        continue;
+      }
+      axis.normalize();
+
+      const values = stations.map((station) => {
+        const value = overlayMode === 'displacement'
+          ? station.displacement_mm
+          : station.moment_kNm;
+        return new THREE.Vector3(value?.x ?? 0, value?.y ?? 0, value?.z ?? 0);
+      });
+      const axisPoints = stations.map(({ position }) => toModelCoordinates(
+        new THREE.Vector3(position.x, position.y, position.z),
+      ));
+      const memberStatusLine = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(axisPoints),
+        new THREE.LineBasicMaterial({
+          color: statusColor,
+          transparent: true,
+          opacity: 1,
+          depthTest: false,
+        }),
+      );
+      memberStatusLine.name = `${STRUCTURAL_OVERLAY_NAME}Member-${structuralOverlay.id}`;
+      memberStatusLine.renderOrder = 32;
+      memberStatusLine.userData.tertiusStructuralOverlay = true;
+      memberGroup.add(memberStatusLine);
+
+      const peakValue = Math.max(...values.map((value) => value.length()));
+      if (peakValue <= Number.EPSILON) {
+        group.add(memberGroup);
+        continue;
+      }
+
+      // Build123D emits GLTF vertex coordinates in metres even though the CAD
+      // source is authored in millimetres.
+      const maxOffset = (structuralOverlay.maxOffsetMm ?? 260) / 1000;
+      const diagramPoints: THREE.Vector3[] = [];
+      const demandRatios: number[] = [];
+      stations.forEach(({ position }, index) => {
+        const sourcePoint = new THREE.Vector3(
+          position.x,
+          position.y,
+          position.z,
+        );
+        const value = values[index]!;
+        const offset = overlayMode === 'displacement'
+          ? value.clone().multiplyScalar(maxOffset / peakValue)
+          : axis.clone().cross(value).multiplyScalar(maxOffset / peakValue);
+        diagramPoints.push(toModelCoordinates(sourcePoint.clone().add(offset)));
+        demandRatios.push(Math.min(1, value.length() / peakValue));
+      });
+
+      const ribbonPositions: number[] = [];
+      const ribbonColors: number[] = [];
+      const peakColor = new THREE.Color(statusColor);
+      const lowColor = peakColor.clone().lerp(new THREE.Color(0x0f172a), 0.58);
+      const pushVertex = (point: THREE.Vector3, demandRatio: number) => {
+        const color = lowColor.clone().lerp(peakColor, demandRatio);
+        ribbonPositions.push(point.x, point.y, point.z);
+        ribbonColors.push(color.r, color.g, color.b);
+      };
+      for (let index = 0; index < stations.length - 1; index += 1) {
+        const axisStart = axisPoints[index]!;
+        const axisEnd = axisPoints[index + 1]!;
+        const diagramStart = diagramPoints[index]!;
+        const diagramEnd = diagramPoints[index + 1]!;
+        const startDemand = demandRatios[index]!;
+        const endDemand = demandRatios[index + 1]!;
+        pushVertex(axisStart, startDemand);
+        pushVertex(diagramStart, startDemand);
+        pushVertex(axisEnd, endDemand);
+        pushVertex(diagramStart, startDemand);
+        pushVertex(diagramEnd, endDemand);
+        pushVertex(axisEnd, endDemand);
+      }
+      const ribbonGeometry = new THREE.BufferGeometry();
+      ribbonGeometry.setAttribute(
+        'position',
+        new THREE.Float32BufferAttribute(ribbonPositions, 3),
+      );
+      ribbonGeometry.setAttribute(
+        'color',
+        new THREE.Float32BufferAttribute(ribbonColors, 3),
+      );
+      const ribbon = new THREE.Mesh(
+        ribbonGeometry,
+        new THREE.MeshBasicMaterial({
+          vertexColors: true,
+          transparent: true,
+          opacity: 0.72,
+          side: THREE.DoubleSide,
+          depthTest: false,
+          depthWrite: false,
+        }),
+      );
+      ribbon.name = `${STRUCTURAL_OVERLAY_NAME}Ribbon-${structuralOverlay.id}`;
+      ribbon.renderOrder = 30;
+      ribbon.userData.tertiusStructuralOverlay = true;
+      memberGroup.add(ribbon);
+
+      const diagramGeometry = new THREE.BufferGeometry().setFromPoints(diagramPoints);
+      const diagramLine = new THREE.Line(
+        diagramGeometry,
+        new THREE.LineBasicMaterial({
+          color: statusColor,
+          transparent: true,
+          opacity: 1,
+          depthTest: false,
+        }),
+      );
+      diagramLine.name = `${STRUCTURAL_OVERLAY_NAME}Edge-${structuralOverlay.id}`;
+      diagramLine.renderOrder = 31;
+      diagramLine.userData.tertiusStructuralOverlay = true;
+      memberGroup.add(diagramLine);
+
+      const connectorPoints: THREE.Vector3[] = [];
+      const connectorInterval = Math.max(1, Math.floor(stations.length / 8));
+      axisPoints.forEach((point, index) => {
+        if (
+          index === 0
+          || index === axisPoints.length - 1
+          || index % connectorInterval === 0
+        ) {
+          connectorPoints.push(point, diagramPoints[index]!);
+        }
+      });
+      const connectors = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints(connectorPoints),
+        new THREE.LineBasicMaterial({
+          color: statusColor,
+          transparent: true,
+          opacity: 0.48,
+          depthTest: false,
+        }),
+      );
+      connectors.name = `${STRUCTURAL_OVERLAY_NAME}Stations-${structuralOverlay.id}`;
+      connectors.renderOrder = 29;
+      connectors.userData.tertiusStructuralOverlay = true;
+      memberGroup.add(connectors);
+      group.add(memberGroup);
+    }
 
     model.add(group);
     return () => {
       if (group.parent) group.parent.remove(group);
       disposeObjectTree(group);
     };
-  }, [sceneGraph, structuralOverlay]);
+  }, [sceneGraph, structuralOverlays]);
 
   // 4. Handle Raycasting Interactions
   useEffect(() => {
@@ -1510,14 +1604,20 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               {projectName}
             </div>
           )}
-          {structuralOverlay && (
+          {structuralOverlays?.length ? (
             <div
               className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
-              title={structuralOverlay.label}
+              title={structuralOverlays.map((overlay) => overlay.label).join('\n')}
             >
-              PyNite moment
+              {structuralOverlays.length} PyNite {
+                structuralOverlays[0]?.mode === 'displacement' ? 'deflection' : 'moment'
+              } ribbon{structuralOverlays.length === 1 ? '' : 's'} ·{' '}
+              {structuralOverlays.reduce(
+                (count, overlay) => count + (overlay.loadArrows?.length ?? 0),
+                0,
+              )} load arrows
             </div>
-          )}
+          ) : null}
           <button
             onClick={() => frameModelRoot(1.5)}
             className="pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-slate-300 transition-colors hover:border-sky-500 hover:text-sky-300"

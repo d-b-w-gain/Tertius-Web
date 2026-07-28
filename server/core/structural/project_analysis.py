@@ -196,7 +196,10 @@ def _distributed_resultant(
     return resultant, first_moment
 
 
-def _load_summary(analysis) -> LoadSummary:
+def _load_summary(
+    analysis,
+    combination: LoadCombination,
+) -> LoadSummary:
     case_categories = {case.id: case.category for case in analysis.load_cases}
     sections = {section.id: section for section in analysis.sections}
     members = {member.id: member for member in analysis.members}
@@ -207,7 +210,10 @@ def _load_summary(analysis) -> LoadSummary:
     wind_load_kN = 0.0
 
     for point_load_summary in analysis.member_loads:
-        magnitude = _magnitude(point_load_summary.force)
+        factor = abs(combination.factors.get(point_load_summary.case_id, 0.0))
+        if factor == 0:
+            continue
+        magnitude = _magnitude(point_load_summary.force) * factor
         category = case_categories[point_load_summary.case_id]
         if category == "dead":
             additional_dead_load_kN += magnitude
@@ -217,8 +223,11 @@ def _load_summary(analysis) -> LoadSummary:
             wind_load_kN += magnitude
 
     for line_load_summary in analysis.member_distributed_loads:
+        factor = abs(combination.factors.get(line_load_summary.case_id, 0.0))
+        if factor == 0:
+            continue
         resultant, _first_moment = _distributed_resultant(line_load_summary)
-        magnitude = _magnitude(resultant)
+        magnitude = _magnitude(resultant) * factor
         category = case_categories[line_load_summary.case_id]
         if line_load_summary.source_kind == "self_weight":
             self_weight_kN += magnitude
@@ -428,6 +437,7 @@ def solve_project_structural(
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
     serviceability_checks: list[ServiceabilityCheck] = []
+    sections_by_id = {section.id: section for section in analysis.sections}
 
     for declaration in analysis.members:
         component = components[declaration.component_id]
@@ -469,6 +479,8 @@ def solve_project_structural(
         rotation = member.T()[:3, :3]
         stations: list[MemberDiagramStation] = []
         max_moment = 0.0
+        max_local_moment_y = 0.0
+        max_local_moment_z = 0.0
         max_shear = 0.0
         max_axial = 0.0
         max_displacement = 0.0
@@ -505,6 +517,8 @@ def solve_project_structural(
                 max_moment,
                 sqrt(sum(value**2 for value in local_moment)),
             )
+            max_local_moment_y = max(max_local_moment_y, abs(local_moment[1]))
+            max_local_moment_z = max(max_local_moment_z, abs(local_moment[2]))
             max_shear = max(
                 max_shear,
                 sqrt(sum(value**2 for value in local_shear)),
@@ -541,19 +555,71 @@ def solve_project_structural(
                 stations=stations,
             )
         )
-        member_checks.append(
-            MemberCheck(
-                member_id=declaration.id,
-                label=f"{declaration.label} bending demand",
-                demand_kNm=max_moment,
-                capacity_kNm=None,
-                utilisation=None,
-                status="not_checked",
-                basis=(
-                    "Elastic demand only — no AS/NZS 4600 member capacity is connected."
-                ),
+        section = sections_by_id[declaration.section_id]
+        if section.bending_reference_kNm is None:
+            member_checks.append(
+                MemberCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} bending demand",
+                    demand_kNm=max_moment,
+                    capacity_kNm=None,
+                    utilisation=None,
+                    status="not_checked",
+                    basis=(
+                        "Elastic demand only — no traceable bending reference is "
+                        "connected."
+                    ),
+                )
             )
-        )
+        else:
+            reference_demand = (
+                max_local_moment_y
+                if section.bending_reference_axis == "local_y"
+                else max_local_moment_z
+                if section.bending_reference_axis == "local_z"
+                else max_moment
+            )
+            unreferenced_demand = (
+                max_local_moment_z
+                if section.bending_reference_axis == "local_y"
+                else max_local_moment_y
+                if section.bending_reference_axis == "local_z"
+                else 0.0
+            )
+            bending_utilisation = reference_demand / section.bending_reference_kNm
+            if unreferenced_demand > reference_demand + 1e-12:
+                member_checks.append(
+                    MemberCheck(
+                        member_id=declaration.id,
+                        label=f"{declaration.label} governing bending reference",
+                        demand_kNm=unreferenced_demand,
+                        capacity_kNm=None,
+                        utilisation=None,
+                        status="not_checked",
+                        basis=(
+                            "The governing demand is outside the authored "
+                            f"{section.bending_reference_axis} reference axis. "
+                            "A matching catalogue reference and biaxial interaction "
+                            "check are required."
+                        ),
+                    )
+                )
+            else:
+                member_checks.append(
+                    MemberCheck(
+                        member_id=declaration.id,
+                        label=(
+                            f"{declaration.label} "
+                            f"{section.bending_reference_axis} yield reference"
+                        ),
+                        demand_kNm=reference_demand,
+                        capacity_kNm=section.bending_reference_kNm,
+                        utilisation=bending_utilisation,
+                        status="pass" if bending_utilisation <= 1.0 else "fail",
+                        basis=section.bending_reference_basis
+                        or "Authored effective-section yield reference.",
+                    )
+                )
 
         limit_candidates: list[float] = []
         if declaration.deflection_limit_ratio is not None:
@@ -679,9 +745,15 @@ def solve_project_structural(
     equilibrium_status: Literal["pass", "fail"] = (
         "pass" if residual <= RESIDUAL_TOLERANCE else "fail"
     )
-    summary = _load_summary(analysis)
+    summary = _load_summary(analysis, active_combination)
     checked_serviceability = [
         check for check in serviceability_checks if check.status != "not_checked"
+    ]
+    reference_checks = [
+        check for check in member_checks if check.status != "not_checked"
+    ]
+    failed_reference_checks = [
+        check for check in reference_checks if check.status == "fail"
     ]
 
     return StructuralSnapshot(
@@ -772,9 +844,23 @@ def solve_project_structural(
             ),
             CapabilityState(
                 id="checks",
-                label="Member capacity",
-                status="pending",
-                detail="AS/NZS 4600 member capacity is not connected.",
+                label="Yield reference",
+                status=(
+                    "blocked"
+                    if failed_reference_checks
+                    else "online"
+                    if reference_checks
+                    else "pending"
+                ),
+                detail=(
+                    f"{len(failed_reference_checks)} of {len(reference_checks)} "
+                    "members exceed the authored effective-section yield reference."
+                    if failed_reference_checks
+                    else f"{len(reference_checks)} effective-section yield references "
+                    "are evaluated; this is not an AS/NZS 4600 member capacity check."
+                    if reference_checks
+                    else "No traceable bending references are connected."
+                ),
             ),
             CapabilityState(
                 id="connections",
@@ -791,8 +877,10 @@ def solve_project_structural(
                 "authors a traceable distributed or point load."
             ),
             (
-                "AS/NZS 4600 capacity, local buckling, restraint, connections, "
-                "anchors, concrete, impact, and progressive collapse are not checked."
+                "The displayed bending threshold is an effective-section yield "
+                "reference only. AS/NZS 4600 member capacity, lateral-torsional "
+                "buckling, restraint, connections, anchors, concrete, impact, and "
+                "progressive collapse are not checked."
             ),
         ],
     )

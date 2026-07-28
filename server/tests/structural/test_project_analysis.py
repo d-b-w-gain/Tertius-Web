@@ -243,6 +243,7 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert service.load_summary.member_mass_kg == pytest.approx(13.16)
     assert service.load_summary.self_weight_kN == pytest.approx(member_weight_kN_m * 4)
     assert service.load_summary.imposed_load_kN == pytest.approx(2.0)
+    assert gravity.load_summary.imposed_load_kN == pytest.approx(0.0)
     assert gravity.reactions[0].force.z == pytest.approx(member_weight_kN_m * 4)
     assert service.reactions[0].force.z == pytest.approx(member_weight_kN_m * 4 + 2.0)
     assert service.equilibrium.status == "pass"
@@ -259,3 +260,39 @@ def test_unknown_load_combination_fails_closed():
 
     with pytest.raises(ValueError, match="Unknown load combination"):
         solve_project_structural(capture, combination_id="SLS-missing")
+
+
+def test_catalogue_yield_reference_drives_pass_and_deliberate_fail_states():
+    source = GRAVITY_FRAME_DESIGN.replace(
+        "mass_kg_m=3.29,\n)",
+        """mass_kg_m=3.29,
+    bending_reference_kNm=1.0,
+    bending_reference_axis="resultant",
+    bending_reference_basis="Nominal effective-section yield reference only.",
+)""",
+    ).replace(
+        "structural_assembly = structure.assembly",
+        """structure.load_combination(
+    id="DEMO-OVERLOAD",
+    label="Deliberate overload",
+    limit_state="ultimate",
+    factors={"dead": 1.0, "live": 5.0},
+)
+structural_assembly = structure.assembly""",
+    )
+    capture = parse_project_structural_capture(
+        source,
+        project_name="yield_reference_frame",
+    )
+
+    gravity = solve_project_structural(capture, combination_id="SLS-G")
+    overload = solve_project_structural(capture, combination_id="DEMO-OVERLOAD")
+
+    assert all(check.status == "pass" for check in gravity.member_checks)
+    assert any(check.status == "fail" for check in overload.member_checks)
+    assert overload.load_summary.imposed_load_kN == pytest.approx(10.0)
+    assert overload.equilibrium.status == "pass"
+    assert any(
+        capability.id == "checks" and capability.status == "blocked"
+        for capability in overload.capabilities
+    )

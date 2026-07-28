@@ -60,7 +60,27 @@ class SectionProperties(StructuralContract):
     iz_m4: float
     torsion_j_m4: float
     mass_kg_m: float | None = None
+    bending_reference_kNm: float | None = None
+    bending_reference_axis: Literal["local_y", "local_z", "resultant"] | None = None
+    bending_reference_basis: str | None = None
     catalog: SectionCatalogReference | None = None
+
+    @model_validator(mode="after")
+    def validate_bending_reference(self) -> SectionProperties:
+        reference_fields = (
+            self.bending_reference_kNm,
+            self.bending_reference_axis,
+            self.bending_reference_basis,
+        )
+        if any(value is None for value in reference_fields) and any(
+            value is not None for value in reference_fields
+        ):
+            raise ValueError(
+                "section bending reference requires capacity, axis, and basis"
+            )
+        if self.bending_reference_kNm is not None and self.bending_reference_kNm <= 0:
+            raise ValueError("section bending reference must be positive")
+        return self
 
 
 class StructuralMember(StructuralContract):
@@ -252,6 +272,7 @@ class DesignSurfaceLoad(StructuralContract):
     id: str
     label: str
     case: Literal["dead", "live", "wind"]
+    case_id: str | None = None
     component_id: str
     pressure_kPa: float
     area_m2: float

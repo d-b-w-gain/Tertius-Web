@@ -137,6 +137,8 @@ structure.surface_load(
     id="wind",
     label="Illustrative wind pressure",
     case="wind",
+    case_id="wind-inward",
+    case_label="Inward wind pressure",
     pressure_kPa=wind_pressure,
     area_m2=sheet_area,
     direction=(0, -1, 0),
@@ -180,11 +182,16 @@ def test_generated_capture_uses_object_handles_and_traces_load_to_ground():
     ]
     assert capture.connections[0].connector_component_ids == ["screws"]
     assert capture.loads[0].area_m2 == pytest.approx(0.9144)
+    assert capture.loads[0].case_id == "case-wind-inward"
+    assert capture.analysis is not None
+    assert capture.analysis.load_cases[0].label == "Inward wind pressure"
     assert capture.load_paths[0].component_ids == ["sheet", "purlin", "block"]
     assert capture.capabilities[0].detail.startswith(
         "Generated structural authoring calls"
     )
-    assert any("UNREGISTERED ASSEMBLY MEMBERS FAIL" in item for item in capture.warnings)
+    assert any(
+        "UNREGISTERED ASSEMBLY MEMBERS FAIL" in item for item in capture.warnings
+    )
 
 
 def test_generated_capture_rejects_unregistered_assembly_handles():
@@ -242,7 +249,9 @@ def test_static_capture_reports_a_disconnected_load_path():
 
 
 def test_static_capture_rejects_missing_component_references():
-    source = DESIGN.replace('"to_component_id": "block"', '"to_component_id": "missing"')
+    source = DESIGN.replace(
+        '"to_component_id": "block"', '"to_component_id": "missing"'
+    )
 
     with pytest.raises(StructuralDeclarationError, match="missing ID 'missing'"):
         parse_project_structural_capture(source, project_name="structural_test")
@@ -272,7 +281,9 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
             assert project_name == "structural_test"
             return {"design.py": DESIGN}
 
-    monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server, "get_active_project", lambda _db, _ctx: project
+    )
     monkeypatch.setattr(
         structural_server,
         "get_latest_structural_manifest_artifact",
@@ -318,7 +329,9 @@ def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeyp
             assert project_name == "structural_test"
             return files
 
-    monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server, "get_active_project", lambda _db, _ctx: project
+    )
     monkeypatch.setattr(
         structural_server,
         "get_latest_structural_manifest_artifact",
@@ -363,7 +376,9 @@ def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypat
             assert project_name == "structural_test"
             return {"design.py": DESIGN + "\n# changed\n"}
 
-    monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server, "get_active_project", lambda _db, _ctx: project
+    )
     monkeypatch.setattr(
         structural_server,
         "get_latest_structural_manifest_artifact",

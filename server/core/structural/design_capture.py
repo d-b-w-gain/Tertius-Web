@@ -34,6 +34,13 @@ class StructuralDeclarationError(ValueError):
     """Raised when a design's static structural declaration cannot be captured."""
 
 
+def _load_case_id(value: str) -> str:
+    case_id = str(value).strip()
+    if not case_id:
+        raise StructuralDeclarationError("load case ID must not be empty")
+    return case_id if case_id.startswith("case-") else f"case-{case_id}"
+
+
 _BINARY_OPERATORS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -76,6 +83,7 @@ class _GeneratedModel:
     member_distributed_loads: list[dict[str, Any]] = field(default_factory=list)
     load_combinations: list[dict[str, Any]] = field(default_factory=list)
     load_case_categories: dict[str, str] = field(default_factory=dict)
+    load_case_labels: dict[str, str] = field(default_factory=dict)
     assembled_component_ids: list[str] | None = None
 
     def declaration(self) -> dict[str, Any]:
@@ -112,7 +120,10 @@ class _GeneratedModel:
                 "load_cases": [
                     {
                         "id": case_id,
-                        "label": f"{category.title()} load",
+                        "label": self.load_case_labels.get(
+                            case_id,
+                            f"{category.title()} load",
+                        ),
                         "category": category,
                     }
                     for case_id, category in self.load_case_categories.items()
@@ -404,6 +415,9 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "iz_m4",
                         "torsion_j_m4",
                         "mass_kg_m",
+                        "bending_reference_kNm",
+                        "bending_reference_axis",
+                        "bending_reference_basis",
                     }
                     unexpected = sorted(set(keywords) - allowed)
                     if unexpected:
@@ -430,6 +444,36 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                     )
                     if mass_kg_m is not None:
                         section_value["mass_kg_m"] = float(mass_kg_m)
+                    bending_reference = _keyword_value(
+                        keywords,
+                        "bending_reference_kNm",
+                        names,
+                        default=None,
+                    )
+                    bending_reference_basis = _keyword_value(
+                        keywords,
+                        "bending_reference_basis",
+                        names,
+                        default=None,
+                    )
+                    bending_reference_axis = _keyword_value(
+                        keywords,
+                        "bending_reference_axis",
+                        names,
+                        default=None,
+                    )
+                    if bending_reference is not None:
+                        section_value["bending_reference_kNm"] = float(
+                            bending_reference
+                        )
+                    if bending_reference_axis is not None:
+                        section_value["bending_reference_axis"] = str(
+                            bending_reference_axis
+                        )
+                    if bending_reference_basis is not None:
+                        section_value["bending_reference_basis"] = str(
+                            bending_reference_basis
+                        )
                     model.sections.append(section_value)
                     section_handles[target_name] = _SpecHandle(
                         model_name=model_name,
@@ -445,6 +489,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "id",
                         "label",
                         "case",
+                        "case_id",
+                        "case_label",
                         "pressure_kPa",
                         "area_m2",
                         "direction",
@@ -463,11 +509,31 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         context="StructuralModel.surface_load(...)",
                     )
                     load_id = str(_keyword_value(keywords, "id", names))
+                    case = str(_keyword_value(keywords, "case", names))
+                    case_id = _load_case_id(
+                        str(
+                            _keyword_value(
+                                keywords,
+                                "case_id",
+                                names,
+                                default=case,
+                            )
+                        )
+                    )
+                    case_label = str(
+                        _keyword_value(
+                            keywords,
+                            "case_label",
+                            names,
+                            default=f"{case.title()} load",
+                        )
+                    )
                     model.loads.append(
                         {
                             "id": load_id,
                             "label": str(_keyword_value(keywords, "label", names)),
-                            "case": str(_keyword_value(keywords, "case", names)),
+                            "case": case,
+                            "case_id": case_id,
                             "component_id": loaded_component.component_id,
                             "pressure_kPa": float(
                                 _keyword_value(keywords, "pressure_kPa", names)
@@ -483,9 +549,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             ),
                         }
                     )
-                    model.load_case_categories[f"case-{model.loads[-1]['case']}"] = (
-                        model.loads[-1]["case"]
-                    )
+                    model.load_case_categories[case_id] = case
+                    model.load_case_labels[case_id] = case_label
                     surface_load_handles[target_name] = _SpecHandle(
                         model_name=model_name,
                         id=load_id,
@@ -632,6 +697,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "id",
                         "label",
                         "case",
+                        "case_id",
+                        "case_label",
                         "pressure_kPa",
                         "area_m2",
                         "direction",
@@ -649,11 +716,31 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         model_name=model_name,
                         context="StructuralModel.surface_load(...)",
                     )
+                    case = str(_keyword_value(keywords, "case", names))
+                    case_id = _load_case_id(
+                        str(
+                            _keyword_value(
+                                keywords,
+                                "case_id",
+                                names,
+                                default=case,
+                            )
+                        )
+                    )
+                    case_label = str(
+                        _keyword_value(
+                            keywords,
+                            "case_label",
+                            names,
+                            default=f"{case.title()} load",
+                        )
+                    )
                     model.loads.append(
                         {
                             "id": str(_keyword_value(keywords, "id", names)),
                             "label": str(_keyword_value(keywords, "label", names)),
-                            "case": str(_keyword_value(keywords, "case", names)),
+                            "case": case,
+                            "case_id": case_id,
                             "component_id": loaded_component.component_id,
                             "pressure_kPa": float(
                                 _keyword_value(keywords, "pressure_kPa", names)
@@ -669,9 +756,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             ),
                         }
                     )
-                    model.load_case_categories[f"case-{model.loads[-1]['case']}"] = (
-                        model.loads[-1]["case"]
-                    )
+                    model.load_case_categories[case_id] = case
+                    model.load_case_labels[case_id] = case_label
                     continue
                 if method == "member_axis":
                     if len(call.args) != 1:
@@ -920,7 +1006,10 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 "id": f"{distribution_id}-{index}",
                                 "label": f"{distribution_label} {index}",
                                 "member_id": analytical_member["id"],
-                                "case_id": f"case-{source_load['case']}",
+                                "case_id": source_load.get(
+                                    "case_id",
+                                    _load_case_id(source_load["case"]),
+                                ),
                                 "distance_m": position,
                                 "force": {
                                     axis: direction[axis] * scale
@@ -1108,13 +1197,18 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 ),
                             ).id
                         )
-                    model.load_case_categories[f"case-{case}"] = case
+                    resolved_case_id = _load_case_id(case)
+                    model.load_case_categories[resolved_case_id] = case
+                    model.load_case_labels.setdefault(
+                        resolved_case_id,
+                        f"{case.title()} load",
+                    )
                     model.member_distributed_loads.append(
                         {
                             "id": load_id,
                             "label": label,
                             "member_id": analytical_member["id"],
-                            "case_id": f"case-{case}",
+                            "case_id": resolved_case_id,
                             "start_distance_m": start_distance,
                             "end_distance_m": end_distance,
                             "start_force_kN_m": start_force,

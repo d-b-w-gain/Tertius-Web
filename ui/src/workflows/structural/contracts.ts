@@ -33,6 +33,7 @@ export type DesignSurfaceLoad = {
   id: string
   label: string
   case: 'dead' | 'live' | 'wind'
+  case_id: string | null
   component_id: string
   pressure_kPa: number
   area_m2: number
@@ -183,6 +184,9 @@ export type StructuralSnapshot = {
     iz_m4: number
     torsion_j_m4: number
     mass_kg_m: number | null
+    bending_reference_kNm: number | null
+    bending_reference_axis: 'local_y' | 'local_z' | 'resultant' | null
+    bending_reference_basis: string | null
     catalog?: {
       catalog_id: string
       catalog_version: string

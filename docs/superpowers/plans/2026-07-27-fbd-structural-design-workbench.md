@@ -265,3 +265,19 @@ two-member C100 gravity frame; its `SLS-G` catalogue self-weight model contains
 9.212 kg of steel and 0.09034 kN of gravity action. This remains an elastic
 demand demonstration: section capacity, connection capacity, stability, impact,
 and the complete shed mass/load inventory are still not checked.
+
+Simple-case visual validation evidence (2026-07-28): named load-case authoring
+now keeps inward wind pressure and outward wind suction distinct through
+surface capture, screw distribution, PyNite combinations, summaries, and
+viewer arrows. The workbench renders every member's moment or amplified
+deflection ribbon instead of only the selected member. Ribbons and analytical
+member axes are green below an authored reference, red above it, and grey when
+unchecked; cyan arrows show only loads active in the selected combination.
+`structural_test` exposes `SLS-G`, `SLS-G+WIN`, `SLS-G+WOUT`, and the explicit
+`DEMO-OVERLOAD` harness case. C10019 uses a 5.535 kN.m nominal effective-section
+yield reference calculated from the validated catalogue row's `Zxe × fy`.
+Normal inward/outward cases reach about 10.6% of that reference, while the
+deliberate 12× inward case reaches 7.023 kN.m and 126.9%, proving the red state.
+This is deliberately labelled as a reference rather than an AS/NZS 4600 design
+capacity because capacity factors, lateral-torsional buckling, restraint,
+interaction, bearing, and connections remain unchecked.

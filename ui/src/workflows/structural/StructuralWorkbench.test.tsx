@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { StructuralWorkbench } from './StructuralWorkbench'
 import type { ProjectStructuralCapture, StructuralSnapshot } from './contracts'
@@ -21,15 +21,36 @@ vi.mock('../../auth/AuthProvider', () => ({
 vi.mock('../extus/ui/ViewerTab', () => ({
   LatestModelViewer: ({
     externalSelectedNodeIds,
-    structuralOverlay,
+    structuralOverlays,
   }: {
     externalSelectedNodeIds?: string[]
-    structuralOverlay?: { stations: unknown[] }
+    structuralOverlays?: Array<{
+      mode?: string
+      status?: string
+      stations: unknown[]
+      loadArrows?: unknown[]
+    }>
   }) => (
     <div>
       Viewer selection: {externalSelectedNodeIds?.join(',')}
       {' · '}
-      Ribbon stations: {structuralOverlay?.stations.length || 0}
+      Ribbon stations: {
+        structuralOverlays?.reduce(
+          (count, overlay) => count + overlay.stations.length,
+          0,
+        ) || 0
+      }
+      {' · '}
+      Ribbon mode: {structuralOverlays?.[0]?.mode}
+      {' · '}
+      Ribbon status: {structuralOverlays?.[0]?.status}
+      {' · '}
+      Load arrows: {
+        structuralOverlays?.reduce(
+          (count, overlay) => count + (overlay.loadArrows?.length ?? 0),
+          0,
+        ) || 0
+      }
     </div>
   ),
 }))
@@ -121,6 +142,7 @@ const capture: ProjectStructuralCapture = {
       id: 'wind',
       label: 'Illustrative inward wind pressure on roofing iron',
       case: 'wind',
+      case_id: 'case-wind-inward',
       component_id: 'sheet',
       pressure_kPa: 0.8,
       area_m2: 0.9144,
@@ -210,6 +232,9 @@ const analysis: StructuralSnapshot = {
       iz_m4: 673000e-12,
       torsion_j_m4: 492e-12,
       mass_kg_m: 3.29,
+      bending_reference_kNm: 5.535,
+      bending_reference_axis: 'local_z',
+      bending_reference_basis: 'Nominal Zxe × fy yield reference only.',
       catalog: {
         catalog_id: 'lysaght-zc-v2',
         catalog_version: '2.0',
@@ -238,19 +263,29 @@ const analysis: StructuralSnapshot = {
       density_kg_m3: 7850,
     },
   ],
-  load_cases: [{ id: 'case-wind', label: 'Wind load', category: 'wind' }],
+  load_cases: [
+    { id: 'case-wind-inward', label: 'Inward wind pressure', category: 'wind' },
+    { id: 'case-wind-outward', label: 'Outward wind suction', category: 'wind' },
+    { id: 'case-dead', label: 'Dead load', category: 'dead' },
+  ],
   load_combinations: [
     {
       id: 'SLS-1.0',
       label: 'Serviceability actions',
       limit_state: 'serviceability',
-      factors: { 'case-wind': 1 },
+      factors: { 'case-wind-inward': 1 },
     },
     {
       id: 'SLS-G',
       label: 'Permanent actions',
       limit_state: 'serviceability',
-      factors: { 'case-wind': 0 },
+      factors: { 'case-dead': 1 },
+    },
+    {
+      id: 'DEMO-OVERLOAD',
+      label: 'Deliberate overload',
+      limit_state: 'ultimate',
+      factors: { 'case-dead': 1, 'case-wind-inward': 12 },
     },
   ],
   loads: [],
@@ -258,7 +293,7 @@ const analysis: StructuralSnapshot = {
     id: `wind-${index}`,
     label: `Wind ${index}`,
     member_id: 'purlin-axis',
-    case_id: 'case-wind',
+    case_id: 'case-wind-inward',
     distance_m: distance,
     force: { x: 0, y: -0.24384, z: 0 },
     moment: { x: 0, y: 0, z: 0 },
@@ -311,10 +346,10 @@ const analysis: StructuralSnapshot = {
       member_id: 'purlin-axis',
       label: 'C100 bending demand',
       demand_kNm: 0.585216,
-      capacity_kNm: null,
-      utilisation: null,
-      status: 'not_checked',
-      basis: 'Elastic demand only — no AS 4600 member capacity is connected.',
+      capacity_kNm: 5.535,
+      utilisation: 0.1057301,
+      status: 'pass',
+      basis: 'Nominal Zxe × fy yield reference only.',
     },
   ],
   serviceability_checks: [
@@ -359,7 +394,28 @@ const analysis: StructuralSnapshot = {
   warnings: ['ELASTIC MEMBER DEMAND ONLY'],
 }
 
+const overloadAnalysis: StructuralSnapshot = {
+  ...analysis,
+  member_results: analysis.member_results.map((result) => ({
+    ...result,
+    combination_id: 'DEMO-OVERLOAD',
+    max_moment_kNm: 7.0226,
+  })),
+  member_checks: analysis.member_checks.map((check) => ({
+    ...check,
+    demand_kNm: 7.0226,
+    utilisation: 1.2688,
+    status: 'fail',
+  })),
+  solver: {
+    ...analysis.solver,
+    combination_id: 'DEMO-OVERLOAD',
+  },
+}
+
 describe('StructuralWorkbench', () => {
+  afterEach(cleanup)
+
   beforeEach(() => {
     mocks.apiFetch.mockReset()
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
@@ -389,8 +445,13 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('Reaches ground')).toBeInTheDocument()
     expect(screen.getByText('0.732 kN')).toBeInTheDocument()
     expect(screen.getByText('HANDLE-AUTHORED')).toBeInTheDocument()
-    expect(screen.getByText('Capacity status: NOT CHECKED')).toBeInTheDocument()
+    expect(screen.getByText('Inward wind pressure')).toBeInTheDocument()
+    expect(screen.getByText('Outward wind suction')).toBeInTheDocument()
+    expect(screen.getByText('Design capacity status: NOT CHECKED')).toBeInTheDocument()
     expect(screen.getByText(/Ribbon stations: 2/)).toBeInTheDocument()
+    expect(screen.getByText(/Ribbon mode: moment/)).toBeInTheDocument()
+    expect(screen.getByText(/Ribbon status: pass/)).toBeInTheDocument()
+    expect(screen.getByText(/Load arrows: 3/)).toBeInTheDocument()
     expect(screen.getByText('0.5852 kN·m')).toBeInTheDocument()
     expect(screen.getByText('Equilibrium pass')).toBeInTheDocument()
     expect(screen.getByText('Validated catalogue section')).toBeInTheDocument()
@@ -398,6 +459,11 @@ describe('StructuralWorkbench', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
     expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'displacement' }))
+    expect(screen.getByText(/Ribbon mode: displacement/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'moment' }))
+    expect(screen.getByText(/Ribbon mode: moment/)).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Load combination'), {
       target: { value: 'SLS-G' },
@@ -424,5 +490,31 @@ describe('StructuralWorkbench', () => {
     await waitFor(() => {
       expect(mocks.apiFetch.mock.calls.length).toBeGreaterThan(requestCountBeforeChange)
     })
+  })
+
+  it('turns the moment ribbon red for the deliberate reference exceedance', async () => {
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('combination_id=DEMO-OVERLOAD')
+          ? overloadAnalysis
+          : url.includes('/active/analysis')
+            ? analysis
+            : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    render(<StructuralWorkbench isActive />)
+    await waitFor(() => {
+      expect(screen.getAllByText('structural_test').length).toBeGreaterThan(0)
+    })
+
+    fireEvent.change(screen.getByLabelText('Load combination'), {
+      target: { value: 'DEMO-OVERLOAD' },
+    })
+
+    expect(await screen.findByText(/Ribbon status: fail/)).toBeInTheDocument()
+    expect(screen.getByText('126.9% reference utilisation')).toBeInTheDocument()
   })
 })
