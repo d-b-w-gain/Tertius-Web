@@ -333,6 +333,8 @@ structural_assembly = structure.assembly""",
     assert snapshot.stability.governing_moment_amplification > 1.0
     assert snapshot.stability.governing_displacement_amplification > 1.0
     assert "P-Delta" in snapshot.solver.analysis
+    assert snapshot.equilibrium.status == "pass"
+    assert snapshot.equilibrium.tolerance > 1e-8
     stages = {stage.id: stage for stage in snapshot.verification_stages}
     assert stages["stability"].status == "warning"
     stability_sheet = next(

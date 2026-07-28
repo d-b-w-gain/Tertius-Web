@@ -35,6 +35,8 @@ from .contracts import (
 DEFAULT_COMBINATION_ID = "SLS-1.0"
 STATION_INTERVALS = 32
 RESIDUAL_TOLERANCE = 1e-8
+PDELTA_RESIDUAL_RELATIVE_TOLERANCE = 1e-3
+PDELTA_EQUILIBRIUM_INTERVALS = 64
 STANDARD_GRAVITY_M_S2 = 9.80665
 NODE_COORDINATE_DIGITS = 9
 
@@ -154,6 +156,25 @@ def _member_extrema(
             sqrt(sum(value**2 for value in local_displacement_mm)),
         )
     return max_moment, max_displacement
+
+
+def _member_global_displacement(
+    model,
+    *,
+    member_id: str,
+    distance_m: float,
+    combination_id: str,
+) -> Vector3:
+    member = model.members[member_id]
+    rotation = member.T()[:3, :3]
+    return _local_to_global(
+        rotation,
+        (
+            member.deflection("dx", distance_m, combination_id),
+            member.deflection("dy", distance_m, combination_id),
+            member.deflection("dz", distance_m, combination_id),
+        ),
+    )
 
 
 def _local_to_global(rotation, values: tuple[float, float, float]) -> Vector3:
@@ -320,6 +341,7 @@ def _p399_evidence(
     serviceability_checks: list[ServiceabilityCheck],
     equilibrium_status: Literal["pass", "fail"],
     residual: float,
+    equilibrium_tolerance: float,
     stability_result: StabilityResult | None,
 ) -> tuple[list[VerificationStage], list[CalculationSheet]]:
     """Build inspectable evidence for every P399 process stage.
@@ -675,7 +697,21 @@ def _p399_evidence(
                     label="Declared analysis method",
                     value=basis.analysis_method if basis else "not declared",
                     source="design.py design_basis",
-                )
+                ),
+                CalculationInput(
+                    symbol="r_tol",
+                    label="Equilibrium diagnostic tolerance",
+                    value=equilibrium_tolerance,
+                    unit="kN / kN.m",
+                    source=(
+                        "Absolute first-order tolerance."
+                        if stability_result is None
+                        else (
+                            "0.1% of the governing action/reaction scale; distributed "
+                            "loads are integrated over the displaced member geometry."
+                        )
+                    ),
+                ),
             ],
             equations=[
                 CalculationEquation(
@@ -1560,6 +1596,16 @@ def solve_project_structural(
             declaration.start,
             _scaled(member_axis, equilibrium_point_load.distance_m),
         )
+        if analysis.stability is not None:
+            position = _plus(
+                position,
+                _member_global_displacement(
+                    model,
+                    member_id=equilibrium_point_load.member_id,
+                    distance_m=equilibrium_point_load.distance_m,
+                    combination_id=active_combination.id,
+                ),
+            )
         _add(applied_force_sum, equilibrium_point_load.force, factor)
         _add(applied_moment_sum, equilibrium_point_load.moment, factor)
         _add(
@@ -1577,14 +1623,66 @@ def solve_project_structural(
             continue
         declaration = declarations[equilibrium_line_load.member_id]
         member_axis = _axis(declaration.start, declaration.end)
-        segment_start = _plus(
-            declaration.start,
-            _scaled(member_axis, equilibrium_line_load.start_distance_m),
-        )
-        resultant, first_moment = _distributed_resultant(equilibrium_line_load)
-        _add(applied_force_sum, resultant, factor)
-        _add(applied_moment_sum, _cross(segment_start, resultant), factor)
-        _add(applied_moment_sum, _cross(member_axis, first_moment), factor)
+        if analysis.stability is None:
+            segment_start = _plus(
+                declaration.start,
+                _scaled(member_axis, equilibrium_line_load.start_distance_m),
+            )
+            resultant, first_moment = _distributed_resultant(equilibrium_line_load)
+            _add(applied_force_sum, resultant, factor)
+            _add(applied_moment_sum, _cross(segment_start, resultant), factor)
+            _add(applied_moment_sum, _cross(member_axis, first_moment), factor)
+        else:
+            loaded_span = (
+                equilibrium_line_load.end_distance_m
+                - equilibrium_line_load.start_distance_m
+            )
+            interval = loaded_span / PDELTA_EQUILIBRIUM_INTERVALS
+            for interval_index in range(PDELTA_EQUILIBRIUM_INTERVALS):
+                distance = (
+                    equilibrium_line_load.start_distance_m
+                    + (interval_index + 0.5) * interval
+                )
+                load_ratio = (
+                    distance - equilibrium_line_load.start_distance_m
+                ) / loaded_span
+                force = Vector3(
+                    **{
+                        axis_name: (
+                            getattr(
+                                equilibrium_line_load.start_force_kN_m,
+                                axis_name,
+                            )
+                            + (
+                                getattr(
+                                    equilibrium_line_load.end_force_kN_m,
+                                    axis_name,
+                                )
+                                - getattr(
+                                    equilibrium_line_load.start_force_kN_m,
+                                    axis_name,
+                                )
+                            )
+                            * load_ratio
+                        )
+                        * interval
+                        for axis_name in ("x", "y", "z")
+                    }
+                )
+                position = _plus(
+                    _plus(
+                        declaration.start,
+                        _scaled(member_axis, distance),
+                    ),
+                    _member_global_displacement(
+                        model,
+                        member_id=equilibrium_line_load.member_id,
+                        distance_m=distance,
+                        combination_id=active_combination.id,
+                    ),
+                )
+                _add(applied_force_sum, force, factor)
+                _add(applied_moment_sum, _cross(position, force), factor)
 
     force_residual = tuple(
         applied_force_sum[index] + reaction_force_sum[index] for index in range(3)
@@ -1593,8 +1691,28 @@ def solve_project_structural(
         applied_moment_sum[index] + reaction_moment_sum[index] for index in range(3)
     )
     residual = max(abs(value) for value in (*force_residual, *moment_residual))
+    equilibrium_scale = max(
+        (
+            abs(value)
+            for value in (
+                *applied_force_sum,
+                *applied_moment_sum,
+                *reaction_force_sum,
+                *reaction_moment_sum,
+            )
+        ),
+        default=0.0,
+    )
+    equilibrium_tolerance = (
+        RESIDUAL_TOLERANCE
+        if analysis.stability is None
+        else max(
+            RESIDUAL_TOLERANCE,
+            equilibrium_scale * PDELTA_RESIDUAL_RELATIVE_TOLERANCE,
+        )
+    )
     equilibrium_status: Literal["pass", "fail"] = (
-        "pass" if residual <= RESIDUAL_TOLERANCE else "fail"
+        "pass" if residual <= equilibrium_tolerance else "fail"
     )
     summary = _load_summary(analysis, active_combination)
     checked_serviceability = [
@@ -1619,6 +1737,7 @@ def solve_project_structural(
         serviceability_checks=serviceability_checks,
         equilibrium_status=equilibrium_status,
         residual=residual,
+        equilibrium_tolerance=equilibrium_tolerance,
         stability_result=stability_result,
     )
 
@@ -1658,7 +1777,7 @@ def solve_project_structural(
         equilibrium=EquilibriumDiagnostic(
             force_residual_kN=_vector(force_residual),
             moment_residual_kNm=_vector(moment_residual),
-            tolerance=RESIDUAL_TOLERANCE,
+            tolerance=equilibrium_tolerance,
             status=equilibrium_status,
         ),
         solver=SolverMetadata(
@@ -1735,7 +1854,10 @@ def solve_project_structural(
                 id="equilibrium",
                 label="Equilibrium",
                 status="online" if equilibrium_status == "pass" else "blocked",
-                detail=f"Global residual is {residual:.3e}.",
+                detail=(
+                    f"Global residual is {residual:.3e} against tolerance "
+                    f"{equilibrium_tolerance:.3e}."
+                ),
             ),
             CapabilityState(
                 id="checks",
