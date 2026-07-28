@@ -666,6 +666,11 @@ class ProjectStructuralCapture(StructuralContract):
 class CompiledStructuralManifest(StructuralContract):
     schema_version: Literal["1.0"] = "1.0"
     source_hash: str = Field(min_length=64, max_length=64)
+    structural_source_hash: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
     design_hash: str = Field(min_length=64, max_length=64)
     declaration: dict[str, Any]
 

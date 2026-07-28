@@ -195,7 +195,7 @@ and result artifacts consumed by the workbench and calculation reports.
 
 ### Task 7: Migrate and reconcile the current shed
 
-- [ ] Port site capture and job-specific wind inputs with provenance.
+- [x] Port site capture and job-specific wind inputs with provenance.
 - [ ] Rebuild current member/opening/cladding geometry in Build123D.
 - [ ] Author the full analytical connectivity, supports, releases, offsets,
   gravity/wind loads, and combinations.
@@ -285,9 +285,12 @@ catalogue ID/version/key, the selected row hash, axis mapping, complete source
 properties, and SI-normalized PyNite properties. A sketch compile produced the
 same 436,772-byte GLB and resolved `A=0.000409 m2`, `Iy=1.42e-7 m4`,
 `Iz=6.73e-7 m4`, `J=4.92e-10 m4`, `fy=450 MPa`, and `Zxe=12300 mm3` from
-`lysaght-zc-v2@2.0`. The API consumes the sidecar only when its full source
-bundle hash matches the active project; the workbench exposes the catalogue
-identity and record hash without reading manufacturer-specific files.
+`lysaght-zc-v2@2.0`. The API consumes the sidecar only when its
+geometry/structural source-bundle hash matches the active project;
+project-owned `tertius_site.py` is validated and overlaid independently so a
+site-only edit cannot silently reuse stale CAD topology or force an unnecessary
+Build123D rebuild. The workbench exposes the catalogue identity and record hash
+without reading manufacturer-specific files.
 
 Gravity/serviceability evidence (2026-07-28): the authoring API now derives
 member self-weight from catalogue mass, accepts global line loads and explicit
@@ -318,3 +321,18 @@ deliberate 12× inward case reaches 7.023 kN.m and 126.9%, proving the red state
 This is deliberately labelled as a reference rather than an AS/NZS 4600 design
 capacity because capacity factors, lateral-torsional buckling, restraint,
 interaction, bearing, and connections remain unchecked.
+
+Site/design-basis evidence (2026-07-28): the dedicated Site workbench reads and
+writes a strict literal `tertius_site.py` dictionary in the authenticated active
+project. It captures building use/classification, Importance Level, design life,
+jurisdiction, exact action-standard references and confirmation state, address,
+coordinates, wind region/status, terrain, return-period override, reference
+height, and exposure multipliers. The file deliberately contains no derived
+wind speed, `q_z`, surface pressure, or member load. The Structural API
+recomputes those values from the current calculation engine, overlays the
+result onto the source-hashed compiled structural topology, and refreshes
+Actions without compiling the GLB. The `structural_test` design now imports
+`site_dict` and links it through `structure.site_wind_basis(site_dict)`; a local
+high-quality compile completed and the overlay produced Region A2
+`q_z=0.683438 kPa`, inward pressure `0.5467504 kPa`, and outward pressure
+`0.6150942 kPa`.

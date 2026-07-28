@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_runtime import runtime_files_hash
+from core.compile_runtime import runtime_files_hash, structural_runtime_files_hash
 from core.db import get_db
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
 from core.structural.contracts import (
@@ -35,6 +35,13 @@ from core.structural.site_wind import (
 )
 from core.models import Artifact, Project, UserWorkspaceState
 from core.repositories import ProjectRepository
+from core.site_definition import (
+    SITE_DEFINITION_FILENAME,
+    SiteDefinitionError,
+    apply_site_definition,
+    parse_site_definition,
+    validate_design_site_usage,
+)
 
 app = FastAPI(title="Tertius Structural Design Workbench")
 
@@ -101,6 +108,14 @@ def get_active_capture(
     if design_source is None:
         raise HTTPException(status_code=404, detail="Active project has no design.py")
     assert files is not None
+    site = None
+    site_source = files.get(SITE_DEFINITION_FILENAME)
+    if site_source is not None:
+        try:
+            site = parse_site_definition(site_source)
+            validate_design_site_usage(design_source)
+        except SiteDefinitionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     artifact = get_latest_structural_manifest_artifact(db, ctx, project)
     if artifact is not None and artifact.content is not None:
         try:
@@ -110,7 +125,12 @@ def get_active_capture(
                 status_code=422,
                 detail=f"Compiled structural manifest is invalid: {exc}",
             ) from exc
-        if compiled.source_hash != runtime_files_hash(files):
+        source_is_current = (
+            compiled.structural_source_hash == structural_runtime_files_hash(files)
+            if compiled.structural_source_hash is not None
+            else compiled.source_hash == runtime_files_hash(files)
+        )
+        if not source_is_current:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -119,8 +139,13 @@ def get_active_capture(
                 ),
             )
         try:
+            declaration = (
+                apply_site_definition(compiled.declaration, site)
+                if site is not None
+                else compiled.declaration
+            )
             return capture_project_structural_declaration(
-                compiled.declaration,
+                declaration,
                 project_name=project.name,
                 design_hash=compiled.design_hash,
                 capture_detail=(
@@ -128,14 +153,19 @@ def get_active_capture(
                     "source closure and validated catalogue imports."
                 ),
             )
-        except StructuralDeclarationError as exc:
+        except (StructuralDeclarationError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        return parse_project_structural_capture(
+        capture = parse_project_structural_capture(
             design_source,
             project_name=project.name,
         )
-    except StructuralDeclarationError as exc:
+        if site is None:
+            return capture
+        return ProjectStructuralCapture.model_validate(
+            apply_site_definition(capture.model_dump(mode="python"), site)
+        )
+    except (StructuralDeclarationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

@@ -28,6 +28,23 @@ def runtime_files_hash(files: dict[str, str]) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
+def structural_runtime_files_hash(files: dict[str, str]) -> str:
+    """Hash files that can change compiled geometry/structural topology.
+
+    ``tertius_site.py`` is deliberately excluded. Its validated inputs are
+    overlaid when structural analysis is requested, so changing a site basis
+    must not invalidate or rebuild an otherwise current Build123D artifact.
+    """
+
+    return runtime_files_hash(
+        {
+            filename: content
+            for filename, content in files.items()
+            if filename != "tertius_site.py"
+        }
+    )
+
+
 @contextmanager
 def hydrate_project_files(files: dict[str, str]) -> Iterator[Path]:
     with TemporaryDirectory(prefix="tertius-project-") as tmp:

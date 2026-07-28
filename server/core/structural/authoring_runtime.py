@@ -312,6 +312,92 @@ class StructuralModel:
         self._wind_action_basis_handles[basis_id] = handle
         return handle
 
+    def site_wind_basis(
+        self,
+        site_dict: Mapping[str, Any],
+    ) -> StructuralWindActionBasisSpec:
+        """Link a project ``tertius_site.py`` dictionary to wind loads.
+
+        The compile helper records a dimensionally coherent placeholder so CAD
+        compilation remains deterministic and self-contained. The authenticated
+        Structural API replaces it with the validated, current site calculation
+        whenever capture or analysis is requested. Consequently site-only edits
+        never require a Build123D rebuild.
+        """
+
+        site = _json_mapping("site_dict", site_dict)
+        project_basis = _json_mapping(
+            "site_dict.project_basis",
+            site.get("project_basis", {}),
+        )
+        location = _json_mapping(
+            "site_dict.location",
+            site.get("location", {}),
+        )
+        wind = _json_mapping("site_dict.wind", site.get("wind", {}))
+        importance_level = _required_text(
+            "site importance level",
+            project_basis.get("importance_level", "2"),
+        )
+        ari_by_importance = {"1": 100, "2": 500, "3": 1000, "4": 2500}
+        annual_probability = str(wind.get("annual_probability_uls") or "").strip()
+        try:
+            annual_recurrence_interval = (
+                int(float(annual_probability.split("/", 1)[-1]))
+                if annual_probability
+                else ari_by_importance[importance_level]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StructuralAuthoringError(
+                "site_dict has an invalid importance level or annual probability"
+            ) from exc
+
+        placeholder_speed = 40.0
+        placeholder_pressure = 0.5 * 1.2 * placeholder_speed**2 / 1000.0
+        return self.wind_action_basis(
+            id=_required_text(
+                "site wind basis ID",
+                wind.get("basis_id", "project-site-wind"),
+            ),
+            site_address=_required_text(
+                "site address",
+                location.get("address") or "Site address pending",
+            ),
+            latitude=float(location.get("latitude", 0.0)),
+            longitude=float(location.get("longitude", 0.0)),
+            region=_required_text("wind region", wind.get("region", "A2")),
+            region_area=str(wind.get("region_area", "")),
+            region_source=_required_text(
+                "wind region source",
+                wind.get("region_source", "tertius_site.py"),
+            ),
+            region_approximate=bool(wind.get("region_approximate", True)),
+            region_status=str(wind.get("region_status", "suggested")),
+            standard="Tertius site calculation overlay",
+            table_version="compile-placeholder-v1",
+            table_status=str(wind.get("table_status", "starter")),
+            importance_level=importance_level,
+            annual_recurrence_interval_years=annual_recurrence_interval,
+            terrain_category=_required_text(
+                "terrain category",
+                wind.get("terrain_category", "3"),
+            ),
+            reference_height_m=float(wind.get("reference_height_m", 3.0)),
+            regional_wind_speed_m_s=placeholder_speed,
+            climate_change_multiplier=1.0,
+            direction_multiplier=1.0,
+            terrain_height_multiplier=1.0,
+            shielding_multiplier=1.0,
+            topographic_multiplier=1.0,
+            site_wind_speed_m_s=placeholder_speed,
+            q_z_kPa=placeholder_pressure,
+            verifier_hash="compile-placeholder",
+            provenance=(
+                "Compile-time placeholder linked to tertius_site.py; replaced "
+                "by the Structural API before analysis"
+            ),
+        )
+
     def ground(
         self,
         shape: bd.Shape,

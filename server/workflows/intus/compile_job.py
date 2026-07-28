@@ -19,7 +19,11 @@ from core.compile_messages import (
     compile_result_message_id,
     serialized_message_size,
 )
-from core.compile_runtime import hydrate_project_files, runtime_files_hash
+from core.compile_runtime import (
+    hydrate_project_files,
+    runtime_files_hash,
+    structural_runtime_files_hash,
+)
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
 from core.nats_client import (
@@ -182,6 +186,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
                 )
                 compiled_manifest = CompiledStructuralManifest(
                     source_hash=runtime_files_hash(files),
+                    structural_source_hash=structural_runtime_files_hash(files),
                     design_hash=design_hash,
                     declaration=declaration,
                 )

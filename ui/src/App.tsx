@@ -4,6 +4,7 @@ import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { OctavusWindow } from './workflows/octavus/OctavusWindow'
 import { StructuralWorkbench } from './workflows/structural/StructuralWorkbench'
+import { SiteWorkbench } from './workflows/site/SiteWorkbench'
 import { GenerateDesignWindow, type GenerateViewportState } from './workflows/generate/GenerateDesignWindow'
 import { SharedExtusViewport, type SharedExtusViewportSource } from './workflows/extus/SharedExtusViewport'
 import { AiUsageGauge } from './workflows/generate/AiUsageGauge'
@@ -238,6 +239,12 @@ function App() {
             🛒 Procurement
           </button>
           <button
+            onClick={() => setActiveTab('site')}
+            className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'site' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+          >
+            🧭 Site
+          </button>
+          <button
             onClick={() => setActiveTab('structural')}
             className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'structural' ? 'bg-slate-950 text-orange-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
           >
@@ -322,6 +329,9 @@ function App() {
           </div>
           <div className={activeTab === 'structural' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
             <StructuralWorkbench isActive={activeTab === 'structural'} />
+          </div>
+          <div className={activeTab === 'site' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+            <SiteWorkbench isActive={activeTab === 'site'} />
           </div>
         </div>
       </div>

@@ -57,6 +57,7 @@ from workflows.artus.artus_server import app as artus_app
 from workflows.extus.extus_server import app as extus_app
 from workflows.timus.timus_server import app as timus_app
 from workflows.structural.structural_server import app as structural_app
+from workflows.site.site_server import app as site_app
 from workflows.intus.compile_result_consumer import run_result_consumer
 from workflows.intus.pi_agent_result_consumer import (
     run_pi_agent_active_observer,
@@ -392,6 +393,7 @@ app.mount("/api/artus", artus_app)
 app.mount("/api/extus", extus_app)
 app.mount("/api/timus", timus_app)
 app.mount("/api/structural", structural_app)
+app.mount("/api/site", site_app)
 
 if __name__ == "__main__":
     import uvicorn

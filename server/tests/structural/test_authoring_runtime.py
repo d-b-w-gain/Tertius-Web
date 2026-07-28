@@ -58,6 +58,35 @@ def test_structural_model_generates_manifest_from_registered_shape_handles():
     assert assembly.tertius_structural_manifest is manifest
 
 
+def test_structural_model_links_literal_site_dict_without_storing_derived_truth():
+    model = StructuralModel(title="Site-linked model")
+    basis = model.site_wind_basis(
+        {
+            "schema_version": "1.0",
+            "project_basis": {"importance_level": "2"},
+            "location": {
+                "address": "14 Porter St",
+                "latitude": -34.4125,
+                "longitude": 150.8886,
+            },
+            "wind": {
+                "basis_id": "project-site-wind",
+                "region": "A2",
+                "region_area": "NSW",
+                "region_source": "Test source",
+                "region_status": "verified",
+                "table_status": "verified",
+                "terrain_category": "3",
+                "reference_height_m": 1.6,
+            },
+        }
+    )
+
+    assert basis.id == "project-site-wind"
+    assert model._wind_action_bases[0]["table_version"] == "compile-placeholder-v1"
+    assert "replaced by the Structural API" in model._wind_action_bases[0]["provenance"]
+
+
 def test_structural_model_rejects_raw_unregistered_assembly_shapes():
     model = StructuralModel(title="Fail closed")
     block = model.ground(
