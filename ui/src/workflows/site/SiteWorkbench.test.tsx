@@ -112,8 +112,10 @@ describe('SiteWorkbench', () => {
     }
 
     expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
-    expect(mocks.apiFetch.mock.calls[1][0]).toBe('/api/site/active')
-    expect(mocks.apiFetch.mock.calls[1][2]).toMatchObject({ method: 'PUT' })
+    const saveCall = mocks.apiFetch.mock.calls[1]
+    expect(saveCall).toBeDefined()
+    expect(saveCall?.[0]).toBe('/api/site/active')
+    expect(saveCall?.[2]).toMatchObject({ method: 'PUT' })
     expect(
       mocks.apiFetch.mock.calls.some(([url]) => String(url).includes('/compile')),
     ).toBe(false)

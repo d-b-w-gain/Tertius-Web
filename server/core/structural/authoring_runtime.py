@@ -7,7 +7,7 @@ from hashlib import sha256
 import json
 from math import sqrt
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Sequence, cast
 
 import build123d as bd
 
@@ -335,6 +335,21 @@ class StructuralModel:
             site.get("location", {}),
         )
         wind = _json_mapping("site_dict.wind", site.get("wind", {}))
+        region_status_text = str(wind.get("region_status", "suggested"))
+        if region_status_text not in {"suggested", "verified"}:
+            raise StructuralAuthoringError(
+                "site_dict wind region_status must be 'suggested' or 'verified'"
+            )
+        region_status = cast(
+            Literal["suggested", "verified"],
+            region_status_text,
+        )
+        table_status_text = str(wind.get("table_status", "starter"))
+        if table_status_text not in {"starter", "verified"}:
+            raise StructuralAuthoringError(
+                "site_dict wind table_status must be 'starter' or 'verified'"
+            )
+        table_status = cast(Literal["starter", "verified"], table_status_text)
         importance_level = _required_text(
             "site importance level",
             project_basis.get("importance_level", "2"),
@@ -372,10 +387,10 @@ class StructuralModel:
                 wind.get("region_source", "tertius_site.py"),
             ),
             region_approximate=bool(wind.get("region_approximate", True)),
-            region_status=str(wind.get("region_status", "suggested")),
+            region_status=region_status,
             standard="Tertius site calculation overlay",
             table_version="compile-placeholder-v1",
-            table_status=str(wind.get("table_status", "starter")),
+            table_status=table_status,
             importance_level=importance_level,
             annual_recurrence_interval_years=annual_recurrence_interval,
             terrain_category=_required_text(
