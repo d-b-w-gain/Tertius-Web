@@ -12,14 +12,11 @@ process model, terminal result contract, polling fallback, and privacy boundary.
 
 ## User Experience
 
-- The existing 1.5-second job-status poll also receives the current bounded
-  progress snapshot.
-- While a job is queued or running, an expanded native `Activity` disclosure
-  shows reasoning-summary chunks and tool start/finish milestones.
-- When the job reaches a terminal state, the disclosure remains attached to the
-  current assistant turn but collapses automatically.
-- The existing final assistant message, changed-file handling, retry behavior,
-  and conversation history remain authoritative.
+The original progress transport and data contract remain current. The frontend
+visibility lifecycle in this section is superseded by
+[Pi Progress Visibility Correction](./2026-07-29-pi-progress-visibility-design.md#2-user-experience-contract),
+which makes queued work immediately visible and preserves the current
+disclosure state through terminal completion.
 
 ## Architecture
 
@@ -164,7 +161,7 @@ returned.
 | Duplicate/old progress batch | ACK after idempotent no-op. |
 | Progress database failure | Roll back and NAK for JetStream redelivery. |
 | UI progress poll failure | Use existing transient retry behavior; keep accumulated activity. |
-| Terminal result arrives | Apply it normally, preserve returned progress, then collapse Activity. |
+| Terminal result arrives | Apply it normally, preserve returned progress, and follow the visibility lifecycle in the corrective frontend specification. |
 
 ## Telemetry and Privacy
 
@@ -187,9 +184,10 @@ Logs use fixed diagnostics and never serialize a progress envelope.
   delivery, rollback/NAK, and unchanged terminal results.
 - Endpoint tests cover ownership, full status snapshots, compact history
   previews, response compatibility, and terminal snapshots.
-- UI tests cover snapshot merge/reset, deduplication, expanded running Activity,
-  collapsed terminal Activity, truncation labels, tool error labels, and
-  unchanged final result behavior.
+- UI visibility tests are defined by
+  [Pi Progress Visibility Correction](./2026-07-29-pi-progress-visibility-design.md#7-test-case-specifications);
+  snapshot merge/reset, truncation, tool error labels, and unchanged final
+  result behavior remain required.
 - Telemetry-safety tests use sentinels to ensure progress content and paths do
   not reach logs or telemetry.
 - Final validation includes full backend/frontend gates, deployment/runtime
