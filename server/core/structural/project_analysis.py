@@ -3,17 +3,21 @@ from __future__ import annotations
 from collections.abc import Sequence
 from importlib.metadata import version
 from math import sqrt
-from typing import Literal
+from typing import Any, Literal
 
 from .contracts import (
     CapabilityState,
     EquilibriumDiagnostic,
+    LoadCombination,
+    LoadSummary,
     MemberCheck,
     MemberDiagram,
     MemberDiagramStation,
+    MemberDistributedLoad,
     MemberResult,
     NodeReaction,
     ProjectStructuralCapture,
+    ServiceabilityCheck,
     SnapshotSource,
     SolverMetadata,
     StructuralMember,
@@ -22,9 +26,11 @@ from .contracts import (
     Vector3,
 )
 
-COMBINATION_ID = "SLS-1.0"
+DEFAULT_COMBINATION_ID = "SLS-1.0"
 STATION_INTERVALS = 32
 RESIDUAL_TOLERANCE = 1e-8
+STANDARD_GRAVITY_M_S2 = 9.80665
+NODE_COORDINATE_DIGITS = 9
 
 
 class StructuralAnalysisError(ValueError):
@@ -45,9 +51,16 @@ def _vector(values: Sequence[float]) -> Vector3:
 
 def _length(start: Vector3, end: Vector3) -> float:
     return sqrt(
-        (end.x - start.x) ** 2
-        + (end.y - start.y) ** 2
-        + (end.z - start.z) ** 2
+        (end.x - start.x) ** 2 + (end.y - start.y) ** 2 + (end.z - start.z) ** 2
+    )
+
+
+def _axis(start: Vector3, end: Vector3) -> Vector3:
+    member_length = _length(start, end)
+    return Vector3(
+        x=(end.x - start.x) / member_length,
+        y=(end.y - start.y) / member_length,
+        z=(end.z - start.z) / member_length,
     )
 
 
@@ -62,10 +75,31 @@ def _cross(left: Vector3, right: Vector3) -> tuple[float, float, float]:
 def _add(
     accumulator: list[float],
     value: Vector3 | tuple[float, float, float],
+    scale: float = 1.0,
 ) -> None:
     values = (value.x, value.y, value.z) if isinstance(value, Vector3) else value
     for index in range(3):
-        accumulator[index] += values[index]
+        accumulator[index] += values[index] * scale
+
+
+def _scaled(value: Vector3, scale: float) -> Vector3:
+    return Vector3(
+        x=value.x * scale,
+        y=value.y * scale,
+        z=value.z * scale,
+    )
+
+
+def _plus(left: Vector3, right: Vector3) -> Vector3:
+    return Vector3(
+        x=left.x + right.x,
+        y=left.y + right.y,
+        z=left.z + right.z,
+    )
+
+
+def _magnitude(value: Vector3) -> float:
+    return sqrt(value.x**2 + value.y**2 + value.z**2)
 
 
 def _local_to_global(rotation, values: tuple[float, float, float]) -> Vector3:
@@ -77,31 +111,156 @@ def _local_to_global(rotation, values: tuple[float, float, float]) -> Vector3:
     )
 
 
+def _coordinate_key(position: Vector3) -> tuple[float, float, float]:
+    return tuple(
+        round(getattr(position, axis), NODE_COORDINATE_DIGITS)
+        for axis in ("x", "y", "z")
+    )
+
+
+def _merge_restraints(
+    current: dict[str, bool],
+    incoming,
+) -> None:
+    for axis in ("dx", "dy", "dz", "rx", "ry", "rz"):
+        current[axis] = current[axis] or bool(getattr(incoming, axis))
+
+
+def _combination_list(analysis) -> list[LoadCombination]:
+    if analysis.load_combinations:
+        return list(analysis.load_combinations)
+    used_case_ids = {
+        load.case_id
+        for load in (
+            *analysis.member_loads,
+            *analysis.member_distributed_loads,
+        )
+    }
+    return [
+        LoadCombination(
+            id=DEFAULT_COMBINATION_ID,
+            label="Serviceability — all authored actions at 1.0",
+            limit_state="serviceability",
+            factors={
+                case.id: 1.0 for case in analysis.load_cases if case.id in used_case_ids
+            },
+        )
+    ]
+
+
+def _select_combination(
+    combinations: list[LoadCombination],
+    combination_id: str | None,
+) -> LoadCombination:
+    if combination_id is not None:
+        selected = next(
+            (
+                combination
+                for combination in combinations
+                if combination.id == combination_id
+            ),
+            None,
+        )
+        if selected is None:
+            raise StructuralAnalysisError(
+                f"Unknown load combination {combination_id!r}; available combinations: "
+                f"{[combination.id for combination in combinations]}"
+            )
+        return selected
+    return next(
+        (
+            combination
+            for combination in combinations
+            if combination.limit_state == "serviceability"
+        ),
+        combinations[0],
+    )
+
+
+def _distributed_resultant(
+    load: MemberDistributedLoad,
+) -> tuple[Vector3, Vector3]:
+    """Return force and first moment about the start of the loaded segment."""
+
+    span = load.end_distance_m - load.start_distance_m
+    resultant = Vector3(
+        x=span * (load.start_force_kN_m.x + load.end_force_kN_m.x) / 2.0,
+        y=span * (load.start_force_kN_m.y + load.end_force_kN_m.y) / 2.0,
+        z=span * (load.start_force_kN_m.z + load.end_force_kN_m.z) / 2.0,
+    )
+    first_moment = Vector3(
+        x=span**2 * (load.start_force_kN_m.x + 2.0 * load.end_force_kN_m.x) / 6.0,
+        y=span**2 * (load.start_force_kN_m.y + 2.0 * load.end_force_kN_m.y) / 6.0,
+        z=span**2 * (load.start_force_kN_m.z + 2.0 * load.end_force_kN_m.z) / 6.0,
+    )
+    return resultant, first_moment
+
+
+def _load_summary(analysis) -> LoadSummary:
+    case_categories = {case.id: case.category for case in analysis.load_cases}
+    sections = {section.id: section for section in analysis.sections}
+    members = {member.id: member for member in analysis.members}
+    member_mass_kg = 0.0
+    self_weight_kN = 0.0
+    additional_dead_load_kN = 0.0
+    imposed_load_kN = 0.0
+    wind_load_kN = 0.0
+
+    for point_load_summary in analysis.member_loads:
+        magnitude = _magnitude(point_load_summary.force)
+        category = case_categories[point_load_summary.case_id]
+        if category == "dead":
+            additional_dead_load_kN += magnitude
+        elif category == "live":
+            imposed_load_kN += magnitude
+        elif category == "wind":
+            wind_load_kN += magnitude
+
+    for line_load_summary in analysis.member_distributed_loads:
+        resultant, _first_moment = _distributed_resultant(line_load_summary)
+        magnitude = _magnitude(resultant)
+        category = case_categories[line_load_summary.case_id]
+        if line_load_summary.source_kind == "self_weight":
+            self_weight_kN += magnitude
+            declaration = members[line_load_summary.member_id]
+            section = sections[declaration.section_id]
+            if section.mass_kg_m is not None:
+                member_mass_kg += section.mass_kg_m * (
+                    line_load_summary.end_distance_m
+                    - line_load_summary.start_distance_m
+                )
+        elif category == "dead":
+            additional_dead_load_kN += magnitude
+        elif category == "live":
+            imposed_load_kN += magnitude
+        elif category == "wind":
+            wind_load_kN += magnitude
+
+    return LoadSummary(
+        member_mass_kg=member_mass_kg,
+        self_weight_kN=self_weight_kN,
+        additional_dead_load_kN=additional_dead_load_kN,
+        imposed_load_kN=imposed_load_kN,
+        wind_load_kN=wind_load_kN,
+    )
+
+
 def solve_project_structural(
     capture: ProjectStructuralCapture,
+    *,
+    combination_id: str | None = None,
 ) -> StructuralSnapshot:
     analysis = capture.analysis
-    if analysis is None or not analysis.members or not analysis.member_loads:
-        raise StructuralAnalysisError(
-            "Active design has no analytical member axis and distributed member loads"
-        )
-    if len(analysis.members) != 1:
-        raise StructuralAnalysisError(
-            "The current structural MVP solves exactly one analytical member; "
-            f"the active design declares {len(analysis.members)}"
-        )
+    if analysis is None or not analysis.members:
+        raise StructuralAnalysisError("Active design has no analytical member axes")
+    if not analysis.member_loads and not analysis.member_distributed_loads:
+        raise StructuralAnalysisError("Active design has no analytical member loads")
 
     from Pynite import FEModel3D
 
-    declaration = analysis.members[0]
-    member_length = _length(declaration.start, declaration.end)
-    member_loads = [
-        load for load in analysis.member_loads if load.member_id == declaration.id
-    ]
-    if not member_loads:
-        raise StructuralAnalysisError(
-            f"Analytical member {declaration.id!r} has no member loads"
-        )
+    combinations = _combination_list(analysis)
+    active_combination = _select_combination(combinations, combination_id)
+    components = {component.id: component for component in capture.components}
 
     model = FEModel3D()
     for material in analysis.materials:
@@ -121,40 +280,84 @@ def solve_project_structural(
             J=section.torsion_j_m4,
         )
 
-    start_node_id = f"{declaration.id}-start"
-    end_node_id = f"{declaration.id}-end"
-    model.add_node(
-        start_node_id,
-        declaration.start.x,
-        declaration.start.y,
-        declaration.start.z,
-    )
-    model.add_node(
-        end_node_id,
-        declaration.end.x,
-        declaration.end.y,
-        declaration.end.z,
-    )
-    for node_id, restraints in (
-        (start_node_id, declaration.start_restraints),
-        (end_node_id, declaration.end_restraints),
-    ):
+    nodes_by_coordinate: dict[tuple[float, float, float], dict[str, Any]] = {}
+    member_node_ids: dict[str, tuple[str, str]] = {}
+    for declaration in analysis.members:
+        component = components[declaration.component_id]
+        member_nodes: list[str] = []
+        for position, restraints in (
+            (declaration.start, declaration.start_restraints),
+            (declaration.end, declaration.end_restraints),
+        ):
+            key = _coordinate_key(position)
+            node = nodes_by_coordinate.get(key)
+            if node is None:
+                node = {
+                    "id": f"node-{len(nodes_by_coordinate) + 1}",
+                    "position": position,
+                    "restraints": {
+                        "dx": False,
+                        "dy": False,
+                        "dz": False,
+                        "rx": False,
+                        "ry": False,
+                        "rz": False,
+                    },
+                    "visual_node_id": component.visual_node_id,
+                    "labels": [],
+                }
+                nodes_by_coordinate[key] = node
+            _merge_restraints(node["restraints"], restraints)
+            node["labels"].append(declaration.label)
+            member_nodes.append(node["id"])
+        member_node_ids[declaration.id] = (member_nodes[0], member_nodes[1])
+
+    for node in nodes_by_coordinate.values():
+        position = node["position"]
+        model.add_node(node["id"], position.x, position.y, position.z)
+        restraints = node["restraints"]
         model.def_support(
-            node_id,
-            support_DX=restraints.dx,
-            support_DY=restraints.dy,
-            support_DZ=restraints.dz,
-            support_RX=restraints.rx,
-            support_RY=restraints.ry,
-            support_RZ=restraints.rz,
+            node["id"],
+            support_DX=restraints["dx"],
+            support_DY=restraints["dy"],
+            support_DZ=restraints["dz"],
+            support_RX=restraints["rx"],
+            support_RY=restraints["ry"],
+            support_RZ=restraints["rz"],
         )
-    model.add_member(
-        declaration.id,
-        start_node_id,
-        end_node_id,
-        declaration.material_id,
-        declaration.section_id,
-    )
+
+    for declaration in analysis.members:
+        start_node_id, end_node_id = member_node_ids[declaration.id]
+        model.add_member(
+            declaration.id,
+            start_node_id,
+            end_node_id,
+            declaration.material_id,
+            declaration.section_id,
+            rotation=declaration.rotation_deg,
+        )
+        start_releases = declaration.start_releases
+        end_releases = declaration.end_releases
+        if any(
+            getattr(releases, axis)
+            for releases in (start_releases, end_releases)
+            for axis in ("dx", "dy", "dz", "rx", "ry", "rz")
+        ):
+            model.def_releases(
+                declaration.id,
+                Dxi=start_releases.dx,
+                Dyi=start_releases.dy,
+                Dzi=start_releases.dz,
+                Rxi=start_releases.rx,
+                Ryi=start_releases.ry,
+                Rzi=start_releases.rz,
+                Dxj=end_releases.dx,
+                Dyj=end_releases.dy,
+                Dzj=end_releases.dz,
+                Rxj=end_releases.rx,
+                Ryj=end_releases.ry,
+                Rzj=end_releases.rz,
+            )
 
     direction_names = (
         ("FX", "x"),
@@ -164,164 +367,307 @@ def solve_project_structural(
         ("MY", "y"),
         ("MZ", "z"),
     )
-    for load in member_loads:
-        for direction, axis in direction_names[:3]:
-            magnitude = getattr(load.force, axis)
+    for point_load in analysis.member_loads:
+        for direction, axis_name in direction_names[:3]:
+            magnitude = getattr(point_load.force, axis_name)
             if magnitude:
                 model.add_member_pt_load(
-                    declaration.id,
+                    point_load.member_id,
                     direction,
                     magnitude,
-                    load.distance_m,
-                    case=load.case_id,
+                    point_load.distance_m,
+                    case=point_load.case_id,
                 )
-        for direction, axis in direction_names[3:]:
-            magnitude = getattr(load.moment, axis)
+        for direction, axis_name in direction_names[3:]:
+            magnitude = getattr(point_load.moment, axis_name)
             if magnitude:
                 model.add_member_pt_load(
-                    declaration.id,
+                    point_load.member_id,
                     direction,
                     magnitude,
-                    load.distance_m,
-                    case=load.case_id,
+                    point_load.distance_m,
+                    case=point_load.case_id,
                 )
 
-    combination_factors = {
-        case.id: 1.0
-        for case in analysis.load_cases
-        if any(load.case_id == case.id for load in member_loads)
-    }
-    if not combination_factors:
-        raise StructuralAnalysisError("Analytical loads reference no declared load case")
-    model.add_load_combo(COMBINATION_ID, combination_factors)
+    for line_load in analysis.member_distributed_loads:
+        for direction, axis_name in direction_names[:3]:
+            start_magnitude = getattr(line_load.start_force_kN_m, axis_name)
+            end_magnitude = getattr(line_load.end_force_kN_m, axis_name)
+            if start_magnitude or end_magnitude:
+                model.add_member_dist_load(
+                    line_load.member_id,
+                    direction,
+                    start_magnitude,
+                    end_magnitude,
+                    x1=line_load.start_distance_m,
+                    x2=line_load.end_distance_m,
+                    case=line_load.case_id,
+                )
+
+    for combination in combinations:
+        model.add_load_combo(combination.id, dict(combination.factors))
     try:
         model.analyze(check_statics=False, log=False)
     except Exception as exc:
-        raise StructuralAnalysisError(f"PyNite could not solve the active design: {exc}") from exc
+        raise StructuralAnalysisError(
+            f"PyNite could not solve the active design: {exc}"
+        ) from exc
 
-    component = next(
-        item for item in capture.components if item.id == declaration.component_id
-    )
-    member = model.members[declaration.id]
-    rotation = member.T()[:3, :3]
+    structural_nodes = [
+        StructuralNode(
+            id=node["id"],
+            label=" / ".join(dict.fromkeys(node["labels"])),
+            position=node["position"],
+            restraints=node["restraints"],
+            visual_node_id=node["visual_node_id"],
+        )
+        for node in nodes_by_coordinate.values()
+    ]
+    structural_members: list[StructuralMember] = []
+    member_results: list[MemberResult] = []
+    member_diagrams: list[MemberDiagram] = []
+    member_checks: list[MemberCheck] = []
+    serviceability_checks: list[ServiceabilityCheck] = []
 
-    station_distances = {
-        member_length * index / STATION_INTERVALS
-        for index in range(STATION_INTERVALS + 1)
-    }
-    station_distances.update(load.distance_m for load in member_loads)
-    stations: list[MemberDiagramStation] = []
-    max_moment = 0.0
-    max_shear = 0.0
-    max_axial = 0.0
-    max_displacement = 0.0
-    for distance in sorted(station_distances):
-        ratio = distance / member_length
-        position = Vector3(
-            x=declaration.start.x
-            + (declaration.end.x - declaration.start.x) * ratio,
-            y=declaration.start.y
-            + (declaration.end.y - declaration.start.y) * ratio,
-            z=declaration.start.z
-            + (declaration.end.z - declaration.start.z) * ratio,
-        )
-        local_moment = (
-            0.0,
-            member.moment("My", distance, COMBINATION_ID),
-            member.moment("Mz", distance, COMBINATION_ID),
-        )
-        local_shear = (
-            0.0,
-            member.shear("Fy", distance, COMBINATION_ID),
-            member.shear("Fz", distance, COMBINATION_ID),
-        )
-        local_displacement = (
-            member.deflection("dx", distance, COMBINATION_ID) * 1000.0,
-            member.deflection("dy", distance, COMBINATION_ID) * 1000.0,
-            member.deflection("dz", distance, COMBINATION_ID) * 1000.0,
-        )
-        global_moment = _local_to_global(rotation, local_moment)
-        global_shear = _local_to_global(rotation, local_shear)
-        global_displacement = _local_to_global(rotation, local_displacement)
-        axial = member.axial(distance, COMBINATION_ID)
-        max_moment = max(
-            max_moment,
-            sqrt(sum(value**2 for value in local_moment)),
-        )
-        max_shear = max(max_shear, sqrt(sum(value**2 for value in local_shear)))
-        max_axial = max(max_axial, abs(axial))
-        max_displacement = max(
-            max_displacement,
-            sqrt(sum(value**2 for value in local_displacement)),
-        )
-        stations.append(
-            MemberDiagramStation(
-                distance_m=distance,
-                position=position,
-                moment_kNm=global_moment,
-                shear_kN=global_shear,
-                displacement_mm=global_displacement,
+    for declaration in analysis.members:
+        component = components[declaration.component_id]
+        start_node_id, end_node_id = member_node_ids[declaration.id]
+        structural_members.append(
+            StructuralMember(
+                id=declaration.id,
+                label=declaration.label,
+                start_node_id=start_node_id,
+                end_node_id=end_node_id,
+                section_id=declaration.section_id,
+                material_id=declaration.material_id,
+                visual_node_id=component.visual_node_id,
             )
         )
+        member_length = _length(declaration.start, declaration.end)
+        point_loads = [
+            load for load in analysis.member_loads if load.member_id == declaration.id
+        ]
+        distributed_loads = [
+            load
+            for load in analysis.member_distributed_loads
+            if load.member_id == declaration.id
+        ]
+        station_distances = {
+            member_length * index / STATION_INTERVALS
+            for index in range(STATION_INTERVALS + 1)
+        }
+        station_distances.update(load.distance_m for load in point_loads)
+        for station_line_load in distributed_loads:
+            station_distances.update(
+                (
+                    station_line_load.start_distance_m,
+                    station_line_load.end_distance_m,
+                )
+            )
+
+        member = model.members[declaration.id]
+        rotation = member.T()[:3, :3]
+        stations: list[MemberDiagramStation] = []
+        max_moment = 0.0
+        max_shear = 0.0
+        max_axial = 0.0
+        max_displacement = 0.0
+        for distance in sorted(station_distances):
+            ratio = distance / member_length
+            position = Vector3(
+                x=declaration.start.x
+                + (declaration.end.x - declaration.start.x) * ratio,
+                y=declaration.start.y
+                + (declaration.end.y - declaration.start.y) * ratio,
+                z=declaration.start.z
+                + (declaration.end.z - declaration.start.z) * ratio,
+            )
+            local_moment = (
+                0.0,
+                member.moment("My", distance, active_combination.id),
+                member.moment("Mz", distance, active_combination.id),
+            )
+            local_shear = (
+                0.0,
+                member.shear("Fy", distance, active_combination.id),
+                member.shear("Fz", distance, active_combination.id),
+            )
+            local_displacement = (
+                member.deflection("dx", distance, active_combination.id) * 1000.0,
+                member.deflection("dy", distance, active_combination.id) * 1000.0,
+                member.deflection("dz", distance, active_combination.id) * 1000.0,
+            )
+            global_moment = _local_to_global(rotation, local_moment)
+            global_shear = _local_to_global(rotation, local_shear)
+            global_displacement = _local_to_global(rotation, local_displacement)
+            axial = member.axial(distance, active_combination.id)
+            max_moment = max(
+                max_moment,
+                sqrt(sum(value**2 for value in local_moment)),
+            )
+            max_shear = max(
+                max_shear,
+                sqrt(sum(value**2 for value in local_shear)),
+            )
+            max_axial = max(max_axial, abs(axial))
+            max_displacement = max(
+                max_displacement,
+                sqrt(sum(value**2 for value in local_displacement)),
+            )
+            stations.append(
+                MemberDiagramStation(
+                    distance_m=distance,
+                    position=position,
+                    moment_kNm=global_moment,
+                    shear_kN=global_shear,
+                    displacement_mm=global_displacement,
+                )
+            )
+
+        member_results.append(
+            MemberResult(
+                member_id=declaration.id,
+                combination_id=active_combination.id,
+                max_moment_kNm=max_moment,
+                max_shear_kN=max_shear,
+                max_axial_kN=max_axial,
+                max_displacement_mm=max_displacement,
+            )
+        )
+        member_diagrams.append(
+            MemberDiagram(
+                member_id=declaration.id,
+                visual_node_id=component.visual_node_id,
+                stations=stations,
+            )
+        )
+        member_checks.append(
+            MemberCheck(
+                member_id=declaration.id,
+                label=f"{declaration.label} bending demand",
+                demand_kNm=max_moment,
+                capacity_kNm=None,
+                utilisation=None,
+                status="not_checked",
+                basis=(
+                    "Elastic demand only — no AS/NZS 4600 member capacity is connected."
+                ),
+            )
+        )
+
+        limit_candidates: list[float] = []
+        if declaration.deflection_limit_ratio is not None:
+            limit_candidates.append(
+                member_length * 1000.0 / declaration.deflection_limit_ratio
+            )
+        if declaration.deflection_limit_mm is not None:
+            limit_candidates.append(declaration.deflection_limit_mm)
+        limit_mm = min(limit_candidates) if limit_candidates else None
+        if active_combination.limit_state != "serviceability" or limit_mm is None:
+            serviceability_checks.append(
+                ServiceabilityCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} deflection",
+                    combination_id=active_combination.id,
+                    displacement_mm=max_displacement,
+                    limit_mm=limit_mm,
+                    utilisation=None,
+                    status="not_checked",
+                    basis=(
+                        "Deflection checks require a serviceability combination "
+                        "and an authored project criterion."
+                        if declaration.deflection_limit_basis is None
+                        else declaration.deflection_limit_basis
+                    ),
+                )
+            )
+        else:
+            utilisation = max_displacement / limit_mm
+            serviceability_checks.append(
+                ServiceabilityCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} deflection",
+                    combination_id=active_combination.id,
+                    displacement_mm=max_displacement,
+                    limit_mm=limit_mm,
+                    utilisation=utilisation,
+                    status="pass" if utilisation <= 1.0 else "fail",
+                    basis=declaration.deflection_limit_basis
+                    or "Authored project deflection criterion.",
+                )
+            )
 
     reaction_values: list[NodeReaction] = []
     reaction_force_sum = [0.0, 0.0, 0.0]
     reaction_moment_sum = [0.0, 0.0, 0.0]
-    node_declarations = (
-        (start_node_id, declaration.start, declaration.start_restraints),
-        (end_node_id, declaration.end, declaration.end_restraints),
-    )
-    for node_id, position, restraints in node_declarations:
-        if not any(
-            (
-                restraints.dx,
-                restraints.dy,
-                restraints.dz,
-                restraints.rx,
-                restraints.ry,
-                restraints.rz,
-            )
-        ):
+    for node in nodes_by_coordinate.values():
+        restraints = node["restraints"]
+        if not any(restraints.values()):
             continue
-        node = model.nodes[node_id]
+        solved_node = model.nodes[node["id"]]
         force = Vector3(
-            x=_clean(node.RxnFX[COMBINATION_ID]),
-            y=_clean(node.RxnFY[COMBINATION_ID]),
-            z=_clean(node.RxnFZ[COMBINATION_ID]),
+            x=_clean(solved_node.RxnFX[active_combination.id]),
+            y=_clean(solved_node.RxnFY[active_combination.id]),
+            z=_clean(solved_node.RxnFZ[active_combination.id]),
         )
         moment = Vector3(
-            x=_clean(node.RxnMX[COMBINATION_ID]),
-            y=_clean(node.RxnMY[COMBINATION_ID]),
-            z=_clean(node.RxnMZ[COMBINATION_ID]),
+            x=_clean(solved_node.RxnMX[active_combination.id]),
+            y=_clean(solved_node.RxnMY[active_combination.id]),
+            z=_clean(solved_node.RxnMZ[active_combination.id]),
         )
         reaction_values.append(
             NodeReaction(
-                node_id=node_id,
-                combination_id=COMBINATION_ID,
+                node_id=node["id"],
+                combination_id=active_combination.id,
                 force=force,
                 moment=moment,
             )
         )
         _add(reaction_force_sum, force)
         _add(reaction_moment_sum, moment)
-        _add(reaction_moment_sum, _cross(position, force))
+        _add(reaction_moment_sum, _cross(node["position"], force))
 
     applied_force_sum = [0.0, 0.0, 0.0]
     applied_moment_sum = [0.0, 0.0, 0.0]
-    analytical_axis = Vector3(
-        x=(declaration.end.x - declaration.start.x) / member_length,
-        y=(declaration.end.y - declaration.start.y) / member_length,
-        z=(declaration.end.z - declaration.start.z) / member_length,
-    )
-    for load in member_loads:
-        position = Vector3(
-            x=declaration.start.x + analytical_axis.x * load.distance_m,
-            y=declaration.start.y + analytical_axis.y * load.distance_m,
-            z=declaration.start.z + analytical_axis.z * load.distance_m,
+    declarations = {member.id: member for member in analysis.members}
+    for equilibrium_point_load in analysis.member_loads:
+        factor = active_combination.factors.get(
+            equilibrium_point_load.case_id,
+            0.0,
         )
-        _add(applied_force_sum, load.force)
-        _add(applied_moment_sum, load.moment)
-        _add(applied_moment_sum, _cross(position, load.force))
+        if factor == 0:
+            continue
+        declaration = declarations[equilibrium_point_load.member_id]
+        member_axis = _axis(declaration.start, declaration.end)
+        position = _plus(
+            declaration.start,
+            _scaled(member_axis, equilibrium_point_load.distance_m),
+        )
+        _add(applied_force_sum, equilibrium_point_load.force, factor)
+        _add(applied_moment_sum, equilibrium_point_load.moment, factor)
+        _add(
+            applied_moment_sum,
+            _cross(position, equilibrium_point_load.force),
+            factor,
+        )
+
+    for equilibrium_line_load in analysis.member_distributed_loads:
+        factor = active_combination.factors.get(
+            equilibrium_line_load.case_id,
+            0.0,
+        )
+        if factor == 0:
+            continue
+        declaration = declarations[equilibrium_line_load.member_id]
+        member_axis = _axis(declaration.start, declaration.end)
+        segment_start = _plus(
+            declaration.start,
+            _scaled(member_axis, equilibrium_line_load.start_distance_m),
+        )
+        resultant, first_moment = _distributed_resultant(equilibrium_line_load)
+        _add(applied_force_sum, resultant, factor)
+        _add(applied_moment_sum, _cross(segment_start, resultant), factor)
+        _add(applied_moment_sum, _cross(member_axis, first_moment), factor)
 
     force_residual = tuple(
         applied_force_sum[index] + reaction_force_sum[index] for index in range(3)
@@ -333,78 +679,38 @@ def solve_project_structural(
     equilibrium_status: Literal["pass", "fail"] = (
         "pass" if residual <= RESIDUAL_TOLERANCE else "fail"
     )
+    summary = _load_summary(analysis)
+    checked_serviceability = [
+        check for check in serviceability_checks if check.status != "not_checked"
+    ]
 
     return StructuralSnapshot(
         mode="design",
         title=capture.title,
-        subtitle="Active-project first-order elastic member demand",
+        subtitle=(
+            f"Multi-member first-order elastic analysis — {active_combination.label}"
+        ),
         source=SnapshotSource(
             kind="design",
             label=capture.project_name,
             design_id=capture.project_name,
             design_hash=capture.design_hash,
         ),
-        nodes=[
-            StructuralNode(
-                id=start_node_id,
-                label=f"{declaration.label} start",
-                position=declaration.start,
-                restraints=declaration.start_restraints,
-                visual_node_id=component.visual_node_id,
-            ),
-            StructuralNode(
-                id=end_node_id,
-                label=f"{declaration.label} end",
-                position=declaration.end,
-                restraints=declaration.end_restraints,
-                visual_node_id=component.visual_node_id,
-            ),
-        ],
-        members=[
-            StructuralMember(
-                id=declaration.id,
-                label=declaration.label,
-                start_node_id=start_node_id,
-                end_node_id=end_node_id,
-                section_id=declaration.section_id,
-                material_id=declaration.material_id,
-                visual_node_id=component.visual_node_id,
-            )
-        ],
+        nodes=structural_nodes,
+        members=structural_members,
         sections=analysis.sections,
         materials=analysis.materials,
         load_cases=analysis.load_cases,
+        load_combinations=combinations,
         loads=[],
-        member_loads=member_loads,
+        member_loads=analysis.member_loads,
+        member_distributed_loads=analysis.member_distributed_loads,
         reactions=reaction_values,
-        member_results=[
-            MemberResult(
-                member_id=declaration.id,
-                combination_id=COMBINATION_ID,
-                max_moment_kNm=max_moment,
-                max_shear_kN=max_shear,
-                max_axial_kN=max_axial,
-                max_displacement_mm=max_displacement,
-            )
-        ],
-        member_diagrams=[
-            MemberDiagram(
-                member_id=declaration.id,
-                visual_node_id=component.visual_node_id,
-                stations=stations,
-            )
-        ],
-        member_checks=[
-            MemberCheck(
-                member_id=declaration.id,
-                label=f"{declaration.label} bending demand",
-                demand_kNm=max_moment,
-                capacity_kNm=None,
-                utilisation=None,
-                status="not_checked",
-                basis="Elastic demand only — no AS 4600 member capacity is connected.",
-            )
-        ],
+        member_results=member_results,
+        member_diagrams=member_diagrams,
+        member_checks=member_checks,
+        serviceability_checks=serviceability_checks,
+        load_summary=summary,
         equilibrium=EquilibriumDiagnostic(
             force_residual_kN=_vector(force_residual),
             moment_residual_kNm=_vector(moment_residual),
@@ -414,21 +720,49 @@ def solve_project_structural(
         solver=SolverMetadata(
             name="PyNiteFEA",
             version=version("PyNiteFEA"),
-            analysis="3D first-order elastic; authored member point loads",
-            combination_id=COMBINATION_ID,
+            analysis=(
+                "3D first-order elastic frame; shared-coordinate nodes, "
+                "point loads, and global distributed loads"
+            ),
+            combination_id=active_combination.id,
         ),
         capabilities=[
             CapabilityState(
                 id="design-capture",
                 label="Design capture",
                 status="online",
-                detail="Analytical declarations were statically parsed from design.py.",
+                detail="Compiled analytical declarations are linked to CAD members.",
+            ),
+            CapabilityState(
+                id="gravity",
+                label="Self-weight",
+                status="online" if summary.self_weight_kN > 0 else "pending",
+                detail=(
+                    f"{summary.member_mass_kg:.3f} kg of catalogue member mass "
+                    "is applied as distributed gravity load."
+                    if summary.self_weight_kN > 0
+                    else "No catalogue member self-weight has been authored."
+                ),
             ),
             CapabilityState(
                 id="solver",
-                label="PyNite demand",
+                label="Frame solver",
                 status="online",
-                detail="Member actions, reactions, and displacements are solved.",
+                detail=(
+                    f"{len(structural_members)} members and "
+                    f"{len(structural_nodes)} shared nodes are solved."
+                ),
+            ),
+            CapabilityState(
+                id="serviceability",
+                label="Deflection",
+                status="online" if checked_serviceability else "pending",
+                detail=(
+                    f"{len(checked_serviceability)} authored deflection criteria "
+                    "are evaluated."
+                    if checked_serviceability
+                    else "No project deflection criteria are authored."
+                ),
             ),
             CapabilityState(
                 id="equilibrium",
@@ -440,19 +774,25 @@ def solve_project_structural(
                 id="checks",
                 label="Member capacity",
                 status="pending",
-                detail="No AS 4600 C100 capacity has been connected.",
+                detail="AS/NZS 4600 member capacity is not connected.",
             ),
             CapabilityState(
                 id="connections",
                 label="Connections",
                 status="pending",
-                detail="Screws, bolts, bracket, anchors, and concrete are not checked.",
+                detail="Screws, bolts, brackets, anchors, and concrete are not checked.",
             ),
         ],
         warnings=[
             "ELASTIC MEMBER DEMAND ONLY — NOT FOR DESIGN, CERTIFICATION, OR ORDERING.",
-            declaration.assumption,
-            "Wind pressure is distributed equally to the authored screw positions.",
-            "C100 capacity, local buckling, restraint, connections, anchors, and concrete are not checked.",
+            *dict.fromkeys(member.assumption for member in analysis.members),
+            (
+                "Non-steel permanent actions are included only where design.py "
+                "authors a traceable distributed or point load."
+            ),
+            (
+                "AS/NZS 4600 capacity, local buckling, restraint, connections, "
+                "anchors, concrete, impact, and progressive collapse are not checked."
+            ),
         ],
     )

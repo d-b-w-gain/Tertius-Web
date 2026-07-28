@@ -188,6 +188,7 @@ def test_catalogue_section_registers_normalized_solver_data_and_provenance():
                 "iy_m4": 142000e-12,
                 "iz_m4": 673000e-12,
                 "torsion_j_m4": 492e-12,
+                "mass_kg_m": 3.29,
             },
             "material": {
                 "label": "G450 steel",
@@ -215,7 +216,71 @@ def test_catalogue_section_registers_normalized_solver_data_and_provenance():
     assert resolved.material.id == "material-g450"
     section = model._sections[0]
     assert section["area_m2"] == pytest.approx(409e-6)
+    assert section["mass_kg_m"] == pytest.approx(3.29)
     assert section["catalog"]["catalog_id"] == "lysaght-zc-v2"
     assert section["catalog"]["axis_mapping"]["local_z_inertia"] == "Ix_mm4"
     assert section["catalog"]["properties"]["Zxe_mm3"] == 12300
     assert len(section["catalog"]["record_sha256"]) == 64
+
+
+def test_catalogue_member_self_weight_and_service_combination_are_authored():
+    model = StructuralModel(title="Gravity member")
+    beam = model.member(bd.Box(2000, 10, 10), id="beam", label="Beam")
+    block = model.ground(bd.Box(100, 100, 100), id="block", label="Block")
+    steel = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000,
+        shear_modulus_kN_m2=80_000_000,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+    )
+    section = model.section(
+        id="c100",
+        label="C100",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+        mass_kg_m=3.29,
+    )
+    model.member_axis(
+        beam,
+        id="beam-axis",
+        label="Beam",
+        start=(0, 0, 0),
+        end=(2, 0, 0),
+        section=section,
+        material=steel,
+        start_restraints=(True, True, True, True, True, True),
+        deflection_limit_ratio=250,
+        deflection_limit_basis="Project demonstration criterion L/250.",
+        assumption="Fixed cantilever demonstration.",
+    )
+    model.connect(
+        beam,
+        block,
+        id="beam-ground",
+        label="Beam to ground",
+        transfers=["force", "moment"],
+    )
+    model.member_self_weight(
+        beam,
+        id="beam-self-weight",
+        label="Beam self-weight",
+    )
+    model.load_combination(
+        id="SLS-G",
+        label="Permanent actions",
+        limit_state="serviceability",
+        factors={"dead": 1.0},
+    )
+    model.assembly([beam, block], label="gravity")
+
+    manifest = model.manifest()
+
+    line_load = manifest["analysis"]["member_distributed_loads"][0]
+    assert line_load["start_force_kN_m"]["z"] == pytest.approx(-3.29 * 9.80665 / 1000)
+    assert line_load["end_distance_m"] == pytest.approx(2.0)
+    assert line_load["source_kind"] == "self_weight"
+    assert manifest["analysis"]["load_combinations"][0]["factors"] == {"case-dead": 1.0}

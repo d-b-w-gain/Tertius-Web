@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -117,12 +117,16 @@ def get_active_capture(
 
 @app.get("/active/analysis", response_model=StructuralSnapshot)
 def get_active_analysis(
+    combination_id: str | None = Query(default=None),
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> StructuralSnapshot:
     capture = get_active_capture(ctx=ctx, db=db)
     try:
-        return solve_project_structural(capture)
+        return solve_project_structural(
+            capture,
+            combination_id=combination_id,
+        )
     except StructuralAnalysisError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

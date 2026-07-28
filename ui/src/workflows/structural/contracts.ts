@@ -72,10 +72,18 @@ export type ProjectStructuralCapture = {
       end_restraints: StructuralNode['restraints']
       section_id: string
       material_id: string
+      rotation_deg: number
+      start_releases: StructuralNode['restraints']
+      end_releases: StructuralNode['restraints']
+      deflection_limit_ratio: number | null
+      deflection_limit_mm: number | null
+      deflection_limit_basis: string | null
       assumption: string
     }>
     load_cases: StructuralSnapshot['load_cases']
+    load_combinations: LoadCombination[]
     member_loads: MemberPointLoad[]
+    member_distributed_loads: MemberDistributedLoad[]
   } | null
   capabilities: CapabilityState[]
   warnings: string[]
@@ -91,6 +99,27 @@ export type MemberPointLoad = {
   moment: Vector3
   source_load_id: string
   provenance: string
+}
+
+export type MemberDistributedLoad = {
+  id: string
+  label: string
+  member_id: string
+  case_id: string
+  start_distance_m: number
+  end_distance_m: number
+  start_force_kN_m: Vector3
+  end_force_kN_m: Vector3
+  source_kind: 'self_weight' | 'surface' | 'authored'
+  source_load_id: string | null
+  provenance: string
+}
+
+export type LoadCombination = {
+  id: string
+  label: string
+  limit_state: 'serviceability' | 'ultimate'
+  factors: Record<string, number>
 }
 
 export type MemberDiagramStation = {
@@ -153,6 +182,7 @@ export type StructuralSnapshot = {
     iy_m4: number
     iz_m4: number
     torsion_j_m4: number
+    mass_kg_m: number | null
     catalog?: {
       catalog_id: string
       catalog_version: string
@@ -176,6 +206,7 @@ export type StructuralSnapshot = {
     label: string
     category: 'dead' | 'live' | 'wind' | 'fixture'
   }>
+  load_combinations: LoadCombination[]
   loads: Array<{
     id: string
     label: string
@@ -186,6 +217,7 @@ export type StructuralSnapshot = {
     visual_node_id: string
   }>
   member_loads: MemberPointLoad[]
+  member_distributed_loads: MemberDistributedLoad[]
   reactions: Array<{
     node_id: string
     combination_id: string
@@ -214,6 +246,23 @@ export type StructuralSnapshot = {
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
   }>
+  serviceability_checks: Array<{
+    member_id: string
+    label: string
+    combination_id: string
+    displacement_mm: number
+    limit_mm: number | null
+    utilisation: number | null
+    status: 'pass' | 'fail' | 'not_checked'
+    basis: string
+  }>
+  load_summary: {
+    member_mass_kg: number
+    self_weight_kN: number
+    additional_dead_load_kN: number
+    imposed_load_kN: number
+    wind_load_kN: number
+  }
   equilibrium: {
     force_residual_kN: Vector3
     moment_residual_kNm: Vector3

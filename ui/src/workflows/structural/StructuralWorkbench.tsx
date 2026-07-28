@@ -49,6 +49,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
   const [analysis, setAnalysis] = useState<StructuralSnapshot | null>(null)
   const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
+  const [selectedMemberId, setSelectedMemberId] = useState('')
+  const [selectedCombinationId, setSelectedCombinationId] = useState('')
+  const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
@@ -84,7 +87,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setCapture(nextCapture)
       setSelectedVisualNodeId('')
       if (analysisResponse.ok) {
-        setAnalysis(analysisPayload as StructuralSnapshot)
+        const nextAnalysis = analysisPayload as StructuralSnapshot
+        setAnalysis(nextAnalysis)
+        setSelectedCombinationId(nextAnalysis.solver.combination_id)
+        setSelectedMemberId(nextAnalysis.members[0]?.id || '')
       } else {
         setAnalysis(null)
         setAnalysisError(
@@ -121,6 +127,38 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     }
   }, [loadCapture])
 
+  const selectCombination = useCallback(async (combinationId: string) => {
+    setSelectedCombinationId(combinationId)
+    setAnalysisError(null)
+    try {
+      const response = await apiFetch(
+        `${serverUrl}/active/analysis?combination_id=${encodeURIComponent(combinationId)}`,
+        getAccessToken,
+      )
+      const payload = await response.json().catch(() => null) as
+        | StructuralSnapshot
+        | { detail?: string }
+        | null
+      if (!response.ok) {
+        const detail = payload && 'detail' in payload ? payload.detail : undefined
+        throw new Error(detail || `Structural analysis returned ${response.status}`)
+      }
+      const nextAnalysis = payload as StructuralSnapshot
+      setAnalysis(nextAnalysis)
+      setSelectedMemberId((current) => (
+        nextAnalysis.members.some((member) => member.id === current)
+          ? current
+          : nextAnalysis.members[0]?.id || ''
+      ))
+    } catch (loadError) {
+      setAnalysisError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'The selected load combination could not be solved',
+      )
+    }
+  }, [getAccessToken, serverUrl])
+
   const componentsById = useMemo(
     () => new Map(capture?.components.map((component) => [component.id, component]) || []),
     [capture],
@@ -128,27 +166,42 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const firstLoad = capture?.loads[0]
   const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
   const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
-  const firstMemberResult = analysis?.member_results[0]
-  const firstMember = analysis?.members[0]
-  const firstSection = analysis?.sections.find(
-    (section) => section.id === firstMember?.section_id,
+  const selectedMember = analysis?.members.find(
+    (member) => member.id === selectedMemberId,
+  ) || analysis?.members[0]
+  const selectedMemberResult = analysis?.member_results.find(
+    (result) => result.member_id === selectedMember?.id,
   )
-  const catalogueProperties = firstSection?.catalog?.properties
+  const selectedSection = analysis?.sections.find(
+    (section) => section.id === selectedMember?.section_id,
+  )
+  const catalogueProperties = selectedSection?.catalog?.properties
   const firstReaction = analysis?.reactions[0]
-  const firstCheck = analysis?.member_checks[0]
+  const selectedCheck = analysis?.member_checks.find(
+    (check) => check.member_id === selectedMember?.id,
+  )
+  const selectedServiceability = analysis?.serviceability_checks.find(
+    (check) => check.member_id === selectedMember?.id,
+  )
   const structuralOverlay = useMemo(() => {
-    const diagram = analysis?.member_diagrams[0]
+    const diagram = analysis?.member_diagrams.find(
+      (candidate) => candidate.member_id === selectedMember?.id,
+    )
     if (!diagram) return undefined
     return {
       id: diagram.member_id,
-      label: `${firstMember?.label || diagram.member_id} signed bending moment`,
+      label: diagramMode === 'displacement'
+        ? `${selectedMember?.label || diagram.member_id} amplified displacement`
+        : `${selectedMember?.label || diagram.member_id} signed bending moment`,
+      mode: diagramMode,
       stations: diagram.stations.map((station) => ({
         position: station.position,
         moment_kNm: station.moment_kNm,
+        displacement_mm: station.displacement_mm,
       })),
       maxOffsetMm: 260,
     }
-  }, [analysis, firstMember?.label])
+  }, [analysis, diagramMode, selectedMember?.id, selectedMember?.label])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
 
   if (authMode === 'guest') {
@@ -186,7 +239,42 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               : 'Active-project geometry with statically parsed structural connectivity'}
           </p>
         </div>
-        <div className="ml-auto hidden items-center gap-2 lg:flex">
+        {analysis && (
+          <div className="ml-auto flex items-center gap-2">
+            <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+              Combination
+              <select
+                aria-label="Load combination"
+                value={selectedCombinationId}
+                onChange={(event) => void selectCombination(event.target.value)}
+                className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs normal-case tracking-normal text-slate-200"
+              >
+                {analysis.load_combinations.map((combination) => (
+                  <option key={combination.id} value={combination.id}>
+                    {combination.id} · {combination.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex rounded border border-slate-700 bg-slate-950 p-0.5">
+              {(['moment', 'displacement'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setDiagramMode(mode)}
+                  className={`rounded px-2 py-1 text-[10px] font-semibold capitalize ${
+                    diagramMode === mode
+                      ? 'bg-cyan-500/20 text-cyan-200'
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="hidden items-center gap-2 xl:flex">
           {capabilities.map((capability) => (
             <span
               key={capability.id}
@@ -345,7 +433,87 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </section>
               )}
 
-              {analysis && firstMemberResult && firstMember && firstReaction && (
+              {analysis && (
+                <section className="rounded border border-violet-500/40 bg-violet-500/10 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-violet-300">
+                      Gravity and service actions
+                    </div>
+                    <span className="font-mono text-[10px] text-violet-200">
+                      {analysis.solver.combination_id}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <dt className="text-slate-500">Catalogue member mass</dt>
+                      <dd className="font-mono">
+                        {number(analysis.load_summary.member_mass_kg, 2)} kg
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Member self-weight</dt>
+                      <dd className="font-mono">
+                        {number(analysis.load_summary.self_weight_kN, 3)} kN
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Other permanent actions</dt>
+                      <dd className="font-mono">
+                        {number(analysis.load_summary.additional_dead_load_kN, 3)} kN
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Imposed actions</dt>
+                      <dd className="font-mono">
+                        {number(analysis.load_summary.imposed_load_kN, 3)} kN
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="mt-3 border-t border-violet-500/20 pt-2 text-[10px] text-slate-400">
+                    {analysis.members.length} members · {analysis.nodes.length} shared nodes ·{' '}
+                    {analysis.member_distributed_loads.length} distributed loads
+                  </div>
+                </section>
+              )}
+
+              {analysis && analysis.members.length > 1 && (
+                <section>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                    Analytical members
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    {analysis.members.map((member) => {
+                      const result = analysis.member_results.find(
+                        (candidate) => candidate.member_id === member.id,
+                      )
+                      return (
+                        <button
+                          key={member.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedMemberId(member.id)
+                            setSelectedVisualNodeId(member.visual_node_id)
+                          }}
+                          className={`flex w-full items-center justify-between rounded border px-3 py-2 text-left ${
+                            selectedMember?.id === member.id
+                              ? 'border-cyan-400 bg-cyan-500/10'
+                              : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'
+                          }`}
+                        >
+                          <span className="text-xs font-semibold text-slate-200">
+                            {member.label}
+                          </span>
+                          <span className="font-mono text-[9px] text-slate-400">
+                            {result ? `${number(result.max_displacement_mm, 2)} mm` : '—'}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {analysis && selectedMemberResult && selectedMember && firstReaction && (
                 <section className="rounded border border-cyan-500/40 bg-cyan-500/10 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -353,12 +521,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         PyNite elastic demand
                       </div>
                       <div className="mt-1 text-sm font-semibold text-slate-100">
-                        {firstMember.label}
+                        {selectedMember.label}
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => setSelectedVisualNodeId(firstMember.visual_node_id)}
+                      onClick={() => setSelectedVisualNodeId(selectedMember.visual_node_id)}
                       className="rounded border border-cyan-500/40 bg-slate-950/50 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:border-cyan-300"
                     >
                       Focus member
@@ -368,27 +536,61 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     <div>
                       <dt className="text-slate-500">Max moment</dt>
                       <dd className="font-mono text-amber-200">
-                        {number(firstMemberResult.max_moment_kNm, 4)} kN·m
+                        {number(selectedMemberResult.max_moment_kNm, 4)} kN·m
                       </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">Max shear</dt>
                       <dd className="font-mono">
-                        {number(firstMemberResult.max_shear_kN, 4)} kN
+                        {number(selectedMemberResult.max_shear_kN, 4)} kN
                       </dd>
                     </div>
                     <div>
                       <dt className="text-slate-500">Max displacement</dt>
                       <dd className="font-mono">
-                        {number(firstMemberResult.max_displacement_mm, 3)} mm
+                        {number(selectedMemberResult.max_displacement_mm, 3)} mm
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-slate-500">Load points</dt>
-                      <dd className="font-mono">{analysis.member_loads.length} screws</dd>
+                      <dt className="text-slate-500">Member loads</dt>
+                      <dd className="font-mono">
+                        {analysis.member_loads.filter(
+                          (load) => load.member_id === selectedMember.id,
+                        ).length} point ·{' '}
+                        {analysis.member_distributed_loads.filter(
+                          (load) => load.member_id === selectedMember.id,
+                        ).length} line
+                      </dd>
                     </div>
                   </dl>
-                  {firstSection?.catalog && (
+                  {selectedServiceability && (
+                    <div className={`mt-3 rounded border p-3 ${
+                      selectedServiceability.status === 'pass'
+                        ? 'border-emerald-500/30 bg-emerald-950/30'
+                        : selectedServiceability.status === 'fail'
+                          ? 'border-red-500/40 bg-red-950/30'
+                          : 'border-slate-700 bg-slate-950/40'
+                    }`}>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
+                          Deflection criterion
+                        </span>
+                        <span className="font-bold uppercase">
+                          {selectedServiceability.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <div className="mt-2 font-mono text-xs text-slate-200">
+                        {number(selectedServiceability.displacement_mm, 3)} mm /{' '}
+                        {selectedServiceability.limit_mm === null
+                          ? 'no authored limit'
+                          : `${number(selectedServiceability.limit_mm, 3)} mm`}
+                      </div>
+                      <p className="mt-2 text-[9px] text-slate-500">
+                        {selectedServiceability.basis}
+                      </p>
+                    </div>
+                  )}
+                  {selectedSection?.catalog && (
                     <div className="mt-3 rounded border border-emerald-500/30 bg-emerald-950/30 p-3">
                       <div className="flex items-center justify-between gap-3">
                         <div>
@@ -396,11 +598,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             Validated catalogue section
                           </div>
                           <div className="mt-1 text-xs font-semibold text-slate-100">
-                            {firstSection.catalog.section_key}
+                            {selectedSection.catalog.section_key}
                           </div>
                         </div>
                         <span className="rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-emerald-200">
-                          {firstSection.catalog.catalog_id} v{firstSection.catalog.catalog_version}
+                          {selectedSection.catalog.catalog_id} v{selectedSection.catalog.catalog_version}
                         </span>
                       </div>
                       <dl className="mt-3 grid grid-cols-3 gap-2 text-[10px]">
@@ -431,16 +633,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </dl>
                       <div
                         className="mt-2 truncate font-mono text-[9px] text-slate-500"
-                        title={firstSection.catalog.record_sha256}
+                        title={selectedSection.catalog.record_sha256}
                       >
-                        Record {firstSection.catalog.record_sha256.slice(0, 12)}
+                        Record {selectedSection.catalog.record_sha256.slice(0, 12)}
                       </div>
                     </div>
                   )}
                   <div className="mt-3 border-t border-cyan-500/20 pt-3">
                     <div className="flex items-center justify-between text-[10px]">
                       <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
-                        Fixed-base reaction
+                        First support reaction
                       </span>
                       <span className={
                         analysis.equilibrium.status === 'pass'
@@ -458,8 +660,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     </div>
                   </div>
                   <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
-                    Signed ribbon: blue is low demand and amber is peak demand. Its width is
-                    scaled for visibility; values above are the solver results.
+                    {diagramMode === 'displacement'
+                      ? 'Displacement is amplified for visibility; the reported millimetres are unscaled.'
+                      : 'Signed moment ribbon: blue is low demand and amber is peak demand.'}
                   </p>
                 </section>
               )}
@@ -467,7 +670,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
                 <div className="font-semibold">Capacity status: NOT CHECKED</div>
                 <p className="mt-1 text-[10px] text-amber-200/75">
-                  {firstCheck?.basis || (
+                  {selectedCheck?.basis || (
                     'This proves declared connectivity only. It does not yet solve the C100 member '
                     + 'or check screws, bolts, bracket, anchors, or concrete.'
                   )}
@@ -483,7 +686,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             isActive={isActive}
             statusTextOverride={
               analysis
-                ? 'Active-project model with PyNite signed moment ribbon'
+                ? `Active-project model with PyNite ${diagramMode} overlay`
                 : 'Active-project model linked to parsed structural declarations'
             }
             externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}

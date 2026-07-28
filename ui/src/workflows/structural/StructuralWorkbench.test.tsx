@@ -209,6 +209,7 @@ const analysis: StructuralSnapshot = {
       iy_m4: 142000e-12,
       iz_m4: 673000e-12,
       torsion_j_m4: 492e-12,
+      mass_kg_m: 3.29,
       catalog: {
         catalog_id: 'lysaght-zc-v2',
         catalog_version: '2.0',
@@ -238,6 +239,20 @@ const analysis: StructuralSnapshot = {
     },
   ],
   load_cases: [{ id: 'case-wind', label: 'Wind load', category: 'wind' }],
+  load_combinations: [
+    {
+      id: 'SLS-1.0',
+      label: 'Serviceability actions',
+      limit_state: 'serviceability',
+      factors: { 'case-wind': 1 },
+    },
+    {
+      id: 'SLS-G',
+      label: 'Permanent actions',
+      limit_state: 'serviceability',
+      factors: { 'case-wind': 0 },
+    },
+  ],
   loads: [],
   member_loads: [0.35, 0.8, 1.25].map((distance, index) => ({
     id: `wind-${index}`,
@@ -250,6 +265,7 @@ const analysis: StructuralSnapshot = {
     source_load_id: 'wind',
     provenance: 'Equal screws',
   })),
+  member_distributed_loads: [],
   reactions: [
     {
       node_id: 'purlin-start',
@@ -301,6 +317,25 @@ const analysis: StructuralSnapshot = {
       basis: 'Elastic demand only — no AS 4600 member capacity is connected.',
     },
   ],
+  serviceability_checks: [
+    {
+      member_id: 'purlin-axis',
+      label: 'C100 deflection',
+      combination_id: 'SLS-1.0',
+      displacement_mm: 2.61231263,
+      limit_mm: 6.4,
+      utilisation: 0.408,
+      status: 'pass',
+      basis: 'Project demonstration criterion L/250.',
+    },
+  ],
+  load_summary: {
+    member_mass_kg: 0,
+    self_weight_kN: 0,
+    additional_dead_load_kN: 0,
+    imposed_load_kN: 0,
+    wind_load_kN: 0.73152,
+  },
   equilibrium: {
     force_residual_kN: { x: 0, y: 0, z: 0 },
     moment_residual_kNm: { x: 0, y: 0, z: 0 },
@@ -328,7 +363,7 @@ describe('StructuralWorkbench', () => {
   beforeEach(() => {
     mocks.apiFetch.mockReset()
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(url.endsWith('/active/analysis') ? analysis : capture), {
+      new Response(JSON.stringify(url.includes('/active/analysis') ? analysis : capture), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -363,6 +398,16 @@ describe('StructuralWorkbench', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
     expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Load combination'), {
+      target: { value: 'SLS-G' },
+    })
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/structural/active/analysis?combination_id=SLS-G',
+        mocks.getAccessToken,
+      )
+    })
   })
 
   it('reloads the structural declaration when the shared active project changes', async () => {

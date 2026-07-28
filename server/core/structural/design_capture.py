@@ -73,6 +73,9 @@ class _GeneratedModel:
     sections: list[dict[str, Any]] = field(default_factory=list)
     analytical_members: list[dict[str, Any]] = field(default_factory=list)
     member_loads: list[dict[str, Any]] = field(default_factory=list)
+    member_distributed_loads: list[dict[str, Any]] = field(default_factory=list)
+    load_combinations: list[dict[str, Any]] = field(default_factory=list)
+    load_case_categories: dict[str, str] = field(default_factory=dict)
     assembled_component_ids: list[str] | None = None
 
     def declaration(self) -> dict[str, Any]:
@@ -108,13 +111,28 @@ class _GeneratedModel:
                 "members": self.analytical_members,
                 "load_cases": [
                     {
-                        "id": f"case-{case}",
-                        "label": f"{case.title()} load",
-                        "category": case,
+                        "id": case_id,
+                        "label": f"{category.title()} load",
+                        "category": category,
                     }
-                    for case in dict.fromkeys(load["case"] for load in self.loads)
+                    for case_id, category in self.load_case_categories.items()
                 ],
+                "load_combinations": (
+                    self.load_combinations
+                    if self.load_combinations
+                    else [
+                        {
+                            "id": "SLS-1.0",
+                            "label": "Serviceability — all authored actions at 1.0",
+                            "limit_state": "serviceability",
+                            "factors": {
+                                case_id: 1.0 for case_id in self.load_case_categories
+                            },
+                        }
+                    ]
+                ),
                 "member_loads": self.member_loads,
+                "member_distributed_loads": self.member_distributed_loads,
             },
         }
 
@@ -136,7 +154,9 @@ def _static_value(node: ast.AST, names: dict[str, Any]) -> Any:
         result = {}
         for key, value in zip(node.keys, node.values, strict=True):
             if key is None:
-                raise StructuralDeclarationError("dictionary unpacking is not supported")
+                raise StructuralDeclarationError(
+                    "dictionary unpacking is not supported"
+                )
             result[_static_value(key, names)] = _static_value(value, names)
         return result
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPERATORS:
@@ -232,9 +252,7 @@ def _direction_value(value: Any) -> dict[str, float]:
         and not any(isinstance(item, (list, tuple, dict, set)) for item in value)
     ):
         return {"x": float(value[0]), "y": float(value[1]), "z": float(value[2])}
-    raise StructuralDeclarationError(
-        "structural vector must contain x, y, and z"
-    )
+    raise StructuralDeclarationError("structural vector must contain x, y, and z")
 
 
 def _restraints_value(value: Any) -> dict[str, bool]:
@@ -290,7 +308,9 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
         ):
             target_name = statement.targets[0].id
             value_node = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
             target_name = statement.target.id
             value_node = statement.value
 
@@ -383,6 +403,7 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "iy_m4",
                         "iz_m4",
                         "torsion_j_m4",
+                        "mass_kg_m",
                     }
                     unexpected = sorted(set(keywords) - allowed)
                     if unexpected:
@@ -391,20 +412,25 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             f"{unexpected}"
                         )
                     section_id = str(_keyword_value(keywords, "id", names))
-                    model.sections.append(
-                        {
-                            "id": section_id,
-                            "label": str(_keyword_value(keywords, "label", names)),
-                            "area_m2": float(
-                                _keyword_value(keywords, "area_m2", names)
-                            ),
-                            "iy_m4": float(_keyword_value(keywords, "iy_m4", names)),
-                            "iz_m4": float(_keyword_value(keywords, "iz_m4", names)),
-                            "torsion_j_m4": float(
-                                _keyword_value(keywords, "torsion_j_m4", names)
-                            ),
-                        }
+                    section_value = {
+                        "id": section_id,
+                        "label": str(_keyword_value(keywords, "label", names)),
+                        "area_m2": float(_keyword_value(keywords, "area_m2", names)),
+                        "iy_m4": float(_keyword_value(keywords, "iy_m4", names)),
+                        "iz_m4": float(_keyword_value(keywords, "iz_m4", names)),
+                        "torsion_j_m4": float(
+                            _keyword_value(keywords, "torsion_j_m4", names)
+                        ),
+                    }
+                    mass_kg_m = _keyword_value(
+                        keywords,
+                        "mass_kg_m",
+                        names,
+                        default=None,
                     )
+                    if mass_kg_m is not None:
+                        section_value["mass_kg_m"] = float(mass_kg_m)
+                    model.sections.append(section_value)
                     section_handles[target_name] = _SpecHandle(
                         model_name=model_name,
                         id=section_id,
@@ -456,6 +482,9 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 _keyword_value(keywords, "provenance", names)
                             ),
                         }
+                    )
+                    model.load_case_categories[f"case-{model.loads[-1]['case']}"] = (
+                        model.loads[-1]["case"]
                     )
                     surface_load_handles[target_name] = _SpecHandle(
                         model_name=model_name,
@@ -640,6 +669,9 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             ),
                         }
                     )
+                    model.load_case_categories[f"case-{model.loads[-1]['case']}"] = (
+                        model.loads[-1]["case"]
+                    )
                     continue
                 if method == "member_axis":
                     if len(call.args) != 1:
@@ -655,6 +687,12 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "material",
                         "start_restraints",
                         "end_restraints",
+                        "rotation_deg",
+                        "start_releases",
+                        "end_releases",
+                        "deflection_limit_ratio",
+                        "deflection_limit_mm",
+                        "deflection_limit_basis",
                         "assumption",
                     }
                     unexpected = sorted(set(keywords) - allowed)
@@ -713,6 +751,48 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                     names,
                                     default=(),
                                 )
+                            ),
+                            "rotation_deg": float(
+                                _keyword_value(
+                                    keywords,
+                                    "rotation_deg",
+                                    names,
+                                    default=0.0,
+                                )
+                            ),
+                            "start_releases": _restraints_value(
+                                _keyword_value(
+                                    keywords,
+                                    "start_releases",
+                                    names,
+                                    default=(),
+                                )
+                            ),
+                            "end_releases": _restraints_value(
+                                _keyword_value(
+                                    keywords,
+                                    "end_releases",
+                                    names,
+                                    default=(),
+                                )
+                            ),
+                            "deflection_limit_ratio": _keyword_value(
+                                keywords,
+                                "deflection_limit_ratio",
+                                names,
+                                default=None,
+                            ),
+                            "deflection_limit_mm": _keyword_value(
+                                keywords,
+                                "deflection_limit_mm",
+                                names,
+                                default=None,
+                            ),
+                            "deflection_limit_basis": _keyword_value(
+                                keywords,
+                                "deflection_limit_basis",
+                                names,
+                                default=None,
                             ),
                             "section_id": axis_section.id,
                             "material_id": axis_material.id,
@@ -799,10 +879,13 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         )
                     member_start = analytical_member["start"]
                     member_end = analytical_member["end"]
-                    member_length = sum(
-                        (member_end[axis] - member_start[axis]) ** 2
-                        for axis in ("x", "y", "z")
-                    ) ** 0.5
+                    member_length = (
+                        sum(
+                            (member_end[axis] - member_start[axis]) ** 2
+                            for axis in ("x", "y", "z")
+                        )
+                        ** 0.5
+                    )
                     if any(position >= member_length for position in positions):
                         raise StructuralDeclarationError(
                             "StructuralModel.distribute_surface_load(...) positions "
@@ -814,9 +897,9 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             "must be positive"
                         )
                     direction = source_load["direction"]
-                    direction_length = sum(
-                        direction[axis] ** 2 for axis in ("x", "y", "z")
-                    ) ** 0.5
+                    direction_length = (
+                        sum(direction[axis] ** 2 for axis in ("x", "y", "z")) ** 0.5
+                    )
                     if direction_length == 0:
                         raise StructuralDeclarationError(
                             "StructuralModel.distribute_surface_load(...) source "
@@ -825,12 +908,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                     total_force = source_load["pressure_kPa"] * source_load["area_m2"]
                     weight_total = sum(weights)
                     distribution_id = str(_keyword_value(keywords, "id", names))
-                    distribution_label = str(
-                        _keyword_value(keywords, "label", names)
-                    )
-                    provenance = str(
-                        _keyword_value(keywords, "provenance", names)
-                    )
+                    distribution_label = str(_keyword_value(keywords, "label", names))
+                    provenance = str(_keyword_value(keywords, "provenance", names))
                     for index, (position, weight) in enumerate(
                         zip(positions, weights, strict=True),
                         start=1,
@@ -853,12 +932,238 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             }
                         )
                     continue
+                if method in {"member_distributed_load", "member_self_weight"}:
+                    if len(call.args) != 1:
+                        raise StructuralDeclarationError(
+                            f"StructuralModel.{method}(...) requires one member handle"
+                        )
+                    distributed_component = _component_handle(
+                        call.args[0],
+                        handles,
+                        model_name=model_name,
+                        context=f"StructuralModel.{method}(...) member",
+                    )
+                    analytical_member = next(
+                        (
+                            member
+                            for member in model.analytical_members
+                            if member["component_id"]
+                            == distributed_component.component_id
+                        ),
+                        None,
+                    )
+                    if analytical_member is None:
+                        raise StructuralDeclarationError(
+                            f"StructuralModel.{method}(...) member has no analytical axis"
+                        )
+                    member_start = analytical_member["start"]
+                    member_end = analytical_member["end"]
+                    member_length = (
+                        sum(
+                            (member_end[axis] - member_start[axis]) ** 2
+                            for axis in ("x", "y", "z")
+                        )
+                        ** 0.5
+                    )
+                    load_id = str(_keyword_value(keywords, "id", names))
+                    label = str(_keyword_value(keywords, "label", names))
+                    provenance = str(
+                        _keyword_value(
+                            keywords,
+                            "provenance",
+                            names,
+                            default=(
+                                "Section mass per metre multiplied by standard gravity."
+                            ),
+                        )
+                    )
+                    if method == "member_self_weight":
+                        allowed = {
+                            "id",
+                            "label",
+                            "direction",
+                            "gravity_m_s2",
+                            "provenance",
+                        }
+                        unexpected = sorted(set(keywords) - allowed)
+                        if unexpected:
+                            raise StructuralDeclarationError(
+                                "StructuralModel.member_self_weight(...) has "
+                                f"unsupported keywords {unexpected}"
+                            )
+                        section = next(
+                            section
+                            for section in model.sections
+                            if section["id"] == analytical_member["section_id"]
+                        )
+                        mass_kg_m = section.get("mass_kg_m")
+                        if mass_kg_m is None:
+                            raise StructuralDeclarationError(
+                                "StructuralModel.member_self_weight(...) section "
+                                "has no mass_kg_m"
+                            )
+                        direction = _direction_value(
+                            _keyword_value(
+                                keywords,
+                                "direction",
+                                names,
+                                default=(0.0, 0.0, -1.0),
+                            )
+                        )
+                        direction_length = (
+                            sum(direction[axis] ** 2 for axis in ("x", "y", "z")) ** 0.5
+                        )
+                        gravity = float(
+                            _keyword_value(
+                                keywords,
+                                "gravity_m_s2",
+                                names,
+                                default=9.80665,
+                            )
+                        )
+                        magnitude = float(mass_kg_m) * gravity / 1000.0
+                        start_force = {
+                            axis: direction[axis] * magnitude / direction_length
+                            for axis in ("x", "y", "z")
+                        }
+                        end_force = dict(start_force)
+                        case = "dead"
+                        source_kind = "self_weight"
+                        source_load_id = None
+                        start_distance = 0.0
+                        end_distance = member_length
+                    else:
+                        allowed = {
+                            "id",
+                            "label",
+                            "case",
+                            "start_force_kN_m",
+                            "end_force_kN_m",
+                            "start_distance_m",
+                            "end_distance_m",
+                            "source_kind",
+                            "source_load",
+                            "provenance",
+                        }
+                        unexpected = sorted(set(keywords) - allowed)
+                        if unexpected:
+                            raise StructuralDeclarationError(
+                                "StructuralModel.member_distributed_load(...) has "
+                                f"unsupported keywords {unexpected}"
+                            )
+                        case = str(_keyword_value(keywords, "case", names))
+                        start_force = _direction_value(
+                            _keyword_value(
+                                keywords,
+                                "start_force_kN_m",
+                                names,
+                            )
+                        )
+                        end_force = _direction_value(
+                            _keyword_value(
+                                keywords,
+                                "end_force_kN_m",
+                                names,
+                                default=start_force,
+                            )
+                        )
+                        start_distance = float(
+                            _keyword_value(
+                                keywords,
+                                "start_distance_m",
+                                names,
+                                default=0.0,
+                            )
+                        )
+                        end_distance_value = _keyword_value(
+                            keywords,
+                            "end_distance_m",
+                            names,
+                            default=None,
+                        )
+                        end_distance = (
+                            member_length
+                            if end_distance_value is None
+                            else float(end_distance_value)
+                        )
+                        source_kind = str(
+                            _keyword_value(
+                                keywords,
+                                "source_kind",
+                                names,
+                                default="authored",
+                            )
+                        )
+                        source_load_node = keywords.get("source_load")
+                        source_load_id = (
+                            None
+                            if source_load_node is None
+                            else _spec_handle(
+                                source_load_node,
+                                surface_load_handles,
+                                model_name=model_name,
+                                context=(
+                                    "StructuralModel.member_distributed_load(...) "
+                                    "source_load"
+                                ),
+                            ).id
+                        )
+                    model.load_case_categories[f"case-{case}"] = case
+                    model.member_distributed_loads.append(
+                        {
+                            "id": load_id,
+                            "label": label,
+                            "member_id": analytical_member["id"],
+                            "case_id": f"case-{case}",
+                            "start_distance_m": start_distance,
+                            "end_distance_m": end_distance,
+                            "start_force_kN_m": start_force,
+                            "end_force_kN_m": end_force,
+                            "source_kind": source_kind,
+                            "source_load_id": source_load_id,
+                            "provenance": provenance,
+                        }
+                    )
+                    continue
+                if method == "load_combination":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.load_combination(...) accepts keywords only"
+                        )
+                    allowed = {"id", "label", "limit_state", "factors"}
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.load_combination(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    raw_factors = dict(_keyword_value(keywords, "factors", names))
+                    factors = {
+                        (
+                            str(case_id)
+                            if str(case_id).startswith("case-")
+                            else f"case-{case_id}"
+                        ): float(factor)
+                        for case_id, factor in raw_factors.items()
+                        if float(factor) != 0
+                    }
+                    model.load_combinations.append(
+                        {
+                            "id": str(_keyword_value(keywords, "id", names)),
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "limit_state": str(
+                                _keyword_value(keywords, "limit_state", names)
+                            ),
+                            "factors": factors,
+                        }
+                    )
+                    continue
 
         if target_name is None or value_node is None:
             continue
         try:
             value = _static_value(value_node, names)
-        except (StructuralDeclarationError, ArithmeticError, TypeError, ValueError):
+        except StructuralDeclarationError, ArithmeticError, TypeError, ValueError:
             if target_name == DECLARATION_NAME:
                 raise
             continue
@@ -877,7 +1182,9 @@ def _structural_declaration(source: str) -> dict[str, Any]:
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
-        raise StructuralDeclarationError(f"design.py is not valid Python: {exc.msg}") from exc
+        raise StructuralDeclarationError(
+            f"design.py is not valid Python: {exc.msg}"
+        ) from exc
 
     declaration = _generated_structural_declaration(tree)
     if declaration is None:
@@ -985,9 +1292,7 @@ def _validate_graph_inputs(
             raise StructuralDeclarationError(
                 f"connection {connection.id!r} connects a component to itself"
             )
-        connected_ids.update(
-            {connection.from_component_id, connection.to_component_id}
-        )
+        connected_ids.update({connection.from_component_id, connection.to_component_id})
         for connector_id in connection.connector_component_ids:
             if connector_id not in valid_ids:
                 raise StructuralDeclarationError(
@@ -1014,8 +1319,7 @@ def _validate_graph_inputs(
     unused_connectors = sorted(
         component.id
         for component in components
-        if component.kind == "connector"
-        and component.id not in used_connector_ids
+        if component.kind == "connector" and component.id not in used_connector_ids
     )
     if unused_connectors:
         raise StructuralDeclarationError(
@@ -1072,7 +1376,7 @@ def capture_project_structural_declaration(
     solver_ready = bool(
         analysis is not None
         and analysis.members
-        and analysis.member_loads
+        and (analysis.member_loads or analysis.member_distributed_loads)
         and analysis.sections
         and analysis.materials
     )
@@ -1105,7 +1409,8 @@ def capture_project_structural_declaration(
             label="PyNite demand",
             status="online" if solver_ready else "pending",
             detail=(
-                "Analytical axes and member point loads are ready for PyNite."
+                "Analytical axes, load combinations, and member loads are ready "
+                "for PyNite."
                 if solver_ready
                 else "Connectivity captured; analytical axes and force distribution "
                 "are not declared yet."
@@ -1127,13 +1432,17 @@ def capture_project_structural_declaration(
             "UNREGISTERED ASSEMBLY MEMBERS FAIL CAPTURE AND COMPILE."
         )
     if blocked_count:
-        warnings.append(f"{blocked_count} declared load path(s) are disconnected from ground.")
+        warnings.append(
+            f"{blocked_count} declared load path(s) are disconnected from ground."
+        )
 
     try:
         return ProjectStructuralCapture(
             project_name=project_name,
             design_hash=design_hash,
-            title=str(declaration.get("title") or f"Structural Workbench — {project_name}"),
+            title=str(
+                declaration.get("title") or f"Structural Workbench — {project_name}"
+            ),
             authoring_mode="generated" if generated_authoring else "legacy",
             components=components,
             connections=connections,

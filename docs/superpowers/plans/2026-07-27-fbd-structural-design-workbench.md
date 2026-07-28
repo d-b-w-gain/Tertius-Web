@@ -146,7 +146,7 @@ and result artifacts consumed by the workbench and calculation reports.
 - [x] Migrate `structural_test` from a handwritten structural dictionary to
   handle-authored components, connections, loads, assembly, and generated
   manifest output.
-- [ ] Add nodes, supports, local axes, releases, loads, tributary regions, and
+- [x] Add nodes, supports, local axes, releases, loads, tributary regions, and
   connectivity inspection.
 - [ ] Link tree/viewer selection to member inputs, results, warnings, and report
   evidence.
@@ -251,3 +251,17 @@ same 436,772-byte GLB and resolved `A=0.000409 m2`, `Iy=1.42e-7 m4`,
 `lysaght-zc-v2@2.0`. The API consumes the sidecar only when its full source
 bundle hash matches the active project; the workbench exposes the catalogue
 identity and record hash without reading manufacturer-specific files.
+
+Gravity/serviceability evidence (2026-07-28): the authoring API now derives
+member self-weight from catalogue mass, accepts global line loads and explicit
+serviceability combinations, and records project-authored deflection limits
+without inventing a certification criterion. The PyNite adapter merges shared
+coordinates into frame nodes, solves every connected member, applies authored
+end releases and rotations, checks global equilibrium, and returns member
+diagrams plus load and serviceability summaries. The workbench can select a
+combination and member and toggle between signed moment and amplified
+displacement overlays. The live `structural_test` microcosm is now a rigid
+two-member C100 gravity frame; its `SLS-G` catalogue self-weight model contains
+9.212 kg of steel and 0.09034 kN of gravity action. This remains an elastic
+demand demonstration: section capacity, connection capacity, stability, impact,
+and the complete shed mass/load inventory are still not checked.

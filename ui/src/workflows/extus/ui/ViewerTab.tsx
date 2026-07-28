@@ -45,9 +45,11 @@ interface ModelViewerCanvasProps {
 export type StructuralViewerOverlay = {
   id: string;
   label: string;
+  mode?: 'moment' | 'displacement';
   stations: Array<{
     position: { x: number; y: number; z: number };
-    moment_kNm: { x: number; y: number; z: number };
+    moment_kNm?: { x: number; y: number; z: number };
+    displacement_mm?: { x: number; y: number; z: number };
   }>;
   maxOffsetMm?: number;
 };
@@ -1093,12 +1095,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     if (axis.lengthSq() === 0) return;
     axis.normalize();
 
-    const peakMoment = Math.max(
-      ...stations.map(({ moment_kNm: moment }) => (
-        Math.hypot(moment.x, moment.y, moment.z)
-      )),
-    );
-    if (peakMoment <= Number.EPSILON) return;
+    const overlayMode = structuralOverlay.mode ?? 'moment';
+    const values = stations.map((station) => {
+      const value = overlayMode === 'displacement'
+        ? station.displacement_mm
+        : station.moment_kNm;
+      return new THREE.Vector3(value?.x ?? 0, value?.y ?? 0, value?.z ?? 0);
+    });
+    const peakValue = Math.max(...values.map((value) => value.length()));
+    if (peakValue <= Number.EPSILON) return;
 
     // Build123D source coordinates are Z-up. GLTF stores them Y-up and the
     // viewer rotates the loaded model back to Z-up, so overlay points are
@@ -1112,17 +1117,19 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const axisPoints: THREE.Vector3[] = [];
     const diagramPoints: THREE.Vector3[] = [];
     const demandRatios: number[] = [];
-    stations.forEach(({ position, moment_kNm: moment }) => {
+    stations.forEach(({ position }, index) => {
       const sourcePoint = new THREE.Vector3(
         position.x,
         position.y,
         position.z,
       );
-      const momentVector = new THREE.Vector3(moment.x, moment.y, moment.z);
-      const offset = axis.clone().cross(momentVector).multiplyScalar(maxOffset / peakMoment);
+      const value = values[index]!;
+      const offset = overlayMode === 'displacement'
+        ? value.clone().multiplyScalar(maxOffset / peakValue)
+        : axis.clone().cross(value).multiplyScalar(maxOffset / peakValue);
       axisPoints.push(toModelCoordinates(sourcePoint));
       diagramPoints.push(toModelCoordinates(sourcePoint.clone().add(offset)));
-      demandRatios.push(Math.min(1, momentVector.length() / peakMoment));
+      demandRatios.push(Math.min(1, value.length() / peakValue));
     });
 
     const group = new THREE.Group();
@@ -1132,7 +1139,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const ribbonPositions: number[] = [];
     const ribbonColors: number[] = [];
     const cool = new THREE.Color(0x38bdf8);
-    const hot = new THREE.Color(0xf59e0b);
+    const hot = new THREE.Color(
+      overlayMode === 'displacement' ? 0xf472b6 : 0xf59e0b,
+    );
     const pushVertex = (point: THREE.Vector3, demandRatio: number) => {
       const color = cool.clone().lerp(hot, demandRatio);
       ribbonPositions.push(point.x, point.y, point.z);
@@ -1181,7 +1190,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const diagramLine = new THREE.Line(
       diagramGeometry,
       new THREE.LineBasicMaterial({
-        color: 0xfbbf24,
+        color: overlayMode === 'displacement' ? 0xf9a8d4 : 0xfbbf24,
         transparent: true,
         opacity: 0.95,
         depthTest: false,

@@ -86,6 +86,104 @@ TERTIUS_STRUCTURAL = structure.manifest()
 """
 
 
+GRAVITY_FRAME_DESIGN = """
+from tertius_structural import StructuralModel
+
+structure = StructuralModel(title="Two-member gravity frame")
+steel = structure.material(
+    id="steel",
+    label="G450 steel",
+    elastic_modulus_kN_m2=200000000.0,
+    shear_modulus_kN_m2=80000000.0,
+    poisson_ratio=0.3,
+    density_kg_m3=7850.0,
+)
+c100 = structure.section(
+    id="c10019",
+    label="C10019 gross section",
+    area_m2=409e-6,
+    iy_m4=142000e-12,
+    iz_m4=673000e-12,
+    torsion_j_m4=492e-12,
+    mass_kg_m=3.29,
+)
+column = structure.member(column_shape, id="column", label="Column")
+beam = structure.member(beam_shape, id="beam", label="Beam")
+block = structure.ground(block_shape, id="block", label="Concrete")
+structure.member_axis(
+    column,
+    id="column-axis",
+    label="Column",
+    start=(0, 0, 0),
+    end=(0, 0, 2),
+    section=c100,
+    material=steel,
+    start_restraints=(True, True, True, True, True, True),
+    deflection_limit_ratio=250,
+    deflection_limit_basis="Project demonstration criterion L/250.",
+    assumption="Rigid knee and fixed base demonstration.",
+)
+structure.member_axis(
+    beam,
+    id="beam-axis",
+    label="Beam",
+    start=(0, 0, 2),
+    end=(2, 0, 2),
+    section=c100,
+    material=steel,
+    deflection_limit_ratio=250,
+    deflection_limit_basis="Project demonstration criterion L/250.",
+    assumption="Rigid knee and fixed base demonstration.",
+)
+structure.connect(
+    beam,
+    column,
+    id="beam-column",
+    label="Rigid knee",
+    transfers=["force", "shear", "moment"],
+)
+structure.connect(
+    column,
+    block,
+    id="column-ground",
+    label="Fixed base",
+    transfers=["force", "shear", "moment"],
+)
+structure.member_self_weight(
+    column,
+    id="column-self-weight",
+    label="Column self-weight",
+)
+structure.member_self_weight(
+    beam,
+    id="beam-self-weight",
+    label="Beam self-weight",
+)
+structure.member_distributed_load(
+    beam,
+    id="beam-service-load",
+    label="Beam imposed service load",
+    case="live",
+    start_force_kN_m=(0, 0, -1),
+    provenance="Authored one kN per metre demonstration service action.",
+)
+structure.load_combination(
+    id="SLS-G",
+    label="Permanent actions",
+    limit_state="serviceability",
+    factors={"dead": 1.0},
+)
+structure.load_combination(
+    id="SLS-G+Q",
+    label="Permanent plus imposed actions",
+    limit_state="serviceability",
+    factors={"dead": 1.0, "live": 1.0},
+)
+structural_assembly = structure.assembly([column, beam, block], label="gravity-frame")
+TERTIUS_STRUCTURAL = structure.manifest()
+"""
+
+
 def test_surface_pressure_is_distributed_to_pynite_and_matches_hand_equilibrium():
     capture = parse_project_structural_capture(
         ANALYTICAL_DESIGN,
@@ -128,3 +226,36 @@ def test_moment_diagram_is_solver_output_with_load_stations_and_zero_free_end():
     assert by_distance[0.8].moment_kNm.x == pytest.approx(-0.109728, abs=1e-10)
     assert by_distance[1.25].moment_kNm.x == pytest.approx(0, abs=1e-10)
     assert by_distance[1.6].moment_kNm.x == pytest.approx(0, abs=1e-10)
+
+
+def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="gravity_frame",
+    )
+
+    gravity = solve_project_structural(capture, combination_id="SLS-G")
+    service = solve_project_structural(capture, combination_id="SLS-G+Q")
+
+    member_weight_kN_m = 3.29 * 9.80665 / 1000.0
+    assert len(service.members) == 2
+    assert len(service.nodes) == 3
+    assert service.load_summary.member_mass_kg == pytest.approx(13.16)
+    assert service.load_summary.self_weight_kN == pytest.approx(member_weight_kN_m * 4)
+    assert service.load_summary.imposed_load_kN == pytest.approx(2.0)
+    assert gravity.reactions[0].force.z == pytest.approx(member_weight_kN_m * 4)
+    assert service.reactions[0].force.z == pytest.approx(member_weight_kN_m * 4 + 2.0)
+    assert service.equilibrium.status == "pass"
+    assert service.member_results[1].max_displacement_mm > 0
+    assert service.serviceability_checks[1].limit_mm == pytest.approx(8.0)
+    assert service.serviceability_checks[1].status in {"pass", "fail"}
+
+
+def test_unknown_load_combination_fails_closed():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="gravity_frame",
+    )
+
+    with pytest.raises(ValueError, match="Unknown load combination"):
+        solve_project_structural(capture, combination_id="SLS-missing")
