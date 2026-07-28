@@ -533,7 +533,7 @@ rtk git add docs/superpowers/plans/2026-07-29-pi-progress-visibility.md
 rtk git commit -m "docs: record Pi progress visibility verification"
 ```
 
-- [ ] **Step 6: Push and open the PR**
+- [x] **Step 6: Push and open the PR**
 
 ```bash
 rtk git push -u origin fix/pi-progress-visibility
@@ -544,6 +544,10 @@ rtk gh pr checks --watch
 The PR body must summarize the lifecycle fix, list focused/full/frontend/live
 validation, note any exact runtime blocker, and avoid prompts, source, progress
 text, or raw identifiers.
+
+Recorded result: branch `fix/pi-progress-visibility` was pushed and pull request
+#334 was opened with the required privacy-safe validation summary. Hosted checks
+were monitored after this final documentation update.
 
 ## Plan Self-Review
 
