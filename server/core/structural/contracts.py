@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import sqrt
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -42,6 +42,16 @@ class StructuralNode(StructuralContract):
     visual_node_id: str
 
 
+class SectionCatalogReference(StructuralContract):
+    catalog_id: str
+    catalog_version: str
+    section_key: str
+    source: str
+    record_sha256: str = Field(min_length=64, max_length=64)
+    axis_mapping: dict[str, str]
+    properties: dict[str, Any]
+
+
 class SectionProperties(StructuralContract):
     id: str
     label: str
@@ -49,6 +59,7 @@ class SectionProperties(StructuralContract):
     iy_m4: float
     iz_m4: float
     torsion_j_m4: float
+    catalog: SectionCatalogReference | None = None
 
 
 class StructuralMember(StructuralContract):
@@ -332,6 +343,13 @@ class ProjectStructuralCapture(StructuralContract):
                         f"analysis load {member_load.id!r} lies outside its member"
                     )
         return self
+
+
+class CompiledStructuralManifest(StructuralContract):
+    schema_version: Literal["1.0"] = "1.0"
+    source_hash: str = Field(min_length=64, max_length=64)
+    design_hash: str = Field(min_length=64, max_length=64)
+    declaration: dict[str, Any]
 
 
 class SnapshotSource(StructuralContract):

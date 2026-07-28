@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections import deque
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from math import sqrt
 from pathlib import Path
 from typing import Any, Literal, Sequence
@@ -38,6 +41,14 @@ class StructuralSectionSpec:
     """A registered member section used by an analytical member."""
 
     id: str
+
+
+@dataclass(frozen=True)
+class StructuralCatalogSectionSpec:
+    """Section and material handles resolved from one immutable catalogue record."""
+
+    section: StructuralSectionSpec
+    material: StructuralMaterialSpec
 
 
 @dataclass(frozen=True)
@@ -316,6 +327,7 @@ class StructuralModel:
         iy_m4: float,
         iz_m4: float,
         torsion_j_m4: float,
+        catalog: Mapping[str, Any] | None = None,
     ) -> StructuralSectionSpec:
         section_id = _required_text("section ID", id)
         if section_id in self._section_handles:
@@ -339,9 +351,80 @@ class StructuralModel:
                 "id": section_id,
                 "label": _required_text("section label", label),
                 **values,
+                **({"catalog": _json_mapping("section catalogue", catalog)} if catalog else {}),
             }
         )
         return handle
+
+    def section_from_catalog(
+        self,
+        *,
+        id: str,
+        material_id: str,
+        record: Mapping[str, Any],
+    ) -> StructuralCatalogSectionSpec:
+        """Register solver properties and provenance from a normalized catalogue record."""
+
+        normalized = _json_mapping("catalogue section record", record)
+        if normalized.get("schema_version") != "1.0":
+            raise StructuralAuthoringError(
+                "catalogue section record schema_version must be '1.0'"
+            )
+        catalog = _required_mapping(normalized, "catalog")
+        solver = _required_mapping(normalized, "solver")
+        material_values = _required_mapping(normalized, "material")
+        properties = _required_mapping(normalized, "properties")
+        axis_mapping = _required_mapping(normalized, "axis_mapping")
+        label = _required_text("catalogue section label", normalized.get("label"))
+        catalog_reference = {
+            "catalog_id": _required_text("catalogue ID", catalog.get("id")),
+            "catalog_version": _required_text(
+                "catalogue version", catalog.get("version")
+            ),
+            "section_key": _required_text(
+                "catalogue section key", catalog.get("section_key")
+            ),
+            "source": _required_text("catalogue source", catalog.get("source")),
+            "record_sha256": sha256(
+                json.dumps(
+                    properties,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "axis_mapping": {
+                str(key): _required_text(
+                    f"catalogue axis mapping {key!r}", value
+                )
+                for key, value in axis_mapping.items()
+            },
+            "properties": properties,
+        }
+        material = self.material(
+            id=material_id,
+            label=_required_text(
+                "catalogue material label", material_values.get("label")
+            ),
+            elastic_modulus_kN_m2=_required_number(
+                material_values, "elastic_modulus_kN_m2"
+            ),
+            shear_modulus_kN_m2=_required_number(
+                material_values, "shear_modulus_kN_m2"
+            ),
+            poisson_ratio=_required_number(material_values, "poisson_ratio"),
+            density_kg_m3=_required_number(material_values, "density_kg_m3"),
+        )
+        section = self.section(
+            id=id,
+            label=label,
+            area_m2=_required_number(solver, "area_m2"),
+            iy_m4=_required_number(solver, "iy_m4"),
+            iz_m4=_required_number(solver, "iz_m4"),
+            torsion_j_m4=_required_number(solver, "torsion_j_m4"),
+            catalog=catalog_reference,
+        )
+        return StructuralCatalogSectionSpec(section=section, material=material)
 
     def member_axis(
         self,
@@ -738,10 +821,57 @@ def helper_source() -> str:
 
 
 def _required_text(label: str, value: Any) -> str:
+    if value is None:
+        raise StructuralAuthoringError(f"{label} must not be empty")
     text = str(value).strip()
     if not text:
         raise StructuralAuthoringError(f"{label} must not be empty")
     return text
+
+
+def _json_mapping(label: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise StructuralAuthoringError(f"{label} must be a mapping")
+    try:
+        encoded = json.dumps(
+            dict(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        decoded = json.loads(encoded)
+    except (TypeError, ValueError) as exc:
+        raise StructuralAuthoringError(
+            f"{label} must contain JSON-serializable finite values"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise StructuralAuthoringError(f"{label} must be a mapping")
+    return decoded
+
+
+def _required_mapping(value: Mapping[str, Any], key: str) -> dict[str, Any]:
+    nested = value.get(key)
+    if not isinstance(nested, Mapping):
+        raise StructuralAuthoringError(
+            f"catalogue section record requires a {key!r} mapping"
+        )
+    return _json_mapping(f"catalogue section {key}", nested)
+
+
+def _required_number(value: Mapping[str, Any], key: str) -> float:
+    raw = value.get(key)
+    if isinstance(raw, bool):
+        raise StructuralAuthoringError(
+            f"catalogue section value {key!r} must be numeric"
+        )
+    try:
+        number = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise StructuralAuthoringError(
+            f"catalogue section value {key!r} must be numeric"
+        ) from exc
+    return number
 
 
 def _vector3(value: Sequence[float] | dict[str, float]) -> dict[str, float]:

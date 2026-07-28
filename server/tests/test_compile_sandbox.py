@@ -113,6 +113,12 @@ TERTIUS_STRUCTURAL = structure.manifest()
 
     assert result.success is True, result.error
     assert result.output_path is not None
+    assert result.structural_manifest_path is not None
+    manifest = json.loads(
+        result.structural_manifest_path.read_text(encoding="utf-8")
+    )
+    assert manifest["title"] == "Generated compile fixture"
+    assert manifest["components"][0]["id"] == "sheet"
 
 
 def test_compile_sandbox_rejects_raw_shapes_outside_generated_assembly(tmp_path):

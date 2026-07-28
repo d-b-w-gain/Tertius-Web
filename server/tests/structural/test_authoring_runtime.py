@@ -167,3 +167,55 @@ def test_surface_load_distribution_derives_member_loads_from_the_same_load_handl
         [-0.24384, -0.24384, -0.24384]
     )
     assert sum(load["force"]["y"] for load in point_loads) == pytest.approx(-0.73152)
+
+
+def test_catalogue_section_registers_normalized_solver_data_and_provenance():
+    model = StructuralModel(title="Catalogue-backed member")
+    resolved = model.section_from_catalog(
+        id="section-c10019",
+        material_id="material-g450",
+        record={
+            "schema_version": "1.0",
+            "catalog": {
+                "id": "lysaght-zc-v2",
+                "version": "2.0",
+                "section_key": "C10019 (100x1.9)",
+                "source": "Lysaght guide p.7-8",
+            },
+            "label": "C100x1.9 (Lysaght)",
+            "solver": {
+                "area_m2": 409e-6,
+                "iy_m4": 142000e-12,
+                "iz_m4": 673000e-12,
+                "torsion_j_m4": 492e-12,
+            },
+            "material": {
+                "label": "G450 steel",
+                "elastic_modulus_kN_m2": 200_000_000,
+                "shear_modulus_kN_m2": 80_000_000,
+                "poisson_ratio": 0.3,
+                "density_kg_m3": 7850,
+            },
+            "axis_mapping": {
+                "local_y_inertia": "Iy_mm4",
+                "local_z_inertia": "Ix_mm4",
+            },
+            "properties": {
+                "A_mm2": 409,
+                "Ix_mm4": 673000,
+                "Iy_mm4": 142000,
+                "J_mm4": 492,
+                "fy_MPa": 450,
+                "Zxe_mm3": 12300,
+            },
+        },
+    )
+
+    assert resolved.section.id == "section-c10019"
+    assert resolved.material.id == "material-g450"
+    section = model._sections[0]
+    assert section["area_m2"] == pytest.approx(409e-6)
+    assert section["catalog"]["catalog_id"] == "lysaght-zc-v2"
+    assert section["catalog"]["axis_mapping"]["local_z_inertia"] == "Ix_mm4"
+    assert section["catalog"]["properties"]["Zxe_mm3"] == 12300
+    assert len(section["catalog"]["record_sha256"]) == 64

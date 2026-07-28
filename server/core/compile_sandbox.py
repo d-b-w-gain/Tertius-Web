@@ -12,6 +12,7 @@ from .structural.authoring_runtime import helper_source as structural_helper_sou
 from .tertius_bom_runtime import TERTIUS_BOM_HELPER_SOURCE
 
 SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views", "timus_bounds"}
+STRUCTURAL_MANIFEST_FILENAME = "tertius-structural-manifest.json"
 
 
 SANDBOX_SCRIPT = r"""
@@ -33,6 +34,7 @@ project_dir = Path.cwd()
 export_format = sys.argv[1].lower()
 quality_arg = sys.argv[2].lower() if len(sys.argv) > 2 else None
 output_path = project_dir / f"output.{export_format}"
+structural_manifest_path = project_dir / "tertius-structural-manifest.json"
 env = {"bd": bd, "build123d": bd}
 
 project_dir_str = str(project_dir.resolve())
@@ -55,6 +57,21 @@ try:
         exec(design_code, env)
     finally:
         uninstall_tertius_provenance()
+
+    structural_manifest = env.get("TERTIUS_STRUCTURAL")
+    if structural_manifest is not None:
+        if not isinstance(structural_manifest, dict):
+            raise RuntimeError("TERTIUS_STRUCTURAL must resolve to a dictionary")
+        structural_manifest_path.write_text(
+            json.dumps(
+                structural_manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
 
     shapes = []
     for val in env.values():
@@ -656,6 +673,7 @@ class CompileSandboxResult:
     stdout: str
     stderr: str
     error: str | None
+    structural_manifest_path: Path | None = None
 
 
 def _subprocess_output_text(value: str | bytes | None) -> str:
@@ -777,4 +795,9 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
         stdout=stdout,
         stderr=stderr,
         error=None,
+        structural_manifest_path=(
+            project_dir / STRUCTURAL_MANIFEST_FILENAME
+            if (project_dir / STRUCTURAL_MANIFEST_FILENAME).is_file()
+            else None
+        ),
     )

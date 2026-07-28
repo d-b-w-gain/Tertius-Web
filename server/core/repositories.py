@@ -671,14 +671,15 @@ class CompileRepository:
             self.db.delete(artifact)
         self.db.flush()
 
-    def artifact_for_job(self, job_id: UUID) -> Artifact | None:
+    def artifact_for_job(self, job_id: UUID, kind: str | None = None) -> Artifact | None:
+        query = select(Artifact).where(
+            Artifact.tenant_id == self.tenant_id,
+            Artifact.compile_job_id == job_id,
+        )
+        if kind is not None:
+            query = query.where(Artifact.kind == kind.lower())
         return self.db.scalar(
-            select(Artifact)
-            .where(
-                Artifact.tenant_id == self.tenant_id,
-                Artifact.compile_job_id == job_id,
-            )
-            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            query.order_by(Artifact.created_at.desc(), Artifact.id.desc())
         )
 
     def record_usage(

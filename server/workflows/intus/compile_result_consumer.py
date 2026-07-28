@@ -30,6 +30,7 @@ from core.nats_client import (
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
+from core.structural.contracts import CompiledStructuralManifest
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,37 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         db.commit()
         return True
 
+    structural_manifest_bytes = None
+    if result.structural_manifest_json is not None:
+        try:
+            structural_manifest = CompiledStructuralManifest.model_validate_json(
+                result.structural_manifest_json
+            )
+            structural_manifest_bytes = structural_manifest.model_dump_json().encode(
+                "utf-8"
+            )
+        except ValueError as exc:
+            repo.finish_job(
+                job,
+                "failed",
+                error=f"Invalid compiled structural manifest: {exc}",
+                error_code="invalid_structural_manifest",
+                user_message=(
+                    "Compile produced invalid structural metadata. "
+                    "Fix the structural catalogue or design declaration."
+                ),
+                retryable=False,
+            )
+            _record_usage_if_applicable(
+                db,
+                result,
+                job,
+                settings,
+                artifact_byte_size=len(artifact_bytes),
+            )
+            db.commit()
+            return True
+
     artifact = repo.record_artifact(
         job.project_id,
         job.id,
@@ -120,10 +152,24 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         artifact_bytes,
         content_type=result.artifact_content_type,
     )
+    if structural_manifest_bytes is not None:
+        repo.record_artifact(
+            job.project_id,
+            job.id,
+            "structural",
+            structural_manifest_bytes,
+            content_type="application/json",
+        )
     repo.finish_job(job, "succeeded")
     _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
     pruned = repo.prunable_artifacts(job.project_id, job.export_format, max(1, settings.artifact_retention_limit))
     repo.delete_artifacts(pruned)
+    structural_pruned = repo.prunable_artifacts(
+        job.project_id,
+        "structural",
+        max(1, settings.artifact_retention_limit),
+    )
+    repo.delete_artifacts(structural_pruned)
     db.commit()
     return artifact.id is not None
 

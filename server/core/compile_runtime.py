@@ -1,5 +1,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
+from hashlib import sha256
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,6 +14,18 @@ def require_valid_runtime_filename(filename: str) -> str:
     if filename in ALLOWED_RUNTIME_SIDECAR_FILES:
         return filename
     return require_valid_python_filename(filename)
+
+
+def runtime_files_hash(files: dict[str, str]) -> str:
+    """Hash an exact, order-independent project source bundle."""
+
+    payload = json.dumps(
+        files,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()
 
 
 @contextmanager

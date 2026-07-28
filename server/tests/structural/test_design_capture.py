@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -7,9 +9,12 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.compile_runtime import runtime_files_hash
 from core.db import get_db
+from core.structural.contracts import CompiledStructuralManifest
 from core.structural.design_capture import (
     StructuralDeclarationError,
+    _structural_declaration,
     parse_project_structural_capture,
 )
 from workflows.structural import structural_server
@@ -268,6 +273,11 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
             return {"design.py": DESIGN}
 
     monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server,
+        "get_latest_structural_manifest_artifact",
+        lambda _db, _ctx, _project: None,
+    )
     monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
     structural_server.app.dependency_overrides[get_auth_context] = lambda: context
     structural_server.app.dependency_overrides[get_db] = lambda: object()
@@ -280,3 +290,95 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
     assert response.status_code == 200
     assert response.json()["project_name"] == "structural_test"
     assert response.json()["load_paths"][0]["status"] == "complete"
+
+
+def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeypatch):
+    context = AuthContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        keycloak_subject="compiled-structural-capture-test",
+        email="test@example.com",
+    )
+    project = SimpleNamespace(id=uuid4(), name="structural_test")
+    files = {
+        "catalog.json.py": '{"version":"2.0"}',
+        "design.py": DESIGN,
+    }
+    compiled = CompiledStructuralManifest(
+        source_hash=runtime_files_hash(files),
+        design_hash=sha256(DESIGN.encode("utf-8")).hexdigest(),
+        declaration=_structural_declaration(DESIGN),
+    )
+
+    class RepositoryStub:
+        def __init__(self, _db, tenant_id):
+            assert tenant_id == context.tenant_id
+
+        def files_for_runtime(self, project_name):
+            assert project_name == "structural_test"
+            return files
+
+    monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server,
+        "get_latest_structural_manifest_artifact",
+        lambda _db, _ctx, _project: SimpleNamespace(
+            content=compiled.model_dump_json().encode("utf-8")
+        ),
+    )
+    monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
+    structural_server.app.dependency_overrides[get_auth_context] = lambda: context
+    structural_server.app.dependency_overrides[get_db] = lambda: object()
+    try:
+        with TestClient(structural_server.app) as client:
+            response = client.get("/active/capture")
+    finally:
+        structural_server.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"][0]["detail"].startswith(
+        "Structural manifest resolved from the compiled design.py source closure"
+    )
+
+
+def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypatch):
+    context = AuthContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        keycloak_subject="stale-structural-capture-test",
+        email="test@example.com",
+    )
+    project = SimpleNamespace(id=uuid4(), name="structural_test")
+    compiled = CompiledStructuralManifest(
+        source_hash="a" * 64,
+        design_hash="b" * 64,
+        declaration=_structural_declaration(DESIGN),
+    )
+
+    class RepositoryStub:
+        def __init__(self, _db, tenant_id):
+            assert tenant_id == context.tenant_id
+
+        def files_for_runtime(self, project_name):
+            assert project_name == "structural_test"
+            return {"design.py": DESIGN + "\n# changed\n"}
+
+    monkeypatch.setattr(structural_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        structural_server,
+        "get_latest_structural_manifest_artifact",
+        lambda _db, _ctx, _project: SimpleNamespace(
+            content=compiled.model_dump_json().encode("utf-8")
+        ),
+    )
+    monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
+    structural_server.app.dependency_overrides[get_auth_context] = lambda: context
+    structural_server.app.dependency_overrides[get_db] = lambda: object()
+    try:
+        with TestClient(structural_server.app) as client:
+            response = client.get("/active/capture")
+    finally:
+        structural_server.app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert "Compile the active project" in response.json()["detail"]

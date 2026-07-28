@@ -1033,12 +1033,13 @@ def _validate_graph_inputs(
             )
 
 
-def parse_project_structural_capture(
-    source: str,
+def capture_project_structural_declaration(
+    declaration: dict[str, Any],
     *,
     project_name: str,
+    design_hash: str,
+    capture_detail: str | None = None,
 ) -> ProjectStructuralCapture:
-    declaration = _structural_declaration(source)
     try:
         components = [
             DesignComponent.model_validate(value)
@@ -1081,9 +1082,12 @@ def parse_project_structural_capture(
             label="Design capture",
             status="online",
             detail=(
-                "Generated structural authoring calls parsed without executing design.py."
-                if generated_authoring
-                else "Static structural declarations parsed without executing design.py."
+                capture_detail
+                or (
+                    "Generated structural authoring calls parsed without executing design.py."
+                    if generated_authoring
+                    else "Static structural declarations parsed without executing design.py."
+                )
             ),
         ),
         CapabilityState(
@@ -1128,7 +1132,7 @@ def parse_project_structural_capture(
     try:
         return ProjectStructuralCapture(
             project_name=project_name,
-            design_hash=sha256(source.encode("utf-8")).hexdigest(),
+            design_hash=design_hash,
             title=str(declaration.get("title") or f"Structural Workbench — {project_name}"),
             authoring_mode="generated" if generated_authoring else "legacy",
             components=components,
@@ -1141,3 +1145,15 @@ def parse_project_structural_capture(
         )
     except ValidationError as exc:
         raise StructuralDeclarationError(f"invalid {DECLARATION_NAME}: {exc}") from exc
+
+
+def parse_project_structural_capture(
+    source: str,
+    *,
+    project_name: str,
+) -> ProjectStructuralCapture:
+    return capture_project_structural_declaration(
+        _structural_declaration(source),
+        project_name=project_name,
+        design_hash=sha256(source.encode("utf-8")).hexdigest(),
+    )

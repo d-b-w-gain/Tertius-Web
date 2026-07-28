@@ -153,6 +153,15 @@ export type StructuralSnapshot = {
     iy_m4: number
     iz_m4: number
     torsion_j_m4: number
+    catalog?: {
+      catalog_id: string
+      catalog_version: string
+      section_key: string
+      source: string
+      record_sha256: string
+      axis_mapping: Record<string, string>
+      properties: Record<string, unknown>
+    } | null
   }>
   materials: Array<{
     id: string

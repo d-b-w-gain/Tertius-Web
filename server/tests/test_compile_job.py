@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import importlib
+import json
 import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -101,6 +102,71 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     assert base64.b64decode(result.artifact_content_base64) == b"solid job"
     assert result.artifact_byte_size == len(b"solid job")
     assert message_id == f"compile-result:{result.job_id}:succeeded"
+
+
+def test_compile_job_attaches_hashed_compiled_structural_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    from core.compile_runtime import runtime_files_hash
+    from core.structural.contracts import CompiledStructuralManifest
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    output_path = tmp_path / "output.glb"
+    output_path.write_bytes(b"glb")
+    manifest_path = tmp_path / "tertius-structural-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "title": "Catalogue fixture",
+                "components": [
+                    {
+                        "id": "ground",
+                        "label": "Ground",
+                        "kind": "ground",
+                        "visual_node_id": "ground",
+                        "grounded": True,
+                    }
+                ],
+                "connections": [],
+                "loads": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox",
+        lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            structural_manifest_path=manifest_path,
+            stdout="",
+            stderr="",
+            error=None,
+        ),
+    )
+    design_source = "shape = 'queued'\n"
+    source_files = [
+        CompileSourceFile(filename="design.py", content=design_source),
+        CompileSourceFile(filename="catalog.json.py", content='{"version":"1"}'),
+    ]
+    msg = FakeMsg(command_payload(export_format="glb", files=source_files))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
+
+    result = publisher.published[0][1]
+    compiled = CompiledStructuralManifest.model_validate_json(
+        result.structural_manifest_json
+    )
+    assert compiled.source_hash == runtime_files_hash(
+        {file.filename: file.content for file in source_files}
+    )
+    assert compiled.design_hash == hashlib.sha256(
+        design_source.encode("utf-8")
+    ).hexdigest()
+    assert compiled.declaration["title"] == "Catalogue fixture"
 
 
 def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):

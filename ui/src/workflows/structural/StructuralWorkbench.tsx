@@ -130,6 +130,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
   const firstMemberResult = analysis?.member_results[0]
   const firstMember = analysis?.members[0]
+  const firstSection = analysis?.sections.find(
+    (section) => section.id === firstMember?.section_id,
+  )
+  const catalogueProperties = firstSection?.catalog?.properties
   const firstReaction = analysis?.reactions[0]
   const firstCheck = analysis?.member_checks[0]
   const structuralOverlay = useMemo(() => {
@@ -384,6 +388,55 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       <dd className="font-mono">{analysis.member_loads.length} screws</dd>
                     </div>
                   </dl>
+                  {firstSection?.catalog && (
+                    <div className="mt-3 rounded border border-emerald-500/30 bg-emerald-950/30 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase tracking-[0.15em] text-emerald-300">
+                            Validated catalogue section
+                          </div>
+                          <div className="mt-1 text-xs font-semibold text-slate-100">
+                            {firstSection.catalog.section_key}
+                          </div>
+                        </div>
+                        <span className="rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-emerald-200">
+                          {firstSection.catalog.catalog_id} v{firstSection.catalog.catalog_version}
+                        </span>
+                      </div>
+                      <dl className="mt-3 grid grid-cols-3 gap-2 text-[10px]">
+                        <div>
+                          <dt className="text-slate-500">Area</dt>
+                          <dd className="font-mono">
+                            {typeof catalogueProperties?.A_mm2 === 'number'
+                              ? `${number(catalogueProperties.A_mm2, 0)} mm²`
+                              : '—'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Yield</dt>
+                          <dd className="font-mono">
+                            {typeof catalogueProperties?.fy_MPa === 'number'
+                              ? `${number(catalogueProperties.fy_MPa, 0)} MPa`
+                              : '—'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Zxe</dt>
+                          <dd className="font-mono">
+                            {typeof catalogueProperties?.Zxe_mm3 === 'number'
+                              ? `${number(catalogueProperties.Zxe_mm3, 0)} mm³`
+                              : '—'}
+                          </dd>
+                        </div>
+                      </dl>
+                      <div
+                        className="mt-2 truncate font-mono text-[9px] text-slate-500"
+                        title={firstSection.catalog.record_sha256}
+                      >
+                        Record {firstSection.catalog.record_sha256.slice(0, 12)}
+                      </div>
+                    </div>
+                  )}
                   <div className="mt-3 border-t border-cyan-500/20 pt-3">
                     <div className="flex items-center justify-between text-[10px]">
                       <span className="font-bold uppercase tracking-[0.15em] text-slate-400">

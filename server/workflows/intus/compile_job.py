@@ -4,6 +4,7 @@ import asyncio
 import base64
 import gzip
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
@@ -18,7 +19,7 @@ from core.compile_messages import (
     compile_result_message_id,
     serialized_message_size,
 )
-from core.compile_runtime import hydrate_project_files
+from core.compile_runtime import hydrate_project_files, runtime_files_hash
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
 from core.nats_client import (
@@ -37,6 +38,8 @@ from core.telemetry import (
     histogram_record,
     record_exception,
 )
+from core.structural.contracts import CompiledStructuralManifest
+from core.structural.design_capture import capture_project_structural_declaration
 
 
 logger = logging.getLogger(__name__)
@@ -163,6 +166,38 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
                 retryable=True,
             )
         output_bytes = result.output_path.read_bytes()
+        structural_manifest_json = None
+        manifest_path = getattr(result, "structural_manifest_path", None)
+        if manifest_path is not None:
+            try:
+                declaration = json.loads(manifest_path.read_text(encoding="utf-8"))
+                design_hash = hashlib.sha256(
+                    files["design.py"].encode("utf-8")
+                ).hexdigest()
+                capture_project_structural_declaration(
+                    declaration,
+                    project_name="compiled-project",
+                    design_hash=design_hash,
+                    capture_detail="Compile-time structural validation.",
+                )
+                compiled_manifest = CompiledStructuralManifest(
+                    source_hash=runtime_files_hash(files),
+                    design_hash=design_hash,
+                    declaration=declaration,
+                )
+                structural_manifest_json = compiled_manifest.model_dump_json()
+            except (KeyError, OSError, TypeError, ValueError) as exc:
+                return _failed_result(
+                    command,
+                    started_at,
+                    error=f"Invalid compiled structural manifest: {exc}",
+                    error_code="invalid_structural_manifest",
+                    user_message=(
+                        "Compile produced invalid structural metadata. "
+                        "Fix the structural catalogue or design declaration."
+                    ),
+                    retryable=False,
+                )
 
     is_compressed = False
     payload_bytes = output_bytes
@@ -182,6 +217,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
         artifact_content_base64=base64.b64encode(payload_bytes).decode("ascii"),
         artifact_byte_size=len(output_bytes),  # original uncompressed size
         artifact_content_type=None,
+        structural_manifest_json=structural_manifest_json,
         is_compressed=is_compressed,
         worker_started_at=started_at,
         worker_finished_at=now_utc(),

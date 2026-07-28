@@ -114,6 +114,10 @@ and result artifacts consumed by the workbench and calculation reports.
   members at the contract boundary.
 - [x] Add structural-aware Build123D authoring helpers that generate the
   `TERTIUS_STRUCTURAL` manifest from registered object handles.
+- [x] Resolve normalized section/material data from versioned project catalogue
+  imports during the same sandbox execution that generates the model.
+- [x] Persist a source-hashed structural sidecar beside the compiled model and
+  reject it when the active project source closure has changed.
 - [x] Fail capture for unregistered assembly handles, omitted or unconnected
   components, unused connectors, and duplicate viewer identities.
 - [x] Fail compilation when generated projects export raw shapes outside the
@@ -235,3 +239,15 @@ same reactions with zero reported global residual. The workbench publishes the
 solver stations as a signed moment ribbon and demand colour ramp while keeping
 C100 capacity, local buckling, restraint adequacy, screws, bolts, GPB, anchors,
 and concrete explicitly `NOT CHECKED`.
+
+Catalogue resolution evidence (2026-07-28): `structural_test/design.py` now
+selects `C10019` through `lysaght_zc_structural_section(...)` and contains no
+copied `A`, `Iy`, `Iz`, or `J` literals. The compile sandbox executes the full
+project import closure, emits a deterministic structural sidecar, and records
+catalogue ID/version/key, the selected row hash, axis mapping, complete source
+properties, and SI-normalized PyNite properties. A sketch compile produced the
+same 436,772-byte GLB and resolved `A=0.000409 m2`, `Iy=1.42e-7 m4`,
+`Iz=6.73e-7 m4`, `J=4.92e-10 m4`, `fy=450 MPa`, and `Zxe=12300 mm3` from
+`lysaght-zc-v2@2.0`. The API consumes the sidecar only when its full source
+bundle hash matches the active project; the workbench exposes the catalogue
+identity and record hash without reading manufacturer-specific files.

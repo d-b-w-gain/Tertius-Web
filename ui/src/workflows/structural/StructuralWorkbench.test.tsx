@@ -209,6 +209,22 @@ const analysis: StructuralSnapshot = {
       iy_m4: 142000e-12,
       iz_m4: 673000e-12,
       torsion_j_m4: 492e-12,
+      catalog: {
+        catalog_id: 'lysaght-zc-v2',
+        catalog_version: '2.0',
+        section_key: 'C10019 (100x1.9)',
+        source: 'Lysaght guide p.7-8',
+        record_sha256: 'a'.repeat(64),
+        axis_mapping: {
+          local_y_inertia: 'Iy_mm4',
+          local_z_inertia: 'Ix_mm4',
+        },
+        properties: {
+          A_mm2: 409,
+          fy_MPa: 450,
+          Zxe_mm3: 12300,
+        },
+      },
     },
   ],
   materials: [
@@ -342,6 +358,8 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText(/Ribbon stations: 2/)).toBeInTheDocument()
     expect(screen.getByText('0.5852 kN·m')).toBeInTheDocument()
     expect(screen.getByText('Equilibrium pass')).toBeInTheDocument()
+    expect(screen.getByText('Validated catalogue section')).toBeInTheDocument()
+    expect(screen.getByText('C10019 (100x1.9)')).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
     expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()
