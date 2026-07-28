@@ -250,6 +250,70 @@ class CapabilityState(StructuralContract):
     detail: str
 
 
+VerificationStatus = Literal[
+    "pass",
+    "fail",
+    "warning",
+    "not_checked",
+    "unsupported",
+    "blocked",
+]
+
+
+class StructuralDesignBasis(StructuralContract):
+    framework_id: str
+    framework_label: str
+    framework_reference: str
+    jurisdiction: str
+    analysis_method: str
+    standards: dict[str, str] = Field(default_factory=dict)
+
+
+class CalculationInput(StructuralContract):
+    symbol: str
+    label: str
+    value: float | str | bool
+    unit: str | None = None
+    source: str
+
+
+class CalculationEquation(StructuralContract):
+    label: str
+    expression: str
+    substitution: str
+    result: float | str
+    unit: str | None = None
+
+
+class CalculationSheet(StructuralContract):
+    id: str
+    stage_id: str
+    title: str
+    status: VerificationStatus
+    p399_reference: str
+    purpose: str
+    assumptions: list[str] = Field(default_factory=list)
+    inputs: list[CalculationInput] = Field(default_factory=list)
+    equations: list[CalculationEquation] = Field(default_factory=list)
+    outputs: list[CalculationInput] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)
+    related_member_ids: list[str] = Field(default_factory=list)
+    related_node_ids: list[str] = Field(default_factory=list)
+    related_load_case_ids: list[str] = Field(default_factory=list)
+    related_combination_ids: list[str] = Field(default_factory=list)
+
+
+class VerificationStage(StructuralContract):
+    id: str
+    order: int
+    label: str
+    p399_reference: str
+    status: VerificationStatus
+    summary: str
+    sheet_ids: list[str] = Field(default_factory=list)
+    blocking_stage_ids: list[str] = Field(default_factory=list)
+
+
 class DesignComponent(StructuralContract):
     id: str
     label: str
@@ -305,6 +369,7 @@ class ProjectStructuralCapture(StructuralContract):
     design_hash: str
     title: str
     authoring_mode: Literal["legacy", "generated"]
+    design_basis: StructuralDesignBasis | None = None
     components: list[DesignComponent]
     connections: list[DesignConnection]
     loads: list[DesignSurfaceLoad]
@@ -500,6 +565,7 @@ class StructuralSnapshot(StructuralContract):
     title: str
     subtitle: str
     source: SnapshotSource
+    design_basis: StructuralDesignBasis | None = None
     units: StructuralUnits = Field(default_factory=StructuralUnits)
     nodes: list[StructuralNode]
     members: list[StructuralMember]
@@ -526,6 +592,8 @@ class StructuralSnapshot(StructuralContract):
     )
     equilibrium: EquilibriumDiagnostic
     solver: SolverMetadata
+    verification_stages: list[VerificationStage] = Field(default_factory=list)
+    calculation_sheets: list[CalculationSheet] = Field(default_factory=list)
     capabilities: list[CapabilityState]
     warnings: list[str]
 

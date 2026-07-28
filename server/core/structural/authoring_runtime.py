@@ -65,6 +65,7 @@ class StructuralModel:
 
     def __init__(self, *, title: str) -> None:
         self.title = _required_text("model title", title)
+        self._design_basis: dict[str, Any] | None = None
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
@@ -82,6 +83,39 @@ class StructuralModel:
         self._surface_load_handles: dict[str, StructuralSurfaceLoad] = {}
         self._assembled_ids: list[str] | None = None
         self._assembly: bd.Compound | None = None
+
+    def design_basis(
+        self,
+        *,
+        framework_id: str,
+        framework_label: str,
+        framework_reference: str,
+        jurisdiction: str,
+        analysis_method: str,
+        standards: dict[str, str],
+    ) -> None:
+        """Declare the verification framework without hiding local design rules."""
+        if self._design_basis is not None:
+            raise StructuralAuthoringError("the structural design basis is already defined")
+        if not isinstance(standards, dict) or not standards:
+            raise StructuralAuthoringError(
+                "the structural design basis requires at least one named standard"
+            )
+        self._design_basis = {
+            "framework_id": _required_text("framework ID", framework_id),
+            "framework_label": _required_text("framework label", framework_label),
+            "framework_reference": _required_text(
+                "framework reference", framework_reference
+            ),
+            "jurisdiction": _required_text("jurisdiction", jurisdiction),
+            "analysis_method": _required_text("analysis method", analysis_method),
+            "standards": {
+                _required_text("standard role", str(role)): _required_text(
+                    "standard reference", str(reference)
+                )
+                for role, reference in standards.items()
+            },
+        }
 
     def ground(
         self,
@@ -990,6 +1024,9 @@ class StructuralModel:
         self._validate_topology()
         manifest = {
             "title": self.title,
+            "design_basis": (
+                dict(self._design_basis) if self._design_basis is not None else None
+            ),
             "authoring": {
                 "mode": "generated",
                 "assembly_component_ids": list(self._assembled_ids),

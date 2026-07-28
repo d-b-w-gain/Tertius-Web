@@ -90,6 +90,17 @@ GRAVITY_FRAME_DESIGN = """
 from tertius_structural import StructuralModel
 
 structure = StructuralModel(title="Two-member gravity frame")
+structure.design_basis(
+    framework_id="SCI-P399",
+    framework_label="SCI P399 verification process",
+    framework_reference="Table 3.1 and Sections 4-12",
+    jurisdiction="Australia",
+    analysis_method="3D first-order elastic frame analysis",
+    standards={
+        "actions": "AS/NZS 1170 test mapping",
+        "members": "AS/NZS 4600 test mapping",
+    },
+)
 steel = structure.material(
     id="steel",
     label="G450 steel",
@@ -250,6 +261,21 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert service.member_results[1].max_displacement_mm > 0
     assert service.serviceability_checks[1].limit_mm == pytest.approx(8.0)
     assert service.serviceability_checks[1].status in {"pass", "fail"}
+    stages = {stage.id: stage for stage in service.verification_stages}
+    assert stages["geometry"].status == "pass"
+    assert stages["actions"].status == "pass"
+    assert stages["analysis"].status == "pass"
+    assert stages["stability"].status == "blocked"
+    assert stages["cross_section"].status == "not_checked"
+    assert stages["decision"].status == "blocked"
+    assert service.design_basis is not None
+    assert service.design_basis.framework_id == "SCI-P399"
+    assert len(service.calculation_sheets) == 11
+    actions_sheet = next(
+        sheet for sheet in service.calculation_sheets if sheet.stage_id == "actions"
+    )
+    assert actions_sheet.equations
+    assert actions_sheet.related_member_ids == ["column-axis", "beam-axis"]
 
 
 def test_unknown_load_combination_fails_closed():
@@ -262,7 +288,7 @@ def test_unknown_load_combination_fails_closed():
         solve_project_structural(capture, combination_id="SLS-missing")
 
 
-def test_catalogue_yield_reference_drives_pass_and_deliberate_fail_states():
+def test_catalogue_yield_reference_is_renderer_only_not_a_design_pass():
     source = GRAVITY_FRAME_DESIGN.replace(
         "mass_kg_m=3.29,\n)",
         """mass_kg_m=3.29,
@@ -288,8 +314,15 @@ structural_assembly = structure.assembly""",
     gravity = solve_project_structural(capture, combination_id="SLS-G")
     overload = solve_project_structural(capture, combination_id="DEMO-OVERLOAD")
 
-    assert all(check.status == "pass" for check in gravity.member_checks)
-    assert any(check.status == "fail" for check in overload.member_checks)
+    assert all(check.status == "not_checked" for check in gravity.member_checks)
+    assert all(check.status == "not_checked" for check in overload.member_checks)
+    assert all((check.utilisation or 0) <= 1 for check in gravity.member_checks)
+    assert any((check.utilisation or 0) > 1 for check in overload.member_checks)
+    assert all(
+        "RENDERER REFERENCE ONLY" in check.basis
+        for check in (*gravity.member_checks, *overload.member_checks)
+        if check.capacity_kNm is not None
+    )
     assert overload.load_summary.imposed_load_kN == pytest.approx(10.0)
     assert overload.equilibrium.status == "pass"
     assert any(

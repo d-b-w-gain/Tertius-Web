@@ -11,6 +11,68 @@ export type CapabilityState = {
   detail: string
 }
 
+export type VerificationStatus =
+  | 'pass'
+  | 'fail'
+  | 'warning'
+  | 'not_checked'
+  | 'unsupported'
+  | 'blocked'
+
+export type StructuralDesignBasis = {
+  framework_id: string
+  framework_label: string
+  framework_reference: string
+  jurisdiction: string
+  analysis_method: string
+  standards: Record<string, string>
+}
+
+export type CalculationInput = {
+  symbol: string
+  label: string
+  value: number | string | boolean
+  unit: string | null
+  source: string
+}
+
+export type CalculationEquation = {
+  label: string
+  expression: string
+  substitution: string
+  result: number | string
+  unit: string | null
+}
+
+export type CalculationSheet = {
+  id: string
+  stage_id: string
+  title: string
+  status: VerificationStatus
+  p399_reference: string
+  purpose: string
+  assumptions: string[]
+  inputs: CalculationInput[]
+  equations: CalculationEquation[]
+  outputs: CalculationInput[]
+  references: string[]
+  related_member_ids: string[]
+  related_node_ids: string[]
+  related_load_case_ids: string[]
+  related_combination_ids: string[]
+}
+
+export type VerificationStage = {
+  id: string
+  order: number
+  label: string
+  p399_reference: string
+  status: VerificationStatus
+  summary: string
+  sheet_ids: string[]
+  blocking_stage_ids: string[]
+}
+
 export type DesignComponent = {
   id: string
   label: string
@@ -56,6 +118,7 @@ export type ProjectStructuralCapture = {
   design_hash: string
   title: string
   authoring_mode: 'legacy' | 'generated'
+  design_basis: StructuralDesignBasis | null
   components: DesignComponent[]
   connections: DesignConnection[]
   loads: DesignSurfaceLoad[]
@@ -167,6 +230,7 @@ export type StructuralSnapshot = {
     design_id: string | null
     design_hash: string | null
   }
+  design_basis: StructuralDesignBasis | null
   units: {
     length: 'm'
     force: 'kN'
@@ -279,6 +343,8 @@ export type StructuralSnapshot = {
     analysis: string
     combination_id: string
   }
+  verification_stages: VerificationStage[]
+  calculation_sheets: CalculationSheet[]
   capabilities: CapabilityState[]
   warnings: string[]
 }

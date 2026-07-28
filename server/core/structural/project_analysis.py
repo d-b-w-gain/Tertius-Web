@@ -6,6 +6,9 @@ from math import sqrt
 from typing import Any, Literal
 
 from .contracts import (
+    CalculationEquation,
+    CalculationInput,
+    CalculationSheet,
     CapabilityState,
     EquilibriumDiagnostic,
     LoadCombination,
@@ -24,6 +27,7 @@ from .contracts import (
     StructuralNode,
     StructuralSnapshot,
     Vector3,
+    VerificationStage,
 )
 
 DEFAULT_COMBINATION_ID = "SLS-1.0"
@@ -252,6 +256,555 @@ def _load_summary(
         imposed_load_kN=imposed_load_kN,
         wind_load_kN=wind_load_kN,
     )
+
+
+def _p399_evidence(
+    *,
+    capture: ProjectStructuralCapture,
+    analysis,
+    combination: LoadCombination,
+    nodes: list[StructuralNode],
+    members: list[StructuralMember],
+    member_results: list[MemberResult],
+    member_checks: list[MemberCheck],
+    serviceability_checks: list[ServiceabilityCheck],
+    equilibrium_status: Literal["pass", "fail"],
+    residual: float,
+) -> tuple[list[VerificationStage], list[CalculationSheet]]:
+    """Build inspectable evidence for every P399 process stage.
+
+    These sheets distinguish a completed model/data calculation from an
+    engineering verification. Unsupported resistance and stability stages are
+    deliberately blocked rather than inferred from an elastic demand result.
+    """
+
+    basis = capture.design_basis
+    basis_references = (
+        [
+            f"{basis.framework_label} — {basis.framework_reference}",
+            *(
+                f"{role}: {reference}"
+                for role, reference in basis.standards.items()
+            ),
+        ]
+        if basis is not None
+        else ["No design basis declared in design.py."]
+    )
+    member_ids = [member.id for member in members]
+    node_ids = [node.id for node in nodes]
+    case_ids = [case.id for case in analysis.load_cases]
+
+    geometry_equations = [
+        CalculationEquation(
+            label=f"{declaration.label} analytical length",
+            expression="L = |x_j - x_i|",
+            substitution=(
+                f"|({declaration.end.x:g}, {declaration.end.y:g}, "
+                f"{declaration.end.z:g}) - ({declaration.start.x:g}, "
+                f"{declaration.start.y:g}, {declaration.start.z:g})|"
+            ),
+            result=_length(declaration.start, declaration.end),
+            unit="m",
+        )
+        for declaration in analysis.members
+    ]
+    action_equations: list[CalculationEquation] = []
+    for load in capture.loads:
+        action_equations.append(
+            CalculationEquation(
+                label=f"{load.label} resultant",
+                expression="F = p A",
+                substitution=f"{load.pressure_kPa:g} × {load.area_m2:g}",
+                result=load.pressure_kPa * load.area_m2,
+                unit="kN",
+            )
+        )
+    for load in analysis.member_distributed_loads:
+        resultant, _ = _distributed_resultant(load)
+        span = load.end_distance_m - load.start_distance_m
+        action_equations.append(
+            CalculationEquation(
+                label=f"{load.label} line-load resultant",
+                expression="F = |(w_1 + w_2)L/2|",
+                substitution=(
+                    f"|({load.start_force_kN_m.model_dump()} + "
+                    f"{load.end_force_kN_m.model_dump()}) × {span:g}/2|"
+                ),
+                result=_magnitude(resultant),
+                unit="kN",
+            )
+        )
+    for load in analysis.member_loads:
+        action_equations.append(
+            CalculationEquation(
+                label=f"{load.label} point-load magnitude",
+                expression="F = sqrt(F_x² + F_y² + F_z²)",
+                substitution=str(load.force.model_dump()),
+                result=_magnitude(load.force),
+                unit="kN",
+            )
+        )
+
+    combination_equations = [
+        CalculationEquation(
+            label=combination.label,
+            expression="E_comb = Σ γ_i E_i",
+            substitution=" + ".join(
+                f"{factor:g}×{case_id}"
+                for case_id, factor in combination.factors.items()
+            ),
+            result=combination.id,
+        )
+    ]
+    result_outputs = [
+        output
+        for result in member_results
+        for output in (
+            CalculationInput(
+                symbol=f"M_max,{result.member_id}",
+                label=f"{result.member_id} maximum resultant moment",
+                value=result.max_moment_kNm,
+                unit="kN.m",
+                source=f"PyNite {combination.id} sampled diagram",
+            ),
+            CalculationInput(
+                symbol=f"V_max,{result.member_id}",
+                label=f"{result.member_id} maximum resultant shear",
+                value=result.max_shear_kN,
+                unit="kN",
+                source=f"PyNite {combination.id} sampled diagram",
+            ),
+            CalculationInput(
+                symbol=f"δ_max,{result.member_id}",
+                label=f"{result.member_id} maximum displacement",
+                value=result.max_displacement_mm,
+                unit="mm",
+                source=f"PyNite {combination.id} sampled diagram",
+            ),
+        )
+    ]
+    reference_outputs = [
+        CalculationInput(
+            symbol=f"M_ref,{check.member_id}",
+            label=f"{check.member_id} renderer-only bending reference",
+            value=check.capacity_kNm if check.capacity_kNm is not None else "not supplied",
+            unit="kN.m" if check.capacity_kNm is not None else None,
+            source=check.basis,
+        )
+        for check in member_checks
+    ]
+    checked_serviceability = [
+        check for check in serviceability_checks if check.status != "not_checked"
+    ]
+    serviceability_status: Literal["pass", "fail", "not_checked"] = (
+        "not_checked"
+        if not checked_serviceability
+        else "fail"
+        if any(check.status == "fail" for check in checked_serviceability)
+        else "pass"
+    )
+    basis_status: Literal["pass", "blocked"] = "pass" if basis is not None else "blocked"
+    action_standard_references = [
+        reference
+        for role, reference in (basis.standards.items() if basis else [])
+        if "action" in role or "wind" in role
+    ]
+    action_basis_ready = bool(action_standard_references) and all(
+        "confirm" not in reference.lower()
+        and "not yet active" not in reference.lower()
+        for reference in action_standard_references
+    )
+    actions_status: Literal["pass", "warning", "blocked"] = (
+        "blocked"
+        if not action_equations or basis is None
+        else "pass"
+        if action_basis_ready
+        else "warning"
+    )
+    combination_reference = (
+        next(
+            (
+                reference
+                for role, reference in basis.standards.items()
+                if "combination" in role
+            ),
+            "",
+        )
+        if basis
+        else ""
+    )
+    combinations_status: Literal["pass", "warning", "blocked"] = (
+        "blocked"
+        if not combination.factors or basis is None
+        else "warning"
+        if "confirm" in combination_reference.lower()
+        or "not yet active" in combination_reference.lower()
+        else "pass"
+    )
+    analysis_status: Literal["pass", "fail", "blocked"] = (
+        "blocked"
+        if basis is None
+        else "pass"
+        if equilibrium_status == "pass"
+        else "fail"
+    )
+
+    sheets = [
+        CalculationSheet(
+            id="sheet-p399-geometry",
+            stage_id="geometry",
+            title="Geometry and analytical scheme",
+            status=basis_status,
+            p399_reference="SCI P399 Sections 3 and 6.1",
+            purpose="Prove which design.py geometry became nodes, members, and supports.",
+            assumptions=list(dict.fromkeys(member.assumption for member in analysis.members)),
+            inputs=[
+                CalculationInput(
+                    symbol="n_member",
+                    label="Analytical members",
+                    value=len(members),
+                    source="design.py StructuralModel.member_axis declarations",
+                ),
+                CalculationInput(
+                    symbol="n_node",
+                    label="Shared analytical nodes",
+                    value=len(nodes),
+                    source="Coincident member end coordinates",
+                ),
+                CalculationInput(
+                    symbol="n_support",
+                    label="Restrained nodes",
+                    value=sum(any(node.restraints.model_dump().values()) for node in nodes),
+                    source="design.py authored end restraints",
+                ),
+            ],
+            equations=geometry_equations,
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_node_ids=node_ids,
+        ),
+        CalculationSheet(
+            id="sheet-p399-actions",
+            stage_id="actions",
+            title="Actions and tributary transfer",
+            status=actions_status,
+            p399_reference="SCI P399 Section 4",
+            purpose="Trace every authored action from its physical source to member load.",
+            assumptions=(
+                []
+                if actions_status == "pass"
+                else [
+                    "The authored actions remain illustrative until the project/site "
+                    "Australian action inputs are confirmed."
+                ]
+            ),
+            equations=action_equations,
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_load_case_ids=case_ids,
+        ),
+        CalculationSheet(
+            id="sheet-p399-combinations",
+            stage_id="combinations",
+            title="Active action combination",
+            status=combinations_status,
+            p399_reference="SCI P399 Section 4.7",
+            purpose="Expose factors selected for the current solve; no hidden combinations.",
+            assumptions=(
+                []
+                if combinations_status == "pass"
+                else [
+                    "The displayed factors are authored test combinations, not a "
+                    "completed AS/NZS 1170.0 project combination set."
+                ]
+            ),
+            inputs=[
+                CalculationInput(
+                    symbol="limit_state",
+                    label="Limit state",
+                    value=combination.limit_state,
+                    source="design.py load_combination declaration",
+                )
+            ],
+            equations=combination_equations,
+            references=basis_references,
+            related_load_case_ids=list(combination.factors),
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-analysis",
+            stage_id="analysis",
+            title="Elastic frame analysis",
+            status=analysis_status,
+            p399_reference="SCI P399 Section 5",
+            purpose="Record the active solver method, member demands, and equilibrium audit.",
+            inputs=[
+                CalculationInput(
+                    symbol="method",
+                    label="Declared analysis method",
+                    value=basis.analysis_method if basis else "not declared",
+                    source="design.py design_basis",
+                )
+            ],
+            equations=[
+                CalculationEquation(
+                    label="Global equilibrium residual",
+                    expression="r = max|ΣF, ΣM|",
+                    substitution=f"active combination {combination.id}",
+                    result=residual,
+                    unit="kN / kN.m",
+                )
+            ],
+            outputs=result_outputs,
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_node_ids=node_ids,
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-stability",
+            stage_id="stability",
+            title="Imperfections and global stability",
+            status="blocked",
+            p399_reference="SCI P399 Sections 7.2–7.8",
+            purpose="Determine first/second-order applicability and frame stability.",
+            assumptions=[
+                "Equivalent horizontal forces/geometric imperfections are not authored.",
+                "Elastic critical factor and second-order amplification are not implemented.",
+                "Base rotational stiffness has not been verified for stability analysis.",
+            ],
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_node_ids=node_ids,
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-cross-section",
+            stage_id="cross_section",
+            title="Cross-section verification",
+            status="not_checked",
+            p399_reference="SCI P399 Section 8.1",
+            purpose="Check classification/effective properties and governing force interactions.",
+            assumptions=[
+                "The current Zxe × fy value is retained only to scale renderer demand.",
+                "No Australian capacity factor or complete cold-formed interaction check is active.",
+            ],
+            outputs=reference_outputs,
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-member-stability",
+            stage_id="member_stability",
+            title="Member stability",
+            status="blocked",
+            p399_reference="SCI P399 Sections 8.2–8.4",
+            purpose="Verify buckling and axial-bending interaction on restraint-defined segments.",
+            assumptions=[
+                "Unbraced lengths and compression-flange restraints are not authored.",
+                "Local, distortional, flexural, and lateral-torsional buckling are not checked.",
+            ],
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-bracing",
+            stage_id="bracing",
+            title="Bracing and restraint",
+            status="blocked",
+            p399_reference="SCI P399 Section 9",
+            purpose="Trace restraint forces and stiffness to a complete resisting system.",
+            assumptions=[
+                "Cladding and fasteners are not assumed to provide unverified restraint.",
+                "No restraint segments or bracing stiffness checks are active.",
+            ],
+            references=basis_references,
+            related_member_ids=member_ids,
+        ),
+        CalculationSheet(
+            id="sheet-p399-connections",
+            stage_id="connections",
+            title="Connections and bases",
+            status="blocked",
+            p399_reference="SCI P399 Section 11",
+            purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
+            assumptions=[
+                "Rendered screws, bolts, bracket, anchors, and concrete are physical evidence only.",
+                "Connection stiffness and resistance are not yet calculated.",
+            ],
+            references=basis_references,
+            related_node_ids=[
+                node.id for node in nodes if any(node.restraints.model_dump().values())
+            ],
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-serviceability",
+            stage_id="serviceability",
+            title="Serviceability",
+            status=serviceability_status,
+            p399_reference="SCI P399 Section 12",
+            purpose="Compare elastic SLS movement with explicitly authored project criteria.",
+            outputs=[
+                CalculationInput(
+                    symbol=f"δ/{check.member_id}",
+                    label=check.label,
+                    value=check.displacement_mm,
+                    unit="mm",
+                    source=check.basis,
+                )
+                for check in serviceability_checks
+            ],
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_combination_ids=[combination.id],
+        ),
+        CalculationSheet(
+            id="sheet-p399-decision",
+            stage_id="decision",
+            title="Evidence and order decision",
+            status="blocked",
+            p399_reference="SCI P399 complete verification process",
+            purpose="Prevent a green design/order decision while required stages are incomplete.",
+            assumptions=[
+                "Current result is analysis evidence only and is not suitable for ordering.",
+                "Impact, robustness, progressive collapse, and controlled failure are separate studies.",
+            ],
+            references=basis_references,
+            related_member_ids=member_ids,
+            related_node_ids=node_ids,
+            related_combination_ids=[combination.id],
+        ),
+    ]
+    stages = [
+        VerificationStage(
+            id="geometry",
+            order=1,
+            label="Geometry",
+            p399_reference="§3, §6.1",
+            status=basis_status,
+            summary=(
+                f"{len(members)} members, {len(nodes)} nodes, "
+                f"{sum(any(node.restraints.model_dump().values()) for node in nodes)} supports."
+            ),
+            sheet_ids=["sheet-p399-geometry"],
+        ),
+        VerificationStage(
+            id="actions",
+            order=2,
+            label="Actions",
+            p399_reference="§4",
+            status=actions_status,
+            summary=f"{len(action_equations)} authored action resultants traced.",
+            sheet_ids=["sheet-p399-actions"],
+            blocking_stage_ids=[] if basis_status == "pass" else ["geometry"],
+        ),
+        VerificationStage(
+            id="combinations",
+            order=3,
+            label="Combinations",
+            p399_reference="§4.7",
+            status=combinations_status,
+            summary=f"{combination.id}: {len(combination.factors)} explicit factors.",
+            sheet_ids=["sheet-p399-combinations"],
+            blocking_stage_ids=[] if actions_status in {"pass", "warning"} else ["actions"],
+        ),
+        VerificationStage(
+            id="analysis",
+            order=4,
+            label="Analysis",
+            p399_reference="§5",
+            status=analysis_status,
+            summary=f"PyNite elastic solve; equilibrium residual {residual:.3e}.",
+            sheet_ids=["sheet-p399-analysis"],
+            blocking_stage_ids=(
+                [] if combinations_status in {"pass", "warning"} else ["combinations"]
+            ),
+        ),
+        VerificationStage(
+            id="stability",
+            order=5,
+            label="Global stability",
+            p399_reference="§7.2–§7.8",
+            status="blocked",
+            summary="Imperfections, αcr/second-order effects, and base stiffness are missing.",
+            sheet_ids=["sheet-p399-stability"],
+            blocking_stage_ids=["analysis"],
+        ),
+        VerificationStage(
+            id="cross_section",
+            order=6,
+            label="Cross-section",
+            p399_reference="§8.1",
+            status="not_checked",
+            summary="Demand is available; Australian resistance and interaction checks are not.",
+            sheet_ids=["sheet-p399-cross-section"],
+            blocking_stage_ids=["stability"],
+        ),
+        VerificationStage(
+            id="member_stability",
+            order=7,
+            label="Member stability",
+            p399_reference="§8.2–§8.4",
+            status="blocked",
+            summary="Restraint-defined segments and buckling checks are missing.",
+            sheet_ids=["sheet-p399-member-stability"],
+            blocking_stage_ids=["stability", "cross_section"],
+        ),
+        VerificationStage(
+            id="bracing",
+            order=8,
+            label="Bracing/restraint",
+            p399_reference="§9",
+            status="blocked",
+            summary="No verified restraint or bracing load path is active.",
+            sheet_ids=["sheet-p399-bracing"],
+            blocking_stage_ids=["member_stability"],
+        ),
+        VerificationStage(
+            id="connections",
+            order=9,
+            label="Connections/bases",
+            p399_reference="§11",
+            status="blocked",
+            summary="Rendered detail exists; resistance and stiffness checks do not.",
+            sheet_ids=["sheet-p399-connections"],
+            blocking_stage_ids=["analysis"],
+        ),
+        VerificationStage(
+            id="serviceability",
+            order=10,
+            label="Serviceability",
+            p399_reference="§12",
+            status=serviceability_status,
+            summary=(
+                f"{len(checked_serviceability)} authored SLS criteria evaluated."
+                if checked_serviceability
+                else "Select an SLS combination with an authored deflection criterion."
+            ),
+            sheet_ids=["sheet-p399-serviceability"],
+            blocking_stage_ids=[] if analysis_status == "pass" else ["analysis"],
+        ),
+        VerificationStage(
+            id="decision",
+            order=11,
+            label="Evidence/decision",
+            p399_reference="Complete process",
+            status="blocked",
+            summary="NOT READY TO ORDER: required P399 stages remain incomplete.",
+            sheet_ids=["sheet-p399-decision"],
+            blocking_stage_ids=[
+                "stability",
+                "cross_section",
+                "member_stability",
+                "bracing",
+                "connections",
+            ],
+        ),
+    ]
+    return stages, sheets
 
 
 def solve_project_structural(
@@ -615,9 +1168,15 @@ def solve_project_structural(
                         demand_kNm=reference_demand,
                         capacity_kNm=section.bending_reference_kNm,
                         utilisation=bending_utilisation,
-                        status="pass" if bending_utilisation <= 1.0 else "fail",
-                        basis=section.bending_reference_basis
-                        or "Authored effective-section yield reference.",
+                        status="not_checked",
+                        basis=(
+                            "RENDERER REFERENCE ONLY — "
+                            + (
+                                section.bending_reference_basis
+                                or "Authored effective-section yield reference."
+                            )
+                            + " This is not a P399/Australian member verification."
+                        ),
                     )
                 )
 
@@ -750,11 +1309,25 @@ def solve_project_structural(
         check for check in serviceability_checks if check.status != "not_checked"
     ]
     reference_checks = [
-        check for check in member_checks if check.status != "not_checked"
+        check for check in member_checks if check.capacity_kNm is not None
     ]
     failed_reference_checks = [
-        check for check in reference_checks if check.status == "fail"
+        check
+        for check in reference_checks
+        if check.utilisation is not None and check.utilisation > 1.0
     ]
+    verification_stages, calculation_sheets = _p399_evidence(
+        capture=capture,
+        analysis=analysis,
+        combination=active_combination,
+        nodes=structural_nodes,
+        members=structural_members,
+        member_results=member_results,
+        member_checks=member_checks,
+        serviceability_checks=serviceability_checks,
+        equilibrium_status=equilibrium_status,
+        residual=residual,
+    )
 
     return StructuralSnapshot(
         mode="design",
@@ -768,6 +1341,7 @@ def solve_project_structural(
             design_id=capture.project_name,
             design_hash=capture.design_hash,
         ),
+        design_basis=capture.design_basis,
         nodes=structural_nodes,
         members=structural_members,
         sections=analysis.sections,
@@ -798,6 +1372,8 @@ def solve_project_structural(
             ),
             combination_id=active_combination.id,
         ),
+        verification_stages=verification_stages,
+        calculation_sheets=calculation_sheets,
         capabilities=[
             CapabilityState(
                 id="design-capture",
@@ -844,22 +1420,18 @@ def solve_project_structural(
             ),
             CapabilityState(
                 id="checks",
-                label="Yield reference",
-                status=(
-                    "blocked"
-                    if failed_reference_checks
-                    else "online"
-                    if reference_checks
-                    else "pending"
-                ),
+                label="Member resistance",
+                status="blocked",
                 detail=(
-                    f"{len(failed_reference_checks)} of {len(reference_checks)} "
-                    "members exceed the authored effective-section yield reference."
+                    f"{len(failed_reference_checks)} of {len(reference_checks)} members "
+                    "exceed the renderer-only yield reference; P399/Australian "
+                    "cross-section and member-stability checks remain blocked."
                     if failed_reference_checks
-                    else f"{len(reference_checks)} effective-section yield references "
-                    "are evaluated; this is not an AS/NZS 4600 member capacity check."
+                    else f"{len(reference_checks)} renderer-only yield references are "
+                    "available; no P399/Australian member pass is active."
                     if reference_checks
-                    else "No traceable bending references are connected."
+                    else "No traceable reference is connected and no member resistance "
+                    "calculation pack is active."
                 ),
             ),
             CapabilityState(

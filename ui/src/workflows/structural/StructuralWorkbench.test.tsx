@@ -29,6 +29,8 @@ vi.mock('../extus/ui/ViewerTab', () => ({
       status?: string
       stations: unknown[]
       loadArrows?: unknown[]
+      nodes?: unknown[]
+      reactions?: unknown[]
     }>
   }) => (
     <div>
@@ -51,6 +53,20 @@ vi.mock('../extus/ui/ViewerTab', () => ({
           0,
         ) || 0
       }
+      {' · '}
+      Nodes: {
+        structuralOverlays?.reduce(
+          (count, overlay) => count + (overlay.nodes?.length ?? 0),
+          0,
+        ) || 0
+      }
+      {' · '}
+      Reactions: {
+        structuralOverlays?.reduce(
+          (count, overlay) => count + (overlay.reactions?.length ?? 0),
+          0,
+        ) || 0
+      }
     </div>
   ),
 }))
@@ -61,6 +77,14 @@ const capture: ProjectStructuralCapture = {
   design_hash: 'abc123',
   title: 'Structural Workbench — C100 wall connection microcosm',
   authoring_mode: 'generated',
+  design_basis: {
+    framework_id: 'SCI-P399',
+    framework_label: 'SCI P399 verification process',
+    framework_reference: 'Table 3.1 and Sections 4–12',
+    jurisdiction: 'Australia',
+    analysis_method: '3D first-order elastic frame analysis',
+    standards: { wind: 'AS/NZS 1170.2 test mapping' },
+  },
   components: [
     {
       id: 'sheet',
@@ -189,6 +213,7 @@ const analysis: StructuralSnapshot = {
     design_id: 'structural_test',
     design_hash: 'abc123',
   },
+  design_basis: capture.design_basis,
   units: {
     length: 'm',
     force: 'kN',
@@ -348,8 +373,8 @@ const analysis: StructuralSnapshot = {
       demand_kNm: 0.585216,
       capacity_kNm: 5.535,
       utilisation: 0.1057301,
-      status: 'pass',
-      basis: 'Nominal Zxe × fy yield reference only.',
+      status: 'not_checked',
+      basis: 'RENDERER REFERENCE ONLY — nominal Zxe × fy.',
     },
   ],
   serviceability_checks: [
@@ -383,6 +408,63 @@ const analysis: StructuralSnapshot = {
     analysis: '3D first-order elastic',
     combination_id: 'SLS-1.0',
   },
+  verification_stages: [
+    {
+      id: 'geometry',
+      order: 1,
+      label: 'Geometry',
+      p399_reference: '§3, §6.1',
+      status: 'pass',
+      summary: 'One member, two nodes, one support.',
+      sheet_ids: ['sheet-p399-geometry'],
+      blocking_stage_ids: [],
+    },
+    {
+      id: 'stability',
+      order: 5,
+      label: 'Global stability',
+      p399_reference: '§7.2–§7.8',
+      status: 'blocked',
+      summary: 'Imperfections and second-order effects are missing.',
+      sheet_ids: [],
+      blocking_stage_ids: ['analysis'],
+    },
+  ],
+  calculation_sheets: [
+    {
+      id: 'sheet-p399-geometry',
+      stage_id: 'geometry',
+      title: 'Geometry and analytical scheme',
+      status: 'pass',
+      p399_reference: 'SCI P399 Sections 3 and 6.1',
+      purpose: 'Prove which design.py geometry became nodes, members, and supports.',
+      assumptions: ['Fixed base is an authored analysis assumption.'],
+      inputs: [
+        {
+          symbol: 'n_member',
+          label: 'Analytical members',
+          value: 1,
+          unit: null,
+          source: 'design.py member_axis',
+        },
+      ],
+      equations: [
+        {
+          label: 'Purlin length',
+          expression: 'L = |x_j - x_i|',
+          substitution: '|1.6 - 0|',
+          result: 1.6,
+          unit: 'm',
+        },
+      ],
+      outputs: [],
+      references: ['SCI P399'],
+      related_member_ids: ['purlin-axis'],
+      related_node_ids: ['purlin-start', 'purlin-end'],
+      related_load_case_ids: [],
+      related_combination_ids: [],
+    },
+  ],
   capabilities: [
     {
       id: 'solver',
@@ -405,7 +487,7 @@ const overloadAnalysis: StructuralSnapshot = {
     ...check,
     demand_kNm: 7.0226,
     utilisation: 1.2688,
-    status: 'fail',
+    status: 'not_checked',
   })),
   solver: {
     ...analysis.solver,
@@ -450,8 +532,13 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('Design capacity status: NOT CHECKED')).toBeInTheDocument()
     expect(screen.getByText(/Ribbon stations: 2/)).toBeInTheDocument()
     expect(screen.getByText(/Ribbon mode: moment/)).toBeInTheDocument()
-    expect(screen.getByText(/Ribbon status: pass/)).toBeInTheDocument()
+    expect(screen.getByText(/Ribbon status: not_checked/)).toBeInTheDocument()
     expect(screen.getByText(/Load arrows: 3/)).toBeInTheDocument()
+    expect(screen.getByText(/Nodes: 2/)).toBeInTheDocument()
+    expect(screen.getByText(/Reactions: 1/)).toBeInTheDocument()
+    expect(screen.getByText('P399 verification spine')).toBeInTheDocument()
+    expect(screen.getByText('Geometry and analytical scheme')).toBeInTheDocument()
+    expect(screen.getByText(/Global stability/)).toBeInTheDocument()
     expect(screen.getByText('0.5852 kN·m')).toBeInTheDocument()
     expect(screen.getByText('Equilibrium pass')).toBeInTheDocument()
     expect(screen.getByText('Validated catalogue section')).toBeInTheDocument()
@@ -492,7 +579,7 @@ describe('StructuralWorkbench', () => {
     })
   })
 
-  it('turns the moment ribbon red for the deliberate reference exceedance', async () => {
+  it('keeps an exceeded renderer reference not-checked until P399 stages pass', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
       new Response(JSON.stringify(
         url.includes('combination_id=DEMO-OVERLOAD')
@@ -514,7 +601,7 @@ describe('StructuralWorkbench', () => {
       target: { value: 'DEMO-OVERLOAD' },
     })
 
-    expect(await screen.findByText(/Ribbon status: fail/)).toBeInTheDocument()
+    expect(await screen.findByText(/Ribbon status: not_checked/)).toBeInTheDocument()
     expect(screen.getByText('126.9% reference utilisation')).toBeInTheDocument()
   })
 })

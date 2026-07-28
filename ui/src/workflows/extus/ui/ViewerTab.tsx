@@ -59,6 +59,19 @@ export type StructuralViewerOverlay = {
     position: { x: number; y: number; z: number };
     force_kN: { x: number; y: number; z: number };
   }>;
+  nodes?: Array<{
+    id: string;
+    label: string;
+    position: { x: number; y: number; z: number };
+    restrained: boolean;
+  }>;
+  reactions?: Array<{
+    id: string;
+    label: string;
+    position: { x: number; y: number; z: number };
+    force_kN: { x: number; y: number; z: number };
+    moment_kNm: { x: number; y: number; z: number };
+  }>;
   maxOffsetMm?: number;
 };
 
@@ -1117,6 +1130,94 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         ))
       )),
     );
+    const diagnosticNodes = structuralOverlays.flatMap(
+      (overlay) => overlay.nodes ?? [],
+    );
+    const reactionArrows = structuralOverlays.flatMap(
+      (overlay) => overlay.reactions ?? [],
+    );
+    const reactionArrowPeak = Math.max(
+      Number.EPSILON,
+      ...reactionArrows.map(({ force_kN: force }) => (
+        Math.hypot(force.x, force.y, force.z)
+      )),
+    );
+
+    for (const node of diagnosticNodes) {
+      const nodeGroup = new THREE.Group();
+      nodeGroup.name = `${STRUCTURAL_OVERLAY_NAME}Node-${node.id}`;
+      nodeGroup.position.copy(toModelCoordinates(new THREE.Vector3(
+        node.position.x,
+        node.position.y,
+        node.position.z,
+      )));
+      const nodeMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(node.restrained ? 0.022 : 0.014, 12, 8),
+        new THREE.MeshBasicMaterial({
+          color: node.restrained ? 0xf59e0b : 0x22d3ee,
+          depthTest: false,
+          transparent: true,
+          opacity: 0.96,
+        }),
+      );
+      nodeMesh.renderOrder = 35;
+      nodeMesh.userData.tertiusStructuralOverlay = true;
+      nodeGroup.add(nodeMesh);
+      if (node.restrained) {
+        const support = new THREE.Mesh(
+          new THREE.ConeGeometry(0.038, 0.055, 4),
+          new THREE.MeshBasicMaterial({
+            color: 0xf59e0b,
+            wireframe: true,
+            depthTest: false,
+            transparent: true,
+            opacity: 0.95,
+          }),
+        );
+        support.position.y = -0.04;
+        support.renderOrder = 35;
+        support.userData.tertiusStructuralOverlay = true;
+        nodeGroup.add(support);
+      }
+      group.add(nodeGroup);
+    }
+
+    for (const reaction of reactionArrows) {
+      const sourceForce = new THREE.Vector3(
+        reaction.force_kN.x,
+        reaction.force_kN.y,
+        reaction.force_kN.z,
+      );
+      const magnitude = sourceForce.length();
+      if (magnitude <= Number.EPSILON) continue;
+      const length = 0.10 + 0.22 * Math.min(1, magnitude / reactionArrowPeak);
+      const arrow = new THREE.ArrowHelper(
+        toModelCoordinates(sourceForce).normalize(),
+        toModelCoordinates(new THREE.Vector3(
+          reaction.position.x,
+          reaction.position.y,
+          reaction.position.z,
+        )),
+        length,
+        0xf472b6,
+        Math.min(0.07, length * 0.35),
+        Math.min(0.04, length * 0.2),
+      );
+      arrow.name = `${STRUCTURAL_OVERLAY_NAME}Reaction-${reaction.id}`;
+      arrow.renderOrder = 34;
+      arrow.traverse((object) => {
+        object.userData.tertiusStructuralOverlay = true;
+        object.renderOrder = 34;
+        const material = (object as THREE.Mesh | THREE.Line).material;
+        const materials = Array.isArray(material) ? material : material ? [material] : [];
+        for (const candidate of materials) {
+          candidate.depthTest = false;
+          candidate.transparent = true;
+          candidate.opacity = 0.95;
+        }
+      });
+      group.add(arrow);
+    }
 
     for (const structuralOverlay of structuralOverlays) {
       const memberGroup = new THREE.Group();
@@ -1609,13 +1710,19 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
               title={structuralOverlays.map((overlay) => overlay.label).join('\n')}
             >
-              {structuralOverlays.length} PyNite {
+              {structuralOverlays.length} analytical {
                 structuralOverlays[0]?.mode === 'displacement' ? 'deflection' : 'moment'
               } ribbon{structuralOverlays.length === 1 ? '' : 's'} ·{' '}
               {structuralOverlays.reduce(
                 (count, overlay) => count + (overlay.loadArrows?.length ?? 0),
                 0,
-              )} load arrows
+              )} loads · {structuralOverlays.reduce(
+                (count, overlay) => count + (overlay.nodes?.length ?? 0),
+                0,
+              )} nodes · {structuralOverlays.reduce(
+                (count, overlay) => count + (overlay.reactions?.length ?? 0),
+                0,
+              )} reactions
             </div>
           ) : null}
           <button

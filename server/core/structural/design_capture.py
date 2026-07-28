@@ -17,6 +17,7 @@ from .contracts import (
     DesignLoadPath,
     DesignSurfaceLoad,
     ProjectStructuralCapture,
+    StructuralDesignBasis,
 )
 
 DECLARATION_NAME = "TERTIUS_STRUCTURAL"
@@ -73,6 +74,7 @@ class _SpecHandle:
 class _GeneratedModel:
     name: str
     title: str
+    design_basis: dict[str, Any] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
     loads: list[dict[str, Any]] = field(default_factory=list)
@@ -106,6 +108,7 @@ class _GeneratedModel:
             )
         return {
             "title": self.title,
+            "design_basis": self.design_basis,
             "authoring": {
                 "mode": "generated",
                 "assembly_component_ids": list(self.assembled_component_ids),
@@ -351,6 +354,57 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                 model = models[model_name]
                 method = call.func.attr
                 keywords = _call_keywords(call)
+                if method == "design_basis":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) accepts keywords only"
+                        )
+                    allowed = {
+                        "framework_id",
+                        "framework_label",
+                        "framework_reference",
+                        "jurisdiction",
+                        "analysis_method",
+                        "standards",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    if model.design_basis is not None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) may only be called once"
+                        )
+                    standards = _keyword_value(keywords, "standards", names)
+                    if not isinstance(standards, dict) or not standards:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) requires a non-empty "
+                            "standards mapping"
+                        )
+                    model.design_basis = {
+                        "framework_id": str(
+                            _keyword_value(keywords, "framework_id", names)
+                        ),
+                        "framework_label": str(
+                            _keyword_value(keywords, "framework_label", names)
+                        ),
+                        "framework_reference": str(
+                            _keyword_value(keywords, "framework_reference", names)
+                        ),
+                        "jurisdiction": str(
+                            _keyword_value(keywords, "jurisdiction", names)
+                        ),
+                        "analysis_method": str(
+                            _keyword_value(keywords, "analysis_method", names)
+                        ),
+                        "standards": {
+                            str(role): str(reference)
+                            for role, reference in standards.items()
+                        },
+                    }
+                    continue
                 if method == "material":
                     if call.args:
                         raise StructuralDeclarationError(
@@ -638,6 +692,57 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                 model = models[model_name]
                 method = call.func.attr
                 keywords = _call_keywords(call)
+                if method == "design_basis":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) accepts keywords only"
+                        )
+                    allowed = {
+                        "framework_id",
+                        "framework_label",
+                        "framework_reference",
+                        "jurisdiction",
+                        "analysis_method",
+                        "standards",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    if model.design_basis is not None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) may only be called once"
+                        )
+                    standards = _keyword_value(keywords, "standards", names)
+                    if not isinstance(standards, dict) or not standards:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.design_basis(...) requires a non-empty "
+                            "standards mapping"
+                        )
+                    model.design_basis = {
+                        "framework_id": str(
+                            _keyword_value(keywords, "framework_id", names)
+                        ),
+                        "framework_label": str(
+                            _keyword_value(keywords, "framework_label", names)
+                        ),
+                        "framework_reference": str(
+                            _keyword_value(keywords, "framework_reference", names)
+                        ),
+                        "jurisdiction": str(
+                            _keyword_value(keywords, "jurisdiction", names)
+                        ),
+                        "analysis_method": str(
+                            _keyword_value(keywords, "analysis_method", names)
+                        ),
+                        "standards": {
+                            str(role): str(reference)
+                            for role, reference in standards.items()
+                        },
+                    }
+                    continue
                 if method == "connect":
                     if len(call.args) != 2:
                         raise StructuralDeclarationError(
@@ -1452,6 +1557,12 @@ def capture_project_structural_declaration(
             for value in declaration.get("loads", [])
         ]
         analysis_value = declaration.get("analysis")
+        design_basis_value = declaration.get("design_basis")
+        design_basis = (
+            StructuralDesignBasis.model_validate(design_basis_value)
+            if design_basis_value is not None
+            else None
+        )
         analysis = (
             DesignAnalysisDefinition.model_validate(analysis_value)
             if analysis_value is not None
@@ -1538,6 +1649,7 @@ def capture_project_structural_declaration(
                 declaration.get("title") or f"Structural Workbench — {project_name}"
             ),
             authoring_mode="generated" if generated_authoring else "legacy",
+            design_basis=design_basis,
             components=components,
             connections=connections,
             loads=loads,

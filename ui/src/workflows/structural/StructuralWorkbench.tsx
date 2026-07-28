@@ -12,6 +12,7 @@ import type {
   ProjectStructuralCapture,
   StructuralSnapshot,
   Vector3,
+  VerificationStatus,
 } from './contracts'
 
 type StructuralWorkbenchProps = {
@@ -33,6 +34,15 @@ const componentStyle: Record<DesignComponent['kind'], string> = {
   support: 'border-violet-500/40 bg-violet-500/10',
 }
 
+const verificationStyle: Record<VerificationStatus, string> = {
+  pass: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300',
+  fail: 'border-red-500/60 bg-red-500/15 text-red-300',
+  warning: 'border-amber-500/50 bg-amber-500/10 text-amber-300',
+  not_checked: 'border-slate-600 bg-slate-800/70 text-slate-300',
+  unsupported: 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300',
+  blocked: 'border-red-500/40 bg-red-950/40 text-red-300',
+}
+
 function number(value: number, digits = 3) {
   return value.toLocaleString(undefined, {
     maximumFractionDigits: digits,
@@ -51,6 +61,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
   const [selectedMemberId, setSelectedMemberId] = useState('')
   const [selectedCombinationId, setSelectedCombinationId] = useState('')
+  const [selectedSheetId, setSelectedSheetId] = useState('')
   const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -91,6 +102,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         setAnalysis(nextAnalysis)
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
+        setSelectedSheetId(nextAnalysis.calculation_sheets?.[0]?.id || '')
       } else {
         setAnalysis(null)
         setAnalysisError(
@@ -145,6 +157,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
       const nextAnalysis = payload as StructuralSnapshot
       setAnalysis(nextAnalysis)
+      setSelectedSheetId((current) => (
+        nextAnalysis.calculation_sheets?.some((sheet) => sheet.id === current)
+          ? current
+          : nextAnalysis.calculation_sheets?.[0]?.id || ''
+      ))
       setSelectedMemberId((current) => (
         nextAnalysis.members.some((member) => member.id === current)
           ? current
@@ -186,10 +203,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const activeCombination = analysis?.load_combinations.find(
     (combination) => combination.id === selectedCombinationId,
   ) || analysis?.load_combinations[0]
+  const selectedCalculationSheet = analysis?.calculation_sheets?.find(
+    (sheet) => sheet.id === selectedSheetId,
+  ) || analysis?.calculation_sheets?.[0]
   const structuralOverlays = useMemo(() => {
     if (!analysis || !activeCombination) return undefined
     const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
-    return analysis.member_diagrams.map((diagram) => {
+    return analysis.member_diagrams.map((diagram, diagramIndex) => {
       const member = analysis.members.find(
         (candidate) => candidate.id === diagram.member_id,
       )
@@ -261,11 +281,66 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           displacement_mm: station.displacement_mm,
         })),
         loadArrows: [...pointArrows, ...lineArrows],
+        nodes: diagramIndex === 0
+          ? analysis.nodes.map((node) => ({
+            id: node.id,
+            label: node.label,
+            position: node.position,
+            restrained: Object.values(node.restraints).some(Boolean),
+          }))
+          : undefined,
+        reactions: diagramIndex === 0
+          ? analysis.reactions.flatMap((reaction) => {
+            const reactionNode = nodes.get(reaction.node_id)
+            if (!reactionNode) return []
+            return [{
+              id: `${reaction.node_id}-${reaction.combination_id}`,
+              label: `${reactionNode.label} reaction`,
+              position: reactionNode.position,
+              force_kN: reaction.force,
+              moment_kNm: reaction.moment,
+            }]
+          })
+          : undefined,
         maxOffsetMm: 260,
       }
     })
   }, [activeCombination, analysis, diagramMode])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
+  const selectVerificationStage = (stageId: string) => {
+    if (!analysis) return
+    const stage = analysis.verification_stages?.find((candidate) => candidate.id === stageId)
+    const sheet = analysis.calculation_sheets?.find(
+      (candidate) => stage?.sheet_ids.includes(candidate.id),
+    )
+    if (!sheet) return
+    setSelectedSheetId(sheet.id)
+    const memberId = sheet.related_member_ids[0]
+    const member = analysis.members.find((candidate) => candidate.id === memberId)
+    if (member) {
+      setSelectedMemberId(member.id)
+      setSelectedVisualNodeId(member.visual_node_id)
+    }
+  }
+  const downloadCalculationSheets = () => {
+    if (!analysis) return
+    const payload = {
+      source: analysis.source,
+      design_basis: analysis.design_basis,
+      active_combination: analysis.solver.combination_id,
+      verification_stages: analysis.verification_stages ?? [],
+      calculation_sheets: analysis.calculation_sheets ?? [],
+    }
+    const url = URL.createObjectURL(new Blob(
+      [JSON.stringify(payload, null, 2)],
+      { type: 'application/json' },
+    ))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${analysis.source.design_id || 'tertius'}-p399-calculations.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   if (authMode === 'guest') {
     return (
@@ -352,7 +427,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
 
       <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
         {analysis
-          ? 'ELASTIC MEMBER DEMAND ONLINE — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'
+          ? 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
@@ -373,6 +448,163 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           )}
           {capture && (
             <div className="space-y-5 p-4">
+              {analysis?.design_basis && (
+                <section className="rounded border border-cyan-500/40 bg-cyan-950/20 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                        Working design framework
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-100">
+                        {analysis.design_basis.framework_label}
+                      </div>
+                    </div>
+                    <span className="rounded border border-cyan-500/40 bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-cyan-200">
+                      {analysis.design_basis.framework_id}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-400">
+                    {analysis.design_basis.framework_reference} ·{' '}
+                    {analysis.design_basis.jurisdiction} ·{' '}
+                    {analysis.design_basis.analysis_method}
+                  </p>
+                </section>
+              )}
+
+              {analysis && (analysis.verification_stages?.length ?? 0) > 0 && (
+                <section>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                      P399 verification spine
+                    </div>
+                    <button
+                      type="button"
+                      onClick={downloadCalculationSheets}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[9px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-200"
+                    >
+                      Export calculation JSON
+                    </button>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {analysis.verification_stages?.map((stage) => (
+                      <button
+                        key={stage.id}
+                        type="button"
+                        title={stage.summary}
+                        onClick={() => selectVerificationStage(stage.id)}
+                        className={`rounded border p-2 text-left ${verificationStyle[stage.status]} ${
+                          selectedCalculationSheet?.stage_id === stage.id
+                            ? 'ring-1 ring-cyan-300'
+                            : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold">
+                            {stage.order}. {stage.label}
+                          </span>
+                          <span className="font-mono text-[8px] uppercase">
+                            {stage.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[8px] opacity-70">{stage.p399_reference}</div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {selectedCalculationSheet && (
+                <section className={`rounded border p-3 ${
+                  verificationStyle[selectedCalculationSheet.status]
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] opacity-75">
+                        Calculation sheet
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-slate-100">
+                        {selectedCalculationSheet.title}
+                      </div>
+                    </div>
+                    <span className="font-mono text-[9px] uppercase">
+                      {selectedCalculationSheet.status.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-300">
+                    {selectedCalculationSheet.purpose}
+                  </p>
+                  <div className="mt-2 rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-slate-400">
+                    {selectedCalculationSheet.p399_reference}
+                  </div>
+                  {selectedCalculationSheet.inputs.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
+                        Inputs
+                      </div>
+                      <div className="mt-1 space-y-1">
+                        {selectedCalculationSheet.inputs.map((input) => (
+                          <div key={`${input.symbol}-${input.label}`} className="flex justify-between gap-3 text-[9px]">
+                            <span title={input.source}>{input.label}</span>
+                            <span className="shrink-0 font-mono">
+                              {String(input.value)}{input.unit ? ` ${input.unit}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedCalculationSheet.equations.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
+                        Trace
+                      </div>
+                      <div className="mt-1 space-y-2">
+                        {selectedCalculationSheet.equations.map((equation) => (
+                          <div key={`${equation.label}-${equation.substitution}`} className="rounded bg-slate-950/50 p-2 text-[9px]">
+                            <div className="font-semibold text-slate-200">{equation.label}</div>
+                            <div className="mt-1 font-mono text-slate-400">
+                              {equation.expression} = {equation.substitution}
+                            </div>
+                            <div className="mt-1 font-mono text-cyan-200">
+                              = {String(equation.result)}{equation.unit ? ` ${equation.unit}` : ''}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedCalculationSheet.outputs.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
+                        Outputs
+                      </div>
+                      <div className="mt-1 space-y-1">
+                        {selectedCalculationSheet.outputs.map((output) => (
+                          <div key={`${output.symbol}-${output.label}`} className="flex justify-between gap-3 text-[9px]">
+                            <span title={output.source}>{output.label}</span>
+                            <span className="shrink-0 font-mono">
+                              {String(output.value)}{output.unit ? ` ${output.unit}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedCalculationSheet.assumptions.length > 0 && (
+                    <div className="mt-3 border-t border-current/20 pt-2">
+                      <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
+                        Missing / assumptions
+                      </div>
+                      {selectedCalculationSheet.assumptions.map((assumption) => (
+                        <p key={assumption} className="mt-1 text-[9px] opacity-80">
+                          {assumption}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+
               <section>
                 <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
                   Declared components
@@ -830,7 +1062,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
                     {diagramMode === 'displacement'
                       ? 'Displacement is amplified for visibility; the reported millimetres are unscaled.'
-                      : 'Signed moment ribbons: green is below the effective-section yield reference, red exceeds it, and grey is not checked. Cyan arrows show the active load direction.'}
+                      : 'Signed moment ribbons are grey until the required P399/Australian verification stages pass. Cyan arrows are applied loads; pink arrows are reactions; amber markers are restrained nodes.'}
                   </p>
                 </section>
               )}
@@ -838,9 +1070,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
                 <div className="font-semibold">Design capacity status: NOT CHECKED</div>
                 <p className="mt-1 text-[10px] text-amber-200/75">
-                  The green/red threshold is a nominal Zxe × fy yield reference. It does not
-                  include an AS/NZS 4600 capacity factor, lateral-torsional buckling,
-                  restraint, interaction, screws, bolts, bracket, anchors, or concrete.
+                  P399 is the verification sequence. The nominal Zxe × fy value only scales
+                  the visual demand reference; it cannot turn a member green until stability,
+                  Australian member resistance, restraint, connections, bases, and applicable
+                  serviceability stages are complete.
                 </p>
               </section>
             </div>
