@@ -861,7 +861,7 @@ def _required_mapping(value: Mapping[str, Any], key: str) -> dict[str, Any]:
 
 def _required_number(value: Mapping[str, Any], key: str) -> float:
     raw = value.get(key)
-    if isinstance(raw, bool):
+    if raw is None or isinstance(raw, bool):
         raise StructuralAuthoringError(
             f"catalogue section value {key!r} must be numeric"
         )

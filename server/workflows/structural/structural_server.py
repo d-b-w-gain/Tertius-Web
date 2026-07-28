@@ -76,6 +76,7 @@ def get_active_capture(
     design_source = files.get("design.py") if files else None
     if design_source is None:
         raise HTTPException(status_code=404, detail="Active project has no design.py")
+    assert files is not None
     artifact = get_latest_structural_manifest_artifact(db, ctx, project)
     if artifact is not None and artifact.content is not None:
         try:
