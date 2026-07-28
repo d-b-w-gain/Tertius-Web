@@ -7,7 +7,7 @@ import json
 from pprint import pformat
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.structural.site_wind import (
     REGION_SOURCE,
@@ -27,19 +27,45 @@ class SiteContract(BaseModel):
 
 
 class SiteActionStandards(SiteContract):
-    combinations: str = "AS/NZS 1170.0 — project edition to confirm"
-    permanent_and_imposed: str = "AS/NZS 1170.1 — project edition to confirm"
+    combinations: str = "AS/NZS 1170.0:2002"
+    permanent_and_imposed: str = "AS/NZS 1170.1:2002"
     wind: str = "AS/NZS 1170.2:2021"
     confirmed: bool = False
+
+    @field_validator("combinations", "permanent_and_imposed", "wind", mode="before")
+    @classmethod
+    def remove_legacy_warning_from_reference(cls, value: Any) -> Any:
+        """Migrate the old UI warning that was incorrectly stored in the value."""
+
+        if not isinstance(value, str):
+            return value
+        clean = value.split(" — project edition to confirm", 1)[0].strip()
+        legacy_defaults = {
+            "AS/NZS 1170.0": "AS/NZS 1170.0:2002",
+            "AS/NZS 1170.1": "AS/NZS 1170.1:2002",
+        }
+        return legacy_defaults.get(clean, clean)
 
 
 class SiteProjectBasis(SiteContract):
     building_use: str = "Private shed"
-    building_classification: str = "Class 10a — confirm for project"
+    building_classification: str = "10a"
     importance_level: Literal["1", "2", "3", "4"] = "2"
     design_life_years: int = Field(default=50, gt=0)
     jurisdiction: str = "Australia / New South Wales"
     standards: SiteActionStandards = Field(default_factory=SiteActionStandards)
+
+    @field_validator("building_classification", mode="before")
+    @classmethod
+    def normalize_building_classification(cls, value: Any) -> Any:
+        """Accept existing human-readable values and store the stable NCC code."""
+
+        if not isinstance(value, str):
+            return value
+        clean = value.strip()
+        if clean.lower().startswith("class "):
+            clean = clean[6:]
+        return clean.split(" ", 1)[0].strip()
 
 
 class SiteLocation(SiteContract):
@@ -82,11 +108,17 @@ def parse_site_definition(source: str) -> SiteDefinition:
     try:
         tree = ast.parse(source, filename=SITE_DEFINITION_FILENAME)
     except SyntaxError as exc:
-        raise SiteDefinitionError(f"{SITE_DEFINITION_FILENAME} is not valid Python: {exc.msg}") from exc
+        raise SiteDefinitionError(
+            f"{SITE_DEFINITION_FILENAME} is not valid Python: {exc.msg}"
+        ) from exc
 
     assignments: list[ast.AST] = []
     for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
             continue
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "site_dict"
@@ -139,7 +171,11 @@ def validate_design_site_usage(design_source: str) -> None:
                 "module-style access could make site inputs affect CAD geometry"
             )
         if isinstance(node, ast.ImportFrom) and node.module == "tertius_site":
-            if len(node.names) != 1 or node.names[0].name != "site_dict" or node.names[0].asname:
+            if (
+                len(node.names) != 1
+                or node.names[0].name != "site_dict"
+                or node.names[0].asname
+            ):
                 raise SiteDefinitionError(
                     "design.py may import only the unaliased site_dict from tertius_site"
                 )
@@ -219,7 +255,9 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
     }
 
 
-def site_wind_basis(site: SiteDefinition, *, basis_id: str | None = None) -> dict[str, Any]:
+def site_wind_basis(
+    site: SiteDefinition, *, basis_id: str | None = None
+) -> dict[str, Any]:
     calculation = calculate_site_definition(site)
     return {
         "id": basis_id or site.wind.basis_id,
@@ -265,18 +303,13 @@ def apply_site_definition(
     value = deepcopy(declaration)
     existing_bases = value.get("wind_action_bases") or []
     target_basis_id = site.wind.basis_id
-    if (
-        len(existing_bases) == 1
-        and target_basis_id not in {
-            str(existing.get("id")) for existing in existing_bases
-        }
-    ):
+    if len(existing_bases) == 1 and target_basis_id not in {
+        str(existing.get("id")) for existing in existing_bases
+    }:
         # Compatibility for projects compiled before the standard basis id was
         # introduced. The next CAD compile will adopt project-site-wind.
         target_basis_id = str(existing_bases[0].get("id") or target_basis_id)
-    value["wind_action_bases"] = [
-        site_wind_basis(site, basis_id=target_basis_id)
-    ]
+    value["wind_action_bases"] = [site_wind_basis(site, basis_id=target_basis_id)]
 
     q_z_kPa = float(value["wind_action_bases"][0]["q_z_kPa"])
     for load in value.get("loads") or []:
@@ -301,10 +334,11 @@ def apply_site_definition(
     if isinstance(design_basis, dict):
         design_basis["jurisdiction"] = site.project_basis.jurisdiction
         design_standards = dict(design_basis.get("standards") or {})
+
         def action_reference(reference: str) -> str:
-            if standards.confirmed or "confirm" in reference.lower():
+            if standards.confirmed:
                 return reference
-            return reference + " — project edition to confirm"
+            return reference + " — unconfirmed for this project"
 
         design_standards.update(
             {

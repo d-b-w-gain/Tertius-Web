@@ -31,13 +31,13 @@ const response: SiteWorkbenchResponse = {
     schema_version: '1.0',
     project_basis: {
       building_use: 'Private shed',
-      building_classification: 'Class 10a',
+      building_classification: '10a',
       importance_level: '2',
       design_life_years: 50,
       jurisdiction: 'Australia / New South Wales',
       standards: {
-        combinations: 'AS/NZS 1170.0',
-        permanent_and_imposed: 'AS/NZS 1170.1',
+        combinations: 'AS/NZS 1170.0:2002',
+        permanent_and_imposed: 'AS/NZS 1170.1:2002',
         wind: 'AS/NZS 1170.2:2021',
         confirmed: true,
       },
@@ -88,6 +88,34 @@ afterEach(() => {
 })
 
 describe('SiteWorkbench', () => {
+  it('shows NCC classification choices and identifies the exact missing confirmation', async () => {
+    mocks.apiFetch.mockResolvedValue(new Response(JSON.stringify({
+      ...response,
+      site_dict: {
+        ...response.site_dict,
+        project_basis: {
+          ...response.site_dict.project_basis,
+          standards: { ...response.site_dict.project_basis.standards, confirmed: false },
+        },
+      },
+      calculation: { ...response.calculation, site_ready: false },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    render(<SiteWorkbench isActive />)
+
+    expect(await screen.findByRole('option', {
+      name: 'Class 10a — non-habitable garage, carport or shed',
+    })).toBeInTheDocument()
+    expect(screen.getByText('NCC working recommendation: Importance Level 2')).toBeInTheDocument()
+    expect(screen.getByText('Missing: confirm these editions for this project')).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: 'confirm the three selected action-standard editions',
+    })).toBeInTheDocument()
+  })
+
   it('creates tertius_site.py and emits a structural refresh without compiling CAD', async () => {
     mocks.apiFetch.mockImplementation(async (_url: string, _token: unknown, init?: RequestInit) => (
       new Response(JSON.stringify({

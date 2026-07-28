@@ -17,6 +17,29 @@ import type {
 export const SITE_BASIS_CHANGED_EVENT = 'tertius:site-basis-changed'
 
 const WIND_REGIONS = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'B1', 'B2', 'C', 'D']
+const BUILDING_CLASSIFICATIONS = [
+  ['1a', 'Class 1a — house or attached dwelling'],
+  ['1b', 'Class 1b — small boarding/guest house or holiday accommodation'],
+  ['2', 'Class 2 — apartment building'],
+  ['3', 'Class 3 — residential building other than Class 1 or 2'],
+  ['4', 'Class 4 — dwelling in a Class 5–9 building'],
+  ['5', 'Class 5 — office'],
+  ['6', 'Class 6 — shop, restaurant or public-facing service'],
+  ['7a', 'Class 7a — car park'],
+  ['7b', 'Class 7b — storage or wholesale building'],
+  ['8', 'Class 8 — laboratory, factory or process building'],
+  ['9a', 'Class 9a — health-care building'],
+  ['9b', 'Class 9b — assembly building'],
+  ['9c', 'Class 9c — residential care building'],
+  ['10a', 'Class 10a — non-habitable garage, carport or shed'],
+  ['10b', 'Class 10b — fence, mast, retaining wall, pool or similar structure'],
+  ['10c', 'Class 10c — private bushfire shelter'],
+] as const
+const STANDARD_OPTIONS = {
+  combinations: ['AS/NZS 1170.0:2002'],
+  permanent_and_imposed: ['AS/NZS 1170.1:2002'],
+  wind: ['AS/NZS 1170.2:2021'],
+} as const
 const inputClass = (
   'w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 '
   + 'text-sm text-slate-100 outline-none focus:border-cyan-500'
@@ -68,6 +91,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   const [isBusy, setIsBusy] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
   const requestId = useRef(0)
+  const standardsSection = useRef<HTMLElement>(null)
 
   const load = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
@@ -300,12 +324,39 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
 
   const missing = useMemo(() => {
     if (!draft) return []
-    const values: string[] = []
-    if (!draft.location.address.trim()) values.push('site address')
-    if (draft.wind.region_status !== 'verified') values.push('wind region verification')
-    if (draft.wind.table_status !== 'verified') values.push('wind table verification')
-    if (!draft.project_basis.standards.confirmed) values.push('action-standard editions')
+    const values: { id: string, label: string }[] = []
+    if (!draft.location.address.trim()) values.push({ id: 'site-address', label: 'enter the site address' })
+    if (draft.wind.region_status !== 'verified') values.push({ id: 'wind-region', label: 'verify the wind region' })
+    if (draft.wind.table_status !== 'verified') values.push({ id: 'wind-table', label: 'verify the wind tables' })
+    if (!draft.project_basis.standards.confirmed) {
+      values.push({ id: 'action-standards', label: 'confirm the three selected action-standard editions' })
+    }
     return values
+  }, [draft])
+
+  const importanceRecommendation = useMemo(() => {
+    if (!draft) return null
+    const classification = draft.project_basis.building_classification
+    const use = draft.project_basis.building_use.toLowerCase()
+    if (classification === '10a' || classification === '10b') {
+      const isolatedMinor = /\b(isolated|minor|farm)\b/.test(use)
+      return {
+        level: isolatedMinor ? '1' : '2',
+        reason: isolatedMinor
+          ? 'NCC indicates Level 1 for isolated minor Class 10a/10b structures with low consequence of failure.'
+          : 'NCC indicates Level 2 for Class 10a/10b structures associated with a Class 1 property; use and consequence still require confirmation.',
+      }
+    }
+    if (['9a', '9b', '9c'].includes(classification)) {
+      return {
+        level: null,
+        reason: 'Class 9 occupancy and capacity can require Level 3 or 4. Determine the consequence of failure before selecting a level.',
+      }
+    }
+    return {
+      level: '2',
+      reason: 'Level 2 is the normal working basis unless the structure meets the low-hazard Level 1 criteria or the higher-consequence Level 3/4 criteria.',
+    }
   }, [draft])
 
   if (authMode !== 'authenticated') {
@@ -382,8 +433,12 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   onChange={(event) => updateProjectBasis('building_use', event.target.value)} />
               </Field>
               <Field label="Building classification">
-                <input className={inputClass} value={draft.project_basis.building_classification}
-                  onChange={(event) => updateProjectBasis('building_classification', event.target.value)} />
+                <select className={inputClass} value={draft.project_basis.building_classification}
+                  onChange={(event) => updateProjectBasis('building_classification', event.target.value)}>
+                  {BUILDING_CLASSIFICATIONS.map(([code, label]) => (
+                    <option key={code} value={code}>{label}</option>
+                  ))}
+                </select>
               </Field>
               <Field label="Importance level">
                 <select className={inputClass} value={draft.project_basis.importance_level}
@@ -401,6 +456,24 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                     onChange={(event) => updateProjectBasis('jurisdiction', event.target.value)} />
                 </Field>
               </div>
+              {importanceRecommendation && (
+                <div className="md:col-span-2 rounded border border-cyan-500/30 bg-cyan-950/20 p-3 text-xs">
+                  <div className="font-semibold text-cyan-200">
+                    {importanceRecommendation.level
+                      ? `NCC working recommendation: Importance Level ${importanceRecommendation.level}`
+                      : 'NCC classification requires an Importance Level review'}
+                  </div>
+                  <p className="mt-1 leading-5 text-slate-400">{importanceRecommendation.reason}</p>
+                  {importanceRecommendation.level
+                    && importanceRecommendation.level !== draft.project_basis.importance_level && (
+                    <button type="button"
+                      className="mt-2 rounded border border-cyan-500/50 px-2 py-1 font-semibold text-cyan-200 hover:bg-cyan-950"
+                      onClick={() => updateProjectBasis('importance_level', importanceRecommendation.level as '1' | '2')}>
+                      Use Level {importanceRecommendation.level}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </section>
 
@@ -419,7 +492,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               <div className="md:col-span-2">
                 <Field label="Site address">
                   <div className="flex gap-2">
-                    <input className={inputClass} value={draft.location.address}
+                    <input id="site-address" className={inputClass} value={draft.location.address}
                       onChange={(event) => updateLocation('address', event.target.value)} />
                     <button type="button" disabled={isBusy || !draft.location.address.trim()}
                       onClick={() => void geocode()}
@@ -459,12 +532,12 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </Field>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
-              <label className="flex items-start gap-2 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
+              <label id="wind-region" className="flex items-start gap-2 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
                 <input type="checkbox" className="mt-0.5" checked={draft.wind.region_status === 'verified'}
                   onChange={(event) => updateWind('region_status', event.target.checked ? 'verified' : 'suggested')} />
                 <span><b>Region checked</b><br /><span className="text-slate-500">Verified against the nominated wind-region figure.</span></span>
               </label>
-              <label className="flex items-start gap-2 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
+              <label id="wind-table" className="flex items-start gap-2 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
                 <input type="checkbox" className="mt-0.5" checked={draft.wind.table_status === 'verified'}
                   onChange={(event) => updateWind('table_status', event.target.checked ? 'verified' : 'starter')} />
                 <span><b>Wind tables checked</b><br /><span className="text-slate-500">Starter values checked against the project edition.</span></span>
@@ -502,25 +575,57 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             </div>
           </section>
 
-          <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
+          <section id="action-standards" ref={standardsSection}
+            className={`rounded border bg-slate-900/50 p-4 ${
+              draft.project_basis.standards.confirmed ? 'border-slate-800' : 'border-amber-500/70'
+            }`}>
             <h2 className="font-semibold text-slate-100">Action standards</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              These are the editions referenced by NCC 2022. Selecting an edition and confirming
+              that it applies are separate, auditable decisions.
+            </p>
             <div className="mt-3 grid gap-3">
-              <Field label="Combinations">
-                <input className={inputClass} value={draft.project_basis.standards.combinations}
-                  onChange={(event) => updateStandards('combinations', event.target.value)} />
+              <Field label="Combinations edition">
+                <select className={inputClass} value={draft.project_basis.standards.combinations}
+                  onChange={(event) => updateStandards('combinations', event.target.value)}>
+                  {STANDARD_OPTIONS.combinations.map((reference) => (
+                    <option key={reference} value={reference}>{reference} — NCC 2022 referenced edition</option>
+                  ))}
+                </select>
               </Field>
-              <Field label="Permanent and imposed actions">
-                <input className={inputClass} value={draft.project_basis.standards.permanent_and_imposed}
-                  onChange={(event) => updateStandards('permanent_and_imposed', event.target.value)} />
+              <Field label="Permanent and imposed actions edition">
+                <select className={inputClass} value={draft.project_basis.standards.permanent_and_imposed}
+                  onChange={(event) => updateStandards('permanent_and_imposed', event.target.value)}>
+                  {STANDARD_OPTIONS.permanent_and_imposed.map((reference) => (
+                    <option key={reference} value={reference}>{reference} — NCC 2022 referenced edition</option>
+                  ))}
+                </select>
               </Field>
-              <Field label="Wind actions">
-                <input className={inputClass} value={draft.project_basis.standards.wind}
-                  onChange={(event) => updateStandards('wind', event.target.value)} />
+              <Field label="Wind actions edition">
+                <select className={inputClass} value={draft.project_basis.standards.wind}
+                  onChange={(event) => updateStandards('wind', event.target.value)}>
+                  {STANDARD_OPTIONS.wind.map((reference) => (
+                    <option key={reference} value={reference}>{reference} — NCC 2022 referenced edition</option>
+                  ))}
+                </select>
               </Field>
-              <label className="flex items-start gap-2 rounded border border-slate-700 bg-slate-950/60 p-3 text-xs">
+              <label className={`flex items-start gap-2 rounded border p-3 text-xs ${
+                draft.project_basis.standards.confirmed
+                  ? 'border-emerald-500/40 bg-emerald-950/20'
+                  : 'border-amber-400 bg-amber-950/40'
+              }`}>
                 <input type="checkbox" className="mt-0.5" checked={draft.project_basis.standards.confirmed}
                   onChange={(event) => updateStandards('confirmed', event.target.checked)} />
-                <span><b>Project editions confirmed</b><br /><span className="text-slate-500">The references above are the editions applicable to this project.</span></span>
+                <span>
+                  <b>{draft.project_basis.standards.confirmed
+                    ? 'Project editions confirmed'
+                    : 'Missing: confirm these editions for this project'}</b>
+                  <br />
+                  <span className={draft.project_basis.standards.confirmed ? 'text-slate-500' : 'text-amber-200/80'}>
+                    Tick after checking that all three selected references apply to this project.
+                    Do not edit or delete part of a standard name.
+                  </span>
+                </span>
               </label>
             </div>
           </section>
@@ -555,7 +660,23 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             )}
             {missing.length > 0 && (
               <div className="mt-3 rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
-                Still requires: {missing.join(', ')}.
+                <div className="font-bold">Incomplete fields</div>
+                <ul className="mt-2 space-y-1">
+                  {missing.map((item) => (
+                    <li key={item.id}>
+                      <button type="button" className="text-left underline decoration-amber-400/50 hover:text-white"
+                        onClick={() => {
+                          if (item.id === 'action-standards') {
+                            standardsSection.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          } else {
+                            document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                          }
+                        }}>
+                        {item.label}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </section>

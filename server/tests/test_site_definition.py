@@ -74,6 +74,26 @@ def test_site_definition_round_trips_as_literal_python():
     assert "q_z_kPa" not in source
 
 
+def test_site_definition_migrates_legacy_warning_text_to_explicit_fields():
+    source = (
+        render_site_definition(default_site_definition())
+        .replace(
+            "'AS/NZS 1170.0:2002'",
+            "'AS/NZS 1170.0 — project edition to confirm'",
+        )
+        .replace(
+            "'10a'",
+            "'Class 10a — confirm for project'",
+        )
+    )
+
+    parsed = parse_site_definition(source)
+
+    assert parsed.project_basis.standards.combinations == "AS/NZS 1170.0:2002"
+    assert parsed.project_basis.standards.confirmed is False
+    assert parsed.project_basis.building_classification == "10a"
+
+
 def test_site_definition_rejects_executable_code():
     with pytest.raises(SiteDefinitionError, match="may only contain"):
         parse_site_definition(
@@ -113,13 +133,8 @@ def test_site_overlay_recalculates_wind_load_without_changing_topology():
 
     assert before["loads"][0]["pressure_kPa"] == 0.8
     assert overlaid["wind_action_bases"][0]["id"] == "legacy-site"
-    assert overlaid["loads"][0]["pressure_kPa"] == pytest.approx(
-        0.8 * 0.683438
-    )
-    assert (
-        overlaid["design_basis"]["standards"]["wind_actions"]
-        == "AS/NZS 1170.2:2021"
-    )
+    assert overlaid["loads"][0]["pressure_kPa"] == pytest.approx(0.8 * 0.683438)
+    assert overlaid["design_basis"]["standards"]["wind_actions"] == "AS/NZS 1170.2:2021"
     assert "confirm" not in (
         overlaid["design_basis"]["standards"]["action_combinations"].lower()
     )
