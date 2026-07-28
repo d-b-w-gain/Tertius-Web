@@ -193,6 +193,104 @@ describe('GenerateDesignWindow', () => {
     expect(screen.getByRole('button', { name: 'Close Generate Design conversation' })).toBeInTheDocument()
   })
 
+  it('shows AI working on the closed conversation control only while progress is active', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: null,
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'succeeded',
+        progress: null,
+        result: {
+          success: true,
+          outcome: 'no_change',
+          message: 'No edits needed.',
+          model: 'test-model',
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+          snapshot: null,
+          files: [],
+        },
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(
+      screen.getByPlaceholderText('Describe the CAD design or modification...'),
+      { target: { value: 'inspect the model' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close Generate Design conversation' }))
+
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('button', {
+      name: /Open Generate Design conversation.*AI working/,
+    })).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: 'Open Generate Design conversation',
+      })).toBeInTheDocument()
+    })
+  })
+
+  it('scrolls the submitted assistant card once without moving focus or following progress updates', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.getLlmFileEditJob.mockResolvedValue({
+      job_id: 'llm-job-1',
+      status: 'running',
+      progress: piProgressSnapshot(),
+    })
+    const scrollIntoView = vi.fn()
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const originalScrollIntoView = Element.prototype.scrollIntoView
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    try {
+      render(<GenerateDesignWindow />)
+      await screen.findByText('Latest model viewer')
+      openGenerateDesignConversation()
+      fireEvent.change(
+        screen.getByPlaceholderText('Describe the CAD design or modification...'),
+        { target: { value: 'inspect the model' } },
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1))
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
+      expect(focus).not.toHaveBeenCalled()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+      await waitFor(() => {
+        expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
+      })
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(focus).not.toHaveBeenCalled()
+    } finally {
+      focus.mockRestore()
+      if (originalScrollIntoView) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', {
+          configurable: true,
+          value: originalScrollIntoView,
+        })
+      } else {
+        delete (Element.prototype as { scrollIntoView?: Element['scrollIntoView'] }).scrollIntoView
+      }
+    }
+  })
+
   it('shows the configured fixed model without pricing controls', async () => {
     render(<GenerateDesignWindow />)
     await screen.findByText('Latest model viewer')
@@ -941,7 +1039,7 @@ describe('GenerateDesignWindow', () => {
     expect(details).toBe(initialDetails)
     expect(details).toHaveAttribute('open')
     expect(screen.getByText('Working')).toBeInTheDocument()
-    expect(screen.getByText('1 updates')).toBeInTheDocument()
+    expect(screen.getByText('1 update')).toHaveClass('text-slate-400')
     expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('AI activity updated: 1 event. Latest: Reasoning updated.')
     expect(screen.getByRole('status')).not.toHaveTextContent('Inspecting the model structure.')

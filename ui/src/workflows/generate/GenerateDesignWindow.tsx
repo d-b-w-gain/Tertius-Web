@@ -65,6 +65,7 @@ type ChatMessage = {
   progress?: LlmEditProgressSnapshot
   progressActive?: boolean
   progressDisclosure?: boolean
+  renderKey?: string
 }
 
 export type GenerateViewportState = {
@@ -261,7 +262,9 @@ function ProgressActivity({
           <span className={`ml-auto font-mono font-semibold ${active ? 'text-cyan-300' : 'text-slate-400'}`}>
             {progressState}
           </span>
-          <span className="font-mono text-slate-500">{eventCount} updates</span>
+          <span className="font-mono text-slate-400">
+            {eventCount} {eventCount === 1 ? 'update' : 'updates'}
+          </span>
         </summary>
         {progress && progress.events.length > 0 ? (
           <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
@@ -331,6 +334,7 @@ export function GenerateDesignWindow({
 
   const activeProjectRef = useRef('')
   const messagesRef = useRef<ChatMessage[]>([])
+  const pendingScrollMessageIdRef = useRef<string | null>(null)
   const startLlmEditPollingRef = useRef<(projectName: string, jobId: string, assistantId: string) => void>(() => {})
   const compileRequestRef = useRef(new Map<string, number>())
   const compileTimerRef = useRef(new Map<string, number>())
@@ -344,6 +348,15 @@ export function GenerateDesignWindow({
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+
+  const scrollSubmittedMessageIntoView = useCallback((
+    node: HTMLDivElement | null,
+    messageIdToScroll: string,
+  ) => {
+    if (!node || pendingScrollMessageIdRef.current !== messageIdToScroll) return
+    pendingScrollMessageIdRef.current = null
+    node.scrollIntoView?.({ block: 'nearest' })
+  }, [])
 
   const clearCompileTimer = useCallback((jobId: string) => {
     const timer = compileTimerRef.current.get(jobId)
@@ -921,8 +934,10 @@ export function GenerateDesignWindow({
       compileStatus: 'queued',
       progressActive: true,
       progressDisclosure: true,
+      renderKey: messageId('render'),
     }
 
+    pendingScrollMessageIdRef.current = assistantMessage.id
     setMessages(prev => [...prev, userMessage, assistantMessage])
     setSelectedMessageId(assistantMessage.id)
     setPrompt('')
@@ -993,6 +1008,10 @@ export function GenerateDesignWindow({
       setIsSubmitting(false)
     }
   }
+
+  const hasActiveProgress = messages.some(message => (
+    message.role === 'assistant' && message.progressActive
+  ))
 
   if (authMode === 'guest') {
     return (
@@ -1066,7 +1085,13 @@ export function GenerateDesignWindow({
             onClick={() => setIsConversationOpen(true)}
             className="pointer-events-auto rounded border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs font-semibold text-slate-100 shadow-xl shadow-slate-950/40 transition-colors hover:bg-slate-800"
           >
-            Open Generate Design conversation
+            <span>Open Generate Design conversation</span>
+            {hasActiveProgress && (
+              <span className="ml-2 inline-flex items-center gap-1 text-cyan-300">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                AI working
+              </span>
+            )}
           </button>
         </div>
       )}
@@ -1153,7 +1178,10 @@ export function GenerateDesignWindow({
                   )
                   return (
                     <div
-                      key={message.progressDisclosure ? `progress:${message.createdAt}` : message.id}
+                      ref={message.role === 'assistant'
+                        ? node => scrollSubmittedMessageIntoView(node, message.id)
+                        : undefined}
+                      key={message.renderKey || message.id}
                       className={`overflow-hidden rounded border transition-colors ${
                         selectedMessageId === message.id
                           ? 'border-cyan-700 bg-cyan-950/30'
