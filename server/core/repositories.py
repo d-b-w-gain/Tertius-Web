@@ -4,8 +4,10 @@ import hashlib
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import desc, func, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -13,6 +15,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
 
 
 FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
@@ -25,6 +28,18 @@ WORKER_LOST_USER_MESSAGE = (
 LLM_EDIT_WORKER_LOST_ERROR = "LLM edit worker stopped before reporting a result"
 LLM_EDIT_WORKER_LOST_ERROR_CODE = "worker_lost"
 LLM_EDIT_WORKER_LOST_USER_MESSAGE = "AI generation stopped unexpectedly. Try again."
+PI_AGENT_PROGRESS_MAX_EVENTS = 128
+PI_AGENT_PROGRESS_MAX_BYTES = 64 * 1024
+
+
+class ProgressBatchApplyOutcome(StrEnum):
+    APPLIED = "applied"
+    DUPLICATE = "duplicate"
+    IGNORED_TERMINAL = "ignored_terminal"
+    REJECTED_IDENTITY = "rejected_identity"
+    REJECTED_SEQUENCE = "rejected_sequence"
+    REJECTED_SNAPSHOT = "rejected_snapshot"
+    STALE_EXECUTION = "stale_execution"
 
 
 class FileVersionConflictError(RuntimeError):
@@ -747,6 +762,83 @@ class LlmEditRepository:
                 LlmEditJob.id == job_id,
             )
         )
+
+    def apply_progress_batch(
+        self,
+        batch: PiAgentProgressBatch,
+    ) -> ProgressBatchApplyOutcome:
+        if batch.tenant_id != self.tenant_id:
+            return ProgressBatchApplyOutcome.REJECTED_IDENTITY
+
+        job = self.db.scalar(
+            select(LlmEditJob)
+            .where(
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == batch.project_id,
+                LlmEditJob.id == batch.job_id,
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return ProgressBatchApplyOutcome.REJECTED_IDENTITY
+        if job.status in {"succeeded", "failed"}:
+            return ProgressBatchApplyOutcome.IGNORED_TERMINAL
+
+        try:
+            persisted = (
+                PiAgentProgressSnapshot.model_validate(job.progress_payload)
+                if job.progress_payload
+                else None
+            )
+        except ValidationError:
+            return ProgressBatchApplyOutcome.REJECTED_SNAPSHOT
+        if persisted is not None and persisted.execution_id == batch.execution_id:
+            if batch.batch_sequence <= persisted.last_batch_sequence:
+                return ProgressBatchApplyOutcome.DUPLICATE
+            if batch.events[0].sequence <= persisted.last_sequence:
+                return ProgressBatchApplyOutcome.REJECTED_SEQUENCE
+            events = [*persisted.events, *batch.events]
+            truncated_before_sequence = persisted.truncated_before_sequence
+        else:
+            if (
+                persisted is not None
+                and batch.execution_started_at <= persisted.execution_started_at
+            ):
+                return ProgressBatchApplyOutcome.STALE_EXECUTION
+            events = list(batch.events)
+            truncated_before_sequence = None
+
+        if len(events) > PI_AGENT_PROGRESS_MAX_EVENTS:
+            discarded_events = events[:-PI_AGENT_PROGRESS_MAX_EVENTS]
+            events = events[-PI_AGENT_PROGRESS_MAX_EVENTS:]
+            truncated_before_sequence = discarded_events[-1].sequence
+
+        snapshot = PiAgentProgressSnapshot(
+            schema_version=1,
+            execution_id=batch.execution_id,
+            execution_started_at=batch.execution_started_at,
+            last_batch_sequence=batch.batch_sequence,
+            last_sequence=batch.events[-1].sequence,
+            truncated_before_sequence=truncated_before_sequence,
+            events=events,
+        )
+        while (
+            len(snapshot.model_dump_json().encode("utf-8"))
+            > PI_AGENT_PROGRESS_MAX_BYTES
+        ):
+            discarded_event = events[0]
+            events = events[1:]
+            snapshot = snapshot.model_copy(
+                update={
+                    "truncated_before_sequence": discarded_event.sequence,
+                    "events": events,
+                }
+            )
+
+        job.progress_payload = snapshot.model_dump(mode="json")
+        flag_modified(job, "progress_payload")
+        self.db.flush()
+        return ProgressBatchApplyOutcome.APPLIED
 
     def list_jobs_for_project(self, project_id: UUID, *, limit: int = 200) -> list[LlmEditJob]:
         normalized_limit = max(1, min(limit, 200))

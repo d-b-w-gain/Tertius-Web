@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,7 +24,7 @@ from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
 from core.pi_agent_conversation import next_conversation_context, render_conversation_context
-from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
+from core.pi_agent_messages import PiAgentCommand, PiAgentProgressSnapshot, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
 from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
@@ -460,6 +460,52 @@ def _llm_edit_job_model(job: LlmEditJob) -> str | None:
     return None
 
 
+def _llm_edit_job_progress_snapshot(
+    job: LlmEditJob,
+) -> PiAgentProgressSnapshot | None:
+    if not job.progress_payload:
+        return None
+    try:
+        return PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    except ValidationError:
+        return None
+
+
+def _llm_edit_job_progress(job: LlmEditJob) -> dict[str, Any] | None:
+    snapshot = _llm_edit_job_progress_snapshot(job)
+    if snapshot is None:
+        return None
+    return snapshot.model_dump(mode="json")
+
+
+def _llm_edit_job_history_progress(job: LlmEditJob) -> dict[str, Any] | None:
+    snapshot = _llm_edit_job_progress_snapshot(job)
+    if snapshot is None:
+        return None
+
+    retained_events = snapshot.events[-8:]
+    preview_events = [
+        event.model_copy(update={"text": event.text[:240]})
+        if event.kind == "reasoning_delta" and event.text is not None
+        else event
+        for event in retained_events
+    ]
+    truncated_before_sequence = snapshot.truncated_before_sequence
+    if len(snapshot.events) > len(retained_events):
+        truncated_before_sequence = snapshot.events[-len(retained_events) - 1].sequence
+
+    preview = PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=snapshot.execution_id,
+        execution_started_at=snapshot.execution_started_at,
+        last_batch_sequence=snapshot.last_batch_sequence,
+        last_sequence=snapshot.last_sequence,
+        truncated_before_sequence=truncated_before_sequence,
+        events=preview_events,
+    )
+    return preview.model_dump(mode="json")
+
+
 def _serialize_llm_edit_history_message(
     job: LlmEditJob,
     compile_job: CompileJob | None,
@@ -469,7 +515,7 @@ def _serialize_llm_edit_history_message(
     result_payload = job.result_payload or {}
     request_files = request_payload.get("files")
     artifact = compile_repo.artifact_for_job(compile_job.id) if compile_job is not None else None
-    return {
+    message = {
         "job_id": str(job.id),
         "prompt": str(request_payload.get("prompt") or ""),
         "content": _llm_edit_job_content(job),
@@ -492,6 +538,9 @@ def _serialize_llm_edit_history_message(
             else None
         ),
     }
+    if job.status in {"succeeded", "failed"}:
+        message["progress"] = _llm_edit_job_history_progress(job)
+    return message
 
 
 
@@ -811,6 +860,7 @@ def get_llm_file_edit_job_status(
         "job_id": str(job.id),
         "status": job.status,
         "result": job.result_payload,
+        "progress": _llm_edit_job_progress(job),
         "error": job.error,
         "error_code": job.error_code,
         "user_message": job.user_message,

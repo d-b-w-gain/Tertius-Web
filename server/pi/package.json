@@ -9,8 +9,8 @@
     "harden": "node pi-install-security.ts harden",
     "install:hardened": "npm ci --ignore-scripts && npm run harden",
     "pretest": "npm run harden",
-    "test": "node pi-install-security.ts verify && npm run typecheck && node --test workspace-guard.test.ts oauth-cli.test.ts",
-    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck oauth-cli.ts oauth-cli.test.ts pi-install-security.ts rpc-test-process.ts workspace-guard.ts workspace-guard.test.ts"
+    "test": "node pi-install-security.ts verify && npm run typecheck && node --test pi-install-security.test.ts workspace-guard.test.ts oauth-cli.test.ts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck oauth-cli.ts oauth-cli.test.ts pi-install-security.ts pi-install-security.test.ts rpc-test-process.ts workspace-guard.ts workspace-guard.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.80.6",

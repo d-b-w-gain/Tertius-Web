@@ -182,6 +182,124 @@ class PiAgentUsage(StrictMessage):
     cache_write_tokens: int = Field(default=0, ge=0, le=2**63 - 1)
     total_tokens: int = Field(default=0, ge=0, le=2**63 - 1)
 
+
+class PiAgentProgressEvent(StrictMessage):
+    sequence: int = Field(ge=1, le=2**63 - 1)
+    kind: Literal["reasoning_delta", "tool_started", "tool_finished"]
+    text: str | None = Field(default=None, min_length=1, max_length=1000)
+    tool_name: Literal["read", "edit", "write", "grep", "find", "ls"] | None = None
+    target: str | None = Field(default=None, max_length=512)
+    is_error: bool | None = None
+    occurred_at: datetime
+
+    @field_validator("target")
+    @classmethod
+    def safe_target(cls, value: str | None) -> str | None:
+        return normalize_filename(value) if value is not None else None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def utc_occurred_at(cls, value: datetime) -> datetime:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None or offset.total_seconds() != 0:
+            raise ValueError("occurred_at must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def valid_state(self):
+        if self.kind == "reasoning_delta":
+            if self.text is None:
+                raise ValueError("reasoning events require text")
+            if any(
+                value is not None
+                for value in (self.tool_name, self.target, self.is_error)
+            ):
+                raise ValueError("reasoning events cannot contain tool fields")
+        elif self.kind == "tool_started":
+            if self.text is not None or self.tool_name is None or self.is_error is not None:
+                raise ValueError(
+                    "tool-started events require only tool name and optional target"
+                )
+        elif self.text is not None or self.tool_name is None or self.is_error is None:
+            raise ValueError(
+                "tool-finished events require tool name, error state, and optional target"
+            )
+        return self
+
+
+class PiAgentProgressBatch(StrictMessage):
+    message_type: Literal["progress"]
+    schema_version: Literal[1]
+    execution_id: UUID
+    execution_started_at: datetime
+    job_id: UUID
+    tenant_id: UUID
+    project_id: UUID
+    batch_sequence: int = Field(ge=1, le=2**63 - 1)
+    events: list[PiAgentProgressEvent] = Field(min_length=1, max_length=16)
+    traceparent: str | None = Field(default=None, max_length=512)
+    tracestate: str | None = Field(default=None, max_length=512)
+
+    @field_validator("execution_started_at")
+    @classmethod
+    def utc_execution_started_at(cls, value: datetime) -> datetime:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None or offset.total_seconds() != 0:
+            raise ValueError("execution_started_at must be UTC")
+        return value
+
+    @field_validator("events")
+    @classmethod
+    def ordered_events(
+        cls, values: list[PiAgentProgressEvent]
+    ) -> list[PiAgentProgressEvent]:
+        sequences = [event.sequence for event in values]
+        if any(current <= previous for previous, current in zip(sequences, sequences[1:])):
+            raise ValueError("progress event sequences must be strictly increasing")
+        return values
+
+
+class PiAgentProgressSnapshot(StrictMessage):
+    schema_version: Literal[1]
+    execution_id: UUID
+    execution_started_at: datetime
+    last_batch_sequence: int = Field(ge=1, le=2**63 - 1)
+    last_sequence: int = Field(ge=1, le=2**63 - 1)
+    truncated_before_sequence: int | None = Field(
+        default=None,
+        ge=1,
+        le=2**63 - 1,
+    )
+    events: list[PiAgentProgressEvent] = Field(min_length=1, max_length=128)
+
+    @field_validator("execution_started_at")
+    @classmethod
+    def utc_execution_started_at(cls, value: datetime) -> datetime:
+        offset = value.utcoffset()
+        if value.tzinfo is None or offset is None or offset.total_seconds() != 0:
+            raise ValueError("execution_started_at must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def consistent_sequences(self):
+        sequences = [event.sequence for event in self.events]
+        if any(
+            current <= previous
+            for previous, current in zip(sequences, sequences[1:])
+        ):
+            raise ValueError("progress snapshot sequences must be strictly increasing")
+        if self.last_sequence != sequences[-1]:
+            raise ValueError("last_sequence must match the final progress event")
+        if (
+            self.truncated_before_sequence is not None
+            and self.truncated_before_sequence >= sequences[0]
+        ):
+            raise ValueError(
+                "truncated_before_sequence must precede retained progress events"
+            )
+        return self
+
+
 class PiAgentResult(StrictMessage):
     schema_version: Literal[1]
     execution_id: UUID
@@ -249,9 +367,22 @@ def assert_pi_agent_result_size(result: PiAgentResult, max_bytes: int) -> None:
     assert_pi_agent_message_size(result, max_bytes, "Pi agent result")
 
 
+def assert_pi_agent_progress_size(
+    progress: PiAgentProgressBatch, max_bytes: int
+) -> None:
+    assert_pi_agent_message_size(progress, max_bytes, "Pi agent progress")
+
+
 def pi_agent_command_message_id(command: PiAgentCommand) -> str:
     return f"pi-request:{command.job_id}"
 
 
 def pi_agent_result_message_id(result: PiAgentResult) -> str:
     return f"pi-result:{result.job_id}:{result.execution_id}"
+
+
+def pi_agent_progress_message_id(progress: PiAgentProgressBatch) -> str:
+    return (
+        f"pi-progress:{progress.job_id}:{progress.execution_id}:"
+        f"{progress.batch_sequence}"
+    )

@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
 
-from core.models import AppUser, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership
+from core.models import AppUser, LlmEditJob, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership
+from core.pi_agent_messages import PiAgentProgressEvent, PiAgentProgressSnapshot
 
 
 def test_projects_are_scoped_to_authenticated_tenant(db_session, authenticated_intus_client, seeded_tenant):
@@ -18,6 +20,78 @@ def test_projects_are_scoped_to_authenticated_tenant(db_session, authenticated_i
 
     assert response.status_code == 200
     assert response.json() == {"projects": ["default_purlin"]}
+
+
+def test_llm_job_progress_is_scoped_to_authenticated_tenant_and_project(
+    db_session, authenticated_intus_client, seeded_tenant
+):
+    now = datetime.now(timezone.utc)
+    snapshot = PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=uuid4(),
+        execution_started_at=now,
+        last_batch_sequence=1,
+        last_sequence=1,
+        events=[
+            PiAgentProgressEvent(
+                sequence=1,
+                kind="reasoning_delta",
+                text="PRIVATE_PROGRESS_SENTINEL",
+                occurred_at=now,
+            )
+        ],
+    ).model_dump(mode="json")
+    same_tenant_other_project = Project(
+        tenant_id=seeded_tenant.tenant_id,
+        name="other_owned_project",
+        created_by=seeded_tenant.user_id,
+    )
+    other_user = AppUser(id=uuid4(), keycloak_subject="kc-progress-other")
+    other_tenant = Tenant(id=uuid4(), name="Progress Other Tenant")
+    db_session.add_all([same_tenant_other_project, other_user, other_tenant])
+    db_session.flush()
+    other_tenant_project = Project(
+        tenant_id=other_tenant.id,
+        name="default_purlin",
+        created_by=other_user.id,
+    )
+    db_session.add_all(
+        [
+            TenantMembership(
+                tenant_id=other_tenant.id,
+                user_id=other_user.id,
+                role="owner",
+            ),
+            other_tenant_project,
+        ]
+    )
+    db_session.flush()
+    other_project_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=same_tenant_other_project.id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        request_payload={},
+        progress_payload=snapshot,
+    )
+    other_tenant_job = LlmEditJob(
+        tenant_id=other_tenant.id,
+        project_id=other_tenant_project.id,
+        requested_by=other_user.id,
+        status="running",
+        request_payload={},
+        progress_payload=snapshot,
+    )
+    db_session.add_all([other_project_job, other_tenant_job])
+    db_session.commit()
+
+    for inaccessible_job in (other_project_job, other_tenant_job):
+        response = authenticated_intus_client.get(
+            f"/projects/default_purlin/files/llm-edit/jobs/{inaccessible_job.id}"
+        )
+        assert response.status_code == 404
+        assert response.json() == {"error": "LLM edit job not found"}
+        assert "PRIVATE_PROGRESS_SENTINEL" not in response.text
 
 
 def test_create_save_list_code_git_status_and_delete_are_tenant_scoped(

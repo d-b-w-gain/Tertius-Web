@@ -7,8 +7,11 @@ import {
   createProjectStorage,
   type LlmEditConversationEntry,
   type LlmEditContextTier,
+  type LlmEditProgressEvent,
+  type LlmEditProgressSnapshot,
   type LlmFileEditResult,
   type LlmModelOption,
+  type PiAgentToolName,
   type ProjectFileMetadata,
 } from '../shared/projectStorage'
 import {
@@ -59,6 +62,8 @@ type ChatMessage = {
   compileJobId?: string
   repairAttempted?: boolean
   repairForCompileJobId?: string
+  progress?: LlmEditProgressSnapshot
+  progressActive?: boolean
 }
 
 export type GenerateViewportState = {
@@ -159,6 +164,127 @@ function buildCompileRepairPrompt(originalPrompt: string, data: CompileJobStatus
 
 function isCompileRepairEntry(entry: LlmEditConversationEntry) {
   return entry.metadata?.source === 'generate_design_compile_repair'
+}
+
+function executionStartedAt(snapshot: LlmEditProgressSnapshot) {
+  const timestamp = Date.parse(snapshot.execution_started_at)
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function mergeProgressSnapshot(
+  current: LlmEditProgressSnapshot | undefined,
+  incoming: LlmEditProgressSnapshot,
+): LlmEditProgressSnapshot {
+  if (!current) return incoming
+  if (current.execution_id !== incoming.execution_id) {
+    return executionStartedAt(incoming) > executionStartedAt(current) ? incoming : current
+  }
+  if (
+    incoming.last_batch_sequence < current.last_batch_sequence
+    || incoming.last_sequence < current.last_sequence
+  ) {
+    return current
+  }
+
+  const truncationBoundaries = [
+    current.truncated_before_sequence,
+    incoming.truncated_before_sequence,
+  ].filter((sequence): sequence is number => sequence !== null)
+  const truncatedBeforeSequence = truncationBoundaries.length > 0
+    ? Math.max(...truncationBoundaries)
+    : null
+  const eventsBySequence = new Map<number, LlmEditProgressEvent>()
+  for (const event of current.events) eventsBySequence.set(event.sequence, event)
+  for (const event of incoming.events) eventsBySequence.set(event.sequence, event)
+  const events = [...eventsBySequence.values()]
+    .filter(event => (
+      event.sequence <= incoming.last_sequence
+      && (truncatedBeforeSequence === null || event.sequence > truncatedBeforeSequence)
+    ))
+    .sort((left, right) => left.sequence - right.sequence)
+
+  return {
+    ...incoming,
+    truncated_before_sequence: truncatedBeforeSequence,
+    events,
+  }
+}
+
+const TOOL_ACTIVITY_LABELS: Record<PiAgentToolName, string> = {
+  read: 'Read',
+  edit: 'Edit',
+  write: 'Write',
+  grep: 'Search',
+  find: 'Find',
+  ls: 'List',
+}
+
+function toolActivityLabel(event: LlmEditProgressEvent) {
+  if (!event.tool_name) return ''
+  const action = TOOL_ACTIVITY_LABELS[event.tool_name]
+  if (event.kind === 'tool_started') return `${action} started`
+  return `${action} ${event.is_error ? 'failed' : 'completed'}`
+}
+
+function ProgressActivity({
+  progress,
+  active,
+}: {
+  progress: LlmEditProgressSnapshot
+  active: boolean
+}) {
+  const setInitialDetailsState = useCallback((node: HTMLDetailsElement | null) => {
+    if (node && active) node.open = true
+  }, [active])
+  if (progress.events.length === 0) return null
+  const latestEvent = progress.events.at(-1)
+  const latestLabel = latestEvent?.kind === 'reasoning_delta'
+    ? 'Reasoning updated'
+    : latestEvent ? toolActivityLabel(latestEvent) : ''
+  return (
+    <>
+      {active && latestLabel && (
+        <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          AI activity updated: {progress.events.length} {progress.events.length === 1 ? 'event' : 'events'}. Latest: {latestLabel}. Sequence: {progress.last_sequence}.
+        </p>
+      )}
+      <details ref={setInitialDetailsState} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
+        <summary className="cursor-pointer select-none font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+          <span>Activity</span>
+          <span className="ml-2 text-slate-300">{progress.events.length}</span>
+        </summary>
+        <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
+          {progress.truncated_before_sequence !== null && (
+            <li className="relative text-[11px] leading-4 text-slate-300">
+              <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
+              Earlier activity was truncated.
+            </li>
+          )}
+          {progress.events.map(event => (
+            <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
+              <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
+                event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
+              }`} />
+              {event.kind === 'reasoning_delta' ? (
+                <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
+              ) : (
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
+                    {toolActivityLabel(event)}
+                  </span>
+                  {event.target && (
+                    <code className="min-w-0 break-all font-mono text-[10px] text-slate-300">
+                      {event.target}
+                    </code>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+      </details>
+    </>
+  )
 }
 
 export function GenerateDesignWindow({
@@ -326,6 +452,8 @@ export function GenerateDesignWindow({
           repairJobId: isCompileRepairEntry(entry) ? entry.job_id : undefined,
           compileJobId: compile?.job_id,
           repairAttempted: isCompileRepairEntry(entry),
+          progress: entry.progress || undefined,
+          progressActive: isNonTerminalStatus(entry.status),
         },
       ]
     })
@@ -677,6 +805,13 @@ export function GenerateDesignWindow({
       if (llmEditRequestRef.current.get(jobId) !== requestId || activeProjectRef.current !== projectName) return
       try {
         const response = await storage.getLlmFileEditJob(projectName, jobId)
+        updateAssistantMessage(assistantMessageId, current => ({
+          ...current,
+          progress: response.progress
+            ? mergeProgressSnapshot(current.progress, response.progress)
+            : current.progress,
+          progressActive: isNonTerminalStatus(response.status),
+        }))
         if (response.status === 'succeeded') {
           if (!response.result) {
             updateAssistantMessage(assistantMessageId, current => ({
@@ -991,33 +1126,49 @@ export function GenerateDesignWindow({
               </div>
             ) : (
               <div className="space-y-3">
-                {messages.map(message => (
-                  <button
-                    key={message.id}
-                    type="button"
-                    onClick={() => setSelectedMessageId(message.id)}
-                    className={`block w-full rounded border p-3 text-left transition-colors ${
-                      selectedMessageId === message.id
-                        ? 'border-cyan-700 bg-cyan-950/30'
-                        : 'border-slate-800 bg-slate-900/50 hover:bg-slate-900'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
-                        {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
-                      </span>
-                      {message.compileStatus && (
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
+                {messages.map(message => {
+                  const hasActivity = message.role === 'assistant' && Boolean(message.progress?.events.length)
+                  return (
+                    <div
+                      key={message.id}
+                      className={`overflow-hidden rounded border transition-colors ${
+                        selectedMessageId === message.id
+                          ? 'border-cyan-700 bg-cyan-950/30'
+                          : 'border-slate-800 bg-slate-900/50'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMessageId(message.id)}
+                        className={`block w-full p-3 text-left transition-colors ${
+                          selectedMessageId === message.id ? '' : 'hover:bg-slate-900'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
+                            {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
+                          </span>
+                          {message.compileStatus && (
+                            <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
+                          )}
+                        </div>
+                        <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
+                        {(message.model || message.usage) && (
+                          <div className="mt-2 font-mono text-[10px] text-slate-500">
+                            {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
+                          </div>
+                        )}
+                      </button>
+                      {hasActivity && message.progress && (
+                        <ProgressActivity
+                          key={`${message.progress.execution_id}:${message.progressActive ? 'active' : 'terminal'}`}
+                          progress={message.progress}
+                          active={Boolean(message.progressActive)}
+                        />
                       )}
                     </div>
-                    <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
-                    {(message.model || message.usage) && (
-                      <div className="mt-2 font-mono text-[10px] text-slate-500">
-                        {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
-                      </div>
-                    )}
-                  </button>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>

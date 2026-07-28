@@ -1,13 +1,17 @@
 import socket
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 
 from core.llm_file_edit import TokenUsage
 from core.models import LlmEditJob, ProjectFile
 from core.pi_agent_conversation import render_conversation_context
-from core.pi_agent_messages import PiAgentConversationContext
+from core.pi_agent_messages import (
+    PiAgentConversationContext,
+    PiAgentProgressEvent,
+    PiAgentProgressSnapshot,
+)
 from core.pi_agent_prompt import PiAgentPromptError, load_pi_agent_prompt, render_pi_agent_user_prompt
 from workflows.intus import intus_server
 
@@ -25,6 +29,25 @@ def enable_pi(monkeypatch):
 
 def design_file(db_session, seeded_tenant):
     return db_session.scalar(select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id))
+
+
+def progress_snapshot(text: str = "Inspecting the design") -> dict:
+    now = datetime.now(timezone.utc)
+    return PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=uuid4(),
+        execution_started_at=now,
+        last_batch_sequence=1,
+        last_sequence=1,
+        events=[
+            PiAgentProgressEvent(
+                sequence=1,
+                kind="reasoning_delta",
+                text=text,
+                occurred_at=now,
+            )
+        ],
+    ).model_dump(mode="json")
 
 
 def test_list_files_includes_metadata(authenticated_intus_client):
@@ -443,10 +466,197 @@ def test_project_with_active_job_rejects_second_submit(authenticated_intus_clien
     assert response.status_code == 409
 
 
-def test_job_status_preserves_public_contract(authenticated_intus_client, db_session, seeded_tenant):
-    job = LlmEditJob(tenant_id=seeded_tenant.tenant_id, project_id=seeded_tenant.project_id, requested_by=seeded_tenant.user_id, status="running", request_payload={"prompt": "working", "files": []})
+def test_job_status_preserves_public_contract_and_returns_validated_progress(
+    authenticated_intus_client, db_session, seeded_tenant
+):
+    running_progress = progress_snapshot()
+    terminal_progress = progress_snapshot("Finished inspecting the design")
+    running_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        request_payload={"prompt": "working", "files": []},
+        progress_payload=running_progress,
+    )
+    terminal_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "done", "files": []},
+        result_payload={"outcome": "no_changes"},
+        progress_payload=terminal_progress,
+    )
+    db_session.add_all([running_job, terminal_job])
+    db_session.commit()
+
+    for job, expected_progress in (
+        (running_job, running_progress),
+        (terminal_job, terminal_progress),
+    ):
+        response = authenticated_intus_client.get(
+            f"/projects/default_purlin/files/llm-edit/jobs/{job.id}"
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == job.status
+        assert payload["progress"] == expected_progress
+        assert {
+            "job_id",
+            "status",
+            "result",
+            "error",
+            "error_code",
+            "user_message",
+            "retryable",
+            "created_at",
+            "finished_at",
+        } <= payload.keys()
+
+
+def test_terminal_history_retains_progress_across_reload(
+    authenticated_intus_client, db_session, seeded_tenant
+):
+    snapshot = progress_snapshot()
+    job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "Inspect", "files": []},
+        result_payload={"outcome": "no_changes"},
+        progress_payload=snapshot,
+    )
     db_session.add(job)
     db_session.commit()
-    response = authenticated_intus_client.get(f"/projects/default_purlin/files/llm-edit/jobs/{job.id}")
-    assert response.status_code == 200
-    assert response.json()["status"] == "running"
+
+    route = "/projects/default_purlin/files/llm-edit/jobs"
+    first = authenticated_intus_client.get(route)
+    second = authenticated_intus_client.get(route)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_entry = next(
+        message
+        for message in first.json()["messages"]
+        if message["job_id"] == str(job.id)
+    )
+    second_entry = next(
+        message
+        for message in second.json()["messages"]
+        if message["job_id"] == str(job.id)
+    )
+    assert first_entry["progress"] == snapshot
+    assert second_entry["progress"] == snapshot
+
+
+def test_terminal_history_compacts_progress_without_changing_status_snapshot(
+    authenticated_intus_client, db_session, seeded_tenant
+):
+    now = datetime.now(timezone.utc)
+    events = [
+        PiAgentProgressEvent(
+            sequence=sequence,
+            kind="reasoning_delta",
+            text=f"Reasoning {sequence}: " + ("x" * 400),
+            occurred_at=now,
+        )
+        for sequence in range(1, 13)
+    ]
+    snapshot = PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=uuid4(),
+        execution_started_at=now,
+        last_batch_sequence=3,
+        last_sequence=12,
+        events=events,
+    )
+    job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="succeeded",
+        request_payload={"prompt": "Inspect", "files": []},
+        result_payload={"outcome": "no_changes"},
+        progress_payload=snapshot.model_dump(mode="json"),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    status = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{job.id}"
+    )
+    history = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs"
+    )
+
+    assert status.status_code == 200
+    assert status.json()["progress"] == snapshot.model_dump(mode="json")
+    history_entry = next(
+        message
+        for message in history.json()["messages"]
+        if message["job_id"] == str(job.id)
+    )
+    preview = PiAgentProgressSnapshot.model_validate(history_entry["progress"])
+    assert [event.sequence for event in preview.events] == list(range(5, 13))
+    assert preview.truncated_before_sequence == 4
+    assert preview.execution_id == snapshot.execution_id
+    assert preview.execution_started_at == snapshot.execution_started_at
+    assert preview.last_batch_sequence == snapshot.last_batch_sequence
+    assert preview.last_sequence == snapshot.last_sequence
+    assert all(
+        event.text is not None and len(event.text) <= 240
+        for event in preview.events
+        if event.kind == "reasoning_delta"
+    )
+    assert preview.events[-1].text == events[-1].text[:240]
+
+
+def test_legacy_and_malformed_progress_are_not_exposed(
+    authenticated_intus_client, db_session, seeded_tenant
+):
+    legacy_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        request_payload={"prompt": "Legacy", "files": []},
+        progress_payload={},
+    )
+    malformed_job = LlmEditJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="failed",
+        request_payload={"prompt": "Malformed", "files": []},
+        progress_payload={
+            "schema_version": 99,
+            "unsafe_raw_tool_output": "MALFORMED_PROGRESS_SENTINEL",
+        },
+    )
+    db_session.add_all([legacy_job, malformed_job])
+    db_session.commit()
+
+    legacy = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{legacy_job.id}"
+    )
+    malformed = authenticated_intus_client.get(
+        f"/projects/default_purlin/files/llm-edit/jobs/{malformed_job.id}"
+    )
+    history = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs"
+    )
+
+    assert legacy.status_code == 200
+    assert legacy.json()["progress"] is None
+    assert malformed.status_code == 200
+    assert malformed.json()["progress"] is None
+    assert "MALFORMED_PROGRESS_SENTINEL" not in malformed.text
+    malformed_history = next(
+        message
+        for message in history.json()["messages"]
+        if message["job_id"] == str(malformed_job.id)
+    )
+    assert malformed_history["progress"] is None
+    assert "MALFORMED_PROGRESS_SENTINEL" not in history.text

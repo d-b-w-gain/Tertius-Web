@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { LlmEditProgressSnapshot } from '../shared/projectStorage'
 import { GenerateDesignWindow } from './GenerateDesignWindow'
 
 const storage = vi.hoisted(() => ({
@@ -75,6 +76,31 @@ function jsonResponse(data: unknown, ok = true) {
 
 function openGenerateDesignConversation() {
   fireEvent.click(screen.getByRole('button', { name: 'Open Generate Design conversation' }))
+}
+
+function piProgressSnapshot(
+  overrides: Partial<LlmEditProgressSnapshot> = {},
+): LlmEditProgressSnapshot {
+  return {
+    schema_version: 1,
+    execution_id: '7d364c43-45d4-4c66-9565-7885f65e6730',
+    execution_started_at: '2026-07-27T11:00:00Z',
+    last_batch_sequence: 1,
+    last_sequence: 1,
+    truncated_before_sequence: null,
+    events: [
+      {
+        sequence: 1,
+        kind: 'reasoning_delta',
+        text: 'Inspecting the model structure.',
+        tool_name: null,
+        target: null,
+        is_error: null,
+        occurred_at: '2026-07-27T11:00:01Z',
+      },
+    ],
+    ...overrides,
+  }
 }
 
 describe('GenerateDesignWindow', () => {
@@ -742,5 +768,196 @@ describe('GenerateDesignWindow', () => {
       expect(screen.getAllByText(/Compile failed: Compile failed. Fix the model source/).length).toBeGreaterThan(0)
     })
     expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
+  })
+
+  it('hydrates a compact terminal Activity log with safe labels and truncation notice', async () => {
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'llm-job-history-progress',
+        prompt: 'refine the bearing seat',
+        content: 'Updated 1 file.',
+        created_at: '2026-07-27T11:00:00Z',
+        status: 'succeeded',
+        progress: piProgressSnapshot({
+          last_batch_sequence: 4,
+          last_sequence: 16,
+          truncated_before_sequence: 12,
+          events: [
+            { sequence: 13, kind: 'reasoning_delta', text: 'Checking the wall thickness before applying the edit.', tool_name: null, target: null, is_error: null, occurred_at: '2026-07-27T11:00:01Z' },
+            { sequence: 14, kind: 'tool_started', text: null, tool_name: 'read', target: 'design.py', is_error: null, occurred_at: '2026-07-27T11:00:02Z' },
+            { sequence: 15, kind: 'tool_finished', text: null, tool_name: 'edit', target: 'design.py', is_error: false, occurred_at: '2026-07-27T11:00:03Z' },
+            { sequence: 16, kind: 'tool_finished', text: null, tool_name: 'write', target: 'parts/bearing.py', is_error: true, occurred_at: '2026-07-27T11:00:04Z' },
+          ],
+        }),
+        compile: null,
+      },
+    ])
+
+    render(<GenerateDesignWindow />)
+    openGenerateDesignConversation()
+
+    const activitySummary = await screen.findByText('Activity')
+    const details = activitySummary.closest('details')
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute('open')
+    const selectionButton = screen.getAllByText('Updated 1 file.')
+      .map(element => element.closest('button'))
+      .find(Boolean)
+    expect(selectionButton?.contains(details)).toBe(false)
+    fireEvent.click(activitySummary)
+
+    expect(screen.getByRole('list')).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(5)
+    expect(screen.getByText('Earlier activity was truncated.')).toBeInTheDocument()
+    expect(screen.getByText('Checking the wall thickness before applying the edit.')).toBeInTheDocument()
+    expect(screen.getByText('Read started')).toBeInTheDocument()
+    expect(screen.getByText('Edit completed')).toBeInTheDocument()
+    expect(screen.getByText('Write failed')).toBeInTheDocument()
+    const fullToolTarget = screen.getByText('parts/bearing.py')
+    expect(fullToolTarget).toBeInTheDocument()
+    expect(fullToolTarget).toHaveClass('break-all')
+    expect(fullToolTarget).not.toHaveClass('truncate')
+    expect(fullToolTarget).not.toHaveAttribute('title')
+    expect(details?.querySelector('[aria-live]')).toBeNull()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('announces capped active progress when the retained event count stays unchanged', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const cappedEvents = (startSequence: number) => Array.from({ length: 128 }, (_, index) => {
+      const sequence = startSequence + index
+      return {
+        sequence,
+        kind: 'tool_started' as const,
+        text: null,
+        tool_name: 'read' as const,
+        target: `private/part-${sequence}.py`,
+        is_error: null,
+        occurred_at: '2026-07-27T11:00:01Z',
+      }
+    })
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: piProgressSnapshot({
+          last_batch_sequence: 8,
+          last_sequence: 128,
+          events: cappedEvents(1),
+        }),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1',
+        status: 'running',
+        progress: piProgressSnapshot({
+          last_batch_sequence: 9,
+          last_sequence: 129,
+          truncated_before_sequence: 1,
+          events: cappedEvents(2),
+        }),
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'inspect the capped activity stream' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    await waitFor(() => expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'AI activity updated: 128 events. Latest: Read started. Sequence: 128.',
+    )
+    expect(screen.getByRole('status')).not.toHaveTextContent('private/part-128.py')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'AI activity updated: 128 events. Latest: Read started. Sequence: 129.',
+    )
+    expect(screen.getByRole('status')).not.toHaveTextContent('private/part-129.py')
+  })
+
+  it('merges polling snapshots, resets newer executions, ignores stale data, and collapses terminal Activity', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const firstExecution = '7d364c43-45d4-4c66-9565-7885f65e6730'
+    const secondExecution = '503ecbd5-6c5a-4564-88df-456ab503a207'
+    storage.getLlmFileEditJob
+      .mockResolvedValueOnce({ job_id: 'llm-job-1', status: 'running', progress: piProgressSnapshot({ execution_id: firstExecution }) })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1', status: 'running', progress: piProgressSnapshot({
+          execution_id: firstExecution, last_batch_sequence: 2, last_sequence: 2,
+          events: [{ sequence: 2, kind: 'tool_started', text: null, tool_name: 'read', target: 'design.py', is_error: null, occurred_at: '2026-07-27T11:00:02Z' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1', status: 'running', progress: piProgressSnapshot({
+          execution_id: firstExecution,
+          events: [{ sequence: 1, kind: 'reasoning_delta', text: 'This stale snapshot must be ignored.', tool_name: null, target: null, is_error: null, occurred_at: '2026-07-27T11:00:01Z' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1', status: 'running', progress: piProgressSnapshot({
+          execution_id: secondExecution, execution_started_at: '2026-07-27T11:10:00Z',
+          events: [{ sequence: 1, kind: 'reasoning_delta', text: 'Fresh execution reasoning.', tool_name: null, target: null, is_error: null, occurred_at: '2026-07-27T11:10:01Z' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        job_id: 'llm-job-1', status: 'succeeded',
+        progress: piProgressSnapshot({
+          execution_id: secondExecution, execution_started_at: '2026-07-27T11:10:00Z', last_batch_sequence: 2, last_sequence: 2,
+          events: [
+            { sequence: 1, kind: 'reasoning_delta', text: 'Fresh execution reasoning.', tool_name: null, target: null, is_error: null, occurred_at: '2026-07-27T11:10:01Z' },
+            { sequence: 2, kind: 'tool_finished', text: null, tool_name: 'write', target: 'design.py', is_error: true, occurred_at: '2026-07-27T11:10:02Z' },
+          ],
+        }),
+        result: {
+          success: true, outcome: 'no_change', message: 'No edits needed.', model: 'test-model',
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }, snapshot: null, files: [],
+        },
+      })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), { target: { value: 'inspect and refine the model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Design' }))
+    await waitFor(() => expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    let details = screen.getByText('Activity').closest('details')
+    expect(details).toHaveAttribute('open')
+    expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('AI activity updated: 1 event. Latest: Reasoning updated.')
+    expect(screen.getByRole('status')).not.toHaveTextContent('Inspecting the model structure.')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(screen.getByText('Read started')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('AI activity updated: 2 events. Latest: Read started.')
+    expect(screen.getByRole('status')).not.toHaveTextContent('design.py')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(screen.queryByText('This stale snapshot must be ignored.')).not.toBeInTheDocument()
+    expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(screen.getByText('Fresh execution reasoning.')).toBeInTheDocument()
+    expect(screen.queryByText('Inspecting the model structure.')).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    await waitFor(() => expect(screen.getAllByText('No edits needed.').length).toBeGreaterThan(0))
+    details = screen.getByText('Activity').closest('details')
+    expect(details).not.toHaveAttribute('open')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Fresh execution reasoning.')).toHaveLength(1)
+    fireEvent.click(screen.getByText('Activity'))
+    expect(screen.getByText('Write failed')).toBeInTheDocument()
+  })
+
+  it('does not render Activity when an assistant turn has no progress events', async () => {
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      { job_id: 'llm-job-without-progress', prompt: 'keep this simple', content: 'No edits needed.', created_at: '2026-07-27T11:00:00Z', status: 'succeeded', progress: null, compile: null },
+    ])
+    render(<GenerateDesignWindow />)
+    openGenerateDesignConversation()
+    expect((await screen.findAllByText('No edits needed.')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Activity')).not.toBeInTheDocument()
   })
 })
