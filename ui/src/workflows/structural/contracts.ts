@@ -28,6 +28,35 @@ export type StructuralDesignBasis = {
   standards: Record<string, string>
 }
 
+export type StructuralWindActionBasis = {
+  id: string
+  site_address: string
+  latitude: number
+  longitude: number
+  region: string
+  region_area: string
+  region_source: string
+  region_approximate: boolean
+  region_status: 'suggested' | 'verified'
+  standard: string
+  table_version: string
+  table_status: 'starter' | 'verified'
+  importance_level: string
+  annual_recurrence_interval_years: number
+  terrain_category: string
+  reference_height_m: number
+  regional_wind_speed_m_s: number
+  climate_change_multiplier: number
+  direction_multiplier: number
+  terrain_height_multiplier: number
+  shielding_multiplier: number
+  topographic_multiplier: number
+  site_wind_speed_m_s: number
+  q_z_kPa: number
+  verifier_hash: string
+  provenance: string
+}
+
 export type CalculationInput = {
   symbol: string
   label: string
@@ -101,6 +130,9 @@ export type DesignSurfaceLoad = {
   area_m2: number
   direction: Vector3
   provenance: string
+  wind_basis_id: string | null
+  net_pressure_coefficient: number | null
+  coefficient_status: 'assumed' | 'verified' | null
 }
 
 export type DesignLoadPath = {
@@ -119,6 +151,7 @@ export type ProjectStructuralCapture = {
   title: string
   authoring_mode: 'legacy' | 'generated'
   design_basis: StructuralDesignBasis | null
+  wind_action_bases: StructuralWindActionBasis[]
   components: DesignComponent[]
   connections: DesignConnection[]
   loads: DesignSurfaceLoad[]
@@ -231,6 +264,7 @@ export type StructuralSnapshot = {
     design_hash: string | null
   }
   design_basis: StructuralDesignBasis | null
+  wind_action_bases: StructuralWindActionBasis[]
   units: {
     length: 'm'
     force: 'kN'

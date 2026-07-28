@@ -363,6 +363,35 @@ class DesignConnection(StructuralContract):
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
 
 
+class StructuralWindActionBasis(StructuralContract):
+    id: str
+    site_address: str
+    latitude: float
+    longitude: float
+    region: str
+    region_area: str
+    region_source: str
+    region_approximate: bool = True
+    region_status: Literal["suggested", "verified"]
+    standard: str
+    table_version: str
+    table_status: Literal["starter", "verified"]
+    importance_level: str
+    annual_recurrence_interval_years: int
+    terrain_category: str
+    reference_height_m: float
+    regional_wind_speed_m_s: float
+    climate_change_multiplier: float
+    direction_multiplier: float
+    terrain_height_multiplier: float
+    shielding_multiplier: float
+    topographic_multiplier: float
+    site_wind_speed_m_s: float
+    q_z_kPa: float
+    verifier_hash: str
+    provenance: str
+
+
 class DesignSurfaceLoad(StructuralContract):
     id: str
     label: str
@@ -373,6 +402,9 @@ class DesignSurfaceLoad(StructuralContract):
     area_m2: float
     direction: Vector3
     provenance: str
+    wind_basis_id: str | None = None
+    net_pressure_coefficient: float | None = None
+    coefficient_status: Literal["assumed", "verified"] | None = None
 
 
 class DesignLoadPath(StructuralContract):
@@ -402,6 +434,7 @@ class ProjectStructuralCapture(StructuralContract):
     title: str
     authoring_mode: Literal["legacy", "generated"]
     design_basis: StructuralDesignBasis | None = None
+    wind_action_bases: list[StructuralWindActionBasis] = Field(default_factory=list)
     components: list[DesignComponent]
     connections: list[DesignConnection]
     loads: list[DesignSurfaceLoad]
@@ -415,6 +448,10 @@ class ProjectStructuralCapture(StructuralContract):
         component_ids = _unique_ids("components", self.components)
         _unique_ids("connections", self.connections)
         _unique_ids("loads", self.loads)
+        wind_basis_ids = _unique_ids("wind action bases", self.wind_action_bases)
+        wind_bases_by_id = {
+            basis.id: basis for basis in self.wind_action_bases
+        }
 
         for connection in self.connections:
             _require_reference(
@@ -446,6 +483,33 @@ class ProjectStructuralCapture(StructuralContract):
                 raise ValueError(f"load {load.id!r} must have non-zero pressure")
             if load.direction == Vector3(x=0, y=0, z=0):
                 raise ValueError(f"load {load.id!r} must have a non-zero direction")
+            if load.wind_basis_id is not None:
+                _require_reference(
+                    "load wind action basis",
+                    load.wind_basis_id,
+                    wind_basis_ids,
+                )
+                if load.case != "wind":
+                    raise ValueError(
+                        f"load {load.id!r} references a wind basis but is not wind"
+                    )
+                if load.net_pressure_coefficient is None:
+                    raise ValueError(
+                        f"load {load.id!r} must declare its net pressure coefficient"
+                    )
+                if load.coefficient_status is None:
+                    raise ValueError(
+                        f"load {load.id!r} must declare its coefficient status"
+                    )
+                expected_pressure = (
+                    wind_bases_by_id[load.wind_basis_id].q_z_kPa
+                    * abs(load.net_pressure_coefficient)
+                )
+                if abs(load.pressure_kPa - expected_pressure) > 1e-6:
+                    raise ValueError(
+                        f"load {load.id!r} pressure does not equal q_z times "
+                        "its net pressure coefficient"
+                    )
 
         for path in self.load_paths:
             _require_reference("load path load", path.load_id, load_ids)
@@ -620,6 +684,7 @@ class StructuralSnapshot(StructuralContract):
     subtitle: str
     source: SnapshotSource
     design_basis: StructuralDesignBasis | None = None
+    wind_action_bases: list[StructuralWindActionBasis] = Field(default_factory=list)
     units: StructuralUnits = Field(default_factory=StructuralUnits)
     nodes: list[StructuralNode]
     members: list[StructuralMember]

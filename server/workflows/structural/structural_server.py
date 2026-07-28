@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -24,10 +25,33 @@ from core.structural.project_analysis import (
     StructuralAnalysisError,
     solve_project_structural,
 )
+from core.structural.site_wind import (
+    REGION_SOURCE,
+    REGION_VERIFY_AGAINST,
+    SiteWindError,
+    compute_site_wind,
+    lookup_wind_region,
+    wind_region_geojson,
+)
 from core.models import Artifact, Project, UserWorkspaceState
 from core.repositories import ProjectRepository
 
 app = FastAPI(title="Tertius Structural Design Workbench")
+
+
+class WindSiteRequest(BaseModel):
+    site_address: str
+    latitude: float
+    longitude: float
+    region: str = ""
+    terrain_category: str
+    importance_level: str = "2"
+    annual_probability_uls: str = "1/500"
+    reference_height_m: float
+    direction_multiplier: float = 1.0
+    shielding_multiplier: float = 1.0
+    topographic_multiplier: float = 1.0
+    climate_change_multiplier: float | None = None
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -129,6 +153,102 @@ def get_active_analysis(
         )
     except StructuralAnalysisError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/wind/region")
+def get_wind_region(
+    latitude: float,
+    longitude: float,
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        result = lookup_wind_region(
+            latitude=latitude,
+            longitude=longitude,
+        )
+    except SiteWindError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is not None:
+        return result
+    return {
+        "region": None,
+        "area": None,
+        "approximate": True,
+        "source": REGION_SOURCE,
+        "verify_against": REGION_VERIFY_AGAINST,
+        "detail": "Coordinates are outside the deployed Australian region overlay.",
+    }
+
+
+@app.get("/wind/regions.geojson")
+def get_wind_regions_geojson(
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        return JSONResponse(content=wind_region_geojson())
+    except SiteWindError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/wind/site")
+def calculate_site_wind(
+    request: WindSiteRequest,
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        suggested = lookup_wind_region(
+            latitude=request.latitude,
+            longitude=request.longitude,
+        )
+        selected_region = request.region.strip().upper()
+        if not selected_region:
+            if suggested is None or not suggested.get("region"):
+                raise SiteWindError(
+                    "site coordinates do not resolve to a wind region; "
+                    "select one manually"
+                )
+            selected_region = str(suggested["region"])
+        calculation = compute_site_wind(
+            region=selected_region,
+            terrain_category=request.terrain_category,
+            importance_level=request.importance_level,
+            annual_probability_uls=request.annual_probability_uls,
+            reference_height_m=request.reference_height_m,
+            direction_multiplier=request.direction_multiplier,
+            shielding_multiplier=request.shielding_multiplier,
+            topographic_multiplier=request.topographic_multiplier,
+            climate_change_multiplier=request.climate_change_multiplier,
+        )
+    except SiteWindError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    suggested_region = (
+        str(suggested.get("region"))
+        if suggested is not None and suggested.get("region")
+        else None
+    )
+    return {
+        "site_address": request.site_address,
+        "latitude": request.latitude,
+        "longitude": request.longitude,
+        "region_area": (
+            str(suggested.get("area") or "") if suggested is not None else ""
+        ),
+        "region_source": REGION_SOURCE,
+        "region_approximate": True,
+        "region_status": "suggested",
+        "suggested_region": suggested_region,
+        "selected_region": selected_region,
+        "region_conflict": bool(
+            suggested_region and suggested_region != selected_region
+        ),
+        "region_detail": (
+            suggested.get("detail")
+            if suggested is not None
+            else "No overlay suggestion is available."
+        ),
+        **calculation,
+    }
 
 
 @app.get("/fixture/cantilever", response_model=StructuralSnapshot)

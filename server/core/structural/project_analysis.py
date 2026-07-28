@@ -31,6 +31,7 @@ from .contracts import (
     Vector3,
     VerificationStage,
 )
+from .site_wind import verify_site_wind_snapshot
 
 DEFAULT_COMBINATION_ID = "SLS-1.0"
 STATION_INTERVALS = 32
@@ -379,7 +380,95 @@ def _p399_evidence(
         for declaration in analysis.members
     ]
     action_equations: list[CalculationEquation] = []
+    action_inputs: list[CalculationInput] = []
+    wind_bases_by_id = {
+        wind_basis.id: wind_basis for wind_basis in capture.wind_action_bases
+    }
+    for wind_basis in capture.wind_action_bases:
+        action_inputs.extend(
+            [
+                CalculationInput(
+                    symbol=f"site,{wind_basis.id}",
+                    label="Site",
+                    value=wind_basis.site_address,
+                    source="design.py StructuralModel.wind_action_basis",
+                ),
+                CalculationInput(
+                    symbol=f"region,{wind_basis.id}",
+                    label="Wind region",
+                    value=(
+                        f"{wind_basis.region} — {wind_basis.region_area} "
+                        f"({wind_basis.region_status})"
+                    ),
+                    source=wind_basis.region_source,
+                ),
+                CalculationInput(
+                    symbol=f"TC,{wind_basis.id}",
+                    label="Terrain category",
+                    value=wind_basis.terrain_category,
+                    source="design.py site wind input",
+                ),
+                CalculationInput(
+                    symbol=f"R,{wind_basis.id}",
+                    label="Annual recurrence interval",
+                    value=wind_basis.annual_recurrence_interval_years,
+                    unit="years",
+                    source="design.py site wind input",
+                ),
+                CalculationInput(
+                    symbol=f"z,{wind_basis.id}",
+                    label="Reference height",
+                    value=wind_basis.reference_height_m,
+                    unit="m",
+                    source="design.py site wind input",
+                ),
+            ]
+        )
+        action_equations.extend(
+            [
+                CalculationEquation(
+                    label=f"{wind_basis.id} site wind speed",
+                    expression="V_sit = V_R M_c M_d M_z,cat M_s M_t",
+                    substitution=(
+                        f"{wind_basis.regional_wind_speed_m_s:g} × "
+                        f"{wind_basis.climate_change_multiplier:g} × "
+                        f"{wind_basis.direction_multiplier:g} × "
+                        f"{wind_basis.terrain_height_multiplier:g} × "
+                        f"{wind_basis.shielding_multiplier:g} × "
+                        f"{wind_basis.topographic_multiplier:g}"
+                    ),
+                    result=wind_basis.site_wind_speed_m_s,
+                    unit="m/s",
+                ),
+                CalculationEquation(
+                    label=f"{wind_basis.id} free-stream dynamic pressure",
+                    expression="q_z = 0.5 ρ V_sit²",
+                    substitution=(
+                        f"0.5 × 1.2 × {wind_basis.site_wind_speed_m_s:g}² / 1000"
+                    ),
+                    result=wind_basis.q_z_kPa,
+                    unit="kPa",
+                ),
+            ]
+        )
     for load in capture.loads:
+        if (
+            load.wind_basis_id is not None
+            and load.net_pressure_coefficient is not None
+        ):
+            wind_basis = wind_bases_by_id[load.wind_basis_id]
+            action_equations.append(
+                CalculationEquation(
+                    label=f"{load.label} net surface pressure",
+                    expression="p_net = q_z |C_net|",
+                    substitution=(
+                        f"{wind_basis.q_z_kPa:g} × "
+                        f"|{load.net_pressure_coefficient:g}|"
+                    ),
+                    result=load.pressure_kPa,
+                    unit="kPa",
+                )
+            )
         action_equations.append(
             CalculationEquation(
                 label=f"{load.label} resultant",
@@ -487,6 +576,85 @@ def _p399_evidence(
         "confirm" not in reference.lower() and "not yet active" not in reference.lower()
         for reference in action_standard_references
     )
+    wind_surface_loads = [
+        load for load in capture.loads if load.case == "wind"
+    ]
+    wind_basis_drift = {
+        basis.id: verify_site_wind_snapshot(basis.model_dump())
+        for basis in capture.wind_action_bases
+    }
+    unlinked_wind_loads = [
+        load.id
+        for load in wind_surface_loads
+        if load.wind_basis_id is None
+    ]
+    unverified_wind_bases = [
+        basis.id
+        for basis in capture.wind_action_bases
+        if basis.region_status != "verified"
+        or basis.table_status != "verified"
+        or wind_basis_drift[basis.id]
+    ]
+    assumed_wind_coefficients = [
+        load.id
+        for load in wind_surface_loads
+        if load.coefficient_status != "verified"
+    ]
+    wind_actions_ready = (
+        not wind_surface_loads
+        or (
+            bool(capture.wind_action_bases)
+            and not unlinked_wind_loads
+            and not unverified_wind_bases
+            and not assumed_wind_coefficients
+        )
+    )
+    action_basis_ready = action_basis_ready and wind_actions_ready
+    action_assumptions = [
+        *(
+            [
+                "The project action standard references still require confirmation."
+            ]
+            if not action_standard_references
+            or any(
+                "confirm" in reference.lower()
+                or "not yet active" in reference.lower()
+                for reference in action_standard_references
+            )
+            else []
+        ),
+        *(
+            [
+                "Wind loads are not linked to a design.py wind action basis: "
+                + ", ".join(unlinked_wind_loads)
+            ]
+            if unlinked_wind_loads
+            else []
+        ),
+        *(
+            [
+                "Wind site/table verification remains outstanding for: "
+                + ", ".join(unverified_wind_bases)
+            ]
+            if unverified_wind_bases
+            else []
+        ),
+        *(
+            [
+                "Net surface pressure coefficients remain assumed for: "
+                + ", ".join(assumed_wind_coefficients)
+            ]
+            if assumed_wind_coefficients
+            else []
+        ),
+        *(
+            [
+                f"{basis_id}: {message}"
+                for basis_id, messages in wind_basis_drift.items()
+                for message in messages
+            ]
+        ),
+    ]
     actions_status: Literal["pass", "warning", "blocked"] = (
         "blocked"
         if not action_equations or basis is None
@@ -646,13 +814,21 @@ def _p399_evidence(
             assumptions=(
                 []
                 if actions_status == "pass"
-                else [
+                else action_assumptions
+                or [
                     "The authored actions remain illustrative until the project/site "
                     "Australian action inputs are confirmed."
                 ]
             ),
+            inputs=action_inputs,
             equations=action_equations,
-            references=basis_references,
+            references=[
+                *basis_references,
+                *(
+                    f"{basis.id}: {basis.provenance}"
+                    for basis in capture.wind_action_bases
+                ),
+            ],
             related_member_ids=member_ids,
             related_load_case_ids=case_ids,
         ),
@@ -939,7 +1115,11 @@ def _p399_evidence(
             label="Actions",
             p399_reference="§4",
             status=actions_status,
-            summary=f"{len(action_equations)} authored action resultants traced.",
+            summary=(
+                f"{len(capture.wind_action_bases)} site basis/bases, "
+                f"{len(wind_surface_loads)} wind surface action(s), "
+                f"{len(action_equations)} trace equation(s)."
+            ),
             sheet_ids=["sheet-p399-actions"],
             blocking_stage_ids=[] if basis_status == "pass" else ["geometry"],
         ),
@@ -1628,10 +1808,16 @@ def solve_project_structural(
                 declaration.start,
                 _scaled(member_axis, equilibrium_line_load.start_distance_m),
             )
-            resultant, first_moment = _distributed_resultant(equilibrium_line_load)
+            resultant, line_first_moment = _distributed_resultant(
+                equilibrium_line_load
+            )
             _add(applied_force_sum, resultant, factor)
             _add(applied_moment_sum, _cross(segment_start, resultant), factor)
-            _add(applied_moment_sum, _cross(member_axis, first_moment), factor)
+            _add(
+                applied_moment_sum,
+                _cross(member_axis, line_first_moment),
+                factor,
+            )
         else:
             loaded_span = (
                 equilibrium_line_load.end_distance_m
@@ -1759,6 +1945,7 @@ def solve_project_structural(
             design_hash=capture.design_hash,
         ),
         design_basis=capture.design_basis,
+        wind_action_bases=capture.wind_action_bases,
         nodes=structural_nodes,
         members=structural_members,
         sections=analysis.sections,

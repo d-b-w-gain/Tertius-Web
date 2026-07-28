@@ -60,12 +60,25 @@ class StructuralSurfaceLoad:
     id: str
 
 
+@dataclass(frozen=True)
+class StructuralWindActionBasisSpec:
+    """A site wind snapshot consumed by one or more authored surface loads."""
+
+    id: str
+    q_z_kPa: float
+
+
 class StructuralModel:
     """Build a structural manifest from the same handles used to assemble CAD."""
 
     def __init__(self, *, title: str) -> None:
         self.title = _required_text("model title", title)
         self._design_basis: dict[str, Any] | None = None
+        self._wind_action_bases: list[dict[str, Any]] = []
+        self._wind_action_basis_handles: dict[
+            str,
+            StructuralWindActionBasisSpec,
+        ] = {}
         self._stability: dict[str, Any] | None = None
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
@@ -165,6 +178,139 @@ class StructuralModel:
             "base_stiffness_status": base_stiffness_status,
             "amplification_warning_ratio": warning_ratio,
         }
+
+    def wind_action_basis(
+        self,
+        *,
+        id: str,
+        site_address: str,
+        latitude: float,
+        longitude: float,
+        region: str,
+        region_area: str,
+        region_source: str,
+        region_approximate: bool,
+        region_status: Literal["suggested", "verified"],
+        standard: str,
+        table_version: str,
+        table_status: Literal["starter", "verified"],
+        importance_level: str,
+        annual_recurrence_interval_years: int,
+        terrain_category: str,
+        reference_height_m: float,
+        regional_wind_speed_m_s: float,
+        climate_change_multiplier: float,
+        direction_multiplier: float,
+        terrain_height_multiplier: float,
+        shielding_multiplier: float,
+        topographic_multiplier: float,
+        site_wind_speed_m_s: float,
+        q_z_kPa: float,
+        verifier_hash: str,
+        provenance: str,
+    ) -> StructuralWindActionBasisSpec:
+        """Register an immutable, externally derived site-wind snapshot.
+
+        The structural helper checks the dimensional arithmetic. The Tertius
+        backend additionally recomputes the snapshot against the named table
+        version before treating it as calculation evidence.
+        """
+
+        basis_id = _required_text("wind action basis ID", id)
+        if basis_id in self._wind_action_basis_handles:
+            raise StructuralAuthoringError(
+                f"wind action basis ID {basis_id!r} is already registered"
+            )
+        if region_status not in {"suggested", "verified"}:
+            raise StructuralAuthoringError(
+                "wind region status must be 'suggested' or 'verified'"
+            )
+        if table_status not in {"starter", "verified"}:
+            raise StructuralAuthoringError(
+                "wind table status must be 'starter' or 'verified'"
+            )
+        if int(annual_recurrence_interval_years) <= 0:
+            raise StructuralAuthoringError(
+                "wind annual recurrence interval must be positive"
+            )
+
+        multiplier_values = {
+            "climate_change_multiplier": float(climate_change_multiplier),
+            "direction_multiplier": float(direction_multiplier),
+            "terrain_height_multiplier": float(terrain_height_multiplier),
+            "shielding_multiplier": float(shielding_multiplier),
+            "topographic_multiplier": float(topographic_multiplier),
+        }
+        speed = float(regional_wind_speed_m_s)
+        site_speed = float(site_wind_speed_m_s)
+        pressure = float(q_z_kPa)
+        reference_height = float(reference_height_m)
+        if min(
+            speed,
+            site_speed,
+            pressure,
+            reference_height,
+            *multiplier_values.values(),
+        ) <= 0:
+            raise StructuralAuthoringError(
+                "wind speeds, pressure, height, and multipliers must be positive"
+            )
+        derived_site_speed = speed
+        for multiplier in multiplier_values.values():
+            derived_site_speed *= multiplier
+        if abs(derived_site_speed - site_speed) > 1e-6:
+            raise StructuralAuthoringError(
+                f"wind basis {basis_id!r} site speed does not match "
+                "V_R multiplied by its authored multipliers"
+            )
+        derived_pressure = 0.5 * 1.2 * site_speed**2 / 1000.0
+        if abs(derived_pressure - pressure) > 1e-6:
+            raise StructuralAuthoringError(
+                f"wind basis {basis_id!r} q_z does not match 0.5 rho V_sit^2"
+            )
+
+        value = {
+            "id": basis_id,
+            "site_address": _required_text("site address", site_address),
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "region": _required_text("wind region", region).upper(),
+            "region_area": str(region_area),
+            "region_source": _required_text("wind region source", region_source),
+            "region_approximate": bool(region_approximate),
+            "region_status": region_status,
+            "standard": _required_text("wind standard", standard),
+            "table_version": _required_text(
+                "wind table version",
+                table_version,
+            ),
+            "table_status": table_status,
+            "importance_level": _required_text(
+                "importance level",
+                importance_level,
+            ),
+            "annual_recurrence_interval_years": int(
+                annual_recurrence_interval_years
+            ),
+            "terrain_category": _required_text(
+                "terrain category",
+                terrain_category,
+            ),
+            "reference_height_m": reference_height,
+            "regional_wind_speed_m_s": speed,
+            **multiplier_values,
+            "site_wind_speed_m_s": site_speed,
+            "q_z_kPa": pressure,
+            "verifier_hash": _required_text(
+                "wind verifier hash",
+                verifier_hash,
+            ),
+            "provenance": _required_text("wind basis provenance", provenance),
+        }
+        handle = StructuralWindActionBasisSpec(id=basis_id, q_z_kPa=pressure)
+        self._wind_action_bases.append(value)
+        self._wind_action_basis_handles[basis_id] = handle
+        return handle
 
     def ground(
         self,
@@ -388,6 +534,59 @@ class StructuralModel:
         self._load_case_labels[resolved_case_id] = resolved_case_label
         handle = StructuralSurfaceLoad(id=load_id)
         self._surface_load_handles[load_id] = handle
+        return handle
+
+    def wind_surface_load(
+        self,
+        component: StructuralPart,
+        *,
+        basis: StructuralWindActionBasisSpec,
+        id: str,
+        label: str,
+        case_id: str,
+        case_label: str,
+        net_pressure_coefficient: float,
+        coefficient_status: Literal["assumed", "verified"],
+        area_m2: float,
+        direction: Sequence[float] | dict[str, float],
+        provenance: str,
+    ) -> StructuralSurfaceLoad:
+        registered_basis = self._wind_action_basis_handles.get(
+            getattr(basis, "id", "")
+        )
+        if registered_basis is not basis:
+            raise StructuralAuthoringError(
+                "wind surface loads accept registered wind-action basis handles only"
+            )
+        if coefficient_status not in {"assumed", "verified"}:
+            raise StructuralAuthoringError(
+                "wind coefficient status must be 'assumed' or 'verified'"
+            )
+        coefficient = float(net_pressure_coefficient)
+        if coefficient == 0:
+            raise StructuralAuthoringError(
+                "wind net pressure coefficient must be non-zero"
+            )
+        handle = self.surface_load(
+            component,
+            id=id,
+            label=label,
+            case="wind",
+            case_id=case_id,
+            case_label=case_label,
+            pressure_kPa=abs(coefficient) * basis.q_z_kPa,
+            area_m2=area_m2,
+            direction=direction,
+            provenance=provenance,
+        )
+        load = next(item for item in self._loads if item["id"] == handle.id)
+        load.update(
+            {
+                "wind_basis_id": basis.id,
+                "net_pressure_coefficient": coefficient,
+                "coefficient_status": coefficient_status,
+            }
+        )
         return handle
 
     def material(
@@ -1155,6 +1354,9 @@ class StructuralModel:
             "design_basis": (
                 dict(self._design_basis) if self._design_basis is not None else None
             ),
+            "wind_action_bases": [
+                dict(basis) for basis in self._wind_action_bases
+            ],
             "authoring": {
                 "mode": "generated",
                 "assembly_component_ids": list(self._assembled_ids),

@@ -85,6 +85,7 @@ const capture: ProjectStructuralCapture = {
     analysis_method: '3D first-order elastic frame analysis',
     standards: { wind: 'AS/NZS 1170.2 test mapping' },
   },
+  wind_action_bases: [],
   components: [
     {
       id: 'sheet',
@@ -172,6 +173,9 @@ const capture: ProjectStructuralCapture = {
       area_m2: 0.9144,
       direction: { x: 0, y: -1, z: 0 },
       provenance: 'Illustrative parser example',
+      wind_basis_id: null,
+      net_pressure_coefficient: null,
+      coefficient_status: null,
     },
   ],
   load_paths: [
@@ -214,6 +218,7 @@ const analysis: StructuralSnapshot = {
     design_hash: 'abc123',
   },
   design_basis: capture.design_basis,
+  wind_action_bases: capture.wind_action_bases,
   units: {
     length: 'm',
     force: 'kN',

@@ -14,6 +14,7 @@ import type {
   Vector3,
   VerificationStatus,
 } from './contracts'
+import { SiteWindPanel } from './SiteWindPanel'
 
 type StructuralWorkbenchProps = {
   isActive?: boolean
@@ -69,6 +70,8 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const captureRequestId = useRef(0)
   const serverUrl = resolveWorkflowServerUrl('structural', import.meta.env?.VITE_API_URL)
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
+  const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
+  const artusServerUrl = resolveWorkflowServerUrl('artus', import.meta.env?.VITE_API_URL)
 
   const loadCapture = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
@@ -333,6 +336,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     const payload = {
       source: analysis.source,
       design_basis: analysis.design_basis,
+      wind_action_bases: analysis.wind_action_bases,
       active_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
       verification_stages: analysis.verification_stages ?? [],
@@ -612,6 +616,17 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     </div>
                   )}
                 </section>
+              )}
+
+              {selectedCalculationSheet?.stage_id === 'actions' && (
+                <SiteWindPanel
+                  capture={capture}
+                  serverUrl={serverUrl}
+                  intusServerUrl={intusServerUrl}
+                  artusServerUrl={artusServerUrl}
+                  getAccessToken={getAccessToken}
+                  onCompiled={loadCapture}
+                />
               )}
 
               <section>

@@ -93,3 +93,52 @@ def test_structural_fixture_api_returns_contract_and_binary_model():
     assert model_response.status_code == 200
     assert model_response.headers["content-type"] == "model/gltf-binary"
     assert model_response.content[:4] == b"glTF"
+
+
+def test_structural_site_picker_exposes_region_conflict_and_qz_derivation():
+    context = AuthContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        keycloak_subject="structural-site-test",
+        email="test@example.com",
+    )
+    structural_app.dependency_overrides[get_auth_context] = lambda: context
+    try:
+        with TestClient(structural_app) as client:
+            region_response = client.get(
+                "/wind/region",
+                params={
+                    "latitude": -34.4125046,
+                    "longitude": 150.8885637,
+                },
+            )
+            site_response = client.post(
+                "/wind/site",
+                json={
+                    "site_address": "14 Porter St, North Wollongong NSW 2500",
+                    "latitude": -34.4125046,
+                    "longitude": 150.8885637,
+                    "region": "C",
+                    "terrain_category": "3",
+                    "importance_level": "2",
+                    "annual_probability_uls": "1/500",
+                    "reference_height_m": 1.6,
+                    "direction_multiplier": 1.0,
+                    "shielding_multiplier": 1.0,
+                    "topographic_multiplier": 1.0,
+                },
+            )
+            overlay_response = client.get("/wind/regions.geojson")
+    finally:
+        structural_app.dependency_overrides.clear()
+
+    assert region_response.status_code == 200
+    assert region_response.json()["region"] == "A2"
+    assert site_response.status_code == 200
+    payload = site_response.json()
+    assert payload["selected_region"] == "C"
+    assert payload["suggested_region"] == "A2"
+    assert payload["region_conflict"] is True
+    assert payload["q_z_kPa"] == pytest.approx(1.62084)
+    assert overlay_response.status_code == 200
+    assert overlay_response.json()["type"] == "FeatureCollection"

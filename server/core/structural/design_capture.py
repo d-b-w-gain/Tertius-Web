@@ -18,7 +18,9 @@ from .contracts import (
     DesignSurfaceLoad,
     ProjectStructuralCapture,
     StructuralDesignBasis,
+    StructuralWindActionBasis,
 )
+from .site_wind import verify_site_wind_snapshot
 
 DECLARATION_NAME = "TERTIUS_STRUCTURAL"
 _COMPONENT_METHOD_KINDS = {
@@ -75,6 +77,7 @@ class _GeneratedModel:
     name: str
     title: str
     design_basis: dict[str, Any] | None = None
+    wind_action_bases: list[dict[str, Any]] = field(default_factory=list)
     stability: dict[str, Any] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
@@ -110,6 +113,7 @@ class _GeneratedModel:
         return {
             "title": self.title,
             "design_basis": self.design_basis,
+            "wind_action_bases": self.wind_action_bases,
             "authoring": {
                 "mode": "generated",
                 "assembly_component_ids": list(self.assembled_component_ids),
@@ -285,6 +289,97 @@ def _restraints_value(value: Any) -> dict[str, bool]:
     )
 
 
+_WIND_BASIS_FIELDS = {
+    "id",
+    "site_address",
+    "latitude",
+    "longitude",
+    "region",
+    "region_area",
+    "region_source",
+    "region_approximate",
+    "region_status",
+    "standard",
+    "table_version",
+    "table_status",
+    "importance_level",
+    "annual_recurrence_interval_years",
+    "terrain_category",
+    "reference_height_m",
+    "regional_wind_speed_m_s",
+    "climate_change_multiplier",
+    "direction_multiplier",
+    "terrain_height_multiplier",
+    "shielding_multiplier",
+    "topographic_multiplier",
+    "site_wind_speed_m_s",
+    "q_z_kPa",
+    "verifier_hash",
+    "provenance",
+}
+
+
+def _wind_basis_declaration(
+    keywords: dict[str, ast.AST],
+    names: dict[str, Any],
+) -> dict[str, Any]:
+    unexpected = sorted(set(keywords) - _WIND_BASIS_FIELDS)
+    if unexpected:
+        raise StructuralDeclarationError(
+            "StructuralModel.wind_action_basis(...) has unsupported keywords "
+            f"{unexpected}"
+        )
+    text_fields = {
+        "id",
+        "site_address",
+        "region",
+        "region_area",
+        "region_source",
+        "region_status",
+        "standard",
+        "table_version",
+        "table_status",
+        "importance_level",
+        "terrain_category",
+        "verifier_hash",
+        "provenance",
+    }
+    float_fields = {
+        "latitude",
+        "longitude",
+        "reference_height_m",
+        "regional_wind_speed_m_s",
+        "climate_change_multiplier",
+        "direction_multiplier",
+        "terrain_height_multiplier",
+        "shielding_multiplier",
+        "topographic_multiplier",
+        "site_wind_speed_m_s",
+        "q_z_kPa",
+    }
+    result: dict[str, Any] = {
+        field: str(_keyword_value(keywords, field, names))
+        for field in text_fields
+    }
+    result.update(
+        {
+            field: float(_keyword_value(keywords, field, names))
+            for field in float_fields
+        }
+    )
+    result["annual_recurrence_interval_years"] = int(
+        _keyword_value(
+            keywords,
+            "annual_recurrence_interval_years",
+            names,
+        )
+    )
+    result["region_approximate"] = bool(
+        _keyword_value(keywords, "region_approximate", names)
+    )
+    return result
+
+
 def _spec_handle(
     node: ast.AST,
     handles: dict[str, _SpecHandle],
@@ -312,6 +407,7 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
     material_handles: dict[str, _SpecHandle] = {}
     section_handles: dict[str, _SpecHandle] = {}
     surface_load_handles: dict[str, _SpecHandle] = {}
+    wind_basis_handles: dict[str, _SpecHandle] = {}
     legacy_declaration: dict[str, Any] | None = None
 
     for statement in tree.body:
@@ -534,6 +630,124 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                     section_handles[target_name] = _SpecHandle(
                         model_name=model_name,
                         id=section_id,
+                    )
+                    continue
+                if method == "wind_action_basis":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.wind_action_basis(...) accepts keywords only"
+                        )
+                    basis = _wind_basis_declaration(keywords, names)
+                    basis_id = basis["id"]
+                    if any(
+                        existing["id"] == basis_id
+                        for existing in model.wind_action_bases
+                    ):
+                        raise StructuralDeclarationError(
+                            "StructuralModel.wind_action_basis(...) repeats ID "
+                            f"{basis_id!r}"
+                        )
+                    model.wind_action_bases.append(basis)
+                    wind_basis_handles[target_name] = _SpecHandle(
+                        model_name=model_name,
+                        id=basis_id,
+                    )
+                    continue
+                if method == "wind_surface_load":
+                    if len(call.args) != 1:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.wind_surface_load(...) requires one "
+                            "surface handle"
+                        )
+                    allowed = {
+                        "basis",
+                        "id",
+                        "label",
+                        "case_id",
+                        "case_label",
+                        "net_pressure_coefficient",
+                        "coefficient_status",
+                        "area_m2",
+                        "direction",
+                        "provenance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.wind_surface_load(...) has unsupported "
+                            f"keywords {unexpected}"
+                        )
+                    loaded_component = _component_handle(
+                        call.args[0],
+                        handles,
+                        model_name=model_name,
+                        context="StructuralModel.wind_surface_load(...)",
+                    )
+                    basis_node = keywords.get("basis")
+                    if basis_node is None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.wind_surface_load(...) requires keyword "
+                            "'basis'"
+                        )
+                    basis_handle = _spec_handle(
+                        basis_node,
+                        wind_basis_handles,
+                        model_name=model_name,
+                        context="StructuralModel.wind_surface_load(...) basis",
+                    )
+                    basis = next(
+                        value
+                        for value in model.wind_action_bases
+                        if value["id"] == basis_handle.id
+                    )
+                    load_id = str(_keyword_value(keywords, "id", names))
+                    case_id = _load_case_id(
+                        str(_keyword_value(keywords, "case_id", names))
+                    )
+                    case_label = str(
+                        _keyword_value(keywords, "case_label", names)
+                    )
+                    coefficient = float(
+                        _keyword_value(
+                            keywords,
+                            "net_pressure_coefficient",
+                            names,
+                        )
+                    )
+                    model.loads.append(
+                        {
+                            "id": load_id,
+                            "label": str(_keyword_value(keywords, "label", names)),
+                            "case": "wind",
+                            "case_id": case_id,
+                            "component_id": loaded_component.component_id,
+                            "pressure_kPa": abs(coefficient)
+                            * float(basis["q_z_kPa"]),
+                            "area_m2": float(
+                                _keyword_value(keywords, "area_m2", names)
+                            ),
+                            "direction": _direction_value(
+                                _keyword_value(keywords, "direction", names)
+                            ),
+                            "provenance": str(
+                                _keyword_value(keywords, "provenance", names)
+                            ),
+                            "wind_basis_id": basis_handle.id,
+                            "net_pressure_coefficient": coefficient,
+                            "coefficient_status": str(
+                                _keyword_value(
+                                    keywords,
+                                    "coefficient_status",
+                                    names,
+                                )
+                            ),
+                        }
+                    )
+                    model.load_case_categories[case_id] = "wind"
+                    model.load_case_labels[case_id] = case_label
+                    surface_load_handles[target_name] = _SpecHandle(
+                        model_name=model_name,
+                        id=load_id,
                     )
                     continue
                 if method == "surface_load":
@@ -1690,6 +1904,10 @@ def capture_project_structural_declaration(
             DesignSurfaceLoad.model_validate(value)
             for value in declaration.get("loads", [])
         ]
+        wind_action_bases = [
+            StructuralWindActionBasis.model_validate(value)
+            for value in declaration.get("wind_action_bases", [])
+        ]
         analysis_value = declaration.get("analysis")
         design_basis_value = declaration.get("design_basis")
         design_basis = (
@@ -1706,6 +1924,11 @@ def capture_project_structural_declaration(
         raise StructuralDeclarationError(f"invalid {DECLARATION_NAME}: {exc}") from exc
 
     _validate_graph_inputs(components, connections, loads)
+    wind_basis_drift = [
+        message
+        for basis in wind_action_bases
+        for message in verify_site_wind_snapshot(basis.model_dump())
+    ]
     paths = _trace_load_paths(components, connections, loads)
     blocked_count = sum(path.status == "blocked" for path in paths)
     generated_authoring = (
@@ -1774,6 +1997,9 @@ def capture_project_structural_declaration(
         warnings.append(
             f"{blocked_count} declared load path(s) are disconnected from ground."
         )
+    warnings.extend(
+        f"WIND ACTION BASIS DRIFT — {message}" for message in wind_basis_drift
+    )
 
     try:
         return ProjectStructuralCapture(
@@ -1784,6 +2010,7 @@ def capture_project_structural_declaration(
             ),
             authoring_mode="generated" if generated_authoring else "legacy",
             design_basis=design_basis,
+            wind_action_bases=wind_action_bases,
             components=components,
             connections=connections,
             loads=loads,

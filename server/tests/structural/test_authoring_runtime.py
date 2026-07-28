@@ -169,6 +169,71 @@ def test_surface_load_distribution_derives_member_loads_from_the_same_load_handl
     assert sum(load["force"]["y"] for load in point_loads) == pytest.approx(-0.73152)
 
 
+def test_site_wind_basis_is_the_only_pressure_source_for_wind_surface_load():
+    model = StructuralModel(title="Site wind handles")
+    sheet = model.surface(bd.Box(100, 2, 100), id="sheet", label="Sheet")
+    block = model.ground(bd.Box(100, 100, 100), id="block", label="Block")
+    model.connect(
+        sheet,
+        block,
+        id="sheet-ground",
+        label="Sheet fixed to ground",
+        transfers=["wind_normal", "force"],
+    )
+    basis = model.wind_action_basis(
+        id="porter-wind",
+        site_address="14 Porter St, North Wollongong NSW 2500",
+        latitude=-34.4125046,
+        longitude=150.8885637,
+        region="A2",
+        region_area="NSW",
+        region_source="Geoscience Australia test fixture",
+        region_approximate=True,
+        region_status="suggested",
+        standard="AS/NZS 1170.2:2021",
+        table_version="AS1170.2-2021-starter-v1",
+        table_status="starter",
+        importance_level="2",
+        annual_recurrence_interval_years=500,
+        terrain_category="3",
+        reference_height_m=1.6,
+        regional_wind_speed_m_s=45.0,
+        climate_change_multiplier=1.0,
+        direction_multiplier=1.0,
+        terrain_height_multiplier=0.75,
+        shielding_multiplier=1.0,
+        topographic_multiplier=1.0,
+        site_wind_speed_m_s=33.75,
+        q_z_kPa=0.683438,
+        verifier_hash="6fd0fef70f0f",
+        provenance="FBD site-wind calculation test fixture.",
+    )
+    wind = model.wind_surface_load(
+        sheet,
+        basis=basis,
+        id="wind-inward",
+        label="Inward wind",
+        case_id="wind-inward",
+        case_label="Inward wind",
+        net_pressure_coefficient=0.9,
+        coefficient_status="assumed",
+        area_m2=0.5,
+        direction=(0, -1, 0),
+        provenance="Explicit assumed net coefficient.",
+    )
+    model.assembly([sheet, block], label="wind-test")
+
+    manifest = model.manifest()
+
+    assert manifest["wind_action_bases"][0]["q_z_kPa"] == pytest.approx(0.683438)
+    load = manifest["loads"][0]
+    assert load["id"] == wind.id
+    assert load["pressure_kPa"] == pytest.approx(0.6150942)
+    assert load["wind_basis_id"] == basis.id
+    assert load["net_pressure_coefficient"] == pytest.approx(0.9)
+    assert load["coefficient_status"] == "assumed"
+
+
 def test_authored_point_load_and_stability_basis_are_emitted_together():
     model = StructuralModel(title="P-Delta frame")
     column = model.member(bd.Box(10, 10, 2000), id="column", label="Column")

@@ -194,6 +194,79 @@ def test_generated_capture_uses_object_handles_and_traces_load_to_ground():
     )
 
 
+def test_generated_capture_recomputes_site_wind_snapshot_and_links_coefficient():
+    source = GENERATED_DESIGN.replace(
+        'structure = StructuralModel(title="Generated structural connection microcosm")',
+        '''structure = StructuralModel(title="Generated structural connection microcosm")
+site_wind = structure.wind_action_basis(
+    id="porter-wind",
+    site_address="14 Porter St, North Wollongong NSW 2500",
+    latitude=-34.4125046,
+    longitude=150.8885637,
+    region="A2",
+    region_area="NSW",
+    region_source="Geoscience Australia test fixture",
+    region_approximate=True,
+    region_status="suggested",
+    standard="AS/NZS 1170.2:2021",
+    table_version="AS1170.2-2021-starter-v1",
+    table_status="starter",
+    importance_level="2",
+    annual_recurrence_interval_years=500,
+    terrain_category="3",
+    reference_height_m=1.6,
+    regional_wind_speed_m_s=45.0,
+    climate_change_multiplier=1.0,
+    direction_multiplier=1.0,
+    terrain_height_multiplier=0.75,
+    shielding_multiplier=1.0,
+    topographic_multiplier=1.0,
+    site_wind_speed_m_s=33.75,
+    q_z_kPa=0.683438,
+    verifier_hash="6fd0fef70f0f",
+    provenance="FBD site-wind calculation test fixture.",
+)''',
+    ).replace(
+        '''structure.surface_load(
+    sheet,
+    id="wind",
+    label="Illustrative wind pressure",
+    case="wind",
+    case_id="wind-inward",
+    case_label="Inward wind pressure",
+    pressure_kPa=wind_pressure,
+    area_m2=sheet_area,
+    direction=(0, -1, 0),
+    provenance="Illustrative parser fixture",
+)''',
+        '''wind = structure.wind_surface_load(
+    sheet,
+    basis=site_wind,
+    id="wind",
+    label="Wind pressure",
+    case_id="wind-inward",
+    case_label="Inward wind pressure",
+    net_pressure_coefficient=0.9,
+    coefficient_status="assumed",
+    area_m2=sheet_area,
+    direction=(0, -1, 0),
+    provenance="Test site pressure and explicit coefficient.",
+)''',
+    )
+
+    capture = parse_project_structural_capture(
+        source,
+        project_name="structural_test",
+    )
+
+    assert capture.wind_action_bases[0].region == "A2"
+    assert capture.wind_action_bases[0].q_z_kPa == pytest.approx(0.683438)
+    assert capture.loads[0].pressure_kPa == pytest.approx(0.6150942)
+    assert capture.loads[0].wind_basis_id == "porter-wind"
+    assert capture.loads[0].net_pressure_coefficient == pytest.approx(0.9)
+    assert not any("WIND ACTION BASIS DRIFT" in item for item in capture.warnings)
+
+
 def test_generated_capture_rejects_unregistered_assembly_handles():
     source = GENERATED_DESIGN.replace(
         "[sheet, screws, purlin, block]",
