@@ -39,7 +39,7 @@ card into view.
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.test.tsx`
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.tsx`
 
-- [ ] **Step 1: Replace terminal-collapse expectations and add failing lifecycle tests**
+- [x] **Step 1: Replace terminal-collapse expectations and add failing lifecycle tests**
 
 Update the existing progress tests so their assertions express the approved
 contract:
@@ -141,7 +141,7 @@ Rename the hydrated-history assertions from `Activity` to
 expectation. Retain the historical no-progress test: a terminal history entry
 with `progress: null` has no disclosure.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -152,7 +152,7 @@ rtk npm test -- src/workflows/generate/GenerateDesignWindow.test.tsx
 Expected: failures because the pending disclosure, new labels, persistent open
 state, and manual-close behavior do not exist.
 
-- [ ] **Step 3: Implement the minimal lifecycle state and disclosure**
+- [x] **Step 3: Implement the minimal lifecycle state and disclosure**
 
 Add the current-session marker:
 
@@ -183,6 +183,9 @@ function ProgressActivity({
   const latestLabel = latestEvent?.kind === 'reasoning_delta'
     ? 'Reasoning updated'
     : latestEvent ? toolActivityLabel(latestEvent) : ''
+  // React does not expose a native <details> defaultOpen prop. Capture the
+  // initial value once so later renders leave browser toggles untouched.
+  const [initiallyOpen] = useState(defaultOpen)
 
   return (
     <>
@@ -192,7 +195,7 @@ function ProgressActivity({
           Latest: {latestLabel}. Sequence: {progress?.last_sequence}.
         </p>
       )}
-      <details defaultOpen={defaultOpen} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
+      <details open={initiallyOpen} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
         <summary className="cursor-pointer select-none text-xs font-semibold text-slate-300">
           <span>Thinking &amp; activity</span>
           <span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-cyan-300">
@@ -278,7 +281,7 @@ const hasActivity = message.role === 'assistant' && (
 )}
 ```
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run:
 
@@ -288,6 +291,11 @@ rtk npm test -- src/workflows/generate/GenerateDesignWindow.test.tsx
 
 Expected: all Generate Design tests pass.
 
+Recorded result: RED produced 6 expected lifecycle failures with 13 existing
+tests passing. GREEN passed 19/19 focused tests, TypeScript typecheck, focused
+lint, and diff check. Independent spec and code-quality reviews reported no
+Critical or Important findings.
+
 ## Task 2: Keep active work discoverable while the conversation moves
 
 **Files:**
@@ -295,7 +303,7 @@ Expected: all Generate Design tests pass.
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.test.tsx`
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.tsx`
 
-- [ ] **Step 1: Add failing badge and one-time scroll tests**
+- [x] **Step 1: Add failing badge and one-time scroll tests**
 
 Add:
 
@@ -353,7 +361,7 @@ it('scrolls the submitted assistant turn into view once without moving focus', a
 })
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -364,7 +372,7 @@ rtk npm test -- src/workflows/generate/GenerateDesignWindow.test.tsx
 Expected: failures because the active badge and submitted-turn scroll do not
 exist.
 
-- [ ] **Step 3: Implement the derived badge and one-time ref callback**
+- [x] **Step 3: Implement the derived badge and one-time ref callback**
 
 Add:
 
@@ -410,7 +418,7 @@ const hasActiveProgress = messages.some(message => (
 </button>
 ```
 
-- [ ] **Step 4: Run focused test, typecheck, lint, and build**
+- [x] **Step 4: Run focused test, typecheck, lint, and build**
 
 Run:
 
@@ -423,7 +431,13 @@ rtk npm run build
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Commit the implementation**
+Recorded result: RED produced the two expected badge/scroll failures with
+19 existing tests passing. GREEN passed 22/22 focused tests after adding
+automatic-repair badge coverage; typecheck, focused lint, build, and diff check
+all passed. Independent review found and then verified the repair-transition
+fix, with no remaining Critical or Important findings.
+
+- [x] **Step 5: Commit the implementation**
 
 ```bash
 rtk git add ui/src/workflows/generate/GenerateDesignWindow.tsx ui/src/workflows/generate/GenerateDesignWindow.test.tsx
@@ -436,7 +450,7 @@ rtk git commit -m "fix: keep Pi progress visible"
 
 - Modify: `docs/superpowers/plans/2026-07-29-pi-progress-visibility.md`
 
-- [ ] **Step 1: Run the complete frontend and repository safety gates**
+- [x] **Step 1: Run the complete frontend and repository safety gates**
 
 Run:
 
@@ -450,7 +464,7 @@ rtk git diff --check origin/master...HEAD
 
 Expected: all commands exit 0.
 
-- [ ] **Step 2: Run authenticated k3s AI-edit validation**
+- [x] **Step 2: Run authenticated k3s AI-edit validation**
 
 Run the isolated local-values release and full AI flow:
 
@@ -477,19 +491,42 @@ rtk env KUBECONFIG=/home/johnson/.kube/config \
 Expected: authenticated seed, pre-edit compile, AI edit, post-edit compile, and
 trace checks succeed. Compile-only mode is not acceptable.
 
-- [ ] **Step 3: Inspect the real browser interaction**
+- [x] **Step 3: Inspect the real browser interaction**
 
 Against the smoke release, verify the six runtime assertions from
 [`Pi Progress Visibility Correction`](../specs/2026-07-29-pi-progress-visibility-design.md#73-runtime-validation),
 plus no unexpected console errors or failed relevant network requests.
 
-- [ ] **Step 4: Request independent code review and resolve findings**
+Recorded result:
+
+- Full UI validation passed: 23 files and 150 tests, TypeScript typecheck,
+  lint with only three unchanged warnings outside the changed files, and the
+  production build.
+- The isolated k3s release passed authenticated seed save, pre-edit compile, a
+  provider-backed Pi edit with changed output, post-edit compile, and
+  cross-service telemetry through the UI origin.
+- The isolated browser confirmed the immediate open waiting disclosure, live
+  safe updates, the closed-panel `AI working` badge, stable disclosure identity
+  and open state through completion, successful post-edit compile, terminal
+  badge removal, and collapsed hydrated history. Relevant HTTP and load
+  failures were zero.
+- Initial headless runs reported three software-WebGL fallback errors during
+  artifact swaps. Relaunching the isolated browser with Chrome's explicit
+  SwiftShader opt-in eliminated them; reload and conversation hydration then
+  completed with zero console errors.
+
+- [x] **Step 4: Request independent code review and resolve findings**
 
 Review the complete range from `origin/master` to `HEAD` against the approved
 spec. Fix every Critical or Important issue, rerun affected tests, and record
 the result in this plan.
 
-- [ ] **Step 5: Commit the completed plan**
+Recorded result: the final independent branch review reported no Critical or
+Important findings and confirmed the lifecycle, repair badge, hydration,
+privacy, accessibility, one-time scroll, validation evidence, and narrow
+frontend-only scope.
+
+- [x] **Step 5: Commit the completed plan**
 
 ```bash
 rtk git add docs/superpowers/plans/2026-07-29-pi-progress-visibility.md
