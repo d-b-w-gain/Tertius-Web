@@ -405,6 +405,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 ))}
               </select>
             </label>
+            {analysis.solver.combination_selection === 'governing_working_envelope' && (
+              <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">
+                Governing working envelope
+              </span>
+            )}
             <div className="flex rounded border border-slate-700 bg-slate-950 p-0.5">
               {(['moment', 'displacement'] as const).map((mode) => (
                 <button
@@ -694,6 +699,28 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       <dt className="text-slate-500">Loaded area</dt>
                       <dd className="font-mono">{number(firstLoad.area_m2)} m²</dd>
                     </div>
+                    {firstLoad.net_pressure_coefficient !== null && (
+                      <div>
+                        <dt className="text-slate-500">Net coefficient Cnet</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.net_pressure_coefficient)}
+                        </dd>
+                      </div>
+                    )}
+                    {firstLoad.coefficient_status && (
+                      <div>
+                        <dt className="text-slate-500">Coefficient basis</dt>
+                        <dd className={
+                          firstLoad.coefficient_status === 'verified'
+                            ? 'text-emerald-300'
+                            : firstLoad.coefficient_status === 'working_conservative'
+                              ? 'text-cyan-200'
+                              : 'text-amber-300'
+                        }>
+                          {firstLoad.coefficient_status.replace('_', ' ')}
+                        </dd>
+                      </div>
+                    )}
                     <div className="col-span-2">
                       <dt className="text-slate-500">Direction</dt>
                       <dd className="font-mono">{vector(firstLoad.direction)}</dd>

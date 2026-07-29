@@ -584,6 +584,38 @@ describe('StructuralWorkbench', () => {
     })
   })
 
+  it('shows the governing working envelope and coefficient basis explicitly', async () => {
+    const workingCapture: ProjectStructuralCapture = {
+      ...capture,
+      loads: capture.loads.map((load) => ({
+        ...load,
+        net_pressure_coefficient: 0.8,
+        coefficient_status: 'working_conservative',
+      })),
+    }
+    const workingAnalysis: StructuralSnapshot = {
+      ...analysis,
+      solver: {
+        ...analysis.solver,
+        combination_selection: 'governing_working_envelope',
+      },
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? workingAnalysis : workingCapture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+
+    render(<StructuralWorkbench isActive />)
+
+    expect(await screen.findByText('Governing working envelope')).toBeInTheDocument()
+    expect(screen.getByText('Net coefficient Cnet')).toBeInTheDocument()
+    expect(screen.getByText('working conservative')).toBeInTheDocument()
+  })
+
   it('keeps an exceeded renderer reference not-checked until P399 stages pass', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
       new Response(JSON.stringify(

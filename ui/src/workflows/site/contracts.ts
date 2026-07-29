@@ -33,6 +33,12 @@ export type SiteDefinition = {
     shielding_multiplier: number
     topographic_multiplier: number
     climate_change_multiplier: number | null
+    action_envelope: {
+      enclosure: 'enclosed' | 'open_sided'
+      openings_operating_state: 'normally_closed' | 'normally_open'
+      opening_capacity_status: 'unverified' | 'verified'
+      coefficient_selection_policy: 'worst_available_credible' | 'verified_only'
+    }
   }
 }
 
@@ -50,6 +56,7 @@ export type SiteCalculation = {
   verifier_hash: string
   formula: string
   verify_against: string
+  action_envelope: SiteDefinition['wind']['action_envelope']
 }
 
 export type SiteWorkbenchResponse = {

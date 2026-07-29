@@ -62,6 +62,12 @@ const response: SiteWorkbenchResponse = {
       shielding_multiplier: 1,
       topographic_multiplier: 1,
       climate_change_multiplier: null,
+      action_envelope: {
+        enclosure: 'enclosed',
+        openings_operating_state: 'normally_closed',
+        opening_capacity_status: 'unverified',
+        coefficient_selection_policy: 'worst_available_credible',
+      },
     },
   },
   source: "site_dict = {'schema_version': '1.0'}\n",
@@ -79,6 +85,12 @@ const response: SiteWorkbenchResponse = {
     verifier_hash: 'verify123',
     formula: 'qz',
     verify_against: 'project standard',
+    action_envelope: {
+      enclosure: 'enclosed',
+      openings_operating_state: 'normally_closed',
+      opening_capacity_status: 'unverified',
+      coefficient_selection_policy: 'worst_available_credible',
+    },
   },
 }
 
@@ -110,6 +122,9 @@ describe('SiteWorkbench', () => {
       name: 'Class 10a — non-habitable garage, carport or shed',
     })).toBeInTheDocument()
     expect(screen.getByText('NCC working recommendation: Importance Level 2')).toBeInTheDocument()
+    expect(screen.getByRole('option', {
+      name: 'Auto-select worst available credible service case',
+    })).toBeInTheDocument()
     expect(screen.getByText('Missing: confirm these editions for this project')).toBeInTheDocument()
     expect(screen.getByRole('button', {
       name: 'confirm the three selected action-standard editions',

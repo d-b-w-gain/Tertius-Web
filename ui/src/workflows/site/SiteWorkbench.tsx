@@ -183,6 +183,25 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     edit({ ...draft, wind: { ...draft.wind, [key]: value } })
   }
 
+  const updateActionEnvelope = <
+    K extends keyof SiteDefinition['wind']['action_envelope'],
+  >(
+    key: K,
+    value: SiteDefinition['wind']['action_envelope'][K],
+  ) => {
+    if (!draft) return
+    edit({
+      ...draft,
+      wind: {
+        ...draft.wind,
+        action_envelope: {
+          ...draft.wind.action_envelope,
+          [key]: value,
+        },
+      },
+    })
+  }
+
   const calculate = useCallback(async () => {
     if (!draft) return null
     setIsBusy(true)
@@ -575,6 +594,79 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             </div>
           </section>
 
+          <section className="rounded border border-cyan-500/40 bg-cyan-950/10 p-4">
+            <h2 className="font-semibold text-slate-100">Working wind action envelope</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              Define the credible operating basis once. Structural will solve the authored
+              service cases and automatically display the governing one; this does not mark
+              surface-zone coefficients or opening capacities as verified.
+            </p>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <Field label="Building envelope">
+                <select className={inputClass} value={draft.wind.action_envelope.enclosure}
+                  onChange={(event) => updateActionEnvelope(
+                    'enclosure',
+                    event.target.value as SiteDefinition['wind']['action_envelope']['enclosure'],
+                  )}>
+                  <option value="enclosed">Enclosed building</option>
+                  <option value="open_sided">Permanently open-sided structure</option>
+                </select>
+              </Field>
+              <Field label="Doors and windows">
+                <select className={inputClass}
+                  value={draft.wind.action_envelope.openings_operating_state}
+                  onChange={(event) => updateActionEnvelope(
+                    'openings_operating_state',
+                    event.target.value as SiteDefinition['wind']['action_envelope']['openings_operating_state'],
+                  )}>
+                  <option value="normally_closed">Normally closed</option>
+                  <option value="normally_open">Normally open</option>
+                </select>
+              </Field>
+              <Field label="Opening pressure capacity">
+                <select className={inputClass}
+                  value={draft.wind.action_envelope.opening_capacity_status}
+                  onChange={(event) => updateActionEnvelope(
+                    'opening_capacity_status',
+                    event.target.value as SiteDefinition['wind']['action_envelope']['opening_capacity_status'],
+                  )}>
+                  <option value="unverified">Unverified — retain working conservative status</option>
+                  <option value="verified">Verified against calculated pressure</option>
+                </select>
+              </Field>
+              <Field label="Case selection">
+                <select className={inputClass}
+                  value={draft.wind.action_envelope.coefficient_selection_policy}
+                  onChange={(event) => updateActionEnvelope(
+                    'coefficient_selection_policy',
+                    event.target.value as SiteDefinition['wind']['action_envelope']['coefficient_selection_policy'],
+                  )}>
+                  <option value="worst_available_credible">
+                    Auto-select worst available credible service case
+                  </option>
+                  <option value="verified_only">
+                    Verified coefficients only
+                  </option>
+                </select>
+              </Field>
+            </div>
+            <div className="mt-3 rounded border border-cyan-500/20 bg-slate-950/60 p-3 text-xs leading-5 text-slate-400">
+              Current working basis: <b className="text-cyan-200">
+                {draft.wind.action_envelope.enclosure === 'enclosed'
+                  ? 'enclosed building'
+                  : 'open-sided structure'}
+              </b>, doors/windows <b className="text-cyan-200">
+                {draft.wind.action_envelope.openings_operating_state.replace('_', ' ')}
+              </b>, opening capacity <b className={
+                draft.wind.action_envelope.opening_capacity_status === 'verified'
+                  ? 'text-emerald-300'
+                  : 'text-amber-300'
+              }>
+                {draft.wind.action_envelope.opening_capacity_status}
+              </b>.
+            </div>
+          </section>
+
           <section id="action-standards" ref={standardsSection}
             className={`rounded border bg-slate-900/50 p-4 ${
               draft.project_basis.standards.confirmed ? 'border-slate-800' : 'border-amber-500/70'
@@ -647,6 +739,8 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   ['Site speed Vsit', `${calculation.site_wind_speed_m_s.toFixed(3)} m/s`],
                   ['Dynamic pressure qz', `${calculation.q_z_kPa.toFixed(6)} kPa`],
                   ['ULS return period', `${calculation.annual_recurrence_interval_years} years`],
+                  ['Envelope', calculation.action_envelope.enclosure.replace('_', ' ')],
+                  ['Case selection', calculation.action_envelope.coefficient_selection_policy.replaceAll('_', ' ')],
                   ['Verifier', calculation.verifier_hash],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded border border-slate-800 bg-slate-950/70 p-3">

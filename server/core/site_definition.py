@@ -74,6 +74,17 @@ class SiteLocation(SiteContract):
     longitude: float = Field(default=150.8885637, ge=-180, le=180)
 
 
+class SiteWindActionEnvelope(SiteContract):
+    enclosure: Literal["enclosed", "open_sided"] = "enclosed"
+    openings_operating_state: Literal["normally_closed", "normally_open"] = (
+        "normally_closed"
+    )
+    opening_capacity_status: Literal["unverified", "verified"] = "unverified"
+    coefficient_selection_policy: Literal[
+        "worst_available_credible", "verified_only"
+    ] = "worst_available_credible"
+
+
 class SiteWindDefinition(SiteContract):
     basis_id: str = "project-site-wind"
     region: str = "A2"
@@ -89,6 +100,9 @@ class SiteWindDefinition(SiteContract):
     shielding_multiplier: float = Field(default=1.0, gt=0)
     topographic_multiplier: float = Field(default=1.0, gt=0)
     climate_change_multiplier: float | None = Field(default=None, gt=0)
+    action_envelope: SiteWindActionEnvelope = Field(
+        default_factory=SiteWindActionEnvelope
+    )
 
 
 class SiteDefinition(SiteContract):
@@ -251,6 +265,7 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
         "region_approximate": site.wind.region_approximate,
         "region_status": site.wind.region_status,
         "table_status": site.wind.table_status,
+        "action_envelope": site.wind.action_envelope.model_dump(mode="json"),
         **calculation,
     }
 
@@ -286,6 +301,14 @@ def site_wind_basis(
         "topographic_multiplier": calculation["topographic_multiplier"],
         "site_wind_speed_m_s": calculation["site_wind_speed_m_s"],
         "q_z_kPa": calculation["q_z_kPa"],
+        "enclosure": site.wind.action_envelope.enclosure,
+        "openings_operating_state": (
+            site.wind.action_envelope.openings_operating_state
+        ),
+        "opening_capacity_status": (site.wind.action_envelope.opening_capacity_status),
+        "coefficient_selection_policy": (
+            site.wind.action_envelope.coefficient_selection_policy
+        ),
         "verifier_hash": calculation["verifier_hash"],
         "provenance": (
             f"{SITE_DEFINITION_FILENAME} revision {calculation['revision']}; "
@@ -322,11 +345,22 @@ def apply_site_definition(
             coefficient = load.get("net_pressure_coefficient")
             if coefficient is not None:
                 load["pressure_kPa"] = abs(float(coefficient)) * q_z_kPa
+                if (
+                    load.get("coefficient_status") == "assumed"
+                    and site.wind.action_envelope.coefficient_selection_policy
+                    == "worst_available_credible"
+                ):
+                    load["coefficient_status"] = "working_conservative"
                 provenance = str(load.get("provenance") or "")
                 load["provenance"] = (
                     provenance.split("; site basis ")[0]
                     + f"; site basis {SITE_DEFINITION_FILENAME} "
-                    f"revision {site_definition_revision(site)}"
+                    f"revision {site_definition_revision(site)}; "
+                    "worst available credible case policy "
+                    f"({site.wind.action_envelope.enclosure}, "
+                    f"{site.wind.action_envelope.openings_operating_state}, "
+                    "opening capacity "
+                    f"{site.wind.action_envelope.opening_capacity_status})"
                 )
 
     design_basis = value.get("design_basis")

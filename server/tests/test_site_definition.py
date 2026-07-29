@@ -56,6 +56,7 @@ def declaration():
                 "case": "wind",
                 "wind_basis_id": "legacy-site",
                 "net_pressure_coefficient": 0.8,
+                "coefficient_status": "assumed",
                 "pressure_kPa": 0.8,
                 "provenance": "Roof sheet; site basis old",
             }
@@ -133,7 +134,13 @@ def test_site_overlay_recalculates_wind_load_without_changing_topology():
 
     assert before["loads"][0]["pressure_kPa"] == 0.8
     assert overlaid["wind_action_bases"][0]["id"] == "legacy-site"
+    assert overlaid["wind_action_bases"][0]["enclosure"] == "enclosed"
+    assert (
+        overlaid["wind_action_bases"][0]["coefficient_selection_policy"]
+        == "worst_available_credible"
+    )
     assert overlaid["loads"][0]["pressure_kPa"] == pytest.approx(0.8 * 0.683438)
+    assert overlaid["loads"][0]["coefficient_status"] == "working_conservative"
     assert overlaid["design_basis"]["standards"]["wind_actions"] == "AS/NZS 1170.2:2021"
     assert "confirm" not in (
         overlaid["design_basis"]["standards"]["action_combinations"].lower()

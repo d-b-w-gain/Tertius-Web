@@ -272,6 +272,9 @@ class SolverMetadata(StructuralContract):
     version: str
     analysis: str
     combination_id: str
+    combination_selection: Literal[
+        "requested", "default", "governing_working_envelope"
+    ] = "default"
 
 
 class CapabilityState(StructuralContract):
@@ -388,6 +391,12 @@ class StructuralWindActionBasis(StructuralContract):
     topographic_multiplier: float
     site_wind_speed_m_s: float
     q_z_kPa: float
+    enclosure: Literal["enclosed", "open_sided"] | None = None
+    openings_operating_state: Literal["normally_closed", "normally_open"] | None = None
+    opening_capacity_status: Literal["unverified", "verified"] | None = None
+    coefficient_selection_policy: (
+        Literal["worst_available_credible", "verified_only"] | None
+    ) = None
     verifier_hash: str
     provenance: str
 
@@ -404,7 +413,9 @@ class DesignSurfaceLoad(StructuralContract):
     provenance: str
     wind_basis_id: str | None = None
     net_pressure_coefficient: float | None = None
-    coefficient_status: Literal["assumed", "verified"] | None = None
+    coefficient_status: (
+        Literal["assumed", "working_conservative", "verified"] | None
+    ) = None
 
 
 class DesignLoadPath(StructuralContract):
@@ -449,9 +460,7 @@ class ProjectStructuralCapture(StructuralContract):
         _unique_ids("connections", self.connections)
         _unique_ids("loads", self.loads)
         wind_basis_ids = _unique_ids("wind action bases", self.wind_action_bases)
-        wind_bases_by_id = {
-            basis.id: basis for basis in self.wind_action_bases
-        }
+        wind_bases_by_id = {basis.id: basis for basis in self.wind_action_bases}
 
         for connection in self.connections:
             _require_reference(
@@ -501,9 +510,8 @@ class ProjectStructuralCapture(StructuralContract):
                     raise ValueError(
                         f"load {load.id!r} must declare its coefficient status"
                     )
-                expected_pressure = (
-                    wind_bases_by_id[load.wind_basis_id].q_z_kPa
-                    * abs(load.net_pressure_coefficient)
+                expected_pressure = wind_bases_by_id[load.wind_basis_id].q_z_kPa * abs(
+                    load.net_pressure_coefficient
                 )
                 if abs(load.pressure_kPa - expected_pressure) > 1e-6:
                     raise ValueError(

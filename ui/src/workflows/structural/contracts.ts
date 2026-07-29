@@ -53,6 +53,13 @@ export type StructuralWindActionBasis = {
   topographic_multiplier: number
   site_wind_speed_m_s: number
   q_z_kPa: number
+  enclosure?: 'enclosed' | 'open_sided' | null
+  openings_operating_state?: 'normally_closed' | 'normally_open' | null
+  opening_capacity_status?: 'unverified' | 'verified' | null
+  coefficient_selection_policy?:
+    | 'worst_available_credible'
+    | 'verified_only'
+    | null
   verifier_hash: string
   provenance: string
 }
@@ -132,7 +139,7 @@ export type DesignSurfaceLoad = {
   provenance: string
   wind_basis_id: string | null
   net_pressure_coefficient: number | null
-  coefficient_status: 'assumed' | 'verified' | null
+  coefficient_status: 'assumed' | 'working_conservative' | 'verified' | null
 }
 
 export type DesignLoadPath = {
@@ -376,6 +383,10 @@ export type StructuralSnapshot = {
     version: string
     analysis: string
     combination_id: string
+    combination_selection?:
+      | 'requested'
+      | 'default'
+      | 'governing_working_envelope'
   }
   stability?: {
     method: 'p_delta'

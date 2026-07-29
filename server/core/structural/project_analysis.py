@@ -253,6 +253,75 @@ def _select_combination(
     )
 
 
+def _governing_working_combination(
+    model,
+    analysis,
+    combinations: list[LoadCombination],
+) -> LoadCombination:
+    """Select the worst credible service combination already authored by design.py."""
+
+    excluded_words = ("demo", "deliberate", "illustrative")
+    candidates = [
+        combination
+        for combination in combinations
+        if combination.limit_state == "serviceability"
+        and not any(
+            word in f"{combination.id} {combination.label}".lower()
+            for word in excluded_words
+        )
+    ]
+    if not candidates:
+        return _select_combination(combinations, None)
+
+    sections = {section.id: section for section in analysis.sections}
+
+    def score(combination: LoadCombination) -> tuple[float, float, float]:
+        maximum_ratio = 0.0
+        maximum_moment = 0.0
+        maximum_displacement = 0.0
+        for declaration in analysis.members:
+            moment, displacement = _member_extrema(
+                model,
+                declaration,
+                combination_id=combination.id,
+                point_loads=[
+                    load
+                    for load in analysis.member_loads
+                    if load.member_id == declaration.id
+                ],
+                distributed_loads=[
+                    load
+                    for load in analysis.member_distributed_loads
+                    if load.member_id == declaration.id
+                ],
+            )
+            maximum_moment = max(maximum_moment, moment)
+            maximum_displacement = max(maximum_displacement, displacement)
+            section = sections[declaration.section_id]
+            if section.bending_reference_kNm:
+                maximum_ratio = max(
+                    maximum_ratio,
+                    moment / section.bending_reference_kNm,
+                )
+            member_length_mm = _length(declaration.start, declaration.end) * 1000.0
+            displacement_limit = declaration.deflection_limit_mm
+            if (
+                displacement_limit is None
+                and declaration.deflection_limit_ratio is not None
+            ):
+                displacement_limit = (
+                    member_length_mm / declaration.deflection_limit_ratio
+                )
+            if displacement_limit:
+                maximum_ratio = max(
+                    maximum_ratio,
+                    displacement / displacement_limit,
+                )
+        return maximum_ratio, maximum_moment, maximum_displacement
+
+    return max(candidates, key=score)
+
+
 def _distributed_resultant(
     load: MemberDistributedLoad,
 ) -> tuple[Vector3, Vector3]:
@@ -422,6 +491,21 @@ def _p399_evidence(
                     unit="m",
                     source="design.py site wind input",
                 ),
+                CalculationInput(
+                    symbol=f"enclosure,{wind_basis.id}",
+                    label="Enclosure / openings",
+                    value=(
+                        f"{wind_basis.enclosure or 'not declared'}; "
+                        f"{wind_basis.openings_operating_state or 'not declared'}"
+                    ),
+                    source="tertius_site.py action envelope",
+                ),
+                CalculationInput(
+                    symbol=f"selection,{wind_basis.id}",
+                    label="Coefficient case selection",
+                    value=(wind_basis.coefficient_selection_policy or "not declared"),
+                    source="tertius_site.py action envelope",
+                ),
             ]
         )
         action_equations.extend(
@@ -452,18 +536,14 @@ def _p399_evidence(
             ]
         )
     for load in capture.loads:
-        if (
-            load.wind_basis_id is not None
-            and load.net_pressure_coefficient is not None
-        ):
+        if load.wind_basis_id is not None and load.net_pressure_coefficient is not None:
             wind_basis = wind_bases_by_id[load.wind_basis_id]
             action_equations.append(
                 CalculationEquation(
                     label=f"{load.label} net surface pressure",
                     expression="p_net = q_z |C_net|",
                     substitution=(
-                        f"{wind_basis.q_z_kPa:g} × "
-                        f"|{load.net_pressure_coefficient:g}|"
+                        f"{wind_basis.q_z_kPa:g} × |{load.net_pressure_coefficient:g}|"
                     ),
                     result=load.pressure_kPa,
                     unit="kPa",
@@ -576,17 +656,13 @@ def _p399_evidence(
         "confirm" not in reference.lower() and "not yet active" not in reference.lower()
         for reference in action_standard_references
     )
-    wind_surface_loads = [
-        load for load in capture.loads if load.case == "wind"
-    ]
+    wind_surface_loads = [load for load in capture.loads if load.case == "wind"]
     wind_basis_drift = {
         basis.id: verify_site_wind_snapshot(basis.model_dump())
         for basis in capture.wind_action_bases
     }
     unlinked_wind_loads = [
-        load.id
-        for load in wind_surface_loads
-        if load.wind_basis_id is None
+        load.id for load in wind_surface_loads if load.wind_basis_id is None
     ]
     unverified_wind_bases = [
         basis.id
@@ -596,29 +672,26 @@ def _p399_evidence(
         or wind_basis_drift[basis.id]
     ]
     assumed_wind_coefficients = [
+        load.id for load in wind_surface_loads if load.coefficient_status == "assumed"
+    ]
+    working_wind_coefficients = [
         load.id
         for load in wind_surface_loads
-        if load.coefficient_status != "verified"
+        if load.coefficient_status == "working_conservative"
     ]
-    wind_actions_ready = (
-        not wind_surface_loads
-        or (
-            bool(capture.wind_action_bases)
-            and not unlinked_wind_loads
-            and not unverified_wind_bases
-            and not assumed_wind_coefficients
-        )
+    wind_actions_ready = not wind_surface_loads or (
+        bool(capture.wind_action_bases)
+        and not unlinked_wind_loads
+        and not unverified_wind_bases
+        and not assumed_wind_coefficients
     )
     action_basis_ready = action_basis_ready and wind_actions_ready
     action_assumptions = [
         *(
-            [
-                "The project action standard references still require confirmation."
-            ]
+            ["The project action standard references still require confirmation."]
             if not action_standard_references
             or any(
-                "confirm" in reference.lower()
-                or "not yet active" in reference.lower()
+                "confirm" in reference.lower() or "not yet active" in reference.lower()
                 for reference in action_standard_references
             )
             else []
@@ -645,6 +718,17 @@ def _p399_evidence(
                 + ", ".join(assumed_wind_coefficients)
             ]
             if assumed_wind_coefficients
+            else []
+        ),
+        *(
+            [
+                "Working conservative envelope is active for: "
+                + ", ".join(working_wind_coefficients)
+                + ". The solver selects the worst available credible service "
+                "combination; AS/NZS 1170.2 surface-zone verification remains "
+                "an evidence item before final design."
+            ]
+            if working_wind_coefficients
             else []
         ),
         *(
@@ -812,9 +896,7 @@ def _p399_evidence(
             p399_reference="SCI P399 Section 4",
             purpose="Trace every authored action from its physical source to member load.",
             assumptions=(
-                []
-                if actions_status == "pass"
-                else action_assumptions
+                action_assumptions
                 or [
                     "The authored actions remain illustrative until the project/site "
                     "Australian action inputs are confirmed."
@@ -1255,6 +1337,9 @@ def solve_project_structural(
 
     combinations = _combination_list(analysis)
     active_combination = _select_combination(combinations, combination_id)
+    combination_selection: Literal[
+        "requested", "default", "governing_working_envelope"
+    ] = "requested" if combination_id is not None else "default"
     components = {component.id: component for component in capture.components}
 
     model = FEModel3D()
@@ -1430,6 +1515,17 @@ def solve_project_structural(
         raise StructuralAnalysisError(
             f"PyNite could not solve the active design: {exc}"
         ) from exc
+
+    if combination_id is None and any(
+        basis.coefficient_selection_policy == "worst_available_credible"
+        for basis in capture.wind_action_bases
+    ):
+        active_combination = _governing_working_combination(
+            model,
+            analysis,
+            combinations,
+        )
+        combination_selection = "governing_working_envelope"
 
     if analysis.stability is not None:
         member_comparisons: list[MemberStabilityComparison] = []
@@ -1808,9 +1904,7 @@ def solve_project_structural(
                 declaration.start,
                 _scaled(member_axis, equilibrium_line_load.start_distance_m),
             )
-            resultant, line_first_moment = _distributed_resultant(
-                equilibrium_line_load
-            )
+            resultant, line_first_moment = _distributed_resultant(equilibrium_line_load)
             _add(applied_force_sum, resultant, factor)
             _add(applied_moment_sum, _cross(segment_start, resultant), factor)
             _add(
@@ -1979,6 +2073,7 @@ def solve_project_structural(
                 + "shared-coordinate nodes, point loads, and global distributed loads"
             ),
             combination_id=active_combination.id,
+            combination_selection=combination_selection,
         ),
         stability=stability_result,
         verification_stages=verification_stages,

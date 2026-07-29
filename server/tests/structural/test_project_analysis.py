@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from core.site_definition import apply_site_definition, default_site_definition
+from core.structural.contracts import ProjectStructuralCapture
 from core.structural.design_capture import parse_project_structural_capture
 from core.structural.project_analysis import solve_project_structural
 
@@ -276,6 +278,22 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     )
     assert actions_sheet.equations
     assert actions_sheet.related_member_ids == ["column-axis", "beam-axis"]
+
+
+def test_site_policy_auto_selects_governing_credible_service_combination():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="gravity_frame",
+    )
+    site = default_site_definition()
+    working_capture = ProjectStructuralCapture.model_validate(
+        apply_site_definition(capture.model_dump(mode="python"), site)
+    )
+
+    snapshot = solve_project_structural(working_capture)
+
+    assert snapshot.solver.combination_id == "SLS-G+Q"
+    assert snapshot.solver.combination_selection == "governing_working_envelope"
 
 
 def test_unknown_load_combination_fails_closed():
