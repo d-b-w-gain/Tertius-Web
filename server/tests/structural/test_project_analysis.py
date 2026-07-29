@@ -366,6 +366,163 @@ structural_assembly = structure.assembly""",
     assert any(output.symbol == "converged" for output in stability_sheet.outputs)
 
 
+def test_bidirectional_nhf_evidence_completes_global_stability_stage():
+    stability_source = GRAVITY_FRAME_DESIGN.replace(
+        "structural_assembly = structure.assembly",
+        """structure.member_point_load(
+    column,
+    id="ehf-plus",
+    label="Equivalent horizontal force +X",
+    case="imperfection",
+    case_id="ehf-plus-x",
+    distance_m=2.0,
+    force=(0.001, 0, 0),
+    provenance="Explicit test EHF +X.",
+)
+structure.member_point_load(
+    column,
+    id="ehf-minus",
+    label="Equivalent horizontal force -X",
+    case="imperfection",
+    case_id="ehf-minus-x",
+    distance_m=2.0,
+    force=(-0.001, 0, 0),
+    provenance="Explicit test EHF -X.",
+)
+structure.member_point_load(
+    column,
+    id="nhf-plus",
+    label="Notional horizontal force +X",
+    case="imperfection",
+    case_id="nhf-plus-x",
+    distance_m=2.0,
+    force=(0.001, 0, 0),
+    provenance="Explicit test NEd/200 +X.",
+)
+structure.member_point_load(
+    column,
+    id="nhf-minus",
+    label="Notional horizontal force -X",
+    case="imperfection",
+    case_id="nhf-minus-x",
+    distance_m=2.0,
+    force=(-0.001, 0, 0),
+    provenance="Explicit test NEd/200 -X.",
+)
+structure.load_combination(
+    id="ULS-STABILITY+X",
+    label="Permanent action plus EHF +X",
+    limit_state="ultimate",
+    factors={"dead": 1.35, "ehf-plus-x": 1.0},
+)
+structure.load_combination(
+    id="ULS-STABILITY-X",
+    label="Permanent action plus EHF -X",
+    limit_state="ultimate",
+    factors={"dead": 1.35, "ehf-minus-x": 1.0},
+)
+structure.load_combination(
+    id="NHF-CHECK+X",
+    label="NEd/200 check +X",
+    limit_state="ultimate",
+    factors={"nhf-plus-x": 1.0},
+)
+structure.load_combination(
+    id="NHF-CHECK-X",
+    label="NEd/200 check -X",
+    limit_state="ultimate",
+    factors={"nhf-minus-x": 1.0},
+)
+structure.stability(
+    method="p_delta",
+    stability_combination_id="ULS-STABILITY+X",
+    imperfection_case_id="ehf-plus-x",
+    imperfection_basis="Mirrored EHF and NEd/200 NHF test cases.",
+    base_stiffness_basis="Fixed base is verified for this solver fixture.",
+    base_stiffness_status="verified",
+    direction_cases=(
+        {
+            "id": "+X",
+            "stability_combination_id": "ULS-STABILITY+X",
+            "imperfection_case_id": "ehf-plus-x",
+            "nhf_combination_id": "NHF-CHECK+X",
+            "horizontal_axis": "x",
+        },
+        {
+            "id": "-X",
+            "stability_combination_id": "ULS-STABILITY-X",
+            "imperfection_case_id": "ehf-minus-x",
+            "nhf_combination_id": "NHF-CHECK-X",
+            "horizontal_axis": "x",
+        },
+    ),
+    eaves_member_ids=("column-axis",),
+    rafter_member_ids=("beam-axis",),
+    column_height_m=2.0,
+    analysis_base_model="fixed",
+    analysis_basis_status="verified",
+    physical_connection_stiffness_status="verified",
+)
+structural_assembly = structure.assembly""",
+    )
+    capture = parse_project_structural_capture(
+        stability_source,
+        project_name="bidirectional_stability_frame",
+    )
+
+    snapshot = solve_project_structural(
+        capture,
+        combination_id="ULS-STABILITY+X",
+    )
+
+    assert snapshot.stability is not None
+    assert len(snapshot.stability.direction_results) == 2
+    assert snapshot.stability.minimum_alpha_cr is not None
+    assert snapshot.stability.minimum_alpha_cr > 1
+    assert snapshot.stability.simplified_alpha_cr_applicable
+    stages = {stage.id: stage for stage in snapshot.verification_stages}
+    assert stages["stability"].status == "pass"
+    stability_sheet = next(
+        sheet for sheet in snapshot.calculation_sheets if sheet.stage_id == "stability"
+    )
+    assert stability_sheet.status == "pass"
+    assert (
+        sum(
+            equation.expression == "αcr = h / (200 δNHF)"
+            for equation in stability_sheet.equations
+        )
+        == 2
+    )
+    assert any(
+        equation.expression == "NEd ≤ 0.09 Ncr"
+        for equation in stability_sheet.equations
+    )
+
+    mismatched_capture = parse_project_structural_capture(
+        stability_source.replace(
+            'analysis_base_model="fixed"',
+            'analysis_base_model="perfectly_pinned"',
+        ),
+        project_name="mismatched_stability_frame",
+    )
+    mismatched_snapshot = solve_project_structural(
+        mismatched_capture,
+        combination_id="ULS-STABILITY+X",
+    )
+    mismatched_stages = {
+        stage.id: stage for stage in mismatched_snapshot.verification_stages
+    }
+    assert mismatched_stages["stability"].status == "warning"
+    mismatched_sheet = next(
+        sheet
+        for sheet in mismatched_snapshot.calculation_sheets
+        if sheet.stage_id == "stability"
+    )
+    assert any(
+        "does not match" in assumption for assumption in mismatched_sheet.assumptions
+    )
+
+
 def test_catalogue_yield_reference_is_renderer_only_not_a_design_pass():
     source = GRAVITY_FRAME_DESIGN.replace(
         "mass_kg_m=3.29,\n)",

@@ -405,6 +405,35 @@ export type StructuralSnapshot = {
       second_order_max_displacement_mm: number
       displacement_amplification: number
     }>
+    direction_results?: Array<{
+      id: string
+      combination_id: string
+      imperfection_case_id: string
+      nhf_combination_id: string
+      horizontal_axis: 'x' | 'y'
+      converged: boolean
+      governing_moment_amplification: number
+      governing_displacement_amplification: number
+      nhf_eaves_displacement_mm: number
+      alpha_cr: number | null
+      member_comparisons: Array<{
+        member_id: string
+        first_order_max_moment_kNm: number
+        second_order_max_moment_kNm: number
+        moment_amplification: number
+        first_order_max_displacement_mm: number
+        second_order_max_displacement_mm: number
+        displacement_amplification: number
+      }>
+    }>
+    governing_direction_id?: string | null
+    minimum_alpha_cr?: number | null
+    second_order_required?: boolean | null
+    rafter_design_axial_kN?: number | null
+    rafter_elastic_critical_load_kN?: number | null
+    rafter_axial_limit_kN?: number | null
+    rafter_axial_force_significant?: boolean | null
+    simplified_alpha_cr_applicable?: boolean | null
   } | null
   verification_stages: VerificationStage[]
   calculation_sheets: CalculationSheet[]

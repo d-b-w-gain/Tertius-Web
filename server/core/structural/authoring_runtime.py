@@ -143,6 +143,19 @@ class StructuralModel:
         base_stiffness_basis: str,
         base_stiffness_status: Literal["verified", "assumed"],
         amplification_warning_ratio: float = 1.1,
+        direction_cases: Sequence[Mapping[str, str]] = (),
+        eaves_member_ids: Sequence[str] = (),
+        rafter_member_ids: Sequence[str] = (),
+        column_height_m: float | None = None,
+        analysis_base_model: Literal[
+            "unspecified", "perfectly_pinned", "rotational_spring", "fixed"
+        ] = "unspecified",
+        analysis_basis_status: Literal[
+            "assumed", "verified", "verified_conservative"
+        ] = "assumed",
+        physical_connection_stiffness_status: Literal[
+            "not_checked", "not_relied_upon", "verified"
+        ] = "not_checked",
     ) -> None:
         """Declare the assumptions and acceptance trigger for a second-order solve."""
 
@@ -163,6 +176,68 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "amplification_warning_ratio must be greater than 1.0"
             )
+        if analysis_base_model not in {
+            "unspecified",
+            "perfectly_pinned",
+            "rotational_spring",
+            "fixed",
+        }:
+            raise StructuralAuthoringError("unsupported analysis_base_model")
+        if analysis_basis_status not in {
+            "assumed",
+            "verified",
+            "verified_conservative",
+        }:
+            raise StructuralAuthoringError("unsupported analysis_basis_status")
+        if physical_connection_stiffness_status not in {
+            "not_checked",
+            "not_relied_upon",
+            "verified",
+        }:
+            raise StructuralAuthoringError(
+                "unsupported physical_connection_stiffness_status"
+            )
+        if column_height_m is not None and float(column_height_m) <= 0:
+            raise StructuralAuthoringError("column_height_m must be positive")
+        normalized_direction_cases: list[dict[str, str]] = []
+        for direction in direction_cases:
+            if not isinstance(direction, Mapping):
+                raise StructuralAuthoringError(
+                    "each stability direction case must be a mapping"
+                )
+            normalized_direction_cases.append(
+                {
+                    "id": _required_text("stability direction ID", direction.get("id")),
+                    "stability_combination_id": _required_text(
+                        "direction stability combination ID",
+                        direction.get("stability_combination_id"),
+                    ),
+                    "imperfection_case_id": _load_case_id(
+                        _required_text(
+                            "direction imperfection case ID",
+                            direction.get("imperfection_case_id"),
+                        )
+                    ),
+                    "nhf_combination_id": _required_text(
+                        "direction NHF combination ID",
+                        direction.get("nhf_combination_id"),
+                    ),
+                    "horizontal_axis": _required_text(
+                        "direction horizontal axis",
+                        direction.get("horizontal_axis", "x"),
+                    ),
+                }
+            )
+        direction_ids = [direction["id"] for direction in normalized_direction_cases]
+        if len(direction_ids) != len(set(direction_ids)):
+            raise StructuralAuthoringError("stability direction IDs must be unique")
+        if any(
+            direction["horizontal_axis"] not in {"x", "y"}
+            for direction in normalized_direction_cases
+        ):
+            raise StructuralAuthoringError(
+                "stability direction horizontal_axis must be 'x' or 'y'"
+            )
         self._stability = {
             "method": method,
             "stability_combination_id": _required_text(
@@ -177,6 +252,23 @@ class StructuralModel:
             ),
             "base_stiffness_status": base_stiffness_status,
             "amplification_warning_ratio": warning_ratio,
+            "direction_cases": normalized_direction_cases,
+            "eaves_member_ids": [
+                _required_text("eaves member ID", member_id)
+                for member_id in eaves_member_ids
+            ],
+            "rafter_member_ids": [
+                _required_text("rafter member ID", member_id)
+                for member_id in rafter_member_ids
+            ],
+            "column_height_m": (
+                None if column_height_m is None else float(column_height_m)
+            ),
+            "analysis_base_model": analysis_base_model,
+            "analysis_basis_status": analysis_basis_status,
+            "physical_connection_stiffness_status": (
+                physical_connection_stiffness_status
+            ),
         }
 
     def wind_action_basis(
@@ -245,13 +337,16 @@ class StructuralModel:
         site_speed = float(site_wind_speed_m_s)
         pressure = float(q_z_kPa)
         reference_height = float(reference_height_m)
-        if min(
-            speed,
-            site_speed,
-            pressure,
-            reference_height,
-            *multiplier_values.values(),
-        ) <= 0:
+        if (
+            min(
+                speed,
+                site_speed,
+                pressure,
+                reference_height,
+                *multiplier_values.values(),
+            )
+            <= 0
+        ):
             raise StructuralAuthoringError(
                 "wind speeds, pressure, height, and multipliers must be positive"
             )
@@ -289,9 +384,7 @@ class StructuralModel:
                 "importance level",
                 importance_level,
             ),
-            "annual_recurrence_interval_years": int(
-                annual_recurrence_interval_years
-            ),
+            "annual_recurrence_interval_years": int(annual_recurrence_interval_years),
             "terrain_category": _required_text(
                 "terrain category",
                 terrain_category,
@@ -652,9 +745,7 @@ class StructuralModel:
         direction: Sequence[float] | dict[str, float],
         provenance: str,
     ) -> StructuralSurfaceLoad:
-        registered_basis = self._wind_action_basis_handles.get(
-            getattr(basis, "id", "")
-        )
+        registered_basis = self._wind_action_basis_handles.get(getattr(basis, "id", ""))
         if registered_basis is not basis:
             raise StructuralAuthoringError(
                 "wind surface loads accept registered wind-action basis handles only"
@@ -1455,9 +1546,7 @@ class StructuralModel:
             "design_basis": (
                 dict(self._design_basis) if self._design_basis is not None else None
             ),
-            "wind_action_bases": [
-                dict(basis) for basis in self._wind_action_bases
-            ],
+            "wind_action_bases": [dict(basis) for basis in self._wind_action_bases],
             "authoring": {
                 "mode": "generated",
                 "assembly_component_ids": list(self._assembled_ids),
@@ -1725,14 +1814,50 @@ class StructuralModel:
             combination_ids = {
                 combination["id"] for combination in self._load_combinations
             }
-            if self._stability["stability_combination_id"] not in combination_ids:
-                raise StructuralAuthoringError(
-                    "stability_combination_id must reference an authored load combination"
+            direction_cases = self._stability["direction_cases"] or [
+                {
+                    "stability_combination_id": self._stability[
+                        "stability_combination_id"
+                    ],
+                    "imperfection_case_id": self._stability["imperfection_case_id"],
+                    "nhf_combination_id": None,
+                }
+            ]
+            for direction in direction_cases:
+                if direction["stability_combination_id"] not in combination_ids:
+                    raise StructuralAuthoringError(
+                        "stability direction must reference an authored stability "
+                        "load combination"
+                    )
+                if (
+                    direction["nhf_combination_id"] is not None
+                    and direction["nhf_combination_id"] not in combination_ids
+                ):
+                    raise StructuralAuthoringError(
+                        "stability direction must reference an authored NHF "
+                        "load combination"
+                    )
+                imperfection_case_id = direction["imperfection_case_id"]
+                if (
+                    self._load_case_categories.get(imperfection_case_id)
+                    != "imperfection"
+                ):
+                    raise StructuralAuthoringError(
+                        "stability direction imperfection_case_id must reference "
+                        "an authored imperfection load"
+                    )
+            member_ids = {member["id"] for member in self._analytical_members}
+            missing_stability_members = sorted(
+                (
+                    set(self._stability["eaves_member_ids"])
+                    | set(self._stability["rafter_member_ids"])
                 )
-            imperfection_case_id = self._stability["imperfection_case_id"]
-            if self._load_case_categories.get(imperfection_case_id) != "imperfection":
+                - member_ids
+            )
+            if missing_stability_members:
                 raise StructuralAuthoringError(
-                    "imperfection_case_id must reference an authored imperfection load"
+                    "stability definition references missing analytical members "
+                    f"{missing_stability_members}"
                 )
 
 

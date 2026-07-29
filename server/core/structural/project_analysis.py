@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from importlib.metadata import version
-from math import sqrt
+from math import pi, sqrt
 from typing import Any, Literal
 
 from .contracts import (
@@ -27,6 +27,7 @@ from .contracts import (
     StructuralMember,
     StructuralNode,
     StructuralSnapshot,
+    StabilityDirectionResult,
     StabilityResult,
     Vector3,
     VerificationStage,
@@ -117,6 +118,43 @@ def _amplification(second_order: float, first_order: float) -> float:
     return second_order / first_order
 
 
+def _analysis_base_model_matches(analysis) -> bool:
+    stability = analysis.stability
+    if stability is None or stability.analysis_base_model == "unspecified":
+        return True
+    members_by_id = {member.id: member for member in analysis.members}
+    if not stability.eaves_member_ids:
+        return False
+    base_restraints = [
+        members_by_id[member_id].start_restraints
+        for member_id in stability.eaves_member_ids
+        if member_id in members_by_id
+    ]
+    if len(base_restraints) != len(stability.eaves_member_ids):
+        return False
+    if stability.analysis_base_model == "perfectly_pinned":
+        return all(
+            restraints.dx
+            and restraints.dy
+            and restraints.dz
+            and not restraints.rx
+            and not restraints.ry
+            and not restraints.rz
+            for restraints in base_restraints
+        )
+    if stability.analysis_base_model == "fixed":
+        return all(
+            restraints.dx
+            and restraints.dy
+            and restraints.dz
+            and restraints.rx
+            and restraints.ry
+            and restraints.rz
+            for restraints in base_restraints
+        )
+    return False
+
+
 def _member_extrema(
     model,
     declaration,
@@ -157,6 +195,20 @@ def _member_extrema(
             sqrt(sum(value**2 for value in local_displacement_mm)),
         )
     return max_moment, max_displacement
+
+
+def _member_max_axial(
+    model,
+    declaration,
+    *,
+    combination_id: str,
+) -> float:
+    member_length = _length(declaration.start, declaration.end)
+    member = model.members[declaration.id]
+    return max(
+        abs(member.axial(member_length * index / STATION_INTERVALS, combination_id))
+        for index in range(STATION_INTERVALS + 1)
+    )
 
 
 def _member_global_displacement(
@@ -775,17 +827,54 @@ def _p399_evidence(
     )
     stability_definition = analysis.stability
     stability_status: Literal["pass", "fail", "warning", "blocked"]
+    stability_direction_evidence_complete = bool(
+        stability_result
+        and len(stability_result.direction_results) >= 2
+        and all(
+            result.alpha_cr is not None for result in stability_result.direction_results
+        )
+    )
+    stability_base_model_matches = _analysis_base_model_matches(analysis)
+    stability_analysis_basis_ready = bool(
+        stability_definition
+        and stability_base_model_matches
+        and (
+            (
+                stability_definition.analysis_base_model == "perfectly_pinned"
+                and stability_definition.analysis_basis_status
+                == "verified_conservative"
+            )
+            or (
+                stability_definition.analysis_basis_status == "verified"
+                and (
+                    (
+                        stability_definition.analysis_base_model == "unspecified"
+                        and stability_definition.base_stiffness_status == "verified"
+                    )
+                    or stability_definition.physical_connection_stiffness_status
+                    == "verified"
+                )
+            )
+        )
+    )
     if stability_definition is None or stability_result is None:
         stability_status = "blocked"
     elif (
-        stability_result.governing_moment_amplification
+        not stability_result.converged
+        or stability_result.governing_moment_amplification
         > stability_result.amplification_warning_ratio
         or stability_result.governing_displacement_amplification
         > stability_result.amplification_warning_ratio
+        or (
+            stability_result.minimum_alpha_cr is not None
+            and stability_result.minimum_alpha_cr <= 1.0
+        )
     ):
         stability_status = "fail"
     elif (
-        stability_definition.base_stiffness_status == "assumed"
+        not stability_direction_evidence_complete
+        or not stability_analysis_basis_ready
+        or stability_result.simplified_alpha_cr_applicable is False
         or actions_status != "pass"
         or combinations_status != "pass"
     ):
@@ -805,10 +894,45 @@ def _p399_evidence(
             stability_definition.base_stiffness_basis,
             *(
                 [
-                    "Base stiffness is an authored analytical assumption, not a "
-                    "verified connection stiffness."
+                    "The analytical base model is not yet a verified conservative "
+                    "idealisation."
                 ]
-                if stability_definition.base_stiffness_status == "assumed"
+                if not stability_analysis_basis_ready
+                else []
+            ),
+            *(
+                [
+                    "The declared analytical base model does not match the actual "
+                    "design.py member-end restraints."
+                ]
+                if not stability_base_model_matches
+                else []
+            ),
+            *(
+                [
+                    "Physical GPB/anchor rotational stiffness is not checked, but "
+                    "it is not relied upon by the perfectly pinned analysis model."
+                ]
+                if stability_definition.analysis_base_model == "perfectly_pinned"
+                and stability_definition.physical_connection_stiffness_status
+                != "verified"
+                else []
+            ),
+            *(
+                [
+                    "Both sway directions and their NEd/200 NHF displacement "
+                    "checks have not all been authored."
+                ]
+                if not stability_direction_evidence_complete
+                else []
+            ),
+            *(
+                [
+                    "The P399 simplified NHF alpha-cr expression is outside its "
+                    "rafter axial-force applicability limit; a more accurate "
+                    "elastic critical-load analysis is required."
+                ]
+                if stability_result.simplified_alpha_cr_applicable is False
                 else []
             ),
             *(
@@ -849,6 +973,47 @@ def _p399_evidence(
             )
         ]
     )
+    if stability_result is not None:
+        stability_equations.extend(
+            CalculationEquation(
+                label=f"{direction.id} elastic critical load ratio",
+                expression="αcr = h / (200 δNHF)",
+                substitution=(
+                    f"{stability_definition.column_height_m:g} × 1000 / "
+                    f"(200 × {direction.nhf_eaves_displacement_mm:g})"
+                    if stability_definition is not None
+                    and stability_definition.column_height_m is not None
+                    and direction.nhf_eaves_displacement_mm > 0
+                    else "insufficient NHF displacement evidence"
+                ),
+                result=(
+                    direction.alpha_cr
+                    if direction.alpha_cr is not None
+                    else "not available"
+                ),
+            )
+            for direction in stability_result.direction_results
+        )
+        if (
+            stability_result.rafter_design_axial_kN is not None
+            and stability_result.rafter_elastic_critical_load_kN is not None
+            and stability_result.rafter_axial_limit_kN is not None
+        ):
+            stability_equations.append(
+                CalculationEquation(
+                    label="Rafter axial-force applicability",
+                    expression="NEd ≤ 0.09 Ncr",
+                    substitution=(
+                        f"{stability_result.rafter_design_axial_kN:g} ≤ "
+                        f"0.09 × "
+                        f"{stability_result.rafter_elastic_critical_load_kN:g}"
+                    ),
+                    result=(
+                        stability_result.rafter_design_axial_kN
+                        / stability_result.rafter_axial_limit_kN
+                    ),
+                )
+            )
 
     sheets = [
         CalculationSheet(
@@ -1008,22 +1173,70 @@ def _p399_evidence(
                         source="design.py StructuralModel.stability",
                     ),
                     CalculationInput(
-                        symbol="combination",
-                        label="Stability combination",
-                        value=stability_definition.stability_combination_id,
+                        symbol="combinations",
+                        label="Stability combinations",
+                        value=(
+                            ", ".join(
+                                direction.stability_combination_id
+                                for direction in stability_definition.direction_cases
+                            )
+                            or stability_definition.stability_combination_id
+                        ),
                         source="design.py StructuralModel.stability",
                     ),
                     CalculationInput(
-                        symbol="imperfection_case",
-                        label="Imperfection load case",
-                        value=stability_definition.imperfection_case_id,
+                        symbol="imperfection_cases",
+                        label="Imperfection load cases",
+                        value=(
+                            ", ".join(
+                                direction.imperfection_case_id
+                                for direction in stability_definition.direction_cases
+                            )
+                            or stability_definition.imperfection_case_id
+                        ),
                         source=stability_definition.imperfection_basis,
                     ),
                     CalculationInput(
-                        symbol="base_stiffness",
-                        label="Base stiffness status",
-                        value=stability_definition.base_stiffness_status,
+                        symbol="analysis_base_model",
+                        label="Analytical base model",
+                        value=stability_definition.analysis_base_model,
                         source=stability_definition.base_stiffness_basis,
+                    ),
+                    CalculationInput(
+                        symbol="analysis_basis_status",
+                        label="Analytical basis status",
+                        value=stability_definition.analysis_basis_status,
+                        source="design.py StructuralModel.stability",
+                    ),
+                    CalculationInput(
+                        symbol="analysis_base_match",
+                        label="Base model matches member restraints",
+                        value=stability_base_model_matches,
+                        source=(
+                            "Direct comparison with design.py start restraints on "
+                            "the declared eaves/column members"
+                        ),
+                    ),
+                    CalculationInput(
+                        symbol="physical_base_stiffness",
+                        label="Physical connection stiffness",
+                        value=(
+                            stability_definition.physical_connection_stiffness_status
+                        ),
+                        source=(
+                            "Evidence item retained for P399 Connections/Bases; "
+                            "not relied upon by a perfectly pinned model."
+                        ),
+                    ),
+                    CalculationInput(
+                        symbol="nhf_combinations",
+                        label="NEd/200 NHF combinations",
+                        value=", ".join(
+                            direction.nhf_combination_id
+                            for direction in stability_definition.direction_cases
+                        )
+                        or "not authored",
+                        source="design.py StructuralModel.stability",
                     ),
                     CalculationInput(
                         symbol="η_warning",
@@ -1062,18 +1275,69 @@ def _p399_evidence(
                         value=stability_result.converged,
                         source="PyNite iterative P-Delta solve",
                     ),
+                    CalculationInput(
+                        symbol="αcr,min",
+                        label="Governing elastic critical load ratio",
+                        value=(
+                            stability_result.minimum_alpha_cr
+                            if stability_result.minimum_alpha_cr is not None
+                            else "not available"
+                        ),
+                        source="P399 NHF method; minimum of authored sway directions",
+                    ),
+                    CalculationInput(
+                        symbol="direction",
+                        label="Governing sway direction",
+                        value=(
+                            stability_result.governing_direction_id or "not available"
+                        ),
+                        source="Bidirectional stability envelope",
+                    ),
+                    CalculationInput(
+                        symbol="second_order",
+                        label="Second-order analysis required",
+                        value=(
+                            stability_result.second_order_required
+                            if stability_result.second_order_required is not None
+                            else "not available"
+                        ),
+                        source="P399 αcr < 10 threshold",
+                    ),
+                    CalculationInput(
+                        symbol="rafter_axial_significant",
+                        label="Rafter axial force significant",
+                        value=(
+                            stability_result.rafter_axial_force_significant
+                            if stability_result.rafter_axial_force_significant
+                            is not None
+                            else "not available"
+                        ),
+                        source="P399 NEd > 0.09 Ncr applicability check",
+                    ),
                 ]
             ),
             references=basis_references,
             related_member_ids=member_ids,
             related_node_ids=node_ids,
             related_load_case_ids=(
-                [stability_definition.imperfection_case_id]
+                [
+                    direction.imperfection_case_id
+                    for direction in stability_definition.direction_cases
+                ]
+                or [stability_definition.imperfection_case_id]
                 if stability_definition is not None
                 else []
             ),
             related_combination_ids=(
-                [stability_definition.stability_combination_id]
+                [
+                    combination_id
+                    for direction in stability_definition.direction_cases
+                    for combination_id in (
+                        direction.stability_combination_id,
+                        direction.nhf_combination_id,
+                    )
+                ]
+                or [stability_definition.stability_combination_id]
                 if stability_definition is not None
                 else [combination.id]
             ),
@@ -1239,10 +1503,20 @@ def _p399_evidence(
                 "Imperfection load and P-Delta comparison are missing."
                 if stability_result is None
                 else (
-                    f"{stability_result.combination_id}: "
+                    f"{len(stability_result.direction_results)} sway directions; "
                     f"ηM={stability_result.governing_moment_amplification:.3f}, "
-                    f"ηδ={stability_result.governing_displacement_amplification:.3f}; "
-                    f"base stiffness {stability_definition.base_stiffness_status}."
+                    f"ηδ={stability_result.governing_displacement_amplification:.3f}, "
+                    f"αcr,min="
+                    f"{stability_result.minimum_alpha_cr:.2f}; "
+                    f"{stability_definition.analysis_base_model} bases."
+                    if stability_result.minimum_alpha_cr is not None
+                    else (
+                        f"{stability_result.combination_id}: "
+                        f"ηM={stability_result.governing_moment_amplification:.3f}, "
+                        f"ηδ="
+                        f"{stability_result.governing_displacement_amplification:.3f}; "
+                        "NHF αcr evidence incomplete."
+                    )
                 )
             ),
             sheet_ids=["sheet-p399-stability"],
@@ -1486,30 +1760,89 @@ def solve_project_structural(
 
     for combination in combinations:
         model.add_load_combo(combination.id, dict(combination.factors))
-    first_order_stability: dict[str, tuple[float, float]] = {}
+    stability_directions: list[dict[str, Any]] = []
+    if analysis.stability is not None:
+        stability_directions = [
+            direction.model_dump() for direction in analysis.stability.direction_cases
+        ] or [
+            {
+                "id": "authored",
+                "stability_combination_id": (
+                    analysis.stability.stability_combination_id
+                ),
+                "imperfection_case_id": analysis.stability.imperfection_case_id,
+                "nhf_combination_id": "",
+                "horizontal_axis": "x",
+            }
+        ]
+    first_order_stability: dict[tuple[str, str], tuple[float, float]] = {}
+    first_order_nhf_eaves_displacement_mm: dict[str, float] = {}
+    first_order_rafter_axial_kN: dict[str, float] = {}
     stability_result: StabilityResult | None = None
     try:
         if analysis.stability is None:
             model.analyze(check_statics=False, log=False)
         else:
-            stability_combination_id = analysis.stability.stability_combination_id
             model.analyze_linear(check_statics=False, log=False)
-            for declaration in analysis.members:
-                first_order_stability[declaration.id] = _member_extrema(
-                    model,
-                    declaration,
-                    combination_id=stability_combination_id,
-                    point_loads=[
-                        load
-                        for load in analysis.member_loads
-                        if load.member_id == declaration.id
-                    ],
-                    distributed_loads=[
-                        load
-                        for load in analysis.member_distributed_loads
-                        if load.member_id == declaration.id
-                    ],
+            members_by_id = {
+                declaration.id: declaration for declaration in analysis.members
+            }
+            for stability_direction in stability_directions:
+                stability_combination_id = stability_direction[
+                    "stability_combination_id"
+                ]
+                for declaration in analysis.members:
+                    first_order_stability[
+                        (stability_direction["id"], declaration.id)
+                    ] = _member_extrema(
+                        model,
+                        declaration,
+                        combination_id=stability_combination_id,
+                        point_loads=[
+                            load
+                            for load in analysis.member_loads
+                            if load.member_id == declaration.id
+                        ],
+                        distributed_loads=[
+                            load
+                            for load in analysis.member_distributed_loads
+                            if load.member_id == declaration.id
+                        ],
+                    )
+                first_order_rafter_axial_kN[stability_direction["id"]] = max(
+                    (
+                        _member_max_axial(
+                            model,
+                            members_by_id[member_id],
+                            combination_id=stability_combination_id,
+                        )
+                        for member_id in analysis.stability.rafter_member_ids
+                    ),
+                    default=0.0,
                 )
+                nhf_combination_id = stability_direction["nhf_combination_id"]
+                if nhf_combination_id and analysis.stability.eaves_member_ids:
+                    axis_name = stability_direction["horizontal_axis"]
+                    first_order_nhf_eaves_displacement_mm[stability_direction["id"]] = (
+                        max(
+                            abs(
+                                getattr(
+                                    _member_global_displacement(
+                                        model,
+                                        member_id=member_id,
+                                        distance_m=_length(
+                                            members_by_id[member_id].start,
+                                            members_by_id[member_id].end,
+                                        ),
+                                        combination_id=nhf_combination_id,
+                                    ),
+                                    axis_name,
+                                )
+                            )
+                            * 1000.0
+                            for member_id in analysis.stability.eaves_member_ids
+                        )
+                    )
             model.analyze_PDelta(log=False)
     except Exception as exc:
         raise StructuralAnalysisError(
@@ -1528,55 +1861,164 @@ def solve_project_structural(
         combination_selection = "governing_working_envelope"
 
     if analysis.stability is not None:
-        member_comparisons: list[MemberStabilityComparison] = []
-        for declaration in analysis.members:
-            point_loads = [
-                load
-                for load in analysis.member_loads
-                if load.member_id == declaration.id
-            ]
-            distributed_loads = [
-                load
-                for load in analysis.member_distributed_loads
-                if load.member_id == declaration.id
-            ]
-            second_moment, second_displacement = _member_extrema(
-                model,
-                declaration,
-                combination_id=analysis.stability.stability_combination_id,
-                point_loads=point_loads,
-                distributed_loads=distributed_loads,
+        direction_results: list[StabilityDirectionResult] = []
+        for stability_direction in stability_directions:
+            member_comparisons: list[MemberStabilityComparison] = []
+            for declaration in analysis.members:
+                point_loads = [
+                    load
+                    for load in analysis.member_loads
+                    if load.member_id == declaration.id
+                ]
+                distributed_loads = [
+                    load
+                    for load in analysis.member_distributed_loads
+                    if load.member_id == declaration.id
+                ]
+                second_moment, second_displacement = _member_extrema(
+                    model,
+                    declaration,
+                    combination_id=stability_direction["stability_combination_id"],
+                    point_loads=point_loads,
+                    distributed_loads=distributed_loads,
+                )
+                first_moment, first_displacement = first_order_stability[
+                    (stability_direction["id"], declaration.id)
+                ]
+                member_comparisons.append(
+                    MemberStabilityComparison(
+                        member_id=declaration.id,
+                        first_order_max_moment_kNm=first_moment,
+                        second_order_max_moment_kNm=second_moment,
+                        moment_amplification=_amplification(
+                            second_moment, first_moment
+                        ),
+                        first_order_max_displacement_mm=first_displacement,
+                        second_order_max_displacement_mm=second_displacement,
+                        displacement_amplification=_amplification(
+                            second_displacement, first_displacement
+                        ),
+                    )
+                )
+            nhf_displacement_mm = first_order_nhf_eaves_displacement_mm.get(
+                stability_direction["id"], 0.0
             )
-            first_moment, first_displacement = first_order_stability[declaration.id]
-            member_comparisons.append(
-                MemberStabilityComparison(
-                    member_id=declaration.id,
-                    first_order_max_moment_kNm=first_moment,
-                    second_order_max_moment_kNm=second_moment,
-                    moment_amplification=_amplification(second_moment, first_moment),
-                    first_order_max_displacement_mm=first_displacement,
-                    second_order_max_displacement_mm=second_displacement,
-                    displacement_amplification=_amplification(
-                        second_displacement, first_displacement
+            alpha_cr = (
+                analysis.stability.column_height_m
+                * 1000.0
+                / (200.0 * nhf_displacement_mm)
+                if analysis.stability.column_height_m is not None
+                and nhf_displacement_mm > 1e-12
+                else None
+            )
+            direction_results.append(
+                StabilityDirectionResult(
+                    id=stability_direction["id"],
+                    combination_id=stability_direction["stability_combination_id"],
+                    imperfection_case_id=stability_direction["imperfection_case_id"],
+                    nhf_combination_id=stability_direction["nhf_combination_id"],
+                    horizontal_axis=(
+                        "x" if stability_direction["horizontal_axis"] == "x" else "y"
                     ),
+                    converged=True,
+                    governing_moment_amplification=max(
+                        comparison.moment_amplification
+                        for comparison in member_comparisons
+                    ),
+                    governing_displacement_amplification=max(
+                        comparison.displacement_amplification
+                        for comparison in member_comparisons
+                    ),
+                    nhf_eaves_displacement_mm=nhf_displacement_mm,
+                    alpha_cr=alpha_cr,
+                    member_comparisons=member_comparisons,
                 )
             )
+        governing_direction = max(
+            direction_results,
+            key=lambda result: max(
+                result.governing_moment_amplification,
+                result.governing_displacement_amplification,
+            ),
+        )
+        alpha_cr_values = [
+            result.alpha_cr
+            for result in direction_results
+            if result.alpha_cr is not None
+        ]
+        rafter_design_axial_kN = (
+            max(first_order_rafter_axial_kN.values())
+            if analysis.stability.rafter_member_ids
+            else None
+        )
+        rafter_elastic_critical_load_kN: float | None = None
+        if analysis.stability.rafter_member_ids:
+            declarations_by_id = {
+                declaration.id: declaration for declaration in analysis.members
+            }
+            sections_by_id = {section.id: section for section in analysis.sections}
+            materials_by_id = {material.id: material for material in analysis.materials}
+            rafter_length_m = sum(
+                _length(
+                    declarations_by_id[member_id].start,
+                    declarations_by_id[member_id].end,
+                )
+                for member_id in analysis.stability.rafter_member_ids
+            )
+            minimum_ei_kNm2 = min(
+                materials_by_id[
+                    declarations_by_id[member_id].material_id
+                ].elastic_modulus_kN_m2
+                * max(
+                    sections_by_id[declarations_by_id[member_id].section_id].iy_m4,
+                    sections_by_id[declarations_by_id[member_id].section_id].iz_m4,
+                )
+                for member_id in analysis.stability.rafter_member_ids
+            )
+            rafter_elastic_critical_load_kN = (
+                pi**2 * minimum_ei_kNm2 / rafter_length_m**2
+            )
+        rafter_axial_limit_kN = (
+            0.09 * rafter_elastic_critical_load_kN
+            if rafter_elastic_critical_load_kN is not None
+            else None
+        )
+        rafter_axial_force_significant = (
+            rafter_design_axial_kN > rafter_axial_limit_kN
+            if rafter_design_axial_kN is not None and rafter_axial_limit_kN is not None
+            else None
+        )
         stability_result = StabilityResult(
             method=analysis.stability.method,
-            combination_id=analysis.stability.stability_combination_id,
-            imperfection_case_id=analysis.stability.imperfection_case_id,
-            converged=True,
+            combination_id=governing_direction.combination_id,
+            imperfection_case_id=governing_direction.imperfection_case_id,
+            converged=all(result.converged for result in direction_results),
             amplification_warning_ratio=(
                 analysis.stability.amplification_warning_ratio
             ),
             governing_moment_amplification=max(
-                comparison.moment_amplification for comparison in member_comparisons
+                result.governing_moment_amplification for result in direction_results
             ),
             governing_displacement_amplification=max(
-                comparison.displacement_amplification
-                for comparison in member_comparisons
+                result.governing_displacement_amplification
+                for result in direction_results
             ),
-            member_comparisons=member_comparisons,
+            member_comparisons=governing_direction.member_comparisons,
+            direction_results=direction_results,
+            governing_direction_id=governing_direction.id,
+            minimum_alpha_cr=(min(alpha_cr_values) if alpha_cr_values else None),
+            second_order_required=(
+                min(alpha_cr_values) < 10.0 if alpha_cr_values else None
+            ),
+            rafter_design_axial_kN=rafter_design_axial_kN,
+            rafter_elastic_critical_load_kN=rafter_elastic_critical_load_kN,
+            rafter_axial_limit_kN=rafter_axial_limit_kN,
+            rafter_axial_force_significant=rafter_axial_force_significant,
+            simplified_alpha_cr_applicable=(
+                not rafter_axial_force_significant
+                if rafter_axial_force_significant is not None
+                else None
+            ),
         )
 
     structural_nodes = [

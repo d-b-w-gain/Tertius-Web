@@ -170,6 +170,14 @@ class LoadCombination(StructuralContract):
     factors: dict[str, float]
 
 
+class StabilityDirectionDefinition(StructuralContract):
+    id: str
+    stability_combination_id: str
+    imperfection_case_id: str
+    nhf_combination_id: str
+    horizontal_axis: Literal["x", "y"] = "x"
+
+
 class StabilityDefinition(StructuralContract):
     method: Literal["p_delta"]
     stability_combination_id: str
@@ -178,6 +186,19 @@ class StabilityDefinition(StructuralContract):
     base_stiffness_basis: str
     base_stiffness_status: Literal["verified", "assumed"]
     amplification_warning_ratio: float = Field(default=1.1, gt=1.0)
+    direction_cases: list[StabilityDirectionDefinition] = Field(default_factory=list)
+    eaves_member_ids: list[str] = Field(default_factory=list)
+    rafter_member_ids: list[str] = Field(default_factory=list)
+    column_height_m: float | None = Field(default=None, gt=0)
+    analysis_base_model: Literal[
+        "unspecified", "perfectly_pinned", "rotational_spring", "fixed"
+    ] = "unspecified"
+    analysis_basis_status: Literal["assumed", "verified", "verified_conservative"] = (
+        "assumed"
+    )
+    physical_connection_stiffness_status: Literal[
+        "not_checked", "not_relied_upon", "verified"
+    ] = "not_checked"
 
 
 class MemberStabilityComparison(StructuralContract):
@@ -190,6 +211,20 @@ class MemberStabilityComparison(StructuralContract):
     displacement_amplification: float
 
 
+class StabilityDirectionResult(StructuralContract):
+    id: str
+    combination_id: str
+    imperfection_case_id: str
+    nhf_combination_id: str
+    horizontal_axis: Literal["x", "y"]
+    converged: bool
+    governing_moment_amplification: float
+    governing_displacement_amplification: float
+    nhf_eaves_displacement_mm: float
+    alpha_cr: float | None = None
+    member_comparisons: list[MemberStabilityComparison]
+
+
 class StabilityResult(StructuralContract):
     method: Literal["p_delta"]
     combination_id: str
@@ -199,6 +234,15 @@ class StabilityResult(StructuralContract):
     governing_moment_amplification: float
     governing_displacement_amplification: float
     member_comparisons: list[MemberStabilityComparison]
+    direction_results: list[StabilityDirectionResult] = Field(default_factory=list)
+    governing_direction_id: str | None = None
+    minimum_alpha_cr: float | None = None
+    second_order_required: bool | None = None
+    rafter_design_axial_kN: float | None = None
+    rafter_elastic_critical_load_kN: float | None = None
+    rafter_axial_limit_kN: float | None = None
+    rafter_axial_force_significant: bool | None = None
+    simplified_alpha_cr_applicable: bool | None = None
 
 
 class NodeReaction(StructuralContract):

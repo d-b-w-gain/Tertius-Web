@@ -358,14 +358,10 @@ def _wind_basis_declaration(
         "q_z_kPa",
     }
     result: dict[str, Any] = {
-        field: str(_keyword_value(keywords, field, names))
-        for field in text_fields
+        field: str(_keyword_value(keywords, field, names)) for field in text_fields
     }
     result.update(
-        {
-            field: float(_keyword_value(keywords, field, names))
-            for field in float_fields
-        }
+        {field: float(_keyword_value(keywords, field, names)) for field in float_fields}
     )
     result["annual_recurrence_interval_years"] = int(
         _keyword_value(
@@ -704,9 +700,7 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                     case_id = _load_case_id(
                         str(_keyword_value(keywords, "case_id", names))
                     )
-                    case_label = str(
-                        _keyword_value(keywords, "case_label", names)
-                    )
+                    case_label = str(_keyword_value(keywords, "case_label", names))
                     coefficient = float(
                         _keyword_value(
                             keywords,
@@ -721,8 +715,7 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             "case": "wind",
                             "case_id": case_id,
                             "component_id": loaded_component.component_id,
-                            "pressure_kPa": abs(coefficient)
-                            * float(basis["q_z_kPa"]),
+                            "pressure_kPa": abs(coefficient) * float(basis["q_z_kPa"]),
                             "area_m2": float(
                                 _keyword_value(keywords, "area_m2", names)
                             ),
@@ -972,6 +965,13 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "base_stiffness_basis",
                         "base_stiffness_status",
                         "amplification_warning_ratio",
+                        "direction_cases",
+                        "eaves_member_ids",
+                        "rafter_member_ids",
+                        "column_height_m",
+                        "analysis_base_model",
+                        "analysis_basis_status",
+                        "physical_connection_stiffness_status",
                     }
                     unexpected = sorted(set(keywords) - allowed)
                     if unexpected:
@@ -1006,6 +1006,54 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 "amplification_warning_ratio",
                                 names,
                                 default=1.1,
+                            )
+                        ),
+                        "direction_cases": [
+                            {
+                                **dict(direction),
+                                "imperfection_case_id": _load_case_id(
+                                    str(direction["imperfection_case_id"])
+                                ),
+                            }
+                            for direction in _keyword_value(
+                                keywords, "direction_cases", names, default=()
+                            )
+                        ],
+                        "eaves_member_ids": list(
+                            _keyword_value(
+                                keywords, "eaves_member_ids", names, default=()
+                            )
+                        ),
+                        "rafter_member_ids": list(
+                            _keyword_value(
+                                keywords, "rafter_member_ids", names, default=()
+                            )
+                        ),
+                        "column_height_m": _keyword_value(
+                            keywords, "column_height_m", names, default=None
+                        ),
+                        "analysis_base_model": str(
+                            _keyword_value(
+                                keywords,
+                                "analysis_base_model",
+                                names,
+                                default="unspecified",
+                            )
+                        ),
+                        "analysis_basis_status": str(
+                            _keyword_value(
+                                keywords,
+                                "analysis_basis_status",
+                                names,
+                                default="assumed",
+                            )
+                        ),
+                        "physical_connection_stiffness_status": str(
+                            _keyword_value(
+                                keywords,
+                                "physical_connection_stiffness_status",
+                                names,
+                                default="not_checked",
                             )
                         ),
                     }

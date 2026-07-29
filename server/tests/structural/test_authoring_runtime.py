@@ -324,6 +324,20 @@ def test_authored_point_load_and_stability_basis_are_emitted_together():
         imperfection_basis="Explicit test imperfection.",
         base_stiffness_basis="Assumed fixed base.",
         base_stiffness_status="assumed",
+        direction_cases=(
+            {
+                "id": "+X",
+                "stability_combination_id": "ULS-STABILITY",
+                "imperfection_case_id": "imperfection-x",
+                "nhf_combination_id": "ULS-STABILITY",
+                "horizontal_axis": "x",
+            },
+        ),
+        eaves_member_ids=("column-axis",),
+        column_height_m=2.0,
+        analysis_base_model="perfectly_pinned",
+        analysis_basis_status="verified_conservative",
+        physical_connection_stiffness_status="not_relied_upon",
     )
     model.assembly([column, block], label="frame")
 
@@ -332,6 +346,14 @@ def test_authored_point_load_and_stability_basis_are_emitted_together():
     assert analysis["member_loads"][0]["source_load_id"] is None
     assert analysis["load_cases"][0]["category"] == "imperfection"
     assert analysis["stability"]["stability_combination_id"] == "ULS-STABILITY"
+    assert analysis["stability"]["direction_cases"][0] == {
+        "id": "+X",
+        "stability_combination_id": "ULS-STABILITY",
+        "imperfection_case_id": "case-imperfection-x",
+        "nhf_combination_id": "ULS-STABILITY",
+        "horizontal_axis": "x",
+    }
+    assert analysis["stability"]["analysis_base_model"] == "perfectly_pinned"
 
 
 def test_catalogue_section_registers_normalized_solver_data_and_provenance():
