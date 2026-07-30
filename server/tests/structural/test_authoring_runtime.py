@@ -468,6 +468,33 @@ def test_catalogue_member_self_weight_and_service_combination_are_authored():
         limit_state="serviceability",
         factors={"dead": 1.0},
     )
+    model.load_combination(
+        id="ULS-G",
+        label="Factored permanent actions",
+        limit_state="ultimate",
+        factors={"dead": 1.2},
+    )
+    model.member_stability_verification(
+        pack_id="as_nzs_4600_2018_ewm_member",
+        combination_ids=("ULS-G",),
+        segments=(
+            {
+                "id": "beam-whole-length",
+                "member_id": "beam-axis",
+                "start_distance_m": 0.0,
+                "end_distance_m": 2.0,
+                "minor_axis_effective_length_factor": 1.0,
+                "torsional_effective_length_factor": 1.0,
+                "lateral_bending_restraint": "unverified",
+                "restraint_status": "assumed",
+                "restraint_basis": "Test segment has no credited lateral restraint.",
+                "distortional_buckling_status": "unverified",
+                "distortional_buckling_basis": (
+                    "No distortional capacity is connected in this test."
+                ),
+            },
+        ),
+    )
     model.assembly([beam, block], label="gravity")
 
     manifest = model.manifest()
@@ -477,6 +504,10 @@ def test_catalogue_member_self_weight_and_service_combination_are_authored():
     assert line_load["end_distance_m"] == pytest.approx(2.0)
     assert line_load["source_kind"] == "self_weight"
     assert manifest["analysis"]["load_combinations"][0]["factors"] == {"case-dead": 1.0}
+    member_verification = manifest["analysis"]["member_stability_verification"]
+    assert member_verification["pack_id"] == "as_nzs_4600_2018_ewm_member"
+    assert member_verification["combination_ids"] == ["ULS-G"]
+    assert member_verification["segments"][0]["member_id"] == "beam-axis"
 
 
 def test_named_opposite_wind_cases_remain_distinct_in_manifest():

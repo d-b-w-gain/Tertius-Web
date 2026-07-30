@@ -496,10 +496,18 @@ structural_assembly = structure.assembly""",
                     "lip": 14.5,
                     "fy": 450,
                     "E": 200000,
+                    "G": 80000,
+                    "A": 409,
                     "Ae": 329,
                     "Zxe": 12300,
                     "d1": 92.5,
                     "t": 1.9,
+                    "rx": 40.6,
+                    "ry": 18.7,
+                    "x0": 40.4,
+                    "ro2": 3630,
+                    "J": 492,
+                    "Iw": 311000000,
                 },
             },
         }
@@ -507,6 +515,43 @@ structural_assembly = structure.assembly""",
     capture_data["analysis"]["cross_section_verification"] = {
         "pack_id": "as_nzs_4600_2018_ewm",
         "combination_ids": ["ULS-STABILITY+X", "ULS-STABILITY-X"],
+        "off_axis_tolerance": 1e-6,
+    }
+    capture_data["analysis"]["member_stability_verification"] = {
+        "pack_id": "as_nzs_4600_2018_ewm_member",
+        "combination_ids": ["ULS-STABILITY+X", "ULS-STABILITY-X"],
+        "segments": [
+            {
+                "id": "column-segment",
+                "member_id": "column-axis",
+                "start_distance_m": 0.0,
+                "end_distance_m": 2.0,
+                "minor_axis_effective_length_factor": 1.0,
+                "torsional_effective_length_factor": 1.0,
+                "lateral_bending_restraint": "continuous_compression_flange",
+                "restraint_status": "verified",
+                "restraint_basis": "Verified test restraint.",
+                "distortional_buckling_status": "verified",
+                "distortional_buckling_basis": (
+                    "Verified distortional resistance for the test."
+                ),
+            },
+            {
+                "id": "beam-segment",
+                "member_id": "beam-axis",
+                "start_distance_m": 0.0,
+                "end_distance_m": 2.0,
+                "minor_axis_effective_length_factor": 1.0,
+                "torsional_effective_length_factor": 1.0,
+                "lateral_bending_restraint": "continuous_compression_flange",
+                "restraint_status": "verified",
+                "restraint_basis": "Verified test restraint.",
+                "distortional_buckling_status": "verified",
+                "distortional_buckling_basis": (
+                    "Verified distortional resistance for the test."
+                ),
+            },
+        ],
         "off_axis_tolerance": 1e-6,
     }
     capture = ProjectStructuralCapture.model_validate(capture_data)
@@ -524,6 +569,7 @@ structural_assembly = structure.assembly""",
     stages = {stage.id: stage for stage in snapshot.verification_stages}
     assert stages["stability"].status == "pass"
     assert stages["cross_section"].status == "pass"
+    assert stages["member_stability"].status == "pass"
     assert len(snapshot.cross_section_checks) == 2
     assert all(check.status == "pass" for check in snapshot.cross_section_checks)
     assert all(
@@ -541,6 +587,15 @@ structural_assembly = structure.assembly""",
         for check in snapshot.cross_section_checks
     )
     assert all(check.status == "pass" for check in snapshot.member_checks)
+    assert len(snapshot.member_stability_checks) == 2
+    assert all(
+        check.status == "pass" for check in snapshot.member_stability_checks
+    )
+    assert all(
+        check.design_member_compression_capacity_kN is not None
+        and check.design_member_compression_capacity_kN > 0
+        for check in snapshot.member_stability_checks
+    )
     stability_sheet = next(
         sheet for sheet in snapshot.calculation_sheets if sheet.stage_id == "stability"
     )
@@ -566,6 +621,43 @@ structural_assembly = structure.assembly""",
         equation.expression
         == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
         for equation in cross_section_sheet.equations
+    )
+    member_stability_sheet = next(
+        sheet
+        for sheet in snapshot.calculation_sheets
+        if sheet.stage_id == "member_stability"
+    )
+    assert member_stability_sheet.status == "pass"
+    assert any(
+        equation.expression == "u_N = N*/(phi_c N_c)"
+        for equation in member_stability_sheet.equations
+    )
+
+    unrestrained_data = deepcopy(capture_data)
+    for segment in unrestrained_data["analysis"][
+        "member_stability_verification"
+    ]["segments"]:
+        segment["lateral_bending_restraint"] = "unverified"
+        segment["restraint_status"] = "assumed"
+    unrestrained_snapshot = solve_project_structural(
+        ProjectStructuralCapture.model_validate(unrestrained_data),
+        combination_id="ULS-STABILITY+X",
+    )
+    unrestrained_stages = {
+        stage.id: stage for stage in unrestrained_snapshot.verification_stages
+    }
+    assert unrestrained_stages["member_stability"].status == "unsupported"
+    assert all(
+        check.status == "unsupported"
+        for check in unrestrained_snapshot.member_stability_checks
+    )
+    assert all(
+        check.design_member_compression_capacity_kN is not None
+        for check in unrestrained_snapshot.member_stability_checks
+    )
+    assert all(
+        check.status == "not_checked"
+        for check in unrestrained_snapshot.member_checks
     )
 
     overloaded_data = deepcopy(capture_data)

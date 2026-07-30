@@ -5,7 +5,11 @@ from importlib.metadata import version
 from math import pi, sqrt
 from typing import Any, Literal
 
-from .capacity_packs import CapacityPackError, cross_section_capacity
+from .capacity_packs import (
+    CapacityPackError,
+    cross_section_capacity,
+    member_compression_capacity,
+)
 from .contracts import (
     CalculationEquation,
     CalculationInput,
@@ -21,6 +25,7 @@ from .contracts import (
     MemberDistributedLoad,
     MemberResult,
     MemberStabilityComparison,
+    MemberStabilityCheck,
     NodeReaction,
     ProjectStructuralCapture,
     ServiceabilityCheck,
@@ -411,6 +416,244 @@ def _cross_section_checks(
     return checks
 
 
+def _member_stability_checks(
+    model,
+    analysis,
+) -> list[MemberStabilityCheck]:
+    definition = analysis.member_stability_verification
+    if definition is None:
+        return []
+
+    members_by_id = {member.id: member for member in analysis.members}
+    sections_by_id = {section.id: section for section in analysis.sections}
+    checks: list[MemberStabilityCheck] = []
+    for segment in definition.segments:
+        declaration = members_by_id[segment.member_id]
+        section = sections_by_id[declaration.section_id]
+        unbraced_length_m = segment.end_distance_m - segment.start_distance_m
+        try:
+            capacity = member_compression_capacity(
+                definition.pack_id,
+                section,
+                unbraced_length_m=unbraced_length_m,
+                minor_axis_effective_length_factor=(
+                    segment.minor_axis_effective_length_factor
+                ),
+                torsional_effective_length_factor=(
+                    segment.torsional_effective_length_factor
+                ),
+            )
+        except CapacityPackError as exc:
+            checks.append(
+                MemberStabilityCheck(
+                    segment_id=segment.id,
+                    member_id=segment.member_id,
+                    label=f"{declaration.label} member stability",
+                    pack_id=definition.pack_id,
+                    status="unsupported",
+                    segment_start_m=segment.start_distance_m,
+                    segment_end_m=segment.end_distance_m,
+                    unbraced_length_m=unbraced_length_m,
+                    lateral_bending_restraint=(
+                        segment.lateral_bending_restraint
+                    ),
+                    restraint_status=segment.restraint_status,
+                    distortional_buckling_status=(
+                        segment.distortional_buckling_status
+                    ),
+                    basis=f"Member pack could not evaluate this segment: {exc}",
+                    assumptions=[
+                        "No member resistance has been inferred from incomplete data."
+                    ],
+                )
+            )
+            continue
+
+        station_distances = {
+            distance
+            for distance in _member_station_distances(analysis, declaration)
+            if (
+                segment.start_distance_m
+                <= distance
+                <= segment.end_distance_m
+            )
+        }
+        station_distances.update(
+            (segment.start_distance_m, segment.end_distance_m)
+        )
+        governing: dict[str, float | str] | None = None
+        off_axis_exceeded = False
+        lateral_bending_unverified = False
+        member = model.members[declaration.id]
+        for combination_id in definition.combination_ids:
+            for distance in sorted(station_distances):
+                axial_kN = abs(member.axial(distance, combination_id))
+                major_moment_kNm = abs(
+                    member.moment("Mz", distance, combination_id)
+                )
+                minor_moment_kNm = abs(
+                    member.moment("My", distance, combination_id)
+                )
+                off_axis_shear_kN = abs(
+                    member.shear("Fz", distance, combination_id)
+                )
+                torsion_kNm = abs(member.torque(distance, combination_id))
+                axial_utilisation = (
+                    axial_kN
+                    / capacity.design_member_compression_capacity_kN
+                )
+                has_verified_lateral_restraint = (
+                    segment.lateral_bending_restraint
+                    == "continuous_compression_flange"
+                    and segment.restraint_status == "verified"
+                )
+                if major_moment_kNm > definition.off_axis_tolerance:
+                    lateral_bending_unverified |= not has_verified_lateral_restraint
+                axial_bending_utilisation = (
+                    axial_utilisation
+                    + major_moment_kNm
+                    / capacity.design_major_bending_capacity_kNm
+                )
+                utilisation = (
+                    axial_bending_utilisation
+                    if has_verified_lateral_restraint
+                    else axial_utilisation
+                )
+                off_axis_exceeded |= max(
+                    minor_moment_kNm,
+                    off_axis_shear_kN,
+                    torsion_kNm,
+                ) > definition.off_axis_tolerance
+                candidate: dict[str, float | str] = {
+                    "combination_id": combination_id,
+                    "distance": distance,
+                    "axial": axial_kN,
+                    "major_moment": major_moment_kNm,
+                    "axial_utilisation": axial_utilisation,
+                    "axial_bending_utilisation": axial_bending_utilisation,
+                    "utilisation": utilisation,
+                }
+                if (
+                    governing is None
+                    or float(candidate["utilisation"])
+                    > float(governing["utilisation"])
+                ):
+                    governing = candidate
+
+        if governing is None:
+            raise StructuralAnalysisError(
+                f"member-stability segment {segment.id!r} has no stations"
+            )
+        axial_fails = float(governing["axial_utilisation"]) > 1.0
+        combined_fails = float(governing["axial_bending_utilisation"]) > 1.0
+        distortional_buckling_unverified = (
+            segment.distortional_buckling_status != "verified"
+        )
+        status: Literal["pass", "fail", "unsupported"] = (
+            "fail"
+            if axial_fails
+            else "unsupported"
+            if (
+                lateral_bending_unverified
+                or distortional_buckling_unverified
+                or off_axis_exceeded
+            )
+            else "fail"
+            if combined_fails
+            else "pass"
+        )
+        checks.append(
+            MemberStabilityCheck(
+                segment_id=segment.id,
+                member_id=segment.member_id,
+                label=f"{declaration.label} member stability",
+                pack_id=definition.pack_id,
+                status=status,
+                governing_combination_id=str(governing["combination_id"]),
+                governing_station_m=float(governing["distance"]),
+                segment_start_m=segment.start_distance_m,
+                segment_end_m=segment.end_distance_m,
+                unbraced_length_m=unbraced_length_m,
+                axial_kN=float(governing["axial"]),
+                major_moment_kNm=float(governing["major_moment"]),
+                elastic_flexural_buckling_stress_MPa=(
+                    capacity.elastic_flexural_buckling_stress_MPa
+                ),
+                elastic_torsional_buckling_stress_MPa=(
+                    capacity.elastic_torsional_buckling_stress_MPa
+                ),
+                elastic_flexural_torsional_buckling_stress_MPa=(
+                    capacity.elastic_flexural_torsional_buckling_stress_MPa
+                ),
+                nominal_global_buckling_stress_MPa=(
+                    capacity.nominal_global_buckling_stress_MPa
+                ),
+                design_member_compression_capacity_kN=(
+                    capacity.design_member_compression_capacity_kN
+                ),
+                design_major_bending_capacity_kNm=(
+                    capacity.design_major_bending_capacity_kNm
+                ),
+                axial_utilisation=float(governing["axial_utilisation"]),
+                axial_bending_utilisation=(
+                    float(governing["axial_bending_utilisation"])
+                    if not lateral_bending_unverified
+                    else None
+                ),
+                governing_utilisation=(
+                    float(governing["utilisation"])
+                    if not lateral_bending_unverified
+                    else None
+                ),
+                lateral_bending_restraint=segment.lateral_bending_restraint,
+                restraint_status=segment.restraint_status,
+                distortional_buckling_status=(
+                    segment.distortional_buckling_status
+                ),
+                section_record_sha256=capacity.section_record_sha256,
+                basis=capacity.basis,
+                assumptions=[
+                    segment.restraint_basis,
+                    segment.distortional_buckling_basis,
+                    (
+                        "Absolute axial demand is treated as compression; tension "
+                        "is not used to improve the result."
+                    ),
+                    *(
+                        [
+                            "Major-axis bending is present, but restraint to the "
+                            "compression flange and twist is not verified for every "
+                            "governing combination. Lateral-torsional resistance and "
+                            "the combined member utilisation therefore remain "
+                            "unsupported."
+                        ]
+                        if lateral_bending_unverified
+                        else []
+                    ),
+                    *(
+                        [
+                            "Distortional buckling resistance is not verified; "
+                            "the global compression calculation cannot by itself "
+                            "complete the member check."
+                        ]
+                        if distortional_buckling_unverified
+                        else []
+                    ),
+                    *(
+                        [
+                            "Minor-axis bending, off-axis shear, or torsion exceeds "
+                            "the authored tolerance; the member pack does not cover "
+                            "that action."
+                        ]
+                        if off_axis_exceeded
+                        else []
+                    ),
+                ],
+            )
+        )
+    return checks
+
+
 def _member_max_axial(
     model,
     declaration,
@@ -675,6 +918,7 @@ def _p399_evidence(
     member_results: list[MemberResult],
     member_checks: list[MemberCheck],
     cross_section_checks: list[MemberCrossSectionCheck],
+    member_stability_checks: list[MemberStabilityCheck],
     serviceability_checks: list[ServiceabilityCheck],
     equilibrium_status: Literal["pass", "fail"],
     residual: float,
@@ -1215,6 +1459,111 @@ def _p399_evidence(
         )
     ]
 
+    member_stability_definition = analysis.member_stability_verification
+    member_stability_status: Literal[
+        "pass", "fail", "not_checked", "unsupported", "blocked"
+    ]
+    if member_stability_definition is None:
+        member_stability_status = "not_checked"
+    elif cross_section_status != "pass":
+        member_stability_status = "blocked"
+    elif not member_stability_checks:
+        member_stability_status = "not_checked"
+    elif any(check.status == "fail" for check in member_stability_checks):
+        member_stability_status = "fail"
+    elif any(check.status == "unsupported" for check in member_stability_checks):
+        member_stability_status = "unsupported"
+    elif all(check.status == "pass" for check in member_stability_checks):
+        member_stability_status = "pass"
+    else:
+        member_stability_status = "not_checked"
+
+    member_stability_equations = [
+        equation
+        for check in member_stability_checks
+        if check.design_member_compression_capacity_kN is not None
+        for equation in (
+            CalculationEquation(
+                label=f"{check.segment_id} flexural-torsional elastic buckling",
+                expression=(
+                    "Fe,FT = (Fey + Fez)/(2β) "
+                    "[1 - sqrt(1 - 4β Fey Fez/(Fey + Fez)²)]"
+                ),
+                substitution=(
+                    f"Fey/Fez from Lb={check.unbraced_length_m:g} m; "
+                    f"Fe,FT={check.elastic_flexural_torsional_buckling_stress_MPa:g}"
+                ),
+                result=(
+                    check.elastic_flexural_torsional_buckling_stress_MPa
+                    or 0.0
+                ),
+                unit="MPa",
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} global compression utilisation",
+                expression="u_N = N*/(phi_c N_c)",
+                substitution=(
+                    f"{check.axial_kN:g}/"
+                    f"{check.design_member_compression_capacity_kN:g}"
+                ),
+                result=check.axial_utilisation or 0.0,
+            ),
+        )
+    ]
+    member_stability_outputs = [
+        output
+        for check in member_stability_checks
+        for output in (
+            CalculationInput(
+                symbol=f"phi_c N_c,{check.segment_id}",
+                label=f"{check.label} design member compression resistance",
+                value=(
+                    check.design_member_compression_capacity_kN
+                    if check.design_member_compression_capacity_kN is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN"
+                    if check.design_member_compression_capacity_kN is not None
+                    else None
+                ),
+                source=check.basis,
+            ),
+            CalculationInput(
+                symbol=f"u_N,{check.segment_id}",
+                label=f"{check.label} global compression utilisation",
+                value=(
+                    check.axial_utilisation
+                    if check.axial_utilisation is not None
+                    else check.status
+                ),
+                source=(
+                    f"{check.governing_combination_id or 'no valid envelope'} at "
+                    f"{check.governing_station_m or 0:g} m"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"LTB,{check.segment_id}",
+                label=f"{check.label} lateral-bending restraint",
+                value=(
+                    f"{check.lateral_bending_restraint} "
+                    f"({check.restraint_status})"
+                ),
+                source=check.assumptions[0] if check.assumptions else check.basis,
+            ),
+            CalculationInput(
+                symbol=f"distortional,{check.segment_id}",
+                label=f"{check.label} distortional buckling",
+                value=check.distortional_buckling_status,
+                source=(
+                    check.assumptions[1]
+                    if len(check.assumptions) > 1
+                    else check.basis
+                ),
+            ),
+        )
+    ]
+
     stability_assumptions = (
         [
             "Equivalent horizontal forces/geometric imperfections are not authored.",
@@ -1731,16 +2080,59 @@ def _p399_evidence(
             id="sheet-p399-member-stability",
             stage_id="member_stability",
             title="Member stability",
-            status="blocked",
+            status=member_stability_status,
             p399_reference="SCI P399 Sections 8.2–8.4",
             purpose="Verify buckling and axial-bending interaction on restraint-defined segments.",
-            assumptions=[
-                "Unbraced lengths and compression-flange restraints are not authored.",
-                "Local, distortional, flexural, and lateral-torsional buckling are not checked.",
-            ],
+            inputs=(
+                []
+                if member_stability_definition is None
+                else [
+                    CalculationInput(
+                        symbol="member_capacity_pack",
+                        label="Versioned member-capacity pack",
+                        value=member_stability_definition.pack_id,
+                        source=(
+                            "design.py "
+                            "StructuralModel.member_stability_verification"
+                        ),
+                    ),
+                    CalculationInput(
+                        symbol="member_ULS_envelope",
+                        label="Checked ULS combinations",
+                        value=", ".join(
+                            member_stability_definition.combination_ids
+                        ),
+                        source=(
+                            "design.py "
+                            "StructuralModel.member_stability_verification"
+                        ),
+                    ),
+                ]
+            ),
+            equations=member_stability_equations,
+            assumptions=(
+                [
+                    assumption
+                    for check in member_stability_checks
+                    for assumption in check.assumptions
+                ]
+                if member_stability_checks
+                else [
+                    "No restraint-defined member-stability segments are authored."
+                ]
+            ),
+            outputs=(
+                member_stability_outputs
+                if member_stability_checks
+                else reference_outputs
+            ),
             references=basis_references,
             related_member_ids=member_ids,
-            related_combination_ids=[combination.id],
+            related_combination_ids=(
+                member_stability_definition.combination_ids
+                if member_stability_definition is not None
+                else [combination.id]
+            ),
         ),
         CalculationSheet(
             id="sheet-p399-bracing",
@@ -1918,8 +2310,20 @@ def _p399_evidence(
             order=7,
             label="Member stability",
             p399_reference="§8.2–§8.4",
-            status="blocked",
-            summary="Restraint-defined segments and buckling checks are missing.",
+            status=member_stability_status,
+            summary=(
+                "No restraint-defined member-capacity pack is selected."
+                if member_stability_definition is None
+                else (
+                    f"{len(member_stability_checks)} restraint segment(s); "
+                    f"{sum(check.status == 'pass' for check in member_stability_checks)} "
+                    "pass, "
+                    f"{sum(check.status == 'fail' for check in member_stability_checks)} "
+                    "fail, "
+                    f"{sum(check.status == 'unsupported' for check in member_stability_checks)} "
+                    "need lateral/torsional restraint evidence."
+                )
+            ),
             sheet_ids=["sheet-p399-member-stability"],
             blocking_stage_ids=["stability", "cross_section"],
         ),
@@ -2439,6 +2843,13 @@ def solve_project_structural(
     cross_section_checks_by_member = {
         check.member_id: check for check in cross_section_checks
     }
+    member_stability_checks = _member_stability_checks(model, analysis)
+    member_stability_checks_by_member: dict[str, list[MemberStabilityCheck]] = {}
+    for stability_check in member_stability_checks:
+        member_stability_checks_by_member.setdefault(
+            stability_check.member_id,
+            [],
+        ).append(stability_check)
     serviceability_checks: list[ServiceabilityCheck] = []
     sections_by_id = {section.id: section for section in analysis.sections}
 
@@ -2560,7 +2971,69 @@ def solve_project_structural(
         )
         section = sections_by_id[declaration.section_id]
         cross_section_check = cross_section_checks_by_member.get(declaration.id)
+        stability_member_checks = member_stability_checks_by_member.get(
+            declaration.id,
+            [],
+        )
+        governing_stability_check = max(
+            stability_member_checks,
+            key=lambda check: (
+                check.governing_utilisation
+                if check.governing_utilisation is not None
+                else check.axial_utilisation
+                if check.axial_utilisation is not None
+                else -1.0
+            ),
+            default=None,
+        )
         if (
+            governing_stability_check is not None
+            and governing_stability_check.status in {"pass", "fail"}
+        ):
+            member_checks.append(
+                MemberCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} Stage 7 member stability",
+                    demand_kNm=governing_stability_check.major_moment_kNm or 0.0,
+                    capacity_kNm=(
+                        governing_stability_check.design_major_bending_capacity_kNm
+                    ),
+                    utilisation=(
+                        governing_stability_check.governing_utilisation
+                        if governing_stability_check.governing_utilisation is not None
+                        else governing_stability_check.axial_utilisation
+                    ),
+                    status=(
+                        "pass"
+                        if governing_stability_check.status == "pass"
+                        else "fail"
+                    ),
+                    basis=(
+                        f"{governing_stability_check.basis} Governing ULS "
+                        f"envelope: "
+                        f"{governing_stability_check.governing_combination_id} at "
+                        f"{governing_stability_check.governing_station_m:.3f} m. "
+                        "Stage 8 bracing resistance and Stage 9 connections "
+                        "remain separate."
+                    ),
+                )
+            )
+        elif governing_stability_check is not None:
+            member_checks.append(
+                MemberCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} Stage 7 member stability",
+                    demand_kNm=governing_stability_check.major_moment_kNm or 0.0,
+                    capacity_kNm=None,
+                    utilisation=None,
+                    status="not_checked",
+                    basis=(
+                        f"{governing_stability_check.basis} "
+                        + " ".join(governing_stability_check.assumptions)
+                    ),
+                )
+            )
+        elif (
             cross_section_check is not None
             and cross_section_check.status in {"pass", "fail"}
         ):
@@ -2896,6 +3369,7 @@ def solve_project_structural(
         member_results=member_results,
         member_checks=member_checks,
         cross_section_checks=cross_section_checks,
+        member_stability_checks=member_stability_checks,
         serviceability_checks=serviceability_checks,
         equilibrium_status=equilibrium_status,
         residual=residual,
@@ -2957,6 +3431,7 @@ def solve_project_structural(
         member_diagrams=member_diagrams,
         member_checks=member_checks,
         cross_section_checks=cross_section_checks,
+        member_stability_checks=member_stability_checks,
         serviceability_checks=serviceability_checks,
         load_summary=summary,
         equilibrium=EquilibriumDiagnostic(

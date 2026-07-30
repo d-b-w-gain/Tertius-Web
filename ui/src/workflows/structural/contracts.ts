@@ -381,6 +381,37 @@ export type StructuralSnapshot = {
     basis: string
     assumptions: string[]
   }>
+  member_stability_checks?: Array<{
+    segment_id: string
+    member_id: string
+    label: string
+    pack_id: 'as_nzs_4600_2018_ewm_member'
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    governing_combination_id: string | null
+    governing_station_m: number | null
+    segment_start_m: number
+    segment_end_m: number
+    unbraced_length_m: number
+    axial_kN: number | null
+    major_moment_kNm: number | null
+    elastic_flexural_buckling_stress_MPa: number | null
+    elastic_torsional_buckling_stress_MPa: number | null
+    elastic_flexural_torsional_buckling_stress_MPa: number | null
+    nominal_global_buckling_stress_MPa: number | null
+    design_member_compression_capacity_kN: number | null
+    design_major_bending_capacity_kNm: number | null
+    axial_utilisation: number | null
+    axial_bending_utilisation: number | null
+    governing_utilisation: number | null
+    lateral_bending_restraint:
+      | 'unverified'
+      | 'continuous_compression_flange'
+    restraint_status: 'assumed' | 'verified'
+    distortional_buckling_status: 'unverified' | 'verified'
+    section_record_sha256: string | null
+    basis: string
+    assumptions: string[]
+  }>
   serviceability_checks: Array<{
     member_id: string
     label: string

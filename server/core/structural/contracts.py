@@ -251,6 +251,30 @@ class CrossSectionVerificationDefinition(StructuralContract):
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
 
+class MemberStabilitySegmentDefinition(StructuralContract):
+    id: str
+    member_id: str
+    start_distance_m: float = Field(ge=0)
+    end_distance_m: float = Field(gt=0)
+    minor_axis_effective_length_factor: float = Field(default=1.0, gt=0)
+    torsional_effective_length_factor: float = Field(default=1.0, gt=0)
+    lateral_bending_restraint: Literal[
+        "unverified",
+        "continuous_compression_flange",
+    ] = "unverified"
+    restraint_status: Literal["assumed", "verified"] = "assumed"
+    restraint_basis: str
+    distortional_buckling_status: Literal["unverified", "verified"] = "unverified"
+    distortional_buckling_basis: str
+
+
+class MemberStabilityVerificationDefinition(StructuralContract):
+    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    combination_ids: list[str] = Field(min_length=1)
+    segments: list[MemberStabilitySegmentDefinition] = Field(min_length=1)
+    off_axis_tolerance: float = Field(default=1e-6, ge=0)
+
+
 class NodeReaction(StructuralContract):
     node_id: str
     combination_id: str
@@ -316,6 +340,39 @@ class MemberCrossSectionCheck(StructuralContract):
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
         None
     )
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class MemberStabilityCheck(StructuralContract):
+    segment_id: str
+    member_id: str
+    label: str
+    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    status: Literal["pass", "fail", "not_checked", "unsupported"]
+    governing_combination_id: str | None = None
+    governing_station_m: float | None = None
+    segment_start_m: float
+    segment_end_m: float
+    unbraced_length_m: float
+    axial_kN: float | None = None
+    major_moment_kNm: float | None = None
+    elastic_flexural_buckling_stress_MPa: float | None = None
+    elastic_torsional_buckling_stress_MPa: float | None = None
+    elastic_flexural_torsional_buckling_stress_MPa: float | None = None
+    nominal_global_buckling_stress_MPa: float | None = None
+    design_member_compression_capacity_kN: float | None = None
+    design_major_bending_capacity_kNm: float | None = None
+    axial_utilisation: float | None = None
+    axial_bending_utilisation: float | None = None
+    governing_utilisation: float | None = None
+    lateral_bending_restraint: Literal[
+        "unverified",
+        "continuous_compression_flange",
+    ]
+    restraint_status: Literal["assumed", "verified"]
+    distortional_buckling_status: Literal["unverified", "verified"]
+    section_record_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 
@@ -516,6 +573,7 @@ class DesignAnalysisDefinition(StructuralContract):
     load_combinations: list[LoadCombination] = Field(default_factory=list)
     stability: StabilityDefinition | None = None
     cross_section_verification: CrossSectionVerificationDefinition | None = None
+    member_stability_verification: MemberStabilityVerificationDefinition | None = None
 
 
 class ProjectStructuralCapture(StructuralContract):
@@ -764,6 +822,56 @@ class ProjectStructuralCapture(StructuralContract):
                             "cross-section verification combinations must use "
                             f"the ultimate limit state; {combination_id!r} does not"
                         )
+            if self.analysis.member_stability_verification is not None:
+                member_verification = (
+                    self.analysis.member_stability_verification
+                )
+                combinations_by_id = {
+                    item.id: item for item in self.analysis.load_combinations
+                }
+                for combination_id in member_verification.combination_ids:
+                    _require_reference(
+                        "member-stability verification combination",
+                        combination_id,
+                        set(combinations_by_id),
+                    )
+                    if combinations_by_id[combination_id].limit_state != "ultimate":
+                        raise ValueError(
+                            "member-stability verification combinations must use "
+                            f"the ultimate limit state; {combination_id!r} does not"
+                        )
+                segment_ids: set[str] = set()
+                for segment in member_verification.segments:
+                    if segment.id in segment_ids:
+                        raise ValueError(
+                            f"duplicate member-stability segment ID {segment.id!r}"
+                        )
+                    segment_ids.add(segment.id)
+                    _require_reference(
+                        "member-stability segment member",
+                        segment.member_id,
+                        member_ids,
+                    )
+                    member_length = member_lengths[segment.member_id]
+                    if not (
+                        0
+                        <= segment.start_distance_m
+                        < segment.end_distance_m
+                        <= member_length + 1e-9
+                    ):
+                        raise ValueError(
+                            f"member-stability segment {segment.id!r} lies outside "
+                            f"member {segment.member_id!r}"
+                        )
+                    if (
+                        segment.lateral_bending_restraint
+                        == "continuous_compression_flange"
+                        and segment.restraint_status != "verified"
+                    ):
+                        raise ValueError(
+                            "continuous compression-flange restraint may only be "
+                            "used when restraint_status is 'verified'"
+                        )
         return self
 
 
@@ -809,6 +917,7 @@ class StructuralSnapshot(StructuralContract):
     member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
+    member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
     serviceability_checks: list[ServiceabilityCheck] = Field(default_factory=list)
     load_summary: LoadSummary = Field(
         default_factory=lambda: LoadSummary(
@@ -881,6 +990,12 @@ class StructuralSnapshot(StructuralContract):
             _require_reference("diagram member", diagram.member_id, member_ids)
         for capacity_check in self.member_checks:
             _require_reference("check member", capacity_check.member_id, member_ids)
+        for stability_check in self.member_stability_checks:
+            _require_reference(
+                "member-stability check member",
+                stability_check.member_id,
+                member_ids,
+            )
         for service_check in self.serviceability_checks:
             _require_reference(
                 "serviceability check member",

@@ -81,6 +81,7 @@ class StructuralModel:
         ] = {}
         self._stability: dict[str, Any] | None = None
         self._cross_section_verification: dict[str, Any] | None = None
+        self._member_stability_verification: dict[str, Any] | None = None
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
@@ -439,6 +440,168 @@ class StructuralModel:
         self._cross_section_verification = {
             "pack_id": pack_id,
             "combination_ids": normalized_combination_ids,
+            "off_axis_tolerance": tolerance,
+        }
+
+    def member_stability_verification(
+        self,
+        *,
+        pack_id: Literal["as_nzs_4600_2018_ewm_member"],
+        combination_ids: Sequence[str],
+        segments: Sequence[Mapping[str, Any]],
+        off_axis_tolerance: float = 1e-6,
+    ) -> None:
+        """Declare restraint-defined member segments for Stage 7 verification."""
+
+        if self._member_stability_verification is not None:
+            raise StructuralAuthoringError(
+                "the member-stability verification basis is already defined"
+            )
+        if pack_id != "as_nzs_4600_2018_ewm_member":
+            raise StructuralAuthoringError(
+                f"unsupported member-stability pack {pack_id!r}"
+            )
+        normalized_combination_ids = [
+            _required_text("member-stability load combination ID", combination_id)
+            for combination_id in combination_ids
+        ]
+        if not normalized_combination_ids:
+            raise StructuralAuthoringError(
+                "member-stability verification requires at least one load combination"
+            )
+        if len(normalized_combination_ids) != len(set(normalized_combination_ids)):
+            raise StructuralAuthoringError(
+                "member-stability verification load combination IDs must be unique"
+            )
+        tolerance = float(off_axis_tolerance)
+        if tolerance < 0:
+            raise StructuralAuthoringError(
+                "member-stability off_axis_tolerance must not be negative"
+            )
+
+        member_lengths = {
+            member["id"]: sqrt(
+                sum(
+                    (
+                        float(member["end"][axis])
+                        - float(member["start"][axis])
+                    )
+                    ** 2
+                    for axis in ("x", "y", "z")
+                )
+            )
+            for member in self._analytical_members
+        }
+        normalized_segments: list[dict[str, Any]] = []
+        segment_ids: set[str] = set()
+        for raw_segment in segments:
+            if not isinstance(raw_segment, Mapping):
+                raise StructuralAuthoringError(
+                    "member-stability segments must be mappings"
+                )
+            segment_id = _required_text(
+                "member-stability segment ID",
+                raw_segment.get("id"),
+            )
+            if segment_id in segment_ids:
+                raise StructuralAuthoringError(
+                    f"member-stability segment ID {segment_id!r} is duplicated"
+                )
+            segment_ids.add(segment_id)
+            member_id = _required_text(
+                "member-stability segment member ID",
+                raw_segment.get("member_id"),
+            )
+            if member_id not in member_lengths:
+                raise StructuralAuthoringError(
+                    f"member-stability segment {segment_id!r} references missing "
+                    f"member {member_id!r}"
+                )
+            start_distance_m = float(raw_segment.get("start_distance_m", 0.0))
+            end_distance_m = float(
+                raw_segment.get("end_distance_m", member_lengths[member_id])
+            )
+            if not (
+                0
+                <= start_distance_m
+                < end_distance_m
+                <= member_lengths[member_id] + 1e-9
+            ):
+                raise StructuralAuthoringError(
+                    f"member-stability segment {segment_id!r} lies outside "
+                    f"member {member_id!r}"
+                )
+            lateral_restraint = str(
+                raw_segment.get("lateral_bending_restraint", "unverified")
+            )
+            if lateral_restraint not in {
+                "unverified",
+                "continuous_compression_flange",
+            }:
+                raise StructuralAuthoringError(
+                    "lateral_bending_restraint must be 'unverified' or "
+                    "'continuous_compression_flange'"
+                )
+            restraint_status = str(raw_segment.get("restraint_status", "assumed"))
+            if restraint_status not in {"assumed", "verified"}:
+                raise StructuralAuthoringError(
+                    "restraint_status must be 'assumed' or 'verified'"
+                )
+            if (
+                lateral_restraint == "continuous_compression_flange"
+                and restraint_status != "verified"
+            ):
+                raise StructuralAuthoringError(
+                    "continuous compression-flange restraint requires "
+                    "restraint_status='verified'"
+                )
+            distortional_status = str(
+                raw_segment.get("distortional_buckling_status", "unverified")
+            )
+            if distortional_status not in {"unverified", "verified"}:
+                raise StructuralAuthoringError(
+                    "distortional_buckling_status must be 'unverified' or "
+                    "'verified'"
+                )
+            minor_factor = float(
+                raw_segment.get("minor_axis_effective_length_factor", 1.0)
+            )
+            torsional_factor = float(
+                raw_segment.get("torsional_effective_length_factor", 1.0)
+            )
+            if min(minor_factor, torsional_factor) <= 0:
+                raise StructuralAuthoringError(
+                    "member-stability effective-length factors must be positive"
+                )
+            normalized_segments.append(
+                {
+                    "id": segment_id,
+                    "member_id": member_id,
+                    "start_distance_m": start_distance_m,
+                    "end_distance_m": end_distance_m,
+                    "minor_axis_effective_length_factor": minor_factor,
+                    "torsional_effective_length_factor": torsional_factor,
+                    "lateral_bending_restraint": lateral_restraint,
+                    "restraint_status": restraint_status,
+                    "restraint_basis": _required_text(
+                        "member-stability restraint basis",
+                        raw_segment.get("restraint_basis"),
+                    ),
+                    "distortional_buckling_status": distortional_status,
+                    "distortional_buckling_basis": _required_text(
+                        "member-stability distortional buckling basis",
+                        raw_segment.get("distortional_buckling_basis"),
+                    ),
+                }
+            )
+        if not normalized_segments:
+            raise StructuralAuthoringError(
+                "member-stability verification requires at least one segment"
+            )
+        self._member_stability_verification = {
+            "pack_id": pack_id,
+            "combination_ids": normalized_combination_ids,
+            "segments": normalized_segments,
             "off_axis_tolerance": tolerance,
         }
 
@@ -1666,6 +1829,19 @@ class StructuralModel:
                     if self._cross_section_verification is not None
                     else None
                 ),
+                "member_stability_verification": (
+                    {
+                        **self._member_stability_verification,
+                        "segments": [
+                            dict(segment)
+                            for segment in self._member_stability_verification[
+                                "segments"
+                            ]
+                        ],
+                    }
+                    if self._member_stability_verification is not None
+                    else None
+                ),
             },
         }
         self._assembly.tertius_structural_manifest = manifest
@@ -1918,6 +2094,25 @@ class StructuralModel:
                 if verification_combination["limit_state"] != "ultimate":
                     raise StructuralAuthoringError(
                         "cross-section verification combinations must use the "
+                        f"ultimate limit state; {combination_id!r} does not"
+                    )
+        if self._member_stability_verification is not None:
+            combinations_by_id = {
+                combination["id"]: combination
+                for combination in self._load_combinations
+            }
+            for combination_id in self._member_stability_verification[
+                "combination_ids"
+            ]:
+                verification_combination = combinations_by_id.get(combination_id)
+                if verification_combination is None:
+                    raise StructuralAuthoringError(
+                        "member-stability verification references missing load "
+                        f"combination {combination_id!r}"
+                    )
+                if verification_combination["limit_state"] != "ultimate":
+                    raise StructuralAuthoringError(
+                        "member-stability verification combinations must use the "
                         f"ultimate limit state; {combination_id!r} does not"
                     )
 

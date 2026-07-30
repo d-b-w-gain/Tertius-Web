@@ -203,8 +203,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
+  const selectedMemberStabilityCheck = analysis?.member_stability_checks?.find(
+    (check) => check.member_id === selectedMember?.id,
+  )
   const crossSectionStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'cross_section',
+  )
+  const memberStabilityStage = analysis?.verification_stages?.find(
+    (stage) => stage.id === 'member_stability',
   )
   const selectedServiceability = analysis?.serviceability_checks.find(
     (check) => check.member_id === selectedMember?.id,
@@ -1015,8 +1021,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     }`}>
                       <div className="flex items-center justify-between text-[10px]">
                         <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
-                          {selectedCrossSectionCheck
-                            ? 'AS/NZS 4600 Stage 6 cross-section'
+                          {selectedMemberStabilityCheck
+                            ? 'AS/NZS 4600 Stage 7 member stability'
+                            : selectedCrossSectionCheck
+                              ? 'AS/NZS 4600 Stage 6 cross-section'
                             : 'Effective-section yield reference'}
                         </span>
                         <span className={`font-bold uppercase ${
@@ -1038,8 +1046,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       {selectedCheck.utilisation !== null && (
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
                           {number(selectedCheck.utilisation * 100, 1)}%{' '}
-                          {selectedCrossSectionCheck
-                            ? 'governing cross-section utilisation'
+                          {selectedMemberStabilityCheck
+                            ? 'governing member utilisation'
+                            : selectedCrossSectionCheck
+                              ? 'governing cross-section utilisation'
                             : 'reference utilisation'}
                         </div>
                       )}
@@ -1089,6 +1099,61 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             <dt className="text-slate-500">Web regime</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
+                            </dd>
+                          </div>
+                        </dl>
+                      )}
+                      {selectedMemberStabilityCheck && (
+                        <dl className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-700/70 pt-2 text-[9px]">
+                          <div>
+                            <dt className="text-slate-500">Unbraced segment</dt>
+                            <dd className="font-mono text-slate-300">
+                              {number(selectedMemberStabilityCheck.unbraced_length_m, 3)} m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Axial / member resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.axial_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.axial_kN, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .design_member_compression_capacity_kN === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_member_compression_capacity_kN,
+                                    3,
+                                  )} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Flexural-torsional Fe</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .elastic_flexural_torsional_buckling_stress_MPa === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .elastic_flexural_torsional_buckling_stress_MPa,
+                                    2,
+                                  )} MPa
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Compression-flange restraint</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.lateral_bending_restraint
+                                .replaceAll('_', ' ')}
+                              {' · '}
+                              {selectedMemberStabilityCheck.restraint_status}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Distortional buckling</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.distortional_buckling_status}
                             </dd>
                           </div>
                         </dl>
@@ -1229,6 +1294,26 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   {' '}This colour is Stage 6 cross-section resistance only. Member buckling,
                   restraint, bracing, connections, bases, and the final order decision remain
                   separate verification stages.
+                </p>
+              </section>
+              <section className={`rounded border p-3 text-xs ${
+                memberStabilityStage?.status === 'pass'
+                  ? 'border-emerald-500/30 bg-emerald-950/30 text-emerald-200'
+                  : memberStabilityStage?.status === 'fail'
+                    ? 'border-red-500/40 bg-red-950/30 text-red-200'
+                    : 'border-amber-500/30 bg-amber-950/30 text-amber-200'
+              }`}>
+                <div className="font-semibold">
+                  Member-stability status: {(memberStabilityStage?.status || 'not checked')
+                    .replace('_', ' ')
+                    .toUpperCase()}
+                </div>
+                <p className="mt-1 text-[10px] opacity-75">
+                  {memberStabilityStage?.summary ||
+                    'Author restraint-defined segments in design.py.'}
+                  {' '}Green/red member colours only represent Stage 7 when the
+                  compression-flange and twist restraint needed by the governing
+                  combination is verified.
                 </p>
               </section>
             </div>

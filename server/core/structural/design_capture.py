@@ -80,6 +80,7 @@ class _GeneratedModel:
     wind_action_bases: list[dict[str, Any]] = field(default_factory=list)
     stability: dict[str, Any] | None = None
     cross_section_verification: dict[str, Any] | None = None
+    member_stability_verification: dict[str, Any] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
     loads: list[dict[str, Any]] = field(default_factory=list)
@@ -155,6 +156,9 @@ class _GeneratedModel:
                 "member_distributed_loads": self.member_distributed_loads,
                 "stability": self.stability,
                 "cross_section_verification": self.cross_section_verification,
+                "member_stability_verification": (
+                    self.member_stability_verification
+                ),
             },
         }
 
@@ -1088,6 +1092,49 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         ),
                         "combination_ids": list(
                             _keyword_value(keywords, "combination_ids", names)
+                        ),
+                        "off_axis_tolerance": float(
+                            _keyword_value(
+                                keywords,
+                                "off_axis_tolerance",
+                                names,
+                                default=1e-6,
+                            )
+                        ),
+                    }
+                    continue
+                if method == "member_stability_verification":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_stability_verification(...) "
+                            "accepts keywords only"
+                        )
+                    allowed = {
+                        "pack_id",
+                        "combination_ids",
+                        "segments",
+                        "off_axis_tolerance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_stability_verification(...) has "
+                            f"unsupported keywords {unexpected}"
+                        )
+                    if model.member_stability_verification is not None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.member_stability_verification(...) may "
+                            "only be called once"
+                        )
+                    model.member_stability_verification = {
+                        "pack_id": str(
+                            _keyword_value(keywords, "pack_id", names)
+                        ),
+                        "combination_ids": list(
+                            _keyword_value(keywords, "combination_ids", names)
+                        ),
+                        "segments": list(
+                            _keyword_value(keywords, "segments", names)
                         ),
                         "off_axis_tolerance": float(
                             _keyword_value(
