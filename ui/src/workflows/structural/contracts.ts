@@ -355,6 +355,32 @@ export type StructuralSnapshot = {
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
   }>
+  cross_section_checks?: Array<{
+    member_id: string
+    label: string
+    pack_id: 'as_nzs_4600_2018_ewm'
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    governing_combination_id: string | null
+    governing_station_m: number | null
+    axial_kN: number | null
+    major_moment_kNm: number | null
+    minor_moment_kNm: number | null
+    web_shear_kN: number | null
+    off_axis_shear_kN: number | null
+    torsion_kNm: number | null
+    design_compression_capacity_kN: number | null
+    design_major_bending_capacity_kNm: number | null
+    design_web_shear_capacity_kN: number | null
+    axial_bending_utilisation: number | null
+    bending_shear_utilisation: number | null
+    governing_utilisation: number | null
+    section_record_sha256: string | null
+    capacity_factors: Record<string, number>
+    web_slenderness: number | null
+    shear_regime: 'stocky' | 'inelastic_buckling' | 'elastic_buckling' | null
+    basis: string
+    assumptions: string[]
+  }>
   serviceability_checks: Array<{
     member_id: string
     label: string

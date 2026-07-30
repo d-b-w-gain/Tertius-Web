@@ -5,6 +5,7 @@ from importlib.metadata import version
 from math import pi, sqrt
 from typing import Any, Literal
 
+from .capacity_packs import CapacityPackError, cross_section_capacity
 from .contracts import (
     CalculationEquation,
     CalculationInput,
@@ -14,6 +15,7 @@ from .contracts import (
     LoadCombination,
     LoadSummary,
     MemberCheck,
+    MemberCrossSectionCheck,
     MemberDiagram,
     MemberDiagramStation,
     MemberDistributedLoad,
@@ -195,6 +197,218 @@ def _member_extrema(
             sqrt(sum(value**2 for value in local_displacement_mm)),
         )
     return max_moment, max_displacement
+
+
+def _member_station_distances(analysis, declaration) -> list[float]:
+    member_length = _length(declaration.start, declaration.end)
+    distances = {
+        member_length * index / STATION_INTERVALS
+        for index in range(STATION_INTERVALS + 1)
+    }
+    distances.update(
+        load.distance_m
+        for load in analysis.member_loads
+        if load.member_id == declaration.id
+    )
+    for load in analysis.member_distributed_loads:
+        if load.member_id == declaration.id:
+            distances.update((load.start_distance_m, load.end_distance_m))
+    return sorted(distances)
+
+
+def _cross_section_checks(
+    model,
+    analysis,
+) -> list[MemberCrossSectionCheck]:
+    definition = analysis.cross_section_verification
+    if definition is None:
+        return []
+
+    sections_by_id = {section.id: section for section in analysis.sections}
+    checks: list[MemberCrossSectionCheck] = []
+    for declaration in analysis.members:
+        section = sections_by_id[declaration.section_id]
+        try:
+            capacity = cross_section_capacity(definition.pack_id, section)
+        except CapacityPackError as exc:
+            checks.append(
+                MemberCrossSectionCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} cross-section",
+                    pack_id=definition.pack_id,
+                    status="unsupported",
+                    basis=f"Capacity pack could not evaluate this section: {exc}",
+                    assumptions=[
+                        "No resistance has been inferred from incomplete catalogue data."
+                    ],
+                )
+            )
+            continue
+
+        if section.bending_reference_axis != "local_z":
+            checks.append(
+                MemberCrossSectionCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} cross-section",
+                    pack_id=definition.pack_id,
+                    status="unsupported",
+                    design_compression_capacity_kN=(
+                        capacity.design_compression_capacity_kN
+                    ),
+                    design_major_bending_capacity_kNm=(
+                        capacity.design_major_bending_capacity_kNm
+                    ),
+                    design_web_shear_capacity_kN=(
+                        capacity.design_web_shear_capacity_kN
+                    ),
+                    section_record_sha256=capacity.section_record_sha256,
+                    capacity_factors={
+                        "phi_c": capacity.phi_c,
+                        "phi_b": capacity.phi_b,
+                        "phi_v": capacity.phi_v,
+                    },
+                    web_slenderness=capacity.web_slenderness,
+                    shear_regime=capacity.shear_regime,
+                    basis=(
+                        "The selected pack requires the catalogue major-axis "
+                        "reference to map to PyNite local_z."
+                    ),
+                )
+            )
+            continue
+
+        governing: dict[str, float | str] | None = None
+        off_axis_exceeded = False
+        for combination_id in definition.combination_ids:
+            for distance in _member_station_distances(analysis, declaration):
+                member = model.members[declaration.id]
+                axial_kN = abs(member.axial(distance, combination_id))
+                major_moment_kNm = abs(
+                    member.moment("Mz", distance, combination_id)
+                )
+                minor_moment_kNm = abs(
+                    member.moment("My", distance, combination_id)
+                )
+                web_shear_kN = abs(member.shear("Fy", distance, combination_id))
+                off_axis_shear_kN = abs(
+                    member.shear("Fz", distance, combination_id)
+                )
+                torsion_kNm = abs(member.torque(distance, combination_id))
+
+                axial_bending = (
+                    axial_kN / capacity.design_compression_capacity_kN
+                    + major_moment_kNm
+                    / capacity.design_major_bending_capacity_kNm
+                )
+                bending_shear = sqrt(
+                    (
+                        major_moment_kNm
+                        / capacity.design_major_bending_capacity_kNm
+                    )
+                    ** 2
+                    + (
+                        web_shear_kN
+                        / capacity.design_web_shear_capacity_kN
+                    )
+                    ** 2
+                )
+                utilization = max(axial_bending, bending_shear)
+                candidate: dict[str, float | str] = {
+                    "combination_id": combination_id,
+                    "distance": distance,
+                    "axial": axial_kN,
+                    "major_moment": major_moment_kNm,
+                    "minor_moment": minor_moment_kNm,
+                    "web_shear": web_shear_kN,
+                    "off_axis_shear": off_axis_shear_kN,
+                    "torsion": torsion_kNm,
+                    "axial_bending": axial_bending,
+                    "bending_shear": bending_shear,
+                    "utilization": utilization,
+                }
+                if governing is None or utilization > float(
+                    governing["utilization"]
+                ):
+                    governing = candidate
+                off_axis_exceeded = off_axis_exceeded or any(
+                    value > definition.off_axis_tolerance
+                    for value in (
+                        minor_moment_kNm,
+                        off_axis_shear_kN,
+                        torsion_kNm,
+                    )
+                )
+
+        if governing is None:
+            raise StructuralAnalysisError(
+                f"cross-section envelope for {declaration.id!r} has no stations"
+            )
+        status: Literal["pass", "fail", "unsupported"] = (
+            "unsupported"
+            if off_axis_exceeded
+            else "fail"
+            if float(governing["utilization"]) > 1.0
+            else "pass"
+        )
+        checks.append(
+            MemberCrossSectionCheck(
+                member_id=declaration.id,
+                label=f"{declaration.label} cross-section",
+                pack_id=definition.pack_id,
+                status=status,
+                governing_combination_id=str(governing["combination_id"]),
+                governing_station_m=float(governing["distance"]),
+                axial_kN=float(governing["axial"]),
+                major_moment_kNm=float(governing["major_moment"]),
+                minor_moment_kNm=float(governing["minor_moment"]),
+                web_shear_kN=float(governing["web_shear"]),
+                off_axis_shear_kN=float(governing["off_axis_shear"]),
+                torsion_kNm=float(governing["torsion"]),
+                design_compression_capacity_kN=(
+                    capacity.design_compression_capacity_kN
+                ),
+                design_major_bending_capacity_kNm=(
+                    capacity.design_major_bending_capacity_kNm
+                ),
+                design_web_shear_capacity_kN=(
+                    capacity.design_web_shear_capacity_kN
+                ),
+                axial_bending_utilisation=float(governing["axial_bending"]),
+                bending_shear_utilisation=float(governing["bending_shear"]),
+                governing_utilisation=float(governing["utilization"]),
+                section_record_sha256=capacity.section_record_sha256,
+                capacity_factors={
+                    "phi_c": capacity.phi_c,
+                    "phi_b": capacity.phi_b,
+                    "phi_v": capacity.phi_v,
+                },
+                web_slenderness=capacity.web_slenderness,
+                shear_regime=capacity.shear_regime,
+                basis=capacity.basis,
+                assumptions=[
+                    (
+                        "Compression resistance conservatively uses Ae×fy for "
+                        "the absolute axial demand; tension yielding is not used "
+                        "to improve the result."
+                    ),
+                    (
+                        "Member buckling, restraint, connections, bearing, "
+                        "local load introduction, and system capacity remain "
+                        "outside this Stage 6 check."
+                    ),
+                    *(
+                        [
+                            "Minor-axis bending, off-axis shear, or torsion exceeds "
+                            "the authored tolerance; no biaxial/torsional capacity "
+                            "has been inferred."
+                        ]
+                        if off_axis_exceeded
+                        else []
+                    ),
+                ],
+            )
+        )
+    return checks
 
 
 def _member_max_axial(
@@ -460,6 +674,7 @@ def _p399_evidence(
     members: list[StructuralMember],
     member_results: list[MemberResult],
     member_checks: list[MemberCheck],
+    cross_section_checks: list[MemberCrossSectionCheck],
     serviceability_checks: list[ServiceabilityCheck],
     equilibrium_status: Literal["pass", "fail"],
     residual: float,
@@ -881,6 +1096,124 @@ def _p399_evidence(
         stability_status = "warning"
     else:
         stability_status = "pass"
+
+    cross_section_definition = analysis.cross_section_verification
+    cross_section_status: Literal[
+        "pass", "fail", "not_checked", "unsupported", "blocked"
+    ]
+    if cross_section_definition is None:
+        cross_section_status = "not_checked"
+    elif stability_status != "pass":
+        cross_section_status = "blocked"
+    elif not cross_section_checks:
+        cross_section_status = "not_checked"
+    elif any(check.status == "fail" for check in cross_section_checks):
+        cross_section_status = "fail"
+    elif any(check.status == "unsupported" for check in cross_section_checks):
+        cross_section_status = "unsupported"
+    elif all(check.status == "pass" for check in cross_section_checks):
+        cross_section_status = "pass"
+    else:
+        cross_section_status = "not_checked"
+
+    cross_section_equations = [
+        equation
+        for check in cross_section_checks
+        if check.governing_utilisation is not None
+        for equation in (
+            CalculationEquation(
+                label=f"{check.member_id} axial + major bending interaction",
+                expression="u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)",
+                substitution=(
+                    f"{check.axial_kN:g}/{check.design_compression_capacity_kN:g} "
+                    f"+ {check.major_moment_kNm:g}/"
+                    f"{check.design_major_bending_capacity_kNm:g}"
+                ),
+                result=check.axial_bending_utilisation or 0.0,
+            ),
+            CalculationEquation(
+                label=f"{check.member_id} major bending + web shear interaction",
+                expression=(
+                    "u_MV = sqrt[(M*/(phi_b M_s))² + "
+                    "(V*/(phi_v V_v))²]"
+                ),
+                substitution=(
+                    f"sqrt[({check.major_moment_kNm:g}/"
+                    f"{check.design_major_bending_capacity_kNm:g})² + "
+                    f"({check.web_shear_kN:g}/"
+                    f"{check.design_web_shear_capacity_kN:g})²]"
+                ),
+                result=check.bending_shear_utilisation or 0.0,
+            ),
+        )
+    ]
+    cross_section_outputs = [
+        output
+        for check in cross_section_checks
+        for output in (
+            CalculationInput(
+                symbol=f"u_gov,{check.member_id}",
+                label=f"{check.label} governing utilisation",
+                value=(
+                    check.governing_utilisation
+                    if check.governing_utilisation is not None
+                    else check.status
+                ),
+                source=(
+                    f"{check.governing_combination_id or 'no valid envelope'} at "
+                    f"{check.governing_station_m or 0:g} m"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"phi_b M_s,{check.member_id}",
+                label=f"{check.label} design major-bending resistance",
+                value=(
+                    check.design_major_bending_capacity_kNm
+                    if check.design_major_bending_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_major_bending_capacity_kNm is not None
+                    else None
+                ),
+                source=check.basis,
+            ),
+            CalculationInput(
+                symbol=f"phi_c N_s,{check.member_id}",
+                label=f"{check.label} design compression section resistance",
+                value=(
+                    check.design_compression_capacity_kN
+                    if check.design_compression_capacity_kN is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN"
+                    if check.design_compression_capacity_kN is not None
+                    else None
+                ),
+                source=check.basis,
+            ),
+            CalculationInput(
+                symbol=f"phi_v V_v,{check.member_id}",
+                label=f"{check.label} design web-shear resistance",
+                value=(
+                    check.design_web_shear_capacity_kN
+                    if check.design_web_shear_capacity_kN is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN"
+                    if check.design_web_shear_capacity_kN is not None
+                    else None
+                ),
+                source=(
+                    f"{check.shear_regime or 'unknown'} web; "
+                    f"d1/t={check.web_slenderness or 0:g}"
+                ),
+            ),
+        )
+    ]
 
     stability_assumptions = (
         [
@@ -1346,17 +1679,53 @@ def _p399_evidence(
             id="sheet-p399-cross-section",
             stage_id="cross_section",
             title="Cross-section verification",
-            status="not_checked",
+            status=cross_section_status,
             p399_reference="SCI P399 Section 8.1",
             purpose="Check classification/effective properties and governing force interactions.",
-            assumptions=[
-                "The current Zxe × fy value is retained only to scale renderer demand.",
-                "No Australian capacity factor or complete cold-formed interaction check is active.",
-            ],
-            outputs=reference_outputs,
+            inputs=(
+                []
+                if cross_section_definition is None
+                else [
+                    CalculationInput(
+                        symbol="capacity_pack",
+                        label="Versioned capacity pack",
+                        value=cross_section_definition.pack_id,
+                        source="design.py StructuralModel.cross_section_verification",
+                    ),
+                    CalculationInput(
+                        symbol="ULS_envelope",
+                        label="Checked ULS combinations",
+                        value=", ".join(
+                            cross_section_definition.combination_ids
+                        ),
+                        source="design.py StructuralModel.cross_section_verification",
+                    ),
+                ]
+            ),
+            equations=cross_section_equations,
+            assumptions=(
+                [
+                    assumption
+                    for check in cross_section_checks
+                    for assumption in check.assumptions
+                ]
+                if cross_section_checks
+                else [
+                    "No versioned Australian cross-section capacity pack is selected."
+                ]
+            ),
+            outputs=(
+                cross_section_outputs
+                if cross_section_checks
+                else reference_outputs
+            ),
             references=basis_references,
             related_member_ids=member_ids,
-            related_combination_ids=[combination.id],
+            related_combination_ids=(
+                cross_section_definition.combination_ids
+                if cross_section_definition is not None
+                else [combination.id]
+            ),
         ),
         CalculationSheet(
             id="sheet-p399-member-stability",
@@ -1527,8 +1896,20 @@ def _p399_evidence(
             order=6,
             label="Cross-section",
             p399_reference="§8.1",
-            status="not_checked",
-            summary="Demand is available; Australian resistance and interaction checks are not.",
+            status=cross_section_status,
+            summary=(
+                "No versioned Australian capacity pack is selected."
+                if cross_section_definition is None
+                else (
+                    f"{len(cross_section_checks)} members checked across "
+                    f"{len(cross_section_definition.combination_ids)} ULS "
+                    f"combinations; governing utilisation "
+                    f"{max((check.governing_utilisation or 0.0) for check in cross_section_checks):.3f}. "
+                    "Cross-section only."
+                    if cross_section_checks
+                    else "Cross-section envelope produced no member results."
+                )
+            ),
             sheet_ids=["sheet-p399-cross-section"],
             blocking_stage_ids=["stability"],
         ),
@@ -1611,6 +1992,25 @@ def solve_project_structural(
 
     combinations = _combination_list(analysis)
     active_combination = _select_combination(combinations, combination_id)
+    if analysis.cross_section_verification is not None:
+        combinations_by_id = {
+            combination.id: combination for combination in combinations
+        }
+        for envelope_combination_id in (
+            analysis.cross_section_verification.combination_ids
+        ):
+            envelope_combination = combinations_by_id.get(envelope_combination_id)
+            if envelope_combination is None:
+                raise StructuralAnalysisError(
+                    "Cross-section verification references missing combination "
+                    f"{envelope_combination_id!r}"
+                )
+            if envelope_combination.limit_state != "ultimate":
+                raise StructuralAnalysisError(
+                    "Cross-section verification requires ULS combinations; "
+                    f"{envelope_combination_id!r} is "
+                    f"{envelope_combination.limit_state!r}"
+                )
     combination_selection: Literal[
         "requested", "default", "governing_working_envelope"
     ] = "requested" if combination_id is not None else "default"
@@ -2035,6 +2435,10 @@ def solve_project_structural(
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
+    cross_section_checks = _cross_section_checks(model, analysis)
+    cross_section_checks_by_member = {
+        check.member_id: check for check in cross_section_checks
+    }
     serviceability_checks: list[ServiceabilityCheck] = []
     sections_by_id = {section.id: section for section in analysis.sections}
 
@@ -2155,7 +2559,50 @@ def solve_project_structural(
             )
         )
         section = sections_by_id[declaration.section_id]
-        if section.bending_reference_kNm is None:
+        cross_section_check = cross_section_checks_by_member.get(declaration.id)
+        if (
+            cross_section_check is not None
+            and cross_section_check.status in {"pass", "fail"}
+        ):
+            member_checks.append(
+                MemberCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} Stage 6 cross-section",
+                    demand_kNm=(
+                        cross_section_check.major_moment_kNm or 0.0
+                    ),
+                    capacity_kNm=(
+                        cross_section_check.design_major_bending_capacity_kNm
+                    ),
+                    utilisation=cross_section_check.governing_utilisation,
+                    status=(
+                        "pass"
+                        if cross_section_check.status == "pass"
+                        else "fail"
+                    ),
+                    basis=(
+                        f"CROSS-SECTION ONLY — {cross_section_check.basis} "
+                        f"Governing ULS envelope: "
+                        f"{cross_section_check.governing_combination_id} at "
+                        f"{cross_section_check.governing_station_m:.3f} m. "
+                        "Stage 7 member stability, restraints, and connections "
+                        "remain incomplete."
+                    ),
+                )
+            )
+        elif cross_section_check is not None:
+            member_checks.append(
+                MemberCheck(
+                    member_id=declaration.id,
+                    label=f"{declaration.label} Stage 6 cross-section",
+                    demand_kNm=max_moment,
+                    capacity_kNm=None,
+                    utilisation=None,
+                    status="not_checked",
+                    basis=cross_section_check.basis,
+                )
+            )
+        elif section.bending_reference_kNm is None:
             member_checks.append(
                 MemberCheck(
                     member_id=declaration.id,
@@ -2440,14 +2887,6 @@ def solve_project_structural(
     checked_serviceability = [
         check for check in serviceability_checks if check.status != "not_checked"
     ]
-    reference_checks = [
-        check for check in member_checks if check.capacity_kNm is not None
-    ]
-    failed_reference_checks = [
-        check
-        for check in reference_checks
-        if check.utilisation is not None and check.utilisation > 1.0
-    ]
     verification_stages, calculation_sheets = _p399_evidence(
         capture=capture,
         analysis=analysis,
@@ -2456,12 +2895,34 @@ def solve_project_structural(
         members=structural_members,
         member_results=member_results,
         member_checks=member_checks,
+        cross_section_checks=cross_section_checks,
         serviceability_checks=serviceability_checks,
         equilibrium_status=equilibrium_status,
         residual=residual,
         equilibrium_tolerance=equilibrium_tolerance,
         stability_result=stability_result,
     )
+    cross_section_stage = next(
+        stage for stage in verification_stages if stage.id == "cross_section"
+    )
+    if (
+        analysis.cross_section_verification is not None
+        and cross_section_stage.status not in {"pass", "fail"}
+    ):
+        member_checks = [
+            check.model_copy(
+                update={
+                    "capacity_kNm": None,
+                    "utilisation": None,
+                    "status": "not_checked",
+                    "basis": (
+                        f"{check.basis} Renderer colour remains neutral because "
+                        f"Stage 6 is {cross_section_stage.status}."
+                    ),
+                }
+            )
+            for check in member_checks
+        ]
 
     return StructuralSnapshot(
         mode="design",
@@ -2495,6 +2956,7 @@ def solve_project_structural(
         member_results=member_results,
         member_diagrams=member_diagrams,
         member_checks=member_checks,
+        cross_section_checks=cross_section_checks,
         serviceability_checks=serviceability_checks,
         load_summary=summary,
         equilibrium=EquilibriumDiagnostic(
@@ -2585,18 +3047,31 @@ def solve_project_structural(
             ),
             CapabilityState(
                 id="checks",
-                label="Member resistance",
-                status="blocked",
+                label="Cross-section",
+                status=(
+                    "online"
+                    if cross_section_stage.status == "pass"
+                    else "blocked"
+                    if cross_section_stage.status == "fail"
+                    or analysis.cross_section_verification is None
+                    else "pending"
+                ),
                 detail=(
-                    f"{len(failed_reference_checks)} of {len(reference_checks)} members "
-                    "exceed the renderer-only yield reference; P399/Australian "
-                    "cross-section and member-stability checks remain blocked."
-                    if failed_reference_checks
-                    else f"{len(reference_checks)} renderer-only yield references are "
-                    "available; no P399/Australian member pass is active."
-                    if reference_checks
-                    else "No traceable reference is connected and no member resistance "
-                    "calculation pack is active."
+                    f"{len(cross_section_checks)} catalogue-backed members pass "
+                    "the authored ULS section-only envelope; member stability "
+                    "remains a separate stage."
+                    if cross_section_stage.status == "pass"
+                    else (
+                        f"{sum(check.status == 'fail' for check in cross_section_checks)} "
+                        "members fail the section-only ULS envelope."
+                    )
+                    if cross_section_stage.status == "fail"
+                    else (
+                        "A section-capacity pack is selected, but prerequisite "
+                        f"evidence leaves Stage 6 {cross_section_stage.status}."
+                    )
+                    if analysis.cross_section_verification is not None
+                    else "No versioned cross-section calculation pack is active."
                 ),
             ),
             CapabilityState(
@@ -2607,17 +3082,29 @@ def solve_project_structural(
             ),
         ],
         warnings=[
-            "ELASTIC MEMBER DEMAND ONLY — NOT FOR DESIGN, CERTIFICATION, OR ORDERING.",
+            (
+                "CROSS-SECTION EVIDENCE ONLY — NOT FOR CERTIFICATION OR ORDERING. "
+                "MEMBER STABILITY, RESTRAINT, BRACING, AND CONNECTIONS REMAIN "
+                "INCOMPLETE."
+                if analysis.cross_section_verification is not None
+                else "ELASTIC MEMBER DEMAND ONLY — NOT FOR DESIGN, CERTIFICATION, "
+                "OR ORDERING."
+            ),
             *dict.fromkeys(member.assumption for member in analysis.members),
             (
                 "Non-steel permanent actions are included only where design.py "
                 "authors a traceable distributed or point load."
             ),
             (
-                "The displayed bending threshold is an effective-section yield "
-                "reference only. AS/NZS 4600 member capacity, lateral-torsional "
-                "buckling, restraint, connections, anchors, concrete, impact, and "
-                "progressive collapse are not checked."
+                "Stage 6 uses catalogue effective properties and a versioned "
+                "AS/NZS 4600:2018 cross-section pack. Member/local/distortional/"
+                "lateral-torsional buckling, restraint, connections, anchors, "
+                "concrete, impact, and progressive collapse are not checked."
+                if analysis.cross_section_verification is not None
+                else "The displayed bending threshold is an effective-section "
+                "yield reference only. AS/NZS 4600 member capacity, "
+                "lateral-torsional buckling, restraint, connections, anchors, "
+                "concrete, impact, and progressive collapse are not checked."
             ),
         ],
     )

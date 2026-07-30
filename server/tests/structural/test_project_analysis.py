@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from core.site_definition import apply_site_definition, default_site_definition
@@ -469,6 +471,45 @@ structural_assembly = structure.assembly""",
         stability_source,
         project_name="bidirectional_stability_frame",
     )
+    capture_data = capture.model_dump()
+    for member_data in capture_data["analysis"]["members"]:
+        member_data["rotation_deg"] = 90.0
+    section_data = capture_data["analysis"]["sections"][0]
+    section_data.update(
+        {
+            "bending_reference_kNm": 5.535,
+            "bending_reference_axis": "local_z",
+            "bending_reference_basis": "Catalogue Zxe times fy reference.",
+            "catalog": {
+                "catalog_id": "lysaght-zc-v2",
+                "catalog_version": "2.0",
+                "section_key": "C10019 (100x1.9)",
+                "source": "Lysaght guide p.7-8",
+                "record_sha256": "a" * 64,
+                "axis_mapping": {
+                    "local_y_inertia": "Iy",
+                    "local_z_inertia": "Ix",
+                },
+                "properties": {
+                    "type": "C",
+                    "validated": True,
+                    "lip": 14.5,
+                    "fy": 450,
+                    "E": 200000,
+                    "Ae": 329,
+                    "Zxe": 12300,
+                    "d1": 92.5,
+                    "t": 1.9,
+                },
+            },
+        }
+    )
+    capture_data["analysis"]["cross_section_verification"] = {
+        "pack_id": "as_nzs_4600_2018_ewm",
+        "combination_ids": ["ULS-STABILITY+X", "ULS-STABILITY-X"],
+        "off_axis_tolerance": 1e-6,
+    }
+    capture = ProjectStructuralCapture.model_validate(capture_data)
 
     snapshot = solve_project_structural(
         capture,
@@ -482,6 +523,24 @@ structural_assembly = structure.assembly""",
     assert snapshot.stability.simplified_alpha_cr_applicable
     stages = {stage.id: stage for stage in snapshot.verification_stages}
     assert stages["stability"].status == "pass"
+    assert stages["cross_section"].status == "pass"
+    assert len(snapshot.cross_section_checks) == 2
+    assert all(check.status == "pass" for check in snapshot.cross_section_checks)
+    assert all(
+        check.section_record_sha256 == "a" * 64
+        for check in snapshot.cross_section_checks
+    )
+    assert all(
+        check.governing_combination_id
+        in {"ULS-STABILITY+X", "ULS-STABILITY-X"}
+        for check in snapshot.cross_section_checks
+    )
+    assert all(
+        check.governing_utilisation is not None
+        and check.governing_utilisation < 1
+        for check in snapshot.cross_section_checks
+    )
+    assert all(check.status == "pass" for check in snapshot.member_checks)
     stability_sheet = next(
         sheet for sheet in snapshot.calculation_sheets if sheet.stage_id == "stability"
     )
@@ -497,6 +556,37 @@ structural_assembly = structure.assembly""",
         equation.expression == "NEd ≤ 0.09 Ncr"
         for equation in stability_sheet.equations
     )
+    cross_section_sheet = next(
+        sheet
+        for sheet in snapshot.calculation_sheets
+        if sheet.stage_id == "cross_section"
+    )
+    assert cross_section_sheet.status == "pass"
+    assert any(
+        equation.expression
+        == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
+        for equation in cross_section_sheet.equations
+    )
+
+    overloaded_data = deepcopy(capture_data)
+    overloaded_properties = overloaded_data["analysis"]["sections"][0][
+        "catalog"
+    ]["properties"]
+    overloaded_properties["Ae"] = 1.0
+    overloaded_properties["Zxe"] = 10.0
+    overloaded_capture = ProjectStructuralCapture.model_validate(overloaded_data)
+    overloaded_snapshot = solve_project_structural(
+        overloaded_capture,
+        combination_id="ULS-STABILITY+X",
+    )
+    overloaded_stages = {
+        stage.id: stage for stage in overloaded_snapshot.verification_stages
+    }
+    assert overloaded_stages["cross_section"].status == "fail"
+    assert any(
+        check.status == "fail" for check in overloaded_snapshot.cross_section_checks
+    )
+    assert any(check.status == "fail" for check in overloaded_snapshot.member_checks)
 
     mismatched_capture = parse_project_structural_capture(
         stability_source.replace(

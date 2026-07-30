@@ -80,6 +80,7 @@ class StructuralModel:
             StructuralWindActionBasisSpec,
         ] = {}
         self._stability: dict[str, Any] | None = None
+        self._cross_section_verification: dict[str, Any] | None = None
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
@@ -404,6 +405,42 @@ class StructuralModel:
         self._wind_action_bases.append(value)
         self._wind_action_basis_handles[basis_id] = handle
         return handle
+
+    def cross_section_verification(
+        self,
+        *,
+        pack_id: Literal["as_nzs_4600_2018_ewm"],
+        combination_ids: Sequence[str],
+        off_axis_tolerance: float = 1e-6,
+    ) -> None:
+        """Select a versioned section-capacity pack and its ULS envelope."""
+
+        if self._cross_section_verification is not None:
+            raise StructuralAuthoringError(
+                "the cross-section verification basis is already defined"
+            )
+        normalized_combination_ids = [
+            _required_text("cross-section load combination ID", combination_id)
+            for combination_id in combination_ids
+        ]
+        if not normalized_combination_ids:
+            raise StructuralAuthoringError(
+                "cross-section verification requires at least one load combination"
+            )
+        if len(normalized_combination_ids) != len(set(normalized_combination_ids)):
+            raise StructuralAuthoringError(
+                "cross-section verification load combination IDs must be unique"
+            )
+        tolerance = float(off_axis_tolerance)
+        if tolerance < 0:
+            raise StructuralAuthoringError(
+                "cross-section off_axis_tolerance must not be negative"
+            )
+        self._cross_section_verification = {
+            "pack_id": pack_id,
+            "combination_ids": normalized_combination_ids,
+            "off_axis_tolerance": tolerance,
+        }
 
     def site_wind_basis(
         self,
@@ -1624,6 +1661,11 @@ class StructuralModel:
                 "stability": (
                     dict(self._stability) if self._stability is not None else None
                 ),
+                "cross_section_verification": (
+                    dict(self._cross_section_verification)
+                    if self._cross_section_verification is not None
+                    else None
+                ),
             },
         }
         self._assembly.tertius_structural_manifest = manifest
@@ -1859,6 +1901,25 @@ class StructuralModel:
                     "stability definition references missing analytical members "
                     f"{missing_stability_members}"
                 )
+        if self._cross_section_verification is not None:
+            combinations_by_id = {
+                combination["id"]: combination
+                for combination in self._load_combinations
+            }
+            for combination_id in self._cross_section_verification[
+                "combination_ids"
+            ]:
+                verification_combination = combinations_by_id.get(combination_id)
+                if verification_combination is None:
+                    raise StructuralAuthoringError(
+                        "cross-section verification references missing load "
+                        f"combination {combination_id!r}"
+                    )
+                if verification_combination["limit_state"] != "ultimate":
+                    raise StructuralAuthoringError(
+                        "cross-section verification combinations must use the "
+                        f"ultimate limit state; {combination_id!r} does not"
+                    )
 
 
 def helper_source() -> str:

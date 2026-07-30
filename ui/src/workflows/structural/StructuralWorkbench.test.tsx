@@ -534,7 +534,7 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('HANDLE-AUTHORED')).toBeInTheDocument()
     expect(screen.getByText('Inward wind pressure')).toBeInTheDocument()
     expect(screen.getByText('Outward wind suction')).toBeInTheDocument()
-    expect(screen.getByText('Design capacity status: NOT CHECKED')).toBeInTheDocument()
+    expect(screen.getByText('Cross-section status: NOT CHECKED')).toBeInTheDocument()
     expect(screen.getByText(/Ribbon stations: 2/)).toBeInTheDocument()
     expect(screen.getByText(/Ribbon mode: moment/)).toBeInTheDocument()
     expect(screen.getByText(/Ribbon status: not_checked/)).toBeInTheDocument()

@@ -245,6 +245,12 @@ class StabilityResult(StructuralContract):
     simplified_alpha_cr_applicable: bool | None = None
 
 
+class CrossSectionVerificationDefinition(StructuralContract):
+    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    combination_ids: list[str] = Field(min_length=1)
+    off_axis_tolerance: float = Field(default=1e-6, ge=0)
+
+
 class NodeReaction(StructuralContract):
     node_id: str
     combination_id: str
@@ -283,6 +289,35 @@ class MemberCheck(StructuralContract):
     utilisation: float | None
     status: Literal["pass", "fail", "not_checked"]
     basis: str
+
+
+class MemberCrossSectionCheck(StructuralContract):
+    member_id: str
+    label: str
+    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    status: Literal["pass", "fail", "not_checked", "unsupported"]
+    governing_combination_id: str | None = None
+    governing_station_m: float | None = None
+    axial_kN: float | None = None
+    major_moment_kNm: float | None = None
+    minor_moment_kNm: float | None = None
+    web_shear_kN: float | None = None
+    off_axis_shear_kN: float | None = None
+    torsion_kNm: float | None = None
+    design_compression_capacity_kN: float | None = None
+    design_major_bending_capacity_kNm: float | None = None
+    design_web_shear_capacity_kN: float | None = None
+    axial_bending_utilisation: float | None = None
+    bending_shear_utilisation: float | None = None
+    governing_utilisation: float | None = None
+    section_record_sha256: str | None = None
+    capacity_factors: dict[str, float] = Field(default_factory=dict)
+    web_slenderness: float | None = None
+    shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
+        None
+    )
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class ServiceabilityCheck(StructuralContract):
@@ -480,6 +515,7 @@ class DesignAnalysisDefinition(StructuralContract):
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
     stability: StabilityDefinition | None = None
+    cross_section_verification: CrossSectionVerificationDefinition | None = None
 
 
 class ProjectStructuralCapture(StructuralContract):
@@ -712,6 +748,22 @@ class ProjectStructuralCapture(StructuralContract):
                     raise ValueError(
                         "stability imperfection case must use category 'imperfection'"
                     )
+            if self.analysis.cross_section_verification is not None:
+                verification = self.analysis.cross_section_verification
+                combinations_by_id = {
+                    item.id: item for item in self.analysis.load_combinations
+                }
+                for combination_id in verification.combination_ids:
+                    _require_reference(
+                        "cross-section verification combination",
+                        combination_id,
+                        set(combinations_by_id),
+                    )
+                    if combinations_by_id[combination_id].limit_state != "ultimate":
+                        raise ValueError(
+                            "cross-section verification combinations must use "
+                            f"the ultimate limit state; {combination_id!r} does not"
+                        )
         return self
 
 
@@ -756,6 +808,7 @@ class StructuralSnapshot(StructuralContract):
     member_results: list[MemberResult]
     member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
+    cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     serviceability_checks: list[ServiceabilityCheck] = Field(default_factory=list)
     load_summary: LoadSummary = Field(
         default_factory=lambda: LoadSummary(

@@ -79,6 +79,7 @@ class _GeneratedModel:
     design_basis: dict[str, Any] | None = None
     wind_action_bases: list[dict[str, Any]] = field(default_factory=list)
     stability: dict[str, Any] | None = None
+    cross_section_verification: dict[str, Any] | None = None
     components: list[dict[str, Any]] = field(default_factory=list)
     connections: list[dict[str, Any]] = field(default_factory=list)
     loads: list[dict[str, Any]] = field(default_factory=list)
@@ -153,6 +154,7 @@ class _GeneratedModel:
                 "member_loads": self.member_loads,
                 "member_distributed_loads": self.member_distributed_loads,
                 "stability": self.stability,
+                "cross_section_verification": self.cross_section_verification,
             },
         }
 
@@ -1054,6 +1056,45 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 "physical_connection_stiffness_status",
                                 names,
                                 default="not_checked",
+                            )
+                        ),
+                    }
+                    continue
+                if method == "cross_section_verification":
+                    if call.args:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.cross_section_verification(...) "
+                            "accepts keywords only"
+                        )
+                    allowed = {
+                        "pack_id",
+                        "combination_ids",
+                        "off_axis_tolerance",
+                    }
+                    unexpected = sorted(set(keywords) - allowed)
+                    if unexpected:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.cross_section_verification(...) has "
+                            f"unsupported keywords {unexpected}"
+                        )
+                    if model.cross_section_verification is not None:
+                        raise StructuralDeclarationError(
+                            "StructuralModel.cross_section_verification(...) may "
+                            "only be called once"
+                        )
+                    model.cross_section_verification = {
+                        "pack_id": str(
+                            _keyword_value(keywords, "pack_id", names)
+                        ),
+                        "combination_ids": list(
+                            _keyword_value(keywords, "combination_ids", names)
+                        ),
+                        "off_axis_tolerance": float(
+                            _keyword_value(
+                                keywords,
+                                "off_axis_tolerance",
+                                names,
+                                default=1e-6,
                             )
                         ),
                     }

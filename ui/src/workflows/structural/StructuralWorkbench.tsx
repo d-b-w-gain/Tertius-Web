@@ -200,6 +200,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedCheck = analysis?.member_checks.find(
     (check) => check.member_id === selectedMember?.id,
   )
+  const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
+    (check) => check.member_id === selectedMember?.id,
+  )
+  const crossSectionStage = analysis?.verification_stages?.find(
+    (stage) => stage.id === 'cross_section',
+  )
   const selectedServiceability = analysis?.serviceability_checks.find(
     (check) => check.member_id === selectedMember?.id,
   )
@@ -1009,7 +1015,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     }`}>
                       <div className="flex items-center justify-between text-[10px]">
                         <span className="font-bold uppercase tracking-[0.15em] text-slate-400">
-                          Effective-section yield reference
+                          {selectedCrossSectionCheck
+                            ? 'AS/NZS 4600 Stage 6 cross-section'
+                            : 'Effective-section yield reference'}
                         </span>
                         <span className={`font-bold uppercase ${
                           selectedCheck.status === 'pass'
@@ -1029,8 +1037,61 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </div>
                       {selectedCheck.utilisation !== null && (
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
-                          {number(selectedCheck.utilisation * 100, 1)}% reference utilisation
+                          {number(selectedCheck.utilisation * 100, 1)}%{' '}
+                          {selectedCrossSectionCheck
+                            ? 'governing cross-section utilisation'
+                            : 'reference utilisation'}
                         </div>
+                      )}
+                      {selectedCrossSectionCheck && (
+                        <dl className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-700/70 pt-2 text-[9px]">
+                          <div>
+                            <dt className="text-slate-500">ULS envelope</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.governing_combination_id || '—'}
+                              {' @ '}
+                              {selectedCrossSectionCheck.governing_station_m === null
+                                ? '—'
+                                : `${number(selectedCrossSectionCheck.governing_station_m, 3)} m`}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Axial / resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.axial_kN === null
+                                ? '—'
+                                : number(selectedCrossSectionCheck.axial_kN, 3)}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_compression_capacity_kN === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_compression_capacity_kN,
+                                    3,
+                                  )} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Web shear / resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.web_shear_kN === null
+                                ? '—'
+                                : number(selectedCrossSectionCheck.web_shear_kN, 3)}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_web_shear_capacity_kN === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_web_shear_capacity_kN,
+                                    3,
+                                  )} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Web regime</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
+                            </dd>
+                          </div>
+                        </dl>
                       )}
                       <p className="mt-2 text-[9px] text-slate-500">
                         {selectedCheck.basis}
@@ -1083,24 +1144,33 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         <div>
                           <dt className="text-slate-500">Area</dt>
                           <dd className="font-mono">
-                            {typeof catalogueProperties?.A_mm2 === 'number'
-                              ? `${number(catalogueProperties.A_mm2, 0)} mm²`
+                            {typeof (catalogueProperties?.A_mm2 ?? catalogueProperties?.A) === 'number'
+                              ? `${number(
+                                  (catalogueProperties?.A_mm2 ?? catalogueProperties?.A) as number,
+                                  0,
+                                )} mm²`
                               : '—'}
                           </dd>
                         </div>
                         <div>
                           <dt className="text-slate-500">Yield</dt>
                           <dd className="font-mono">
-                            {typeof catalogueProperties?.fy_MPa === 'number'
-                              ? `${number(catalogueProperties.fy_MPa, 0)} MPa`
+                            {typeof (catalogueProperties?.fy_MPa ?? catalogueProperties?.fy) === 'number'
+                              ? `${number(
+                                  (catalogueProperties?.fy_MPa ?? catalogueProperties?.fy) as number,
+                                  0,
+                                )} MPa`
                               : '—'}
                           </dd>
                         </div>
                         <div>
                           <dt className="text-slate-500">Zxe</dt>
                           <dd className="font-mono">
-                            {typeof catalogueProperties?.Zxe_mm3 === 'number'
-                              ? `${number(catalogueProperties.Zxe_mm3, 0)} mm³`
+                            {typeof (catalogueProperties?.Zxe_mm3 ?? catalogueProperties?.Zxe) === 'number'
+                              ? `${number(
+                                  (catalogueProperties?.Zxe_mm3 ?? catalogueProperties?.Zxe) as number,
+                                  0,
+                                )} mm³`
                               : '—'}
                           </dd>
                         </div>
@@ -1141,13 +1211,24 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </section>
               )}
 
-              <section className="rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
-                <div className="font-semibold">Design capacity status: NOT CHECKED</div>
-                <p className="mt-1 text-[10px] text-amber-200/75">
-                  P399 is the verification sequence. The nominal Zxe × fy value only scales
-                  the visual demand reference; it cannot turn a member green until stability,
-                  Australian member resistance, restraint, connections, bases, and applicable
-                  serviceability stages are complete.
+              <section className={`rounded border p-3 text-xs ${
+                crossSectionStage?.status === 'pass'
+                  ? 'border-emerald-500/30 bg-emerald-950/30 text-emerald-200'
+                  : crossSectionStage?.status === 'fail'
+                    ? 'border-red-500/40 bg-red-950/30 text-red-200'
+                    : 'border-amber-500/30 bg-amber-950/30 text-amber-200'
+              }`}>
+                <div className="font-semibold">
+                  Cross-section status: {(crossSectionStage?.status || 'not checked')
+                    .replace('_', ' ')
+                    .toUpperCase()}
+                </div>
+                <p className="mt-1 text-[10px] opacity-75">
+                  {crossSectionStage?.summary ||
+                    'Select a versioned Australian capacity pack in design.py.'}
+                  {' '}This colour is Stage 6 cross-section resistance only. Member buckling,
+                  restraint, bracing, connections, bases, and the final order decision remain
+                  separate verification stages.
                 </p>
               </section>
             </div>
