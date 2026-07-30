@@ -206,6 +206,8 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedMemberStabilityCheck = analysis?.member_stability_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
+  const selectedDisplayCheckStatus = selectedMemberStabilityCheck?.status
+    || selectedCheck?.status
   const crossSectionStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'cross_section',
   )
@@ -1013,10 +1015,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   </dl>
                   {selectedCheck && (
                     <div className={`mt-3 rounded border p-3 ${
-                      selectedCheck.status === 'pass'
+                      selectedDisplayCheckStatus === 'pass'
                         ? 'border-emerald-500/40 bg-emerald-950/30'
-                        : selectedCheck.status === 'fail'
+                        : selectedDisplayCheckStatus === 'fail'
                           ? 'border-red-500/50 bg-red-950/30'
+                          : selectedDisplayCheckStatus === 'unsupported'
+                            ? 'border-amber-500/40 bg-amber-950/30'
                           : 'border-slate-700 bg-slate-950/40'
                     }`}>
                       <div className="flex items-center justify-between text-[10px]">
@@ -1028,20 +1032,44 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             : 'Effective-section yield reference'}
                         </span>
                         <span className={`font-bold uppercase ${
-                          selectedCheck.status === 'pass'
+                          selectedDisplayCheckStatus === 'pass'
                             ? 'text-emerald-300'
-                            : selectedCheck.status === 'fail'
+                            : selectedDisplayCheckStatus === 'fail'
                               ? 'text-red-300'
+                              : selectedDisplayCheckStatus === 'unsupported'
+                                ? 'text-amber-300'
                               : 'text-slate-400'
                         }`}>
-                          {selectedCheck.status.replace('_', ' ')}
+                          {(selectedDisplayCheckStatus || 'not_checked')
+                            .replace('_', ' ')}
                         </span>
                       </div>
                       <div className="mt-2 font-mono text-xs text-slate-200">
-                        {number(selectedCheck.demand_kNm, 4)} kN·m /{' '}
-                        {selectedCheck.capacity_kNm === null
-                          ? 'no reference'
-                          : `${number(selectedCheck.capacity_kNm, 4)} kN·m`}
+                        {selectedMemberStabilityCheck
+                          ? (
+                            <>
+                              {selectedMemberStabilityCheck.axial_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.axial_kN, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .design_member_compression_capacity_kN === null
+                                ? 'no member resistance'
+                                : `${number(
+                                    selectedMemberStabilityCheck
+                                      .design_member_compression_capacity_kN,
+                                    3,
+                                  )} kN axial screen`}
+                            </>
+                          )
+                          : (
+                            <>
+                              {number(selectedCheck.demand_kNm, 4)} kN·m /{' '}
+                              {selectedCheck.capacity_kNm === null
+                                ? 'no reference'
+                                : `${number(selectedCheck.capacity_kNm, 4)} kN·m`}
+                            </>
+                          )}
                       </div>
                       {selectedCheck.utilisation !== null && (
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
@@ -1053,7 +1081,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             : 'reference utilisation'}
                         </div>
                       )}
-                      {selectedCrossSectionCheck && (
+                      {selectedCrossSectionCheck && !selectedMemberStabilityCheck && (
                         <dl className="mt-2 grid grid-cols-2 gap-2 border-t border-slate-700/70 pt-2 text-[9px]">
                           <div>
                             <dt className="text-slate-500">ULS envelope</dt>
@@ -1312,8 +1340,8 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   {memberStabilityStage?.summary ||
                     'Author restraint-defined segments in design.py.'}
                   {' '}Green/red member colours only represent Stage 7 when the
-                  compression-flange and twist restraint needed by the governing
-                  combination is verified.
+                  governing compression-flange/twist restraint and distortional
+                  buckling resistance are verified.
                 </p>
               </section>
             </div>

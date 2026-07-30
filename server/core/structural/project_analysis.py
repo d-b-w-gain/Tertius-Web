@@ -2321,7 +2321,7 @@ def _p399_evidence(
                     f"{sum(check.status == 'fail' for check in member_stability_checks)} "
                     "fail, "
                     f"{sum(check.status == 'unsupported' for check in member_stability_checks)} "
-                    "need lateral/torsional restraint evidence."
+                    "need restraint and/or distortional-buckling evidence."
                 )
             ),
             sheet_ids=["sheet-p399-member-stability"],
