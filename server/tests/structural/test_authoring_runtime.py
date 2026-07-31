@@ -5,8 +5,116 @@ import pytest
 
 from core.structural.authoring_runtime import (
     StructuralAuthoringError,
+    StructuralConnectorGeometry,
+    StructuralMemberGeometry,
     StructuralModel,
+    StructuralSurfaceGeometry,
 )
+
+
+def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together():
+    model = StructuralModel(title="Imported component contracts")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=76_923_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=0.001,
+        iy_m4=1.0e-6,
+        iz_m4=2.0e-6,
+        torsion_j_m4=1.0e-8,
+    )
+    member_geometry = StructuralMemberGeometry(
+        shape=bd.Box(100, 50, 1000),
+        label="Imported Cee",
+        part_number="C10012",
+        start=(1.0, 2.0, 3.0),
+        end=(1.0, 2.0, 4.0),
+        rotation_deg=90.0,
+    )
+    surface_geometry = StructuralSurfaceGeometry(
+        shape=bd.Box(1000, 1000, 1),
+        label="Imported cladding panel",
+        part_number="CUSTOM-ORB",
+        area_m2=1.0,
+    )
+    connector_geometry = StructuralConnectorGeometry(
+        shape=bd.Cylinder(3, 20),
+        label="Imported screw pattern",
+        part_number="12-14X35",
+    )
+
+    member = model.member_from_geometry(
+        member_geometry,
+        component_id="component-member",
+        member_id="member-axis",
+        section=section,
+        material=material,
+        start_restraints=(True, True, True, True, True, True),
+        assumption="Imported builder axis.",
+    )
+    surface = model.surface_from_geometry(
+        surface_geometry,
+        component_id="component-surface",
+    )
+    connector = model.connector_from_geometry(
+        connector_geometry,
+        component_id="component-fasteners",
+    )
+    ground = model.ground(
+        bd.Box(200, 200, 100),
+        id="component-ground",
+        label="Ground",
+    )
+    model.connect(
+        surface,
+        member,
+        via=[connector],
+        id="surface-member",
+        label="Sheet fixed to Cee",
+        transfers=["wind_normal", "force"],
+    )
+    model.connect(
+        member,
+        ground,
+        id="member-ground",
+        label="Cee reaches ground",
+        transfers=["force", "shear", "moment"],
+    )
+    load = model.surface_load(
+        surface,
+        id="surface-load",
+        label="Panel action",
+        case="wind",
+        pressure_kPa=1.0,
+        area_m2=surface_geometry.area_m2,
+        direction=(1.0, 0.0, 0.0),
+        provenance="Builder-authored physical panel area.",
+    )
+    model.distribute_surface_load_uniform(
+        load,
+        member,
+        id="surface-distribution",
+        label="Panel to Cee",
+        provenance="Uniform fixture distribution.",
+    )
+    model.assembly(
+        [surface, connector, member, ground],
+        label="imported-component-contract",
+    )
+
+    manifest = model.manifest()
+    analytical = manifest["analysis"]["members"][0]
+    assert analytical["start"] == {"x": 1.0, "y": 2.0, "z": 3.0}
+    assert analytical["end"] == {"x": 1.0, "y": 2.0, "z": 4.0}
+    assert analytical["rotation_deg"] == 90.0
+    assert manifest["loads"][0]["area_m2"] == 1.0
 
 
 def test_structural_model_generates_manifest_from_registered_shape_handles():

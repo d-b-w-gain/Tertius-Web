@@ -32,6 +32,52 @@ class StructuralPart:
 
 
 @dataclass(frozen=True)
+class StructuralMemberGeometry:
+    """Placed CAD member with the analytical axis derived by its builder."""
+
+    shape: bd.Shape
+    label: str
+    part_number: str
+    start: tuple[float, float, float]
+    end: tuple[float, float, float]
+    rotation_deg: float = 0.0
+
+
+@dataclass(frozen=True)
+class StructuralSurfaceGeometry:
+    """Placed panel geometry and its physical loaded area."""
+
+    shape: bd.Shape
+    label: str
+    part_number: str
+    area_m2: float
+
+    def moved(self, location: bd.Location) -> "StructuralSurfaceGeometry":
+        return StructuralSurfaceGeometry(
+            shape=self.shape.moved(location),
+            label=self.label,
+            part_number=self.part_number,
+            area_m2=self.area_m2,
+        )
+
+
+@dataclass(frozen=True)
+class StructuralConnectorGeometry:
+    """Placed fastener or connection assembly supplied by a builder."""
+
+    shape: bd.Shape
+    label: str
+    part_number: str
+
+    def moved(self, location: bd.Location) -> "StructuralConnectorGeometry":
+        return StructuralConnectorGeometry(
+            shape=self.shape.moved(location),
+            label=self.label,
+            part_number=self.part_number,
+        )
+
+
+@dataclass(frozen=True)
 class StructuralMaterialSpec:
     """A registered elastic material used by an analytical member."""
 
@@ -134,6 +180,97 @@ class StructuralModel:
                 for role, reference in standards.items()
             },
         }
+
+    def member_from_geometry(
+        self,
+        geometry: StructuralMemberGeometry,
+        *,
+        component_id: str,
+        member_id: str,
+        section: StructuralSectionSpec,
+        material: StructuralMaterialSpec,
+        start_restraints: Sequence[bool] | dict[str, bool] = (),
+        end_restraints: Sequence[bool] | dict[str, bool] = (),
+        start_releases: Sequence[bool] | dict[str, bool] = (),
+        end_releases: Sequence[bool] | dict[str, bool] = (),
+        deflection_limit_ratio: float | None = None,
+        deflection_limit_mm: float | None = None,
+        deflection_limit_basis: str | None = None,
+        assumption: str,
+    ) -> StructuralPart:
+        """Register CAD and analysis from one builder-authored member value."""
+
+        if not isinstance(geometry, StructuralMemberGeometry):
+            raise StructuralAuthoringError(
+                "member_from_geometry requires StructuralMemberGeometry"
+            )
+        part = self.member(
+            geometry.shape,
+            id=component_id,
+            label=geometry.label,
+            part_number=geometry.part_number,
+        )
+        self.member_axis(
+            part,
+            id=member_id,
+            label=geometry.label,
+            start=geometry.start,
+            end=geometry.end,
+            section=section,
+            material=material,
+            start_restraints=start_restraints,
+            end_restraints=end_restraints,
+            rotation_deg=geometry.rotation_deg,
+            start_releases=start_releases,
+            end_releases=end_releases,
+            deflection_limit_ratio=deflection_limit_ratio,
+            deflection_limit_mm=deflection_limit_mm,
+            deflection_limit_basis=deflection_limit_basis,
+            assumption=assumption,
+        )
+        return part
+
+    def surface_from_geometry(
+        self,
+        geometry: StructuralSurfaceGeometry,
+        *,
+        component_id: str,
+    ) -> StructuralPart:
+        """Register a panel while retaining its builder-authored loaded area."""
+
+        if not isinstance(geometry, StructuralSurfaceGeometry):
+            raise StructuralAuthoringError(
+                "surface_from_geometry requires StructuralSurfaceGeometry"
+            )
+        if float(geometry.area_m2) <= 0:
+            raise StructuralAuthoringError(
+                "StructuralSurfaceGeometry area_m2 must be positive"
+            )
+        return self.surface(
+            geometry.shape,
+            id=component_id,
+            label=geometry.label,
+            part_number=geometry.part_number,
+        )
+
+    def connector_from_geometry(
+        self,
+        geometry: StructuralConnectorGeometry,
+        *,
+        component_id: str,
+    ) -> StructuralPart:
+        """Register the fastener assembly rendered by its product builder."""
+
+        if not isinstance(geometry, StructuralConnectorGeometry):
+            raise StructuralAuthoringError(
+                "connector_from_geometry requires StructuralConnectorGeometry"
+            )
+        return self.connector(
+            geometry.shape,
+            id=component_id,
+            label=geometry.label,
+            part_number=geometry.part_number,
+        )
 
     def stability(
         self,
