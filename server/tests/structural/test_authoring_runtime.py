@@ -50,6 +50,17 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         part_number="12-14X35",
     )
 
+    secondary = model.member_component_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(50, 50, 2000),
+            label="Imported graph-only girt",
+            part_number="C10012",
+            start=(0.0, 0.0, 0.0),
+            end=(0.0, 2.0, 0.0),
+        ),
+        component_id="component-secondary",
+    )
+
     member = model.member_from_geometry(
         member_geometry,
         component_id="component-member",
@@ -87,6 +98,13 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         label="Cee reaches ground",
         transfers=["force", "shear", "moment"],
     )
+    model.connect(
+        secondary,
+        member,
+        id="secondary-member",
+        label="Graph-only girt to analysed member",
+        transfers=["force", "shear"],
+    )
     load = model.surface_load(
         surface,
         id="surface-load",
@@ -105,12 +123,18 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         provenance="Uniform fixture distribution.",
     )
     model.assembly(
-        [surface, connector, member, ground],
+        [surface, connector, secondary, member, ground],
         label="imported-component-contract",
     )
 
     manifest = model.manifest()
     analytical = manifest["analysis"]["members"][0]
+    assert len(manifest["analysis"]["members"]) == 1
+    assert next(
+        component
+        for component in manifest["components"]
+        if component["id"] == "component-secondary"
+    )["part_number"] == "C10012"
     assert analytical["start"] == {"x": 1.0, "y": 2.0, "z": 3.0}
     assert analytical["end"] == {"x": 1.0, "y": 2.0, "z": 4.0}
     assert analytical["rotation_deg"] == 90.0

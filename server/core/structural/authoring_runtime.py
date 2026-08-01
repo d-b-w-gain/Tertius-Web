@@ -181,6 +181,25 @@ class StructuralModel:
             },
         }
 
+    def member_component_from_geometry(
+        self,
+        geometry: StructuralMemberGeometry,
+        *,
+        component_id: str,
+    ) -> StructuralPart:
+        """Register builder-authored member CAD without promoting it to the solver."""
+
+        if not isinstance(geometry, StructuralMemberGeometry):
+            raise StructuralAuthoringError(
+                "member_component_from_geometry requires StructuralMemberGeometry"
+            )
+        return self.member(
+            geometry.shape,
+            id=component_id,
+            label=geometry.label,
+            part_number=geometry.part_number,
+        )
+
     def member_from_geometry(
         self,
         geometry: StructuralMemberGeometry,
@@ -204,11 +223,9 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "member_from_geometry requires StructuralMemberGeometry"
             )
-        part = self.member(
-            geometry.shape,
-            id=component_id,
-            label=geometry.label,
-            part_number=geometry.part_number,
+        part = self.member_component_from_geometry(
+            geometry,
+            component_id=component_id,
         )
         self.member_axis(
             part,
