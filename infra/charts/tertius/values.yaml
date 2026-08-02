@@ -89,7 +89,13 @@ app:
     llmUserDailyTokenQuota: "3200000"
     piAgentProvider: openai-codex
     piAgentModel: gpt-5.6-sol
-    piAgentModelLabel: GPT-5.6 Sol
+    piAgentModels:
+      - id: gpt-5.6-sol
+        label: GPT-5.6 Sol
+      - id: gpt-5.6-luna
+        label: GPT-5.6 Luna
+      - id: gpt-5.6-terra
+        label: GPT-5.6 Terra
     piAgentThinking: medium
     piAgentTimeoutSeconds: 480
     piAgentMaxTurns: 24

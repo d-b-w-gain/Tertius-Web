@@ -578,6 +578,47 @@ pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'ki
 pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
 pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
 
+# I-001: the API ConfigMap owns one ordered model catalog and the Pi worker
+# references that exact key. Parse the rendered scalar so this remains valid
+# regardless of whether Helm/YAML represents it with single or double quotes.
+python3 - "$default_app_configmap" "$pi_worker" <<'PY'
+import json
+import re
+import sys
+
+configmap, worker = sys.argv[1:]
+expected = [
+    {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
+    {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
+    {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+]
+
+catalog_line = next(
+    (line for line in configmap.splitlines() if line.strip().startswith("PI_AGENT_MODELS_JSON:")),
+    None,
+)
+assert catalog_line is not None, "ConfigMap must render PI_AGENT_MODELS_JSON"
+raw_catalog = catalog_line.split(":", 1)[1].strip()
+if raw_catalog.startswith("'") and raw_catalog.endswith("'"):
+    decoded = raw_catalog[1:-1].replace("''", "'")
+else:
+    decoded = json.loads(raw_catalog)
+catalog = json.loads(decoded) if isinstance(decoded, str) else decoded
+assert catalog == expected, "ConfigMap model catalog must contain ordered Sol, Luna, Terra entries"
+
+assert re.search(
+    r"- name:\s*PI_AGENT_MODELS_JSON\s+valueFrom:\s+configMapKeyRef:\s+"
+    r"name:\s*[^\s]+\s+key:\s*PI_AGENT_MODELS_JSON(?:\s|$)",
+    worker,
+), "Pi worker must consume the ConfigMap PI_AGENT_MODELS_JSON key"
+assert re.search(
+    r"- name:\s*PI_AGENT_MODEL\s+value:\s*[\"']?gpt-5\.6-sol[\"']?(?:\s|$)",
+    worker,
+), "Pi worker default model must remain gpt-5.6-sol"
+assert "PI_AGENT_MODEL_LABEL" not in configmap
+assert "PI_AGENT_MODEL_LABEL" not in worker
+PY
+
 # ConfigMap-backed API settings must change the pod template so Helm rolls the
 # API together with workers that consume the same feature flag.
 pi_enabled_config_checksum="$(printf '%s\n' "$pi_enabled_api_deployment" | awk '/checksum\/config:/ {gsub(/"/, "", $2); print $2; exit}')"
