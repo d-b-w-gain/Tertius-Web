@@ -324,7 +324,7 @@ Task 2 evidence (2026-08-02): RED exposed six endpoint/selection/context failure
 - Modify: `server/tests/test_pi_agent_job.py`
 - Modify: `server/tests/test_pi_agent_result_consumer.py`
 
-- [ ] **Step 1: Write failing worker and reconciliation tests**
+- [x] **Step 1: Write failing worker and reconciliation tests**
 
 Add worker tests proving Luna and Terra commands are accepted when present in `settings.pi_agent_models`, while an unknown command is terminated before `run_pi_agent`.
 
@@ -404,7 +404,7 @@ async def test_queued_reconciliation_fails_closed_when_model_left_catalog(
     assert job.error_code == "dispatch_config_error"
 ```
 
-- [ ] **Step 2: Run focused worker/reconciler tests and verify RED**
+- [x] **Step 2: Run focused worker/reconciler tests and verify RED**
 
 ```bash
 UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/test_pi_agent_job.py server/tests/test_pi_agent_result_consumer.py -q
@@ -412,7 +412,7 @@ UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/t
 
 Expected: non-default configured models are rejected by equality checks.
 
-- [ ] **Step 3: Replace fixed-model equality with catalog membership**
+- [x] **Step 3: Replace fixed-model equality with catalog membership**
 
 In the worker:
 
@@ -426,16 +426,18 @@ if command.model not in allowed_models or command.thinking != settings.pi_agent_
 
 In queued reconciliation, validate `payload["dispatched_model"]` against the same catalog instead of comparing it with `settings.pi_agent_model`. Do not change result/progress comparisons against persisted dispatch provenance.
 
-- [ ] **Step 4: Run focused worker/reconciler tests and verify GREEN**
+- [x] **Step 4: Run focused worker/reconciler tests and verify GREEN**
 
 Run the Step 2 command. Expected: all tests pass.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 rtk git add server/workflows/intus/pi_agent_job.py server/workflows/intus/pi_agent_result_consumer.py server/tests/test_pi_agent_job.py server/tests/test_pi_agent_result_consumer.py
 rtk git commit -m "feat: validate Pi jobs against model catalog"
 ```
+
+Task 3 evidence (2026-08-02): RED produced four expected non-default catalog failures with 97 tests already passing. Commit `e69c6bb` passes all 101 focused worker/reconciler tests plus targeted Ruff and diff checks. Independent specification and code-quality reviews found no open issues.
 
 ## Task 4: Wire the Catalog Through Helm and Compose
 
