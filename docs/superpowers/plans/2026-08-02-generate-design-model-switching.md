@@ -621,7 +621,7 @@ Task 5 evidence (2026-08-02): RED produced seven expected failures in the prior 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-02-generate-design-model-switching.md` (checkboxes and evidence)
 
-- [ ] **Step 1: Run the full focused regression set**
+- [x] **Step 1: Run the full focused regression set**
 
 ```bash
 UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/test_pi_agent_models.py server/tests/test_config.py server/tests/test_llm_file_edit_domain.py server/tests/test_llm_usage.py server/tests/test_llm_file_edit.py server/tests/test_pi_agent_job.py server/tests/test_pi_agent_result_consumer.py -q
@@ -632,7 +632,7 @@ rtk bash scripts/check-runtime-parity.sh
 
 Expected: all feature-focused tests pass. Record the known untouched-master `server/pi` U-022 baseline separately if the complete Pi package test is run.
 
-- [ ] **Step 2: Run repository quality gates**
+- [x] **Step 2: Run repository quality gates**
 
 ```bash
 UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run ruff check server
@@ -645,11 +645,11 @@ rtk npm --prefix ui run build
 
 Expected: all gates pass, except any reproduced and explicitly documented untouched-master baseline failure.
 
-- [ ] **Step 3: Request specification and code-quality review**
+- [x] **Step 3: Request specification and code-quality review**
 
 Dispatch a code-review subagent with the approved design, this plan, base SHA `5035949`, and current head. Fix every Critical and Important finding, then rerun affected tests.
 
-- [ ] **Step 4: Run the isolated k3s authenticated live-flow**
+- [x] **Step 4: Run the isolated k3s authenticated live-flow**
 
 Use the local-values smoke release described in `docs/harness/local-harness.md` and run:
 
@@ -660,7 +660,7 @@ KUBECONFIG=/home/johnson/.kube/config NAMESPACE=tertius RELEASE_NAME=tertius-liv
 
 Do not set `LIVE_FLOW_COMPILE_ONLY=true`. In the browser, verify Sol/Luna/Terra are present, the context selector is absent, select a non-default model, submit a real edit, observe terminal completion and compile artifact, and inspect console/network failures. Verify the persisted/result model matches the selection without exposing prompts, source, or credentials.
 
-- [ ] **Step 5: Update plan evidence and commit verification notes**
+- [x] **Step 5: Update plan evidence and commit verification notes**
 
 Mark completed checkboxes and append exact commands/results plus any blocker. Then:
 
@@ -669,7 +669,7 @@ rtk git add docs/superpowers/plans/2026-08-02-generate-design-model-switching.md
 rtk git commit -m "docs: record model switching verification"
 ```
 
-- [ ] **Step 6: Verify final repository state**
+- [x] **Step 6: Verify final repository state**
 
 ```bash
 rtk git status --short --branch
@@ -678,3 +678,12 @@ rtk git diff 5035949...HEAD --check
 ```
 
 Expected: clean feature worktree, intentional commits only, and no whitespace errors.
+
+Task 6 evidence (2026-08-02):
+
+- Focused backend regression: 168 passed. Focused Generate Design/project-storage UI regression: 42 passed. Deployment configuration and runtime-parity checks passed.
+- Repository gates: backend 596 passed and 29 skipped; frontend 154 passed; UI typecheck, lint, and production build passed. UI lint retained three pre-existing warnings outside the touched files. Targeted Ruff passed for every changed Python file. Full `ruff check server` reported 31 legacy errors that reproduce unchanged on base `5035949` and are therefore recorded as an untouched-master baseline.
+- Final independent review of `5035949...HEAD` found no Critical, Important, or Minor findings and judged the branch ready.
+- The isolated k3s smoke release used locally built `model-switch-20260802` API, UI, and Pi images. Authenticated compile smoke passed with the Pi auth PVC verified and the Pi worker enabled.
+- Isolated authenticated browser validation returned HTTP 200 from `/api/intus/llm-usage/models`, in order, with Sol as default and Sol/Luna/Terra enabled. The accessible `AI model` selector switched from Sol to Terra, no context-size control was present, local storage contained no auth token, and there were no failed requests, HTTP errors, or console errors.
+- With explicit approval to send the isolated smoke prompt/source to the configured external provider, `LIVE_FLOW_MODEL_ID=gpt-5.6-terra LIVE_FLOW_VERIFY_CONVERSATION=true rtk scripts/harness-k3s.sh live-flow` passed without compile-only mode: authentication and seed save passed, the pre-edit compile passed, both conversation seed and follow-up edits completed with changed outcomes, and the final compile passed. The harness verified conversation continuity and selected-model persistence.
