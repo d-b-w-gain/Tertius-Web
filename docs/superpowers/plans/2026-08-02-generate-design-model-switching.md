@@ -34,8 +34,9 @@
 - Create: `server/tests/test_pi_agent_models.py`
 - Modify: `server/core/config.py`
 - Modify: `server/tests/test_config.py`
+- Modify: `server/.env.example` (catalog/obsolete label only; context cap remains Task 4)
 
-- [ ] **Step 1: Write failing catalog parser and Settings tests**
+- [x] **Step 1: Write failing catalog parser and Settings tests**
 
 Create `server/tests/test_pi_agent_models.py` with tests equivalent to:
 
@@ -98,7 +99,9 @@ def test_settings_catalog_errors_hide_raw_configuration(raw, default_model):
 
 Update `server/tests/test_config.py` so the default test expects `pi_agent_models_json` and `settings.pi_agent_models`, no longer expects `pi_agent_model_label`, and an override supplies a catalog containing its custom default.
 
-- [ ] **Step 2: Run the catalog tests and verify RED**
+Update `server/.env.example` in the same TDD slice: remove `PI_AGENT_MODEL_LABEL` and add the compact default `PI_AGENT_MODELS_JSON`. Leave `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` unchanged until Task 4.
+
+- [x] **Step 2: Run the catalog tests and verify RED**
 
 Run:
 
@@ -108,7 +111,7 @@ UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/t
 
 Expected: FAIL because `core.pi_agent_models`, `pi_agent_models_json`, and `pi_agent_models` do not exist and `pi_agent_model_label` still exists.
 
-- [ ] **Step 3: Implement strict shared catalog parsing**
+- [x] **Step 3: Implement strict shared catalog parsing**
 
 Create `server/core/pi_agent_models.py` with:
 
@@ -187,16 +190,20 @@ def pi_agent_models(self) -> tuple[PiAgentModelOption, ...]:
     return validate_default_pi_agent_model(self.pi_agent_models_json, self.pi_agent_model)
 ```
 
-- [ ] **Step 4: Run catalog/config tests and verify GREEN**
+Keep the intermediate application state coherent with a derived read-only `pi_agent_model_label` property that resolves the configured default's label from `pi_agent_models`. It is not a Pydantic model field or environment setting, so `PI_AGENT_MODEL_LABEL` remains removed; test both the default and a custom catalog/default label. Task 2 removes the endpoint's reliance on this compatibility accessor when it returns the full catalog.
+
+- [x] **Step 4: Run catalog/config tests and verify GREEN**
 
 Run the Step 2 command. Expected: all tests pass with bounded validation messages.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
-rtk git add server/core/pi_agent_models.py server/core/config.py server/tests/test_pi_agent_models.py server/tests/test_config.py
+rtk git add server/core/pi_agent_models.py server/core/config.py server/tests/test_pi_agent_models.py server/tests/test_config.py server/.env.example
 rtk git commit -m "feat: add configurable Pi model catalog"
 ```
+
+Task 1 evidence (2026-08-02): RED failed with the expected missing module and derived-property errors. Commit `4ee1f8c5` passes 28 focused tests plus targeted Ruff and diff checks. Independent specification and code-quality reviews found no open issues.
 
 ## Task 2: Dispatch Selected Models and Fix Context at 300,000 Characters
 
@@ -485,7 +492,7 @@ Make the Pi worker consume that exact ConfigMap key rather than rendering a seco
       key: PI_AGENT_MODELS_JSON
 ```
 
-Replace `PI_AGENT_MODEL_LABEL` in Compose dev/parity API environments and add the identical catalog to their Pi worker environments. Update `server/.env.example` with the compact JSON value and raise its existing `LLM_FILE_EDIT_MAX_CONTEXT_CHARS=80000` safety cap to `2000000`, matching the runtime default so the fixed 300,000-character product budget is effective in direct local runs.
+Replace `PI_AGENT_MODEL_LABEL` in Compose dev/parity API environments and add the identical catalog to their Pi worker environments. The catalog value is already present in `server/.env.example` from Task 1; raise that file's existing `LLM_FILE_EDIT_MAX_CONTEXT_CHARS=80000` safety cap to `2000000`, matching the runtime default so the fixed 300,000-character product budget is effective in direct local runs.
 
 Document that catalog entries are non-secret deployment configuration, Sol is the default, selection is persisted per job, and end users cannot configure the fixed 300,000-character source budget.
 
