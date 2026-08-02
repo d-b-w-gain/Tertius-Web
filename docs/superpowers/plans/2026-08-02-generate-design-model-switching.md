@@ -453,13 +453,13 @@ Task 3 evidence (2026-08-02): RED produced four expected non-default catalog fai
 - Modify: `docs/configuration-and-secrets.md`
 - Modify: `docs/harness/runtime-parity.md`
 
-- [ ] **Step 1: Add failing deployment and parity assertions**
+- [x] **Step 1: Add failing deployment and parity assertions**
 
 Extend `scripts/test-deployment-config.sh` to require the `PI_AGENT_MODELS_JSON` ConfigMap key and each ordered ID/label pair (`gpt-5.6-sol`/`GPT-5.6 Sol`, then Luna, then Terra) in the rendered value without depending on Helm's YAML quote style. Require the worker to use `configMapKeyRef` with `key: PI_AGENT_MODELS_JSON`, require `PI_AGENT_MODEL: "gpt-5.6-sol"`, and reject `PI_AGENT_MODEL_LABEL`.
 
 Extend `scripts/check-runtime-parity.sh` to verify API and worker catalog presence in Helm, Compose dev, and Compose parity and to reject the obsolete label variable.
 
-- [ ] **Step 2: Run deployment/parity checks and verify RED**
+- [x] **Step 2: Run deployment/parity checks and verify RED**
 
 ```bash
 rtk bash scripts/test-deployment-config.sh
@@ -468,7 +468,7 @@ rtk bash scripts/check-runtime-parity.sh
 
 Expected: FAIL because the catalog is not rendered and the obsolete label setting remains.
 
-- [ ] **Step 3: Add one ordered values catalog and render/inject it everywhere**
+- [x] **Step 3: Add one ordered values catalog and render/inject it everywhere**
 
 In `values.yaml` replace `piAgentModelLabel` with:
 
@@ -502,16 +502,18 @@ Replace `PI_AGENT_MODEL_LABEL` in Compose dev/parity API environments and add th
 
 Document that catalog entries are non-secret deployment configuration, Sol is the default, selection is persisted per job, and end users cannot configure the fixed 300,000-character source budget.
 
-- [ ] **Step 4: Run deployment/parity checks and verify GREEN**
+- [x] **Step 4: Run deployment/parity checks and verify GREEN**
 
 Run the Step 2 commands. Expected: both exit 0.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```bash
 rtk git add infra/charts/tertius/values.yaml infra/charts/tertius/templates/configmap.yaml infra/charts/tertius/templates/pi-agent-worker.yaml docker-compose.yml docker-compose.parity.yml server/.env.example scripts/test-deployment-config.sh scripts/check-runtime-parity.sh docs/configuration-and-secrets.md docs/harness/runtime-parity.md
 rtk git commit -m "feat: configure Generate Design model catalog"
 ```
+
+Task 4 evidence (2026-08-02): RED produced six intentional static-contract failures across the missing Helm catalog/key reference and obsolete label settings. Commit `b9bc24e` passes deployment configuration, runtime-parity, shell syntax, and diff checks. Independent specification and code-quality reviews found no open issues.
 
 ## Task 5: Add the Generate Design Model Selector and Remove Context Controls
 
