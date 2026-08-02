@@ -11,6 +11,10 @@ from uuid import uuid4
 
 import pytest
 
+from core.pi_agent_models import (
+    DEFAULT_PI_AGENT_MODELS_JSON,
+    parse_pi_agent_models,
+)
 from core.pi_agent_conversation import (
     render_conversation_context,
     render_legacy_prior_prompts,
@@ -317,6 +321,7 @@ def worker_settings(**overrides):
 
     values = {
         "pi_agent_model": "gpt-5.6-sol",
+        "pi_agent_models": parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON),
         "pi_agent_thinking": "medium",
         "pi_agent_request_max_bytes": 524288,
         "pi_agent_result_max_bytes": 524288,
@@ -328,6 +333,62 @@ def worker_settings(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra"])
+async def test_worker_accepts_catalog_non_default_model(monkeypatch, model):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")]).model_copy(
+        update={"model": model}
+    )
+    processed = []
+
+    async def fake_execute(command, *_args):
+        processed.append(command.model)
+        return job._failure(
+            command,
+            datetime.now(timezone.utc),
+            "provider_auth",
+            "failed",
+            False,
+        )
+
+    monkeypatch.setattr(job, "execute_pi_agent_command", fake_execute)
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = FakePublisher()
+
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
+
+    assert processed == [model]
+    assert publisher.calls[0][1].model == model
+    assert msg.actions == ["ack"]
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_model_outside_catalog_before_pi(monkeypatch):
+    import workflows.intus.pi_agent_job as job
+
+    request = command([source("model.py", "old")]).model_copy(
+        update={"model": "retired-model"}
+    )
+    called = False
+
+    async def fake_execute(*_args):
+        nonlocal called
+        called = True
+        raise AssertionError("Pi execution must not start")
+
+    monkeypatch.setattr(job, "execute_pi_agent_command", fake_execute)
+    msg = FakeMessage(request.model_dump_json().encode())
+    publisher = FakePublisher()
+
+    await job.handle_pi_agent_request_message(msg, publisher, worker_settings())
+
+    assert called is False
+    assert publisher.calls == []
+    assert msg.actions == ["term"]
 
 
 @pytest.mark.asyncio
