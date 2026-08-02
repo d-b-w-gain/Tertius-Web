@@ -6,7 +6,6 @@ import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
   type LlmEditConversationEntry,
-  type LlmEditContextTier,
   type LlmEditProgressEvent,
   type LlmEditProgressSnapshot,
   type LlmFileEditResult,
@@ -33,13 +32,6 @@ const COMPILE_STATUS_RETRY_MS = 3_000
 const LLM_EDIT_STATUS_INITIAL_DELAY_MS = 1_000
 const LLM_EDIT_STATUS_POLL_MS = 1_500
 const LLM_EDIT_STATUS_RETRY_MS = 2_000
-
-const LLM_EDIT_CONTEXT_TIERS: Array<{ value: LlmEditContextTier; label: string; chars: string }> = [
-  { value: 'low', label: 'Low', chars: '80k' },
-  { value: 'medium', label: 'Medium', chars: '160k' },
-  { value: 'high', label: 'High', chars: '250k' },
-  { value: 'very_high', label: 'Very High', chars: '2.0m (~500k tokens)' },
-]
 
 type EditableFilePointer = ProjectFileMetadata & {
   id: string
@@ -326,7 +318,6 @@ export function GenerateDesignWindow({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [contextTier, setContextTier] = useState<LlmEditContextTier>('low')
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -392,7 +383,7 @@ export function GenerateDesignWindow({
     ))
     : undefined
   const selectedModelUrl = selectedMessage?.modelUrl || selectedJobAssistant?.modelUrl || ''
-  const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
+  const selectedModel = llmModels.find(model => model.id === selectedModelId)
   const selectedCompileStatus = (
     selectedMessage?.compileJobId ? selectedMessage.compileStatus : undefined
   ) || (
@@ -564,15 +555,24 @@ export function GenerateDesignWindow({
         const response = await storage.listLlmModels()
         if (cancelled) return
         if (response.models.length === 0) {
+          setLlmModels([])
+          setSelectedModelId('')
           throw new Error('No AI model is configured.')
         }
         setLlmModels(response.models)
         setSelectedModelId(current => {
-          if (current && response.models.some(model => model.id === current)) return current
-          return response.default_model_id || response.models[0]?.id || ''
+          if (current && response.models.some(model => model.id === current && model.enabled)) return current
+          const defaultModel = response.models.find(model => (
+            model.id === response.default_model_id && model.enabled
+          ))
+          return defaultModel?.id || response.models.find(model => model.enabled)?.id || ''
         })
       } catch (modelError) {
-        if (!cancelled) setError(modelError instanceof Error ? modelError.message : 'Failed to load LLM models.')
+        if (!cancelled) {
+          setLlmModels([])
+          setSelectedModelId('')
+          setError(modelError instanceof Error ? modelError.message : 'Failed to load LLM models.')
+        }
       }
     }
 
@@ -645,6 +645,9 @@ export function GenerateDesignWindow({
             const currentMessage = messagesRef.current.find(candidate => candidate.id === assistantMessageId)
             if (currentMessage && !currentMessage.repairAttempted) {
               try {
+                if (!currentMessage.model) {
+                  throw new Error('Original AI model is unavailable.')
+                }
                 const originalPrompt = messagesRef.current.find(candidate => (
                   candidate.id === promptMessageId(currentMessage.jobId || '')
                 ))?.content || prompt || 'Generate a design.'
@@ -657,8 +660,7 @@ export function GenerateDesignWindow({
                     updated_at: file.updated_at,
                   })),
                   active_file_id: activeFileId,
-                  model_id: selectedModel?.id,
-                  context_tier: contextTier,
+                  model_id: currentMessage.model,
                   metadata: { source: 'generate_design_compile_repair' },
                 })
                 updateAssistantMessage(assistantMessageId, current => ({
@@ -715,7 +717,7 @@ export function GenerateDesignWindow({
 
     clearCompileTimer(jobId)
     compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS))
-  }, [buildLlmEditRequest, clearCompileTimer, contextTier, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, selectedModel?.id, storage, updateAssistantMessage])
+  }, [buildLlmEditRequest, clearCompileTimer, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, storage, updateAssistantMessage])
 
   const startCompilePolling = useCallback((projectName: string, jobId: string, assistantMessageId: string) => {
     const requestId = (compileRequestRef.current.get(jobId) || 0) + 1
@@ -799,7 +801,7 @@ export function GenerateDesignWindow({
         changed: file.changed,
       })),
       usage: result.usage,
-      model: result.model,
+      model: current.model || result.model,
       compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
       jobId: current.repairAttempted ? current.jobId : originatingLlmEditJobId || current.jobId,
       repairJobId: current.repairAttempted ? originatingLlmEditJobId || current.repairJobId : current.repairJobId,
@@ -919,8 +921,9 @@ export function GenerateDesignWindow({
 
   const submitPrompt = async (event: FormEvent) => {
     event.preventDefault()
-    if (!prompt.trim() || isSubmitting) return
+    if (!prompt.trim() || isSubmitting || !selectedModel?.enabled) return
     const submittedPrompt = prompt.trim()
+    const submittedModelId = selectedModel.id
     const userMessage: ChatMessage = {
       id: messageId('user'),
       role: 'user',
@@ -933,6 +936,7 @@ export function GenerateDesignWindow({
       content: 'Generating design edit...',
       createdAt: Date.now(),
       compileStatus: 'queued',
+      model: submittedModelId,
       progressActive: true,
       progressDisclosure: true,
       renderKey: messageId('render'),
@@ -951,7 +955,7 @@ export function GenerateDesignWindow({
       const job = await runWithInteractionSpan('llm_file_edit_submit', {
         workflow: 'generate',
         source: 'generate_design_window',
-        model_id: selectedModel?.id || '',
+        model_id: submittedModelId,
       }, () => storage.applyLlmFileEditJob(activeProject, {
           prompt: submittedPrompt,
           files: requestFiles.map(file => ({
@@ -960,8 +964,7 @@ export function GenerateDesignWindow({
             updated_at: file.updated_at,
           })),
           active_file_id: activeFileId,
-          model_id: selectedModel?.id,
-          context_tier: contextTier,
+          model_id: submittedModelId,
           metadata: { source: 'generate_design_window' },
         }))
       const stablePromptId = promptMessageId(job.job_id)
@@ -1138,27 +1141,21 @@ export function GenerateDesignWindow({
             </span>
           </div>
 
-          {selectedModel && (
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
-              <span className="font-semibold text-slate-200">{selectedModel.label}</span>
-              <span className="font-mono text-slate-500">{selectedModel.model}</span>
-            </div>
-          )}
-
           <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
-            <label htmlFor="generate-design-context-tier" className="font-semibold text-slate-200">
-              AI context size
+            <label htmlFor="generate-design-model" className="font-semibold text-slate-200">
+              AI model
             </label>
             <select
-              id="generate-design-context-tier"
-              aria-label="AI context size"
-              value={contextTier}
-              onChange={event => setContextTier(event.currentTarget.value as LlmEditContextTier)}
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500"
+              id="generate-design-model"
+              aria-label="AI model"
+              value={selectedModel?.id || ''}
+              onChange={event => setSelectedModelId(event.currentTarget.value)}
+              disabled={!llmModels.some(model => model.enabled)}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:text-slate-500"
             >
-              {LLM_EDIT_CONTEXT_TIERS.map(tier => (
-                <option key={tier.value} value={tier.value}>
-                  {tier.label} ({tier.chars})
+              {llmModels.map(model => (
+                <option key={model.id} value={model.id} disabled={!model.enabled}>
+                  {model.label}
                 </option>
               ))}
             </select>
@@ -1235,7 +1232,7 @@ export function GenerateDesignWindow({
             {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
             <button
               type="submit"
-              disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel}
+              disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel?.enabled}
               className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSubmitting ? 'Generating...' : 'Generate Design'}

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LlmEditProgressSnapshot } from '../shared/projectStorage'
 import { GenerateDesignWindow } from './GenerateDesignWindow'
@@ -125,6 +125,18 @@ describe('GenerateDesignWindow', () => {
           id: 'gpt-5.6-sol',
           label: 'GPT-5.6 Sol',
           model: 'gpt-5.6-sol',
+          enabled: true,
+        },
+        {
+          id: 'gpt-5.6-luna',
+          label: 'GPT-5.6 Luna',
+          model: 'gpt-5.6-luna',
+          enabled: true,
+        },
+        {
+          id: 'gpt-5.6-terra',
+          label: 'GPT-5.6 Terra',
+          model: 'gpt-5.6-terra',
           enabled: true,
         },
       ],
@@ -291,17 +303,45 @@ describe('GenerateDesignWindow', () => {
     }
   })
 
-  it('shows the configured fixed model without pricing controls', async () => {
+  it('selects the configured default model and allows switching models', async () => {
     render(<GenerateDesignWindow />)
     await screen.findByText('Latest model viewer')
     openGenerateDesignConversation()
 
-    expect(await screen.findByText('GPT-5.6 Sol')).toBeInTheDocument()
-    expect(screen.getByText('gpt-5.6-sol')).toBeInTheDocument()
+    const selector = await screen.findByRole('combobox', { name: 'AI model' })
+    expect(selector).toHaveValue('gpt-5.6-sol')
+    expect(within(selector).getAllByRole('option')).toHaveLength(3)
+    fireEvent.change(selector, { target: { value: 'gpt-5.6-terra' } })
+    expect(selector).toHaveValue('gpt-5.6-terra')
+    expect(screen.queryByRole('combobox', { name: 'AI context size' })).not.toBeInTheDocument()
     expect(screen.queryByText(/\$|per 1M|week/i)).not.toBeInTheDocument()
   })
 
-  it('shows an error when the models response is empty', async () => {
+  it('disables generation when every configured model is unavailable', async () => {
+    storage.listLlmModels.mockResolvedValueOnce({
+      default_model_id: 'gpt-5.6-sol',
+      models: [
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', model: 'gpt-5.6-sol', enabled: false },
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', model: 'gpt-5.6-luna', enabled: false },
+      ],
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+
+    const selector = await screen.findByRole('combobox', { name: 'AI model' })
+    expect((selector as HTMLSelectElement).value).toBe('')
+    for (const option of within(selector).getAllByRole('option')) {
+      expect(option).toBeDisabled()
+    }
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'make a bracket' },
+    })
+    expect(screen.getByRole('button', { name: 'Generate Design' })).toBeDisabled()
+  })
+
+  it('shows an error and disables generation when the models response is empty', async () => {
     storage.listLlmModels.mockResolvedValueOnce({ default_model_id: '', models: [] })
 
     render(<GenerateDesignWindow />)
@@ -309,6 +349,52 @@ describe('GenerateDesignWindow', () => {
     openGenerateDesignConversation()
 
     expect(await screen.findByText('No AI model is configured.')).toBeInTheDocument()
+    const selector = screen.getByRole('combobox', { name: 'AI model' })
+    expect(within(selector).queryAllByRole('option')).toHaveLength(0)
+    fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
+      target: { value: 'make a bracket' },
+    })
+    expect(screen.getByRole('button', { name: 'Generate Design' })).toBeDisabled()
+  })
+
+  it('clears a stale model selection when model refresh fails', async () => {
+    const { rerender } = render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    const selector = await screen.findByRole('combobox', { name: 'AI model' })
+    fireEvent.change(selector, { target: { value: 'gpt-5.6-terra' } })
+    expect(selector).toHaveValue('gpt-5.6-terra')
+
+    storage.listLlmModels.mockRejectedValueOnce(new Error('Model discovery unavailable.'))
+    rerender(<GenerateDesignWindow isActive={false} />)
+    rerender(<GenerateDesignWindow isActive />)
+
+    expect(await screen.findByText('Model discovery unavailable.')).toBeInTheDocument()
+    await waitFor(() => {
+      const refreshedSelector = screen.getByRole('combobox', { name: 'AI model' })
+      expect((refreshedSelector as HTMLSelectElement).value).toBe('')
+      expect(within(refreshedSelector).queryAllByRole('option')).toHaveLength(0)
+    })
+  })
+
+  it('clears a stale model selection when model refresh returns an empty catalog', async () => {
+    const { rerender } = render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+    const selector = await screen.findByRole('combobox', { name: 'AI model' })
+    fireEvent.change(selector, { target: { value: 'gpt-5.6-terra' } })
+    expect(selector).toHaveValue('gpt-5.6-terra')
+
+    storage.listLlmModels.mockResolvedValueOnce({ default_model_id: '', models: [] })
+    rerender(<GenerateDesignWindow isActive={false} />)
+    rerender(<GenerateDesignWindow isActive />)
+
+    expect(await screen.findByText('No AI model is configured.')).toBeInTheDocument()
+    await waitFor(() => {
+      const refreshedSelector = screen.getByRole('combobox', { name: 'AI model' })
+      expect((refreshedSelector as HTMLSelectElement).value).toBe('')
+      expect(within(refreshedSelector).queryAllByRole('option')).toHaveLength(0)
+    })
   })
 
   it('sends design.py first, omits files missing concurrency metadata, compiles changed output, and selects the artifact URL', async () => {
@@ -318,8 +404,10 @@ describe('GenerateDesignWindow', () => {
     openGenerateDesignConversation()
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
-    expect(screen.getByRole('combobox', { name: 'AI context size' })).toHaveValue('low')
-    expect(screen.getByRole('option', { name: 'Very High (2.0m (~500k tokens))' })).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox', { name: 'AI model' }), {
+      target: { value: 'gpt-5.6-terra' },
+    })
+    expect(screen.queryByRole('combobox', { name: 'AI context size' })).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'make a larger test cube' },
@@ -339,10 +427,10 @@ describe('GenerateDesignWindow', () => {
         { id: 'helpers-id', filename: 'helpers.py', updated_at: '2026-06-18T00:00:00Z' },
       ],
       active_file_id: 'design-id',
-      model_id: 'gpt-5.6-sol',
-      context_tier: 'low',
+      model_id: 'gpt-5.6-terra',
       metadata: { source: 'generate_design_window' },
     })
+    expect(storage.applyLlmFileEditJob.mock.calls[0]?.[1]).not.toHaveProperty('context_tier')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
@@ -664,6 +752,9 @@ describe('GenerateDesignWindow', () => {
     await screen.findByText('Latest model viewer')
     openGenerateDesignConversation()
 
+    const selector = screen.getByRole('combobox', { name: 'AI model' })
+    fireEvent.change(selector, { target: { value: 'gpt-5.6-terra' } })
+
     fireEvent.change(screen.getByPlaceholderText('Describe the CAD design or modification...'), {
       target: { value: 'Generate a door handle for 3d printing' },
     })
@@ -672,6 +763,8 @@ describe('GenerateDesignWindow', () => {
     await waitFor(() => {
       expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(1)
     })
+    fireEvent.change(selector, { target: { value: 'gpt-5.6-luna' } })
+    expect(selector).toHaveValue('gpt-5.6-luna')
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)
@@ -696,6 +789,8 @@ describe('GenerateDesignWindow', () => {
     if (!repairRequest) throw new Error('repair request was not captured')
     expect(repairRequest.prompt).toContain('Generate a door handle for 3d printing')
     expect(repairRequest.prompt).toContain("AttributeError: module 'build123d' has no attribute 'RoundedPolygon'")
+    expect(repairRequest.model_id).toBe('gpt-5.6-terra')
+    expect(repairRequest).not.toHaveProperty('context_tier')
     expect(repairRequest.metadata).toEqual({ source: 'generate_design_compile_repair' })
 
     await act(async () => {
@@ -947,6 +1042,48 @@ describe('GenerateDesignWindow', () => {
     })
     expect(storage.applyLlmFileEditJob).toHaveBeenCalledTimes(2)
     expect(screen.getAllByText(/Compile failed: Compile failed. Fix the model source/).length).toBeGreaterThan(0)
+  })
+
+  it('fails automatic repair with a bounded error when the original model snapshot is missing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    storage.listLlmEditConversation.mockResolvedValueOnce([
+      {
+        job_id: 'llm-job-without-model',
+        prompt: 'Generate a printable latch',
+        content: 'Updated 1 file.',
+        created_at: '2026-06-19T00:03:00Z',
+        status: 'succeeded',
+        compile: {
+          job_id: 'compile-job-without-model',
+          status: 'running',
+          export_format: 'glb',
+        },
+      },
+    ])
+    mocks.apiFetch.mockImplementation((url: string) => {
+      if (url === '/api/intus/projects/project_a/compile/jobs/compile-job-without-model') {
+        return Promise.resolve(jsonResponse({
+          job_id: 'compile-job-without-model',
+          status: 'failed',
+          error_code: 'sandbox_error',
+          retryable: true,
+          user_message: 'Compile failed. Fix the model source and try again.',
+          error: 'Traceback:\nNameError: latch is not defined',
+        }, true))
+      }
+      return Promise.resolve(jsonResponse({}, false))
+    })
+
+    render(<GenerateDesignWindow />)
+    await screen.findByText('Latest model viewer')
+    openGenerateDesignConversation()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect((await screen.findAllByText(/Automatic repair could not start: Original AI model is unavailable\./)).length).toBeGreaterThan(0)
+    expect(storage.applyLlmFileEditJob).not.toHaveBeenCalled()
   })
 
   it('does not run another automatic repair after hydrating a repaired edit job', async () => {
