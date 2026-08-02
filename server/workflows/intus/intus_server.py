@@ -33,9 +33,9 @@ from core.pi_agent_prompt import (
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
 from core.llm_file_edit import (
+    LLM_FILE_EDIT_CONTEXT_CHARS,
     LlmEditableFile as DomainEditableFile,
     LlmFileEditInput,
-    llm_edit_context_chars_for_tier,
     select_llm_edit_context_files as select_domain_context_files,
 )
 from core.telemetry import (
@@ -454,6 +454,10 @@ def _llm_edit_job_model(job: LlmEditJob) -> str | None:
         return result_model
 
     request_payload = job.request_payload or {}
+    dispatched_model = request_payload.get("dispatched_model")
+    if isinstance(dispatched_model, str) and dispatched_model:
+        return dispatched_model
+
     request_model = request_payload.get("model_id")
     if isinstance(request_model, str) and request_model:
         return request_model
@@ -589,6 +593,7 @@ async def start_llm_file_edit_job(
     repo = ProjectRepository(db, ctx.tenant_id)
     job_repo = LlmEditRepository(db, ctx.tenant_id)
     settings = get_settings()
+    selected_model = req.model_id or settings.pi_agent_model
     job = None
     publication_attempted = False
     try:
@@ -615,7 +620,7 @@ async def start_llm_file_edit_job(
         if active_job is not None:
             db.rollback()
             return JSONResponse(status_code=409, content={"success": False, "error": "An AI edit is already running for this project", "retryable": True})
-        if req.model_id not in (None, "", settings.pi_agent_model):
+        if selected_model not in {model.id for model in settings.pi_agent_models}:
             return JSONResponse(status_code=400, content={"success": False, "error": "unsupported_model"})
 
         seen_ids: set[UUID] = set()
@@ -647,7 +652,7 @@ async def start_llm_file_edit_job(
             max_files=settings.llm_file_edit_max_context_files,
             max_chars=min(
                 settings.llm_file_edit_max_context_chars,
-                llm_edit_context_chars_for_tier(req.context_tier),
+                LLM_FILE_EDIT_CONTEXT_CHARS,
             ),
         )
         prompt_snapshot = load_pi_agent_prompt()
@@ -706,7 +711,7 @@ async def start_llm_file_edit_job(
         request_payload.update(
             {
                 "dispatched_provider": settings.pi_agent_provider,
-                "dispatched_model": settings.pi_agent_model,
+                "dispatched_model": selected_model,
                 "dispatched_thinking": settings.pi_agent_thinking,
                 "dispatched_command_schema_version": 2,
                 "dispatched_conversation": conversation.model_dump(mode="json"),
@@ -735,7 +740,7 @@ async def start_llm_file_edit_job(
             tenant_id=ctx.tenant_id,
             project_id=project.id,
             provider=settings.pi_agent_provider,
-            model=settings.pi_agent_model,
+            model=selected_model,
             thinking=settings.pi_agent_thinking,
             prompt=req.prompt,
             prior_prompts=[],
@@ -756,7 +761,7 @@ async def start_llm_file_edit_job(
             pi_agent_metric_attributes(
                 operation="pi_agent.api",
                 provider=settings.pi_agent_provider,
-                model=settings.pi_agent_model,
+                model=selected_model,
                 status="queued",
             ),
         )
