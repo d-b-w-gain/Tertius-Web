@@ -215,7 +215,7 @@ Task 1 evidence (2026-08-02): RED failed with the expected missing module and de
 - Modify: `server/tests/test_llm_usage.py`
 - Modify: `server/tests/test_llm_file_edit.py`
 
-- [ ] **Step 1: Write failing models endpoint, selection, rejection, and context tests**
+- [x] **Step 1: Write failing models endpoint, selection, rejection, and context tests**
 
 Update `test_llm_models_endpoint_reflects_pi_agent_availability` to expect all three configured records in order. Add parametrized API submission coverage:
 
@@ -263,7 +263,9 @@ def test_file_edit_request_has_no_context_tier_contract():
 
 Add a submission test that monkeypatches `select_domain_context_files`, sends legacy `context_tier`, and verifies `max_chars == min(settings.llm_file_edit_max_context_chars, 300_000)`.
 
-- [ ] **Step 2: Run the focused API/domain tests and verify RED**
+Add history serialization coverage for a queued/failed job submitted with omitted or blank `model_id`: `_llm_edit_job_model` must prefer validated result provenance, then persisted `dispatched_model`, and use raw `model_id` only as a legacy fallback. Assert the current job reports `gpt-5.6-sol` before any result exists and retain a legacy fallback test.
+
+- [x] **Step 2: Run the focused API/domain tests and verify RED**
 
 ```bash
 UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/test_llm_file_edit_domain.py server/tests/test_llm_usage.py server/tests/test_llm_file_edit.py -q
@@ -271,7 +273,7 @@ UV_CACHE_DIR=/tmp/tertius-model-switch-uv-cache rtk uv run pytest server/tests/t
 
 Expected: FAIL because the endpoint returns one model, selected models are rejected/overwritten, and tiers still control context.
 
-- [ ] **Step 3: Remove the tier contract and resolve the requested catalog model**
+- [x] **Step 3: Remove the tier contract and resolve the requested catalog model**
 
 In `server/core/llm_file_edit.py`, replace the tier type/function with:
 
@@ -301,16 +303,18 @@ Use `selected_model` for `dispatched_model`, `PiAgentCommand.model`, and the que
 max_chars=min(settings.llm_file_edit_max_context_chars, LLM_FILE_EDIT_CONTEXT_CHARS)
 ```
 
-- [ ] **Step 4: Run API/domain tests and verify GREEN**
+- [x] **Step 4: Run API/domain tests and verify GREEN**
 
 Run the Step 2 command. Expected: all tests pass.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 rtk git add server/core/llm_file_edit.py server/workflows/intus/usage_server.py server/workflows/intus/intus_server.py server/tests/test_llm_file_edit_domain.py server/tests/test_llm_usage.py server/tests/test_llm_file_edit.py
 rtk git commit -m "feat: dispatch selected Generate Design models"
 ```
+
+Task 2 evidence (2026-08-02): RED exposed six endpoint/selection/context failures and three provenance-history failures. Amended commit `355b65d` passes all 39 focused API/domain tests plus targeted Ruff and diff checks. Independent specification and code-quality reviews found no open issues.
 
 ## Task 3: Validate Catalog Models in Workers and Queued Reconciliation
 
