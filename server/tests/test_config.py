@@ -1,5 +1,6 @@
 import core.config as config
 from core.config import Settings
+from core.pi_agent_models import DEFAULT_PI_AGENT_MODELS_JSON
 from pydantic import ValidationError
 import pytest
 
@@ -195,7 +196,7 @@ def test_settings_allows_otel_overrides(monkeypatch):
 
 def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     for env_var in (
-        "PI_AGENT_ENABLED", "PI_AGENT_PROVIDER", "PI_AGENT_MODEL", "PI_AGENT_MODEL_LABEL",
+        "PI_AGENT_ENABLED", "PI_AGENT_PROVIDER", "PI_AGENT_MODEL", "PI_AGENT_MODELS_JSON",
         "PI_AGENT_THINKING", "PI_AGENT_TIMEOUT_SECONDS", "PI_AGENT_MAX_TURNS",
         "PI_AGENT_MAX_TOOL_CALLS", "PI_AGENT_ESTIMATED_OUTPUT_TOKENS",
         "PI_AGENT_STREAM_NAME", "PI_AGENT_REQUEST_SUBJECT", "PI_AGENT_RESULT_SUBJECT",
@@ -216,6 +217,12 @@ def test_settings_exposes_pi_agent_and_billing_defaults(monkeypatch):
     assert settings.pi_agent_enabled is False
     assert settings.pi_agent_provider == "openai-codex"
     assert settings.pi_agent_model == "gpt-5.6-sol"
+    assert settings.pi_agent_models_json == DEFAULT_PI_AGENT_MODELS_JSON
+    assert [(model.id, model.label) for model in settings.pi_agent_models] == [
+        ("gpt-5.6-sol", "GPT-5.6 Sol"),
+        ("gpt-5.6-luna", "GPT-5.6 Luna"),
+        ("gpt-5.6-terra", "GPT-5.6 Terra"),
+    ]
     assert settings.pi_agent_model_label == "GPT-5.6 Sol"
     assert settings.pi_agent_thinking == "medium"
     assert settings.pi_agent_timeout_seconds == 480
@@ -244,6 +251,7 @@ def test_settings_rejects_invalid_pi_agent_values(field, value):
 def test_removed_direct_provider_settings_are_absent():
     removed = {
         "pi_agent_system_prompt",
+        "pi_agent_model_label",
         "llm_api_key", "llm_models_json", "llm_default_model_id",
         "llm_weekly_" + "budget_usd", "llm_daily_" + "budget_usd", "llm_max_output_tokens",
         "llm_file_edit_max_output_tokens", "llm_file_edit_max_generation_attempts",
@@ -257,6 +265,10 @@ def test_removed_direct_provider_settings_are_absent():
 def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
     monkeypatch.setenv("PI_AGENT_ENABLED", "true")
     monkeypatch.setenv("PI_AGENT_MODEL", "gpt-test")
+    monkeypatch.setenv(
+        "PI_AGENT_MODELS_JSON",
+        '[{"id":"gpt-test","label":"GPT Test"}]',
+    )
     monkeypatch.setenv("PI_AGENT_THINKING", "xhigh")
     monkeypatch.setenv("PI_AGENT_MAX_TURNS", "8")
     monkeypatch.setenv("LLM_FILE_EDIT_MAX_CONTEXT_FILES", "6")
@@ -273,6 +285,10 @@ def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
 
     assert settings.pi_agent_enabled is True
     assert settings.pi_agent_model == "gpt-test"
+    assert [(model.id, model.label) for model in settings.pi_agent_models] == [
+        ("gpt-test", "GPT Test")
+    ]
+    assert settings.pi_agent_model_label == "GPT Test"
     assert settings.pi_agent_thinking == "xhigh"
     assert settings.pi_agent_max_turns == 8
     assert settings.llm_file_edit_max_context_files == 6
@@ -284,3 +300,22 @@ def test_settings_allows_pi_agent_and_billing_overrides(monkeypatch):
     assert settings.billing_stream_name == "CUSTOM_BILLING"
     assert settings.billing_llm_usage_subject == "custom.billing.llm"
     assert settings.billing_max_bytes == 65536
+
+
+@pytest.mark.parametrize(
+    ("raw", "default_model"),
+    [
+        ("SENSITIVE_MALFORMED_CATALOG", "gpt-5.6-sol"),
+        (
+            '[{"id":"private-catalog-sentinel","label":"Private Sentinel"}]',
+            "gpt-5.6-sol",
+        ),
+    ],
+)
+def test_settings_catalog_errors_hide_raw_configuration(raw, default_model):
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(pi_agent_model=default_model, pi_agent_models_json=raw)
+
+    message = str(exc_info.value)
+    assert "PI_AGENT_MODELS_JSON" in message
+    assert raw not in message

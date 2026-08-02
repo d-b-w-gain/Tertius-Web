@@ -6,11 +6,22 @@ from urllib.parse import quote_plus
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from core.pi_agent_models import (
+    DEFAULT_PI_AGENT_MODELS_JSON,
+    PiAgentModelOption,
+    validate_default_pi_agent_model,
+)
+
 SERVER_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 def settings_config() -> SettingsConfigDict:
-    return SettingsConfigDict(env_file=SERVER_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
+    return SettingsConfigDict(
+        env_file=SERVER_ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
 
 class Settings(BaseSettings):
@@ -50,7 +61,7 @@ class Settings(BaseSettings):
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)
-    pi_agent_model_label: str = Field(default="GPT-5.6 Sol", min_length=1, max_length=200)
+    pi_agent_models_json: str = Field(default=DEFAULT_PI_AGENT_MODELS_JSON)
     pi_agent_thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] = Field(default="medium")
     pi_agent_timeout_seconds: int = Field(default=480, gt=0)
     pi_agent_max_turns: int = Field(default=24, gt=0)
@@ -92,6 +103,11 @@ class Settings(BaseSettings):
     otel_log_json: bool = Field(default=True)
 
     @model_validator(mode="after")
+    def validate_pi_agent_model_catalog(self):
+        validate_default_pi_agent_model(self.pi_agent_models_json, self.pi_agent_model)
+        return self
+
+    @model_validator(mode="after")
     def populate_database_url(self):
         if self.database_url:
             return self
@@ -115,6 +131,15 @@ class Settings(BaseSettings):
     def allowed_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
 
+    @property
+    def pi_agent_models(self) -> tuple[PiAgentModelOption, ...]:
+        return validate_default_pi_agent_model(self.pi_agent_models_json, self.pi_agent_model)
+
+    @property
+    def pi_agent_model_label(self) -> str:
+        return next(
+            model.label for model in self.pi_agent_models if model.id == self.pi_agent_model
+        )
 
 
 @lru_cache
