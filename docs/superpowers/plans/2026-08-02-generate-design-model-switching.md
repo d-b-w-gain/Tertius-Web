@@ -522,7 +522,7 @@ Task 4 evidence (2026-08-02): RED produced six intentional static-contract failu
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.tsx`
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.test.tsx`
 
-- [ ] **Step 1: Write failing model-switching and fixed-context component tests**
+- [x] **Step 1: Write failing model-switching and fixed-context component tests**
 
 Change the default fixture to all three models. Replace the fixed-label test with:
 
@@ -554,7 +554,7 @@ Extend the compile-repair test to submit with Terra, change the selector to Luna
 
 Add disabled-catalog coverage proving no enabled option means Generate remains disabled. Add a success-then-refresh-failure regression (and an empty refreshed response variant) that first loads a valid catalog, reruns the model-loading effect, and verifies the prior catalog and `selectedModelId` are cleared so a stale model cannot remain selectable.
 
-- [ ] **Step 2: Run Generate Design tests and verify RED**
+- [x] **Step 2: Run Generate Design tests and verify RED**
 
 ```bash
 rtk npm --prefix ui test -- src/workflows/generate/GenerateDesignWindow.test.tsx
@@ -562,7 +562,7 @@ rtk npm --prefix ui test -- src/workflows/generate/GenerateDesignWindow.test.tsx
 
 Expected: FAIL because the model is static and the context selector/request remain.
 
-- [ ] **Step 3: Implement the selector and remove client context policy**
+- [x] **Step 3: Implement the selector and remove client context policy**
 
 Remove `LlmEditContextTier` from `projectStorage.ts` and `context_tier` from the request type. In `GenerateDesignWindow.tsx`, remove the tier import, choices, state, callback dependencies, request fields, and context settings row.
 
@@ -593,11 +593,11 @@ Replace the static model row with:
 
 Model loading must retain a current enabled selection, otherwise choose the enabled default, otherwise the first enabled model, otherwise `''`. Define `selectedModel` only from the selected ID; do not fall back to a disabled first entry. Use `selectedModel?.enabled` in Generate enablement. On an empty response or request failure, clear both `llmModels` and `selectedModelId` before showing the existing bounded error; never retain a previously loaded catalog after discovery fails.
 
-- [ ] **Step 4: Run Generate Design tests and verify GREEN**
+- [x] **Step 4: Run Generate Design tests and verify GREEN**
 
 Run the Step 2 command. Expected: all Generate Design tests pass.
 
-- [ ] **Step 5: Run frontend type, lint, and build gates**
+- [x] **Step 5: Run frontend type, lint, and build gates**
 
 ```bash
 rtk npm --prefix ui run typecheck
@@ -607,12 +607,14 @@ rtk npm --prefix ui run build
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```bash
 rtk git add ui/src/workflows/shared/projectStorage.ts ui/src/workflows/generate/GenerateDesignWindow.tsx ui/src/workflows/generate/GenerateDesignWindow.test.tsx
 rtk git commit -m "feat: switch Generate Design models"
 ```
+
+Task 5 evidence (2026-08-02): RED produced seven expected failures in the prior 25-test component suite. Commit `3042989` passes all 26 focused Generate Design tests, typecheck, lint, build, and diff checks; lint reports only three pre-existing warnings outside the touched files. Independent specification and code-quality reviews found no open issues.
 
 ## Task 6: Integrate, Review, and Validate the Full AI Edit Flow
 
