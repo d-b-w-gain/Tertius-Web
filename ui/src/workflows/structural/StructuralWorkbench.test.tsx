@@ -22,8 +22,10 @@ vi.mock('../extus/ui/ViewerTab', () => ({
   LatestModelViewer: ({
     externalSelectedNodeIds,
     structuralOverlays,
+    onStructuralRestraintSelect,
   }: {
     externalSelectedNodeIds?: string[]
+    onStructuralRestraintSelect?: (restraintId: string) => void
     structuralOverlays?: Array<{
       mode?: string
       status?: string
@@ -31,6 +33,7 @@ vi.mock('../extus/ui/ViewerTab', () => ({
       loadArrows?: unknown[]
       nodes?: unknown[]
       reactions?: unknown[]
+      restraintSegments?: Array<{ id: string }>
     }>
   }) => (
     <div>
@@ -67,6 +70,16 @@ vi.mock('../extus/ui/ViewerTab', () => ({
           0,
         ) || 0
       }
+      {structuralOverlays?.[0]?.restraintSegments?.[0] && (
+        <button
+          type="button"
+          onClick={() => onStructuralRestraintSelect?.(
+            structuralOverlays[0]!.restraintSegments![0]!.id,
+          )}
+        >
+          Select restraint trace
+        </button>
+      )}
     </div>
   ),
 }))
@@ -500,6 +513,56 @@ const overloadAnalysis: StructuralSnapshot = {
   },
 }
 
+const restraintAnalysis: StructuralSnapshot = {
+  ...analysis,
+  member_restraint_candidate_checks: [
+    {
+      id: 'candidate-check-restraint-purlin-SLS-1.0',
+      candidate_id: 'restraint-purlin',
+      member_id: 'purlin-axis',
+      connection_id: 'sheet-purlin',
+      combination_id: 'SLS-1.0',
+      contact_flange: 'positive_local_y',
+      status: 'candidate',
+      demand_model: 'aisi_2004_d3_2_2_eccentric_load_couple',
+      transferred_load_kN: 0.73152,
+      load_eccentricity_m: 0.05,
+      member_depth_m: 0.1,
+      required_force_kN: 0.54864,
+      required_moment_kNm: 0.054864,
+      available_force_kN: null,
+      available_moment_kNm: null,
+      force_utilisation: null,
+      moment_utilisation: null,
+      stiffness_status: 'unverified',
+      mechanism: 'Factored tributary load acting through the purlin axis.',
+      provenance: 'Builder-derived purlin and registered connection.',
+      basis: 'Working AISI D3.2.2 adaptation; AS/NZS verification remains open.',
+    },
+  ],
+  member_restraint_traces: [
+    {
+      id: 'restraint-trace-purlin-SLS-1.0',
+      member_id: 'purlin-axis',
+      combination_id: 'SLS-1.0',
+      segment_start_m: 0,
+      segment_end_m: 1.6,
+      start_position: { x: 0, y: 0, z: 0 },
+      end_position: { x: 0, y: 0, z: 1.6 },
+      compression_flange: 'positive_local_y',
+      status: 'candidate',
+      start_restraint_candidate_ids: ['restraint-purlin'],
+      end_restraint_candidate_ids: ['restraint-purlin'],
+      effective_restraint_candidate_ids: ['restraint-purlin'],
+      governing_candidate_check_ids: ['candidate-check-restraint-purlin-SLS-1.0'],
+      required_restraint_force_kN: 0.54864,
+      available_restraint_force_kN: null,
+      restraint_force_utilisation: null,
+      basis: 'Signed local moment requires the positive local-y flange restraint.',
+    },
+  ],
+}
+
 describe('StructuralWorkbench', () => {
   afterEach(cleanup)
 
@@ -640,5 +703,27 @@ describe('StructuralWorkbench', () => {
 
     expect(await screen.findByText(/Ribbon status: not_checked/)).toBeInTheDocument()
     expect(screen.getByText('126.9% reference utilisation')).toBeInTheDocument()
+  })
+
+  it('opens auditable demand, capacity, and provenance from a selected 3D trace', async () => {
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? restraintAnalysis : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    render(<StructuralWorkbench isActive />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Select restraint trace' }))
+
+    expect(screen.getByText('Selected 3D restraint trace')).toBeInTheDocument()
+    expect(screen.getByText('0.5486 kN')).toBeInTheDocument()
+    expect(screen.getByText('not verified')).toBeInTheDocument()
+    expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Builder-derived purlin and registered connection.',
+    )).toBeInTheDocument()
   })
 })

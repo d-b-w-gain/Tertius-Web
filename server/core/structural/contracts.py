@@ -282,8 +282,24 @@ class MemberRestraintCandidateDefinition(StructuralContract):
     axis_separation_m: float = Field(ge=0)
     restrains_lateral_translation: bool
     restrains_twist: bool
+    restrained_flange: Literal[
+        "auto",
+        "positive_local_y",
+        "negative_local_y",
+        "both",
+    ] = "auto"
+    demand_model: Literal[
+        "not_defined",
+        "aisi_2004_d3_2_2_eccentric_load_couple",
+    ] = "not_defined"
+    demand_factor: float = Field(default=1.5, gt=0)
+    design_force_capacity_kN: float | None = Field(default=None, gt=0)
+    design_moment_capacity_kNm: float | None = Field(default=None, gt=0)
+    stiffness_status: Literal["unverified", "verified"] = "unverified"
     evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate"
     evidence_basis: str
+    capacity_basis: str
+    provenance: str
 
 
 class MemberStabilityVerificationDefinition(StructuralContract):
@@ -391,7 +407,13 @@ class MemberStabilityCheck(StructuralContract):
         "unverified",
         "continuous_compression_flange",
     ]
-    restraint_status: Literal["missing", "candidate", "assumed", "verified"]
+    restraint_status: Literal[
+        "missing",
+        "candidate",
+        "inadequate",
+        "assumed",
+        "verified",
+    ]
     compression_flange: Literal[
         "positive_local_y",
         "negative_local_y",
@@ -418,10 +440,52 @@ class MemberRestraintTrace(StructuralContract):
         "negative_local_y",
         "none",
     ]
-    status: Literal["missing", "candidate", "verified", "not_required"]
+    status: Literal[
+        "missing",
+        "candidate",
+        "inadequate",
+        "verified",
+        "not_required",
+    ]
     start_restraint_candidate_ids: list[str] = Field(default_factory=list)
     end_restraint_candidate_ids: list[str] = Field(default_factory=list)
     effective_restraint_candidate_ids: list[str] = Field(default_factory=list)
+    governing_candidate_check_ids: list[str] = Field(default_factory=list)
+    required_restraint_force_kN: float | None = None
+    available_restraint_force_kN: float | None = None
+    restraint_force_utilisation: float | None = None
+    basis: str
+
+
+class MemberRestraintCandidateCheck(StructuralContract):
+    id: str
+    candidate_id: str
+    member_id: str
+    connection_id: str
+    combination_id: str
+    contact_flange: Literal[
+        "positive_local_y",
+        "negative_local_y",
+        "both",
+        "none",
+    ]
+    status: Literal["unsupported", "candidate", "pass", "fail", "not_required"]
+    demand_model: Literal[
+        "not_defined",
+        "aisi_2004_d3_2_2_eccentric_load_couple",
+    ]
+    transferred_load_kN: float | None = None
+    load_eccentricity_m: float | None = None
+    member_depth_m: float | None = None
+    required_force_kN: float | None = None
+    required_moment_kNm: float | None = None
+    available_force_kN: float | None = None
+    available_moment_kNm: float | None = None
+    force_utilisation: float | None = None
+    moment_utilisation: float | None = None
+    stiffness_status: Literal["unverified", "verified"]
+    mechanism: str
+    provenance: str
     basis: str
 
 
@@ -924,6 +988,15 @@ class ProjectStructuralCapture(StructuralContract):
                             f"member-restraint candidate {candidate.id!r} lies outside "
                             f"member {candidate.member_id!r}"
                         )
+                    if candidate.evidence_status == "verified" and (
+                        candidate.design_force_capacity_kN is None
+                        or candidate.design_moment_capacity_kNm is None
+                        or candidate.stiffness_status != "verified"
+                    ):
+                        raise ValueError(
+                            f"verified member-restraint candidate {candidate.id!r} "
+                            "requires verified stiffness and force/moment capacities"
+                        )
                 segment_ids: set[str] = set()
                 for segment in member_verification.segments:
                     if segment.id in segment_ids:
@@ -1020,6 +1093,9 @@ class StructuralSnapshot(StructuralContract):
     member_checks: list[MemberCheck]
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
+    member_restraint_candidate_checks: list[MemberRestraintCandidateCheck] = Field(
+        default_factory=list
+    )
     member_restraint_traces: list[MemberRestraintTrace] = Field(default_factory=list)
     serviceability_checks: list[ServiceabilityCheck] = Field(default_factory=list)
     load_summary: LoadSummary = Field(
@@ -1099,6 +1175,48 @@ class StructuralSnapshot(StructuralContract):
                 stability_check.member_id,
                 member_ids,
             )
+        candidate_check_ids = _unique_ids(
+            "member-restraint candidate checks",
+            self.member_restraint_candidate_checks,
+        )
+        candidate_ids = {
+            check.candidate_id for check in self.member_restraint_candidate_checks
+        }
+        for candidate_check in self.member_restraint_candidate_checks:
+            _require_reference(
+                "member-restraint candidate check member",
+                candidate_check.member_id,
+                member_ids,
+            )
+            _require_reference(
+                "member-restraint candidate check combination",
+                candidate_check.combination_id,
+                {combination.id for combination in self.load_combinations},
+            )
+        for trace in self.member_restraint_traces:
+            _require_reference(
+                "member-restraint trace member", trace.member_id, member_ids
+            )
+            _require_reference(
+                "member-restraint trace combination",
+                trace.combination_id,
+                {combination.id for combination in self.load_combinations},
+            )
+            for check_id in trace.governing_candidate_check_ids:
+                _require_reference(
+                    "member-restraint trace candidate check",
+                    check_id,
+                    candidate_check_ids,
+                )
+            if trace.effective_restraint_candidate_ids:
+                missing_candidates = (
+                    set(trace.effective_restraint_candidate_ids) - candidate_ids
+                )
+                if missing_candidates:
+                    raise ValueError(
+                        "member-restraint trace references candidates without checks "
+                        f"{sorted(missing_candidates)}"
+                    )
         for service_check in self.serviceability_checks:
             _require_reference(
                 "serviceability check member",

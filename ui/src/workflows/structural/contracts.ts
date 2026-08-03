@@ -406,7 +406,7 @@ export type StructuralSnapshot = {
     lateral_bending_restraint:
       | 'unverified'
       | 'continuous_compression_flange'
-    restraint_status: 'missing' | 'candidate' | 'assumed' | 'verified'
+    restraint_status: 'missing' | 'candidate' | 'inadequate' | 'assumed' | 'verified'
     compression_flange:
       | 'positive_local_y'
       | 'negative_local_y'
@@ -418,6 +418,29 @@ export type StructuralSnapshot = {
     basis: string
     assumptions: string[]
   }>
+  member_restraint_candidate_checks?: Array<{
+    id: string
+    candidate_id: string
+    member_id: string
+    connection_id: string
+    combination_id: string
+    contact_flange: 'positive_local_y' | 'negative_local_y' | 'both' | 'none'
+    status: 'unsupported' | 'candidate' | 'pass' | 'fail' | 'not_required'
+    demand_model: 'not_defined' | 'aisi_2004_d3_2_2_eccentric_load_couple'
+    transferred_load_kN: number | null
+    load_eccentricity_m: number | null
+    member_depth_m: number | null
+    required_force_kN: number | null
+    required_moment_kNm: number | null
+    available_force_kN: number | null
+    available_moment_kNm: number | null
+    force_utilisation: number | null
+    moment_utilisation: number | null
+    stiffness_status: 'unverified' | 'verified'
+    mechanism: string
+    provenance: string
+    basis: string
+  }>
   member_restraint_traces?: Array<{
     id: string
     member_id: string
@@ -427,10 +450,14 @@ export type StructuralSnapshot = {
     start_position: Vector3
     end_position: Vector3
     compression_flange: 'positive_local_y' | 'negative_local_y' | 'none'
-    status: 'missing' | 'candidate' | 'verified' | 'not_required'
+    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required'
     start_restraint_candidate_ids: string[]
     end_restraint_candidate_ids: string[]
     effective_restraint_candidate_ids: string[]
+    governing_candidate_check_ids: string[]
+    required_restraint_force_kN: number | null
+    available_restraint_force_kN: number | null
+    restraint_force_utilisation: number | null
     basis: string
   }>
   serviceability_checks: Array<{

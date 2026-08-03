@@ -28,6 +28,7 @@ interface ViewerProps {
   statusTextOverride?: string;
   externalSelectedNodeIds?: string[];
   structuralOverlays?: StructuralViewerOverlay[];
+  onStructuralRestraintSelect?: (restraintId: string) => void;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
@@ -39,6 +40,7 @@ interface ModelViewerCanvasProps {
   isActive?: boolean;
   externalSelectedNodeIds?: string[];
   structuralOverlays?: StructuralViewerOverlay[];
+  onStructuralRestraintSelect?: (restraintId: string) => void;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
@@ -78,7 +80,7 @@ export type StructuralViewerOverlay = {
     start: { x: number; y: number; z: number };
     end: { x: number; y: number; z: number };
     compressionFlange: 'positive_local_y' | 'negative_local_y' | 'none';
-    status: 'missing' | 'candidate' | 'verified' | 'not_required';
+    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
   }>;
   maxOffsetMm?: number;
 };
@@ -96,7 +98,7 @@ export function structuralRestraintColor(
 ): number {
   if (status === 'verified') return 0x22c55e;
   if (status === 'candidate') return 0xf59e0b;
-  if (status === 'missing') return 0xef4444;
+  if (status === 'missing' || status === 'inadequate') return 0xef4444;
   return 0x64748b;
 }
 
@@ -448,6 +450,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
   statusTextOverride,
   externalSelectedNodeIds,
   structuralOverlays,
+  onStructuralRestraintSelect,
   onExternalSelectionPreviewChange,
 }) => {
   const { getAccessToken } = useAuth();
@@ -509,6 +512,7 @@ export const LatestModelViewer: React.FC<ViewerProps> = ({
       isActive={isActive}
       externalSelectedNodeIds={externalSelectedNodeIds}
       structuralOverlays={structuralOverlays}
+      onStructuralRestraintSelect={onStructuralRestraintSelect}
       onExternalSelectionPreviewChange={onExternalSelectionPreviewChange}
     />
   );
@@ -522,6 +526,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   isActive = true,
   externalSelectedNodeIds,
   structuralOverlays,
+  onStructuralRestraintSelect,
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -541,6 +546,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const controlsRef = useRef<OrbitControls | null>(null);
   const autoRotateRef = useRef<boolean>(true);
   const isActiveRef = useRef<boolean>(isActive);
+  const structuralRestraintSelectRef = useRef(onStructuralRestraintSelect);
+
+  useEffect(() => {
+    structuralRestraintSelectRef.current = onStructuralRestraintSelect;
+  }, [onStructuralRestraintSelect]);
   
   // THREE.js refs
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -1515,6 +1525,27 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
        raycaster.setFromCamera(mouse, cameraRef.current!);
        
        if (meshRef.current) {
+          const overlayIntersection = raycaster
+            .intersectObject(meshRef.current, true)
+            .find((intersection) => {
+              let object: THREE.Object3D | null = intersection.object;
+              while (object) {
+                if (object.userData.tertiusStructuralRestraint) return true;
+                object = object.parent;
+              }
+              return false;
+            });
+          if (overlayIntersection) {
+            let object: THREE.Object3D | null = overlayIntersection.object;
+            while (object && !object.userData.tertiusStructuralRestraint) {
+              object = object.parent;
+            }
+            const restraintId = object?.userData.tertiusStructuralRestraint?.id;
+            if (typeof restraintId === 'string') {
+              structuralRestraintSelectRef.current?.(restraintId);
+              return;
+            }
+          }
           // Raycast source meshes, then ignore objects hidden in the Assembly Tree.
           meshRef.current.traverse(c => {
             if (c.userData.tertiusStructuralOverlay) return;

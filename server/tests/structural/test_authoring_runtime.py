@@ -254,6 +254,97 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
     ]
 
 
+def test_member_boundary_restraint_is_derived_from_connection_and_member_end():
+    model = StructuralModel(title="Connection boundary restraint")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+        mass_kg_m=3.29,
+    )
+    rafter = model.member_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(2000, 100, 100),
+            label="Rafter",
+            part_number="C10019",
+            start=(0.0, 0.0, 1.0),
+            end=(2.0, 0.0, 1.0),
+        ),
+        component_id="rafter",
+        member_id="rafter-axis",
+        section=section,
+        material=material,
+        assumption="Unit-test rafter.",
+    )
+    column = model.member_component_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(100, 100, 1000),
+            label="Column",
+            part_number="C10019",
+            start=(0.0, 0.0, 0.0),
+            end=(0.0, 0.0, 1.0),
+        ),
+        component_id="column",
+    )
+    bracket = model.connector(
+        bd.Box(100, 3, 150),
+        id="knee-bracket",
+        label="Knee bracket",
+    )
+    connection = model.connect(
+        rafter,
+        column,
+        via=[bracket],
+        id="rafter-column",
+        label="Rafter to column",
+        transfers=["force", "shear", "moment"],
+    )
+    model.member_boundary_restraint_from_connection(
+        rafter,
+        connection=connection,
+        at="start",
+        restrained_flange="both",
+        restrains_lateral_translation=True,
+        restrains_twist=True,
+        evidence_status="candidate",
+        evidence_basis="Physical knee detail exists; capacity remains unverified.",
+    )
+    model.member_self_weight(rafter, id="rafter-weight", label="Rafter weight")
+    model.load_combination(
+        id="ULS-G",
+        label="Permanent action",
+        limit_state="ultimate",
+        factors={"dead": 1.2},
+    )
+    model.member_stability_verification(
+        pack_id="as_nzs_4600_2018_ewm_member",
+        combination_ids=("ULS-G",),
+        members=(rafter,),
+        distortional_buckling_basis="Unit-test evidence remains unverified.",
+    )
+    model.assembly([rafter, column, bracket], label="boundary-restraint")
+
+    candidate = model.manifest()["analysis"]["member_stability_verification"][
+        "restraint_candidates"
+    ][0]
+    assert candidate["connection_id"] == "rafter-column"
+    assert candidate["distance_m"] == pytest.approx(0.0)
+    assert candidate["member_position"] == {"x": 0.0, "y": 0.0, "z": 1.0}
+    assert candidate["restrained_flange"] == "both"
+    assert candidate["demand_model"] == "not_defined"
+
+
 def test_structural_model_generates_manifest_from_registered_shape_handles():
     model = StructuralModel(title="Handle-authored model")
     sheet = model.surface(

@@ -767,6 +767,15 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
         iy_m4=142000e-12,
         iz_m4=673000e-12,
         torsion_j_m4=492e-12,
+        catalog={
+            "catalog_id": "test-c100",
+            "catalog_version": "1.0",
+            "section_key": "C10019",
+            "source": "Unit-test section record.",
+            "record_sha256": "b" * 64,
+            "axis_mapping": {},
+            "properties": {"depth_mm": 100.0},
+        },
     )
     primary = model.member_from_geometry(
         StructuralMemberGeometry(
@@ -808,8 +817,13 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
             connection=connection,
             restrains_lateral_translation=True,
             restrains_twist=True,
-            evidence_status="candidate",
-            evidence_basis="Connected geometry; capacity evidence pending.",
+            evidence_status="verified",
+            evidence_basis="Connected geometry with unit-test capacity evidence.",
+            design_force_capacity_kN=10.0,
+            design_moment_capacity_kNm=1.0,
+            stiffness_status="verified",
+            capacity_basis="Deliberately sufficient unit-test capacity.",
+            provenance="Versioned unit-test restraint record.",
         )
         braces.append(brace)
     ground = model.ground(bd.Box(100, 100, 100), id="ground", label="Ground")
@@ -845,8 +859,9 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
         distortional_buckling_basis="Distortional evidence is outside this trace test.",
     )
     model.assembly([primary, *braces, ground], label="signed-restraint")
+    manifest = model.manifest()
     capture = capture_project_structural_declaration(
-        model.manifest(),
+        manifest,
         project_name="signed_restraint",
         design_hash="a" * 64,
     )
@@ -870,8 +885,39 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
         "positive_local_y",
         "negative_local_y",
     }
-    assert {inward_middle.status, outward_middle.status} == {"candidate", "missing"}
+    assert {inward_middle.status, outward_middle.status} == {"verified", "missing"}
     candidate_trace = (
-        inward_middle if inward_middle.status == "candidate" else outward_middle
+        inward_middle if inward_middle.status == "verified" else outward_middle
     )
     assert len(candidate_trace.effective_restraint_candidate_ids) == 2
+    loaded_candidate = max(
+        inward.member_restraint_candidate_checks,
+        key=lambda check: check.transferred_load_kN or 0.0,
+    )
+    assert loaded_candidate.required_force_kN == pytest.approx(1.5)
+    assert loaded_candidate.required_moment_kNm == pytest.approx(0.15)
+    assert loaded_candidate.status == "pass"
+
+    inadequate_manifest = deepcopy(manifest)
+    for candidate in inadequate_manifest["analysis"]["member_stability_verification"][
+        "restraint_candidates"
+    ]:
+        candidate["design_force_capacity_kN"] = 1.0
+        candidate["design_moment_capacity_kNm"] = 0.1
+    inadequate_capture = capture_project_structural_declaration(
+        inadequate_manifest,
+        project_name="inadequate_signed_restraint",
+        design_hash="c" * 64,
+    )
+    inadequate = solve_project_structural(
+        inadequate_capture,
+        combination_id=inward.solver.combination_id,
+    )
+    inadequate_middle = next(
+        trace
+        for trace in inadequate.member_restraint_traces
+        if trace.segment_start_m == pytest.approx(0.5)
+        and trace.segment_end_m == pytest.approx(1.5)
+    )
+    assert inadequate_middle.status == "inadequate"
+    assert inadequate_middle.restraint_force_utilisation == pytest.approx(1.5)

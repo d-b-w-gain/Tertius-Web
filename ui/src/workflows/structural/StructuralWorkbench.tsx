@@ -70,6 +70,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [selectedMemberId, setSelectedMemberId] = useState('')
   const [selectedCombinationId, setSelectedCombinationId] = useState('')
   const [selectedSheetId, setSelectedSheetId] = useState('')
+  const [selectedRestraintTraceId, setSelectedRestraintTraceId] = useState('')
   const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -105,6 +106,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       if (requestId !== captureRequestId.current) return
       setCapture(nextCapture)
       setSelectedVisualNodeId('')
+      setSelectedRestraintTraceId('')
       if (analysisResponse.ok) {
         const nextAnalysis = analysisPayload as StructuralSnapshot
         setAnalysis(nextAnalysis)
@@ -167,6 +169,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
       const nextAnalysis = payload as StructuralSnapshot
       setAnalysis(nextAnalysis)
+      setSelectedRestraintTraceId('')
       setSelectedSheetId((current) => (
         nextAnalysis.calculation_sheets?.some((sheet) => sheet.id === current)
           ? current
@@ -233,6 +236,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedCalculationSheet = analysis?.calculation_sheets?.find(
     (sheet) => sheet.id === selectedSheetId,
   ) || analysis?.calculation_sheets?.[0]
+  const selectedRestraintTrace = analysis?.member_restraint_traces?.find(
+    (trace) => trace.id === selectedRestraintTraceId,
+  )
+  const selectedRestraintChecks = (analysis?.member_restraint_candidate_checks ?? [])
+    .filter((check) => selectedRestraintTrace?.governing_candidate_check_ids.includes(check.id))
+  const selectRestraintTrace = useCallback((traceId: string) => {
+    const currentAnalysis = analysis
+    const trace = currentAnalysis?.member_restraint_traces?.find(
+      (candidate) => candidate.id === traceId,
+    )
+    if (!trace || !currentAnalysis) return
+    setSelectedRestraintTraceId(trace.id)
+    setSelectedMemberId(trace.member_id)
+    setSelectedVisualNodeId(
+      currentAnalysis.members.find(
+        (member) => member.id === trace.member_id,
+      )?.visual_node_id || '',
+    )
+    setSelectedSheetId(
+      currentAnalysis.calculation_sheets?.find(
+        (sheet) => sheet.stage_id === 'member_stability',
+      )?.id
+      || '',
+    )
+    setDiagramMode('moment')
+  }, [analysis])
   const structuralOverlays = useMemo(() => {
     if (!analysis || !activeCombination) return undefined
     const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
@@ -387,6 +416,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       active_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
       member_restraint_traces: analysis.member_restraint_traces ?? [],
+      member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
       verification_stages: analysis.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
     }
@@ -668,6 +698,93 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       ))}
                     </div>
                   )}
+                </section>
+              )}
+
+              {selectedRestraintTrace && (
+                <section className={`rounded border p-3 ${
+                  selectedRestraintTrace.status === 'verified'
+                    ? 'border-emerald-500/50 bg-emerald-950/30'
+                    : selectedRestraintTrace.status === 'candidate'
+                      ? 'border-amber-500/50 bg-amber-950/30'
+                      : 'border-red-500/50 bg-red-950/30'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-cyan-300">
+                        Selected 3D restraint trace
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-slate-100">
+                        {selectedRestraintTrace.member_id} ·{' '}
+                        {number(selectedRestraintTrace.segment_start_m, 3)}–
+                        {number(selectedRestraintTrace.segment_end_m, 3)} m
+                      </div>
+                    </div>
+                    <span className="font-mono text-[9px] font-bold uppercase text-slate-200">
+                      {selectedRestraintTrace.status.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-2 text-[9px]">
+                    <div>
+                      <dt className="text-slate-500">Combination</dt>
+                      <dd className="font-mono text-slate-200">
+                        {selectedRestraintTrace.combination_id}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Compression flange</dt>
+                      <dd className="font-mono text-slate-200">
+                        {selectedRestraintTrace.compression_flange.replaceAll('_', ' ')}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Required brace force</dt>
+                      <dd className="font-mono text-slate-200">
+                        {selectedRestraintTrace.required_restraint_force_kN === null
+                          ? 'not quantified'
+                          : `${number(selectedRestraintTrace.required_restraint_force_kN, 4)} kN`}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Available resistance</dt>
+                      <dd className="font-mono text-slate-200">
+                        {selectedRestraintTrace.available_restraint_force_kN === null
+                          ? 'not verified'
+                          : `${number(selectedRestraintTrace.available_restraint_force_kN, 4)} kN`}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="mt-3 space-y-2">
+                    {selectedRestraintChecks.length === 0 ? (
+                      <p className="text-[9px] text-red-200">
+                        No effective physical candidate exists at both required boundaries.
+                      </p>
+                    ) : selectedRestraintChecks.map((check) => (
+                      <div
+                        key={check.id}
+                        className="rounded border border-slate-700 bg-slate-950/60 p-2 text-[9px]"
+                      >
+                        <div className="flex justify-between gap-2">
+                          <span className="font-semibold text-slate-200">{check.candidate_id}</span>
+                          <span className="font-mono uppercase text-slate-300">{check.status}</span>
+                        </div>
+                        <div className="mt-1 font-mono text-cyan-200">
+                          P* {check.required_force_kN === null
+                            ? '—'
+                            : `${number(check.required_force_kN, 4)} kN`}
+                          {' / '}φR {check.available_force_kN === null
+                            ? '—'
+                            : `${number(check.available_force_kN, 4)} kN`}
+                          {' · '}stiffness {check.stiffness_status}
+                        </div>
+                        <p className="mt-1 text-slate-400">{check.mechanism}</p>
+                        <p className="mt-1 text-slate-500">{check.provenance}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 border-t border-slate-700 pt-2 text-[9px] text-slate-400">
+                    {selectedRestraintTrace.basis}
+                  </p>
                 </section>
               )}
 
@@ -1408,6 +1525,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             }
             externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}
             structuralOverlays={structuralOverlays}
+            onStructuralRestraintSelect={selectRestraintTrace}
           />
         </main>
       </div>

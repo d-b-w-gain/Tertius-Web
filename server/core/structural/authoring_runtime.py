@@ -1183,8 +1183,24 @@ class StructuralModel:
         connection: StructuralConnection,
         restrains_lateral_translation: bool,
         restrains_twist: bool,
+        restrained_flange: Literal[
+            "auto",
+            "positive_local_y",
+            "negative_local_y",
+            "both",
+        ] = "auto",
+        demand_model: Literal[
+            "not_defined",
+            "aisi_2004_d3_2_2_eccentric_load_couple",
+        ] = "aisi_2004_d3_2_2_eccentric_load_couple",
+        demand_factor: float = 1.5,
+        design_force_capacity_kN: float | None = None,
+        design_moment_capacity_kNm: float | None = None,
+        stiffness_status: Literal["unverified", "verified"] = "unverified",
         evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate",
         evidence_basis: str,
+        capacity_basis: str | None = None,
+        provenance: str | None = None,
         maximum_axis_separation_m: float = 0.25,
     ) -> None:
         """Derive a Stage 7 restraint location from connected member geometry.
@@ -1240,6 +1256,48 @@ class StructuralModel:
                 "member restraint evidence_status must be candidate, verified, "
                 "or unsupported"
             )
+        if restrained_flange not in {
+            "auto",
+            "positive_local_y",
+            "negative_local_y",
+            "both",
+        }:
+            raise StructuralAuthoringError(
+                "member restraint restrained_flange must be auto, "
+                "positive_local_y, negative_local_y, or both"
+            )
+        if demand_model not in {
+            "not_defined",
+            "aisi_2004_d3_2_2_eccentric_load_couple",
+        }:
+            raise StructuralAuthoringError(
+                "member restraint demand_model is not supported"
+            )
+        if float(demand_factor) <= 0:
+            raise StructuralAuthoringError(
+                "member restraint demand_factor must be positive"
+            )
+        if stiffness_status not in {"unverified", "verified"}:
+            raise StructuralAuthoringError(
+                "member restraint stiffness_status must be unverified or verified"
+            )
+        for label, value in (
+            ("design force capacity", design_force_capacity_kN),
+            ("design moment capacity", design_moment_capacity_kNm),
+        ):
+            if value is not None and float(value) <= 0:
+                raise StructuralAuthoringError(
+                    f"member restraint {label} must be positive"
+                )
+        if evidence_status == "verified" and (
+            design_force_capacity_kN is None
+            or design_moment_capacity_kNm is None
+            or stiffness_status != "verified"
+        ):
+            raise StructuralAuthoringError(
+                "verified member restraint requires verified stiffness and "
+                "positive force/moment capacities"
+            )
         maximum_separation = float(maximum_axis_separation_m)
         if maximum_separation <= 0:
             raise StructuralAuthoringError(
@@ -1290,9 +1348,194 @@ class StructuralModel:
                 "axis_separation_m": separation,
                 "restrains_lateral_translation": bool(restrains_lateral_translation),
                 "restrains_twist": bool(restrains_twist),
+                "restrained_flange": restrained_flange,
+                "demand_model": demand_model,
+                "demand_factor": float(demand_factor),
+                "design_force_capacity_kN": (
+                    float(design_force_capacity_kN)
+                    if design_force_capacity_kN is not None
+                    else None
+                ),
+                "design_moment_capacity_kNm": (
+                    float(design_moment_capacity_kNm)
+                    if design_moment_capacity_kNm is not None
+                    else None
+                ),
+                "stiffness_status": stiffness_status,
                 "evidence_status": evidence_status,
                 "evidence_basis": _required_text(
                     "member restraint evidence basis", evidence_basis
+                ),
+                "capacity_basis": _required_text(
+                    "member restraint capacity basis",
+                    capacity_basis or evidence_basis,
+                ),
+                "provenance": _required_text(
+                    "member restraint provenance",
+                    provenance or evidence_basis,
+                ),
+            }
+        )
+
+    def member_boundary_restraint_from_connection(
+        self,
+        member: StructuralPart,
+        *,
+        connection: StructuralConnection,
+        at: Literal["start", "end"],
+        restrained_flange: Literal[
+            "positive_local_y",
+            "negative_local_y",
+            "both",
+        ],
+        restrains_lateral_translation: bool,
+        restrains_twist: bool,
+        evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate",
+        evidence_basis: str,
+        capacity_basis: str | None = None,
+        provenance: str | None = None,
+        design_force_capacity_kN: float | None = None,
+        design_moment_capacity_kNm: float | None = None,
+        stiffness_status: Literal["unverified", "verified"] = "unverified",
+    ) -> None:
+        """Register a connection-derived restraint at a member end.
+
+        Knee and apex joints do not have an offset bracing-member axis from which
+        the restrained flange can be inferred. The member endpoint and connected
+        physical components remain handle-derived, while the flange capability is
+        an explicit, auditable property of the connection detail.
+        """
+
+        primary = self._require_registered(member)
+        if primary.kind != "member":
+            raise StructuralAuthoringError(
+                "member boundary restraints require a member component"
+            )
+        registered_connection = self._connection_handles.get(connection.id)
+        if registered_connection != connection:
+            raise StructuralAuthoringError(
+                f"member boundary restraint references unregistered connection "
+                f"{connection.id!r}"
+            )
+        if primary.component_id not in {
+            connection.from_component_id,
+            connection.to_component_id,
+        }:
+            raise StructuralAuthoringError(
+                f"connection {connection.id!r} does not include member "
+                f"{primary.component_id!r}"
+            )
+        analytical_member = next(
+            (
+                item
+                for item in self._analytical_members
+                if item["component_id"] == primary.component_id
+            ),
+            None,
+        )
+        if analytical_member is None:
+            raise StructuralAuthoringError(
+                f"member {primary.component_id!r} has no analytical axis"
+            )
+        if at not in {"start", "end"}:
+            raise StructuralAuthoringError(
+                "member boundary restraint location must be start or end"
+            )
+        if restrained_flange not in {
+            "positive_local_y",
+            "negative_local_y",
+            "both",
+        }:
+            raise StructuralAuthoringError(
+                "member boundary restrained_flange must identify a local flange or both"
+            )
+        if not (restrains_lateral_translation or restrains_twist):
+            raise StructuralAuthoringError(
+                "member boundary restraint must declare lateral or twist capability"
+            )
+        if evidence_status not in {"candidate", "verified", "unsupported"}:
+            raise StructuralAuthoringError(
+                "member boundary restraint evidence_status must be candidate, "
+                "verified, or unsupported"
+            )
+        if stiffness_status not in {"unverified", "verified"}:
+            raise StructuralAuthoringError(
+                "member boundary restraint stiffness_status must be unverified or verified"
+            )
+        for label, value in (
+            ("design force capacity", design_force_capacity_kN),
+            ("design moment capacity", design_moment_capacity_kNm),
+        ):
+            if value is not None and float(value) <= 0:
+                raise StructuralAuthoringError(
+                    f"member boundary restraint {label} must be positive"
+                )
+        if evidence_status == "verified" and (
+            design_force_capacity_kN is None
+            or design_moment_capacity_kNm is None
+            or stiffness_status != "verified"
+        ):
+            raise StructuralAuthoringError(
+                "verified member boundary restraint requires verified stiffness "
+                "and positive force/moment capacities"
+            )
+        primary_start = _vector_tuple(analytical_member["start"])
+        primary_end = _vector_tuple(analytical_member["end"])
+        member_length = sqrt(
+            sum((primary_end[index] - primary_start[index]) ** 2 for index in range(3))
+        )
+        point = primary_start if at == "start" else primary_end
+        other_component_id = (
+            connection.to_component_id
+            if connection.from_component_id == primary.component_id
+            else connection.from_component_id
+        )
+        candidate_id = f"restraint-{connection.id}-{analytical_member['id']}"
+        if any(
+            candidate["id"] == candidate_id
+            for candidate in self._member_restraint_candidates
+        ):
+            raise StructuralAuthoringError(
+                f"member-restraint candidate {candidate_id!r} is already registered"
+            )
+        self._member_restraint_candidates.append(
+            {
+                "id": candidate_id,
+                "member_id": analytical_member["id"],
+                "bracing_component_id": other_component_id,
+                "connection_id": connection.id,
+                "connector_component_ids": list(connection.connector_component_ids),
+                "member_position": _vector_dict(point),
+                "brace_position": _vector_dict(point),
+                "distance_m": 0.0 if at == "start" else member_length,
+                "axis_separation_m": 0.0,
+                "restrains_lateral_translation": bool(restrains_lateral_translation),
+                "restrains_twist": bool(restrains_twist),
+                "restrained_flange": restrained_flange,
+                "demand_model": "not_defined",
+                "demand_factor": 1.5,
+                "design_force_capacity_kN": (
+                    float(design_force_capacity_kN)
+                    if design_force_capacity_kN is not None
+                    else None
+                ),
+                "design_moment_capacity_kNm": (
+                    float(design_moment_capacity_kNm)
+                    if design_moment_capacity_kNm is not None
+                    else None
+                ),
+                "stiffness_status": stiffness_status,
+                "evidence_status": evidence_status,
+                "evidence_basis": _required_text(
+                    "member boundary restraint evidence basis", evidence_basis
+                ),
+                "capacity_basis": _required_text(
+                    "member boundary restraint capacity basis",
+                    capacity_basis or evidence_basis,
+                ),
+                "provenance": _required_text(
+                    "member boundary restraint provenance",
+                    provenance or evidence_basis,
                 ),
             }
         )

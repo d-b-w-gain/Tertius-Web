@@ -24,6 +24,7 @@ from .contracts import (
     MemberDiagramStation,
     MemberDistributedLoad,
     MemberResult,
+    MemberRestraintCandidateCheck,
     MemberRestraintTrace,
     MemberStabilityComparison,
     MemberStabilityCheck,
@@ -415,7 +416,12 @@ def _candidate_contact_flange(
     model,
     candidate,
     tolerance: float,
-) -> Literal["positive_local_y", "negative_local_y", "none"]:
+) -> Literal["positive_local_y", "negative_local_y", "both", "none"]:
+    if candidate.restrained_flange != "auto":
+        return cast(
+            Literal["positive_local_y", "negative_local_y", "both"],
+            candidate.restrained_flange,
+        )
     rotation = model.members[candidate.member_id].T()[:3, :3]
     local_y_global = tuple(float(value) for value in rotation[1])
     offset = (
@@ -431,28 +437,250 @@ def _candidate_contact_flange(
     return "none"
 
 
+def _candidate_restrains_flange(
+    model,
+    candidate,
+    compression_flange: Literal["positive_local_y", "negative_local_y", "none"],
+    tolerance: float,
+) -> bool:
+    if compression_flange == "none":
+        return True
+    contact_flange = _candidate_contact_flange(model, candidate, tolerance)
+    return contact_flange in {compression_flange, "both"}
+
+
+def _member_restraint_candidate_checks(
+    model,
+    analysis,
+    *,
+    combination_id: str,
+) -> list[MemberRestraintCandidateCheck]:
+    definition = analysis.member_stability_verification
+    if definition is None:
+        return []
+    combinations_by_id = {
+        combination.id: combination for combination in analysis.load_combinations
+    }
+    combination = combinations_by_id[combination_id]
+    members_by_id = {member.id: member for member in analysis.members}
+    sections_by_id = {section.id: section for section in analysis.sections}
+    candidates_by_member: dict[str, list[Any]] = {}
+    for candidate in definition.restraint_candidates:
+        candidates_by_member.setdefault(candidate.member_id, []).append(candidate)
+    for candidates in candidates_by_member.values():
+        candidates.sort(key=lambda candidate: candidate.distance_m)
+    checks: list[MemberRestraintCandidateCheck] = []
+    for candidate in definition.restraint_candidates:
+        declaration = members_by_id[candidate.member_id]
+        section = sections_by_id[declaration.section_id]
+        member_length = _length(declaration.start, declaration.end)
+        candidate_distances = sorted(
+            {item.distance_m for item in candidates_by_member[candidate.member_id]}
+        )
+        candidate_index = candidate_distances.index(candidate.distance_m)
+        previous_distance = (
+            candidate_distances[candidate_index - 1] if candidate_index > 0 else 0.0
+        )
+        next_distance = (
+            candidate_distances[candidate_index + 1]
+            if candidate_index + 1 < len(candidate_distances)
+            else member_length
+        )
+        tributary_start_m = (
+            (previous_distance + candidate.distance_m) / 2.0
+            if candidate_index > 0
+            else 0.0
+        )
+        tributary_end_m = (
+            (candidate.distance_m + next_distance) / 2.0
+            if candidate_index + 1 < len(candidate_distances)
+            else member_length
+        )
+        point_loads = [
+            load
+            for load in analysis.member_loads
+            if load.member_id == candidate.member_id
+            and tributary_start_m - 1e-9 <= load.distance_m <= tributary_end_m + 1e-9
+        ]
+        combined_force = Vector3(x=0.0, y=0.0, z=0.0)
+        for load in point_loads:
+            factor = combination.factors.get(load.case_id, 0.0)
+            combined_force = Vector3(
+                x=combined_force.x + factor * load.force.x,
+                y=combined_force.y + factor * load.force.y,
+                z=combined_force.z + factor * load.force.z,
+            )
+        for load in analysis.member_distributed_loads:
+            if load.member_id != candidate.member_id:
+                continue
+            overlap_start = max(tributary_start_m, load.start_distance_m)
+            overlap_end = min(tributary_end_m, load.end_distance_m)
+            if overlap_end <= overlap_start:
+                continue
+            factor = combination.factors.get(load.case_id, 0.0)
+            if factor == 0.0:
+                continue
+            load_span = load.end_distance_m - load.start_distance_m
+
+            def ordinate(vector_start: Vector3, vector_end: Vector3, distance: float):
+                ratio = (distance - load.start_distance_m) / load_span
+                return Vector3(
+                    x=vector_start.x + (vector_end.x - vector_start.x) * ratio,
+                    y=vector_start.y + (vector_end.y - vector_start.y) * ratio,
+                    z=vector_start.z + (vector_end.z - vector_start.z) * ratio,
+                )
+
+            start_force = ordinate(
+                load.start_force_kN_m,
+                load.end_force_kN_m,
+                overlap_start,
+            )
+            end_force = ordinate(
+                load.start_force_kN_m,
+                load.end_force_kN_m,
+                overlap_end,
+            )
+            overlap_length = overlap_end - overlap_start
+            combined_force = Vector3(
+                x=combined_force.x
+                + factor * overlap_length * (start_force.x + end_force.x) / 2.0,
+                y=combined_force.y
+                + factor * overlap_length * (start_force.y + end_force.y) / 2.0,
+                z=combined_force.z
+                + factor * overlap_length * (start_force.z + end_force.z) / 2.0,
+            )
+        transferred_load_kN = _magnitude(combined_force)
+        depth_value = None
+        if section.catalog is not None:
+            raw_depth = section.catalog.properties.get(
+                "depth_mm",
+                section.catalog.properties.get("D_mm"),
+            )
+            if isinstance(raw_depth, (int, float)) and float(raw_depth) > 0:
+                depth_value = float(raw_depth) / 1000.0
+
+        required_force_kN: float | None = None
+        required_moment_kNm: float | None = None
+        if (
+            candidate.demand_model == "aisi_2004_d3_2_2_eccentric_load_couple"
+            and depth_value is not None
+        ):
+            required_force_kN = (
+                candidate.demand_factor
+                * candidate.axis_separation_m
+                / depth_value
+                * transferred_load_kN
+            )
+            required_moment_kNm = required_force_kN * depth_value
+
+        force_utilisation = (
+            required_force_kN / candidate.design_force_capacity_kN
+            if required_force_kN is not None
+            and candidate.design_force_capacity_kN is not None
+            else None
+        )
+        moment_utilisation = (
+            required_moment_kNm / candidate.design_moment_capacity_kNm
+            if required_moment_kNm is not None
+            and candidate.design_moment_capacity_kNm is not None
+            else None
+        )
+        status: Literal["unsupported", "candidate", "pass", "fail"]
+        if candidate.evidence_status == "unsupported":
+            status = "unsupported"
+        elif (
+            candidate.evidence_status != "verified"
+            or required_force_kN is None
+            or required_moment_kNm is None
+            or candidate.design_force_capacity_kN is None
+            or candidate.design_moment_capacity_kNm is None
+            or candidate.stiffness_status != "verified"
+        ):
+            status = "candidate"
+        elif max(force_utilisation or 0.0, moment_utilisation or 0.0) > 1.0:
+            status = "fail"
+        else:
+            status = "pass"
+        checks.append(
+            MemberRestraintCandidateCheck(
+                id=f"candidate-check-{candidate.id}-{combination_id}",
+                candidate_id=candidate.id,
+                member_id=candidate.member_id,
+                connection_id=candidate.connection_id,
+                combination_id=combination_id,
+                contact_flange=_candidate_contact_flange(
+                    model,
+                    candidate,
+                    definition.off_axis_tolerance,
+                ),
+                status=status,
+                demand_model=candidate.demand_model,
+                transferred_load_kN=transferred_load_kN,
+                load_eccentricity_m=(
+                    candidate.axis_separation_m
+                    if candidate.demand_model
+                    == "aisi_2004_d3_2_2_eccentric_load_couple"
+                    else None
+                ),
+                member_depth_m=depth_value,
+                required_force_kN=required_force_kN,
+                required_moment_kNm=required_moment_kNm,
+                available_force_kN=candidate.design_force_capacity_kN,
+                available_moment_kNm=candidate.design_moment_capacity_kNm,
+                force_utilisation=force_utilisation,
+                moment_utilisation=moment_utilisation,
+                stiffness_status=candidate.stiffness_status,
+                mechanism=(
+                    "Flange-brace force couple generated by the factored point-load "
+                    "and distributed-load resultant within the candidate's midpoint "
+                    "tributary interval, acting at the connected secondary-member axis."
+                    if candidate.demand_model
+                    == "aisi_2004_d3_2_2_eccentric_load_couple"
+                    else "Connection boundary restraint demand is not yet quantified."
+                ),
+                provenance=candidate.provenance,
+                basis=(
+                    "P_L = 1.5(e/d)W from the AISI Cold-Formed Steel Framing "
+                    "Design Guide, Second Edition, Example 2 Step 2(a), adapting "
+                    "Supplement D3.2.2 to expose a working eccentric-load brace "
+                    "demand. This does not replace an AS/NZS 4600 verification. "
+                    f"{candidate.capacity_basis}"
+                    if candidate.demand_model
+                    == "aisi_2004_d3_2_2_eccentric_load_couple"
+                    else candidate.capacity_basis
+                ),
+            )
+        )
+    return checks
+
+
 def _segment_restraint_state(
     model,
     definition,
     segment,
     compression_flange: Literal["positive_local_y", "negative_local_y", "none"],
+    candidate_checks_by_id: dict[str, MemberRestraintCandidateCheck] | None = None,
 ) -> tuple[
-    Literal["missing", "candidate", "verified"],
+    Literal["missing", "candidate", "inadequate", "verified"],
+    list[str],
     list[str],
 ]:
     if compression_flange == "none":
-        return "verified", []
+        return "verified", [], []
     if (
         segment.lateral_bending_restraint == "continuous_compression_flange"
         and segment.restraint_status == "verified"
     ):
-        return "verified", []
+        return "verified", [], []
 
     candidates_by_id = {
         candidate.id: candidate for candidate in definition.restraint_candidates
     }
     effective_ids: list[str] = []
-    boundary_statuses: list[Literal["missing", "candidate", "verified"]] = []
+    effective_check_ids: list[str] = []
+    boundary_statuses: list[
+        Literal["missing", "candidate", "inadequate", "verified"]
+    ] = []
     for candidate_ids in (
         segment.start_restraint_candidate_ids,
         segment.end_restraint_candidate_ids,
@@ -463,27 +691,47 @@ def _segment_restraint_state(
             if candidate_id in candidates_by_id
             and candidates_by_id[candidate_id].restrains_lateral_translation
             and candidates_by_id[candidate_id].restrains_twist
-            and _candidate_contact_flange(
+            and _candidate_restrains_flange(
                 model,
                 candidates_by_id[candidate_id],
+                compression_flange,
                 definition.off_axis_tolerance,
             )
-            == compression_flange
         ]
         effective_ids.extend(candidate.id for candidate in effective)
         if not effective:
             boundary_statuses.append("missing")
-        elif any(candidate.evidence_status == "verified" for candidate in effective):
-            boundary_statuses.append("verified")
-        elif any(candidate.evidence_status == "candidate" for candidate in effective):
-            boundary_statuses.append("candidate")
         else:
-            boundary_statuses.append("missing")
+            checks = [
+                candidate_checks_by_id[candidate.id]
+                for candidate in effective
+                if candidate_checks_by_id is not None
+                and candidate.id in candidate_checks_by_id
+            ]
+            effective_check_ids.extend(check.id for check in checks)
+            if any(check.status == "pass" for check in checks):
+                boundary_statuses.append("verified")
+            elif any(check.status == "candidate" for check in checks):
+                boundary_statuses.append("candidate")
+            elif any(check.status == "fail" for check in checks):
+                boundary_statuses.append("inadequate")
+            elif any(
+                candidate.evidence_status == "candidate" for candidate in effective
+            ):
+                boundary_statuses.append("candidate")
+            else:
+                boundary_statuses.append("missing")
     if "missing" in boundary_statuses:
-        return "missing", sorted(set(effective_ids))
+        return "missing", sorted(set(effective_ids)), sorted(set(effective_check_ids))
+    if "inadequate" in boundary_statuses:
+        return (
+            "inadequate",
+            sorted(set(effective_ids)),
+            sorted(set(effective_check_ids)),
+        )
     if "candidate" in boundary_statuses:
-        return "candidate", sorted(set(effective_ids))
-    return "verified", sorted(set(effective_ids))
+        return "candidate", sorted(set(effective_ids)), sorted(set(effective_check_ids))
+    return "verified", sorted(set(effective_ids)), sorted(set(effective_check_ids))
 
 
 def _position_on_member(declaration, distance_m: float) -> Vector3:
@@ -505,6 +753,12 @@ def _member_restraint_traces(
     definition = analysis.member_stability_verification
     if definition is None:
         return []
+    candidate_checks = _member_restraint_candidate_checks(
+        model,
+        analysis,
+        combination_id=combination_id,
+    )
+    candidate_checks_by_id = {check.candidate_id: check for check in candidate_checks}
     members_by_id = {member.id: member for member in analysis.members}
     traces: list[MemberRestraintTrace] = []
     for segment in definition.segments:
@@ -544,14 +798,41 @@ def _member_restraint_traces(
                 member.moment("Mz", midpoint, combination_id),
                 definition.off_axis_tolerance,
             )
-            restraint_status, effective_ids = _segment_restraint_state(
-                model,
-                definition,
-                segment,
-                compression,
+            restraint_status, effective_ids, effective_check_ids = (
+                _segment_restraint_state(
+                    model,
+                    definition,
+                    segment,
+                    compression,
+                    candidate_checks_by_id,
+                )
             )
+            effective_checks = [
+                candidate_checks_by_id[candidate_id]
+                for candidate_id in effective_ids
+                if candidate_id in candidate_checks_by_id
+            ]
+            required_forces = [
+                check.required_force_kN
+                for check in effective_checks
+                if check.required_force_kN is not None
+            ]
+            available_forces = [
+                check.available_force_kN
+                for check in effective_checks
+                if check.available_force_kN is not None
+            ]
+            force_utilisations = [
+                check.force_utilisation
+                for check in effective_checks
+                if check.force_utilisation is not None
+            ]
             trace_status: Literal[
-                "missing", "candidate", "verified", "not_required"
+                "missing",
+                "candidate",
+                "inadequate",
+                "verified",
+                "not_required",
             ] = "not_required" if compression == "none" else restraint_status
             traces.append(
                 MemberRestraintTrace(
@@ -569,6 +850,25 @@ def _member_restraint_traces(
                     ),
                     end_restraint_candidate_ids=(segment.end_restraint_candidate_ids),
                     effective_restraint_candidate_ids=effective_ids,
+                    governing_candidate_check_ids=effective_check_ids,
+                    required_restraint_force_kN=(
+                        max(required_forces)
+                        if effective_checks
+                        and len(required_forces) == len(effective_checks)
+                        else None
+                    ),
+                    available_restraint_force_kN=(
+                        min(available_forces)
+                        if effective_checks
+                        and len(available_forces) == len(effective_checks)
+                        else None
+                    ),
+                    restraint_force_utilisation=(
+                        max(force_utilisations)
+                        if effective_checks
+                        and len(force_utilisations) == len(effective_checks)
+                        else None
+                    ),
                     basis=(
                         f"Signed PyNite local Mz identifies {compression.replace('_', ' ')} "
                         f"as the compression flange. Restraint state {trace_status} "
@@ -590,6 +890,17 @@ def _member_stability_checks(
 
     members_by_id = {member.id: member for member in analysis.members}
     sections_by_id = {section.id: section for section in analysis.sections}
+    candidate_checks_by_combination = {
+        combination_id: {
+            check.candidate_id: check
+            for check in _member_restraint_candidate_checks(
+                model,
+                analysis,
+                combination_id=combination_id,
+            )
+        }
+        for combination_id in definition.combination_ids
+    }
     checks: list[MemberStabilityCheck] = []
     for segment in definition.segments:
         declaration = members_by_id[segment.member_id]
@@ -638,6 +949,7 @@ def _member_stability_checks(
         governing: dict[str, Any] | None = None
         off_axis_exceeded = False
         lateral_bending_unverified = False
+        restraint_capacity_fails = False
         compression_flange_values: set[str] = set()
         member = model.members[declaration.id]
         for combination_id in definition.combination_ids:
@@ -657,13 +969,17 @@ def _member_stability_checks(
                 )
                 if compression_flange != "none":
                     compression_flange_values.add(compression_flange)
-                restraint_status, effective_candidate_ids = _segment_restraint_state(
-                    model,
-                    definition,
-                    segment,
-                    compression_flange,
+                restraint_status, effective_candidate_ids, _candidate_check_ids = (
+                    _segment_restraint_state(
+                        model,
+                        definition,
+                        segment,
+                        compression_flange,
+                        candidate_checks_by_combination[combination_id],
+                    )
                 )
                 has_verified_lateral_restraint = restraint_status == "verified"
+                restraint_capacity_fails |= restraint_status == "inadequate"
                 if major_moment_kNm > definition.off_axis_tolerance:
                     lateral_bending_unverified |= not has_verified_lateral_restraint
                 axial_bending_utilisation = (
@@ -711,7 +1027,7 @@ def _member_stability_checks(
         )
         status: Literal["pass", "fail", "unsupported"] = (
             "fail"
-            if axial_fails
+            if axial_fails or restraint_capacity_fails
             else "unsupported"
             if (
                 lateral_bending_unverified
@@ -767,7 +1083,13 @@ def _member_stability_checks(
                 ),
                 lateral_bending_restraint=segment.lateral_bending_restraint,
                 restraint_status=cast(
-                    Literal["missing", "candidate", "assumed", "verified"],
+                    Literal[
+                        "missing",
+                        "candidate",
+                        "inadequate",
+                        "assumed",
+                        "verified",
+                    ],
                     governing["restraint_status"],
                 ),
                 compression_flange=cast(
@@ -1092,6 +1414,7 @@ def _p399_evidence(
     member_checks: list[MemberCheck],
     cross_section_checks: list[MemberCrossSectionCheck],
     member_stability_checks: list[MemberStabilityCheck],
+    member_restraint_candidate_checks: list[MemberRestraintCandidateCheck],
     serviceability_checks: list[ServiceabilityCheck],
     equilibrium_status: Literal["pass", "fail"],
     residual: float,
@@ -1670,6 +1993,20 @@ def _p399_evidence(
             ),
         )
     ]
+    member_stability_equations.extend(
+        CalculationEquation(
+            label=f"{check.candidate_id} eccentric-load restraint demand",
+            expression="P_L = 1.5(e/d)W; M_L = P_L d",
+            substitution=(
+                f"P_L={check.required_force_kN:g} kN; "
+                f"M_L={check.required_moment_kNm:g} kN.m"
+            ),
+            result=check.required_force_kN,
+            unit="kN",
+        )
+        for check in member_restraint_candidate_checks
+        if check.required_force_kN is not None and check.required_moment_kNm is not None
+    )
     member_stability_outputs = [
         output
         for check in member_stability_checks
@@ -2307,10 +2644,34 @@ def _p399_evidence(
             purpose="Trace restraint forces and stiffness to a complete resisting system.",
             assumptions=[
                 "Cladding and fasteners are not assumed to provide unverified restraint.",
-                "No restraint segments or bracing stiffness checks are active.",
+                *(
+                    [
+                        "Physical restraint candidates are active, but their complete "
+                        "force/moment resistance, stiffness, and longitudinal load path "
+                        "are not all verified."
+                    ]
+                    if member_restraint_candidate_checks
+                    else [
+                        "No restraint candidates or bracing stiffness checks are active."
+                    ]
+                ),
+            ],
+            inputs=[
+                CalculationInput(
+                    symbol=f"restraint,{check.candidate_id}",
+                    label=f"{check.candidate_id} demand/capacity state",
+                    value=check.status,
+                    source=(
+                        f"{check.combination_id}; {check.provenance}; "
+                        f"required={check.required_force_kN if check.required_force_kN is not None else 'not defined'} kN; "
+                        f"available={check.available_force_kN if check.available_force_kN is not None else 'not verified'} kN"
+                    ),
+                )
+                for check in member_restraint_candidate_checks
             ],
             references=basis_references,
             related_member_ids=member_ids,
+            related_combination_ids=[combination.id],
         ),
         CalculationSheet(
             id="sheet-p399-connections",
@@ -2497,7 +2858,12 @@ def _p399_evidence(
             label="Bracing/restraint",
             p399_reference="§9",
             status="blocked",
-            summary="No verified restraint or bracing load path is active.",
+            summary=(
+                f"{len(member_restraint_candidate_checks)} active restraint candidate "
+                "check(s); complete resistance, stiffness, and load-path evidence remains blocked."
+                if member_restraint_candidate_checks
+                else "No verified restraint or bracing load path is active."
+            ),
             sheet_ids=["sheet-p399-bracing"],
             blocking_stage_ids=["member_stability"],
         ),
@@ -3008,6 +3374,11 @@ def solve_project_structural(
         check.member_id: check for check in cross_section_checks
     }
     member_stability_checks = _member_stability_checks(model, analysis)
+    member_restraint_candidate_checks = _member_restraint_candidate_checks(
+        model,
+        analysis,
+        combination_id=active_combination.id,
+    )
     member_restraint_traces = _member_restraint_traces(
         model,
         analysis,
@@ -3531,6 +3902,7 @@ def solve_project_structural(
         member_checks=member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
+        member_restraint_candidate_checks=member_restraint_candidate_checks,
         serviceability_checks=serviceability_checks,
         equilibrium_status=equilibrium_status,
         residual=residual,
@@ -3593,6 +3965,7 @@ def solve_project_structural(
         member_checks=member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
+        member_restraint_candidate_checks=member_restraint_candidate_checks,
         member_restraint_traces=member_restraint_traces,
         serviceability_checks=serviceability_checks,
         load_summary=summary,
