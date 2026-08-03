@@ -32,6 +32,17 @@ class StructuralPart:
 
 
 @dataclass(frozen=True)
+class StructuralConnection:
+    """A registered physical connection that can be reused by checks."""
+
+    id: str
+    from_component_id: str
+    to_component_id: str
+    connector_component_ids: tuple[str, ...]
+    transfers: tuple[TransferKind, ...]
+
+
+@dataclass(frozen=True)
 class StructuralMemberGeometry:
     """Placed CAD member with the analytical axis derived by its builder."""
 
@@ -131,6 +142,9 @@ class StructuralModel:
         self._components: list[dict[str, Any]] = []
         self._parts_by_id: dict[str, StructuralPart] = {}
         self._connections: list[dict[str, Any]] = []
+        self._connection_handles: dict[str, StructuralConnection] = {}
+        self._member_geometry_by_component_id: dict[str, StructuralMemberGeometry] = {}
+        self._member_restraint_candidates: list[dict[str, Any]] = []
         self._loads: list[dict[str, Any]] = []
         self._materials: list[dict[str, Any]] = []
         self._material_handles: dict[str, StructuralMaterialSpec] = {}
@@ -193,12 +207,14 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "member_component_from_geometry requires StructuralMemberGeometry"
             )
-        return self.member(
+        part = self.member(
             geometry.shape,
             id=component_id,
             label=geometry.label,
             part_number=geometry.part_number,
         )
+        self._member_geometry_by_component_id[part.component_id] = geometry
+        return part
 
     def member_from_geometry(
         self,
@@ -602,10 +618,13 @@ class StructuralModel:
         *,
         pack_id: Literal["as_nzs_4600_2018_ewm_member"],
         combination_ids: Sequence[str],
-        segments: Sequence[Mapping[str, Any]],
+        segments: Sequence[Mapping[str, Any]] | None = None,
+        members: Sequence[StructuralPart] = (),
+        distortional_buckling_status: Literal["unverified", "verified"] = "unverified",
+        distortional_buckling_basis: str | None = None,
         off_axis_tolerance: float = 1e-6,
     ) -> None:
-        """Declare restraint-defined member segments for Stage 7 verification."""
+        """Declare or derive restraint-defined member segments for Stage 7."""
 
         if self._member_stability_verification is not None:
             raise StructuralAuthoringError(
@@ -636,19 +655,129 @@ class StructuralModel:
         member_lengths = {
             member["id"]: sqrt(
                 sum(
-                    (
-                        float(member["end"][axis])
-                        - float(member["start"][axis])
-                    )
-                    ** 2
+                    (float(member["end"][axis]) - float(member["start"][axis])) ** 2
                     for axis in ("x", "y", "z")
                 )
             )
             for member in self._analytical_members
         }
+        if segments is not None and members:
+            raise StructuralAuthoringError(
+                "member-stability verification accepts authored segments or member "
+                "handles, not both"
+            )
+        if segments is None and not members:
+            raise StructuralAuthoringError(
+                "member-stability verification requires segments or member handles"
+            )
+        if distortional_buckling_status not in {"unverified", "verified"}:
+            raise StructuralAuthoringError(
+                "distortional_buckling_status must be unverified or verified"
+            )
+
+        selected_member_ids: list[str] = []
+        if members:
+            for part in members:
+                registered = self._require_registered(part)
+                analytical_member = next(
+                    (
+                        item
+                        for item in self._analytical_members
+                        if item["component_id"] == registered.component_id
+                    ),
+                    None,
+                )
+                if analytical_member is None:
+                    raise StructuralAuthoringError(
+                        f"member-stability component {registered.component_id!r} "
+                        "has no analytical axis"
+                    )
+                if analytical_member["id"] in selected_member_ids:
+                    raise StructuralAuthoringError(
+                        f"member-stability member {analytical_member['id']!r} is repeated"
+                    )
+                selected_member_ids.append(analytical_member["id"])
+            shared_distortional_basis = _required_text(
+                "member-stability distortional buckling basis",
+                distortional_buckling_basis,
+            )
+            derived_segments: list[dict[str, Any]] = []
+            for member_id in selected_member_ids:
+                member_length = member_lengths[member_id]
+                candidates = sorted(
+                    (
+                        candidate
+                        for candidate in self._member_restraint_candidates
+                        if candidate["member_id"] == member_id
+                    ),
+                    key=lambda candidate: float(candidate["distance_m"]),
+                )
+                boundary_groups: list[dict[str, Any]] = [
+                    {"distance": 0.0, "candidate_ids": []}
+                ]
+                for candidate in candidates:
+                    distance = min(
+                        member_length,
+                        max(0.0, float(candidate["distance_m"])),
+                    )
+                    if abs(distance - float(boundary_groups[-1]["distance"])) <= 1e-6:
+                        boundary_groups[-1]["candidate_ids"].append(candidate["id"])
+                    else:
+                        boundary_groups.append(
+                            {
+                                "distance": distance,
+                                "candidate_ids": [candidate["id"]],
+                            }
+                        )
+                if abs(member_length - float(boundary_groups[-1]["distance"])) <= 1e-6:
+                    boundary_groups[-1]["distance"] = member_length
+                else:
+                    boundary_groups.append(
+                        {"distance": member_length, "candidate_ids": []}
+                    )
+                for index, (start, end) in enumerate(
+                    zip(boundary_groups, boundary_groups[1:]),
+                    start=1,
+                ):
+                    start_distance = float(start["distance"])
+                    end_distance = float(end["distance"])
+                    if end_distance - start_distance <= 1e-9:
+                        continue
+                    start_ids = list(start["candidate_ids"])
+                    end_ids = list(end["candidate_ids"])
+                    derived_segments.append(
+                        {
+                            "id": f"segment-{member_id}-{index}",
+                            "member_id": member_id,
+                            "start_distance_m": start_distance,
+                            "end_distance_m": end_distance,
+                            "minor_axis_effective_length_factor": 1.0,
+                            "torsional_effective_length_factor": 1.0,
+                            "lateral_bending_restraint": "unverified",
+                            "restraint_status": "assumed",
+                            "restraint_basis": (
+                                "Segment boundaries were derived from the actual "
+                                "builder-authored bracing-member axes and registered "
+                                "portal connections. Candidate IDs at start/end: "
+                                f"{start_ids or ['none']} / {end_ids or ['none']}. "
+                                "Candidate geometry is not restraint-capacity evidence."
+                            ),
+                            "distortional_buckling_status": (
+                                distortional_buckling_status
+                            ),
+                            "distortional_buckling_basis": shared_distortional_basis,
+                            "start_restraint_candidate_ids": start_ids,
+                            "end_restraint_candidate_ids": end_ids,
+                        }
+                    )
+            segments = derived_segments
+
         normalized_segments: list[dict[str, Any]] = []
         segment_ids: set[str] = set()
-        for raw_segment in segments:
+        candidate_ids = {
+            candidate["id"] for candidate in self._member_restraint_candidates
+        }
+        for raw_segment in segments or ():
             if not isinstance(raw_segment, Mapping):
                 raise StructuralAuthoringError(
                     "member-stability segments must be mappings"
@@ -714,8 +843,7 @@ class StructuralModel:
             )
             if distortional_status not in {"unverified", "verified"}:
                 raise StructuralAuthoringError(
-                    "distortional_buckling_status must be 'unverified' or "
-                    "'verified'"
+                    "distortional_buckling_status must be 'unverified' or 'verified'"
                 )
             minor_factor = float(
                 raw_segment.get("minor_axis_effective_length_factor", 1.0)
@@ -726,6 +854,22 @@ class StructuralModel:
             if min(minor_factor, torsional_factor) <= 0:
                 raise StructuralAuthoringError(
                     "member-stability effective-length factors must be positive"
+                )
+            start_candidate_ids = [
+                _required_text("start restraint candidate ID", candidate_id)
+                for candidate_id in raw_segment.get("start_restraint_candidate_ids", ())
+            ]
+            end_candidate_ids = [
+                _required_text("end restraint candidate ID", candidate_id)
+                for candidate_id in raw_segment.get("end_restraint_candidate_ids", ())
+            ]
+            missing_candidate_ids = sorted(
+                (set(start_candidate_ids) | set(end_candidate_ids)) - candidate_ids
+            )
+            if missing_candidate_ids:
+                raise StructuralAuthoringError(
+                    f"member-stability segment {segment_id!r} references missing "
+                    f"restraint candidates {missing_candidate_ids}"
                 )
             normalized_segments.append(
                 {
@@ -746,6 +890,8 @@ class StructuralModel:
                         "member-stability distortional buckling basis",
                         raw_segment.get("distortional_buckling_basis"),
                     ),
+                    "start_restraint_candidate_ids": start_candidate_ids,
+                    "end_restraint_candidate_ids": end_candidate_ids,
                 }
             )
         if not normalized_segments:
@@ -756,6 +902,12 @@ class StructuralModel:
             "pack_id": pack_id,
             "combination_ids": normalized_combination_ids,
             "segments": normalized_segments,
+            "restraint_candidates": [
+                dict(candidate)
+                for candidate in self._member_restraint_candidates
+                if candidate["member_id"]
+                in {segment["member_id"] for segment in normalized_segments}
+            ],
             "off_axis_tolerance": tolerance,
         }
 
@@ -960,7 +1112,7 @@ class StructuralModel:
         id: str,
         label: str,
         transfers: Sequence[TransferKind],
-    ) -> None:
+    ) -> StructuralConnection:
         source = self._require_registered(from_component)
         target = self._require_registered(to_component)
         if source.component_id == target.component_id:
@@ -1003,14 +1155,145 @@ class StructuralModel:
                 f"connection {connection_id!r} must declare transferred actions"
             )
 
+        connection = StructuralConnection(
+            id=connection_id,
+            from_component_id=source.component_id,
+            to_component_id=target.component_id,
+            connector_component_ids=tuple(connector_ids),
+            transfers=tuple(cast(TransferKind, item) for item in transfer_values),
+        )
+        self._connection_handles[connection_id] = connection
         self._connections.append(
             {
-                "id": connection_id,
+                "id": connection.id,
                 "label": _required_text("connection label", label),
-                "from_component_id": source.component_id,
-                "to_component_id": target.component_id,
-                "connector_component_ids": connector_ids,
-                "transfers": transfer_values,
+                "from_component_id": connection.from_component_id,
+                "to_component_id": connection.to_component_id,
+                "connector_component_ids": list(connection.connector_component_ids),
+                "transfers": list(connection.transfers),
+            }
+        )
+        return connection
+
+    def member_restraint_from_connection(
+        self,
+        member: StructuralPart,
+        bracing_member: StructuralPart,
+        *,
+        connection: StructuralConnection,
+        restrains_lateral_translation: bool,
+        restrains_twist: bool,
+        evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate",
+        evidence_basis: str,
+        maximum_axis_separation_m: float = 0.25,
+    ) -> None:
+        """Derive a Stage 7 restraint location from connected member geometry.
+
+        The analytical member, bracing-member axis, connector identity, and
+        restraint location all come from already registered handles. This keeps
+        a hand-maintained list of member IDs and restraint distances out of the
+        design file.
+        """
+
+        primary = self._require_registered(member)
+        brace = self._require_registered(bracing_member)
+        if primary.kind != "member" or brace.kind != "member":
+            raise StructuralAuthoringError(
+                "member restraints require member and bracing-member components"
+            )
+        registered_connection = self._connection_handles.get(connection.id)
+        if registered_connection != connection:
+            raise StructuralAuthoringError(
+                f"member restraint references unregistered connection {connection.id!r}"
+            )
+        if {connection.from_component_id, connection.to_component_id} != {
+            primary.component_id,
+            brace.component_id,
+        }:
+            raise StructuralAuthoringError(
+                f"connection {connection.id!r} does not join member "
+                f"{primary.component_id!r} to brace {brace.component_id!r}"
+            )
+        analytical_member = next(
+            (
+                item
+                for item in self._analytical_members
+                if item["component_id"] == primary.component_id
+            ),
+            None,
+        )
+        if analytical_member is None:
+            raise StructuralAuthoringError(
+                f"member {primary.component_id!r} has no analytical axis"
+            )
+        brace_geometry = self._member_geometry_by_component_id.get(brace.component_id)
+        if brace_geometry is None:
+            raise StructuralAuthoringError(
+                f"bracing member {brace.component_id!r} has no builder-authored axis"
+            )
+        if not (restrains_lateral_translation or restrains_twist):
+            raise StructuralAuthoringError(
+                "member restraint must declare lateral-translation or twist capability"
+            )
+        if evidence_status not in {"candidate", "verified", "unsupported"}:
+            raise StructuralAuthoringError(
+                "member restraint evidence_status must be candidate, verified, "
+                "or unsupported"
+            )
+        maximum_separation = float(maximum_axis_separation_m)
+        if maximum_separation <= 0:
+            raise StructuralAuthoringError(
+                "member restraint maximum_axis_separation_m must be positive"
+            )
+
+        primary_start = _vector_tuple(analytical_member["start"])
+        primary_end = _vector_tuple(analytical_member["end"])
+        brace_start = tuple(float(value) for value in brace_geometry.start)
+        brace_end = tuple(float(value) for value in brace_geometry.end)
+        primary_fraction, _brace_fraction, primary_point, brace_point = (
+            _closest_points_on_segments(
+                primary_start,
+                primary_end,
+                brace_start,
+                brace_end,
+            )
+        )
+        separation = sqrt(
+            sum((brace_point[index] - primary_point[index]) ** 2 for index in range(3))
+        )
+        if separation > maximum_separation + 1e-9:
+            raise StructuralAuthoringError(
+                f"member restraint {connection.id!r} axes are {separation:.6f} m "
+                f"apart, beyond the {maximum_separation:.6f} m authoring tolerance"
+            )
+        member_length = sqrt(
+            sum((primary_end[index] - primary_start[index]) ** 2 for index in range(3))
+        )
+        candidate_id = f"restraint-{connection.id}"
+        if any(
+            candidate["id"] == candidate_id
+            for candidate in self._member_restraint_candidates
+        ):
+            raise StructuralAuthoringError(
+                f"member-restraint candidate {candidate_id!r} is already registered"
+            )
+        self._member_restraint_candidates.append(
+            {
+                "id": candidate_id,
+                "member_id": analytical_member["id"],
+                "bracing_component_id": brace.component_id,
+                "connection_id": connection.id,
+                "connector_component_ids": list(connection.connector_component_ids),
+                "member_position": _vector_dict(primary_point),
+                "brace_position": _vector_dict(brace_point),
+                "distance_m": primary_fraction * member_length,
+                "axis_separation_m": separation,
+                "restrains_lateral_translation": bool(restrains_lateral_translation),
+                "restrains_twist": bool(restrains_twist),
+                "evidence_status": evidence_status,
+                "evidence_basis": _required_text(
+                    "member restraint evidence basis", evidence_basis
+                ),
             }
         )
 
@@ -1992,6 +2275,19 @@ class StructuralModel:
                                 "segments"
                             ]
                         ],
+                        "restraint_candidates": [
+                            {
+                                **candidate,
+                                "member_position": dict(candidate["member_position"]),
+                                "brace_position": dict(candidate["brace_position"]),
+                                "connector_component_ids": list(
+                                    candidate["connector_component_ids"]
+                                ),
+                            }
+                            for candidate in self._member_stability_verification[
+                                "restraint_candidates"
+                            ]
+                        ],
                     }
                     if self._member_stability_verification is not None
                     else None
@@ -2236,9 +2532,7 @@ class StructuralModel:
                 combination["id"]: combination
                 for combination in self._load_combinations
             }
-            for combination_id in self._cross_section_verification[
-                "combination_ids"
-            ]:
+            for combination_id in self._cross_section_verification["combination_ids"]:
                 verification_combination = combinations_by_id.get(combination_id)
                 if verification_combination is None:
                     raise StructuralAuthoringError(
@@ -2401,6 +2695,78 @@ def _vector3(value: Sequence[float] | dict[str, float]) -> dict[str, float]:
         "y": float(value[1]),
         "z": float(value[2]),
     }
+
+
+def _vector_tuple(value: Sequence[float] | Mapping[str, float]) -> tuple[float, ...]:
+    if isinstance(value, Mapping):
+        return tuple(float(value[axis]) for axis in ("x", "y", "z"))
+    return tuple(float(item) for item in value)
+
+
+def _vector_dict(value: Sequence[float]) -> dict[str, float]:
+    return {axis: float(value[index]) for index, axis in enumerate(("x", "y", "z"))}
+
+
+def _closest_points_on_segments(
+    first_start: Sequence[float],
+    first_end: Sequence[float],
+    second_start: Sequence[float],
+    second_end: Sequence[float],
+) -> tuple[float, float, tuple[float, ...], tuple[float, ...]]:
+    """Return closest normalized parameters and points on two 3D segments."""
+
+    epsilon = 1e-12
+    first_delta = tuple(
+        float(first_end[index]) - float(first_start[index]) for index in range(3)
+    )
+    second_delta = tuple(
+        float(second_end[index]) - float(second_start[index]) for index in range(3)
+    )
+    between_starts = tuple(
+        float(first_start[index]) - float(second_start[index]) for index in range(3)
+    )
+    first_length_sq = sum(value * value for value in first_delta)
+    second_length_sq = sum(value * value for value in second_delta)
+    if first_length_sq <= epsilon or second_length_sq <= epsilon:
+        raise StructuralAuthoringError(
+            "member-restraint axes must both have positive length"
+        )
+    first_second = sum(first_delta[index] * second_delta[index] for index in range(3))
+    first_offset = sum(first_delta[index] * between_starts[index] for index in range(3))
+    second_offset = sum(
+        second_delta[index] * between_starts[index] for index in range(3)
+    )
+    denominator = first_length_sq * second_length_sq - first_second**2
+    if denominator > epsilon:
+        first_fraction = max(
+            0.0,
+            min(
+                1.0,
+                (first_second * second_offset - first_offset * second_length_sq)
+                / denominator,
+            ),
+        )
+    else:
+        first_fraction = 0.0
+    second_fraction = (first_second * first_fraction + second_offset) / second_length_sq
+    if second_fraction < 0.0:
+        second_fraction = 0.0
+        first_fraction = max(0.0, min(1.0, -first_offset / first_length_sq))
+    elif second_fraction > 1.0:
+        second_fraction = 1.0
+        first_fraction = max(
+            0.0,
+            min(1.0, (first_second - first_offset) / first_length_sq),
+        )
+    first_point = tuple(
+        float(first_start[index]) + first_fraction * first_delta[index]
+        for index in range(3)
+    )
+    second_point = tuple(
+        float(second_start[index]) + second_fraction * second_delta[index]
+        for index in range(3)
+    )
+    return first_fraction, second_fraction, first_point, second_point
 
 
 def _restraints(

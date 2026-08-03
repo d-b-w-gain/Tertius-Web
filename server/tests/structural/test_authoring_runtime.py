@@ -130,15 +130,128 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
     manifest = model.manifest()
     analytical = manifest["analysis"]["members"][0]
     assert len(manifest["analysis"]["members"]) == 1
-    assert next(
-        component
-        for component in manifest["components"]
-        if component["id"] == "component-secondary"
-    )["part_number"] == "C10012"
+    assert (
+        next(
+            component
+            for component in manifest["components"]
+            if component["id"] == "component-secondary"
+        )["part_number"]
+        == "C10012"
+    )
     assert analytical["start"] == {"x": 1.0, "y": 2.0, "z": 3.0}
     assert analytical["end"] == {"x": 1.0, "y": 2.0, "z": 4.0}
     assert analytical["rotation_deg"] == 90.0
     assert manifest["loads"][0]["area_m2"] == 1.0
+
+
+def test_member_restraint_segments_are_derived_from_connected_builder_axes():
+    model = StructuralModel(title="Geometry-derived restraint")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+        mass_kg_m=3.29,
+    )
+    primary = model.member_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(2000, 100, 100),
+            label="Primary rafter",
+            part_number="C10019",
+            start=(0.0, 0.0, 0.0),
+            end=(2.0, 0.0, 0.0),
+        ),
+        component_id="primary",
+        member_id="primary-axis",
+        section=section,
+        material=material,
+        start_restraints=(True, True, True, True, True, True),
+        assumption="Fixed unit-test member.",
+    )
+    brace = model.member_component_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(100, 2000, 100),
+            label="Crossing purlin",
+            part_number="C10012",
+            start=(0.5, -1.0, 0.1),
+            end=(0.5, 1.0, 0.1),
+        ),
+        component_id="brace",
+    )
+    connector = model.connector_from_geometry(
+        StructuralConnectorGeometry(
+            shape=bd.Box(50, 50, 50),
+            label="100AC and bolts",
+            part_number="100AC-M12",
+        ),
+        component_id="brace-connector",
+    )
+    connection = model.connect(
+        brace,
+        primary,
+        via=[connector],
+        id="brace-primary",
+        label="Purlin to rafter",
+        transfers=["force", "shear"],
+    )
+    model.member_restraint_from_connection(
+        primary,
+        brace,
+        connection=connection,
+        restrains_lateral_translation=True,
+        restrains_twist=True,
+        evidence_status="candidate",
+        evidence_basis="Geometry exists; product restraint capacity is pending.",
+    )
+    ground = model.ground(bd.Box(100, 100, 100), id="ground", label="Ground")
+    model.connect(
+        primary,
+        ground,
+        id="primary-ground",
+        label="Primary to ground",
+        transfers=["force", "moment"],
+    )
+    model.member_self_weight(primary, id="primary-weight", label="Primary weight")
+    model.load_combination(
+        id="ULS-G",
+        label="Permanent action",
+        limit_state="ultimate",
+        factors={"dead": 1.2},
+    )
+    model.member_stability_verification(
+        pack_id="as_nzs_4600_2018_ewm_member",
+        combination_ids=("ULS-G",),
+        members=(primary,),
+        distortional_buckling_basis="Unit-test evidence remains unverified.",
+    )
+    model.assembly([primary, brace, connector, ground], label="restraint")
+
+    verification = model.manifest()["analysis"]["member_stability_verification"]
+    assert len(verification["restraint_candidates"]) == 1
+    candidate = verification["restraint_candidates"][0]
+    assert candidate["connection_id"] == "brace-primary"
+    assert candidate["distance_m"] == pytest.approx(0.5)
+    assert candidate["axis_separation_m"] == pytest.approx(0.1)
+    assert [
+        (item["start_distance_m"], item["end_distance_m"])
+        for item in verification["segments"]
+    ] == [(0.0, 0.5), (0.5, 2.0)]
+    assert verification["segments"][0]["end_restraint_candidate_ids"] == [
+        "restraint-brace-primary"
+    ]
+    assert verification["segments"][1]["start_restraint_candidate_ids"] == [
+        "restraint-brace-primary"
+    ]
 
 
 def test_structural_model_generates_manifest_from_registered_shape_handles():

@@ -72,6 +72,14 @@ export type StructuralViewerOverlay = {
     force_kN: { x: number; y: number; z: number };
     moment_kNm: { x: number; y: number; z: number };
   }>;
+  restraintSegments?: Array<{
+    id: string;
+    label: string;
+    start: { x: number; y: number; z: number };
+    end: { x: number; y: number; z: number };
+    compressionFlange: 'positive_local_y' | 'negative_local_y' | 'none';
+    status: 'missing' | 'candidate' | 'verified' | 'not_required';
+  }>;
   maxOffsetMm?: number;
 };
 
@@ -81,6 +89,15 @@ export function structuralCheckColor(
   if (status === 'pass') return 0x22c55e;
   if (status === 'fail') return 0xef4444;
   return 0x94a3b8;
+}
+
+export function structuralRestraintColor(
+  status: NonNullable<StructuralViewerOverlay['restraintSegments']>[number]['status'],
+): number {
+  if (status === 'verified') return 0x22c55e;
+  if (status === 'candidate') return 0xf59e0b;
+  if (status === 'missing') return 0xef4444;
+  return 0x64748b;
 }
 
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
@@ -1226,6 +1243,60 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const overlayMode = structuralOverlay.mode ?? 'moment';
       const statusColor = structuralCheckColor(structuralOverlay.status);
 
+      for (const restraint of structuralOverlay.restraintSegments ?? []) {
+        const start = toModelCoordinates(new THREE.Vector3(
+          restraint.start.x,
+          restraint.start.y,
+          restraint.start.z,
+        ));
+        const end = toModelCoordinates(new THREE.Vector3(
+          restraint.end.x,
+          restraint.end.y,
+          restraint.end.z,
+        ));
+        const direction = end.clone().sub(start);
+        const length = direction.length();
+        if (length <= Number.EPSILON) continue;
+        const color = structuralRestraintColor(restraint.status);
+        const segment = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.014, 0.014, length, 10),
+          new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: restraint.status === 'not_required' ? 0.42 : 0.92,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        segment.position.copy(start.clone().add(end).multiplyScalar(0.5));
+        segment.quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0),
+          direction.normalize(),
+        );
+        segment.name = `${STRUCTURAL_OVERLAY_NAME}Restraint-${restraint.id}`;
+        segment.renderOrder = 36;
+        segment.userData.tertiusStructuralOverlay = true;
+        segment.userData.tertiusStructuralRestraint = restraint;
+        memberGroup.add(segment);
+
+        for (const [suffix, point] of [['Start', start], ['End', end]] as const) {
+          const marker = new THREE.Mesh(
+            new THREE.OctahedronGeometry(0.025, 0),
+            new THREE.MeshBasicMaterial({
+              color,
+              transparent: true,
+              opacity: 0.95,
+              depthTest: false,
+            }),
+          );
+          marker.position.copy(point);
+          marker.name = `${STRUCTURAL_OVERLAY_NAME}Restraint${suffix}-${restraint.id}`;
+          marker.renderOrder = 37;
+          marker.userData.tertiusStructuralOverlay = true;
+          memberGroup.add(marker);
+        }
+      }
+
       for (const loadArrow of structuralOverlay.loadArrows ?? []) {
         const sourceForce = new THREE.Vector3(
           loadArrow.force_kN.x,
@@ -1722,7 +1793,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               )} nodes · {structuralOverlays.reduce(
                 (count, overlay) => count + (overlay.reactions?.length ?? 0),
                 0,
-              )} reactions
+              )} reactions · {structuralOverlays.reduce(
+                (count, overlay) => count + (overlay.restraintSegments?.length ?? 0),
+                0,
+              )} restraint traces
             </div>
           ) : null}
           <button

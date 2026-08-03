@@ -3,10 +3,18 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+import build123d as bd
 
 from core.site_definition import apply_site_definition, default_site_definition
+from core.structural.authoring_runtime import (
+    StructuralMemberGeometry,
+    StructuralModel,
+)
 from core.structural.contracts import ProjectStructuralCapture
-from core.structural.design_capture import parse_project_structural_capture
+from core.structural.design_capture import (
+    capture_project_structural_declaration,
+    parse_project_structural_capture,
+)
 from core.structural.project_analysis import solve_project_structural
 
 
@@ -577,20 +585,16 @@ structural_assembly = structure.assembly""",
         for check in snapshot.cross_section_checks
     )
     assert all(
-        check.governing_combination_id
-        in {"ULS-STABILITY+X", "ULS-STABILITY-X"}
+        check.governing_combination_id in {"ULS-STABILITY+X", "ULS-STABILITY-X"}
         for check in snapshot.cross_section_checks
     )
     assert all(
-        check.governing_utilisation is not None
-        and check.governing_utilisation < 1
+        check.governing_utilisation is not None and check.governing_utilisation < 1
         for check in snapshot.cross_section_checks
     )
     assert all(check.status == "pass" for check in snapshot.member_checks)
     assert len(snapshot.member_stability_checks) == 2
-    assert all(
-        check.status == "pass" for check in snapshot.member_stability_checks
-    )
+    assert all(check.status == "pass" for check in snapshot.member_stability_checks)
     assert all(
         check.design_member_compression_capacity_kN is not None
         and check.design_member_compression_capacity_kN > 0
@@ -618,8 +622,7 @@ structural_assembly = structure.assembly""",
     )
     assert cross_section_sheet.status == "pass"
     assert any(
-        equation.expression
-        == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
+        equation.expression == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
         for equation in cross_section_sheet.equations
     )
     member_stability_sheet = next(
@@ -634,9 +637,9 @@ structural_assembly = structure.assembly""",
     )
 
     unrestrained_data = deepcopy(capture_data)
-    for segment in unrestrained_data["analysis"][
-        "member_stability_verification"
-    ]["segments"]:
+    for segment in unrestrained_data["analysis"]["member_stability_verification"][
+        "segments"
+    ]:
         segment["lateral_bending_restraint"] = "unverified"
         segment["restraint_status"] = "assumed"
     unrestrained_snapshot = solve_project_structural(
@@ -656,14 +659,13 @@ structural_assembly = structure.assembly""",
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert all(
-        check.status == "not_checked"
-        for check in unrestrained_snapshot.member_checks
+        check.status == "not_checked" for check in unrestrained_snapshot.member_checks
     )
 
     overloaded_data = deepcopy(capture_data)
-    overloaded_properties = overloaded_data["analysis"]["sections"][0][
-        "catalog"
-    ]["properties"]
+    overloaded_properties = overloaded_data["analysis"]["sections"][0]["catalog"][
+        "properties"
+    ]
     overloaded_properties["Ae"] = 1.0
     overloaded_properties["Zxe"] = 10.0
     overloaded_capture = ProjectStructuralCapture.model_validate(overloaded_data)
@@ -746,3 +748,130 @@ structural_assembly = structure.assembly""",
         capability.id == "checks" and capability.status == "blocked"
         for capability in overload.capabilities
     )
+
+
+def test_signed_moment_flips_effective_compression_flange_restraint_trace():
+    model = StructuralModel(title="Signed restraint trace")
+    steel = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+    )
+    primary = model.member_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(2000, 100, 100),
+            label="Primary",
+            part_number="C10019",
+            start=(0.0, 0.0, 0.0),
+            end=(2.0, 0.0, 0.0),
+        ),
+        component_id="primary",
+        member_id="primary-axis",
+        section=section,
+        material=steel,
+        start_restraints=(True, True, True, True, True, True),
+        assumption="Fixed cantilever for signed-moment trace test.",
+    )
+    braces = []
+    for index, distance in enumerate((0.5, 1.5), start=1):
+        brace = model.member_component_from_geometry(
+            StructuralMemberGeometry(
+                shape=bd.Box(100, 1000, 100),
+                label=f"Brace {index}",
+                part_number="C10012",
+                start=(distance, 0.1, -0.5),
+                end=(distance, 0.1, 0.5),
+            ),
+            component_id=f"brace-{index}",
+        )
+        connection = model.connect(
+            brace,
+            primary,
+            id=f"brace-{index}-primary",
+            label=f"Brace {index} to primary",
+            transfers=["force", "shear"],
+        )
+        model.member_restraint_from_connection(
+            primary,
+            brace,
+            connection=connection,
+            restrains_lateral_translation=True,
+            restrains_twist=True,
+            evidence_status="candidate",
+            evidence_basis="Connected geometry; capacity evidence pending.",
+        )
+        braces.append(brace)
+    ground = model.ground(bd.Box(100, 100, 100), id="ground", label="Ground")
+    model.connect(
+        primary,
+        ground,
+        id="primary-ground",
+        label="Fixed base",
+        transfers=["force", "shear", "moment"],
+    )
+    for case_id, direction in (("inward", -1.0), ("outward", 1.0)):
+        model.member_point_load(
+            primary,
+            id=f"load-{case_id}",
+            label=f"{case_id.title()} load",
+            case="wind",
+            case_id=case_id,
+            case_label=f"{case_id.title()} load case",
+            distance_m=2.0,
+            force=(0.0, direction, 0.0),
+            provenance="Opposite signed-moment trace test.",
+        )
+        model.load_combination(
+            id=f"ULS-{case_id}",
+            label=f"ULS {case_id}",
+            limit_state="ultimate",
+            factors={case_id: 1.0},
+        )
+    model.member_stability_verification(
+        pack_id="as_nzs_4600_2018_ewm_member",
+        combination_ids=("ULS-inward", "ULS-outward"),
+        members=(primary,),
+        distortional_buckling_basis="Distortional evidence is outside this trace test.",
+    )
+    model.assembly([primary, *braces, ground], label="signed-restraint")
+    capture = capture_project_structural_declaration(
+        model.manifest(),
+        project_name="signed_restraint",
+        design_hash="a" * 64,
+    )
+
+    inward = solve_project_structural(capture, combination_id="ULS-inward")
+    outward = solve_project_structural(capture, combination_id="ULS-outward")
+    inward_middle = next(
+        trace
+        for trace in inward.member_restraint_traces
+        if trace.segment_start_m == pytest.approx(0.5)
+        and trace.segment_end_m == pytest.approx(1.5)
+    )
+    outward_middle = next(
+        trace
+        for trace in outward.member_restraint_traces
+        if trace.segment_start_m == pytest.approx(0.5)
+        and trace.segment_end_m == pytest.approx(1.5)
+    )
+
+    assert {inward_middle.compression_flange, outward_middle.compression_flange} == {
+        "positive_local_y",
+        "negative_local_y",
+    }
+    assert {inward_middle.status, outward_middle.status} == {"candidate", "missing"}
+    candidate_trace = (
+        inward_middle if inward_middle.status == "candidate" else outward_middle
+    )
+    assert len(candidate_trace.effective_restraint_candidate_ids) == 2

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from importlib.metadata import version
 from math import pi, sqrt
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .capacity_packs import (
     CapacityPackError,
@@ -24,6 +24,7 @@ from .contracts import (
     MemberDiagramStation,
     MemberDistributedLoad,
     MemberResult,
+    MemberRestraintTrace,
     MemberStabilityComparison,
     MemberStabilityCheck,
     NodeReaction,
@@ -288,34 +289,19 @@ def _cross_section_checks(
             for distance in _member_station_distances(analysis, declaration):
                 member = model.members[declaration.id]
                 axial_kN = abs(member.axial(distance, combination_id))
-                major_moment_kNm = abs(
-                    member.moment("Mz", distance, combination_id)
-                )
-                minor_moment_kNm = abs(
-                    member.moment("My", distance, combination_id)
-                )
+                major_moment_kNm = abs(member.moment("Mz", distance, combination_id))
+                minor_moment_kNm = abs(member.moment("My", distance, combination_id))
                 web_shear_kN = abs(member.shear("Fy", distance, combination_id))
-                off_axis_shear_kN = abs(
-                    member.shear("Fz", distance, combination_id)
-                )
+                off_axis_shear_kN = abs(member.shear("Fz", distance, combination_id))
                 torsion_kNm = abs(member.torque(distance, combination_id))
 
                 axial_bending = (
                     axial_kN / capacity.design_compression_capacity_kN
-                    + major_moment_kNm
-                    / capacity.design_major_bending_capacity_kNm
+                    + major_moment_kNm / capacity.design_major_bending_capacity_kNm
                 )
                 bending_shear = sqrt(
-                    (
-                        major_moment_kNm
-                        / capacity.design_major_bending_capacity_kNm
-                    )
-                    ** 2
-                    + (
-                        web_shear_kN
-                        / capacity.design_web_shear_capacity_kN
-                    )
-                    ** 2
+                    (major_moment_kNm / capacity.design_major_bending_capacity_kNm) ** 2
+                    + (web_shear_kN / capacity.design_web_shear_capacity_kN) ** 2
                 )
                 utilization = max(axial_bending, bending_shear)
                 candidate: dict[str, float | str] = {
@@ -331,9 +317,7 @@ def _cross_section_checks(
                     "bending_shear": bending_shear,
                     "utilization": utilization,
                 }
-                if governing is None or utilization > float(
-                    governing["utilization"]
-                ):
+                if governing is None or utilization > float(governing["utilization"]):
                     governing = candidate
                 off_axis_exceeded = off_axis_exceeded or any(
                     value > definition.off_axis_tolerance
@@ -375,9 +359,7 @@ def _cross_section_checks(
                 design_major_bending_capacity_kNm=(
                     capacity.design_major_bending_capacity_kNm
                 ),
-                design_web_shear_capacity_kN=(
-                    capacity.design_web_shear_capacity_kN
-                ),
+                design_web_shear_capacity_kN=(capacity.design_web_shear_capacity_kN),
                 axial_bending_utilisation=float(governing["axial_bending"]),
                 bending_shear_utilisation=float(governing["bending_shear"]),
                 governing_utilisation=float(governing["utilization"]),
@@ -414,6 +396,188 @@ def _cross_section_checks(
             )
         )
     return checks
+
+
+def _compression_flange(
+    signed_major_moment_kNm: float,
+    tolerance: float,
+) -> Literal["positive_local_y", "negative_local_y", "none"]:
+    # PyNite's positive local Mz produces compressive longitudinal stress at
+    # positive local y under sigma_x = -Mz*y/Iz.
+    if signed_major_moment_kNm > tolerance:
+        return "positive_local_y"
+    if signed_major_moment_kNm < -tolerance:
+        return "negative_local_y"
+    return "none"
+
+
+def _candidate_contact_flange(
+    model,
+    candidate,
+    tolerance: float,
+) -> Literal["positive_local_y", "negative_local_y", "none"]:
+    rotation = model.members[candidate.member_id].T()[:3, :3]
+    local_y_global = tuple(float(value) for value in rotation[1])
+    offset = (
+        candidate.brace_position.x - candidate.member_position.x,
+        candidate.brace_position.y - candidate.member_position.y,
+        candidate.brace_position.z - candidate.member_position.z,
+    )
+    local_y_offset = sum(local_y_global[index] * offset[index] for index in range(3))
+    if local_y_offset > tolerance:
+        return "positive_local_y"
+    if local_y_offset < -tolerance:
+        return "negative_local_y"
+    return "none"
+
+
+def _segment_restraint_state(
+    model,
+    definition,
+    segment,
+    compression_flange: Literal["positive_local_y", "negative_local_y", "none"],
+) -> tuple[
+    Literal["missing", "candidate", "verified"],
+    list[str],
+]:
+    if compression_flange == "none":
+        return "verified", []
+    if (
+        segment.lateral_bending_restraint == "continuous_compression_flange"
+        and segment.restraint_status == "verified"
+    ):
+        return "verified", []
+
+    candidates_by_id = {
+        candidate.id: candidate for candidate in definition.restraint_candidates
+    }
+    effective_ids: list[str] = []
+    boundary_statuses: list[Literal["missing", "candidate", "verified"]] = []
+    for candidate_ids in (
+        segment.start_restraint_candidate_ids,
+        segment.end_restraint_candidate_ids,
+    ):
+        effective = [
+            candidates_by_id[candidate_id]
+            for candidate_id in candidate_ids
+            if candidate_id in candidates_by_id
+            and candidates_by_id[candidate_id].restrains_lateral_translation
+            and candidates_by_id[candidate_id].restrains_twist
+            and _candidate_contact_flange(
+                model,
+                candidates_by_id[candidate_id],
+                definition.off_axis_tolerance,
+            )
+            == compression_flange
+        ]
+        effective_ids.extend(candidate.id for candidate in effective)
+        if not effective:
+            boundary_statuses.append("missing")
+        elif any(candidate.evidence_status == "verified" for candidate in effective):
+            boundary_statuses.append("verified")
+        elif any(candidate.evidence_status == "candidate" for candidate in effective):
+            boundary_statuses.append("candidate")
+        else:
+            boundary_statuses.append("missing")
+    if "missing" in boundary_statuses:
+        return "missing", sorted(set(effective_ids))
+    if "candidate" in boundary_statuses:
+        return "candidate", sorted(set(effective_ids))
+    return "verified", sorted(set(effective_ids))
+
+
+def _position_on_member(declaration, distance_m: float) -> Vector3:
+    member_length = _length(declaration.start, declaration.end)
+    ratio = distance_m / member_length if member_length > 0 else 0.0
+    return Vector3(
+        x=declaration.start.x + (declaration.end.x - declaration.start.x) * ratio,
+        y=declaration.start.y + (declaration.end.y - declaration.start.y) * ratio,
+        z=declaration.start.z + (declaration.end.z - declaration.start.z) * ratio,
+    )
+
+
+def _member_restraint_traces(
+    model,
+    analysis,
+    *,
+    combination_id: str,
+) -> list[MemberRestraintTrace]:
+    definition = analysis.member_stability_verification
+    if definition is None:
+        return []
+    members_by_id = {member.id: member for member in analysis.members}
+    traces: list[MemberRestraintTrace] = []
+    for segment in definition.segments:
+        declaration = members_by_id[segment.member_id]
+        member = model.members[segment.member_id]
+        sample_distances = sorted(
+            {
+                segment.start_distance_m,
+                segment.end_distance_m,
+                *(
+                    distance
+                    for distance in _member_station_distances(analysis, declaration)
+                    if segment.start_distance_m < distance < segment.end_distance_m
+                ),
+            }
+        )
+        split_distances = [segment.start_distance_m, segment.end_distance_m]
+        for start_distance, end_distance in zip(sample_distances, sample_distances[1:]):
+            start_moment = member.moment("Mz", start_distance, combination_id)
+            end_moment = member.moment("Mz", end_distance, combination_id)
+            if start_moment * end_moment < 0:
+                fraction = abs(start_moment) / (abs(start_moment) + abs(end_moment))
+                split_distances.append(
+                    start_distance + fraction * (end_distance - start_distance)
+                )
+        split_distances = sorted(
+            set(round(distance, 12) for distance in split_distances)
+        )
+        for index, (start_distance, end_distance) in enumerate(
+            zip(split_distances, split_distances[1:]),
+            start=1,
+        ):
+            if end_distance - start_distance <= 1e-9:
+                continue
+            midpoint = (start_distance + end_distance) / 2.0
+            compression = _compression_flange(
+                member.moment("Mz", midpoint, combination_id),
+                definition.off_axis_tolerance,
+            )
+            restraint_status, effective_ids = _segment_restraint_state(
+                model,
+                definition,
+                segment,
+                compression,
+            )
+            trace_status: Literal[
+                "missing", "candidate", "verified", "not_required"
+            ] = "not_required" if compression == "none" else restraint_status
+            traces.append(
+                MemberRestraintTrace(
+                    id=f"trace-{segment.id}-{combination_id}-{index}",
+                    member_id=segment.member_id,
+                    combination_id=combination_id,
+                    segment_start_m=start_distance,
+                    segment_end_m=end_distance,
+                    start_position=_position_on_member(declaration, start_distance),
+                    end_position=_position_on_member(declaration, end_distance),
+                    compression_flange=compression,
+                    status=trace_status,
+                    start_restraint_candidate_ids=(
+                        segment.start_restraint_candidate_ids
+                    ),
+                    end_restraint_candidate_ids=(segment.end_restraint_candidate_ids),
+                    effective_restraint_candidate_ids=effective_ids,
+                    basis=(
+                        f"Signed PyNite local Mz identifies {compression.replace('_', ' ')} "
+                        f"as the compression flange. Restraint state {trace_status} "
+                        "requires effective lateral-translation and twist restraint at "
+                        "both physical segment boundaries."
+                    ),
+                )
+            )
+    return traces
 
 
 def _member_stability_checks(
@@ -454,13 +618,9 @@ def _member_stability_checks(
                     segment_start_m=segment.start_distance_m,
                     segment_end_m=segment.end_distance_m,
                     unbraced_length_m=unbraced_length_m,
-                    lateral_bending_restraint=(
-                        segment.lateral_bending_restraint
-                    ),
+                    lateral_bending_restraint=(segment.lateral_bending_restraint),
                     restraint_status=segment.restraint_status,
-                    distortional_buckling_status=(
-                        segment.distortional_buckling_status
-                    ),
+                    distortional_buckling_status=(segment.distortional_buckling_status),
                     basis=f"Member pack could not evaluate this segment: {exc}",
                     assumptions=[
                         "No member resistance has been inferred from incomplete data."
@@ -472,71 +632,71 @@ def _member_stability_checks(
         station_distances = {
             distance
             for distance in _member_station_distances(analysis, declaration)
-            if (
-                segment.start_distance_m
-                <= distance
-                <= segment.end_distance_m
-            )
+            if (segment.start_distance_m <= distance <= segment.end_distance_m)
         }
-        station_distances.update(
-            (segment.start_distance_m, segment.end_distance_m)
-        )
-        governing: dict[str, float | str] | None = None
+        station_distances.update((segment.start_distance_m, segment.end_distance_m))
+        governing: dict[str, Any] | None = None
         off_axis_exceeded = False
         lateral_bending_unverified = False
+        compression_flange_values: set[str] = set()
         member = model.members[declaration.id]
         for combination_id in definition.combination_ids:
             for distance in sorted(station_distances):
                 axial_kN = abs(member.axial(distance, combination_id))
-                major_moment_kNm = abs(
-                    member.moment("Mz", distance, combination_id)
-                )
-                minor_moment_kNm = abs(
-                    member.moment("My", distance, combination_id)
-                )
-                off_axis_shear_kN = abs(
-                    member.shear("Fz", distance, combination_id)
-                )
+                signed_major_moment_kNm = member.moment("Mz", distance, combination_id)
+                major_moment_kNm = abs(signed_major_moment_kNm)
+                minor_moment_kNm = abs(member.moment("My", distance, combination_id))
+                off_axis_shear_kN = abs(member.shear("Fz", distance, combination_id))
                 torsion_kNm = abs(member.torque(distance, combination_id))
                 axial_utilisation = (
-                    axial_kN
-                    / capacity.design_member_compression_capacity_kN
+                    axial_kN / capacity.design_member_compression_capacity_kN
                 )
-                has_verified_lateral_restraint = (
-                    segment.lateral_bending_restraint
-                    == "continuous_compression_flange"
-                    and segment.restraint_status == "verified"
+                compression_flange = _compression_flange(
+                    signed_major_moment_kNm,
+                    definition.off_axis_tolerance,
                 )
+                if compression_flange != "none":
+                    compression_flange_values.add(compression_flange)
+                restraint_status, effective_candidate_ids = _segment_restraint_state(
+                    model,
+                    definition,
+                    segment,
+                    compression_flange,
+                )
+                has_verified_lateral_restraint = restraint_status == "verified"
                 if major_moment_kNm > definition.off_axis_tolerance:
                     lateral_bending_unverified |= not has_verified_lateral_restraint
                 axial_bending_utilisation = (
                     axial_utilisation
-                    + major_moment_kNm
-                    / capacity.design_major_bending_capacity_kNm
+                    + major_moment_kNm / capacity.design_major_bending_capacity_kNm
                 )
                 utilisation = (
                     axial_bending_utilisation
                     if has_verified_lateral_restraint
                     else axial_utilisation
                 )
-                off_axis_exceeded |= max(
-                    minor_moment_kNm,
-                    off_axis_shear_kN,
-                    torsion_kNm,
-                ) > definition.off_axis_tolerance
-                candidate: dict[str, float | str] = {
+                off_axis_exceeded |= (
+                    max(
+                        minor_moment_kNm,
+                        off_axis_shear_kN,
+                        torsion_kNm,
+                    )
+                    > definition.off_axis_tolerance
+                )
+                candidate: dict[str, Any] = {
                     "combination_id": combination_id,
                     "distance": distance,
                     "axial": axial_kN,
                     "major_moment": major_moment_kNm,
+                    "compression_flange": compression_flange,
+                    "restraint_status": restraint_status,
+                    "restraint_candidate_ids": effective_candidate_ids,
                     "axial_utilisation": axial_utilisation,
                     "axial_bending_utilisation": axial_bending_utilisation,
                     "utilisation": utilisation,
                 }
-                if (
-                    governing is None
-                    or float(candidate["utilisation"])
-                    > float(governing["utilisation"])
+                if governing is None or float(candidate["utilisation"]) > float(
+                    governing["utilisation"]
                 ):
                     governing = candidate
 
@@ -606,10 +766,23 @@ def _member_stability_checks(
                     else None
                 ),
                 lateral_bending_restraint=segment.lateral_bending_restraint,
-                restraint_status=segment.restraint_status,
-                distortional_buckling_status=(
-                    segment.distortional_buckling_status
+                restraint_status=cast(
+                    Literal["missing", "candidate", "assumed", "verified"],
+                    governing["restraint_status"],
                 ),
+                compression_flange=cast(
+                    Literal[
+                        "positive_local_y",
+                        "negative_local_y",
+                        "none",
+                        "mixed",
+                    ],
+                    "mixed"
+                    if len(compression_flange_values) > 1
+                    else next(iter(compression_flange_values), "none"),
+                ),
+                restraint_candidate_ids=list(governing["restraint_candidate_ids"]),
+                distortional_buckling_status=(segment.distortional_buckling_status),
                 section_record_sha256=capacity.section_record_sha256,
                 basis=capacity.basis,
                 assumptions=[
@@ -1377,10 +1550,7 @@ def _p399_evidence(
             ),
             CalculationEquation(
                 label=f"{check.member_id} major bending + web shear interaction",
-                expression=(
-                    "u_MV = sqrt[(M*/(phi_b M_s))² + "
-                    "(V*/(phi_v V_v))²]"
-                ),
+                expression=("u_MV = sqrt[(M*/(phi_b M_s))² + (V*/(phi_v V_v))²]"),
                 substitution=(
                     f"sqrt[({check.major_moment_kNm:g}/"
                     f"{check.design_major_bending_capacity_kNm:g})² + "
@@ -1432,9 +1602,7 @@ def _p399_evidence(
                     else "not available"
                 ),
                 unit=(
-                    "kN"
-                    if check.design_compression_capacity_kN is not None
-                    else None
+                    "kN" if check.design_compression_capacity_kN is not None else None
                 ),
                 source=check.basis,
             ),
@@ -1446,11 +1614,7 @@ def _p399_evidence(
                     if check.design_web_shear_capacity_kN is not None
                     else "not available"
                 ),
-                unit=(
-                    "kN"
-                    if check.design_web_shear_capacity_kN is not None
-                    else None
-                ),
+                unit=("kN" if check.design_web_shear_capacity_kN is not None else None),
                 source=(
                     f"{check.shear_regime or 'unknown'} web; "
                     f"d1/t={check.web_slenderness or 0:g}"
@@ -1486,17 +1650,13 @@ def _p399_evidence(
             CalculationEquation(
                 label=f"{check.segment_id} flexural-torsional elastic buckling",
                 expression=(
-                    "Fe,FT = (Fey + Fez)/(2β) "
-                    "[1 - sqrt(1 - 4β Fey Fez/(Fey + Fez)²)]"
+                    "Fe,FT = (Fey + Fez)/(2β) [1 - sqrt(1 - 4β Fey Fez/(Fey + Fez)²)]"
                 ),
                 substitution=(
                     f"Fey/Fez from Lb={check.unbraced_length_m:g} m; "
                     f"Fe,FT={check.elastic_flexural_torsional_buckling_stress_MPa:g}"
                 ),
-                result=(
-                    check.elastic_flexural_torsional_buckling_stress_MPa
-                    or 0.0
-                ),
+                result=(check.elastic_flexural_torsional_buckling_stress_MPa or 0.0),
                 unit="MPa",
             ),
             CalculationEquation(
@@ -1545,20 +1705,34 @@ def _p399_evidence(
             CalculationInput(
                 symbol=f"LTB,{check.segment_id}",
                 label=f"{check.label} lateral-bending restraint",
-                value=(
-                    f"{check.lateral_bending_restraint} "
-                    f"({check.restraint_status})"
-                ),
+                value=(f"{check.lateral_bending_restraint} ({check.restraint_status})"),
                 source=check.assumptions[0] if check.assumptions else check.basis,
+            ),
+            CalculationInput(
+                symbol=f"compression_flange,{check.segment_id}",
+                label=f"{check.label} signed-moment compression flange",
+                value=check.compression_flange,
+                source=(
+                    f"Signed PyNite local Mz envelope for "
+                    f"{check.governing_combination_id or 'no valid envelope'}"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"restraint_candidates,{check.segment_id}",
+                label=f"{check.label} effective physical restraint candidates",
+                value=(
+                    ", ".join(check.restraint_candidate_ids)
+                    if check.restraint_candidate_ids
+                    else "none"
+                ),
+                source="Builder-authored axes and registered connection handles",
             ),
             CalculationInput(
                 symbol=f"distortional,{check.segment_id}",
                 label=f"{check.label} distortional buckling",
                 value=check.distortional_buckling_status,
                 source=(
-                    check.assumptions[1]
-                    if len(check.assumptions) > 1
-                    else check.basis
+                    check.assumptions[1] if len(check.assumptions) > 1 else check.basis
                 ),
             ),
         )
@@ -2044,9 +2218,7 @@ def _p399_evidence(
                     CalculationInput(
                         symbol="ULS_envelope",
                         label="Checked ULS combinations",
-                        value=", ".join(
-                            cross_section_definition.combination_ids
-                        ),
+                        value=", ".join(cross_section_definition.combination_ids),
                         source="design.py StructuralModel.cross_section_verification",
                     ),
                 ]
@@ -2064,9 +2236,7 @@ def _p399_evidence(
                 ]
             ),
             outputs=(
-                cross_section_outputs
-                if cross_section_checks
-                else reference_outputs
+                cross_section_outputs if cross_section_checks else reference_outputs
             ),
             references=basis_references,
             related_member_ids=member_ids,
@@ -2092,19 +2262,15 @@ def _p399_evidence(
                         label="Versioned member-capacity pack",
                         value=member_stability_definition.pack_id,
                         source=(
-                            "design.py "
-                            "StructuralModel.member_stability_verification"
+                            "design.py StructuralModel.member_stability_verification"
                         ),
                     ),
                     CalculationInput(
                         symbol="member_ULS_envelope",
                         label="Checked ULS combinations",
-                        value=", ".join(
-                            member_stability_definition.combination_ids
-                        ),
+                        value=", ".join(member_stability_definition.combination_ids),
                         source=(
-                            "design.py "
-                            "StructuralModel.member_stability_verification"
+                            "design.py StructuralModel.member_stability_verification"
                         ),
                     ),
                 ]
@@ -2117,9 +2283,7 @@ def _p399_evidence(
                     for assumption in check.assumptions
                 ]
                 if member_stability_checks
-                else [
-                    "No restraint-defined member-stability segments are authored."
-                ]
+                else ["No restraint-defined member-stability segments are authored."]
             ),
             outputs=(
                 member_stability_outputs
@@ -2400,9 +2564,9 @@ def solve_project_structural(
         combinations_by_id = {
             combination.id: combination for combination in combinations
         }
-        for envelope_combination_id in (
-            analysis.cross_section_verification.combination_ids
-        ):
+        for (
+            envelope_combination_id
+        ) in analysis.cross_section_verification.combination_ids:
             envelope_combination = combinations_by_id.get(envelope_combination_id)
             if envelope_combination is None:
                 raise StructuralAnalysisError(
@@ -2844,6 +3008,11 @@ def solve_project_structural(
         check.member_id: check for check in cross_section_checks
     }
     member_stability_checks = _member_stability_checks(model, analysis)
+    member_restraint_traces = _member_restraint_traces(
+        model,
+        analysis,
+        combination_id=active_combination.id,
+    )
     member_stability_checks_by_member: dict[str, list[MemberStabilityCheck]] = {}
     for stability_check in member_stability_checks:
         member_stability_checks_by_member.setdefault(
@@ -3004,9 +3173,7 @@ def solve_project_structural(
                         else governing_stability_check.axial_utilisation
                     ),
                     status=(
-                        "pass"
-                        if governing_stability_check.status == "pass"
-                        else "fail"
+                        "pass" if governing_stability_check.status == "pass" else "fail"
                     ),
                     basis=(
                         f"{governing_stability_check.basis} Governing ULS "
@@ -3033,26 +3200,20 @@ def solve_project_structural(
                     ),
                 )
             )
-        elif (
-            cross_section_check is not None
-            and cross_section_check.status in {"pass", "fail"}
-        ):
+        elif cross_section_check is not None and cross_section_check.status in {
+            "pass",
+            "fail",
+        }:
             member_checks.append(
                 MemberCheck(
                     member_id=declaration.id,
                     label=f"{declaration.label} Stage 6 cross-section",
-                    demand_kNm=(
-                        cross_section_check.major_moment_kNm or 0.0
-                    ),
+                    demand_kNm=(cross_section_check.major_moment_kNm or 0.0),
                     capacity_kNm=(
                         cross_section_check.design_major_bending_capacity_kNm
                     ),
                     utilisation=cross_section_check.governing_utilisation,
-                    status=(
-                        "pass"
-                        if cross_section_check.status == "pass"
-                        else "fail"
-                    ),
+                    status=("pass" if cross_section_check.status == "pass" else "fail"),
                     basis=(
                         f"CROSS-SECTION ONLY — {cross_section_check.basis} "
                         f"Governing ULS envelope: "
@@ -3432,6 +3593,7 @@ def solve_project_structural(
         member_checks=member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
+        member_restraint_traces=member_restraint_traces,
         serviceability_checks=serviceability_checks,
         load_summary=summary,
         equilibrium=EquilibriumDiagnostic(

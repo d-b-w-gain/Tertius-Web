@@ -55,6 +55,13 @@ function vector(value: Vector3) {
   return `X ${number(value.x)} · Y ${number(value.y)} · Z ${number(value.z)}`
 }
 
+const stabilityStatusRank = {
+  fail: 4,
+  unsupported: 3,
+  not_checked: 2,
+  pass: 1,
+} as const
+
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
@@ -203,9 +210,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const selectedMemberStabilityCheck = analysis?.member_stability_checks?.find(
-    (check) => check.member_id === selectedMember?.id,
-  )
+  const selectedMemberStabilityCheck = analysis?.member_stability_checks
+    ?.filter((check) => check.member_id === selectedMember?.id)
+    .sort((left, right) => (
+      stabilityStatusRank[right.status] - stabilityStatusRank[left.status]
+      || (right.governing_utilisation ?? -1) - (left.governing_utilisation ?? -1)
+    ))[0]
   const selectedDisplayCheckStatus = selectedMemberStabilityCheck?.status
     || selectedCheck?.status
   const crossSectionStage = analysis?.verification_stages?.find(
@@ -284,6 +294,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         : analysis.serviceability_checks.find(
           (candidate) => candidate.member_id === diagram.member_id,
         )
+      const restraintSegments = (analysis.member_restraint_traces ?? [])
+        .filter((trace) => (
+          trace.member_id === diagram.member_id
+          && trace.combination_id === activeCombination.id
+        ))
+        .map((trace) => ({
+          id: trace.id,
+          label: `${trace.compression_flange.replaceAll('_', ' ')} · ${trace.status}`,
+          start: trace.start_position,
+          end: trace.end_position,
+          compressionFlange: trace.compression_flange,
+          status: trace.status,
+        }))
       return {
         id: diagram.member_id,
         label: diagramMode === 'displacement'
@@ -319,6 +342,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             }]
           })
           : undefined,
+        restraintSegments: diagramMode === 'moment' ? restraintSegments : undefined,
         maxOffsetMm: 260,
       }
     })
@@ -338,6 +362,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         void selectCombination(analysis.stability.combination_id)
       }
     }
+    if (stageId === 'member_stability') {
+      setDiagramMode('moment')
+      const governingCombination = analysis.member_stability_checks?.find(
+        (check) => check.governing_combination_id,
+      )?.governing_combination_id
+      if (governingCombination && selectedCombinationId !== governingCombination) {
+        void selectCombination(governingCombination)
+      }
+    }
     const memberId = sheet.related_member_ids[0]
     const member = analysis.members.find((candidate) => candidate.id === memberId)
     if (member) {
@@ -353,6 +386,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       wind_action_bases: analysis.wind_action_bases,
       active_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
+      member_restraint_traces: analysis.member_restraint_traces ?? [],
       verification_stages: analysis.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
     }
@@ -1179,6 +1213,21 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
+                            <dt className="text-slate-500">Signed-moment compression flange</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.compression_flange
+                                .replaceAll('_', ' ')}
+                            </dd>
+                          </div>
+                          <div className="col-span-2">
+                            <dt className="text-slate-500">Effective physical candidates</dt>
+                            <dd className="break-all font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.restraint_candidate_ids.length
+                                ? selectedMemberStabilityCheck.restraint_candidate_ids.join(', ')
+                                : 'none at both required boundaries'}
+                            </dd>
+                          </div>
+                          <div>
                             <dt className="text-slate-500">Distortional buckling</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedMemberStabilityCheck.distortional_buckling_status}
@@ -1299,7 +1348,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
                     {diagramMode === 'displacement'
                       ? 'Displacement is amplified for visibility; the reported millimetres are unscaled.'
-                      : 'Signed moment ribbons are grey until the required P399/Australian verification stages pass. Cyan arrows are applied loads; pink arrows are reactions; amber markers are restrained nodes.'}
+                      : 'Signed moment ribbons remain grey until the required checks pass. Thick Stage 7 axis traces show verified restraint in green, geometry-linked candidates in amber, and missing effective restraint in red. Cyan arrows are loads; pink arrows are reactions.'}
                   </p>
                 </section>
               )}

@@ -406,11 +406,32 @@ export type StructuralSnapshot = {
     lateral_bending_restraint:
       | 'unverified'
       | 'continuous_compression_flange'
-    restraint_status: 'assumed' | 'verified'
+    restraint_status: 'missing' | 'candidate' | 'assumed' | 'verified'
+    compression_flange:
+      | 'positive_local_y'
+      | 'negative_local_y'
+      | 'none'
+      | 'mixed'
+    restraint_candidate_ids: string[]
     distortional_buckling_status: 'unverified' | 'verified'
     section_record_sha256: string | null
     basis: string
     assumptions: string[]
+  }>
+  member_restraint_traces?: Array<{
+    id: string
+    member_id: string
+    combination_id: string
+    segment_start_m: number
+    segment_end_m: number
+    start_position: Vector3
+    end_position: Vector3
+    compression_flange: 'positive_local_y' | 'negative_local_y' | 'none'
+    status: 'missing' | 'candidate' | 'verified' | 'not_required'
+    start_restraint_candidate_ids: string[]
+    end_restraint_candidate_ids: string[]
+    effective_restraint_candidate_ids: string[]
+    basis: string
   }>
   serviceability_checks: Array<{
     member_id: string

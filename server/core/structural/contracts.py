@@ -266,12 +266,33 @@ class MemberStabilitySegmentDefinition(StructuralContract):
     restraint_basis: str
     distortional_buckling_status: Literal["unverified", "verified"] = "unverified"
     distortional_buckling_basis: str
+    start_restraint_candidate_ids: list[str] = Field(default_factory=list)
+    end_restraint_candidate_ids: list[str] = Field(default_factory=list)
+
+
+class MemberRestraintCandidateDefinition(StructuralContract):
+    id: str
+    member_id: str
+    bracing_component_id: str
+    connection_id: str
+    connector_component_ids: list[str] = Field(default_factory=list)
+    member_position: Vector3
+    brace_position: Vector3
+    distance_m: float = Field(ge=0)
+    axis_separation_m: float = Field(ge=0)
+    restrains_lateral_translation: bool
+    restrains_twist: bool
+    evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate"
+    evidence_basis: str
 
 
 class MemberStabilityVerificationDefinition(StructuralContract):
     pack_id: Literal["as_nzs_4600_2018_ewm_member"]
     combination_ids: list[str] = Field(min_length=1)
     segments: list[MemberStabilitySegmentDefinition] = Field(min_length=1)
+    restraint_candidates: list[MemberRestraintCandidateDefinition] = Field(
+        default_factory=list
+    )
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
 
@@ -370,11 +391,38 @@ class MemberStabilityCheck(StructuralContract):
         "unverified",
         "continuous_compression_flange",
     ]
-    restraint_status: Literal["assumed", "verified"]
+    restraint_status: Literal["missing", "candidate", "assumed", "verified"]
+    compression_flange: Literal[
+        "positive_local_y",
+        "negative_local_y",
+        "none",
+        "mixed",
+    ] = "none"
+    restraint_candidate_ids: list[str] = Field(default_factory=list)
     distortional_buckling_status: Literal["unverified", "verified"]
     section_record_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
+
+
+class MemberRestraintTrace(StructuralContract):
+    id: str
+    member_id: str
+    combination_id: str
+    segment_start_m: float
+    segment_end_m: float
+    start_position: Vector3
+    end_position: Vector3
+    compression_flange: Literal[
+        "positive_local_y",
+        "negative_local_y",
+        "none",
+    ]
+    status: Literal["missing", "candidate", "verified", "not_required"]
+    start_restraint_candidate_ids: list[str] = Field(default_factory=list)
+    end_restraint_candidate_ids: list[str] = Field(default_factory=list)
+    effective_restraint_candidate_ids: list[str] = Field(default_factory=list)
+    basis: str
 
 
 class ServiceabilityCheck(StructuralContract):
@@ -823,9 +871,7 @@ class ProjectStructuralCapture(StructuralContract):
                             f"the ultimate limit state; {combination_id!r} does not"
                         )
             if self.analysis.member_stability_verification is not None:
-                member_verification = (
-                    self.analysis.member_stability_verification
-                )
+                member_verification = self.analysis.member_stability_verification
                 combinations_by_id = {
                     item.id: item for item in self.analysis.load_combinations
                 }
@@ -839,6 +885,44 @@ class ProjectStructuralCapture(StructuralContract):
                         raise ValueError(
                             "member-stability verification combinations must use "
                             f"the ultimate limit state; {combination_id!r} does not"
+                        )
+                restraint_candidates_by_id: dict[
+                    str, MemberRestraintCandidateDefinition
+                ] = {}
+                for candidate in member_verification.restraint_candidates:
+                    if candidate.id in restraint_candidates_by_id:
+                        raise ValueError(
+                            f"duplicate member-restraint candidate ID {candidate.id!r}"
+                        )
+                    restraint_candidates_by_id[candidate.id] = candidate
+                    _require_reference(
+                        "member-restraint candidate member",
+                        candidate.member_id,
+                        member_ids,
+                    )
+                    _require_reference(
+                        "member-restraint bracing component",
+                        candidate.bracing_component_id,
+                        component_ids,
+                    )
+                    _require_reference(
+                        "member-restraint connection",
+                        candidate.connection_id,
+                        connection_ids,
+                    )
+                    for connector_id in candidate.connector_component_ids:
+                        _require_reference(
+                            "member-restraint connector component",
+                            connector_id,
+                            component_ids,
+                        )
+                    if (
+                        candidate.distance_m
+                        > member_lengths[candidate.member_id] + 1e-9
+                    ):
+                        raise ValueError(
+                            f"member-restraint candidate {candidate.id!r} lies outside "
+                            f"member {candidate.member_id!r}"
                         )
                 segment_ids: set[str] = set()
                 for segment in member_verification.segments:
@@ -872,6 +956,24 @@ class ProjectStructuralCapture(StructuralContract):
                             "continuous compression-flange restraint may only be "
                             "used when restraint_status is 'verified'"
                         )
+                    for boundary, candidate_ids in (
+                        ("start", segment.start_restraint_candidate_ids),
+                        ("end", segment.end_restraint_candidate_ids),
+                    ):
+                        for candidate_id in candidate_ids:
+                            _require_reference(
+                                f"member-stability segment {boundary} restraint",
+                                candidate_id,
+                                set(restraint_candidates_by_id),
+                            )
+                            if (
+                                restraint_candidates_by_id[candidate_id].member_id
+                                != segment.member_id
+                            ):
+                                raise ValueError(
+                                    f"member-stability segment {segment.id!r} uses "
+                                    f"restraint {candidate_id!r} from another member"
+                                )
         return self
 
 
@@ -918,6 +1020,7 @@ class StructuralSnapshot(StructuralContract):
     member_checks: list[MemberCheck]
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
+    member_restraint_traces: list[MemberRestraintTrace] = Field(default_factory=list)
     serviceability_checks: list[ServiceabilityCheck] = Field(default_factory=list)
     load_summary: LoadSummary = Field(
         default_factory=lambda: LoadSummary(
