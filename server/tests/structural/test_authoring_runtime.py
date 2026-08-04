@@ -116,6 +116,8 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         id="surface-load",
         label="Panel action",
         case="wind",
+        case_id="wind-plus-x",
+        case_label="Wind +X",
         pressure_kPa=1.0,
         area_m2=surface_geometry.area_m2,
         direction=(1.0, 0.0, 0.0),
@@ -154,6 +156,9 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
     assert analytical["end_fastener_count"] == 2
     assert analytical["end_connection_capacity_kN"] is None
     assert manifest["loads"][0]["area_m2"] == 1.0
+    assert manifest["analysis"]["member_distributed_loads"][0]["case_id"] == (
+        "case-wind-plus-x"
+    )
 
 
 def test_analytical_member_cannot_be_tension_and_compression_only():

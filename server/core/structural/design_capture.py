@@ -1769,6 +1769,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             "id",
                             "label",
                             "case",
+                            "case_id",
+                            "case_label",
                             "start_force_kN_m",
                             "end_force_kN_m",
                             "start_distance_m",
@@ -1840,11 +1842,27 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                 ),
                             ).id
                         )
-                    resolved_case_id = _load_case_id(case)
+                    resolved_case_id = _load_case_id(
+                        str(
+                            _keyword_value(
+                                keywords,
+                                "case_id",
+                                names,
+                                default=case,
+                            )
+                        )
+                    )
                     model.load_case_categories[resolved_case_id] = case
                     model.load_case_labels.setdefault(
                         resolved_case_id,
-                        f"{case.title()} load",
+                        str(
+                            _keyword_value(
+                                keywords,
+                                "case_label",
+                                names,
+                                default=f"{case.title()} load",
+                            )
+                        ),
                     )
                     model.member_distributed_loads.append(
                         {

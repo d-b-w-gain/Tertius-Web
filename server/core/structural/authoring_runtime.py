@@ -2314,6 +2314,8 @@ class StructuralModel:
         id: str,
         label: str,
         case: LoadCategory,
+        case_id: str | None = None,
+        case_label: str | None = None,
         start_force_kN_m: Sequence[float] | dict[str, float],
         end_force_kN_m: Sequence[float] | dict[str, float] | None = None,
         start_distance_m: float = 0.0,
@@ -2380,15 +2382,26 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "member self-weight must use the dead load case"
             )
-        case_id = _load_case_id(case)
-        self._load_case_categories[case_id] = case
-        self._load_case_labels.setdefault(case_id, f"{case.title()} load")
+        resolved_case_id = _load_case_id(case_id or case)
+        existing_category = self._load_case_categories.get(resolved_case_id)
+        if existing_category is not None and existing_category != case:
+            raise StructuralAuthoringError(
+                f"load case {resolved_case_id!r} is already registered as "
+                f"{existing_category!r}"
+            )
+        self._load_case_categories[resolved_case_id] = case
+        self._load_case_labels.setdefault(
+            resolved_case_id,
+            _required_text("load case label", case_label)
+            if case_label is not None
+            else f"{case.title()} load",
+        )
         self._member_distributed_loads.append(
             {
                 "id": load_id,
                 "label": _required_text("distributed load label", label),
                 "member_id": analytical_member["id"],
-                "case_id": case_id,
+                "case_id": resolved_case_id,
                 "start_distance_m": start_distance,
                 "end_distance_m": end_distance,
                 "start_force_kN_m": start_force,
@@ -2493,6 +2506,8 @@ class StructuralModel:
             id=id,
             label=label,
             case=source_data["case"],
+            case_id=source_data["case_id"],
+            case_label=self._load_case_labels[source_data["case_id"]],
             start_force_kN_m=line_force,
             start_distance_m=start_distance,
             end_distance_m=end_distance,
