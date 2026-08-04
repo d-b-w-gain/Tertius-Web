@@ -1289,6 +1289,24 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         segment.userData.tertiusStructuralRestraint = restraint;
         memberGroup.add(segment);
 
+        // Keep the rendered trace dimensionally quiet while providing a practical
+        // pointer target at whole-building zoom. Opacity does not affect raycasting.
+        const hitTarget = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.07, 0.07, length, 8),
+          new THREE.MeshBasicMaterial({
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        hitTarget.position.copy(segment.position);
+        hitTarget.quaternion.copy(segment.quaternion);
+        hitTarget.name = `${STRUCTURAL_OVERLAY_NAME}RestraintHit-${restraint.id}`;
+        hitTarget.userData.tertiusStructuralOverlay = true;
+        hitTarget.userData.tertiusStructuralRestraint = restraint;
+        memberGroup.add(hitTarget);
+
         for (const [suffix, point] of [['Start', start], ['End', end]] as const) {
           const marker = new THREE.Mesh(
             new THREE.OctahedronGeometry(0.025, 0),
@@ -1303,6 +1321,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           marker.name = `${STRUCTURAL_OVERLAY_NAME}Restraint${suffix}-${restraint.id}`;
           marker.renderOrder = 37;
           marker.userData.tertiusStructuralOverlay = true;
+          marker.userData.tertiusStructuralRestraint = restraint;
           memberGroup.add(marker);
         }
       }
