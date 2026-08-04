@@ -535,6 +535,16 @@ const restraintAnalysis: StructuralSnapshot = {
       force_utilisation: null,
       moment_utilisation: null,
       stiffness_status: 'unverified',
+      evidence_pack_id: 'lysaght-zc-test-pack',
+      evidence_pack_version: '1.0',
+      identity_status: 'pass',
+      identity_mismatches: [],
+      evidence_references: ['Test evidence reference'],
+      anchorage_status: 'unverified',
+      anchorage_component_ids: ['purlin', 'roof-diaphragm'],
+      anchorage_connection_ids: ['purlin-diaphragm'],
+      anchorage_grounded_component_id: null,
+      anchorage_basis: 'The test diaphragm has no grounded collector.',
       mechanism: 'Factored tributary load acting through the purlin axis.',
       provenance: 'Builder-derived purlin and registered connection.',
       basis: 'Working AISI D3.2.2 adaptation; AS/NZS verification remains open.',
@@ -722,6 +732,9 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('0.5486 kN')).toBeInTheDocument()
     expect(screen.getByText('not verified')).toBeInTheDocument()
     expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
+    expect(screen.getByText('Identity pass')).toBeInTheDocument()
+    expect(screen.getByText('Anchorage unverified')).toBeInTheDocument()
+    expect(screen.getByText('The test diaphragm has no grounded collector.')).toBeInTheDocument()
     expect(screen.getByText(
       'Builder-derived purlin and registered connection.',
     )).toBeInTheDocument()

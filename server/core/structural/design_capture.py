@@ -156,9 +156,7 @@ class _GeneratedModel:
                 "member_distributed_loads": self.member_distributed_loads,
                 "stability": self.stability,
                 "cross_section_verification": self.cross_section_verification,
-                "member_stability_verification": (
-                    self.member_stability_verification
-                ),
+                "member_stability_verification": (self.member_stability_verification),
             },
         }
 
@@ -1087,9 +1085,7 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             "only be called once"
                         )
                     model.cross_section_verification = {
-                        "pack_id": str(
-                            _keyword_value(keywords, "pack_id", names)
-                        ),
+                        "pack_id": str(_keyword_value(keywords, "pack_id", names)),
                         "combination_ids": list(
                             _keyword_value(keywords, "combination_ids", names)
                         ),
@@ -1127,15 +1123,11 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                             "only be called once"
                         )
                     model.member_stability_verification = {
-                        "pack_id": str(
-                            _keyword_value(keywords, "pack_id", names)
-                        ),
+                        "pack_id": str(_keyword_value(keywords, "pack_id", names)),
                         "combination_ids": list(
                             _keyword_value(keywords, "combination_ids", names)
                         ),
-                        "segments": list(
-                            _keyword_value(keywords, "segments", names)
-                        ),
+                        "segments": list(_keyword_value(keywords, "segments", names)),
                         "off_axis_tolerance": float(
                             _keyword_value(
                                 keywords,

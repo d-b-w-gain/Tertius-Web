@@ -16,8 +16,7 @@ REGION_DATA_VERSION = "GA-1170.2-wind-regions-simplified-t0.0500"
 AIR_DENSITY_KG_M3 = 1.2
 
 REGION_SOURCE = (
-    "Geoscience Australia AS/NZS 1170.2 Wind Regions "
-    "(DOI 10.26186/146359, CC-BY 4.0)"
+    "Geoscience Australia AS/NZS 1170.2 Wind Regions (DOI 10.26186/146359, CC-BY 4.0)"
 )
 REGION_VERIFY_AGAINST = "AS/NZS 1170.2:2021 Fig. 3.1(A)"
 
@@ -134,9 +133,7 @@ def lookup_regional_wind_speed(region: str, ari: int) -> float:
         if candidate_region == code
     )
     if not candidates:
-        raise SiteWindError(
-            f"wind region {region!r} is not one of {sorted(M_C_TABLE)}"
-        )
+        raise SiteWindError(f"wind region {region!r} is not one of {sorted(M_C_TABLE)}")
     larger = [candidate for candidate in candidates if candidate >= ari]
     selected = larger[0] if larger else candidates[-1]
     return V_R_TABLE_AU[(code, selected)]
@@ -148,9 +145,7 @@ def lookup_terrain_height_multiplier(
 ) -> float:
     category = str(terrain_category).strip()
     if category not in {"1", "2", "2.5", "3", "4"}:
-        raise SiteWindError(
-            "terrain category must be one of 1, 2, 2.5, 3, or 4"
-        )
+        raise SiteWindError("terrain category must be one of 1, 2, 2.5, 3, or 4")
     height = float(reference_height_m)
     if height <= 0:
         raise SiteWindError("reference height must be positive")
@@ -161,13 +156,8 @@ def lookup_terrain_height_multiplier(
     for lower, upper in zip(_MZ_HEIGHTS, _MZ_HEIGHTS[1:], strict=True):
         if lower <= height <= upper:
             ratio = (height - lower) / (upper - lower)
-            return (
-                M_Z_CAT_TABLE[lower][category]
-                + ratio
-                * (
-                    M_Z_CAT_TABLE[upper][category]
-                    - M_Z_CAT_TABLE[lower][category]
-                )
+            return M_Z_CAT_TABLE[lower][category] + ratio * (
+                M_Z_CAT_TABLE[upper][category] - M_Z_CAT_TABLE[lower][category]
             )
     raise SiteWindError(
         f"terrain multiplier lookup failed for category {category}, z={height}"
@@ -195,9 +185,7 @@ def compute_site_wind(
         if importance not in IL_TO_ARI_ULS:
             raise SiteWindError("importance level must be one of 1, 2, 3, or 4")
         ari = IL_TO_ARI_ULS[importance]
-        ari_source = (
-            f"IL{importance} default per AS/NZS 1170.0 starter mapping"
-        )
+        ari_source = f"IL{importance} default per AS/NZS 1170.0 starter mapping"
 
     regional_speed = lookup_regional_wind_speed(code, ari)
     climate = (
@@ -216,12 +204,7 @@ def compute_site_wind(
         raise SiteWindError("all wind multipliers must be positive")
 
     site_speed = (
-        regional_speed
-        * climate
-        * direction
-        * terrain
-        * shielding
-        * topographic
+        regional_speed * climate * direction * terrain * shielding * topographic
     )
     q_z = 0.5 * AIR_DENSITY_KG_M3 * site_speed**2 / 1000.0
     digest_input = {
@@ -264,10 +247,7 @@ def compute_site_wind(
         "site_wind_speed_m_s": round(site_speed, 6),
         "q_z_kPa": round(q_z, 6),
         "verifier_hash": verifier_hash,
-        "formula": (
-            "q_z = 0.5 rho V_sit^2; "
-            "V_sit = V_R M_c M_d M_z,cat M_s M_t"
-        ),
+        "formula": ("q_z = 0.5 rho V_sit^2; V_sit = V_R M_c M_d M_z,cat M_s M_t"),
         "verify_against": (
             "Engineer must verify V_R, M_z,cat, region, multipliers, and "
             "return-period selection against the project editions of "
@@ -284,16 +264,12 @@ def verify_site_wind_snapshot(snapshot: dict[str, Any]) -> list[str]:
             region=str(snapshot["region"]),
             terrain_category=str(snapshot["terrain_category"]),
             importance_level=str(snapshot["importance_level"]),
-            annual_probability_uls=str(
-                snapshot["annual_recurrence_interval_years"]
-            ),
+            annual_probability_uls=str(snapshot["annual_recurrence_interval_years"]),
             reference_height_m=float(snapshot["reference_height_m"]),
             direction_multiplier=float(snapshot["direction_multiplier"]),
             shielding_multiplier=float(snapshot["shielding_multiplier"]),
             topographic_multiplier=float(snapshot["topographic_multiplier"]),
-            climate_change_multiplier=float(
-                snapshot["climate_change_multiplier"]
-            ),
+            climate_change_multiplier=float(snapshot["climate_change_multiplier"]),
         )
     except (KeyError, TypeError, ValueError, SiteWindError) as exc:
         return [f"wind action basis cannot be recomputed: {exc}"]
@@ -308,7 +284,7 @@ def verify_site_wind_snapshot(snapshot: dict[str, Any]) -> list[str]:
     for field, tolerance in comparisons.items():
         try:
             actual = float(snapshot[field])
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             messages.append(f"wind action basis is missing numeric {field}")
             continue
         if abs(actual - float(expected[field])) > tolerance:
@@ -331,9 +307,7 @@ def verify_site_wind_snapshot(snapshot: dict[str, Any]) -> list[str]:
 @lru_cache(maxsize=1)
 def wind_region_geojson() -> dict[str, Any]:
     if not _REGION_GEOJSON_PATH.exists():
-        raise SiteWindError(
-            f"wind region overlay is missing at {_REGION_GEOJSON_PATH}"
-        )
+        raise SiteWindError(f"wind region overlay is missing at {_REGION_GEOJSON_PATH}")
     value = json.loads(_REGION_GEOJSON_PATH.read_text(encoding="utf-8"))
     if (
         not isinstance(value, dict)
@@ -370,21 +344,19 @@ def _point_in_polygon(
 ) -> bool:
     if not polygon or not _point_in_ring(longitude, latitude, polygon[0]):
         return False
-    return not any(
-        _point_in_ring(longitude, latitude, hole)
-        for hole in polygon[1:]
-    )
+    return not any(_point_in_ring(longitude, latitude, hole) for hole in polygon[1:])
 
 
-def _feature_contains(feature: dict[str, Any], latitude: float, longitude: float) -> bool:
+def _feature_contains(
+    feature: dict[str, Any], latitude: float, longitude: float
+) -> bool:
     geometry = feature.get("geometry") or {}
     coordinates = geometry.get("coordinates") or []
     if geometry.get("type") == "Polygon":
         return _point_in_polygon(longitude, latitude, coordinates)
     if geometry.get("type") == "MultiPolygon":
         return any(
-            _point_in_polygon(longitude, latitude, polygon)
-            for polygon in coordinates
+            _point_in_polygon(longitude, latitude, polygon) for polygon in coordinates
         )
     return False
 

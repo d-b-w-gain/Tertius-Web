@@ -42,6 +42,7 @@ from .contracts import (
     VerificationStage,
 )
 from .site_wind import verify_site_wind_snapshot
+from .restraint_evidence import resolve_restraint_evidence
 
 DEFAULT_COMBINATION_ID = "SLS-1.0"
 STATION_INTERVALS = 32
@@ -471,6 +472,53 @@ def _member_restraint_candidate_checks(
         candidates.sort(key=lambda candidate: candidate.distance_m)
     checks: list[MemberRestraintCandidateCheck] = []
     for candidate in definition.restraint_candidates:
+        evidence_resolution = (
+            resolve_restraint_evidence(
+                candidate.evidence_pack_id,
+                candidate.configuration,
+            )
+            if candidate.evidence_pack_id is not None
+            else None
+        )
+        identity_status: Literal["not_declared", "pass", "fail"] = (
+            evidence_resolution.identity_status
+            if evidence_resolution is not None
+            else "not_declared"
+        )
+        identity_mismatches = (
+            list(evidence_resolution.identity_mismatches)
+            if evidence_resolution is not None
+            else []
+        )
+        design_force_capacity_kN = (
+            evidence_resolution.design_force_capacity_kN
+            if evidence_resolution is not None
+            and evidence_resolution.identity_status == "pass"
+            else candidate.design_force_capacity_kN
+            if evidence_resolution is None
+            else None
+        )
+        design_moment_capacity_kNm = (
+            evidence_resolution.design_moment_capacity_kNm
+            if evidence_resolution is not None
+            and evidence_resolution.identity_status == "pass"
+            else candidate.design_moment_capacity_kNm
+            if evidence_resolution is None
+            else None
+        )
+        stiffness_status = (
+            evidence_resolution.stiffness_status
+            if evidence_resolution is not None
+            and evidence_resolution.identity_status == "pass"
+            else candidate.stiffness_status
+            if evidence_resolution is None
+            else "unverified"
+        )
+        capacity_basis = (
+            evidence_resolution.capacity_basis
+            if evidence_resolution is not None
+            else candidate.capacity_basis
+        )
         declaration = members_by_id[candidate.member_id]
         section = sections_by_id[declaration.section_id]
         member_length = _length(declaration.start, declaration.end)
@@ -574,27 +622,30 @@ def _member_restraint_candidate_checks(
             required_moment_kNm = required_force_kN * depth_value
 
         force_utilisation = (
-            required_force_kN / candidate.design_force_capacity_kN
-            if required_force_kN is not None
-            and candidate.design_force_capacity_kN is not None
+            required_force_kN / design_force_capacity_kN
+            if required_force_kN is not None and design_force_capacity_kN is not None
             else None
         )
         moment_utilisation = (
-            required_moment_kNm / candidate.design_moment_capacity_kNm
+            required_moment_kNm / design_moment_capacity_kNm
             if required_moment_kNm is not None
-            and candidate.design_moment_capacity_kNm is not None
+            and design_moment_capacity_kNm is not None
             else None
         )
         status: Literal["unsupported", "candidate", "pass", "fail"]
-        if candidate.evidence_status == "unsupported":
+        if candidate.evidence_status == "unsupported" or identity_status == "fail":
             status = "unsupported"
         elif (
             candidate.evidence_status != "verified"
             or required_force_kN is None
             or required_moment_kNm is None
-            or candidate.design_force_capacity_kN is None
-            or candidate.design_moment_capacity_kNm is None
-            or candidate.stiffness_status != "verified"
+            or design_force_capacity_kN is None
+            or design_moment_capacity_kNm is None
+            or stiffness_status != "verified"
+            or (
+                candidate.evidence_pack_id is not None
+                and candidate.anchorage_status != "verified"
+            )
         ):
             status = "candidate"
         elif max(force_utilisation or 0.0, moment_utilisation or 0.0) > 1.0:
@@ -625,11 +676,31 @@ def _member_restraint_candidate_checks(
                 member_depth_m=depth_value,
                 required_force_kN=required_force_kN,
                 required_moment_kNm=required_moment_kNm,
-                available_force_kN=candidate.design_force_capacity_kN,
-                available_moment_kNm=candidate.design_moment_capacity_kNm,
+                available_force_kN=design_force_capacity_kN,
+                available_moment_kNm=design_moment_capacity_kNm,
                 force_utilisation=force_utilisation,
                 moment_utilisation=moment_utilisation,
-                stiffness_status=candidate.stiffness_status,
+                stiffness_status=stiffness_status,
+                evidence_pack_id=candidate.evidence_pack_id,
+                evidence_pack_version=(
+                    evidence_resolution.pack_version
+                    if evidence_resolution is not None
+                    else None
+                ),
+                identity_status=identity_status,
+                identity_mismatches=identity_mismatches,
+                evidence_references=(
+                    list(evidence_resolution.references)
+                    if evidence_resolution is not None
+                    else []
+                ),
+                anchorage_status=candidate.anchorage_status,
+                anchorage_component_ids=candidate.anchorage_component_ids,
+                anchorage_connection_ids=candidate.anchorage_connection_ids,
+                anchorage_grounded_component_id=(
+                    candidate.anchorage_grounded_component_id
+                ),
+                anchorage_basis=candidate.anchorage_basis,
                 mechanism=(
                     "Flange-brace force couple generated by the factored point-load "
                     "and distributed-load resultant within the candidate's midpoint "
@@ -644,10 +715,10 @@ def _member_restraint_candidate_checks(
                     "Design Guide, Second Edition, Example 2 Step 2(a), adapting "
                     "Supplement D3.2.2 to expose a working eccentric-load brace "
                     "demand. This does not replace an AS/NZS 4600 verification. "
-                    f"{candidate.capacity_basis}"
+                    f"{capacity_basis}"
                     if candidate.demand_model
                     == "aisi_2004_d3_2_2_eccentric_load_couple"
-                    else candidate.capacity_basis
+                    else capacity_basis
                 ),
             )
         )
@@ -715,6 +786,8 @@ def _segment_restraint_state(
                 boundary_statuses.append("candidate")
             elif any(check.status == "fail" for check in checks):
                 boundary_statuses.append("inadequate")
+            elif checks and all(check.status == "unsupported" for check in checks):
+                boundary_statuses.append("missing")
             elif any(
                 candidate.evidence_status == "candidate" for candidate in effective
             ):
@@ -1965,6 +2038,20 @@ def _p399_evidence(
     else:
         member_stability_status = "not_checked"
 
+    bracing_status: Literal["pass", "fail", "warning", "not_checked", "unsupported"]
+    if not member_restraint_candidate_checks:
+        bracing_status = "not_checked"
+    elif any(check.status == "fail" for check in member_restraint_candidate_checks):
+        bracing_status = "fail"
+    elif all(check.status == "pass" for check in member_restraint_candidate_checks):
+        bracing_status = "pass"
+    elif any(
+        check.status == "unsupported" for check in member_restraint_candidate_checks
+    ):
+        bracing_status = "unsupported"
+    else:
+        bracing_status = "warning"
+
     member_stability_equations = [
         equation
         for check in member_stability_checks
@@ -2639,7 +2726,7 @@ def _p399_evidence(
             id="sheet-p399-bracing",
             stage_id="bracing",
             title="Bracing and restraint",
-            status="blocked",
+            status=bracing_status,
             p399_reference="SCI P399 Section 9",
             purpose="Trace restraint forces and stiffness to a complete resisting system.",
             assumptions=[
@@ -2662,14 +2749,27 @@ def _p399_evidence(
                     label=f"{check.candidate_id} demand/capacity state",
                     value=check.status,
                     source=(
-                        f"{check.combination_id}; {check.provenance}; "
+                        f"{check.combination_id}; identity={check.identity_status}; "
+                        f"stiffness={check.stiffness_status}; "
+                        f"anchorage={check.anchorage_status}; {check.provenance}; "
                         f"required={check.required_force_kN if check.required_force_kN is not None else 'not defined'} kN; "
                         f"available={check.available_force_kN if check.available_force_kN is not None else 'not verified'} kN"
                     ),
                 )
                 for check in member_restraint_candidate_checks
             ],
-            references=basis_references,
+            references=list(
+                dict.fromkeys(
+                    [
+                        *basis_references,
+                        *(
+                            reference
+                            for check in member_restraint_candidate_checks
+                            for reference in check.evidence_references
+                        ),
+                    ]
+                )
+            ),
             related_member_ids=member_ids,
             related_combination_ids=[combination.id],
         ),
@@ -2857,10 +2957,12 @@ def _p399_evidence(
             order=8,
             label="Bracing/restraint",
             p399_reference="§9",
-            status="blocked",
+            status=bracing_status,
             summary=(
                 f"{len(member_restraint_candidate_checks)} active restraint candidate "
-                "check(s); complete resistance, stiffness, and load-path evidence remains blocked."
+                f"check(s): {sum(check.identity_status == 'pass' for check in member_restraint_candidate_checks)} identity pass, "
+                f"{sum(check.stiffness_status == 'verified' for check in member_restraint_candidate_checks)} stiffness verified, "
+                f"{sum(check.anchorage_status == 'verified' for check in member_restraint_candidate_checks)} anchored."
                 if member_restraint_candidate_checks
                 else "No verified restraint or bracing load path is active."
             ),

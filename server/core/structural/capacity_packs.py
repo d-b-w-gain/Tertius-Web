@@ -102,26 +102,18 @@ def as_nzs_4600_2018_ewm_capacity(
     nominal_compression_kN = effective_area_mm2 * fy_mpa / 1000.0
 
     web_slenderness = clear_web_depth_mm / thickness_mm
-    web_yield_boundary = sqrt(
-        elastic_modulus_mpa * shear_buckling_coefficient / fy_mpa
-    )
+    web_yield_boundary = sqrt(elastic_modulus_mpa * shear_buckling_coefficient / fy_mpa)
     web_elastic_boundary = 1.415 * web_yield_boundary
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"]
     if web_slenderness <= web_yield_boundary:
         shear_regime = "stocky"
-        nominal_shear_n = (
-            0.64 * fy_mpa * clear_web_depth_mm * thickness_mm
-        )
+        nominal_shear_n = 0.64 * fy_mpa * clear_web_depth_mm * thickness_mm
     elif web_slenderness <= web_elastic_boundary:
         shear_regime = "inelastic_buckling"
         nominal_shear_n = (
             0.64
             * thickness_mm**2
-            * sqrt(
-                elastic_modulus_mpa
-                * shear_buckling_coefficient
-                * fy_mpa
-            )
+            * sqrt(elastic_modulus_mpa * shear_buckling_coefficient * fy_mpa)
         )
     else:
         shear_regime = "elastic_buckling"
@@ -136,12 +128,8 @@ def as_nzs_4600_2018_ewm_capacity(
     return CrossSectionCapacity(
         pack_id="as_nzs_4600_2018_ewm",
         section_record_sha256=catalog.record_sha256,
-        design_compression_capacity_kN=(
-            phi_c * nominal_compression_kN
-        ),
-        design_major_bending_capacity_kNm=(
-            phi_b * nominal_bending_kNm
-        ),
+        design_compression_capacity_kN=(phi_c * nominal_compression_kN),
+        design_major_bending_capacity_kNm=(phi_b * nominal_bending_kNm),
         design_web_shear_capacity_kN=phi_v * nominal_shear_n / 1000.0,
         phi_c=phi_c,
         phi_b=phi_b,
@@ -192,10 +180,13 @@ def as_nzs_4600_2018_ewm_member_capacity(
         )
     if unbraced_length_m <= 0:
         raise CapacityPackError("member unbraced length must be positive")
-    if min(
-        minor_axis_effective_length_factor,
-        torsional_effective_length_factor,
-    ) <= 0:
+    if (
+        min(
+            minor_axis_effective_length_factor,
+            torsional_effective_length_factor,
+        )
+        <= 0
+    ):
         raise CapacityPackError("member effective-length factors must be positive")
 
     fy_mpa = _positive(properties, "fy", "fy_MPa")
@@ -211,12 +202,8 @@ def as_nzs_4600_2018_ewm_member_capacity(
     warping_constant_mm6 = _positive(properties, "Iw", "Iw_mm6")
 
     length_mm = unbraced_length_m * 1000.0
-    minor_effective_length_mm = (
-        minor_axis_effective_length_factor * length_mm
-    )
-    torsional_effective_length_mm = (
-        torsional_effective_length_factor * length_mm
-    )
+    minor_effective_length_mm = minor_axis_effective_length_factor * length_mm
+    torsional_effective_length_mm = torsional_effective_length_factor * length_mm
     major_flexural_stress_mpa = (
         (3.141592653589793**2)
         * elastic_modulus_mpa
@@ -234,9 +221,7 @@ def as_nzs_4600_2018_ewm_member_capacity(
         * warping_constant_mm6
         / torsional_effective_length_mm**2
     ) / (gross_area_mm2 * polar_radius_squared_mm2)
-    coupling_factor = 1.0 - (
-        shear_centre_offset_mm**2 / polar_radius_squared_mm2
-    )
+    coupling_factor = 1.0 - (shear_centre_offset_mm**2 / polar_radius_squared_mm2)
     if not 0 < coupling_factor <= 1:
         raise CapacityPackError(
             "catalogue x0 and ro2 do not define a valid channel coupling factor"
@@ -250,9 +235,7 @@ def as_nzs_4600_2018_ewm_member_capacity(
         / stress_sum**2
     )
     flexural_torsional_stress_mpa = (
-        stress_sum
-        / (2.0 * coupling_factor)
-        * (1.0 - sqrt(max(0.0, discriminant)))
+        stress_sum / (2.0 * coupling_factor) * (1.0 - sqrt(max(0.0, discriminant)))
     )
     elastic_global_stress_mpa = min(
         major_flexural_stress_mpa,
@@ -276,13 +259,9 @@ def as_nzs_4600_2018_ewm_member_capacity(
             minor_flexural_stress_mpa,
         ),
         elastic_torsional_buckling_stress_MPa=torsional_stress_mpa,
-        elastic_flexural_torsional_buckling_stress_MPa=(
-            flexural_torsional_stress_mpa
-        ),
+        elastic_flexural_torsional_buckling_stress_MPa=(flexural_torsional_stress_mpa),
         nominal_global_buckling_stress_MPa=nominal_global_stress_mpa,
-        design_member_compression_capacity_kN=(
-            design_member_compression_capacity_kN
-        ),
+        design_member_compression_capacity_kN=(design_member_compression_capacity_kN),
         design_major_bending_capacity_kNm=(
             section_capacity.design_major_bending_capacity_kNm
         ),
@@ -310,9 +289,7 @@ def member_compression_capacity(
         return as_nzs_4600_2018_ewm_member_capacity(
             section,
             unbraced_length_m=unbraced_length_m,
-            minor_axis_effective_length_factor=(
-                minor_axis_effective_length_factor
-            ),
+            minor_axis_effective_length_factor=(minor_axis_effective_length_factor),
             torsional_effective_length_factor=torsional_effective_length_factor,
         )
     raise CapacityPackError(f"unsupported member capacity pack {pack_id!r}")

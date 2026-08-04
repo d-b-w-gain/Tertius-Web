@@ -921,3 +921,34 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
     )
     assert inadequate_middle.status == "inadequate"
     assert inadequate_middle.restraint_force_utilisation == pytest.approx(1.5)
+
+    evidence_manifest = deepcopy(manifest)
+    for candidate in evidence_manifest["analysis"]["member_stability_verification"][
+        "restraint_candidates"
+    ]:
+        candidate["evidence_pack_id"] = "lysaght-zc-2026-07-c10012-100ac-pb1230hs"
+        candidate["configuration"] = {
+            "primary_part_number": "C10019",
+            "bracing_part_number": "C10012",
+            "connector_part_numbers": ["100AC-M12X25-END-JOINTS"],
+        }
+        candidate["anchorage_basis"] = "No grounded test anchorage exists."
+    evidence_capture = capture_project_structural_declaration(
+        evidence_manifest,
+        project_name="identity_failed_restraint",
+        design_hash="d" * 64,
+    )
+    evidence_result = solve_project_structural(
+        evidence_capture,
+        combination_id=inward.solver.combination_id,
+    )
+    identity_failed = next(
+        check
+        for check in evidence_result.member_restraint_candidate_checks
+        if check.required_force_kN is not None
+    )
+    assert identity_failed.status == "unsupported"
+    assert identity_failed.identity_status == "fail"
+    assert identity_failed.available_force_kN is None
+    assert identity_failed.anchorage_status == "unverified"
+    assert any("M12X25" in mismatch for mismatch in identity_failed.identity_mismatches)

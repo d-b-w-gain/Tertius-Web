@@ -192,7 +192,7 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
         StructuralConnectorGeometry(
             shape=bd.Box(50, 50, 50),
             label="100AC and bolts",
-            part_number="100AC-M12",
+            part_number="100AC-PB1230HS-M12X30-G8.8-END-JOINTS",
         ),
         component_id="brace-connector",
     )
@@ -204,6 +204,14 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
         label="Purlin to rafter",
         transfers=["force", "shear"],
     )
+    ground = model.ground(bd.Box(100, 100, 100), id="ground", label="Ground")
+    brace_ground = model.connect(
+        brace,
+        ground,
+        id="brace-ground",
+        label="Brace to grounded collector",
+        transfers=["force"],
+    )
     model.member_restraint_from_connection(
         primary,
         brace,
@@ -211,9 +219,12 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
         restrains_lateral_translation=True,
         restrains_twist=True,
         evidence_status="candidate",
+        evidence_pack_id="lysaght-zc-2026-07-c10012-100ac-pb1230hs",
+        anchorage_connections=(brace_ground,),
+        anchorage_status="verified",
+        anchorage_basis="The unit-test brace terminates at a grounded collector.",
         evidence_basis="Geometry exists; product restraint capacity is pending.",
     )
-    ground = model.ground(bd.Box(100, 100, 100), id="ground", label="Ground")
     model.connect(
         primary,
         ground,
@@ -242,6 +253,15 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
     assert candidate["connection_id"] == "brace-primary"
     assert candidate["distance_m"] == pytest.approx(0.5)
     assert candidate["axis_separation_m"] == pytest.approx(0.1)
+    assert candidate["configuration"] == {
+        "primary_part_number": "C10019",
+        "bracing_part_number": "C10012",
+        "connector_part_numbers": ["100AC-PB1230HS-M12X30-G8.8-END-JOINTS"],
+    }
+    assert candidate["anchorage_status"] == "verified"
+    assert candidate["anchorage_component_ids"] == ["brace", "ground"]
+    assert candidate["anchorage_connection_ids"] == ["brace-ground"]
+    assert candidate["anchorage_grounded_component_id"] == "ground"
     assert [
         (item["start_distance_m"], item["end_distance_m"])
         for item in verification["segments"]

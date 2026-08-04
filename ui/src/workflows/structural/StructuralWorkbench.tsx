@@ -241,6 +241,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   )
   const selectedRestraintChecks = (analysis?.member_restraint_candidate_checks ?? [])
     .filter((check) => selectedRestraintTrace?.governing_candidate_check_ids.includes(check.id))
+  const selectedRestraintVisualNodeIds = useMemo(() => {
+    if (!capture || !selectedRestraintTrace) {
+      return selectedVisualNodeId ? [selectedVisualNodeId] : undefined
+    }
+    const componentVisualNodes = new Map(
+      capture.components.map((component) => [component.id, component.visual_node_id]),
+    )
+    return Array.from(new Set([
+      selectedVisualNodeId,
+      ...selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
+        .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
+    ].filter(Boolean)))
+  }, [capture, selectedRestraintChecks, selectedRestraintTrace, selectedVisualNodeId])
   const selectRestraintTrace = useCallback((traceId: string) => {
     const currentAnalysis = analysis
     const trace = currentAnalysis?.member_restraint_traces?.find(
@@ -777,8 +790,70 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             : `${number(check.available_force_kN, 4)} kN`}
                           {' · '}stiffness {check.stiffness_status}
                         </div>
+                        <div className="mt-2 grid grid-cols-2 gap-1 font-mono text-[8px] uppercase">
+                          <span className={check.identity_status === 'pass'
+                            ? 'text-emerald-300'
+                            : check.identity_status === 'fail'
+                              ? 'text-red-300'
+                              : 'text-slate-500'}>
+                            Identity {check.identity_status.replace('_', ' ')}
+                          </span>
+                          <span className={check.anchorage_status === 'verified'
+                            ? 'text-emerald-300'
+                            : 'text-amber-300'}>
+                            Anchorage {check.anchorage_status}
+                          </span>
+                          <span className={check.available_force_kN !== null
+                            && check.available_moment_kNm !== null
+                            ? 'text-emerald-300'
+                            : 'text-amber-300'}>
+                            Resistance {check.available_force_kN !== null
+                              && check.available_moment_kNm !== null
+                              ? 'defined'
+                              : 'unverified'}
+                          </span>
+                          <span className={check.stiffness_status === 'verified'
+                            ? 'text-emerald-300'
+                            : 'text-amber-300'}>
+                            Stiffness {check.stiffness_status}
+                          </span>
+                        </div>
+                        {check.evidence_pack_id && (
+                          <p className="mt-2 break-all font-mono text-[8px] text-violet-300">
+                            {check.evidence_pack_id}
+                            {check.evidence_pack_version ? ` v${check.evidence_pack_version}` : ''}
+                          </p>
+                        )}
+                        {check.identity_mismatches.length > 0 && (
+                          <ul className="mt-1 space-y-1 text-red-200">
+                            {check.identity_mismatches.map((mismatch) => (
+                              <li key={mismatch}>Identity mismatch: {mismatch}</li>
+                            ))}
+                          </ul>
+                        )}
+                        <p className="mt-1 text-amber-100">{check.anchorage_basis}</p>
+                        {check.anchorage_component_ids.length > 0 && (
+                          <p className="mt-1 break-all font-mono text-[8px] text-slate-500">
+                            Path {check.anchorage_component_ids.join(' → ')}
+                            {check.anchorage_grounded_component_id
+                              ? ` → grounded ${check.anchorage_grounded_component_id}`
+                              : ' → no grounded endpoint'}
+                          </p>
+                        )}
                         <p className="mt-1 text-slate-400">{check.mechanism}</p>
                         <p className="mt-1 text-slate-500">{check.provenance}</p>
+                        {check.evidence_references.length > 0 && (
+                          <details className="mt-2 text-slate-500">
+                            <summary className="cursor-pointer text-[8px] uppercase tracking-wide">
+                              Evidence references
+                            </summary>
+                            <ul className="mt-1 space-y-1">
+                              {check.evidence_references.map((reference) => (
+                                <li key={reference}>{reference}</li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1523,7 +1598,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 ? `Active-project model with PyNite ${diagramMode} overlay`
                 : 'Active-project model linked to parsed structural declarations'
             }
-            externalSelectedNodeIds={selectedVisualNodeId ? [selectedVisualNodeId] : undefined}
+            externalSelectedNodeIds={selectedRestraintVisualNodeIds}
             structuralOverlays={structuralOverlays}
             onStructuralRestraintSelect={selectRestraintTrace}
           />

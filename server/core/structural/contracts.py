@@ -270,6 +270,14 @@ class MemberStabilitySegmentDefinition(StructuralContract):
     end_restraint_candidate_ids: list[str] = Field(default_factory=list)
 
 
+class RestraintConfigurationIdentity(StructuralContract):
+    """Exact rendered component identities used to select restraint evidence."""
+
+    primary_part_number: str | None = None
+    bracing_part_number: str | None = None
+    connector_part_numbers: list[str] = Field(default_factory=list)
+
+
 class MemberRestraintCandidateDefinition(StructuralContract):
     id: str
     member_id: str
@@ -300,6 +308,15 @@ class MemberRestraintCandidateDefinition(StructuralContract):
     evidence_basis: str
     capacity_basis: str
     provenance: str
+    evidence_pack_id: str | None = None
+    configuration: RestraintConfigurationIdentity = Field(
+        default_factory=RestraintConfigurationIdentity
+    )
+    anchorage_status: Literal["unverified", "verified"] = "unverified"
+    anchorage_component_ids: list[str] = Field(default_factory=list)
+    anchorage_connection_ids: list[str] = Field(default_factory=list)
+    anchorage_grounded_component_id: str | None = None
+    anchorage_basis: str = "No longitudinal anchorage evidence is declared."
 
 
 class MemberStabilityVerificationDefinition(StructuralContract):
@@ -484,6 +501,16 @@ class MemberRestraintCandidateCheck(StructuralContract):
     force_utilisation: float | None = None
     moment_utilisation: float | None = None
     stiffness_status: Literal["unverified", "verified"]
+    evidence_pack_id: str | None = None
+    evidence_pack_version: str | None = None
+    identity_status: Literal["not_declared", "pass", "fail"] = "not_declared"
+    identity_mismatches: list[str] = Field(default_factory=list)
+    evidence_references: list[str] = Field(default_factory=list)
+    anchorage_status: Literal["unverified", "verified"] = "unverified"
+    anchorage_component_ids: list[str] = Field(default_factory=list)
+    anchorage_connection_ids: list[str] = Field(default_factory=list)
+    anchorage_grounded_component_id: str | None = None
+    anchorage_basis: str = "No longitudinal anchorage evidence is declared."
     mechanism: str
     provenance: str
     basis: str
@@ -979,6 +1006,40 @@ class ProjectStructuralCapture(StructuralContract):
                             "member-restraint connector component",
                             connector_id,
                             component_ids,
+                        )
+                    for anchorage_component_id in candidate.anchorage_component_ids:
+                        _require_reference(
+                            "member-restraint anchorage component",
+                            anchorage_component_id,
+                            component_ids,
+                        )
+                    for anchorage_connection_id in candidate.anchorage_connection_ids:
+                        _require_reference(
+                            "member-restraint anchorage connection",
+                            anchorage_connection_id,
+                            connection_ids,
+                        )
+                    if candidate.anchorage_grounded_component_id is not None:
+                        _require_reference(
+                            "member-restraint grounded anchorage component",
+                            candidate.anchorage_grounded_component_id,
+                            component_ids,
+                        )
+                        grounded_component = components_by_id[
+                            candidate.anchorage_grounded_component_id
+                        ]
+                        if not grounded_component.grounded:
+                            raise ValueError(
+                                f"member-restraint candidate {candidate.id!r} "
+                                "identifies an ungrounded anchorage endpoint"
+                            )
+                    if (
+                        candidate.anchorage_status == "verified"
+                        and candidate.anchorage_grounded_component_id is None
+                    ):
+                        raise ValueError(
+                            f"verified member-restraint candidate {candidate.id!r} "
+                            "requires a grounded anchorage endpoint"
                         )
                     if (
                         candidate.distance_m

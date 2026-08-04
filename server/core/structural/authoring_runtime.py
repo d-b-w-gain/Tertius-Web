@@ -1198,6 +1198,10 @@ class StructuralModel:
         design_moment_capacity_kNm: float | None = None,
         stiffness_status: Literal["unverified", "verified"] = "unverified",
         evidence_status: Literal["candidate", "verified", "unsupported"] = "candidate",
+        evidence_pack_id: str | None = None,
+        anchorage_connections: Sequence[StructuralConnection] = (),
+        anchorage_status: Literal["unverified", "verified"] = "unverified",
+        anchorage_basis: str = "No longitudinal anchorage evidence is declared.",
         evidence_basis: str,
         capacity_basis: str | None = None,
         provenance: str | None = None,
@@ -1281,6 +1285,10 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "member restraint stiffness_status must be unverified or verified"
             )
+        if anchorage_status not in {"unverified", "verified"}:
+            raise StructuralAuthoringError(
+                "member restraint anchorage_status must be unverified or verified"
+            )
         for label, value in (
             ("design force capacity", design_force_capacity_kN),
             ("design moment capacity", design_moment_capacity_kNm),
@@ -1297,6 +1305,46 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "verified member restraint requires verified stiffness and "
                 "positive force/moment capacities"
+            )
+
+        anchorage_component_ids = [brace.component_id]
+        anchorage_connection_ids: list[str] = []
+        anchorage_cursor = brace.component_id
+        for anchorage_connection in anchorage_connections:
+            registered_anchorage_connection = self._connection_handles.get(
+                anchorage_connection.id
+            )
+            if registered_anchorage_connection != anchorage_connection:
+                raise StructuralAuthoringError(
+                    "member restraint anchorage references an unregistered "
+                    f"connection {anchorage_connection.id!r}"
+                )
+            endpoints = {
+                anchorage_connection.from_component_id,
+                anchorage_connection.to_component_id,
+            }
+            if anchorage_cursor not in endpoints:
+                raise StructuralAuthoringError(
+                    f"member restraint anchorage connection "
+                    f"{anchorage_connection.id!r} does not continue from "
+                    f"{anchorage_cursor!r}"
+                )
+            anchorage_cursor = next(
+                component_id
+                for component_id in endpoints
+                if component_id != anchorage_cursor
+            )
+            anchorage_connection_ids.append(anchorage_connection.id)
+            anchorage_component_ids.append(anchorage_cursor)
+        anchorage_grounded_component_id = (
+            anchorage_cursor
+            if self._component_record(anchorage_cursor).get("grounded") is True
+            else None
+        )
+        if anchorage_status == "verified" and anchorage_grounded_component_id is None:
+            raise StructuralAuthoringError(
+                "verified member restraint anchorage must terminate at a grounded "
+                "component"
             )
         maximum_separation = float(maximum_axis_separation_m)
         if maximum_separation <= 0:
@@ -1373,6 +1421,37 @@ class StructuralModel:
                 "provenance": _required_text(
                     "member restraint provenance",
                     provenance or evidence_basis,
+                ),
+                "evidence_pack_id": (
+                    _required_text(
+                        "member restraint evidence pack ID", evidence_pack_id
+                    )
+                    if evidence_pack_id is not None
+                    else None
+                ),
+                "configuration": {
+                    "primary_part_number": self._component_part_number(
+                        primary.component_id
+                    ),
+                    "bracing_part_number": self._component_part_number(
+                        brace.component_id
+                    ),
+                    "connector_part_numbers": sorted(
+                        filter(
+                            None,
+                            (
+                                self._component_part_number(component_id)
+                                for component_id in connection.connector_component_ids
+                            ),
+                        )
+                    ),
+                },
+                "anchorage_status": anchorage_status,
+                "anchorage_component_ids": anchorage_component_ids,
+                "anchorage_connection_ids": anchorage_connection_ids,
+                "anchorage_grounded_component_id": (anchorage_grounded_component_id),
+                "anchorage_basis": _required_text(
+                    "member restraint anchorage basis", anchorage_basis
                 ),
             }
         )
@@ -1536,6 +1615,32 @@ class StructuralModel:
                 "provenance": _required_text(
                     "member boundary restraint provenance",
                     provenance or evidence_basis,
+                ),
+                "evidence_pack_id": None,
+                "configuration": {
+                    "primary_part_number": self._component_part_number(
+                        primary.component_id
+                    ),
+                    "bracing_part_number": self._component_part_number(
+                        other_component_id
+                    ),
+                    "connector_part_numbers": sorted(
+                        filter(
+                            None,
+                            (
+                                self._component_part_number(component_id)
+                                for component_id in connection.connector_component_ids
+                            ),
+                        )
+                    ),
+                },
+                "anchorage_status": "unverified",
+                "anchorage_component_ids": [other_component_id],
+                "anchorage_connection_ids": [],
+                "anchorage_grounded_component_id": None,
+                "anchorage_basis": (
+                    "No longitudinal anchorage path is declared for this member "
+                    "boundary connection."
                 ),
             }
         )
@@ -2621,6 +2726,21 @@ class StructuralModel:
                 f"component handle {part.component_id!r} is not registered with this model"
             )
         return registered
+
+    def _component_record(self, component_id: str) -> dict[str, Any]:
+        component = next(
+            (item for item in self._components if item["id"] == component_id),
+            None,
+        )
+        if component is None:
+            raise StructuralAuthoringError(
+                f"component {component_id!r} is not registered with this model"
+            )
+        return component
+
+    def _component_part_number(self, component_id: str) -> str | None:
+        part_number = self._component_record(component_id).get("part_number")
+        return str(part_number) if part_number is not None else None
 
     def _require_material(
         self, material: StructuralMaterialSpec

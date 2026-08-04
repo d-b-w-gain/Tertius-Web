@@ -437,6 +437,16 @@ export type StructuralSnapshot = {
     force_utilisation: number | null
     moment_utilisation: number | null
     stiffness_status: 'unverified' | 'verified'
+    evidence_pack_id: string | null
+    evidence_pack_version: string | null
+    identity_status: 'not_declared' | 'pass' | 'fail'
+    identity_mismatches: string[]
+    evidence_references: string[]
+    anchorage_status: 'unverified' | 'verified'
+    anchorage_component_ids: string[]
+    anchorage_connection_ids: string[]
+    anchorage_grounded_component_id: string | null
+    anchorage_basis: string
     mechanism: string
     provenance: string
     basis: string

@@ -197,7 +197,7 @@ def test_generated_capture_uses_object_handles_and_traces_load_to_ground():
 def test_generated_capture_recomputes_site_wind_snapshot_and_links_coefficient():
     source = GENERATED_DESIGN.replace(
         'structure = StructuralModel(title="Generated structural connection microcosm")',
-        '''structure = StructuralModel(title="Generated structural connection microcosm")
+        """structure = StructuralModel(title="Generated structural connection microcosm")
 site_wind = structure.wind_action_basis(
     id="porter-wind",
     site_address="14 Porter St, North Wollongong NSW 2500",
@@ -225,9 +225,9 @@ site_wind = structure.wind_action_basis(
     q_z_kPa=0.683438,
     verifier_hash="6fd0fef70f0f",
     provenance="FBD site-wind calculation test fixture.",
-)''',
+)""",
     ).replace(
-        '''structure.surface_load(
+        """structure.surface_load(
     sheet,
     id="wind",
     label="Illustrative wind pressure",
@@ -238,8 +238,8 @@ site_wind = structure.wind_action_basis(
     area_m2=sheet_area,
     direction=(0, -1, 0),
     provenance="Illustrative parser fixture",
-)''',
-        '''wind = structure.wind_surface_load(
+)""",
+        """wind = structure.wind_surface_load(
     sheet,
     basis=site_wind,
     id="wind",
@@ -251,7 +251,7 @@ site_wind = structure.wind_action_basis(
     area_m2=sheet_area,
     direction=(0, -1, 0),
     provenance="Test site pressure and explicit coefficient.",
-)''',
+)""",
     )
 
     capture = parse_project_structural_capture(
