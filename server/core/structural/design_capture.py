@@ -1276,6 +1276,8 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "rotation_deg",
                         "start_releases",
                         "end_releases",
+                        "tension_only",
+                        "compression_only",
                         "deflection_limit_ratio",
                         "deflection_limit_mm",
                         "deflection_limit_basis",
@@ -1360,6 +1362,22 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                     "end_releases",
                                     names,
                                     default=(),
+                                )
+                            ),
+                            "tension_only": bool(
+                                _keyword_value(
+                                    keywords,
+                                    "tension_only",
+                                    names,
+                                    default=False,
+                                )
+                            ),
+                            "compression_only": bool(
+                                _keyword_value(
+                                    keywords,
+                                    "compression_only",
+                                    names,
+                                    default=False,
                                 )
                             ),
                             "deflection_limit_ratio": _keyword_value(

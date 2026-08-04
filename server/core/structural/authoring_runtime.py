@@ -228,6 +228,8 @@ class StructuralModel:
         end_restraints: Sequence[bool] | dict[str, bool] = (),
         start_releases: Sequence[bool] | dict[str, bool] = (),
         end_releases: Sequence[bool] | dict[str, bool] = (),
+        tension_only: bool = False,
+        compression_only: bool = False,
         deflection_limit_ratio: float | None = None,
         deflection_limit_mm: float | None = None,
         deflection_limit_basis: str | None = None,
@@ -256,6 +258,8 @@ class StructuralModel:
             rotation_deg=geometry.rotation_deg,
             start_releases=start_releases,
             end_releases=end_releases,
+            tension_only=tension_only,
+            compression_only=compression_only,
             deflection_limit_ratio=deflection_limit_ratio,
             deflection_limit_mm=deflection_limit_mm,
             deflection_limit_basis=deflection_limit_basis,
@@ -582,6 +586,7 @@ class StructuralModel:
         *,
         pack_id: Literal["as_nzs_4600_2018_ewm"],
         combination_ids: Sequence[str],
+        members: Sequence[StructuralPart] = (),
         off_axis_tolerance: float = 1e-6,
     ) -> None:
         """Select a versioned section-capacity pack and its ULS envelope."""
@@ -607,9 +612,31 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "cross-section off_axis_tolerance must not be negative"
             )
+        selected_member_ids: list[str] = []
+        for part in members:
+            registered = self._require_registered(part)
+            analytical_member = next(
+                (
+                    item
+                    for item in self._analytical_members
+                    if item["component_id"] == registered.component_id
+                ),
+                None,
+            )
+            if analytical_member is None:
+                raise StructuralAuthoringError(
+                    f"cross-section component {registered.component_id!r} "
+                    "has no analytical axis"
+                )
+            if analytical_member["id"] in selected_member_ids:
+                raise StructuralAuthoringError(
+                    f"cross-section member {analytical_member['id']!r} is repeated"
+                )
+            selected_member_ids.append(analytical_member["id"])
         self._cross_section_verification = {
             "pack_id": pack_id,
             "combination_ids": normalized_combination_ids,
+            "member_ids": selected_member_ids,
             "off_axis_tolerance": tolerance,
         }
 
@@ -2003,6 +2030,8 @@ class StructuralModel:
         rotation_deg: float = 0.0,
         start_releases: Sequence[bool] | dict[str, bool] = (),
         end_releases: Sequence[bool] | dict[str, bool] = (),
+        tension_only: bool = False,
+        compression_only: bool = False,
         deflection_limit_ratio: float | None = None,
         deflection_limit_mm: float | None = None,
         deflection_limit_basis: str | None = None,
@@ -2032,6 +2061,11 @@ class StructuralModel:
         if start_vector == end_vector:
             raise StructuralAuthoringError(
                 f"analytical member {member_id!r} has zero length"
+            )
+        if tension_only and compression_only:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} cannot be both tension-only "
+                "and compression-only"
             )
         limit_ratio = (
             None if deflection_limit_ratio is None else float(deflection_limit_ratio)
@@ -2064,6 +2098,8 @@ class StructuralModel:
                 "rotation_deg": float(rotation_deg),
                 "start_releases": _restraints(start_releases),
                 "end_releases": _restraints(end_releases),
+                "tension_only": bool(tension_only),
+                "compression_only": bool(compression_only),
                 "deflection_limit_ratio": limit_ratio,
                 "deflection_limit_mm": limit_mm,
                 "deflection_limit_basis": (

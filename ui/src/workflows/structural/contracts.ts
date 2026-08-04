@@ -179,6 +179,8 @@ export type ProjectStructuralCapture = {
       rotation_deg: number
       start_releases: StructuralNode['restraints']
       end_releases: StructuralNode['restraints']
+      tension_only?: boolean
+      compression_only?: boolean
       deflection_limit_ratio: number | null
       deflection_limit_mm: number | null
       deflection_limit_basis: string | null
@@ -257,6 +259,8 @@ export type StructuralMember = {
   section_id: string
   material_id: string
   visual_node_id: string
+  tension_only?: boolean
+  compression_only?: boolean
 }
 
 export type StructuralSnapshot = {

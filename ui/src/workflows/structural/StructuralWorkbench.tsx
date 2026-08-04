@@ -278,7 +278,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const structuralOverlays = useMemo(() => {
     if (!analysis || !activeCombination) return undefined
     const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
-    return analysis.member_diagrams.map((diagram, diagramIndex) => {
+    return analysis.member_diagrams
+      .filter((diagram) => !analysis.members.find(
+        (candidate) => candidate.id === diagram.member_id,
+      )?.tension_only)
+      .map((diagram, diagramIndex) => {
       const member = analysis.members.find(
         (candidate) => candidate.id === diagram.member_id,
       )
@@ -1158,6 +1162,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         >
                           <span className="text-xs font-semibold text-slate-200">
                             {member.label}
+                            {member.tension_only && (
+                              <span className="ml-2 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[8px] text-violet-300">
+                                TENSION-ONLY
+                              </span>
+                            )}
                           </span>
                           <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
                             check?.status === 'pass'
@@ -1192,6 +1201,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </div>
                       <div className="mt-1 text-sm font-semibold text-slate-100">
                         {selectedMember.label}
+                        {selectedMember.tension_only && (
+                          <span className="ml-2 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[9px] text-violet-300">
+                            TENSION-ONLY
+                          </span>
+                        )}
                       </div>
                     </div>
                     <button
@@ -1219,6 +1233,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       <dt className="text-slate-500">Max shear</dt>
                       <dd className="font-mono">
                         {number(selectedMemberResult.max_shear_kN, 4)} kN
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-500">Max axial</dt>
+                      <dd className="font-mono">
+                        {number(selectedMemberResult.max_axial_kN, 4)} kN
                       </dd>
                     </div>
                     <div>

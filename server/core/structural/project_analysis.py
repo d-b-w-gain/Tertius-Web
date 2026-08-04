@@ -234,7 +234,10 @@ def _cross_section_checks(
 
     sections_by_id = {section.id: section for section in analysis.sections}
     checks: list[MemberCrossSectionCheck] = []
+    selected_member_ids = set(definition.member_ids)
     for declaration in analysis.members:
+        if selected_member_ids and declaration.id not in selected_member_ids:
+            continue
         section = sections_by_id[declaration.section_id]
         try:
             capacity = cross_section_capacity(definition.pack_id, section)
@@ -3125,6 +3128,8 @@ def solve_project_structural(
             declaration.material_id,
             declaration.section_id,
             rotation=declaration.rotation_deg,
+            tension_only=declaration.tension_only,
+            comp_only=declaration.compression_only,
         )
         start_releases = declaration.start_releases
         end_releases = declaration.end_releases
@@ -3507,6 +3512,8 @@ def solve_project_structural(
                 section_id=declaration.section_id,
                 material_id=declaration.material_id,
                 visual_node_id=component.visual_node_id,
+                tension_only=declaration.tension_only,
+                compression_only=declaration.compression_only,
             )
         )
         member_length = _length(declaration.start, declaration.end)

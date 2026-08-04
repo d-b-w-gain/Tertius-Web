@@ -91,6 +91,8 @@ class StructuralMember(StructuralContract):
     section_id: str
     material_id: str
     visual_node_id: str
+    tension_only: bool = False
+    compression_only: bool = False
 
 
 class StructuralMaterial(StructuralContract):
@@ -115,6 +117,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
     rotation_deg: float = 0.0
     start_releases: Restraints = Field(default_factory=Restraints)
     end_releases: Restraints = Field(default_factory=Restraints)
+    tension_only: bool = False
+    compression_only: bool = False
     deflection_limit_ratio: float | None = None
     deflection_limit_mm: float | None = None
     deflection_limit_basis: str | None = None
@@ -248,6 +252,7 @@ class StabilityResult(StructuralContract):
 class CrossSectionVerificationDefinition(StructuralContract):
     pack_id: Literal["as_nzs_4600_2018_ewm"]
     combination_ids: list[str] = Field(min_length=1)
+    member_ids: list[str] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
 
@@ -950,6 +955,17 @@ class ProjectStructuralCapture(StructuralContract):
                 combinations_by_id = {
                     item.id: item for item in self.analysis.load_combinations
                 }
+                analytical_member_ids = {item.id for item in self.analysis.members}
+                if len(verification.member_ids) != len(set(verification.member_ids)):
+                    raise ValueError(
+                        "cross-section verification member IDs must be unique"
+                    )
+                for member_id in verification.member_ids:
+                    _require_reference(
+                        "cross-section verification member",
+                        member_id,
+                        analytical_member_ids,
+                    )
                 for combination_id in verification.combination_ids:
                     _require_reference(
                         "cross-section verification combination",

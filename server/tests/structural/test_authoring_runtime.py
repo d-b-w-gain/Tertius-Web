@@ -68,6 +68,7 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         section=section,
         material=material,
         start_restraints=(True, True, True, True, True, True),
+        tension_only=True,
         assumption="Imported builder axis.",
     )
     surface = model.surface_from_geometry(
@@ -141,7 +142,48 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
     assert analytical["start"] == {"x": 1.0, "y": 2.0, "z": 3.0}
     assert analytical["end"] == {"x": 1.0, "y": 2.0, "z": 4.0}
     assert analytical["rotation_deg"] == 90.0
+    assert analytical["tension_only"] is True
+    assert analytical["compression_only"] is False
     assert manifest["loads"][0]["area_m2"] == 1.0
+
+
+def test_analytical_member_cannot_be_tension_and_compression_only():
+    model = StructuralModel(title="Invalid unilateral member")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="rod",
+        label="Rod",
+        area_m2=113e-6,
+        iy_m4=1e-9,
+        iz_m4=1e-9,
+        torsion_j_m4=2e-9,
+    )
+    geometry = StructuralMemberGeometry(
+        shape=bd.Cylinder(6, 1000),
+        label="Brace",
+        part_number="PROVISIONAL-D12",
+        start=(0.0, 0.0, 0.0),
+        end=(0.0, 0.0, 1.0),
+    )
+
+    with pytest.raises(StructuralAuthoringError, match="both tension-only"):
+        model.member_from_geometry(
+            geometry,
+            component_id="brace",
+            member_id="brace-axis",
+            section=section,
+            material=material,
+            tension_only=True,
+            compression_only=True,
+            assumption="Invalid test member.",
+        )
 
 
 def test_member_restraint_segments_are_derived_from_connected_builder_axes():
