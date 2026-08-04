@@ -3941,21 +3941,37 @@ def solve_project_structural(
                 z=declaration.start.z
                 + (declaration.end.z - declaration.start.z) * ratio,
             )
-            local_moment = (
-                0.0,
-                member.moment("My", distance, active_combination.id),
-                member.moment("Mz", distance, active_combination.id),
-            )
-            local_shear = (
-                0.0,
-                member.shear("Fy", distance, active_combination.id),
-                member.shear("Fz", distance, active_combination.id),
-            )
-            local_displacement = (
-                member.deflection("dx", distance, active_combination.id) * 1000.0,
-                member.deflection("dy", distance, active_combination.id) * 1000.0,
-                member.deflection("dz", distance, active_combination.id) * 1000.0,
-            )
+            if declaration.tension_only:
+                # Tension-only brace members are axial ties. PyNite retains tiny
+                # frame stiffness for numerical stability, so suppress those
+                # non-physical bending/shear results and report axial elongation.
+                local_moment = (0.0, 0.0, 0.0)
+                local_shear = (0.0, 0.0, 0.0)
+                local_displacement = (
+                    member.deflection("dx", distance, active_combination.id)
+                    * 1000.0,
+                    0.0,
+                    0.0,
+                )
+            else:
+                local_moment = (
+                    0.0,
+                    member.moment("My", distance, active_combination.id),
+                    member.moment("Mz", distance, active_combination.id),
+                )
+                local_shear = (
+                    0.0,
+                    member.shear("Fy", distance, active_combination.id),
+                    member.shear("Fz", distance, active_combination.id),
+                )
+                local_displacement = (
+                    member.deflection("dx", distance, active_combination.id)
+                    * 1000.0,
+                    member.deflection("dy", distance, active_combination.id)
+                    * 1000.0,
+                    member.deflection("dz", distance, active_combination.id)
+                    * 1000.0,
+                )
             global_moment = _local_to_global(rotation, local_moment)
             global_major_moment = _local_to_global(
                 rotation,
