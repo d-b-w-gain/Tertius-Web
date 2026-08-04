@@ -1191,6 +1191,7 @@ class StructuralModel:
         bracing_member: StructuralPart,
         *,
         connection: StructuralConnection,
+        id: str | None = None,
         restrains_lateral_translation: bool,
         restrains_twist: bool,
         restrained_flange: Literal[
@@ -1374,7 +1375,11 @@ class StructuralModel:
         member_length = sqrt(
             sum((primary_end[index] - primary_start[index]) ** 2 for index in range(3))
         )
-        candidate_id = f"restraint-{connection.id}"
+        candidate_id = (
+            _required_text("member-restraint candidate ID", id)
+            if id is not None
+            else f"restraint-{connection.id}"
+        )
         if any(
             candidate["id"] == candidate_id
             for candidate in self._member_restraint_candidates

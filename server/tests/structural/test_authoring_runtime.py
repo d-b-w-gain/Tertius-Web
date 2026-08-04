@@ -671,6 +671,40 @@ def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
         limit_state="ultimate",
         factors={"live": 1.5},
     )
+    brace = model.member_component_from_geometry(
+        StructuralMemberGeometry(
+            shape=bd.Box(100, 50, 50),
+            label="Shared-node purlin",
+            part_number="C10012",
+            start=(-0.1, 0.0, 1.0),
+            end=(0.1, 0.0, 1.0),
+        ),
+        component_id="purlin",
+    )
+    shared_connection = model.connect(
+        rafter,
+        brace,
+        id="rafter-purlin",
+        label="Continuous rafter to purlin",
+        transfers=("force", "shear"),
+    )
+    for handle in (first, second):
+        model.member_restraint_from_connection(
+            handle,
+            brace,
+            connection=shared_connection,
+            id=f"restraint-rafter-purlin-{handle.id}",
+            restrains_lateral_translation=True,
+            restrains_twist=True,
+            demand_model="not_defined",
+            evidence_basis="Unit-test shared-node restraint candidate.",
+        )
+    model.member_stability_verification(
+        pack_id="as_nzs_4600_2018_ewm_member",
+        combination_ids=("uls",),
+        members=(first, second),
+        distortional_buckling_basis="Unit-test evidence remains unverified.",
+    )
     model.connect(
         rafter,
         support,
@@ -678,7 +712,7 @@ def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
         label="Rafter support",
         transfers=("force", "shear", "moment"),
     )
-    model.assembly([rafter, support], label="segmented-rafter")
+    model.assembly([rafter, brace, support], label="segmented-rafter")
 
     manifest = model.manifest()
 
@@ -690,6 +724,15 @@ def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
     assert manifest["analysis"]["cross_section_verification"]["member_ids"] == [
         "rafter-segment-1",
         "rafter-segment-2",
+    ]
+    assert [
+        candidate["id"]
+        for candidate in manifest["analysis"]["member_stability_verification"][
+            "restraint_candidates"
+        ]
+    ] == [
+        "restraint-rafter-purlin-rafter-segment-1",
+        "restraint-rafter-purlin-rafter-segment-2",
     ]
 
 
