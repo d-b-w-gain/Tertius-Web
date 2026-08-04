@@ -232,6 +232,8 @@ export type MemberDiagramStation = {
   distance_m: number
   position: Vector3
   moment_kNm: Vector3
+  major_moment_kNm: Vector3
+  minor_moment_kNm: Vector3
   shear_kN: Vector3
   displacement_mm: Vector3
 }

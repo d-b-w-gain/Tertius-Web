@@ -280,6 +280,8 @@ def test_moment_diagram_is_solver_output_with_load_stations_and_zero_free_end():
     by_distance = {round(station.distance_m, 6): station for station in stations}
 
     assert by_distance[0].moment_kNm.x == pytest.approx(-0.585216, abs=1e-10)
+    assert by_distance[0].major_moment_kNm.x == pytest.approx(-0.585216, abs=1e-10)
+    assert by_distance[0].minor_moment_kNm.x == pytest.approx(0, abs=1e-10)
     assert by_distance[0.35].moment_kNm.x == pytest.approx(-0.329184, abs=1e-10)
     assert by_distance[0.8].moment_kNm.x == pytest.approx(-0.109728, abs=1e-10)
     assert by_distance[1.25].moment_kNm.x == pytest.approx(0, abs=1e-10)

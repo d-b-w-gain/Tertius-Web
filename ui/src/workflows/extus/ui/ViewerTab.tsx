@@ -50,6 +50,7 @@ export type StructuralViewerOverlay = {
   mode?: 'moment' | 'displacement';
   status?: 'pass' | 'fail' | 'not_checked';
   utilisation?: number | null;
+  diagramColor?: number;
   stations: Array<{
     position: { x: number; y: number; z: number };
     moment_kNm?: { x: number; y: number; z: number };
@@ -1252,6 +1253,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       memberGroup.userData.tertiusStructuralOverlay = true;
       const overlayMode = structuralOverlay.mode ?? 'moment';
       const statusColor = structuralCheckColor(structuralOverlay.status);
+      const diagramColor = structuralOverlay.diagramColor ?? statusColor;
 
       for (const restraint of structuralOverlay.restraintSegments ?? []) {
         const start = toModelCoordinates(new THREE.Vector3(
@@ -1433,7 +1435,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       const ribbonPositions: number[] = [];
       const ribbonColors: number[] = [];
-      const peakColor = new THREE.Color(statusColor);
+      const peakColor = new THREE.Color(diagramColor);
       const lowColor = peakColor.clone().lerp(new THREE.Color(0x0f172a), 0.58);
       const pushVertex = (point: THREE.Vector3, demandRatio: number) => {
         const color = lowColor.clone().lerp(peakColor, demandRatio);
@@ -1483,7 +1485,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const diagramLine = new THREE.Line(
         diagramGeometry,
         new THREE.LineBasicMaterial({
-          color: statusColor,
+          color: diagramColor,
           transparent: true,
           opacity: 1,
           depthTest: false,
@@ -1508,7 +1510,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const connectors = new THREE.LineSegments(
         new THREE.BufferGeometry().setFromPoints(connectorPoints),
         new THREE.LineBasicMaterial({
-          color: statusColor,
+          color: diagramColor,
           transparent: true,
           opacity: 0.48,
           depthTest: false,

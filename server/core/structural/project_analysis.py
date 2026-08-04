@@ -311,6 +311,9 @@ def _cross_section_checks(
 
         governing: dict[str, float | str] | None = None
         off_axis_exceeded = False
+        peak_minor_moment_kNm = 0.0
+        peak_off_axis_shear_kN = 0.0
+        peak_torsion_kNm = 0.0
         for combination_id in definition.combination_ids:
             for distance in _member_station_distances(analysis, declaration):
                 member = model.members[declaration.id]
@@ -320,6 +323,15 @@ def _cross_section_checks(
                 web_shear_kN = abs(member.shear("Fy", distance, combination_id))
                 off_axis_shear_kN = abs(member.shear("Fz", distance, combination_id))
                 torsion_kNm = abs(member.torque(distance, combination_id))
+                peak_minor_moment_kNm = max(
+                    peak_minor_moment_kNm,
+                    minor_moment_kNm,
+                )
+                peak_off_axis_shear_kN = max(
+                    peak_off_axis_shear_kN,
+                    off_axis_shear_kN,
+                )
+                peak_torsion_kNm = max(peak_torsion_kNm, torsion_kNm)
 
                 axial_bending = (
                     axial_kN / capacity.design_compression_capacity_kN
@@ -375,10 +387,10 @@ def _cross_section_checks(
                 governing_station_m=float(governing["distance"]),
                 axial_kN=float(governing["axial"]),
                 major_moment_kNm=float(governing["major_moment"]),
-                minor_moment_kNm=float(governing["minor_moment"]),
+                minor_moment_kNm=peak_minor_moment_kNm,
                 web_shear_kN=float(governing["web_shear"]),
-                off_axis_shear_kN=float(governing["off_axis_shear"]),
-                torsion_kNm=float(governing["torsion"]),
+                off_axis_shear_kN=peak_off_axis_shear_kN,
+                torsion_kNm=peak_torsion_kNm,
                 design_compression_capacity_kN=(
                     capacity.design_compression_capacity_kN
                 ),
@@ -411,11 +423,28 @@ def _cross_section_checks(
                     ),
                     *(
                         [
-                            "Minor-axis bending, off-axis shear, or torsion exceeds "
-                            "the authored tolerance; no biaxial/torsional capacity "
-                            "has been inferred."
+                            "Minor-axis bending exceeds the authored tolerance; "
+                            "the catalogue record has no verified effective "
+                            "minor-axis design resistance."
                         ]
-                        if off_axis_exceeded
+                        if peak_minor_moment_kNm > definition.off_axis_tolerance
+                        else []
+                    ),
+                    *(
+                        [
+                            "Off-axis shear exceeds the authored tolerance; no "
+                            "verified flange-direction shear resistance has been "
+                            "inferred."
+                        ]
+                        if peak_off_axis_shear_kN > definition.off_axis_tolerance
+                        else []
+                    ),
+                    *(
+                        [
+                            "Torsion exceeds the authored tolerance; no verified "
+                            "torsional design resistance has been inferred."
+                        ]
+                        if peak_torsion_kNm > definition.off_axis_tolerance
                         else []
                     ),
                 ],
@@ -3599,6 +3628,14 @@ def solve_project_structural(
                 member.deflection("dz", distance, active_combination.id) * 1000.0,
             )
             global_moment = _local_to_global(rotation, local_moment)
+            global_major_moment = _local_to_global(
+                rotation,
+                (0.0, 0.0, local_moment[2]),
+            )
+            global_minor_moment = _local_to_global(
+                rotation,
+                (0.0, local_moment[1], 0.0),
+            )
             global_shear = _local_to_global(rotation, local_shear)
             global_displacement = _local_to_global(rotation, local_displacement)
             axial = member.axial(distance, active_combination.id)
@@ -3622,6 +3659,8 @@ def solve_project_structural(
                     distance_m=distance,
                     position=position,
                     moment_kNm=global_moment,
+                    major_moment_kNm=global_major_moment,
+                    minor_moment_kNm=global_minor_moment,
                     shear_kN=global_shear,
                     displacement_mm=global_displacement,
                 )

@@ -72,6 +72,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [selectedSheetId, setSelectedSheetId] = useState('')
   const [selectedRestraintTraceId, setSelectedRestraintTraceId] = useState('')
   const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
+  const [momentComponent, setMomentComponent] = useState<'resultant' | 'major' | 'minor'>(
+    'resultant',
+  )
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
@@ -361,9 +364,20 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         mode: diagramMode,
         status: check?.status ?? 'not_checked',
         utilisation: check?.utilisation,
+        diagramColor: diagramMode === 'moment'
+          ? momentComponent === 'major'
+            ? 0x22d3ee
+            : momentComponent === 'minor'
+              ? 0xf472b6
+              : undefined
+          : undefined,
         stations: diagram.stations.map((station) => ({
           position: station.position,
-          moment_kNm: station.moment_kNm,
+          moment_kNm: momentComponent === 'major'
+            ? station.major_moment_kNm
+            : momentComponent === 'minor'
+              ? station.minor_moment_kNm
+              : station.moment_kNm,
           displacement_mm: station.displacement_mm,
         })),
         loadArrows: [...pointArrows, ...lineArrows],
@@ -392,7 +406,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         maxOffsetMm: 260,
       }
     })
-  }, [activeCombination, analysis, diagramMode])
+  }, [activeCombination, analysis, diagramMode, momentComponent])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
   const selectVerificationStage = (stageId: string) => {
     if (!analysis) return
@@ -521,6 +535,31 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </button>
               ))}
             </div>
+            {diagramMode === 'moment' && (
+              <div className="flex rounded border border-slate-700 bg-slate-950 p-0.5">
+                {(['resultant', 'major', 'minor'] as const).map((component) => (
+                  <button
+                    key={component}
+                    type="button"
+                    onClick={() => setMomentComponent(component)}
+                    title={component === 'major'
+                      ? 'PyNite local Mz: bending about the catalogue major axis'
+                      : component === 'minor'
+                        ? 'PyNite local My: weak-axis bending requiring separate resistance evidence'
+                        : 'Vector sum of major- and minor-axis moments'}
+                    className={`rounded px-2 py-1 text-[10px] font-semibold capitalize ${
+                      momentComponent === component
+                        ? component === 'minor'
+                          ? 'bg-pink-500/20 text-pink-200'
+                          : 'bg-cyan-500/20 text-cyan-200'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                  >
+                    {component}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div className="hidden items-center gap-2 xl:flex">
@@ -1370,6 +1409,44 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
+                            <dt className="text-cyan-400">Major-axis Mz / resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.major_moment_kNm === null
+                                ? '—'
+                                : number(selectedCrossSectionCheck.major_moment_kNm, 4)}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_major_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_major_bending_capacity_kNm,
+                                    4,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Minor-axis My</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.minor_moment_kNm === null
+                                ? '—'
+                                : `${number(
+                                    selectedCrossSectionCheck.minor_moment_kNm,
+                                    4,
+                                  )} kN·m`}
+                              {' · no verified resistance'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Off-axis shear Fz</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.off_axis_shear_kN === null
+                                ? '—'
+                                : `${number(
+                                    selectedCrossSectionCheck.off_axis_shear_kN,
+                                    4,
+                                  )} kN`}
+                            </dd>
+                          </div>
+                          <div>
                             <dt className="text-slate-500">Web regime</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
@@ -1560,7 +1637,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <p className="mt-3 border-t border-cyan-500/20 pt-2 text-[10px] text-slate-400">
                     {diagramMode === 'displacement'
                       ? 'Displacement is amplified for visibility; the reported millimetres are unscaled.'
-                      : 'Signed moment ribbons remain grey until the required checks pass. Thick Stage 7 axis traces show verified restraint in green, geometry-linked candidates in amber, and missing effective restraint in red. Cyan arrows are loads; pink arrows are reactions.'}
+                      : 'Use Resultant, Major, and Minor above to audit the analytical axes against the CAD. Major-axis ribbons are cyan; minor-axis ribbons are pink and require separate resistance evidence. Member centreline colour remains the pass/fail status. Cyan arrows are loads; pink arrows are reactions.'}
                   </p>
                 </section>
               )}
