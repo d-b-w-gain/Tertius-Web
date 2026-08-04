@@ -596,6 +596,103 @@ def test_surface_load_distribution_derives_member_loads_from_the_same_load_handl
     assert sum(load["force"]["y"] for load in point_loads) == pytest.approx(-0.73152)
 
 
+def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
+    model = StructuralModel(title="Segmented physical member")
+    steel = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000,
+        shear_modulus_kN_m2=80_000_000,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+    )
+    section = model.section(
+        id="c100",
+        label="C100",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+    )
+    rafter = model.member(
+        bd.Box(50, 100, 2000),
+        id="rafter",
+        label="Continuous rendered rafter",
+    )
+    support = model.ground(
+        bd.Box(100, 100, 100),
+        id="support",
+        label="Support",
+    )
+    first = model.member_axis(
+        rafter,
+        id="rafter-segment-1",
+        label="Rafter segment 1",
+        start=(0, 0, 0),
+        end=(0, 0, 1),
+        section=section,
+        material=steel,
+        assumption="Segmented at a physical purlin intersection.",
+    )
+    second = model.member_axis(
+        rafter,
+        id="rafter-segment-2",
+        label="Rafter segment 2",
+        start=(0, 0, 1),
+        end=(0, 0, 2),
+        section=section,
+        material=steel,
+        assumption="Segmented at a physical purlin intersection.",
+    )
+
+    model.member_point_load(
+        second,
+        id="segment-load",
+        label="Second-segment action",
+        case="live",
+        distance_m=0.5,
+        force=(1, 0, 0),
+        provenance="Targeted analytical member handle.",
+    )
+    with pytest.raises(StructuralAuthoringError, match="multiple analytical axes"):
+        model.member_self_weight(
+            rafter,
+            id="ambiguous-self-weight",
+            label="Ambiguous physical member load",
+        )
+    model.cross_section_verification(
+        pack_id="as_nzs_4600_2018_ewm",
+        combination_ids=("uls",),
+        members=(first, second),
+    )
+    model.load_combination(
+        id="uls",
+        label="Ultimate",
+        limit_state="ultimate",
+        factors={"live": 1.5},
+    )
+    model.connect(
+        rafter,
+        support,
+        id="rafter-support",
+        label="Rafter support",
+        transfers=("force", "shear", "moment"),
+    )
+    model.assembly([rafter, support], label="segmented-rafter")
+
+    manifest = model.manifest()
+
+    assert [member["component_id"] for member in manifest["analysis"]["members"]] == [
+        "rafter",
+        "rafter",
+    ]
+    assert manifest["analysis"]["member_loads"][0]["member_id"] == ("rafter-segment-2")
+    assert manifest["analysis"]["cross_section_verification"]["member_ids"] == [
+        "rafter-segment-1",
+        "rafter-segment-2",
+    ]
+
+
 def test_site_wind_basis_is_the_only_pressure_source_for_wind_surface_load():
     model = StructuralModel(title="Site wind handles")
     sheet = model.surface(bd.Box(100, 2, 100), id="sheet", label="Sheet")

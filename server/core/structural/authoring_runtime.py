@@ -103,6 +103,14 @@ class StructuralSectionSpec:
 
 
 @dataclass(frozen=True)
+class StructuralAnalyticalMemberSpec:
+    """A specific solver axis belonging to one rendered member component."""
+
+    id: str
+    component_id: str
+
+
+@dataclass(frozen=True)
 class StructuralCatalogSectionSpec:
     """Section and material handles resolved from one immutable catalogue record."""
 
@@ -151,6 +159,7 @@ class StructuralModel:
         self._sections: list[dict[str, Any]] = []
         self._section_handles: dict[str, StructuralSectionSpec] = {}
         self._analytical_members: list[dict[str, Any]] = []
+        self._analytical_member_handles: dict[str, StructuralAnalyticalMemberSpec] = {}
         self._member_loads: list[dict[str, Any]] = []
         self._member_distributed_loads: list[dict[str, Any]] = []
         self._load_combinations: list[dict[str, Any]] = []
@@ -586,7 +595,7 @@ class StructuralModel:
         *,
         pack_id: Literal["as_nzs_4600_2018_ewm"],
         combination_ids: Sequence[str],
-        members: Sequence[StructuralPart] = (),
+        members: Sequence[StructuralPart | StructuralAnalyticalMemberSpec] = (),
         off_axis_tolerance: float = 1e-6,
     ) -> None:
         """Select a versioned section-capacity pack and its ULS envelope."""
@@ -613,21 +622,8 @@ class StructuralModel:
                 "cross-section off_axis_tolerance must not be negative"
             )
         selected_member_ids: list[str] = []
-        for part in members:
-            registered = self._require_registered(part)
-            analytical_member = next(
-                (
-                    item
-                    for item in self._analytical_members
-                    if item["component_id"] == registered.component_id
-                ),
-                None,
-            )
-            if analytical_member is None:
-                raise StructuralAuthoringError(
-                    f"cross-section component {registered.component_id!r} "
-                    "has no analytical axis"
-                )
+        for member in members:
+            analytical_member = self._analytical_member(member)
             if analytical_member["id"] in selected_member_ids:
                 raise StructuralAuthoringError(
                     f"cross-section member {analytical_member['id']!r} is repeated"
@@ -646,7 +642,7 @@ class StructuralModel:
         pack_id: Literal["as_nzs_4600_2018_ewm_member"],
         combination_ids: Sequence[str],
         segments: Sequence[Mapping[str, Any]] | None = None,
-        members: Sequence[StructuralPart] = (),
+        members: Sequence[StructuralPart | StructuralAnalyticalMemberSpec] = (),
         distortional_buckling_status: Literal["unverified", "verified"] = "unverified",
         distortional_buckling_basis: str | None = None,
         off_axis_tolerance: float = 1e-6,
@@ -704,21 +700,8 @@ class StructuralModel:
 
         selected_member_ids: list[str] = []
         if members:
-            for part in members:
-                registered = self._require_registered(part)
-                analytical_member = next(
-                    (
-                        item
-                        for item in self._analytical_members
-                        if item["component_id"] == registered.component_id
-                    ),
-                    None,
-                )
-                if analytical_member is None:
-                    raise StructuralAuthoringError(
-                        f"member-stability component {registered.component_id!r} "
-                        "has no analytical axis"
-                    )
+            for member in members:
+                analytical_member = self._analytical_member(member)
                 if analytical_member["id"] in selected_member_ids:
                     raise StructuralAuthoringError(
                         f"member-stability member {analytical_member['id']!r} is repeated"
@@ -1204,7 +1187,7 @@ class StructuralModel:
 
     def member_restraint_from_connection(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         bracing_member: StructuralPart,
         *,
         connection: StructuralConnection,
@@ -1242,7 +1225,7 @@ class StructuralModel:
         design file.
         """
 
-        primary = self._require_registered(member)
+        primary = self._member_component(member)
         brace = self._require_registered(bracing_member)
         if primary.kind != "member" or brace.kind != "member":
             raise StructuralAuthoringError(
@@ -1261,18 +1244,7 @@ class StructuralModel:
                 f"connection {connection.id!r} does not join member "
                 f"{primary.component_id!r} to brace {brace.component_id!r}"
             )
-        analytical_member = next(
-            (
-                item
-                for item in self._analytical_members
-                if item["component_id"] == primary.component_id
-            ),
-            None,
-        )
-        if analytical_member is None:
-            raise StructuralAuthoringError(
-                f"member {primary.component_id!r} has no analytical axis"
-            )
+        analytical_member = self._analytical_member(member)
         brace_geometry = self._member_geometry_by_component_id.get(brace.component_id)
         if brace_geometry is None:
             raise StructuralAuthoringError(
@@ -1485,7 +1457,7 @@ class StructuralModel:
 
     def member_boundary_restraint_from_connection(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         connection: StructuralConnection,
         at: Literal["start", "end"],
@@ -1512,7 +1484,7 @@ class StructuralModel:
         an explicit, auditable property of the connection detail.
         """
 
-        primary = self._require_registered(member)
+        primary = self._member_component(member)
         if primary.kind != "member":
             raise StructuralAuthoringError(
                 "member boundary restraints require a member component"
@@ -1531,18 +1503,7 @@ class StructuralModel:
                 f"connection {connection.id!r} does not include member "
                 f"{primary.component_id!r}"
             )
-        analytical_member = next(
-            (
-                item
-                for item in self._analytical_members
-                if item["component_id"] == primary.component_id
-            ),
-            None,
-        )
-        if analytical_member is None:
-            raise StructuralAuthoringError(
-                f"member {primary.component_id!r} has no analytical axis"
-            )
+        analytical_member = self._analytical_member(member)
         if at not in {"start", "end"}:
             raise StructuralAuthoringError(
                 "member boundary restraint location must be start or end"
@@ -2036,7 +1997,7 @@ class StructuralModel:
         deflection_limit_mm: float | None = None,
         deflection_limit_basis: str | None = None,
         assumption: str,
-    ) -> None:
+    ) -> StructuralAnalyticalMemberSpec:
         registered = self._require_registered(component)
         if registered.kind != "member":
             raise StructuralAuthoringError(
@@ -2046,13 +2007,6 @@ class StructuralModel:
         if any(item["id"] == member_id for item in self._analytical_members):
             raise StructuralAuthoringError(
                 f"analytical member ID {member_id!r} is already registered"
-            )
-        if any(
-            item["component_id"] == registered.component_id
-            for item in self._analytical_members
-        ):
-            raise StructuralAuthoringError(
-                f"component {registered.component_id!r} already has an analytical axis"
             )
         section_spec = self._require_section(section)
         material_spec = self._require_material(material)
@@ -2117,11 +2071,17 @@ class StructuralModel:
                 ),
             }
         )
+        handle = StructuralAnalyticalMemberSpec(
+            id=member_id,
+            component_id=registered.component_id,
+        )
+        self._analytical_member_handles[member_id] = handle
+        return handle
 
     def distribute_surface_load(
         self,
         load: StructuralSurfaceLoad,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         id: str,
         label: str,
@@ -2130,19 +2090,7 @@ class StructuralModel:
         provenance: str,
     ) -> None:
         source = self._require_surface_load(load)
-        registered_member = self._require_registered(member)
-        analytical_member = next(
-            (
-                item
-                for item in self._analytical_members
-                if item["component_id"] == registered_member.component_id
-            ),
-            None,
-        )
-        if analytical_member is None:
-            raise StructuralAuthoringError(
-                f"component {registered_member.component_id!r} has no analytical axis"
-            )
+        analytical_member = self._analytical_member(member)
         distribution_id = _required_text("load distribution ID", id)
         if any(
             item["id"] == distribution_id
@@ -2210,7 +2158,7 @@ class StructuralModel:
 
     def member_point_load(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         id: str,
         label: str,
@@ -2226,8 +2174,7 @@ class StructuralModel:
 
         if case not in {"dead", "live", "wind", "imperfection"}:
             raise StructuralAuthoringError(f"unsupported load case {case!r}")
-        registered_member = self._require_registered(member)
-        analytical_member = self._analytical_member(registered_member)
+        analytical_member = self._analytical_member(member)
         load_id = _required_text("member point load ID", id)
         if any(
             item["id"] == load_id
@@ -2289,7 +2236,7 @@ class StructuralModel:
 
     def member_distributed_load(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         id: str,
         label: str,
@@ -2310,8 +2257,7 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 f"unsupported distributed load source {source_kind!r}"
             )
-        registered_member = self._require_registered(member)
-        analytical_member = self._analytical_member(registered_member)
+        analytical_member = self._analytical_member(member)
         load_id = _required_text("distributed load ID", id)
         if any(
             item["id"] == load_id
@@ -2385,7 +2331,7 @@ class StructuralModel:
 
     def member_self_weight(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         id: str,
         label: str,
@@ -2395,8 +2341,7 @@ class StructuralModel:
     ) -> None:
         """Apply catalogue-derived member self-weight as a global line load."""
 
-        registered_member = self._require_registered(member)
-        analytical_member = self._analytical_member(registered_member)
+        analytical_member = self._analytical_member(member)
         section = next(
             item
             for item in self._sections
@@ -2434,7 +2379,7 @@ class StructuralModel:
     def distribute_surface_load_uniform(
         self,
         load: StructuralSurfaceLoad,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
         *,
         id: str,
         label: str,
@@ -2447,8 +2392,7 @@ class StructuralModel:
 
         source = self._require_surface_load(load)
         source_data = next(item for item in self._loads if item["id"] == source.id)
-        registered_member = self._require_registered(member)
-        analytical_member = self._analytical_member(registered_member)
+        analytical_member = self._analytical_member(member)
         member_length = _member_length(analytical_member)
         start_distance = float(start_distance_m)
         end_distance = (
@@ -2734,21 +2678,44 @@ class StructuralModel:
 
     def _analytical_member(
         self,
-        member: StructuralPart,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
     ) -> dict[str, Any]:
-        analytical_member = next(
-            (
-                item
-                for item in self._analytical_members
-                if item["component_id"] == member.component_id
-            ),
-            None,
-        )
-        if analytical_member is None:
-            raise StructuralAuthoringError(
-                f"component {member.component_id!r} has no analytical axis"
+        if isinstance(member, StructuralAnalyticalMemberSpec):
+            registered_handle = self._analytical_member_handles.get(member.id)
+            if registered_handle is not member:
+                raise StructuralAuthoringError(
+                    f"analytical member handle {member.id!r} is not registered "
+                    "with this model"
+                )
+            return next(
+                item for item in self._analytical_members if item["id"] == member.id
             )
-        return analytical_member
+
+        registered = self._require_registered(member)
+        matches = [
+            item
+            for item in self._analytical_members
+            if item["component_id"] == registered.component_id
+        ]
+        if not matches:
+            raise StructuralAuthoringError(
+                f"component {registered.component_id!r} has no analytical axis"
+            )
+        if len(matches) > 1:
+            raise StructuralAuthoringError(
+                f"component {registered.component_id!r} has multiple analytical axes; "
+                "pass the StructuralAnalyticalMemberSpec returned by member_axis"
+            )
+        return matches[0]
+
+    def _member_component(
+        self,
+        member: StructuralPart | StructuralAnalyticalMemberSpec,
+    ) -> StructuralPart:
+        if isinstance(member, StructuralAnalyticalMemberSpec):
+            analytical_member = self._analytical_member(member)
+            return self._parts_by_id[analytical_member["component_id"]]
+        return self._require_registered(member)
 
     def _require_registered(self, part: StructuralPart) -> StructuralPart:
         if not isinstance(part, StructuralPart):
