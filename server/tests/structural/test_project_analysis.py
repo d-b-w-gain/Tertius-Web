@@ -10,12 +10,47 @@ from core.structural.authoring_runtime import (
     StructuralMemberGeometry,
     StructuralModel,
 )
-from core.structural.contracts import ProjectStructuralCapture
+from core.structural.contracts import (
+    MemberStabilityComparison,
+    ProjectStructuralCapture,
+)
 from core.structural.design_capture import (
     capture_project_structural_declaration,
     parse_project_structural_capture,
 )
-from core.structural.project_analysis import solve_project_structural
+from core.structural.project_analysis import (
+    _stability_scope_comparisons,
+    solve_project_structural,
+)
+
+
+def test_global_stability_scope_excludes_secondary_member_numerical_noise():
+    primary = MemberStabilityComparison(
+        member_id="primary-rafter",
+        first_order_max_moment_kNm=1.0,
+        second_order_max_moment_kNm=1.02,
+        moment_amplification=1.02,
+        first_order_max_displacement_mm=2.0,
+        second_order_max_displacement_mm=2.04,
+        displacement_amplification=1.02,
+    )
+    secondary = MemberStabilityComparison(
+        member_id="secondary-stud",
+        first_order_max_moment_kNm=1e-16,
+        second_order_max_moment_kNm=2e-4,
+        moment_amplification=2e8,
+        first_order_max_displacement_mm=0.2,
+        second_order_max_displacement_mm=0.21,
+        displacement_amplification=1.05,
+    )
+
+    scoped = _stability_scope_comparisons(
+        [primary, secondary],
+        eaves_member_ids=(),
+        rafter_member_ids=("primary-rafter",),
+    )
+
+    assert scoped == [primary]
 
 
 ANALYTICAL_DESIGN = """

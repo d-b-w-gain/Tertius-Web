@@ -128,6 +128,27 @@ def _amplification(second_order: float, first_order: float) -> float:
     return second_order / first_order
 
 
+def _stability_scope_comparisons(
+    comparisons: Sequence[MemberStabilityComparison],
+    *,
+    eaves_member_ids: Sequence[str],
+    rafter_member_ids: Sequence[str],
+) -> list[MemberStabilityComparison]:
+    """Return the primary-frame members authored to govern global stability."""
+
+    scoped_ids = set(eaves_member_ids) | set(rafter_member_ids)
+    if not scoped_ids:
+        return list(comparisons)
+    scoped = [
+        comparison for comparison in comparisons if comparison.member_id in scoped_ids
+    ]
+    if not scoped:
+        raise StructuralAnalysisError(
+            "the authored global-stability member scope resolved no members"
+        )
+    return scoped
+
+
 def _analysis_base_model_matches(analysis) -> bool:
     stability = analysis.stability
     if stability is None or stability.analysis_base_model == "unspecified":
@@ -3352,6 +3373,11 @@ def solve_project_structural(
                 and nhf_displacement_mm > 1e-12
                 else None
             )
+            governing_comparisons = _stability_scope_comparisons(
+                member_comparisons,
+                eaves_member_ids=analysis.stability.eaves_member_ids,
+                rafter_member_ids=analysis.stability.rafter_member_ids,
+            )
             direction_results.append(
                 StabilityDirectionResult(
                     id=stability_direction["id"],
@@ -3364,11 +3390,11 @@ def solve_project_structural(
                     converged=True,
                     governing_moment_amplification=max(
                         comparison.moment_amplification
-                        for comparison in member_comparisons
+                        for comparison in governing_comparisons
                     ),
                     governing_displacement_amplification=max(
                         comparison.displacement_amplification
-                        for comparison in member_comparisons
+                        for comparison in governing_comparisons
                     ),
                     nhf_eaves_displacement_mm=nhf_displacement_mm,
                     alpha_cr=alpha_cr,
