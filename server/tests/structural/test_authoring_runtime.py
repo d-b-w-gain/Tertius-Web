@@ -69,6 +69,11 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
         material=material,
         start_restraints=(True, True, True, True, True, True),
         tension_only=True,
+        tension_capacity_status="candidate",
+        tension_capacity_kN=5.0,
+        tension_capacity_basis="Analogous 30 x 0.8 mm strap capacity.",
+        end_fastener_count=2,
+        end_connection_basis="Two candidate screws per end; capacity unverified.",
         assumption="Imported builder axis.",
     )
     surface = model.surface_from_geometry(
@@ -144,6 +149,10 @@ def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together(
     assert analytical["rotation_deg"] == 90.0
     assert analytical["tension_only"] is True
     assert analytical["compression_only"] is False
+    assert analytical["tension_capacity_status"] == "candidate"
+    assert analytical["tension_capacity_kN"] == 5.0
+    assert analytical["end_fastener_count"] == 2
+    assert analytical["end_connection_capacity_kN"] is None
     assert manifest["loads"][0]["area_m2"] == 1.0
 
 

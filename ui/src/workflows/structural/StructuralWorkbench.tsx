@@ -213,6 +213,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedCheck = analysis?.member_checks.find(
     (check) => check.member_id === selectedMember?.id,
   )
+  const selectedTensionCheck = analysis?.tension_member_checks?.find(
+    (check) => check.member_id === selectedMember?.id,
+  )
   const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
@@ -1191,9 +1194,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         (candidate) => candidate.member_id === member.id,
                       )
                       const check = diagramMode === 'moment'
-                        ? analysis.member_checks.find(
-                          (candidate) => candidate.member_id === member.id,
-                        )
+                        ? (member.tension_only
+                          ? analysis.tension_member_checks?.find(
+                            (candidate) => candidate.member_id === member.id,
+                          )
+                          : analysis.member_checks.find(
+                            (candidate) => candidate.member_id === member.id,
+                          ))
                         : analysis.serviceability_checks.find(
                           (candidate) => candidate.member_id === member.id,
                         )
@@ -1229,7 +1236,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             {check?.status === 'not_checked' || !check
                               ? 'NOT CHECKED'
                               : `${check.status.toUpperCase()} · ${number(
-                                (check.utilisation ?? 0) * 100,
+                                (('utilisation' in check
+                                  ? check.utilisation
+                                  : check.governing_utilisation) ?? 0) * 100,
                                 1,
                               )}%`}
                             {result && diagramMode === 'displacement'
@@ -1310,6 +1319,57 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </dd>
                     </div>
                   </dl>
+                  {selectedMember.tension_only && selectedTensionCheck && (
+                    <div className="mt-3 rounded border border-violet-500/30 bg-slate-950/50 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-violet-300">
+                          Stage 8 strap check
+                        </span>
+                        <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
+                          selectedTensionCheck.status === 'pass'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : selectedTensionCheck.status === 'fail'
+                              ? 'bg-red-500/15 text-red-300'
+                              : 'bg-amber-500/15 text-amber-300'
+                        }`}>
+                          {selectedTensionCheck.status.toUpperCase()}
+                        </span>
+                      </div>
+                      <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <dt className="text-slate-500">Governing ULS tension</dt>
+                          <dd className="font-mono text-slate-200">
+                            {number(selectedTensionCheck.tension_demand_kN, 4)} kN
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Combination</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.governing_combination_id || 'No tension'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Candidate strap capacity</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.tension_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.tension_capacity_kN, 3)} kN`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Required / end fastener</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.required_force_per_end_fastener_kN == null
+                              ? 'Unspecified'
+                              : `${number(selectedTensionCheck.required_force_per_end_fastener_kN, 4)} kN`}
+                          </dd>
+                        </div>
+                      </dl>
+                      <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
+                        Candidate resistance is shown for comparison only; the exact Airco strap and C100 screw connection remain unverified.
+                      </p>
+                    </div>
+                  )}
                   {selectedCheck && (
                     <div className={`mt-3 rounded border p-3 ${
                       selectedDisplayCheckStatus === 'pass'

@@ -239,6 +239,12 @@ class StructuralModel:
         end_releases: Sequence[bool] | dict[str, bool] = (),
         tension_only: bool = False,
         compression_only: bool = False,
+        tension_capacity_status: str = "not_checked",
+        tension_capacity_kN: float | None = None,
+        tension_capacity_basis: str | None = None,
+        end_fastener_count: int | None = None,
+        end_connection_capacity_kN: float | None = None,
+        end_connection_basis: str | None = None,
         deflection_limit_ratio: float | None = None,
         deflection_limit_mm: float | None = None,
         deflection_limit_basis: str | None = None,
@@ -269,6 +275,12 @@ class StructuralModel:
             end_releases=end_releases,
             tension_only=tension_only,
             compression_only=compression_only,
+            tension_capacity_status=tension_capacity_status,
+            tension_capacity_kN=tension_capacity_kN,
+            tension_capacity_basis=tension_capacity_basis,
+            end_fastener_count=end_fastener_count,
+            end_connection_capacity_kN=end_connection_capacity_kN,
+            end_connection_basis=end_connection_basis,
             deflection_limit_ratio=deflection_limit_ratio,
             deflection_limit_mm=deflection_limit_mm,
             deflection_limit_basis=deflection_limit_basis,
@@ -1998,6 +2010,12 @@ class StructuralModel:
         end_releases: Sequence[bool] | dict[str, bool] = (),
         tension_only: bool = False,
         compression_only: bool = False,
+        tension_capacity_status: str = "not_checked",
+        tension_capacity_kN: float | None = None,
+        tension_capacity_basis: str | None = None,
+        end_fastener_count: int | None = None,
+        end_connection_capacity_kN: float | None = None,
+        end_connection_basis: str | None = None,
         deflection_limit_ratio: float | None = None,
         deflection_limit_mm: float | None = None,
         deflection_limit_basis: str | None = None,
@@ -2025,6 +2043,42 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 f"analytical member {member_id!r} cannot be both tension-only "
                 "and compression-only"
+            )
+        if tension_capacity_status not in {"not_checked", "candidate", "verified"}:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} has invalid tension capacity status"
+            )
+        if any(
+            value is not None and float(value) <= 0
+            for value in (tension_capacity_kN, end_connection_capacity_kN)
+        ):
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} tension capacities must be positive"
+            )
+        if end_fastener_count is not None and int(end_fastener_count) <= 0:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} end fastener count must be positive"
+            )
+        if any(
+            value is not None
+            for value in (
+                tension_capacity_kN,
+                end_fastener_count,
+                end_connection_capacity_kN,
+            )
+        ) and not tension_only:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} tension evidence requires tension_only"
+            )
+        if tension_capacity_status == "verified" and (
+            tension_capacity_kN is None
+            or tension_capacity_basis is None
+            or end_connection_capacity_kN is None
+            or end_connection_basis is None
+        ):
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} verified tension capacity requires "
+                "member and end-connection capacities with bases"
             )
         limit_ratio = (
             None if deflection_limit_ratio is None else float(deflection_limit_ratio)
@@ -2059,6 +2113,20 @@ class StructuralModel:
                 "end_releases": _restraints(end_releases),
                 "tension_only": bool(tension_only),
                 "compression_only": bool(compression_only),
+                "tension_capacity_status": tension_capacity_status,
+                "tension_capacity_kN": (
+                    None if tension_capacity_kN is None else float(tension_capacity_kN)
+                ),
+                "tension_capacity_basis": tension_capacity_basis,
+                "end_fastener_count": (
+                    None if end_fastener_count is None else int(end_fastener_count)
+                ),
+                "end_connection_capacity_kN": (
+                    None
+                    if end_connection_capacity_kN is None
+                    else float(end_connection_capacity_kN)
+                ),
+                "end_connection_basis": end_connection_basis,
                 "deflection_limit_ratio": limit_ratio,
                 "deflection_limit_mm": limit_mm,
                 "deflection_limit_basis": (

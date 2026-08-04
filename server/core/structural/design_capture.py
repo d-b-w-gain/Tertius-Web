@@ -1278,6 +1278,12 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                         "end_releases",
                         "tension_only",
                         "compression_only",
+                        "tension_capacity_status",
+                        "tension_capacity_kN",
+                        "tension_capacity_basis",
+                        "end_fastener_count",
+                        "end_connection_capacity_kN",
+                        "end_connection_basis",
                         "deflection_limit_ratio",
                         "deflection_limit_mm",
                         "deflection_limit_basis",
@@ -1379,6 +1385,44 @@ def _generated_structural_declaration(tree: ast.Module) -> dict[str, Any] | None
                                     names,
                                     default=False,
                                 )
+                            ),
+                            "tension_capacity_status": str(
+                                _keyword_value(
+                                    keywords,
+                                    "tension_capacity_status",
+                                    names,
+                                    default="not_checked",
+                                )
+                            ),
+                            "tension_capacity_kN": _keyword_value(
+                                keywords,
+                                "tension_capacity_kN",
+                                names,
+                                default=None,
+                            ),
+                            "tension_capacity_basis": _keyword_value(
+                                keywords,
+                                "tension_capacity_basis",
+                                names,
+                                default=None,
+                            ),
+                            "end_fastener_count": _keyword_value(
+                                keywords,
+                                "end_fastener_count",
+                                names,
+                                default=None,
+                            ),
+                            "end_connection_capacity_kN": _keyword_value(
+                                keywords,
+                                "end_connection_capacity_kN",
+                                names,
+                                default=None,
+                            ),
+                            "end_connection_basis": _keyword_value(
+                                keywords,
+                                "end_connection_basis",
+                                names,
+                                default=None,
                             ),
                             "deflection_limit_ratio": _keyword_value(
                                 keywords,

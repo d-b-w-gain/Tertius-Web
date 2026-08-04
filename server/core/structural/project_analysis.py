@@ -39,6 +39,7 @@ from .contracts import (
     StructuralMember,
     StructuralNode,
     StructuralSnapshot,
+    TensionMemberCheck,
     StabilityDirectionResult,
     StabilityResult,
     Vector3,
@@ -58,6 +59,98 @@ NODE_COORDINATE_DIGITS = 9
 
 class StructuralAnalysisError(ValueError):
     """Raised when the active design cannot be represented by the MVP solver."""
+
+
+def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
+    """Envelope authored tension-only members across every ULS combination."""
+
+    ultimate_combinations = [
+        combination
+        for combination in analysis.load_combinations
+        if combination.limit_state == "ultimate"
+    ]
+    checks: list[TensionMemberCheck] = []
+    for declaration in analysis.members:
+        if not declaration.tension_only:
+            continue
+        member = model.members[declaration.id]
+        member_length = _length(declaration.start, declaration.end)
+        governing_combination_id: str | None = None
+        tension_demand_kN = 0.0
+        for combination in ultimate_combinations:
+            demand = max(
+                abs(member.axial(member_length * index / 8, combination.id))
+                for index in range(9)
+            )
+            if demand > tension_demand_kN:
+                tension_demand_kN = demand
+                governing_combination_id = combination.id
+
+        tension_capacity = declaration.tension_capacity_kN
+        connection_capacity = declaration.end_connection_capacity_kN
+        capacities = [
+            capacity
+            for capacity in (tension_capacity, connection_capacity)
+            if capacity is not None
+        ]
+        governing_capacity = min(capacities) if capacities else None
+        member_utilisation = (
+            tension_demand_kN / tension_capacity
+            if tension_capacity is not None
+            else None
+        )
+        connection_utilisation = (
+            tension_demand_kN / connection_capacity
+            if connection_capacity is not None
+            else None
+        )
+        governing_utilisation = (
+            tension_demand_kN / governing_capacity
+            if governing_capacity is not None
+            else None
+        )
+        if declaration.tension_capacity_status == "verified":
+            status: Literal["pass", "fail", "not_checked", "unsupported"] = (
+                "pass"
+                if governing_utilisation is not None and governing_utilisation <= 1.0
+                else "fail"
+            )
+        elif declaration.tension_capacity_status == "candidate":
+            status = "unsupported"
+        else:
+            status = "not_checked"
+        checks.append(
+            TensionMemberCheck(
+                member_id=declaration.id,
+                label=declaration.label,
+                status=status,
+                capacity_status=declaration.tension_capacity_status,
+                governing_combination_id=governing_combination_id,
+                tension_demand_kN=tension_demand_kN,
+                tension_capacity_kN=tension_capacity,
+                end_connection_capacity_kN=connection_capacity,
+                governing_capacity_kN=governing_capacity,
+                member_utilisation=member_utilisation,
+                connection_utilisation=connection_utilisation,
+                governing_utilisation=governing_utilisation,
+                end_fastener_count=declaration.end_fastener_count,
+                required_force_per_end_fastener_kN=(
+                    tension_demand_kN / declaration.end_fastener_count
+                    if declaration.end_fastener_count is not None
+                    else None
+                ),
+                basis=(
+                    declaration.tension_capacity_basis
+                    or "No authored tension resistance basis."
+                ),
+                assumptions=[
+                    declaration.assumption,
+                    declaration.end_connection_basis
+                    or "End-connection resistance remains unverified.",
+                ],
+            )
+        )
+    return checks
 
 
 def _clean(value: float, tolerance: float = 1e-12) -> float:
@@ -1670,6 +1763,7 @@ def _p399_evidence(
     members: list[StructuralMember],
     member_results: list[MemberResult],
     member_checks: list[MemberCheck],
+    tension_member_checks: list[TensionMemberCheck],
     cross_section_checks: list[MemberCrossSectionCheck],
     member_stability_checks: list[MemberStabilityCheck],
     member_restraint_candidate_checks: list[MemberRestraintCandidateCheck],
@@ -2248,11 +2342,17 @@ def _p399_evidence(
         member_stability_status = "not_checked"
 
     bracing_status: Literal["pass", "fail", "warning", "not_checked", "unsupported"]
-    if not member_restraint_candidate_checks:
+    if any(check.status == "fail" for check in tension_member_checks):
+        bracing_status = "fail"
+    elif any(check.status == "unsupported" for check in tension_member_checks):
+        bracing_status = "unsupported"
+    elif not member_restraint_candidate_checks and not tension_member_checks:
         bracing_status = "not_checked"
     elif any(check.status == "fail" for check in member_restraint_candidate_checks):
         bracing_status = "fail"
-    elif all(check.status == "pass" for check in member_restraint_candidate_checks):
+    elif all(check.status == "pass" for check in member_restraint_candidate_checks) and all(
+        check.status == "pass" for check in tension_member_checks
+    ):
         bracing_status = "pass"
     elif any(
         check.status == "unsupported" for check in member_restraint_candidate_checks
@@ -2940,6 +3040,11 @@ def _p399_evidence(
             purpose="Trace restraint forces and stiffness to a complete resisting system.",
             assumptions=[
                 "Cladding and fasteners are not assumed to provide unverified restraint.",
+                *[
+                    assumption
+                    for check in tension_member_checks
+                    for assumption in check.assumptions
+                ],
                 *(
                     [
                         "Physical restraint candidates are active, but their complete "
@@ -2966,6 +3071,21 @@ def _p399_evidence(
                     ),
                 )
                 for check in member_restraint_candidate_checks
+            ]
+            + [
+                CalculationInput(
+                    symbol=f"strap,{check.member_id}",
+                    label=f"{check.label} ULS tension envelope",
+                    value=check.status,
+                    source=(
+                        f"governing={check.governing_combination_id or 'none'}; "
+                        f"demand={check.tension_demand_kN:g} kN; "
+                        f"strap capacity={check.tension_capacity_kN if check.tension_capacity_kN is not None else 'not declared'} kN; "
+                        f"end capacity={check.end_connection_capacity_kN if check.end_connection_capacity_kN is not None else 'unverified'} kN; "
+                        f"per end fastener={check.required_force_per_end_fastener_kN if check.required_force_per_end_fastener_kN is not None else 'not declared'} kN"
+                    ),
+                )
+                for check in tension_member_checks
             ],
             references=list(
                 dict.fromkeys(
@@ -2979,8 +3099,55 @@ def _p399_evidence(
                     ]
                 )
             ),
+            equations=[
+                CalculationEquation(
+                    label=f"{check.label} governing strap utilisation",
+                    expression="u = N* / min(phi Nt, phi Nc,end)",
+                    substitution=(
+                        f"{check.tension_demand_kN:g} / "
+                        f"{check.governing_capacity_kN if check.governing_capacity_kN is not None else 'unverified'}"
+                    ),
+                    result=check.governing_utilisation or 0.0,
+                )
+                for check in tension_member_checks
+                if check.governing_capacity_kN is not None
+            ]
+            + [
+                CalculationEquation(
+                    label=f"{check.label} required force per end fastener",
+                    expression="F*,fastener = N* / n_end",
+                    substitution=(
+                        f"{check.tension_demand_kN:g} / {check.end_fastener_count}"
+                    ),
+                    result=check.required_force_per_end_fastener_kN or 0.0,
+                    unit="kN",
+                )
+                for check in tension_member_checks
+                if check.end_fastener_count is not None
+            ],
+            outputs=[
+                CalculationInput(
+                    symbol=f"N*,{check.member_id}",
+                    label=f"{check.label} governing ULS tension",
+                    value=check.tension_demand_kN,
+                    unit="kN",
+                    source=check.governing_combination_id or "No active ULS tension",
+                )
+                for check in tension_member_checks
+            ],
             related_member_ids=member_ids,
-            related_combination_ids=[combination.id],
+            related_combination_ids=list(
+                dict.fromkeys(
+                    [
+                        combination.id,
+                        *(
+                            check.governing_combination_id
+                            for check in tension_member_checks
+                            if check.governing_combination_id is not None
+                        ),
+                    ]
+                )
+            ),
         ),
         CalculationSheet(
             id="sheet-p399-connections",
@@ -3687,6 +3854,7 @@ def solve_project_structural(
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
+    tension_member_checks = _tension_member_checks(model, analysis)
     cross_section_checks = _cross_section_checks(
         model,
         analysis,
@@ -4235,6 +4403,7 @@ def solve_project_structural(
         members=structural_members,
         member_results=member_results,
         member_checks=member_checks,
+        tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
         member_restraint_candidate_checks=member_restraint_candidate_checks,
@@ -4298,6 +4467,7 @@ def solve_project_structural(
         member_results=member_results,
         member_diagrams=member_diagrams,
         member_checks=member_checks,
+        tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
         member_restraint_candidate_checks=member_restraint_candidate_checks,

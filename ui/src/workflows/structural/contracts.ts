@@ -181,6 +181,12 @@ export type ProjectStructuralCapture = {
       end_releases: StructuralNode['restraints']
       tension_only?: boolean
       compression_only?: boolean
+      tension_capacity_status?: 'not_checked' | 'candidate' | 'verified'
+      tension_capacity_kN?: number | null
+      tension_capacity_basis?: string | null
+      end_fastener_count?: number | null
+      end_connection_capacity_kN?: number | null
+      end_connection_basis?: string | null
       deflection_limit_ratio: number | null
       deflection_limit_mm: number | null
       deflection_limit_basis: string | null
@@ -360,6 +366,24 @@ export type StructuralSnapshot = {
     utilisation: number | null
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
+  }>
+  tension_member_checks?: Array<{
+    member_id: string
+    label: string
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    capacity_status: 'not_checked' | 'candidate' | 'verified'
+    governing_combination_id: string | null
+    tension_demand_kN: number
+    tension_capacity_kN: number | null
+    end_connection_capacity_kN: number | null
+    governing_capacity_kN: number | null
+    member_utilisation: number | null
+    connection_utilisation: number | null
+    governing_utilisation: number | null
+    end_fastener_count: number | null
+    required_force_per_end_fastener_kN: number | null
+    basis: string
+    assumptions: string[]
   }>
   cross_section_checks?: Array<{
     member_id: string

@@ -119,10 +119,47 @@ class AnalyticalMemberDeclaration(StructuralContract):
     end_releases: Restraints = Field(default_factory=Restraints)
     tension_only: bool = False
     compression_only: bool = False
+    tension_capacity_status: Literal["not_checked", "candidate", "verified"] = (
+        "not_checked"
+    )
+    tension_capacity_kN: float | None = None
+    tension_capacity_basis: str | None = None
+    end_fastener_count: int | None = None
+    end_connection_capacity_kN: float | None = None
+    end_connection_basis: str | None = None
     deflection_limit_ratio: float | None = None
     deflection_limit_mm: float | None = None
     deflection_limit_basis: str | None = None
     assumption: str
+
+    @model_validator(mode="after")
+    def validate_tension_evidence(self) -> AnalyticalMemberDeclaration:
+        if any(
+            value is not None and value <= 0
+            for value in (self.tension_capacity_kN, self.end_connection_capacity_kN)
+        ):
+            raise ValueError("tension capacities must be positive")
+        if self.end_fastener_count is not None and self.end_fastener_count <= 0:
+            raise ValueError("end fastener count must be positive")
+        if any(
+            value is not None
+            for value in (
+                self.tension_capacity_kN,
+                self.end_fastener_count,
+                self.end_connection_capacity_kN,
+            )
+        ) and not self.tension_only:
+            raise ValueError("tension evidence requires a tension-only member")
+        if self.tension_capacity_status == "verified" and (
+            self.tension_capacity_kN is None
+            or not self.tension_capacity_basis
+            or self.end_connection_capacity_kN is None
+            or not self.end_connection_basis
+        ):
+            raise ValueError(
+                "verified tension evidence requires member and connection capacities"
+            )
+        return self
 
 
 class LoadCase(StructuralContract):
@@ -374,6 +411,25 @@ class MemberCheck(StructuralContract):
     utilisation: float | None
     status: Literal["pass", "fail", "not_checked"]
     basis: str
+
+
+class TensionMemberCheck(StructuralContract):
+    member_id: str
+    label: str
+    status: Literal["pass", "fail", "not_checked", "unsupported"]
+    capacity_status: Literal["not_checked", "candidate", "verified"]
+    governing_combination_id: str | None = None
+    tension_demand_kN: float
+    tension_capacity_kN: float | None = None
+    end_connection_capacity_kN: float | None = None
+    governing_capacity_kN: float | None = None
+    member_utilisation: float | None = None
+    connection_utilisation: float | None = None
+    governing_utilisation: float | None = None
+    end_fastener_count: int | None = None
+    required_force_per_end_fastener_kN: float | None = None
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class MemberCrossSectionCheck(StructuralContract):
@@ -1180,6 +1236,7 @@ class StructuralSnapshot(StructuralContract):
     member_results: list[MemberResult]
     member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
+    tension_member_checks: list[TensionMemberCheck] = Field(default_factory=list)
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
     member_restraint_candidate_checks: list[MemberRestraintCandidateCheck] = Field(
