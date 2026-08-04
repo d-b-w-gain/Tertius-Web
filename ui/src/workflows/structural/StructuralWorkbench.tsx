@@ -216,6 +216,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedTensionCheck = analysis?.tension_member_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
+  const selectedGlobalBracingTrace = useMemo(() => {
+    if (!capture || !selectedMember?.tension_only) return undefined
+    const declaration = capture.analysis?.members.find(
+      (member) => member.id === selectedMember.id,
+    )
+    if (!declaration) return undefined
+    const collectorConnection = capture.connections.find((connection) => (
+      connection.to_component_id === declaration.component_id
+      && connection.id.endsWith('-collector')
+    ))
+    const foundationConnection = capture.connections.find((connection) => (
+      connection.from_component_id === declaration.component_id
+      && connection.id.endsWith('-foundation')
+      && componentsById.get(connection.to_component_id)?.grounded
+    ))
+    if (!collectorConnection || !foundationConnection) return undefined
+    return {
+      componentIds: Array.from(new Set([
+        collectorConnection.from_component_id,
+        ...collectorConnection.connector_component_ids,
+        declaration.component_id,
+        ...foundationConnection.connector_component_ids,
+        foundationConnection.to_component_id,
+      ])),
+    }
+  }, [capture, componentsById, selectedMember])
   const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
@@ -264,12 +290,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         ? selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
         : [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
+      ...(selectedGlobalBracingTrace?.componentIds ?? [])
+        .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
     ].filter(Boolean)))
   }, [
     capture,
     selectedCrossSectionCheck,
     selectedRestraintChecks,
     selectedRestraintTrace,
+    selectedGlobalBracingTrace,
     selectedVisualNodeId,
   ])
   const selectRestraintTrace = useCallback((traceId: string) => {
@@ -1364,9 +1393,52 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               : `${number(selectedTensionCheck.required_force_per_end_fastener_kN, 4)} kN`}
                           </dd>
                         </div>
+                        <div>
+                          <dt className="text-slate-500">Candidate screw-group capacity</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.end_connection_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.end_connection_capacity_kN, 3)} kN`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Screw-group utilisation</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.connection_utilisation == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.connection_utilisation * 100, 1)}%`}
+                          </dd>
+                        </div>
                       </dl>
                       <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
                         Candidate resistance is shown for comparison only; the exact Airco strap and C100 screw connection remain unverified.
+                      </p>
+                    </div>
+                  )}
+                  {selectedMember.tension_only && selectedGlobalBracingTrace && (
+                    <div className="mt-3 rounded border border-cyan-500/30 bg-slate-950/50 p-3">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
+                        Selected global bracing trace
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-1 text-[9px] text-slate-200">
+                        {selectedGlobalBracingTrace.componentIds.map((componentId, index) => (
+                          <span key={componentId} className="contents">
+                            {index > 0 && <span className="text-slate-500">→</span>}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedVisualNodeId(
+                                componentsById.get(componentId)?.visual_node_id || '',
+                              )}
+                              className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 hover:border-cyan-400"
+                            >
+                              {componentsById.get(componentId)?.label || componentId}
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+                        Collector → tension strap → grounded foundation. This global X-bracing
+                        path is shown separately from the Stage 7 compression-flange restraint trace.
                       </p>
                     </div>
                   )}
