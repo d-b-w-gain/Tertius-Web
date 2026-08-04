@@ -2168,10 +2168,6 @@ def _p399_evidence(
         stability_status = "blocked"
     elif (
         not stability_result.converged
-        or stability_result.governing_moment_amplification
-        > stability_result.amplification_warning_ratio
-        or stability_result.governing_displacement_amplification
-        > stability_result.amplification_warning_ratio
         or (
             stability_result.minimum_alpha_cr is not None
             and stability_result.minimum_alpha_cr <= 1.0
@@ -2179,7 +2175,11 @@ def _p399_evidence(
     ):
         stability_status = "fail"
     elif (
-        not stability_direction_evidence_complete
+        stability_result.governing_moment_amplification
+        > stability_result.amplification_warning_ratio
+        or stability_result.governing_displacement_amplification
+        > stability_result.amplification_warning_ratio
+        or not stability_direction_evidence_complete
         or not stability_analysis_basis_ready
         or stability_result.simplified_alpha_cr_applicable is False
         or actions_status != "pass"
@@ -2522,6 +2522,21 @@ def _p399_evidence(
                     "elastic critical-load analysis is required."
                 ]
                 if stability_result.simplified_alpha_cr_applicable is False
+                else []
+            ),
+            *(
+                [
+                    "The linear/P-Delta amplification ratio exceeds the authored "
+                    "review threshold. P399 does not define this ratio as a failure "
+                    "criterion; the converged second-order design effects remain "
+                    "visible for downstream resistance and serviceability checks."
+                ]
+                if (
+                    stability_result.governing_moment_amplification
+                    > stability_result.amplification_warning_ratio
+                    or stability_result.governing_displacement_amplification
+                    > stability_result.amplification_warning_ratio
+                )
                 else []
             ),
             *(

@@ -461,7 +461,7 @@ structure.stability(
     imperfection_basis="Explicit test equivalent horizontal force.",
     base_stiffness_basis="Fixed base is an unverified test assumption.",
     base_stiffness_status="assumed",
-    amplification_warning_ratio=1.10,
+    amplification_warning_ratio=1.000001,
 )
 structural_assembly = structure.assembly""",
     )
@@ -493,6 +493,10 @@ structural_assembly = structure.assembly""",
         for equation in stability_sheet.equations
     )
     assert any(output.symbol == "converged" for output in stability_sheet.outputs)
+    assert any(
+        "P399 does not define this ratio as a failure criterion" in assumption
+        for assumption in stability_sheet.assumptions
+    )
 
 
 def test_bidirectional_nhf_evidence_completes_global_stability_stage():
