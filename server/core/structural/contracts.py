@@ -401,6 +401,16 @@ class MemberCrossSectionCheck(StructuralContract):
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
         None
     )
+    off_axis_load_path_status: Literal[
+        "not_declared", "candidate", "verified"
+    ] = "not_declared"
+    off_axis_required_reaction_kN: float | None = None
+    off_axis_source_component_ids: list[str] = Field(default_factory=list)
+    off_axis_source_connection_ids: list[str] = Field(default_factory=list)
+    off_axis_collector_component_ids: list[str] = Field(default_factory=list)
+    off_axis_collector_connection_ids: list[str] = Field(default_factory=list)
+    off_axis_grounded_component_id: str | None = None
+    off_axis_load_path_basis: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 

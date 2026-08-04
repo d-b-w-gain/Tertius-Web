@@ -245,7 +245,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedRestraintChecks = (analysis?.member_restraint_candidate_checks ?? [])
     .filter((check) => selectedRestraintTrace?.governing_candidate_check_ids.includes(check.id))
   const selectedRestraintVisualNodeIds = useMemo(() => {
-    if (!capture || !selectedRestraintTrace) {
+    if (!capture) {
       return selectedVisualNodeId ? [selectedVisualNodeId] : undefined
     }
     const componentVisualNodes = new Map(
@@ -253,10 +253,22 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     return Array.from(new Set([
       selectedVisualNodeId,
-      ...selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
+      ...(selectedCrossSectionCheck?.off_axis_source_component_ids ?? [])
+        .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
+      ...(selectedCrossSectionCheck?.off_axis_collector_component_ids ?? [])
+        .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
+      ...(selectedRestraintTrace
+        ? selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
+        : [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
     ].filter(Boolean)))
-  }, [capture, selectedRestraintChecks, selectedRestraintTrace, selectedVisualNodeId])
+  }, [
+    capture,
+    selectedCrossSectionCheck,
+    selectedRestraintChecks,
+    selectedRestraintTrace,
+    selectedVisualNodeId,
+  ])
   const selectRestraintTrace = useCallback((traceId: string) => {
     const currentAnalysis = analysis
     const trace = currentAnalysis?.member_restraint_traces?.find(
@@ -1451,6 +1463,40 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
                             </dd>
+                          </div>
+                          <div className="col-span-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <dt className="font-semibold text-amber-300">
+                                Off-axis load path
+                              </dt>
+                              <dd className="font-bold uppercase text-amber-300">
+                                {selectedCrossSectionCheck.off_axis_load_path_status
+                                  .replace('_', ' ')}
+                              </dd>
+                            </div>
+                            <div className="mt-1 font-mono text-slate-300">
+                              Required support reaction:{' '}
+                              {selectedCrossSectionCheck.off_axis_required_reaction_kN === null
+                                ? '—'
+                                : `${number(
+                                    selectedCrossSectionCheck.off_axis_required_reaction_kN,
+                                    4,
+                                  )} kN`}
+                            </div>
+                            <div className="mt-1 text-slate-400">
+                              Action source:{' '}
+                              {selectedCrossSectionCheck.off_axis_source_component_ids.join(' → ')
+                                || 'no wind-normal surface connection declared'}
+                            </div>
+                            <div className="mt-1 text-slate-400">
+                              Collector to ground:{' '}
+                              {selectedCrossSectionCheck.off_axis_collector_component_ids.join(' → ')
+                                || 'not declared'}
+                            </div>
+                            <div className="mt-1 text-slate-500">
+                              {selectedCrossSectionCheck.off_axis_load_path_basis
+                                || 'No authored collector path basis.'}
+                            </div>
                           </div>
                         </dl>
                       )}

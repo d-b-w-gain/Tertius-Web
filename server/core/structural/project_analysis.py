@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from collections import deque
 from importlib.metadata import version
 from math import pi, sqrt
 from typing import Any, Literal, cast
@@ -15,6 +16,8 @@ from .contracts import (
     CalculationInput,
     CalculationSheet,
     CapabilityState,
+    DesignComponent,
+    DesignConnection,
     EquilibriumDiagnostic,
     LoadCombination,
     LoadSummary,
@@ -245,9 +248,105 @@ def _member_station_distances(analysis, declaration) -> list[float]:
     return sorted(distances)
 
 
+def _off_axis_load_path(
+    component_id: str,
+    components: dict[str, DesignComponent],
+    connections: Sequence[DesignConnection],
+) -> dict[str, Any]:
+    """Trace authored surface action into a member and force/shear path to ground.
+
+    Connectivity is deliberately reported as a candidate only. It demonstrates
+    where the design says the reaction goes; it does not infer connector,
+    diaphragm, collector, or anchorage resistance from touching CAD solids.
+    """
+    source_component_ids: list[str] = []
+    source_connection_ids: list[str] = []
+    adjacency: dict[str, list[tuple[str, DesignConnection]]] = {}
+    for connection in connections:
+        if connection.from_component_id == component_id:
+            other_id = connection.to_component_id
+        elif connection.to_component_id == component_id:
+            other_id = connection.from_component_id
+        else:
+            other_id = ""
+        if other_id and components.get(other_id, None) is not None:
+            if components[other_id].kind == "surface" and "wind_normal" in connection.transfers:
+                source_component_ids.append(other_id)
+                source_connection_ids.append(connection.id)
+
+        if not ({"force", "shear"} & set(connection.transfers)):
+            continue
+        adjacency.setdefault(connection.from_component_id, []).append(
+            (connection.to_component_id, connection)
+        )
+        adjacency.setdefault(connection.to_component_id, []).append(
+            (connection.from_component_id, connection)
+        )
+
+    queue = deque([(component_id, [component_id], [])])
+    visited = {component_id}
+    while queue:
+        current_id, component_path, connection_path = queue.popleft()
+        current = components.get(current_id)
+        if current is not None and current.grounded and current_id != component_id:
+            collector_component_ids = [component_path[0]]
+            for next_component_id, connection in zip(
+                component_path[1:],
+                connection_path,
+                strict=True,
+            ):
+                collector_component_ids.extend(connection.connector_component_ids)
+                collector_component_ids.append(next_component_id)
+            source_basis = (
+                "An authored wind-normal surface connection feeds this member"
+                if source_component_ids
+                else "No wind-normal surface action source is directly connected"
+            )
+            return {
+                "status": "candidate",
+                "source_component_ids": list(dict.fromkeys(source_component_ids)),
+                "source_connection_ids": list(dict.fromkeys(source_connection_ids)),
+                "collector_component_ids": list(
+                    dict.fromkeys(collector_component_ids)
+                ),
+                "collector_connection_ids": [
+                    connection.id for connection in connection_path
+                ],
+                "grounded_component_id": current_id,
+                "basis": (
+                    f"{source_basis}; the design connection graph contains a "
+                    "force/shear path to the "
+                    f"grounded component {current_id!r}. Path continuity is a candidate, "
+                    "not verified resistance or stiffness."
+                ),
+            }
+        for next_id, connection in adjacency.get(current_id, []):
+            if next_id in visited or components.get(next_id) is None:
+                continue
+            visited.add(next_id)
+            queue.append(
+                (next_id, [*component_path, next_id], [*connection_path, connection])
+            )
+
+    return {
+        "status": "not_declared",
+        "source_component_ids": list(dict.fromkeys(source_component_ids)),
+        "source_connection_ids": list(dict.fromkeys(source_connection_ids)),
+        "collector_component_ids": [component_id],
+        "collector_connection_ids": [],
+        "grounded_component_id": None,
+        "basis": (
+            "No authored force/shear connection path from this member reaches a "
+            "grounded component."
+        ),
+    }
+
+
 def _cross_section_checks(
     model,
     analysis,
+    components: dict[str, DesignComponent],
+    connections: Sequence[DesignConnection],
 ) -> list[MemberCrossSectionCheck]:
     definition = analysis.cross_section_verification
     if definition is None:
@@ -377,6 +476,11 @@ def _cross_section_checks(
             if float(governing["utilization"]) > 1.0
             else "pass"
         )
+        off_axis_path = _off_axis_load_path(
+            declaration.component_id,
+            components,
+            connections,
+        )
         checks.append(
             MemberCrossSectionCheck(
                 member_id=declaration.id,
@@ -409,6 +513,24 @@ def _cross_section_checks(
                 },
                 web_slenderness=capacity.web_slenderness,
                 shear_regime=capacity.shear_regime,
+                off_axis_load_path_status=off_axis_path["status"],
+                off_axis_required_reaction_kN=peak_off_axis_shear_kN,
+                off_axis_source_component_ids=off_axis_path[
+                    "source_component_ids"
+                ],
+                off_axis_source_connection_ids=off_axis_path[
+                    "source_connection_ids"
+                ],
+                off_axis_collector_component_ids=off_axis_path[
+                    "collector_component_ids"
+                ],
+                off_axis_collector_connection_ids=off_axis_path[
+                    "collector_connection_ids"
+                ],
+                off_axis_grounded_component_id=off_axis_path[
+                    "grounded_component_id"
+                ],
+                off_axis_load_path_basis=off_axis_path["basis"],
                 basis=capacity.basis,
                 assumptions=[
                     (
@@ -445,6 +567,16 @@ def _cross_section_checks(
                             "torsional design resistance has been inferred."
                         ]
                         if peak_torsion_kNm > definition.off_axis_tolerance
+                        else []
+                    ),
+                    *(
+                        [
+                            "An authored collector path reaches ground, but roof-sheet "
+                            "fasteners, member support transfer, collector/brace resistance "
+                            "and stiffness, and anchorage remain unverified."
+                        ]
+                        if off_axis_path["status"] == "candidate"
+                        and off_axis_exceeded
                         else []
                     ),
                 ],
@@ -2010,6 +2142,17 @@ def _p399_evidence(
             ),
         )
     ]
+    cross_section_equations.extend(
+        CalculationEquation(
+            label=f"{check.member_id} off-axis support reaction demand",
+            expression="R_off-axis* = max |Fz|",
+            substitution=f"max |Fz| = {check.off_axis_required_reaction_kN:g} kN",
+            result=check.off_axis_required_reaction_kN,
+            unit="kN",
+        )
+        for check in cross_section_checks
+        if check.off_axis_required_reaction_kN is not None
+    )
     cross_section_outputs = [
         output
         for check in cross_section_checks
@@ -2071,6 +2214,19 @@ def _p399_evidence(
             ),
         )
     ]
+    cross_section_outputs.extend(
+        CalculationInput(
+            symbol=f"path_off-axis,{check.member_id}",
+            label=f"{check.label} off-axis collector path",
+            value=(
+                " → ".join(check.off_axis_collector_component_ids)
+                if check.off_axis_collector_component_ids
+                else check.off_axis_load_path_status
+            ),
+            source=check.off_axis_load_path_basis or "No authored path basis.",
+        )
+        for check in cross_section_checks
+    )
 
     member_stability_definition = analysis.member_stability_verification
     member_stability_status: Literal[
@@ -3531,7 +3687,12 @@ def solve_project_structural(
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
-    cross_section_checks = _cross_section_checks(model, analysis)
+    cross_section_checks = _cross_section_checks(
+        model,
+        analysis,
+        components,
+        capture.connections,
+    )
     cross_section_checks_by_member = {
         check.member_id: check for check in cross_section_checks
     }

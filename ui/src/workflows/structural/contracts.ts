@@ -384,6 +384,14 @@ export type StructuralSnapshot = {
     capacity_factors: Record<string, number>
     web_slenderness: number | null
     shear_regime: 'stocky' | 'inelastic_buckling' | 'elastic_buckling' | null
+    off_axis_load_path_status: 'not_declared' | 'candidate' | 'verified'
+    off_axis_required_reaction_kN: number | null
+    off_axis_source_component_ids: string[]
+    off_axis_source_connection_ids: string[]
+    off_axis_collector_component_ids: string[]
+    off_axis_collector_connection_ids: string[]
+    off_axis_grounded_component_id: string | null
+    off_axis_load_path_basis: string | null
     basis: string
     assumptions: string[]
   }>

@@ -11,6 +11,8 @@ from core.structural.authoring_runtime import (
     StructuralModel,
 )
 from core.structural.contracts import (
+    DesignComponent,
+    DesignConnection,
     MemberStabilityComparison,
     ProjectStructuralCapture,
 )
@@ -19,9 +21,89 @@ from core.structural.design_capture import (
     parse_project_structural_capture,
 )
 from core.structural.project_analysis import (
+    _off_axis_load_path,
     _stability_scope_comparisons,
     solve_project_structural,
 )
+
+
+def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():
+    components = {
+        component.id: component
+        for component in (
+            DesignComponent(
+                id="sheet",
+                label="Roof sheet",
+                kind="surface",
+                visual_node_id="sheet-node",
+            ),
+            DesignComponent(
+                id="screws",
+                label="Roof screws",
+                kind="connector",
+                visual_node_id="screw-node",
+            ),
+            DesignComponent(
+                id="purlin",
+                label="Roof purlin",
+                kind="member",
+                visual_node_id="purlin-node",
+            ),
+            DesignComponent(
+                id="portal",
+                label="Portal",
+                kind="member",
+                visual_node_id="portal-node",
+            ),
+            DesignComponent(
+                id="foundation",
+                label="Foundation",
+                kind="ground",
+                visual_node_id="foundation-node",
+                grounded=True,
+            ),
+        )
+    }
+    connections = [
+        DesignConnection(
+            id="sheet-purlin",
+            label="Sheet screw line",
+            from_component_id="sheet",
+            to_component_id="purlin",
+            connector_component_ids=["screws"],
+            transfers=["wind_normal", "force", "shear"],
+        ),
+        DesignConnection(
+            id="purlin-portal",
+            label="Purlin cleat",
+            from_component_id="purlin",
+            to_component_id="portal",
+            transfers=["force", "shear"],
+        ),
+        DesignConnection(
+            id="portal-foundation",
+            label="Portal base",
+            from_component_id="portal",
+            to_component_id="foundation",
+            transfers=["force", "shear", "moment"],
+        ),
+    ]
+
+    path = _off_axis_load_path("purlin", components, connections)
+
+    assert path["status"] == "candidate"
+    assert path["source_component_ids"] == ["sheet"]
+    assert path["source_connection_ids"] == ["sheet-purlin"]
+    assert path["collector_component_ids"] == [
+        "purlin",
+        "portal",
+        "foundation",
+    ]
+    assert path["collector_connection_ids"] == [
+        "purlin-portal",
+        "portal-foundation",
+    ]
+    assert path["grounded_component_id"] == "foundation"
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():
@@ -629,6 +711,20 @@ structural_assembly = structure.assembly""",
         check.governing_utilisation is not None and check.governing_utilisation < 1
         for check in snapshot.cross_section_checks
     )
+    beam_cross_section = next(
+        check for check in snapshot.cross_section_checks if check.member_id == "beam-axis"
+    )
+    assert beam_cross_section.off_axis_load_path_status == "candidate"
+    assert beam_cross_section.off_axis_collector_component_ids == [
+        "beam",
+        "column",
+        "block",
+    ]
+    assert beam_cross_section.off_axis_collector_connection_ids == [
+        "beam-column",
+        "column-ground",
+    ]
+    assert beam_cross_section.off_axis_grounded_component_id == "block"
     assert all(check.status == "pass" for check in snapshot.member_checks)
     assert len(snapshot.member_stability_checks) == 2
     assert all(check.status == "pass" for check in snapshot.member_stability_checks)
@@ -660,6 +756,10 @@ structural_assembly = structure.assembly""",
     assert cross_section_sheet.status == "pass"
     assert any(
         equation.expression == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
+        for equation in cross_section_sheet.equations
+    )
+    assert any(
+        equation.expression == "R_off-axis* = max |Fz|"
         for equation in cross_section_sheet.equations
     )
     member_stability_sheet = next(

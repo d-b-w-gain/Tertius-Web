@@ -517,6 +517,59 @@ const overloadAnalysis: StructuralSnapshot = {
   },
 }
 
+const crossSectionAnalysis: StructuralSnapshot = {
+  ...analysis,
+  verification_stages: [
+    ...analysis.verification_stages,
+    {
+      id: 'cross_section',
+      order: 6,
+      label: 'Cross-section',
+      p399_reference: '§8.1',
+      status: 'unsupported',
+      summary: 'Off-axis action has a candidate collector path but no verified resistance.',
+      sheet_ids: ['sheet-p399-cross-section'],
+      blocking_stage_ids: [],
+    },
+  ],
+  cross_section_checks: [
+    {
+      member_id: 'purlin-axis',
+      label: 'C100 purlin cross-section',
+      pack_id: 'as_nzs_4600_2018_ewm',
+      status: 'unsupported',
+      governing_combination_id: 'ULS-WIND',
+      governing_station_m: 0.8,
+      axial_kN: 0,
+      major_moment_kNm: 0.3321,
+      minor_moment_kNm: 0.1209,
+      web_shear_kN: 0.499,
+      off_axis_shear_kN: 0.186,
+      torsion_kNm: 0,
+      design_compression_capacity_kN: 31.2,
+      design_major_bending_capacity_kNm: 4.4,
+      design_web_shear_capacity_kN: 22.1,
+      axial_bending_utilisation: 0.0755,
+      bending_shear_utilisation: 0.0788,
+      governing_utilisation: 0.0788,
+      section_record_sha256: 'a'.repeat(64),
+      capacity_factors: { phi_c: 0.85, phi_b: 0.9, phi_v: 0.9 },
+      web_slenderness: 48.7,
+      shear_regime: 'stocky',
+      off_axis_load_path_status: 'candidate',
+      off_axis_required_reaction_kN: 0.186,
+      off_axis_source_component_ids: ['sheet'],
+      off_axis_source_connection_ids: ['sheet-purlin'],
+      off_axis_collector_component_ids: ['purlin', 'gpb', 'anchors', 'block'],
+      off_axis_collector_connection_ids: ['purlin-gpb', 'gpb-ground'],
+      off_axis_grounded_component_id: 'block',
+      off_axis_load_path_basis: 'Authored force/shear path reaches grounded block.',
+      basis: 'Versioned catalogue effective-width capacity pack.',
+      assumptions: ['Collector resistance and stiffness remain unverified.'],
+    },
+  ],
+}
+
 const restraintAnalysis: StructuralSnapshot = {
   ...analysis,
   member_restraint_candidate_checks: [
@@ -659,6 +712,31 @@ describe('StructuralWorkbench', () => {
     await waitFor(() => {
       expect(mocks.apiFetch.mock.calls.length).toBeGreaterThan(requestCountBeforeChange)
     })
+  })
+
+  it('shows and highlights the authored off-axis action and collector path', async () => {
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? crossSectionAnalysis : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+
+    render(<StructuralWorkbench isActive />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Off-axis load path')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Required support reaction: 0.1860 kN')).toBeInTheDocument()
+    expect(screen.getByText('Action source: sheet')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Collector to ground: purlin → gpb → anchors → block',
+    )).toBeInTheDocument()
+    expect(screen.getByText(/Viewer selection:.*sheet.*purlin.*gpb.*anchors.*block/))
+      .toBeInTheDocument()
+    expect(screen.getByText('Cross-section status: UNSUPPORTED')).toBeInTheDocument()
   })
 
   it('shows the governing working envelope and coefficient basis explicitly', async () => {
