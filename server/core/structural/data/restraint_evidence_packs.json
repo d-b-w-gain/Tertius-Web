@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "packs": [
+    {
+      "id": "lysaght-zc-2026-07-c10012-100ac-pb1230hs",
+      "version": "2026.07.07.1",
+      "label": "Lysaght C10012 / 100AC / PB1230HS restraint identity",
+      "source": {
+        "title": "LYSAGHT Zeds and Cees Design and Installation Guide",
+        "url": "https://cdn.dcs.lysaght.com/download/lysaght-zeds-cees-purlins-and-girts-user-guide",
+        "sha256": "8202f3c759be2ce929964d6feaee39e0d28a5f756045fefc65b663698e279c57",
+        "pages": [
+          "13: purlin bolt catalogue and angle connectors",
+          "17-18: holes, cleats, orientation and bridging locations",
+          "19-20: capacity-table assumptions and cleat connections"
+        ]
+      },
+      "applicability": {
+        "primary_part_number": "C10019",
+        "bracing_part_number": "C10012",
+        "connector_part_numbers": [
+          "100AC-PB1230HS-M12X30-G8.8-END-JOINTS"
+        ]
+      },
+      "resistance": {
+        "design_force_capacity_kN": null,
+        "design_moment_capacity_kNm": null,
+        "stiffness_status": "unverified",
+        "basis": "The guide verifies product geometry and identifies the standard cleat/bolt system, but does not publish a generic portal-rafter brace-force resistance or connection stiffness for this restraint use. The purlin capacity tables are configuration-specific system capacities and are not substituted for this missing evidence."
+      },
+      "assumptions": [
+        "C10012 is a single-span secondary member between the two portal frames.",
+        "The rendered fasteners are PB1230HS M12 x 30 grade 8.8 purlin bolts.",
+        "A separate combined bending-plus-axial check is required before C10012 axial reserve may carry brace force.",
+        "A separate longitudinal roof-bracing or verified diaphragm path is required."
+      ],
+      "exclusions": [
+        "No connection stiffness is inferred from bracket geometry.",
+        "No rafter distortional-buckling resistance is inferred from purlin load tables.",
+        "No cladding-diaphragm capacity or collector anchorage is credited."
+      ]
+    }
+  ]
+}

@@ -34,6 +34,7 @@ class CompileResultPayload(BaseModel):
     artifact_content_base64: str | None = None
     artifact_byte_size: int | None = None
     artifact_content_type: str | None = None
+    structural_manifest_json: str | None = None
     error_code: str | None = None
     user_message: str | None = None
     error: str | None = None

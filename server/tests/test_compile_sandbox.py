@@ -1,4 +1,3 @@
-import os
 import json
 import struct
 import time
@@ -66,6 +65,106 @@ part = bd.Box(WIDTH, 20, 10)
     assert result.output_path == tmp_path / "output.timus_bounds"
     assert json.loads(result.output_path.read_text(encoding="utf-8")) == {"max_dim": 30.0}
     assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
+
+
+def test_compile_sandbox_exports_a_generated_structural_assembly(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+from tertius_structural import StructuralModel
+
+raw_shapes = (
+    bd.Box(100, 2, 100),
+    bd.Cylinder(2, 10),
+    bd.Box(100, 100, 100),
+)
+structure = StructuralModel(title="Generated compile fixture")
+sheet = structure.surface(raw_shapes[0], id="sheet", label="Sheet")
+screws = structure.connector(raw_shapes[1], id="screws", label="Screws")
+block = structure.ground(raw_shapes[2], id="block", label="Block")
+structure.connect(
+    sheet,
+    block,
+    via=[screws],
+    id="sheet-ground",
+    label="Sheet to block",
+    transfers=["force", "shear"],
+)
+structure.surface_load(
+    sheet,
+    id="wind",
+    label="Wind",
+    case="wind",
+    pressure_kPa=0.8,
+    area_m2=0.5,
+    direction=(0, -1, 0),
+    provenance="Compile fixture",
+)
+structural_assembly = structure.assembly(
+    [sheet, screws, block],
+    label="structural-fixture",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", quality="sketch", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    assert result.structural_manifest_path is not None
+    manifest = json.loads(
+        result.structural_manifest_path.read_text(encoding="utf-8")
+    )
+    assert manifest["title"] == "Generated compile fixture"
+    assert manifest["components"][0]["id"] == "sheet"
+
+
+def test_compile_sandbox_rejects_raw_shapes_outside_generated_assembly(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+from tertius_structural import StructuralModel
+
+raw_shapes = (
+    bd.Box(100, 2, 100),
+    bd.Box(100, 100, 100),
+    bd.Box(10, 10, 100),
+)
+structure = StructuralModel(title="Generated compile fixture")
+sheet = structure.surface(raw_shapes[0], id="sheet", label="Sheet")
+block = structure.ground(raw_shapes[1], id="block", label="Block")
+structure.connect(
+    sheet,
+    block,
+    id="sheet-ground",
+    label="Sheet to block",
+    transfers=["force"],
+)
+structure.surface_load(
+    sheet,
+    id="wind",
+    label="Wind",
+    case="wind",
+    pressure_kPa=0.8,
+    area_m2=0.5,
+    direction=(0, -1, 0),
+    provenance="Compile fixture",
+)
+structural_assembly = structure.assembly(
+    [sheet, block],
+    label="structural-fixture",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", quality="sketch", timeout_seconds=30)
+
+    assert result.success is False
+    assert "shapes exposed by design containers were not registered" in result.error
 
 
 def test_compile_sandbox_preserves_build123d_part_color_in_glb(tmp_path):

@@ -1,6 +1,10 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ModelViewerCanvas, ViewerTab } from './ViewerTab'
+import {
+  ModelViewerCanvas,
+  ViewerTab,
+  structuralCheckColor,
+} from './ViewerTab'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -142,6 +146,12 @@ describe('ViewerTab active state', () => {
     mocks.apiFetch
       .mockResolvedValueOnce(jsonResponse({ project_name: 'default_purlin' }))
       .mockResolvedValueOnce(jsonResponse({}, false))
+  })
+
+  it('uses stable green, red, and grey structural status colours', () => {
+    expect(structuralCheckColor('pass')).toBe(0x22c55e)
+    expect(structuralCheckColor('fail')).toBe(0xef4444)
+    expect(structuralCheckColor('not_checked')).toBe(0x94a3b8)
   })
 
   afterEach(() => {

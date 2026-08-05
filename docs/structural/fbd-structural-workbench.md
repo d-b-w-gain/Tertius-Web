@@ -1,0 +1,296 @@
+# FBD Structural Design Workbench
+
+## Status
+
+This is the evolving architecture for [epic #330](https://github.com/d-b-w-gain/Tertius-Web/issues/330).
+It turns the useful parts of the legacy FBD Shed Designer into a Tertius
+workbench without treating the old application as the target architecture.
+
+SCI Publication P399 is now the working process guide. The binding design
+sequence, Australian adaptation boundary, legacy-module migration map, and
+current-shed acceptance matrix are defined in
+[`p399-working-basis.md`](p399-working-basis.md). The structural workbench must
+follow that calculation sequence; it is not acceptable to infer a design pass
+from an elastic demand diagram or a nominal yield reference.
+
+The first active-project capture is now present. The authenticated
+**Structural** tab reads the same active project as Extus and displays its
+latest model artifact. A restricted `TERTIUS_STRUCTURAL` dictionary in
+`design.py` remains the workbench interchange contract, but the reference
+project no longer authors that dictionary by hand. `StructuralModel` calls wrap
+the actual Build123D shape handles, own their GLB node identities, connect those
+handles, and generate the manifest. Tertius interprets that narrow authoring
+surface statically without executing the CAD script, then traces every declared
+load to ground. The compile sandbox separately executes the same helper and
+audits the generated assembly against the manifest. This is connectivity
+capture only: member, connection, anchor, and concrete capacities remain
+visibly **not checked**.
+
+The earlier strict version `1.0` cantilever fixture and PyNiteFEA 2.4.1 solver
+remain as a backend compatibility harness, but the product workbench no longer
+shows fixture geometry or results against an active project.
+
+The legacy source is at
+`W:\ben\ContextUI\default\workflows\shed\FBD`. The first source/runtime audit is
+recorded in `docs/structural/fbd-source-inventory.md`.
+
+The legacy workflow has no `design.py`; its entrypoint is
+`portal_frame_fbd_server.py` plus 11 local imports. `design.py` plus local
+imports remains the target Tertius project boundary and must be created around
+the extracted domain/solver adapter rather than around the legacy FastAPI app.
+
+## Product question
+
+The workbench must answer:
+
+> If I change this design element, what changes in the structural model, load
+> path, reactions, member checks, and order decision?
+
+A compiled result is not trustworthy merely because it rendered or a solver
+returned numbers. Every relevant design element needs a traceable chain:
+
+`design.py input -> physical geometry -> analytical entity/load -> result -> report evidence`
+
+Missing links are blocking diagnostics, not implied passing checks.
+
+## What to preserve and what to leave behind
+
+| Treatment | Legacy FBD content |
+| --- | --- |
+| Preserve as evidence | Representative job inputs, site/wind inputs, load cases and combinations, member checks, calculation sheets, report results, and known-good hand checks |
+| Reuse behind a contract | The Python structural node/solver package, section/material data, wind calculations, load generation, result extraction, and calculation formulas |
+| Re-express in Tertius | `design.py` parameters, Build123D member geometry, structural entities, stable IDs, workbench state, viewer overlays, and report artifacts |
+| Do not port by default | The cube-per-element Three.js model, legacy workflow shell, duplicated UI state, generated jobs/caches, dead exporters, and modules outside the `design.py` import closure |
+
+Files outside the import closure are not automatically junk. They are a review
+queue. The safe inventory probe records them without importing or executing the
+legacy project:
+
+```powershell
+uv run python scripts/spikes/structural_source_inventory.py `
+  W:\ben\ContextUI\default\workflows\shed\FBD `
+  --entrypoint portal_frame_fbd_server.py `
+  --pretty
+```
+
+The JSON form records content hashes, external imports, literal runtime-file
+references, module-level calls, syntax diagnostics, and Python files outside the
+closure. It records no source text.
+
+## One design state, two linked representations
+
+The physical model and analytical model have different jobs and must not be
+collapsed into one.
+
+### Physical Build123D model
+
+- Actual section/profile shape and dimensions.
+- Member length, placement, orientation, colour, and assembly hierarchy.
+- Openings, cladding, connections, and visible offsets.
+- Stable component IDs for viewer selection and procurement linkage.
+
+### Analytical structural model
+
+- Nodes and degrees of freedom.
+- Members with analytical centre-lines and local axes.
+- Sections, materials, releases, supports, offsets/eccentricities, and rigid
+  links.
+- Nodal, member, surface, and tributary loads.
+- Load cases and combinations.
+- Reactions, internal actions, deflections, capacities, utilisation, warnings,
+  and provenance.
+
+Both representations reference the same stable design IDs. Build123D solids are
+not used as an implicit finite-element mesh, and solver node coordinates are not
+used as placeholder render geometry.
+
+## Node placement
+
+Nodes are authored explicitly or created by deterministic design helpers at:
+
+- supports and restraint locations;
+- physical member intersections and connection/load-transfer points;
+- member ends and releases;
+- section, stiffness, or orientation changes;
+- point-load locations and distributed-load discontinuities;
+- locations where result stations are required by a check.
+
+Members reference their start and end nodes. Supports restrain selected degrees
+of freedom at declared nodes, which is what gives reactions a defined location.
+Member-end forces and internal diagrams are reported in declared local axes.
+
+The contract must represent the difference between the analytical centre-line
+and physical geometry. Offsets, eccentricities, rigid links, partial fixity, and
+connection assumptions are explicit. Coincident-looking geometry does not prove
+analytical connectivity.
+
+Validation rejects or blocks:
+
+- duplicate IDs and ambiguously coincident nodes;
+- dangling, disconnected, or zero-length members;
+- unsupported degrees of freedom and unstable models;
+- geometry with no structural coverage when coverage is required;
+- analytical members with no geometry/viewer identity;
+- loads that reference missing entities or have no case/provenance;
+- stale results whose source/structural hashes do not match the current compile.
+
+## Artifact pipeline
+
+```mermaid
+flowchart LR
+    A["design.py + local imports"] --> B["Tertius compile sandbox"]
+    B --> C["Build123D assembly artifact"]
+    B --> D["structural-model.json"]
+    D --> E["versioned solver adapter"]
+    E --> F["structural-results.json"]
+    C --> G["Structural Design Workbench"]
+    D --> G
+    F --> G
+    F --> H["calculation/report artifacts"]
+```
+
+The solver is isolated behind a versioned adapter. The compatibility spike must
+first establish the exact legacy package, version, native dependencies, licence
+constraints, units, sign conventions, and deterministic export behaviour. The
+package should not leak its private object model into UI or persistence schemas.
+
+## Initial artifact contracts
+
+`structural-model.json` needs versioned collections for:
+
+- nodes;
+- members;
+- sections and materials;
+- supports, releases, offsets, and rigid links;
+- loads, load cases, and combinations;
+- geometry/source references;
+- units, standards, assumptions, warnings, and provenance.
+
+`structural-results.json` needs:
+
+- source and structural-model hashes;
+- solver identity/version and analysis settings;
+- convergence/stability/equilibrium diagnostics;
+- reactions and member-end forces;
+- axial, shear, moment, torsion, and deflection stations;
+- capacity checks, governing combinations, utilisation, and check status;
+- unsupported or not-checked conditions.
+
+Exact field names land only after the legacy inventory and minimal solver spike.
+
+The fixture establishes the first concrete subset in
+`server/core/structural/contracts.py`: nodes, six-degree restraints, members,
+sections, materials, nodal loads, load cases, reactions, member demands,
+illustrative checks, equilibrium diagnostics, solver metadata, source identity,
+and capability states. Contract validation rejects duplicate IDs, missing
+references, and zero-length members. This is a compatibility harness, not yet
+the complete persisted `structural-model.json`/`structural-results.json`
+contract.
+
+The active-project capture adds a deliberately smaller version `0.1` authoring
+surface. Legacy projects may still provide a literal `TERTIUS_STRUCTURAL`
+dictionary, but new projects use an injected `tertius_structural` helper:
+
+```python
+structure = StructuralModel(title="C100 connection")
+purlin = structure.member(purlin_shape, id="purlin", label="C10019")
+bracket = structure.support(bracket_shape, id="gpb", label="100GPB")
+bolts = structure.connector(bolt_shape, id="bolts", label="M12 bolts")
+structure.connect(
+    purlin,
+    bracket,
+    via=[bolts],
+    id="purlin-gpb",
+    label="C100 web bolted to 100GPB",
+    transfers=["force", "shear", "moment"],
+)
+structural_assembly = structure.assembly(
+    [purlin, bracket, bolts],
+    label="connection",
+)
+TERTIUS_STRUCTURAL = structure.manifest()
+```
+
+The same registered object handles drive the Build123D assembly and generated
+manifest. Connections cannot name arbitrary component strings. The restricted
+AST interpreter recognizes only this explicit helper surface plus literals,
+previously declared static names, and arithmetic; it does not execute geometry
+or arbitrary Python. The parser validates:
+
+- unique stable component, connection, and load IDs;
+- unique physical viewer IDs and optional product/part numbers;
+- directed source/target component references;
+- connector handles of the correct kind used by each connection;
+- registered components omitted from the assembly, raw/unregistered assembly
+  handles, unconnected members/supports/surfaces, and unused connectors;
+- non-zero surface pressure, positive loaded area, direction, load case, and
+  provenance;
+- a deterministic connection path from each loaded component to a component
+  explicitly marked `grounded`.
+
+At runtime, `StructuralModel.assembly(...)` accepts registered
+`StructuralPart` handles only and must contain every registered component
+exactly once. The compile sandbox requires that generated projects export that
+single marked assembly root and verifies that every declared viewer node occurs
+exactly once. It also walks Build123D shapes exposed through design lists,
+tuples, sets, and dictionaries and rejects any shape absent from the registered
+assembly. A new purlin added to the builder output but omitted from structural
+registration therefore fails compilation rather than silently disappearing or
+appearing beside an outdated structural graph.
+
+The reference `structural_test` design exercises:
+
+`Custom Orb sheet → Tek screws → C10019 → M12 bolts → 100GPB → M12 anchors → grounded concrete`
+
+Reaching ground proves only that the declared graph is connected. It does not
+prove that geometry is in contact, that the stated connection transfers are
+valid, or that any component has adequate strength, stiffness, embedment,
+edge distance, pull-out, bearing, or buckling capacity.
+
+The later `Zxe x fy` colour threshold is a renderer regression fixture only.
+It is not a P399 cross-section/member verification and is not an Australian
+design capacity. Product pass/fail status must come from a versioned
+calculation pack after actions, combinations, stability and restraints have
+been resolved.
+
+## Current-order verification gate
+
+Before relying on the workbench for the imminent shed order, the baseline must
+show where each of these appears in physical geometry, the analytical model,
+loads/combinations, results, and reports:
+
+- internal cladding self-weight;
+- selected C100 batten properties, spans, spacing, restraint, and connection
+  assumptions;
+- revised wall positions and their load paths;
+- window and door openings, jambs, headers/lintels, interrupted studs/bracing,
+  and tributary loads;
+- every changed connection or detail that affects stiffness, capacity,
+  restraint, or load transfer;
+- job-specific site and wind inputs.
+
+The review also requires global force and moment equilibrium, reactions,
+connectivity/stability, consistent units and signs, and independent comparison
+with a trusted FBD result or hand calculation. Unsupported checks remain
+visibly **not checked**. Tertius output alone is not engineering certification.
+
+## Platform boundaries
+
+- #54 remains the umbrella for Shed Designer capabilities in Tertius.
+- #57 owns shared viewer/tree inspection primitives.
+- #61 owns incremental component compilation and scene updates.
+- #46 owns generic procurement/BoM behaviour.
+- #330 owns the structural graph, solver adapter, analysis inspection, structural
+  coverage, calculation evidence, and FBD reference migration.
+
+## Open evidence questions
+
+- Which current Tertius `design.py` represents the changed shed that is about
+  to be ordered?
+- Which calculations are package-provided versus custom FBD formulas?
+- What units, local-axis rules, release conventions, and load-combination rules
+  are currently assumed?
+- Which legacy results are trusted enough to become golden fixtures, and which
+  require independent correction before migration?
+- Which Australian standards editions, amendments, project criteria, and
+  manufacturer capacity sources form the first versioned calculation pack?

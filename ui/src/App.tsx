@@ -3,10 +3,12 @@ import { IntusWindow } from './workflows/intus/IntusWindow'
 import { ArtusWindow } from './workflows/artus/ArtusWindow'
 import { TimusWindow } from './workflows/timus/TimusWindow'
 import { OctavusWindow } from './workflows/octavus/OctavusWindow'
+import { StructuralWorkbench } from './workflows/structural/StructuralWorkbench'
+import { SiteWorkbench } from './workflows/site/SiteWorkbench'
 import { GenerateDesignWindow, type GenerateViewportState } from './workflows/generate/GenerateDesignWindow'
 import { SharedExtusViewport, type SharedExtusViewportSource } from './workflows/extus/SharedExtusViewport'
 import { AiUsageGauge } from './workflows/generate/AiUsageGauge'
-import { useAuth } from './auth/AuthProvider'
+import { hasWorkbenchAccess, useAuth } from './auth/AuthProvider'
 import { LoginStateWidget } from './auth/LoginStateWidget'
 import { GUEST_WORKSPACE_KEY } from './workflows/shared/guestWorkspace'
 import { importGuestWorkspace } from './workflows/shared/guestImport'
@@ -21,7 +23,7 @@ type ViewportFrame = {
 }
 
 function App() {
-  const { authMode, getAccessToken, isLoading } = useAuth()
+  const { authMode, getAccessToken, isLoading, user } = useAuth()
   const [activeTab, setActiveTab] = useState('generate')
   const [isSidebarOpen, setIsSidebarOpen] = useState(false)
   const [showImportBanner, setShowImportBanner] = useState(false)
@@ -40,6 +42,8 @@ function App() {
   const previousAuthMode = useRef(authMode)
   const buildInfoTooltip = `Commit ${__GIT_COMMIT__}\nDate ${__GIT_COMMIT_DATE__}`
   const intusServerUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL)
+  const canUseSiteWorkbench = hasWorkbenchAccess(user, 'site')
+  const canUseStructuralWorkbench = hasWorkbenchAccess(user, 'structural')
   const usesSharedExtusViewport = activeTab === 'extus' || activeTab === 'octavus' || (activeTab === 'generate' && authMode !== 'guest')
   const sharedExtusViewportSource: SharedExtusViewportSource = activeTab === 'generate' && generateViewportState.modelUrl
     ? {
@@ -96,6 +100,15 @@ function App() {
   useEffect(() => {
     if (activeTab !== 'octavus') setProcurementViewportFrame(null)
   }, [activeTab])
+
+  useEffect(() => {
+    if (
+      (activeTab === 'site' && !canUseSiteWorkbench) ||
+      (activeTab === 'structural' && !canUseStructuralWorkbench)
+    ) {
+      setActiveTab('generate')
+    }
+  }, [activeTab, canUseSiteWorkbench, canUseStructuralWorkbench])
 
   useEffect(() => {
     if (authMode === 'guest') {
@@ -236,6 +249,22 @@ function App() {
           >
             🛒 Procurement
           </button>
+          {canUseSiteWorkbench && (
+            <button
+              onClick={() => setActiveTab('site')}
+              className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'site' ? 'bg-slate-950 text-cyan-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+            >
+              🧭 Site
+            </button>
+          )}
+          {canUseStructuralWorkbench && (
+            <button
+              onClick={() => setActiveTab('structural')}
+              className={`px-4 py-2 rounded-t-lg transition-all border-t border-l border-r ${activeTab === 'structural' ? 'bg-slate-950 text-orange-300 font-medium border-slate-800' : 'bg-slate-800/50 hover:bg-slate-800 text-slate-400 border-transparent'}`}
+            >
+              🏗️ Structural
+            </button>
+          )}
           <div className="ml-auto flex items-center space-x-2 mr-4">
             <div className="relative">
               <button 
@@ -313,6 +342,16 @@ function App() {
               componentPreviewImage={procurementComponentPreview}
             />
           </div>
+          {canUseStructuralWorkbench && (
+            <div className={activeTab === 'structural' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+              <StructuralWorkbench isActive={activeTab === 'structural'} />
+            </div>
+          )}
+          {canUseSiteWorkbench && (
+            <div className={activeTab === 'site' ? 'absolute inset-0 flex flex-col' : 'hidden'}>
+              <SiteWorkbench isActive={activeTab === 'site'} />
+            </div>
+          )}
         </div>
       </div>
       <AiUsageGauge serverUrl={intusServerUrl} />
