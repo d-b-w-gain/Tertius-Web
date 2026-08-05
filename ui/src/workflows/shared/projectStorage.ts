@@ -23,6 +23,28 @@ export type ProjectFileMetadata = {
   updated_at?: string
 }
 
+export type PiAgentToolName = 'read' | 'edit' | 'write' | 'grep' | 'find' | 'ls'
+
+export type LlmEditProgressEvent = {
+  sequence: number
+  kind: 'reasoning_delta' | 'tool_started' | 'tool_finished'
+  text: string | null
+  tool_name: PiAgentToolName | null
+  target: string | null
+  is_error: boolean | null
+  occurred_at: string
+}
+
+export type LlmEditProgressSnapshot = {
+  schema_version: 1
+  execution_id: string
+  execution_started_at: string
+  last_batch_sequence: number
+  last_sequence: number
+  truncated_before_sequence: number | null
+  events: LlmEditProgressEvent[]
+}
+
 export type LlmFileEditResult = {
   success: true
   outcome: 'changed' | 'no_change' | 'cannot_complete'
@@ -45,6 +67,7 @@ export type LlmFileEditJobStatus = {
   job_id: string
   status: 'queued' | 'running' | 'succeeded' | 'failed'
   result?: LlmFileEditResult
+  progress?: LlmEditProgressSnapshot | null
   error?: string
   error_code?: string
   user_message?: string
@@ -69,6 +92,7 @@ export type LlmEditConversationEntry = {
     changed?: boolean
   }>
   requested_file_count?: number
+  progress?: LlmEditProgressSnapshot | null
   compile?: {
     job_id: string
     status: 'queued' | 'running' | 'succeeded' | 'failed'

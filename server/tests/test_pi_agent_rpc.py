@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -48,6 +50,36 @@ for raw in sys.stdin:
             {"type":"tool_execution_end","toolCallId":"call-1","toolName":"read","result":{"content":[{"type":"text","text":"TOOL_SENTINEL"}],"details":{}},"isError":False},
             {"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_SENTINEL"*210},{"type":"text","text":"FINAL_FIRST_BLOCK "},{"type":"text","text":"F"*2100},{"type":"text","text":" FINAL_SECOND_BLOCK"}],"stopReason":"stop"}},
         ]
+        elif scenario=="progress": events=[
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"Checking workspace","tertiusReasoningSummary":True}},
+            {"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"SOURCE_SENTINEL"}]},"assistantMessageEvent":{"type":"text_delta","delta":"ASSISTANT_SENTINEL"}},
+            {"type":"tool_execution_start","toolCallId":"call-read","toolName":"read","args":{"path":"nested/model.py","content":"ARG_SOURCE_SENTINEL"}},
+            {"type":"tool_execution_update","toolCallId":"call-read","toolName":"read","args":{"path":"nested/model.py"},"partialResult":{"content":[{"type":"text","text":"UPDATE_RESULT_SENTINEL"}]}},
+            {"type":"tool_execution_end","toolCallId":"call-read","toolName":"read","result":{"content":[{"type":"text","text":"RESULT_SENTINEL"}]},"isError":False},
+            {"type":"tool_execution_start","toolCallId":"call-edit","toolName":"edit","args":{"file_path":os.path.join(os.getcwd(),"src/model.py"),"replacement":"REPLACEMENT_SENTINEL"}},
+            {"type":"tool_execution_end","toolCallId":"call-edit","toolName":"edit","result":{"content":[{"type":"text","text":"EDIT_RESULT_SENTINEL"}]},"isError":True},
+            {"type":"tool_execution_start","toolCallId":"call-traversal","toolName":"write","args":{"path":"../outside.py","content":"TRAVERSAL_SOURCE_SENTINEL"}},
+            {"type":"tool_execution_end","toolCallId":"call-traversal","toolName":"write","result":{"content":[{"type":"text","text":"TRAVERSAL_RESULT_SENTINEL"}]},"isError":False},
+            {"type":"tool_execution_start","toolCallId":"call-outside","toolName":"read","args":{"path":"/etc/passwd"}},
+            {"type":"tool_execution_end","toolCallId":"call-outside","toolName":"read","result":{"content":[{"type":"text","text":"OUTSIDE_RESULT_SENTINEL"}]},"isError":False},
+            {"type":"tool_execution_start","toolCallId":"call-unknown","toolName":"bash","args":{"command":"UNKNOWN_ARG_SENTINEL"}},
+            {"type":"tool_execution_end","toolCallId":"call-unknown","toolName":"bash","result":{"content":[{"type":"text","text":"UNKNOWN_RESULT_SENTINEL"}]},"isError":False},
+            {"type":"tool_execution_end","toolCallId":"call-orphan","toolName":"read","result":{"content":[{"type":"text","text":"ORPHAN_RESULT_SENTINEL"}]},"isError":False},
+        ]
+        elif scenario=="long-reasoning": events=[
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"R"*1201,"tertiusReasoningSummary":True}},
+        ]
+        elif scenario=="mixed-reasoning": events=[
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"SAFE_SUMMARY_SENTINEL","tertiusReasoningSummary":True}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"RAW_REASONING_SENTINEL","tertiusReasoningSummary":False}},
+            {"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"thinking_delta","delta":"UNMARKED_REASONING_SENTINEL"}},
+        ]
+        elif scenario=="unsafe-targets": events=[
+            {"type":"tool_execution_start","toolCallId":"call-contained","toolName":"read","args":{"path":"nested/../model.py"}},
+            {"type":"tool_execution_end","toolCallId":"call-contained","toolName":"read","result":{"content":[]},"isError":False},
+            {"type":"tool_execution_start","toolCallId":"call-symlink","toolName":"read","args":{"path":"escape/secret.py"}},
+            {"type":"tool_execution_end","toolCallId":"call-symlink","toolName":"read","result":{"content":[]},"isError":False},
+        ]
         elif scenario=="auth": events=[{"type":"agent_error","error":{"message":"Unauthorized bearer sk-secret"}}]
         elif scenario=="rate": events=[{"type":"auto_retry_end","success":False,"finalError":"429 rate limit exceeded"}]
         elif scenario=="assistant-error": events=[{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Unauthorized secret-token"}}]
@@ -77,6 +109,220 @@ def settings(fake_pi: Path, scenario: str = "settled") -> dict:
         "max_tool_calls": 48,
         "environment": {"FAKE_PI_SCENARIO": scenario},
     }
+
+
+@pytest.mark.asyncio
+async def test_rpc_emits_thinking_and_correlated_safe_tool_milestones(fake_pi):
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        await asyncio.sleep(0)
+        progress.append(event)
+
+    result = await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "progress"),
+        progress_callback=capture,
+    )
+
+    assert result.tool_calls == 5
+    assert [asdict(event) for event in progress] == [
+        {
+            "kind": "reasoning_delta",
+            "text": "Checking workspace",
+            "tool_name": None,
+            "target": None,
+            "is_error": None,
+        },
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "read",
+            "target": "nested/model.py",
+            "is_error": None,
+        },
+        {
+            "kind": "tool_finished",
+            "text": None,
+            "tool_name": "read",
+            "target": "nested/model.py",
+            "is_error": False,
+        },
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "edit",
+            "target": "src/model.py",
+            "is_error": None,
+        },
+        {
+            "kind": "tool_finished",
+            "text": None,
+            "tool_name": "edit",
+            "target": "src/model.py",
+            "is_error": True,
+        },
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "write",
+            "target": None,
+            "is_error": None,
+        },
+        {
+            "kind": "tool_finished",
+            "text": None,
+            "tool_name": "write",
+            "target": None,
+            "is_error": False,
+        },
+        {
+            "kind": "tool_started",
+            "text": None,
+            "tool_name": "read",
+            "target": None,
+            "is_error": None,
+        },
+        {
+            "kind": "tool_finished",
+            "text": None,
+            "tool_name": "read",
+            "target": None,
+            "is_error": False,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rpc_progress_excludes_raw_args_results_source_and_tool_ids(fake_pi):
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        progress.append(event)
+
+    await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "progress"),
+        progress_callback=capture,
+    )
+
+    assert all(
+        set(asdict(event)) == {"kind", "text", "tool_name", "target", "is_error"}
+        for event in progress
+    )
+    serialized = repr(progress)
+    for sentinel in (
+        "SOURCE_SENTINEL",
+        "ASSISTANT_SENTINEL",
+        "ARG_SOURCE_SENTINEL",
+        "UPDATE_RESULT_SENTINEL",
+        "RESULT_SENTINEL",
+        "REPLACEMENT_SENTINEL",
+        "EDIT_RESULT_SENTINEL",
+        "TRAVERSAL_SOURCE_SENTINEL",
+        "TRAVERSAL_RESULT_SENTINEL",
+        "OUTSIDE_RESULT_SENTINEL",
+        "UNKNOWN_ARG_SENTINEL",
+        "UNKNOWN_RESULT_SENTINEL",
+        "ORPHAN_RESULT_SENTINEL",
+        "call-read",
+    ):
+        assert sentinel not in serialized
+
+
+@pytest.mark.asyncio
+async def test_rpc_preserves_full_thinking_delta_for_worker_batch_splitting(fake_pi):
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        progress.append(event)
+
+    await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "long-reasoning"),
+        progress_callback=capture,
+    )
+
+    assert len(progress) == 1
+    assert progress[0].text == "R" * 1201
+
+
+@pytest.mark.asyncio
+async def test_rpc_emits_only_provenance_marked_reasoning_summaries(fake_pi):
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        progress.append(event)
+
+    await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "mixed-reasoning"),
+        progress_callback=capture,
+    )
+
+    assert [event.text for event in progress] == ["SAFE_SUMMARY_SENTINEL"]
+    assert "RAW_REASONING_SENTINEL" not in repr(progress)
+    assert "UNMARKED_REASONING_SENTINEL" not in repr(progress)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failing_kind",
+    ["reasoning_delta", "tool_started", "tool_finished"],
+)
+async def test_rpc_progress_callback_failure_does_not_fail_terminal_result(
+    fake_pi, failing_kind
+):
+    observed: list[str] = []
+
+    async def capture(event: Any) -> None:
+        observed.append(event.kind)
+        if event.kind == failing_kind:
+            raise RuntimeError("CALLBACK_CONTENT_SENTINEL")
+
+    result = await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "progress"),
+        progress_callback=capture,
+    )
+
+    assert failing_kind in observed
+    assert result.tool_calls == 5
+    assert result.usage.total_tokens == 23
+
+
+@pytest.mark.asyncio
+async def test_rpc_progress_callback_cancellation_propagates(fake_pi):
+    async def cancel(_: Any) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_pi_agent(
+            "prompt",
+            **settings(fake_pi, "long-reasoning"),
+            progress_callback=cancel,
+        )
+
+
+@pytest.mark.asyncio
+async def test_rpc_rejects_contained_traversal_and_symlink_escape_targets(
+    fake_pi, tmp_path
+):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (fake_pi.parent / "escape").symlink_to(outside, target_is_directory=True)
+    progress: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        progress.append(event)
+
+    await run_pi_agent(
+        "prompt",
+        **settings(fake_pi, "unsafe-targets"),
+        progress_callback=capture,
+    )
+
+    assert [event.target for event in progress] == [None, None, None, None]
 
 
 def test_pi_argv_uses_prompt_path_without_prompt_bytes(tmp_path):

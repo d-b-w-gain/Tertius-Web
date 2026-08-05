@@ -14,11 +14,15 @@ from core.pi_agent_messages import (
     PiAgentChangedFile,
     PiAgentConversationContext,
     PiAgentConversationTurn,
+    PiAgentProgressBatch,
+    PiAgentProgressEvent,
+    PiAgentProgressSnapshot,
     PiAgentResult,
     PiAgentUsage,
 )
-from core.repositories import LlmEditRepository
+from core.repositories import LlmEditRepository, ProgressBatchApplyOutcome
 from workflows.intus.pi_agent_result_consumer import (
+    _progress_provenance,
     apply_pi_agent_result,
     handle_pi_agent_result_message,
     observe_pi_agent_active_jobs,
@@ -59,8 +63,53 @@ def _job(db_session, seeded_tenant, file, result):
         {"prompt": "Change length", "files": [{"id": str(file.id), "filename": file.filename, "updated_at": file.updated_at.isoformat()}], "dispatched_manifest": [{"id": str(file.id), "filename": file.filename, "updated_at": file.updated_at.isoformat(), "sha256": sha256(file.content.encode()).hexdigest()}], "metadata": {}},
     )
     job.id = result.job_id
+    job.request_payload["dispatched_provider"] = "openai-codex"
+    job.request_payload["dispatched_model"] = "gpt-5.6-sol"
+    flag_modified(job, "request_payload")
     db_session.commit()
     return job
+
+
+def _progress(
+    seeded_tenant,
+    job_id,
+    *,
+    tenant_id=None,
+    execution_id=None,
+    execution_started_at=None,
+    batch_sequence=1,
+    event_sequence=1,
+    text="Inspecting the model",
+):
+    now = datetime.now(timezone.utc)
+    return PiAgentProgressBatch(
+        message_type="progress",
+        schema_version=1,
+        execution_id=execution_id or uuid4(),
+        execution_started_at=execution_started_at or now,
+        job_id=job_id,
+        tenant_id=tenant_id or seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        batch_sequence=batch_sequence,
+        events=[
+            PiAgentProgressEvent(
+                sequence=event_sequence,
+                kind="reasoning_delta",
+                text=text,
+                occurred_at=now,
+            )
+        ],
+    )
+
+
+def _consumer_settings():
+    return SimpleNamespace(
+        pi_agent_result_max_bytes=524288,
+        billing_llm_usage_subject="billing",
+        billing_max_bytes=524288,
+        pi_agent_provider="openai-codex",
+        pi_agent_model="gpt-5.6-sol",
+    )
 
 
 class Publisher:
@@ -82,6 +131,389 @@ class Message:
 
     async def nak(self):
         self.nacked += 1
+
+
+@pytest.mark.asyncio
+async def test_progress_batch_is_persisted_and_acked_with_bounded_metric(
+    db_session, seeded_tenant, monkeypatch
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    batch = _progress(seeded_tenant, job.id)
+    message = Message(batch.model_dump_json().encode())
+    metrics = []
+    monkeypatch.setattr(
+        consumer_module,
+        "counter_add",
+        lambda name, value, attributes: metrics.append((name, value, attributes)),
+    )
+
+    await handle_pi_agent_result_message(
+        message, db_session, _consumer_settings(), Publisher()
+    )
+
+    assert message.acked == 1
+    assert message.nacked == 0
+    db_session.refresh(job)
+    snapshot = PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    assert snapshot.last_batch_sequence == 1
+    assert snapshot.events[0].text == "Inspecting the model"
+    progress_metrics = [item for item in metrics if item[0] == "tertius.pi_agent.progress.processed.count"]
+    assert progress_metrics[0][2]["status"] == "applied"
+    assert set(progress_metrics[0][2]) == {
+        "operation",
+        "provider",
+        "model",
+        "status",
+        "failure_category",
+        "retryable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_progress_duplicate_is_acked_idempotently(db_session, seeded_tenant):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    batch = _progress(seeded_tenant, job.id)
+
+    first = Message(batch.model_dump_json().encode())
+    second = Message(batch.model_dump_json().encode())
+    await handle_pi_agent_result_message(first, db_session, _consumer_settings(), Publisher())
+    await handle_pi_agent_result_message(second, db_session, _consumer_settings(), Publisher())
+
+    assert first.acked == 1 and first.nacked == 0
+    assert second.acked == 1 and second.nacked == 0
+    db_session.refresh(job)
+    snapshot = PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    assert len(snapshot.events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        ProgressBatchApplyOutcome.REJECTED_IDENTITY,
+        ProgressBatchApplyOutcome.REJECTED_SEQUENCE,
+        ProgressBatchApplyOutcome.STALE_EXECUTION,
+        ProgressBatchApplyOutcome.REJECTED_SNAPSHOT,
+        ProgressBatchApplyOutcome.IGNORED_TERMINAL,
+    ],
+)
+async def test_rejected_progress_outcomes_are_acked_with_content_free_logs(
+    db_session, seeded_tenant, monkeypatch, caplog, outcome
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    secret = "SENSITIVE_PROGRESS_TEXT"
+    batch = _progress(seeded_tenant, job.id, text=secret)
+    monkeypatch.setattr(
+        LlmEditRepository, "apply_progress_batch", lambda _self, _batch: outcome
+    )
+    message = Message(batch.model_dump_json().encode())
+
+    await handle_pi_agent_result_message(
+        message, db_session, _consumer_settings(), Publisher()
+    )
+
+    assert message.acked == 1 and message.nacked == 0
+    assert secret not in caplog.text
+    assert outcome.value not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_invalid_oversize_and_identity_rejected_progress_are_acked(
+    db_session, seeded_tenant, caplog
+):
+    invalid = Message(b'{"message_type":"progress","events":[]}')
+    await handle_pi_agent_result_message(
+        invalid, db_session, _consumer_settings(), Publisher()
+    )
+    assert invalid.acked == 1 and invalid.nacked == 0
+
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    batch = _progress(seeded_tenant, job.id, text="SENSITIVE_PROGRESS_TEXT")
+    oversize_settings = _consumer_settings()
+    oversize_settings.pi_agent_result_max_bytes = 1
+    oversize = Message(batch.model_dump_json().encode())
+    await handle_pi_agent_result_message(
+        oversize, db_session, oversize_settings, Publisher()
+    )
+    assert oversize.acked == 1 and oversize.nacked == 0
+
+    rejected = Message(
+        batch.model_copy(update={"tenant_id": uuid4()}).model_dump_json().encode()
+    )
+    await handle_pi_agent_result_message(
+        rejected, db_session, _consumer_settings(), Publisher()
+    )
+    assert rejected.acked == 1 and rejected.nacked == 0
+    assert "SENSITIVE_PROGRESS_TEXT" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_progress_database_failure_rolls_back_and_naks(
+    db_session, seeded_tenant, monkeypatch
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    batch = _progress(seeded_tenant, job.id)
+    monkeypatch.setattr(
+        LlmEditRepository,
+        "apply_progress_batch",
+        lambda _self, _batch: (_ for _ in ()).throw(RuntimeError("database failed")),
+    )
+    message = Message(batch.model_dump_json().encode())
+
+    await handle_pi_agent_result_message(
+        message, db_session, _consumer_settings(), Publisher()
+    )
+
+    assert message.acked == 0 and message.nacked == 1
+    assert db_session.in_transaction() is False
+
+
+@pytest.mark.asyncio
+async def test_raw_oversize_messages_are_acked_before_envelope_discrimination(
+    db_session, seeded_tenant, monkeypatch
+):
+    warnings: list[str] = []
+    monkeypatch.setattr(consumer_module.logger, "warning", warnings.append)
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+
+    terminal = _result(seeded_tenant, file)
+    terminal_job = _job(db_session, seeded_tenant, file, terminal)
+    terminal_data = terminal.model_dump_json().encode()
+    terminal_settings = _consumer_settings()
+    terminal_settings.pi_agent_result_max_bytes = len(terminal_data)
+    terminal_message = Message(terminal_data + b" ")
+    await handle_pi_agent_result_message(
+        terminal_message, db_session, terminal_settings, Publisher()
+    )
+
+    progress_result = _result(seeded_tenant, file)
+    progress_job = _job(db_session, seeded_tenant, file, progress_result)
+    progress = _progress(
+        seeded_tenant, progress_job.id, text="SENSITIVE_PROGRESS_TEXT"
+    )
+    progress_data = progress.model_dump_json().encode()
+    progress_settings = _consumer_settings()
+    progress_settings.pi_agent_result_max_bytes = len(progress_data)
+    progress_message = Message(progress_data + b" ")
+    await handle_pi_agent_result_message(
+        progress_message, db_session, progress_settings, Publisher()
+    )
+
+    db_session.refresh(terminal_job)
+    db_session.refresh(progress_job)
+    assert terminal_message.acked == 1 and terminal_message.nacked == 0
+    assert progress_message.acked == 1 and progress_message.nacked == 0
+    assert terminal_job.status not in {"succeeded", "failed"}
+    assert progress_job.progress_payload == {}
+    assert warnings == [
+        "Discarding oversize Pi agent message envelope",
+        "Discarding oversize Pi agent message envelope",
+    ]
+    assert "SENSITIVE_PROGRESS_TEXT" not in " ".join(warnings)
+
+
+@pytest.mark.asyncio
+async def test_progress_provenance_rejects_non_runtime_dispatch_dimensions(
+    db_session, seeded_tenant, monkeypatch
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    unapproved_model = "unapproved-" + "x" * 220
+    job.request_payload["dispatched_model"] = unapproved_model
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    metrics = []
+    monkeypatch.setattr(
+        consumer_module,
+        "counter_add",
+        lambda name, value, attributes: metrics.append((name, value, attributes)),
+    )
+    message = Message(_progress(seeded_tenant, job.id).model_dump_json().encode())
+
+    await handle_pi_agent_result_message(
+        message, db_session, _consumer_settings(), Publisher()
+    )
+
+    db_session.refresh(job)
+    assert message.acked == 1 and message.nacked == 0
+    assert job.progress_payload == {}
+    assert unapproved_model not in repr(metrics)
+
+
+@pytest.mark.asyncio
+async def test_progress_provenance_preserves_inflight_dispatch_across_config_drift(
+    db_session, seeded_tenant, monkeypatch
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    settings = _consumer_settings()
+    settings.pi_agent_model = "gpt-6-runtime-rollout"
+    metrics = []
+    monkeypatch.setattr(
+        consumer_module,
+        "counter_add",
+        lambda name, value, attributes: metrics.append((name, value, attributes)),
+    )
+    message = Message(_progress(seeded_tenant, job.id).model_dump_json().encode())
+
+    await handle_pi_agent_result_message(message, db_session, settings, Publisher())
+
+    db_session.refresh(job)
+    assert message.acked == 1 and message.nacked == 0
+    assert PiAgentProgressSnapshot.model_validate(job.progress_payload).last_sequence == 1
+    progress_metric = next(
+        item for item in metrics if item[0] == "tertius.pi_agent.progress.processed.count"
+    )
+    assert progress_metric[2]["provider"] == "openai-codex"
+    assert progress_metric[2]["model"] == "gpt-5.6-sol"
+
+
+def test_progress_provenance_query_is_scoped_by_tenant_project_and_job(
+    seeded_tenant,
+):
+    class QueryCapture:
+        def __init__(self):
+            self.statement = None
+
+        def scalar(self, statement):
+            self.statement = statement
+            return None
+
+    progress = _progress(seeded_tenant, uuid4())
+    database = QueryCapture()
+
+    assert _progress_provenance(database, progress, _consumer_settings()) is None
+
+    statement_text = str(database.statement.whereclause)
+    assert "llm_edit_jobs.tenant_id" in statement_text
+    assert "llm_edit_jobs.project_id" in statement_text
+    assert "llm_edit_jobs.id" in statement_text
+    parameter_values = set(database.statement.compile().params.values())
+    assert {progress.tenant_id, progress.project_id, progress.job_id} <= parameter_values
+
+
+@pytest.mark.asyncio
+async def test_progress_provenance_rejects_unsafe_bounded_dispatch_label(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    unsafe_model = "gpt-5.6-sol\ninjected-label"
+    job.request_payload["dispatched_model"] = unsafe_model
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    settings = _consumer_settings()
+    settings.pi_agent_model = unsafe_model
+    message = Message(_progress(seeded_tenant, job.id).model_dump_json().encode())
+
+    await handle_pi_agent_result_message(message, db_session, settings, Publisher())
+
+    db_session.refresh(job)
+    assert message.acked == 1 and message.nacked == 0
+    assert job.progress_payload == {}
+
+
+@pytest.mark.asyncio
+async def test_progress_trace_context_prefers_headers_and_falls_back_to_envelope(
+    db_session, seeded_tenant, monkeypatch
+):
+    from opentelemetry import propagate
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    started_at = datetime.now(timezone.utc)
+    execution_id = uuid4()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test.pi-agent-progress")
+    monkeypatch.setattr(consumer_module.trace, "get_tracer", lambda _name: tracer)
+
+    headers = {}
+    with tracer.start_as_current_span("NATS publish progress") as producer:
+        propagate.inject(headers)
+        producer_context = producer.get_span_context()
+    header_batch = _progress(
+        seeded_tenant,
+        job.id,
+        execution_id=execution_id,
+        execution_started_at=started_at,
+    ).model_copy(
+        update={
+            "traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+        }
+    )
+    header_message = Message(header_batch.model_dump_json().encode())
+    header_message.headers = headers
+    await handle_pi_agent_result_message(
+        header_message, db_session, _consumer_settings(), Publisher()
+    )
+
+    fallback_batch = _progress(
+        seeded_tenant,
+        job.id,
+        execution_id=execution_id,
+        execution_started_at=started_at,
+        batch_sequence=2,
+        event_sequence=2,
+    ).model_copy(
+        update={
+            "traceparent": "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01"
+        }
+    )
+    fallback_message = Message(fallback_batch.model_dump_json().encode())
+    await handle_pi_agent_result_message(
+        fallback_message, db_session, _consumer_settings(), Publisher()
+    )
+
+    consumers = [
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == "pi_agent.progress.consume"
+    ]
+    assert consumers[0].context.trace_id == producer_context.trace_id
+    assert consumers[0].parent.span_id == producer_context.span_id
+    assert consumers[1].context.trace_id == int("c" * 32, 16)
+    assert consumers[1].parent.span_id == int("d" * 16, 16)
 
 
 @pytest.mark.asyncio
@@ -114,6 +546,41 @@ async def test_valid_changed_result_stages_usage_and_terminal_job_atomically(db_
         result.provider,
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
+async def test_terminal_result_clears_progress_from_different_worker_execution(
+    db_session, seeded_tenant
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    result = _result(seeded_tenant, file)
+    job = _job(db_session, seeded_tenant, file, result)
+    progress = _progress(
+        seeded_tenant,
+        job.id,
+        execution_id=uuid4(),
+        execution_started_at=result.worker_started_at - timedelta(seconds=1),
+    )
+    repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
+    assert repo.apply_progress_batch(progress) is ProgressBatchApplyOutcome.APPLIED
+    db_session.commit()
+
+    outcome = await apply_pi_agent_result(
+        db_session,
+        result,
+        SimpleNamespace(
+            billing_llm_usage_subject="billing", billing_max_bytes=524288
+        ),
+        Publisher(),
+    )
+    db_session.commit()
+
+    assert outcome == "applied"
+    db_session.refresh(job)
+    assert job.status == "succeeded"
+    assert job.progress_payload == {}
 
 
 @pytest.mark.asyncio
