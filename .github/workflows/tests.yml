@@ -179,7 +179,9 @@ jobs:
         run: uv run mypy
 
       - name: Run Python tests
-        run: uv run pytest
+        # The GIS service deliberately has an isolated dependency environment;
+        # run its Rasterio/TiTiler suite in the dedicated step below.
+        run: uv run pytest --ignore=server/tests/gis_cache
 
       - name: Run GIS cache tests
         run: PYTHONPATH=. uv run --project gis-cache pytest server/tests/gis_cache
