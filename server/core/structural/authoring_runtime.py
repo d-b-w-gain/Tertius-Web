@@ -53,6 +53,29 @@ class StructuralMemberGeometry:
     end: tuple[float, float, float]
     rotation_deg: float = 0.0
 
+    def translated(self, offset: Sequence[float]) -> "StructuralMemberGeometry":
+        delta = tuple(float(value) for value in offset)
+        if len(delta) != 3:
+            raise ValueError("StructuralMemberGeometry translation requires x, y, z")
+
+        def moved(point: tuple[float, float, float]):
+            return tuple(point[index] + delta[index] for index in range(3))
+
+        return StructuralMemberGeometry(
+            shape=self.shape.moved(
+                bd.Pos(
+                    X=delta[0] * 1000.0,
+                    Y=delta[1] * 1000.0,
+                    Z=delta[2] * 1000.0,
+                )
+            ),
+            label=self.label,
+            part_number=self.part_number,
+            start=moved(self.start),
+            end=moved(self.end),
+            rotation_deg=self.rotation_deg,
+        )
+
 
 @dataclass(frozen=True)
 class StructuralSurfaceGeometry:
@@ -85,6 +108,72 @@ class StructuralConnectorGeometry:
             shape=self.shape.moved(location),
             label=self.label,
             part_number=self.part_number,
+        )
+
+
+@dataclass(frozen=True)
+class StructuralJointPort:
+    """A rendered connection's engagement with one member end."""
+
+    role: str
+    member_end: Literal["start", "end"]
+    joint_point: tuple[float, float, float]
+    flexible_axis_end: tuple[float, float, float]
+    engagement_length_m: float
+    plate_length_m: float
+    bolt_line_distances_m: tuple[float, ...]
+
+    def translated(self, offset: Sequence[float]) -> "StructuralJointPort":
+        delta = tuple(float(value) for value in offset)
+        if len(delta) != 3:
+            raise ValueError("StructuralJointPort translation requires x, y, z")
+
+        def moved(point: tuple[float, float, float]):
+            return tuple(point[index] + delta[index] for index in range(3))
+
+        return StructuralJointPort(
+            role=self.role,
+            member_end=self.member_end,
+            joint_point=moved(self.joint_point),
+            flexible_axis_end=moved(self.flexible_axis_end),
+            engagement_length_m=self.engagement_length_m,
+            plate_length_m=self.plate_length_m,
+            bolt_line_distances_m=self.bolt_line_distances_m,
+        )
+
+
+@dataclass(frozen=True)
+class StructuralJointGeometry:
+    """Rendered multi-member joint and its derived analytical engagement."""
+
+    shape: bd.Shape
+    label: str
+    part_number: str
+    ports: tuple[StructuralJointPort, ...]
+    transfers: tuple[TransferKind, ...] = ("force", "shear", "moment")
+    analysis_model: Literal["pinned", "rigid_zone", "semi_rigid"] = "rigid_zone"
+    stiffness_status: Literal["assumed", "candidate", "verified"] = "candidate"
+    stiffness_basis: str = "Connection stiffness has not been verified."
+
+    def translated(self, offset: Sequence[float]) -> "StructuralJointGeometry":
+        delta = tuple(float(value) for value in offset)
+        if len(delta) != 3:
+            raise ValueError("StructuralJointGeometry translation requires x, y, z")
+        return StructuralJointGeometry(
+            shape=self.shape.moved(
+                bd.Pos(
+                    X=delta[0] * 1000.0,
+                    Y=delta[1] * 1000.0,
+                    Z=delta[2] * 1000.0,
+                )
+            ),
+            label=self.label,
+            part_number=self.part_number,
+            ports=tuple(port.translated(delta) for port in self.ports),
+            transfers=self.transfers,
+            analysis_model=self.analysis_model,
+            stiffness_status=self.stiffness_status,
+            stiffness_basis=self.stiffness_basis,
         )
 
 
@@ -239,6 +328,8 @@ class StructuralModel:
         end_releases: Sequence[bool] | dict[str, bool] = (),
         tension_only: bool = False,
         compression_only: bool = False,
+        analytical_role: Literal["physical", "rigid_zone"] = "physical",
+        source_connection_id: str | None = None,
         tension_capacity_status: str = "not_checked",
         tension_capacity_kN: float | None = None,
         tension_capacity_basis: str | None = None,
@@ -275,6 +366,8 @@ class StructuralModel:
             end_releases=end_releases,
             tension_only=tension_only,
             compression_only=compression_only,
+            analytical_role=analytical_role,
+            source_connection_id=source_connection_id,
             tension_capacity_status=tension_capacity_status,
             tension_capacity_kN=tension_capacity_kN,
             tension_capacity_basis=tension_capacity_basis,
@@ -329,6 +422,78 @@ class StructuralModel:
             label=geometry.label,
             part_number=geometry.part_number,
         )
+
+    def joint_from_geometry(
+        self,
+        geometry: StructuralJointGeometry,
+        *,
+        components_by_role: Mapping[str, StructuralPart],
+        component_id: str,
+        connection_id: str,
+        label: str | None = None,
+    ) -> tuple[StructuralPart, StructuralConnection]:
+        """Register joint CAD, topology, and bolt-derived member engagement."""
+
+        if not isinstance(geometry, StructuralJointGeometry):
+            raise StructuralAuthoringError(
+                "joint_from_geometry requires StructuralJointGeometry"
+            )
+        if len(geometry.ports) != 2:
+            raise StructuralAuthoringError(
+                "joint_from_geometry currently requires exactly two member ports"
+            )
+        port_roles = {port.role for port in geometry.ports}
+        if set(components_by_role) != port_roles:
+            raise StructuralAuthoringError(
+                "joint component roles must exactly match the builder-authored ports"
+            )
+        connector = self.connector_from_geometry(
+            StructuralConnectorGeometry(
+                shape=geometry.shape,
+                label=geometry.label,
+                part_number=geometry.part_number,
+            ),
+            component_id=component_id,
+        )
+        first_port, second_port = geometry.ports
+        first_component = components_by_role[first_port.role]
+        second_component = components_by_role[second_port.role]
+        member_engagements = []
+        for port in geometry.ports:
+            component = self._require_registered(components_by_role[port.role])
+            if component.kind != "member":
+                raise StructuralAuthoringError(
+                    f"joint port {port.role!r} must map to a member component"
+                )
+            member_engagements.append(
+                {
+                    "role": port.role,
+                    "component_id": component.component_id,
+                    "member_end": port.member_end,
+                    "joint_point": _vector3(port.joint_point),
+                    "flexible_axis_end": _vector3(port.flexible_axis_end),
+                    "engagement_length_m": float(port.engagement_length_m),
+                    "plate_length_m": float(port.plate_length_m),
+                    "bolt_line_distances_m": [
+                        float(value) for value in port.bolt_line_distances_m
+                    ],
+                }
+            )
+        connection = self.connect(
+            first_component,
+            second_component,
+            via=[connector],
+            id=connection_id,
+            label=label or geometry.label,
+            transfers=geometry.transfers,
+            joint_model={
+                "analysis_model": geometry.analysis_model,
+                "stiffness_status": geometry.stiffness_status,
+                "stiffness_basis": geometry.stiffness_basis,
+                "member_engagements": member_engagements,
+            },
+        )
+        return connector, connection
 
     def stability(
         self,
@@ -1134,6 +1299,7 @@ class StructuralModel:
         id: str,
         label: str,
         transfers: Sequence[TransferKind],
+        joint_model: Mapping[str, Any] | None = None,
     ) -> StructuralConnection:
         source = self._require_registered(from_component)
         target = self._require_registered(to_component)
@@ -1193,6 +1359,7 @@ class StructuralModel:
                 "to_component_id": connection.to_component_id,
                 "connector_component_ids": list(connection.connector_component_ids),
                 "transfers": list(connection.transfers),
+                "joint_model": None if joint_model is None else dict(joint_model),
             }
         )
         return connection
@@ -2010,6 +2177,8 @@ class StructuralModel:
         end_releases: Sequence[bool] | dict[str, bool] = (),
         tension_only: bool = False,
         compression_only: bool = False,
+        analytical_role: Literal["physical", "rigid_zone"] = "physical",
+        source_connection_id: str | None = None,
         tension_capacity_status: str = "not_checked",
         tension_capacity_kN: float | None = None,
         tension_capacity_basis: str | None = None,
@@ -2044,6 +2213,14 @@ class StructuralModel:
                 f"analytical member {member_id!r} cannot be both tension-only "
                 "and compression-only"
             )
+        if analytical_role not in {"physical", "rigid_zone"}:
+            raise StructuralAuthoringError(
+                f"analytical member {member_id!r} has invalid analytical role"
+            )
+        if analytical_role == "rigid_zone" and not source_connection_id:
+            raise StructuralAuthoringError(
+                f"rigid-zone member {member_id!r} requires a source connection ID"
+            )
         if tension_capacity_status not in {"not_checked", "candidate", "verified"}:
             raise StructuralAuthoringError(
                 f"analytical member {member_id!r} has invalid tension capacity status"
@@ -2059,14 +2236,17 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 f"analytical member {member_id!r} end fastener count must be positive"
             )
-        if any(
-            value is not None
-            for value in (
-                tension_capacity_kN,
-                end_fastener_count,
-                end_connection_capacity_kN,
+        if (
+            any(
+                value is not None
+                for value in (
+                    tension_capacity_kN,
+                    end_fastener_count,
+                    end_connection_capacity_kN,
+                )
             )
-        ) and not tension_only:
+            and not tension_only
+        ):
             raise StructuralAuthoringError(
                 f"analytical member {member_id!r} tension evidence requires tension_only"
             )
@@ -2113,6 +2293,12 @@ class StructuralModel:
                 "end_releases": _restraints(end_releases),
                 "tension_only": bool(tension_only),
                 "compression_only": bool(compression_only),
+                "analytical_role": analytical_role,
+                "source_connection_id": (
+                    _required_text("source connection ID", source_connection_id)
+                    if source_connection_id is not None
+                    else None
+                ),
                 "tension_capacity_status": tension_capacity_status,
                 "tension_capacity_kN": (
                     None if tension_capacity_kN is None else float(tension_capacity_kN)

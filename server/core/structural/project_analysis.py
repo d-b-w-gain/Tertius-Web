@@ -363,7 +363,10 @@ def _off_axis_load_path(
         else:
             other_id = ""
         if other_id and components.get(other_id, None) is not None:
-            if components[other_id].kind == "surface" and "wind_normal" in connection.transfers:
+            if (
+                components[other_id].kind == "surface"
+                and "wind_normal" in connection.transfers
+            ):
                 source_component_ids.append(other_id)
                 source_connection_ids.append(connection.id)
 
@@ -399,9 +402,7 @@ def _off_axis_load_path(
                 "status": "candidate",
                 "source_component_ids": list(dict.fromkeys(source_component_ids)),
                 "source_connection_ids": list(dict.fromkeys(source_connection_ids)),
-                "collector_component_ids": list(
-                    dict.fromkeys(collector_component_ids)
-                ),
+                "collector_component_ids": list(dict.fromkeys(collector_component_ids)),
                 "collector_connection_ids": [
                     connection.id for connection in connection_path
                 ],
@@ -449,6 +450,8 @@ def _cross_section_checks(
     checks: list[MemberCrossSectionCheck] = []
     selected_member_ids = set(definition.member_ids)
     for declaration in analysis.members:
+        if declaration.analytical_role == "rigid_zone":
+            continue
         if selected_member_ids and declaration.id not in selected_member_ids:
             continue
         section = sections_by_id[declaration.section_id]
@@ -608,21 +611,15 @@ def _cross_section_checks(
                 shear_regime=capacity.shear_regime,
                 off_axis_load_path_status=off_axis_path["status"],
                 off_axis_required_reaction_kN=peak_off_axis_shear_kN,
-                off_axis_source_component_ids=off_axis_path[
-                    "source_component_ids"
-                ],
-                off_axis_source_connection_ids=off_axis_path[
-                    "source_connection_ids"
-                ],
+                off_axis_source_component_ids=off_axis_path["source_component_ids"],
+                off_axis_source_connection_ids=off_axis_path["source_connection_ids"],
                 off_axis_collector_component_ids=off_axis_path[
                     "collector_component_ids"
                 ],
                 off_axis_collector_connection_ids=off_axis_path[
                     "collector_connection_ids"
                 ],
-                off_axis_grounded_component_id=off_axis_path[
-                    "grounded_component_id"
-                ],
+                off_axis_grounded_component_id=off_axis_path["grounded_component_id"],
                 off_axis_load_path_basis=off_axis_path["basis"],
                 basis=capacity.basis,
                 assumptions=[
@@ -668,8 +665,7 @@ def _cross_section_checks(
                             "fasteners, member support transfer, collector/brace resistance "
                             "and stiffness, and anchorage remain unverified."
                         ]
-                        if off_axis_path["status"] == "candidate"
-                        and off_axis_exceeded
+                        if off_axis_path["status"] == "candidate" and off_axis_exceeded
                         else []
                     ),
                 ],
@@ -1792,6 +1788,11 @@ def _p399_evidence(
     member_ids = [member.id for member in members]
     node_ids = [node.id for node in nodes]
     case_ids = [case.id for case in analysis.load_cases]
+    joint_connections = [
+        connection
+        for connection in capture.connections
+        if connection.joint_model is not None
+    ]
 
     geometry_equations = [
         CalculationEquation(
@@ -2166,12 +2167,9 @@ def _p399_evidence(
     )
     if stability_definition is None or stability_result is None:
         stability_status = "blocked"
-    elif (
-        not stability_result.converged
-        or (
-            stability_result.minimum_alpha_cr is not None
-            and stability_result.minimum_alpha_cr <= 1.0
-        )
+    elif not stability_result.converged or (
+        stability_result.minimum_alpha_cr is not None
+        and stability_result.minimum_alpha_cr <= 1.0
     ):
         stability_status = "fail"
     elif (
@@ -2350,9 +2348,9 @@ def _p399_evidence(
         bracing_status = "not_checked"
     elif any(check.status == "fail" for check in member_restraint_candidate_checks):
         bracing_status = "fail"
-    elif all(check.status == "pass" for check in member_restraint_candidate_checks) and all(
-        check.status == "pass" for check in tension_member_checks
-    ):
+    elif all(
+        check.status == "pass" for check in member_restraint_candidate_checks
+    ) and all(check.status == "pass" for check in tension_member_checks):
         bracing_status = "pass"
     elif any(
         check.status == "unsupported" for check in member_restraint_candidate_checks
@@ -3173,7 +3171,58 @@ def _p399_evidence(
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
                 "Rendered screws, bolts, bracket, anchors, and concrete are physical evidence only.",
-                "Connection stiffness and resistance are not yet calculated.",
+                *(
+                    [
+                        "Finite connection zones terminate the flexible member axes at the outer rendered bolt lines; the remaining centreline arms are deliberately idealised as rigid.",
+                        "The finite-zone model is candidate stiffness evidence only. Bracket, bolt, Cee local web/flange, slip, and connection resistance remain unverified.",
+                    ]
+                    if joint_connections
+                    else ["Connection stiffness and resistance are not yet calculated."]
+                ),
+            ],
+            inputs=[
+                CalculationInput(
+                    symbol=f"joint model {connection.id}",
+                    label=connection.label,
+                    value=connection.joint_model.analysis_model,
+                    source=connection.joint_model.stiffness_basis,
+                )
+                for connection in joint_connections
+                if connection.joint_model is not None
+            ],
+            equations=[
+                CalculationEquation(
+                    label=(
+                        f"{connection.label} — {engagement.role} flexible-axis "
+                        "termination"
+                    ),
+                    expression="L_rigid = max(s_bolt)",
+                    substitution="max("
+                    + ", ".join(
+                        f"{distance:g}" for distance in engagement.bolt_line_distances_m
+                    )
+                    + ")",
+                    result=engagement.engagement_length_m,
+                    unit="m",
+                )
+                for connection in joint_connections
+                if connection.joint_model is not None
+                for engagement in connection.joint_model.member_engagements
+            ],
+            outputs=[
+                CalculationInput(
+                    symbol=f"Lrigid,{connection.id},{engagement.role}",
+                    label=f"{connection.label} — {engagement.role}",
+                    value=engagement.engagement_length_m,
+                    unit="m",
+                    source=(
+                        "Outermost bolt line from the rendered component-builder "
+                        "joint port"
+                    ),
+                )
+                for connection in joint_connections
+                if connection.joint_model is not None
+                for engagement in connection.joint_model.member_engagements
             ],
             references=basis_references,
             related_node_ids=[
@@ -3366,7 +3415,12 @@ def _p399_evidence(
             label="Connections/bases",
             p399_reference="§11",
             status="blocked",
-            summary="Rendered detail exists; resistance and stiffness checks do not.",
+            summary=(
+                f"{len(joint_connections)} geometry-linked finite joint model(s); "
+                "resistance and validated stiffness checks remain blocked."
+                if joint_connections
+                else "Rendered detail exists; resistance and stiffness checks do not."
+            ),
             sheet_ids=["sheet-p399-connections"],
             blocking_stage_ids=["analysis"],
         ),
@@ -3913,6 +3967,8 @@ def solve_project_structural(
                 visual_node_id=component.visual_node_id,
                 tension_only=declaration.tension_only,
                 compression_only=declaration.compression_only,
+                analytical_role=declaration.analytical_role,
+                source_connection_id=declaration.source_connection_id,
             )
         )
         member_length = _length(declaration.start, declaration.end)
@@ -3963,8 +4019,7 @@ def solve_project_structural(
                 local_moment = (0.0, 0.0, 0.0)
                 local_shear = (0.0, 0.0, 0.0)
                 local_displacement = (
-                    member.deflection("dx", distance, active_combination.id)
-                    * 1000.0,
+                    member.deflection("dx", distance, active_combination.id) * 1000.0,
                     0.0,
                     0.0,
                 )
@@ -3980,12 +4035,9 @@ def solve_project_structural(
                     member.shear("Fz", distance, active_combination.id),
                 )
                 local_displacement = (
-                    member.deflection("dx", distance, active_combination.id)
-                    * 1000.0,
-                    member.deflection("dy", distance, active_combination.id)
-                    * 1000.0,
-                    member.deflection("dz", distance, active_combination.id)
-                    * 1000.0,
+                    member.deflection("dx", distance, active_combination.id) * 1000.0,
+                    member.deflection("dy", distance, active_combination.id) * 1000.0,
+                    member.deflection("dz", distance, active_combination.id) * 1000.0,
                 )
             global_moment = _local_to_global(rotation, local_moment)
             global_major_moment = _local_to_global(
@@ -4060,7 +4112,13 @@ def solve_project_structural(
             ),
             default=None,
         )
-        if (
+        if declaration.analytical_role == "rigid_zone":
+            # A rigid zone is an idealised connection arm, not a physical
+            # catalogue member.  Its displacement remains visible, while
+            # member and cross-section resistance checks stay with the
+            # connected flexible Cee portions and the connection calculation.
+            pass
+        elif (
             governing_stability_check is not None
             and governing_stability_check.status in {"pass", "fail"}
         ):

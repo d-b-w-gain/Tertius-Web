@@ -93,6 +93,8 @@ class StructuralMember(StructuralContract):
     visual_node_id: str
     tension_only: bool = False
     compression_only: bool = False
+    analytical_role: Literal["physical", "rigid_zone"] = "physical"
+    source_connection_id: str | None = None
 
 
 class StructuralMaterial(StructuralContract):
@@ -119,6 +121,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
     end_releases: Restraints = Field(default_factory=Restraints)
     tension_only: bool = False
     compression_only: bool = False
+    analytical_role: Literal["physical", "rigid_zone"] = "physical"
+    source_connection_id: str | None = None
     tension_capacity_status: Literal["not_checked", "candidate", "verified"] = (
         "not_checked"
     )
@@ -134,6 +138,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
 
     @model_validator(mode="after")
     def validate_tension_evidence(self) -> AnalyticalMemberDeclaration:
+        if self.analytical_role == "rigid_zone" and not self.source_connection_id:
+            raise ValueError("rigid-zone members require a source connection ID")
         if any(
             value is not None and value <= 0
             for value in (self.tension_capacity_kN, self.end_connection_capacity_kN)
@@ -141,14 +147,17 @@ class AnalyticalMemberDeclaration(StructuralContract):
             raise ValueError("tension capacities must be positive")
         if self.end_fastener_count is not None and self.end_fastener_count <= 0:
             raise ValueError("end fastener count must be positive")
-        if any(
-            value is not None
-            for value in (
-                self.tension_capacity_kN,
-                self.end_fastener_count,
-                self.end_connection_capacity_kN,
+        if (
+            any(
+                value is not None
+                for value in (
+                    self.tension_capacity_kN,
+                    self.end_fastener_count,
+                    self.end_connection_capacity_kN,
+                )
             )
-        ) and not self.tension_only:
+            and not self.tension_only
+        ):
             raise ValueError("tension evidence requires a tension-only member")
         if self.tension_capacity_status == "verified" and (
             self.tension_capacity_kN is None
@@ -457,9 +466,9 @@ class MemberCrossSectionCheck(StructuralContract):
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
         None
     )
-    off_axis_load_path_status: Literal[
-        "not_declared", "candidate", "verified"
-    ] = "not_declared"
+    off_axis_load_path_status: Literal["not_declared", "candidate", "verified"] = (
+        "not_declared"
+    )
     off_axis_required_reaction_kN: float | None = None
     off_axis_source_component_ids: list[str] = Field(default_factory=list)
     off_axis_source_connection_ids: list[str] = Field(default_factory=list)
@@ -705,6 +714,34 @@ class DesignComponent(StructuralContract):
     part_number: str | None = None
 
 
+class ConnectionMemberEngagement(StructuralContract):
+    role: str
+    component_id: str
+    member_end: Literal["start", "end"]
+    joint_point: Vector3
+    flexible_axis_end: Vector3
+    engagement_length_m: float = Field(gt=0)
+    plate_length_m: float = Field(gt=0)
+    bolt_line_distances_m: list[float] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_connection_engagement(self) -> ConnectionMemberEngagement:
+        if self.plate_length_m < self.engagement_length_m:
+            raise ValueError("joint plate length cannot be shorter than engagement")
+        if any(value <= 0 for value in self.bolt_line_distances_m):
+            raise ValueError("joint bolt-line distances must be positive")
+        if abs(max(self.bolt_line_distances_m) - self.engagement_length_m) > 1e-9:
+            raise ValueError("joint engagement must equal the outermost bolt line")
+        return self
+
+
+class ConnectionJointModel(StructuralContract):
+    analysis_model: Literal["pinned", "rigid_zone", "semi_rigid"]
+    stiffness_status: Literal["assumed", "candidate", "verified"]
+    stiffness_basis: str
+    member_engagements: list[ConnectionMemberEngagement] = Field(min_length=2)
+
+
 class DesignConnection(StructuralContract):
     id: str
     label: str
@@ -712,6 +749,7 @@ class DesignConnection(StructuralContract):
     to_component_id: str
     connector_component_ids: list[str] = Field(default_factory=list)
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
+    joint_model: ConnectionJointModel | None = None
 
 
 class StructuralWindActionBasis(StructuralContract):

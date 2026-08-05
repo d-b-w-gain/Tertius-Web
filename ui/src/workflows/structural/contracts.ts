@@ -125,6 +125,21 @@ export type DesignConnection = {
   to_component_id: string
   connector_component_ids: string[]
   transfers: Array<'force' | 'shear' | 'moment' | 'wind_normal'>
+  joint_model?: {
+    analysis_model: 'pinned' | 'rigid_zone' | 'semi_rigid'
+    stiffness_status: 'assumed' | 'candidate' | 'verified'
+    stiffness_basis: string
+    member_engagements: Array<{
+      role: string
+      component_id: string
+      member_end: 'start' | 'end'
+      joint_point: Vector3
+      flexible_axis_end: Vector3
+      engagement_length_m: number
+      plate_length_m: number
+      bolt_line_distances_m: number[]
+    }>
+  } | null
 }
 
 export type DesignSurfaceLoad = {
@@ -181,6 +196,8 @@ export type ProjectStructuralCapture = {
       end_releases: StructuralNode['restraints']
       tension_only?: boolean
       compression_only?: boolean
+      analytical_role?: 'physical' | 'rigid_zone'
+      source_connection_id?: string | null
       tension_capacity_status?: 'not_checked' | 'candidate' | 'verified'
       tension_capacity_kN?: number | null
       tension_capacity_basis?: string | null
@@ -269,6 +286,8 @@ export type StructuralMember = {
   visual_node_id: string
   tension_only?: boolean
   compression_only?: boolean
+  analytical_role?: 'physical' | 'rigid_zone'
+  source_connection_id?: string | null
 }
 
 export type StructuralSnapshot = {

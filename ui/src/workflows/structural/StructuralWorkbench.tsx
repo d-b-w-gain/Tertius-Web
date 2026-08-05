@@ -205,6 +205,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedMemberResult = analysis?.member_results.find(
     (result) => result.member_id === selectedMember?.id,
   )
+  const selectedSourceConnection = capture?.connections.find(
+    (connection) => connection.id === selectedMember?.source_connection_id,
+  )
   const selectedSection = analysis?.sections.find(
     (section) => section.id === selectedMember?.section_id,
   )
@@ -1254,6 +1257,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                                 TENSION-ONLY
                               </span>
                             )}
+                            {member.analytical_role === 'rigid_zone' && (
+                              <span className="ml-2 rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[8px] text-cyan-300">
+                                JOINT RIGID ZONE
+                              </span>
+                            )}
                           </span>
                           <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
                             check?.status === 'pass'
@@ -1293,6 +1301,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         {selectedMember.tension_only && (
                           <span className="ml-2 rounded bg-violet-500/15 px-1.5 py-0.5 font-mono text-[9px] text-violet-300">
                             TENSION-ONLY
+                          </span>
+                        )}
+                        {selectedMember.analytical_role === 'rigid_zone' && (
+                          <span className="ml-2 rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[9px] text-cyan-300">
+                            JOINT RIGID ZONE
                           </span>
                         )}
                       </div>
@@ -1348,6 +1361,29 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </dd>
                     </div>
                   </dl>
+                  {selectedMember.analytical_role === 'rigid_zone' && selectedSourceConnection?.joint_model && (
+                    <div className="mt-3 rounded border border-cyan-500/30 bg-slate-950/50 p-3 text-xs">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
+                        Geometry-linked connection arm
+                      </div>
+                      <div className="mt-1 font-semibold text-slate-200">
+                        {selectedSourceConnection.label}
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-slate-400">
+                        <span>Model</span>
+                        <span className="font-mono text-slate-200">
+                          {selectedSourceConnection.joint_model.analysis_model}
+                        </span>
+                        <span>Evidence</span>
+                        <span className="font-mono text-amber-300">
+                          {selectedSourceConnection.joint_model.stiffness_status.toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+                        {selectedSourceConnection.joint_model.stiffness_basis}
+                      </p>
+                    </div>
+                  )}
                   {selectedMember.tension_only && selectedTensionCheck && (
                     <div className="mt-3 rounded border border-violet-500/30 bg-slate-950/50 p-3">
                       <div className="flex items-center justify-between gap-3">

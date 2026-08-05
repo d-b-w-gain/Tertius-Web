@@ -6,10 +6,131 @@ import pytest
 from core.structural.authoring_runtime import (
     StructuralAuthoringError,
     StructuralConnectorGeometry,
+    StructuralJointGeometry,
+    StructuralJointPort,
     StructuralMemberGeometry,
     StructuralModel,
     StructuralSurfaceGeometry,
 )
+
+
+def test_joint_geometry_owns_rendered_engagement_and_rigid_zone_contract():
+    model = StructuralModel(title="Geometry-linked moment joint")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+    )
+    column_geometry = StructuralMemberGeometry(
+        shape=bd.Box(100, 50, 1000),
+        label="Column",
+        part_number="C10019",
+        start=(0.0, 0.0, 0.0),
+        end=(0.0, 0.0, 1.0),
+    )
+    rafter_geometry = StructuralMemberGeometry(
+        shape=bd.Box(1000, 50, 100),
+        label="Rafter",
+        part_number="C10019",
+        start=(0.0, 0.0, 1.0),
+        end=(1.0, 0.0, 1.0),
+    )
+    column = model.member_component_from_geometry(
+        column_geometry,
+        component_id="column",
+    )
+    rafter = model.member_component_from_geometry(
+        rafter_geometry,
+        component_id="rafter",
+    )
+    column_axis = model.member_axis(
+        column,
+        id="column-flexible",
+        label="Column flexible length",
+        start=(0.0, 0.0, 0.0),
+        end=(0.0, 0.0, 0.85),
+        section=section,
+        material=material,
+        assumption="Unit-test flexible length.",
+    )
+    model.member_axis(
+        column,
+        id="column-rigid-zone",
+        label="Column knee rigid zone",
+        start=(0.0, 0.0, 0.85),
+        end=(0.0, 0.0, 1.0),
+        section=section,
+        material=material,
+        analytical_role="rigid_zone",
+        source_connection_id="knee",
+        assumption="Unit-test finite joint arm.",
+    )
+    joint_geometry = StructuralJointGeometry(
+        shape=bd.Box(225, 3, 225),
+        label="KB01 knee",
+        part_number="KB01",
+        ports=(
+            StructuralJointPort(
+                role="column",
+                member_end="end",
+                joint_point=(0.0, 0.0, 1.0),
+                flexible_axis_end=(0.0, 0.0, 0.85),
+                engagement_length_m=0.15,
+                plate_length_m=0.225,
+                bolt_line_distances_m=(0.035, 0.15),
+            ),
+            StructuralJointPort(
+                role="rafter",
+                member_end="start",
+                joint_point=(0.0, 0.0, 1.0),
+                flexible_axis_end=(0.15, 0.0, 1.0),
+                engagement_length_m=0.15,
+                plate_length_m=0.225,
+                bolt_line_distances_m=(0.035, 0.15),
+            ),
+        ),
+        stiffness_basis="Outer rendered bolt line defines the candidate rigid zone.",
+    )
+    connector, connection = model.joint_from_geometry(
+        joint_geometry,
+        components_by_role={"column": column, "rafter": rafter},
+        component_id="knee-bracket",
+        connection_id="knee",
+    )
+    model.member_distributed_load(
+        column_axis,
+        id="column-test-load",
+        label="Unit-test line load",
+        case="dead",
+        start_force_kN_m=(0.0, 0.0, -0.01),
+        provenance="Unit-test topology load.",
+    )
+    model.assembly([column, rafter, connector], label="joint-test")
+
+    manifest = model.manifest()
+    joint = manifest["connections"][0]["joint_model"]
+    rigid = next(
+        member
+        for member in manifest["analysis"]["members"]
+        if member["id"] == "column-rigid-zone"
+    )
+
+    assert connection.id == "knee"
+    assert joint["analysis_model"] == "rigid_zone"
+    assert joint["member_engagements"][0]["engagement_length_m"] == 0.15
+    assert rigid["analytical_role"] == "rigid_zone"
+    assert rigid["source_connection_id"] == "knee"
 
 
 def test_component_geometry_contract_keeps_cad_axis_area_and_fasteners_together():
