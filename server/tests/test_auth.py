@@ -17,7 +17,9 @@ from core.auth import (
     decode_keycloak_token,
     get_auth_context,
     get_cookie_auth_context,
+    keycloak_logout_url,
     keycloak_token_url,
+    logout_keycloak_session,
     session_token_hash,
 )
 from core.auth_types import AuthContext
@@ -345,6 +347,73 @@ def test_refresh_token_url_uses_internal_jwks_service():
     assert keycloak_token_url(settings) == (
         "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/token"
     )
+
+
+def test_logout_url_uses_internal_jwks_service():
+    settings = Settings(
+        keycloak_issuer="http://127.0.0.1:18081/realms/tertius",
+        keycloak_jwks_url_override=(
+            "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"
+        ),
+    )
+
+    assert keycloak_logout_url(settings) == (
+        "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/logout"
+    )
+
+
+def test_logout_keycloak_session_revokes_refresh_token(monkeypatch):
+    settings = _patch_session_settings(monkeypatch)
+    session = AuthSession(refresh_token="refresh-token")
+    captured = {}
+
+    class _Response:
+        status_code = 204
+
+    def post(url, *, data, timeout):
+        captured.update(url=url, data=data, timeout=timeout)
+        return _Response()
+
+    monkeypatch.setattr(auth.httpx, "post", post)
+
+    assert logout_keycloak_session(session) is True
+    assert captured == {
+        "url": keycloak_logout_url(settings),
+        "data": {
+            "client_id": settings.oidc_client_id,
+            "refresh_token": "refresh-token",
+        },
+        "timeout": 10,
+    }
+
+
+def test_auth_logout_revokes_keycloak_and_deletes_local_session(monkeypatch):
+    import main as app_main
+
+    settings = _patch_session_settings(monkeypatch)
+    monkeypatch.setattr(app_main, "settings", settings)
+    token = "session-token"
+    session = AuthSession(refresh_token="refresh-token")
+    db = _Db(session)
+    revoked = []
+    monkeypatch.setattr(
+        app_main,
+        "logout_keycloak_session",
+        lambda stored_session: revoked.append(stored_session) or True,
+    )
+    request = _request(
+        method="POST",
+        headers=[(b"cookie", f"{settings.auth_session_cookie_name}={token}".encode("ascii"))],
+    )
+    response = Response()
+
+    result = app_main.auth_logout(request, response, db)
+
+    assert result == {"ok": True, "identity_provider_logout": True}
+    assert revoked == [session]
+    assert db.deleted is session
+    assert db.committed is True
+    assert f"{settings.auth_session_cookie_name}=" in response.headers["set-cookie"]
 
 
 def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):

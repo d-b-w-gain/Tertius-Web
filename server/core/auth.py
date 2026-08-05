@@ -136,6 +136,32 @@ def keycloak_token_url(settings) -> str:
     return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
 
 
+def keycloak_logout_url(settings) -> str:
+    token_url = keycloak_token_url(settings)
+    return f"{token_url[: -len('/token')]}/logout"
+
+
+def logout_keycloak_session(session: AuthSession) -> bool:
+    settings = get_settings()
+    data = {
+        "client_id": settings.oidc_client_id,
+        "refresh_token": session.refresh_token,
+    }
+    if settings.oidc_client_secret:
+        data["client_secret"] = settings.oidc_client_secret
+
+    try:
+        response = httpx.post(keycloak_logout_url(settings), data=data, timeout=10)
+    except httpx.RequestError as exc:
+        logger.warning("Keycloak session logout request failed: %s", exc)
+        return False
+
+    if response.status_code >= 400:
+        logger.warning("Keycloak session logout returned %s", response.status_code)
+        return False
+    return True
+
+
 def require_csrf(request: Request, session: AuthSession) -> None:
     if request.method.upper() in SAFE_METHODS:
         return

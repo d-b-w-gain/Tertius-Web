@@ -42,6 +42,7 @@ from core.auth import (
     decode_keycloak_token,
     get_auth_context,
     keycloak_token_url,
+    logout_keycloak_session,
     new_csrf_token,
     new_session_token,
     session_token_hash,
@@ -384,15 +385,20 @@ def auth_me(ctx: AuthContext = Depends(get_auth_context)):
 @app.post("/api/auth/logout")
 def auth_logout(request: Request, response: Response, db=Depends(get_db)):
     session_token = request.cookies.get(settings.auth_session_cookie_name)
+    identity_provider_logout = False
     if session_token:
         session = db.scalar(
             select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token))
         )
         if session is not None:
+            identity_provider_logout = logout_keycloak_session(session)
             db.delete(session)
             db.commit()
     clear_auth_cookies(response)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "identity_provider_logout": identity_provider_logout,
+    }
 
 
 # Mount the workflows to sub-paths
