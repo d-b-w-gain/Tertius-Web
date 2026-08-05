@@ -184,4 +184,6 @@ jobs:
         run: uv run pytest --ignore=server/tests/gis_cache
 
       - name: Run GIS cache tests
-        run: PYTHONPATH=. uv run --project gis-cache pytest server/tests/gis_cache
+        # Do not load the API suite's SQLAlchemy/Testcontainers conftest into
+        # the intentionally isolated GIS environment.
+        run: PYTHONPATH=. uv run --project gis-cache pytest --confcutdir=server/tests/gis_cache server/tests/gis_cache
