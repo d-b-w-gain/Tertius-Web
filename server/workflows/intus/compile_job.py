@@ -87,7 +87,10 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
         counter_add("tertius.compile.job.started.count", 1, {"export_format": command.export_format})
         start = perf_counter()
         try:
-            result = execute_compile_command(command, settings)
+            # CAD compilation is CPU-bound and can run for several minutes.  Keep
+            # the NATS event loop available to service heartbeats and publish the
+            # eventual result instead of blocking it for the entire compile.
+            result = await asyncio.to_thread(execute_compile_command, command, settings)
             assert_message_size(result, settings.compile_result_max_bytes, "result")
             await publisher.publish_json(
                 settings.compile_result_subject,
