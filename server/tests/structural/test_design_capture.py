@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.workbench_access import STRUCTURAL_WORKBENCH_ROLE
 from core.compile_runtime import runtime_files_hash
 from core.db import get_db
 from core.structural.contracts import CompiledStructuralManifest
@@ -343,6 +344,7 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
         tenant_id=uuid4(),
         keycloak_subject="structural-capture-test",
         email="test@example.com",
+        roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     project = type("ProjectStub", (), {"name": "structural_test"})()
 
@@ -382,6 +384,7 @@ def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeyp
         tenant_id=uuid4(),
         keycloak_subject="compiled-structural-capture-test",
         email="test@example.com",
+        roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     project = SimpleNamespace(id=uuid4(), name="structural_test")
     files = {
@@ -433,6 +436,7 @@ def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypat
         tenant_id=uuid4(),
         keycloak_subject="stale-structural-capture-test",
         email="test@example.com",
+        roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     project = SimpleNamespace(id=uuid4(), name="structural_test")
     compiled = CompiledStructuralManifest(

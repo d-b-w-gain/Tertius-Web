@@ -974,6 +974,18 @@ if ! rg -q 'directAccessGrantsEnabled: true' <<<"$rendered" || ! rg -q 'username
   exit 1
 fi
 
+for role in workbench-site workbench-structural engineering-workbenches; do
+  if ! rg -q -- "- name: ${role}" <<<"$rendered"; then
+    echo "Local Helm render must define the ${role} Keycloak realm role." >&2
+    exit 1
+  fi
+done
+
+if ! rg -q -- '- engineering-workbenches' <<<"$rendered"; then
+  echo "Local Helm render must grant engineering-workbenches to the smoke user." >&2
+  exit 1
+fi
+
 if ! rg -q 'publicClient: true' <<<"$rendered"; then
   echo "Local Helm render must keep the UI OIDC client public for local PKCE auth." >&2
   exit 1

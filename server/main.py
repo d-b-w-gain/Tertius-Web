@@ -48,6 +48,7 @@ from core.auth import (
     set_auth_cookies,
     utc_now,
 )
+from core.workbench_access import enabled_workbenches
 from core.db import get_db
 from core.models import AuthSession
 
@@ -114,9 +115,7 @@ async def start_pi_agent_active_observer():
     if not settings.pi_agent_enabled:
         return
     _pi_agent_active_stop_event = asyncio.Event()
-    _pi_agent_active_task = asyncio.create_task(
-        run_pi_agent_active_observer(_pi_agent_active_stop_event)
-    )
+    _pi_agent_active_task = asyncio.create_task(run_pi_agent_active_observer(_pi_agent_active_stop_event))
 
 
 async def stop_pi_agent_active_observer():
@@ -324,13 +323,19 @@ def auth_callback(
 
     token_response = httpx.post(_keycloak_token_url(), data=token_data, timeout=10)
     if token_response.status_code >= 400:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token exchange failed")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="OIDC token exchange failed",
+        )
     token_payload = token_response.json()
     access_token = token_payload.get("access_token")
     refresh_token = token_payload.get("refresh_token")
     expires_in = int(token_payload.get("expires_in") or 300)
     if not access_token or not refresh_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token response was incomplete")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="OIDC token response was incomplete",
+        )
 
     claims = decode_keycloak_token(access_token)
     principal = claims_to_principal(claims)
@@ -372,6 +377,7 @@ def auth_me(ctx: AuthContext = Depends(get_auth_context)):
         "user_id": str(ctx.user_id),
         "tenant_id": str(ctx.tenant_id),
         "email": ctx.email,
+        "workbenches": enabled_workbenches(ctx.roles),
     }
 
 
@@ -379,7 +385,9 @@ def auth_me(ctx: AuthContext = Depends(get_auth_context)):
 def auth_logout(request: Request, response: Response, db=Depends(get_db)):
     session_token = request.cookies.get(settings.auth_session_cookie_name)
     if session_token:
-        session = db.scalar(select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token)))
+        session = db.scalar(
+            select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token))
+        )
         if session is not None:
             db.delete(session)
             db.commit()
@@ -397,6 +405,7 @@ app.mount("/api/site", site_app)
 
 if __name__ == "__main__":
     import uvicorn
+
     # Use environment variable for port, default to 8000
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

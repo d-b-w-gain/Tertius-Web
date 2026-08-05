@@ -1,5 +1,5 @@
-from server.core.structural.contracts import RestraintConfigurationIdentity
-from server.core.structural.restraint_evidence import resolve_restraint_evidence
+from core.structural.contracts import RestraintConfigurationIdentity
+from core.structural.restraint_evidence import resolve_restraint_evidence
 
 
 PACK_ID = "lysaght-zc-2026-07-c10012-100ac-pb1230hs"

@@ -18,6 +18,7 @@ def test_first_login_creates_tenant_membership_and_default_project(db_session):
         email="alice@example.com",
         username="alice",
         display_name="Alice Example",
+        roles=frozenset({"workbench-structural"}),
     )
 
     ctx = provision_user_context(db_session, principal)
@@ -38,6 +39,7 @@ def test_first_login_creates_tenant_membership_and_default_project(db_session):
 
     assert ctx.keycloak_subject == "kc-123"
     assert ctx.email == "alice@example.com"
+    assert ctx.roles == frozenset({"workbench-structural"})
     assert user.keycloak_subject == "kc-123"
     assert tenant.name == "Alice Example"
     assert membership.role == "owner"
@@ -65,6 +67,7 @@ def test_second_login_updates_existing_user_without_duplicate_provisioning(db_se
         email="alice.renamed@example.com",
         username="alice-renamed",
         display_name="Alice Renamed",
+        roles=frozenset({"workbench-site"}),
     )
 
     second_ctx = provision_user_context(db_session, second_principal)
@@ -75,6 +78,7 @@ def test_second_login_updates_existing_user_without_duplicate_provisioning(db_se
         tenant_id=first_ctx.tenant_id,
         keycloak_subject="kc-123",
         email="alice.renamed@example.com",
+        roles=frozenset({"workbench-site"}),
     )
     assert second_user.email == "alice.renamed@example.com"
     assert second_user.username == "alice-renamed"

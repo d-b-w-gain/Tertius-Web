@@ -379,7 +379,9 @@ def _off_axis_load_path(
             (connection.from_component_id, connection)
         )
 
-    queue = deque([(component_id, [component_id], [])])
+    queue: deque[tuple[str, list[str], list[DesignConnection]]] = deque(
+        [(component_id, [component_id], [])]
+    )
     visited = {component_id}
     while queue:
         current_id, component_path, connection_path = queue.popleft()

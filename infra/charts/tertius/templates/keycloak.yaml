@@ -60,6 +60,19 @@ spec:
     ssoSessionMaxLifespan: {{ .Values.keycloak.realmImport.ssoSessionMaxLifespanSeconds | int64 }}
     clientSessionIdleTimeout: {{ .Values.keycloak.realmImport.clientSessionIdleTimeoutSeconds | int64 }}
     clientSessionMaxLifespan: {{ .Values.keycloak.realmImport.clientSessionMaxLifespanSeconds | int64 }}
+    roles:
+      realm:
+        - name: workbench-site
+          description: Access to the Tertius Site and Design Basis workbench
+        - name: workbench-structural
+          description: Access to the Tertius Structural workbench
+        - name: engineering-workbenches
+          description: Access to the Tertius engineering workbench suite
+          composite: true
+          composites:
+            realm:
+              - workbench-site
+              - workbench-structural
     clients:
       - clientId: {{ .Values.keycloak.realmImport.uiClientId | quote }}
         name: Tertius UI
@@ -97,6 +110,8 @@ spec:
           - type: password
             value: {{ .Values.keycloak.realmImport.smokeUser.password | quote }}
             temporary: false
+        realmRoles:
+          - engineering-workbenches
     {{- end }}
 {{- end }}
 {{- end }}

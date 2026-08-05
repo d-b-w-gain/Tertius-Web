@@ -26,9 +26,13 @@ from core.structural.site_wind import (
     lookup_wind_region,
     wind_region_geojson,
 )
+from core.workbench_access import require_site_workbench
 
 
-app = FastAPI(title="Tertius Site and Design Basis Workbench")
+app = FastAPI(
+    title="Tertius Site and Design Basis Workbench",
+    dependencies=[Depends(require_site_workbench)],
+)
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:

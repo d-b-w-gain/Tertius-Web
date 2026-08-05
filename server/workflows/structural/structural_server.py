@@ -42,8 +42,12 @@ from core.site_definition import (
     parse_site_definition,
     validate_design_site_usage,
 )
+from core.workbench_access import require_structural_workbench
 
-app = FastAPI(title="Tertius Structural Design Workbench")
+app = FastAPI(
+    title="Tertius Structural Design Workbench",
+    dependencies=[Depends(require_structural_workbench)],
+)
 
 
 class WindSiteRequest(BaseModel):

@@ -21,10 +21,13 @@ export interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null)
 
-interface AuthUser {
+export type OptionalWorkbench = 'site' | 'structural'
+
+export interface AuthUser {
   user_id: string
   tenant_id: string
   email: string | null
+  workbenches: OptionalWorkbench[]
 }
 
 const AUTH_CHECK_RETRY_DELAYS_MS = [500, 1500, 3000]
@@ -41,7 +44,19 @@ async function fetchCurrentUser(): Promise<AuthUser | null> {
   for (let attempt = 0; attempt <= AUTH_CHECK_RETRY_DELAYS_MS.length; attempt += 1) {
     const response = await fetch('/api/auth/me', { credentials: 'same-origin' })
     if (response.status === 401) return null
-    if (response.ok) return response.json()
+    if (response.ok) {
+      const user = await response.json() as Omit<AuthUser, 'workbenches'> & {
+        workbenches?: unknown
+      }
+      return {
+        ...user,
+        workbenches: Array.isArray(user.workbenches)
+          ? user.workbenches.filter(
+              (workbench): workbench is OptionalWorkbench => workbench === 'site' || workbench === 'structural',
+            )
+          : [],
+      }
+    }
     if (!isTransientAuthCheckFailure(response.status) || attempt === AUTH_CHECK_RETRY_DELAYS_MS.length) {
       throw new Error(`Authentication check failed with status ${response.status}`)
     }
@@ -49,6 +64,13 @@ async function fetchCurrentUser(): Promise<AuthUser | null> {
   }
 
   return null
+}
+
+export function hasWorkbenchAccess(
+  user: AuthUser | null,
+  workbench: OptionalWorkbench,
+) {
+  return user?.workbenches.includes(workbench) ?? false
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

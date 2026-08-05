@@ -32,11 +32,15 @@ def claims_to_principal(claims: dict) -> Principal:
     subject = claims.get("sub")
     if not subject:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token subject is missing")
+    realm_access = claims.get("realm_access")
+    raw_roles = realm_access.get("roles", []) if isinstance(realm_access, dict) else []
+    roles = frozenset(role for role in raw_roles if isinstance(role, str))
     return Principal(
         keycloak_subject=subject,
         email=claims.get("email"),
         username=claims.get("preferred_username"),
         display_name=claims.get("name"),
+        roles=roles,
     )
 
 
@@ -128,7 +132,7 @@ def keycloak_token_url(settings) -> str:
     jwks_url = settings.keycloak_jwks_url.rstrip("/")
     suffix = "/protocol/openid-connect/certs"
     if jwks_url.endswith(suffix):
-        return f"{jwks_url[:-len(suffix)]}/protocol/openid-connect/token"
+        return f"{jwks_url[: -len(suffix)]}/protocol/openid-connect/token"
     return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
 
 
@@ -168,7 +172,10 @@ def refresh_session_access_token(session: AuthSession) -> None:
         )
 
     if response.status_code >= 400:
-        logger.info("Keycloak token refresh rejected stored session with status %s", response.status_code)
+        logger.info(
+            "Keycloak token refresh rejected stored session with status %s",
+            response.status_code,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired")
 
     try:
@@ -253,7 +260,10 @@ def get_auth_context(
     if credentials is None or credentials.scheme.lower() != "bearer":
         cookie_ctx = get_cookie_auth_context(request, response, db)
         if cookie_ctx is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authentication",
+            )
         return cookie_ctx
 
     try:

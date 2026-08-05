@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.workbench_access import STRUCTURAL_WORKBENCH_ROLE
 from core.structural.cantilever_fixture import (
     BASE_NODE_ID,
     FREE_NODE_ID,
@@ -79,6 +80,7 @@ def test_structural_fixture_api_returns_contract_and_binary_model():
         tenant_id=uuid4(),
         keycloak_subject="structural-fixture-test",
         email="test@example.com",
+        roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     structural_app.dependency_overrides[get_auth_context] = lambda: context
     try:
@@ -101,6 +103,7 @@ def test_structural_site_picker_exposes_region_conflict_and_qz_derivation():
         tenant_id=uuid4(),
         keycloak_subject="structural-site-test",
         email="test@example.com",
+        roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     structural_app.dependency_overrides[get_auth_context] = lambda: context
     try:

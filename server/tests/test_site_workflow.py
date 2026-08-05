@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
+from core.workbench_access import SITE_WORKBENCH_ROLE
 from workflows.site import site_server
 
 
@@ -15,6 +16,7 @@ def test_site_workbench_creates_project_owned_definition_without_compile(monkeyp
         tenant_id=uuid4(),
         keycloak_subject="site-workbench-test",
         email="site@example.com",
+        roles=frozenset({SITE_WORKBENCH_ROLE}),
     )
     project = SimpleNamespace(id=uuid4(), name="structural_test")
     storage: dict[str, str] = {}
@@ -59,3 +61,21 @@ def test_site_workbench_creates_project_owned_definition_without_compile(monkeyp
     assert reloaded.json()["exists"] is True
     assert "site_dict = {" in storage["tertius_site.py"]
     assert "q_z_kPa" not in storage["tertius_site.py"]
+
+
+def test_site_workbench_rejects_users_without_the_keycloak_role():
+    context = AuthContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        keycloak_subject="general-cad-user",
+        email="cad@example.com",
+    )
+    site_server.app.dependency_overrides[get_auth_context] = lambda: context
+    try:
+        with TestClient(site_server.app) as client:
+            response = client.get("/active")
+    finally:
+        site_server.app.dependency_overrides.clear()
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Site workbench access required"

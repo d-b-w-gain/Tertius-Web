@@ -78,6 +78,7 @@ describe('AuthProvider', () => {
         user_id: 'user-1',
         tenant_id: 'tenant-1',
         email: 'alice@example.com',
+        workbenches: ['site', 'unknown-workbench'],
       })))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -95,5 +96,29 @@ describe('AuthProvider', () => {
     expect(screen.getByTestId('loading')).toHaveTextContent('false')
     expect(screen.getByTestId('mode')).toHaveTextContent('authenticated')
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes only known workbench capabilities from the session response', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      user_id: 'user-1',
+      tenant_id: 'tenant-1',
+      email: 'alice@example.com',
+      workbenches: ['site', 'unknown-workbench'],
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    function WorkbenchProbe() {
+      const { user } = useAuth()
+      return <span data-testid="workbenches">{user?.workbenches.join(',') ?? ''}</span>
+    }
+
+    render(
+      <AuthProvider>
+        <WorkbenchProbe />
+      </AuthProvider>,
+    )
+
+    await waitFor(() => expect(screen.getByTestId('workbenches')).toHaveTextContent('site'))
+    expect(screen.getByTestId('workbenches')).not.toHaveTextContent('unknown-workbench')
   })
 })

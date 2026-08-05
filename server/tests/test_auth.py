@@ -127,6 +127,9 @@ def test_claims_to_principal_maps_keycloak_claims():
             "email": "a@example.com",
             "preferred_username": "alice",
             "name": "Alice Example",
+            "realm_access": {
+                "roles": ["workbench-site", "workbench-structural", 42],
+            },
         }
     )
 
@@ -134,6 +137,12 @@ def test_claims_to_principal_maps_keycloak_claims():
     assert principal.email == "a@example.com"
     assert principal.username == "alice"
     assert principal.display_name == "Alice Example"
+    assert principal.roles == frozenset({"workbench-site", "workbench-structural"})
+
+
+def test_claims_to_principal_ignores_missing_or_invalid_realm_roles():
+    assert claims_to_principal({"sub": "kc-user-1"}).roles == frozenset()
+    assert claims_to_principal({"sub": "kc-user-1", "realm_access": "not-a-dictionary"}).roles == frozenset()
 
 
 def test_decode_keycloak_token_accepts_valid_rs256_token(monkeypatch):
@@ -209,7 +218,12 @@ def test_decode_keycloak_token_rejects_unknown_kid(monkeypatch):
 
 def test_get_auth_context_rejects_missing_bearer_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(request=_request(), response=Response(), credentials=None, db=cast(Session, None))
+        get_auth_context(
+            request=_request(),
+            response=Response(),
+            credentials=None,
+            db=cast(Session, None),
+        )
 
     assert exc.value.status_code == 401
 
@@ -256,7 +270,11 @@ def test_oauth_state_secret_requires_configured_secret(monkeypatch):
     monkeypatch.setattr(
         app_main,
         "settings",
-        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=False),
+        Settings(
+            auth_session_secret="",
+            oidc_client_secret="",
+            auth_allow_insecure_oauth_state_secret=False,
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -271,7 +289,11 @@ def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
     monkeypatch.setattr(
         app_main,
         "settings",
-        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=True),
+        Settings(
+            auth_session_secret="",
+            oidc_client_secret="",
+            auth_allow_insecure_oauth_state_secret=True,
+        ),
     )
 
     assert app_main._auth_state_secret() == b"insecure-local-auth-state-secret"
@@ -316,14 +338,12 @@ def test_refresh_token_url_uses_internal_jwks_service():
     settings = Settings(
         keycloak_issuer="http://127.0.0.1:18081/realms/tertius",
         keycloak_jwks_url_override=(
-            "http://tertius-fbd-smoke-keycloak-service:8080"
-            "/realms/tertius/protocol/openid-connect/certs"
+            "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"
         ),
     )
 
     assert keycloak_token_url(settings) == (
-        "http://tertius-fbd-smoke-keycloak-service:8080"
-        "/realms/tertius/protocol/openid-connect/token"
+        "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/token"
     )
 
 
@@ -401,7 +421,9 @@ def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monke
     assert "tertius_session=" in response.headers["set-cookie"]
 
 
-def test_cookie_auth_context_keeps_session_when_refresh_service_is_unavailable(monkeypatch):
+def test_cookie_auth_context_keeps_session_when_refresh_service_is_unavailable(
+    monkeypatch,
+):
     settings = _patch_session_settings(monkeypatch)
     user_id = uuid4()
     tenant_id = uuid4()
