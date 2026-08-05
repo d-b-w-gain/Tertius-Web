@@ -18,6 +18,13 @@ export type SiteDefinition = {
     latitude: number
     longitude: number
   }
+  structure: {
+    footprint_length_m: number
+    footprint_width_m: number
+    front_bearing_degrees: number
+    front_definition: 'long_wall_normal' | 'gable_ridge_normal' | 'manual'
+    orientation_status: 'suggested' | 'verified'
+  }
   wind: {
     basis_id: string
     region: string
@@ -30,6 +37,16 @@ export type SiteDefinition = {
     annual_probability_uls: string
     reference_height_m: number
     direction_multiplier: number
+    cardinal_direction_multipliers: {
+      n: number
+      ne: number
+      e: number
+      se: number
+      s: number
+      sw: number
+      w: number
+      nw: number
+    } | null
     shielding_multiplier: number
     topographic_multiplier: number
     climate_change_multiplier: number | null
@@ -53,6 +70,24 @@ export type SiteCalculation = {
   terrain_height_multiplier: number
   site_wind_speed_m_s: number
   q_z_kPa: number
+  structure: SiteDefinition['structure']
+  directional_mode: 'single_conservative' | 'cardinal'
+  cardinal_wind_speeds: Array<{
+    direction: 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW'
+    bearing_degrees: number
+    direction_multiplier: number
+    site_wind_speed_m_s: number
+    q_z_kPa: number
+  }>
+  building_face_wind_speeds: Array<{
+    face: 'front' | 'right' | 'back' | 'left'
+    bearing_degrees: number
+    site_wind_speed_m_s: number
+    q_z_kPa: number
+    governing_cardinal_direction: string
+    contributing_cardinal_directions: string[]
+  }>
+  governing_cardinal_direction: string
   verifier_hash: string
   formula: string
   verify_against: string
@@ -66,4 +101,43 @@ export type SiteWorkbenchResponse = {
   site_dict: SiteDefinition
   source: string
   calculation: SiteCalculation
+}
+
+export type GisCacheHealth = {
+  status: 'ready'
+  free_bytes: number
+  total_bytes: number
+}
+
+export type GisEvidenceManifest = {
+  evidence_id: string
+  created_at: string
+  source: {
+    provider: string
+    dataset: string
+    dataset_version: string
+    licence: string
+    attribution: string
+    source_uri?: string | null
+  }
+  asset: {
+    content_sha256: string
+    relative_path: string
+    media_type: string
+    size_bytes: number
+    width: number
+    height: number
+    band_count: number
+    dtype: string
+    crs: string
+    bounds: [number, number, number, number]
+    resolution: [number, number]
+    nodata: number | null
+  }
+}
+
+export type GisPointResult = {
+  coordinates: [number, number]
+  values: Array<number | null>
+  band_names: string[]
 }

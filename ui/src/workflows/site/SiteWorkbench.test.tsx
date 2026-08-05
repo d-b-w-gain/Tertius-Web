@@ -47,6 +47,13 @@ const response: SiteWorkbenchResponse = {
       latitude: -34.4125046,
       longitude: 150.8885637,
     },
+    structure: {
+      footprint_length_m: 12,
+      footprint_width_m: 6,
+      front_bearing_degrees: 20,
+      front_definition: 'long_wall_normal',
+      orientation_status: 'verified',
+    },
     wind: {
       basis_id: 'project-site-wind',
       region: 'A2',
@@ -59,6 +66,10 @@ const response: SiteWorkbenchResponse = {
       annual_probability_uls: '',
       reference_height_m: 1.6,
       direction_multiplier: 1,
+      cardinal_direction_multipliers: {
+        n: 0.9, ne: 0.85, e: 0.8, se: 0.85,
+        s: 0.95, sw: 1, w: 0.9, nw: 0.85,
+      },
       shielding_multiplier: 1,
       topographic_multiplier: 1,
       climate_change_multiplier: null,
@@ -82,6 +93,31 @@ const response: SiteWorkbenchResponse = {
     terrain_height_multiplier: 0.75,
     site_wind_speed_m_s: 33.75,
     q_z_kPa: 0.683438,
+    structure: {
+      footprint_length_m: 12,
+      footprint_width_m: 6,
+      front_bearing_degrees: 20,
+      front_definition: 'long_wall_normal',
+      orientation_status: 'verified',
+    },
+    directional_mode: 'cardinal',
+    cardinal_wind_speeds: [
+      { direction: 'N', bearing_degrees: 0, direction_multiplier: 0.9, site_wind_speed_m_s: 30.375, q_z_kPa: 0.553584 },
+      { direction: 'NE', bearing_degrees: 45, direction_multiplier: 0.85, site_wind_speed_m_s: 28.6875, q_z_kPa: 0.493807 },
+      { direction: 'E', bearing_degrees: 90, direction_multiplier: 0.8, site_wind_speed_m_s: 27, q_z_kPa: 0.4374 },
+      { direction: 'SE', bearing_degrees: 135, direction_multiplier: 0.85, site_wind_speed_m_s: 28.6875, q_z_kPa: 0.493807 },
+      { direction: 'S', bearing_degrees: 180, direction_multiplier: 0.95, site_wind_speed_m_s: 32.0625, q_z_kPa: 0.616802 },
+      { direction: 'SW', bearing_degrees: 225, direction_multiplier: 1, site_wind_speed_m_s: 33.75, q_z_kPa: 0.683438 },
+      { direction: 'W', bearing_degrees: 270, direction_multiplier: 0.9, site_wind_speed_m_s: 30.375, q_z_kPa: 0.553584 },
+      { direction: 'NW', bearing_degrees: 315, direction_multiplier: 0.85, site_wind_speed_m_s: 28.6875, q_z_kPa: 0.493807 },
+    ],
+    building_face_wind_speeds: [
+      { face: 'front', bearing_degrees: 20, site_wind_speed_m_s: 30.375, q_z_kPa: 0.553584, governing_cardinal_direction: 'N', contributing_cardinal_directions: ['N', 'NE'] },
+      { face: 'right', bearing_degrees: 110, site_wind_speed_m_s: 28.6875, q_z_kPa: 0.493807, governing_cardinal_direction: 'SE', contributing_cardinal_directions: ['E', 'SE'] },
+      { face: 'back', bearing_degrees: 200, site_wind_speed_m_s: 33.75, q_z_kPa: 0.683438, governing_cardinal_direction: 'SW', contributing_cardinal_directions: ['S', 'SW'] },
+      { face: 'left', bearing_degrees: 290, site_wind_speed_m_s: 30.375, q_z_kPa: 0.553584, governing_cardinal_direction: 'W', contributing_cardinal_directions: ['W', 'NW'] },
+    ],
+    governing_cardinal_direction: 'SW',
     verifier_hash: 'verify123',
     formula: 'qz',
     verify_against: 'project standard',
@@ -101,7 +137,10 @@ afterEach(() => {
 
 describe('SiteWorkbench', () => {
   it('shows NCC classification choices and identifies the exact missing confirmation', async () => {
-    mocks.apiFetch.mockResolvedValue(new Response(JSON.stringify({
+    mocks.apiFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/gis/health') ? {
+        status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+      } : {
       ...response,
       site_dict: {
         ...response.site_dict,
@@ -122,6 +161,9 @@ describe('SiteWorkbench', () => {
       name: 'Class 10a — non-habitable garage, carport or shed',
     })).toBeInTheDocument()
     expect(screen.getByText('NCC working recommendation: Importance Level 2')).toBeInTheDocument()
+    expect(screen.getByText('Structure orientation & directional wind')).toBeInTheDocument()
+    expect(screen.getByText('Front bearing 20° true')).toBeInTheDocument()
+    expect(screen.getByText('Governing SW · qz 0.683 kPa')).toBeInTheDocument()
     expect(screen.getByRole('option', {
       name: 'Auto-select worst available credible service case',
     })).toBeInTheDocument()
@@ -132,8 +174,10 @@ describe('SiteWorkbench', () => {
   })
 
   it('creates tertius_site.py and emits a structural refresh without compiling CAD', async () => {
-    mocks.apiFetch.mockImplementation(async (_url: string, _token: unknown, init?: RequestInit) => (
-      new Response(JSON.stringify({
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => (
+      new Response(JSON.stringify(url.endsWith('/gis/health') ? {
+        status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+      } : {
         ...response,
         exists: init?.method === 'PUT',
       }), {
@@ -154,13 +198,59 @@ describe('SiteWorkbench', () => {
       window.removeEventListener('tertius:site-basis-changed', changed)
     }
 
-    expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
-    const saveCall = mocks.apiFetch.mock.calls[1]
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(3)
+    const saveCall = mocks.apiFetch.mock.calls.find((call) => call[2]?.method === 'PUT')
     expect(saveCall).toBeDefined()
     expect(saveCall?.[0]).toBe('/api/site/active')
     expect(saveCall?.[2]).toMatchObject({ method: 'PUT' })
     expect(
       mocks.apiFetch.mock.calls.some(([url]) => String(url).includes('/compile')),
     ).toBe(false)
+  })
+
+  it('authors a true-north bearing and expands the fallback Md into eight cardinal inputs', async () => {
+    mocks.apiFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/gis/health')
+        ? { status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000 }
+        : url.endsWith('/calculate')
+          ? response.calculation
+          : {
+            ...response,
+            site_dict: {
+              ...response.site_dict,
+              structure: { ...response.site_dict.structure, orientation_status: 'suggested' },
+              wind: {
+                ...response.site_dict.wind,
+                cardinal_direction_multipliers: null,
+              },
+            },
+          },
+    ), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    render(<SiteWorkbench isActive />)
+
+    const northMultiplier = await screen.findByRole('spinbutton', {
+      name: 'N direction multiplier',
+    })
+    expect(northMultiplier).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Enable cardinal inputs' }))
+    expect(northMultiplier).toBeEnabled()
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Front bearing degrees true' }), {
+      target: { value: '135' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Recalculate' }))
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some((call) => call[2]?.method === 'POST'),
+    ).toBe(true))
+    const calculateCall = mocks.apiFetch.mock.calls.find((call) => call[2]?.method === 'POST')
+    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    expect(submitted.structure.front_bearing_degrees).toBe(135)
+    expect(submitted.wind.cardinal_direction_multipliers).toEqual({
+      n: 1, ne: 1, e: 1, se: 1, s: 1, sw: 1, w: 1, nw: 1,
+    })
   })
 })

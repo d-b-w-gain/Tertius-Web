@@ -61,10 +61,16 @@ services:
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
       KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:${COMPOSE_PARITY_UI_PORT:-18080}}
+      GIS_CACHE_URL: http://gis-cache:8000
     depends_on:
       - postgres
       - nats
       - otel-collector
+      - gis-cache
+
+  gis-cache:
+    ports: !override
+      - "${COMPOSE_PARITY_GIS_PORT:-18004}:8000"
 
   frontend:
     image: !reset null

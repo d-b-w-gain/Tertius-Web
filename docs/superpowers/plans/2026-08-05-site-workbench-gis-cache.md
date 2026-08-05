@@ -10,6 +10,8 @@
 
 **Epic:** [#338](https://github.com/d-b-w-gain/Tertius-Web/issues/338)
 
+**Deployment plan:** [Local k3s and production rollout](2026-08-05-site-workbench-gis-cache-deployment.md)
+
 ---
 
 ## Product outcome
@@ -88,14 +90,14 @@ This epic extends that boundary. It does not replace the current structural calc
 - Modify: Compose development and parity manifests
 - Modify: `scripts/check-runtime-parity.sh`
 
-- [ ] Add a separately deployed internal `gis-cache` API with liveness, readiness, and dependency health.
-- [ ] Add a PVC-backed, content-addressed cache for immutable source extracts and derived evidence manifests.
+- [x] Add a separately deployed internal `gis-cache` API with liveness, readiness, and storage health.
+- [x] Add a PVC-backed, content-addressed cache for immutable source extracts and derived evidence manifests.
 - [ ] Store source URL/identifier, dataset/version, acquisition time, extent, CRS, vertical datum, resolution, media type, licence/attribution, ETag/checksum, byte size, and validation state.
 - [ ] Use atomic writes and verify digest, raster bounds, bands, units, nodata, CRS, and pixel limits before publishing a cache entry.
 - [ ] Add upstream hostname allowlisting, redirect validation, DNS/IP safety, bounded response size, timeout/retry policy, and per-provider concurrency limits.
 - [ ] Add cache quotas, least-recently-used/reference-aware eviction, storage-pressure readiness, corruption quarantine, and safe rebuild behavior.
-- [ ] Run the pod without database or compile-worker credentials; expose it only to the API through cluster policy.
-- [ ] Add resource requests/limits, NetworkPolicy, PodDisruptionBudget where appropriate, PVC configuration, and non-root/read-only-container settings except for the cache mount.
+- [x] Run the pod without database or compile-worker credentials; expose it only to the API through cluster policy.
+- [x] Add resource requests/limits, NetworkPolicy, retained PVC configuration, Recreate updates, and non-root/read-only-container settings except for the cache mount.
 
 **Gate:** Two identical bounded requests produce one upstream acquisition and one verified cache hit; corrupt or partial entries become misses without being served.
 
@@ -146,7 +148,7 @@ This epic extends that boundary. It does not replace the current structural calc
 
 - [ ] Add address search, bounded candidate list, map/coordinate confirmation, and manual-coordinate fallback.
 - [ ] Show selected and alternative source coverage, resolution, DEM/DSM type, datum, age, licence/attribution, and cache/upstream state.
-- [ ] Add a compass-sector view that keeps standards-derived `M_d` separate from GIS-derived terrain/topographic evidence.
+- [x] Add true-north structure placement and a compass-sector view that keeps standards-derived `M_d` separate from GIS-derived terrain/topographic evidence. The first slice accepts licensed/manual `M_d` inputs; directional GIS terrain/topography remains pending.
 - [ ] Show raw evidence, suggested value, current verified value, uncertainty, fallback reason, and effect on `V_sit`/`q_z`.
 - [ ] Require an explicit review action before adopting suggestions; capture reviewer, reason, time, and applicable standards edition.
 - [ ] Preserve manual overrides and make stale/changed source evidence obvious.

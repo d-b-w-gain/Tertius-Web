@@ -32,7 +32,41 @@ type Props = {
   getAccessToken: () => Promise<string>
   latitude: number | null
   longitude: number | null
+  footprintLengthM?: number
+  footprintWidthM?: number
+  frontBearingDegrees?: number
   onPick: (latitude: number, longitude: number) => void
+}
+
+export function structureFootprintCoordinates(
+  latitude: number,
+  longitude: number,
+  footprintLengthM: number,
+  footprintWidthM: number,
+  frontBearingDegrees: number,
+) {
+  const radians = frontBearingDegrees * Math.PI / 180
+  const metresPerLatitudeDegree = 111_320
+  const metresPerLongitudeDegree = Math.max(
+    1,
+    metresPerLatitudeDegree * Math.cos(latitude * Math.PI / 180),
+  )
+  const point = (forward: number, right: number): [number, number] => {
+    const north = Math.cos(radians) * forward - Math.sin(radians) * right
+    const east = Math.sin(radians) * forward + Math.cos(radians) * right
+    return [
+      latitude + north / metresPerLatitudeDegree,
+      longitude + east / metresPerLongitudeDegree,
+    ]
+  }
+  const halfLength = footprintLengthM / 2
+  const halfWidth = footprintWidthM / 2
+  return [
+    point(halfWidth, -halfLength),
+    point(halfWidth, halfLength),
+    point(-halfWidth, halfLength),
+    point(-halfWidth, -halfLength),
+  ]
 }
 
 export function WindRegionMap({
@@ -40,12 +74,16 @@ export function WindRegionMap({
   getAccessToken,
   latitude,
   longitude,
+  footprintLengthM = 12,
+  footprintWidthM = 6,
+  frontBearingDegrees = 0,
   onPick,
 }: Props) {
   const divRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const markerRef = useRef<any>(null)
   const overlayRef = useRef<any>(null)
+  const placementLayerRef = useRef<any>(null)
   const onPickRef = useRef(onPick)
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [message, setMessage] = useState('')
@@ -78,6 +116,7 @@ export function WindRegionMap({
       mapRef.current = null
       markerRef.current = null
       overlayRef.current = null
+      placementLayerRef.current = null
     }
   }, [])
 
@@ -160,10 +199,56 @@ export function WindRegionMap({
       })
       markerRef.current = L.marker([latitude, longitude], { icon }).addTo(map)
     }
-    map.setView([latitude, longitude], Math.max(map.getZoom(), 11), {
+    // A shed-scale footprint is only inspectable at parcel-level zoom.
+    map.setView([latitude, longitude], Math.max(map.getZoom(), 18), {
       animate: true,
     })
   }, [latitude, longitude, status])
+
+  useEffect(() => {
+    const map = mapRef.current
+    placementLayerRef.current?.remove()
+    placementLayerRef.current = null
+    if (!map || latitude == null || longitude == null) return
+    if (footprintLengthM <= 0 || footprintWidthM <= 0) return
+
+    const corners = structureFootprintCoordinates(
+      latitude,
+      longitude,
+      footprintLengthM,
+      footprintWidthM,
+      frontBearingDegrees,
+    )
+    const [frontLeft, frontRight] = corners
+    if (!frontLeft || !frontRight) return
+    const frontMidpoint: [number, number] = [
+      (frontLeft[0] + frontRight[0]) / 2,
+      (frontLeft[1] + frontRight[1]) / 2,
+    ]
+    const group = L.layerGroup()
+    L.polygon(corners, {
+      color: '#5eead4',
+      fillColor: '#0f766e',
+      fillOpacity: 0.55,
+      weight: 2,
+    }).bindTooltip(
+      `Structure footprint · front ${Math.round(frontBearingDegrees)}° true`,
+      { sticky: true },
+    ).addTo(group)
+    L.polyline([[latitude, longitude], frontMidpoint], {
+      color: '#fbbf24',
+      weight: 4,
+    }).addTo(group)
+    group.addTo(map)
+    placementLayerRef.current = group
+  }, [
+    footprintLengthM,
+    footprintWidthM,
+    frontBearingDegrees,
+    latitude,
+    longitude,
+    status,
+  ])
 
   return (
     <div className="relative h-64 w-full overflow-hidden rounded border border-slate-700 bg-slate-900">

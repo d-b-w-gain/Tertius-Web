@@ -1,0 +1,138 @@
+{{- if .Values.gisCache.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.gisCacheName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+spec:
+  replicas: {{ .Values.gisCache.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gis-cache
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gis-cache
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gis-cache
+          image: "{{ .Values.gisCache.image.repository }}:{{ .Values.gisCache.image.tag }}"
+          imagePullPolicy: {{ .Values.gisCache.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          ports:
+            - name: http
+              containerPort: {{ .Values.gisCache.port }}
+          env:
+            - name: GIS_CACHE_ROOT
+              value: /var/lib/tertius-gis
+            - name: GIS_MAX_UPLOAD_BYTES
+              value: {{ printf "%d" (.Values.gisCache.maxUploadBytes | int64) | quote }}
+            - name: GIS_MAX_RASTER_PIXELS
+              value: {{ printf "%d" (.Values.gisCache.maxRasterPixels | int64) | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: tertius-gis-cache
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "tertius.configName" . }}
+                  key: OTEL_EXPORTER_OTLP_ENDPOINT
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            failureThreshold: {{ .Values.gisCache.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.gisCache.probes.startup.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.gisCache.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.gisCache.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: {{ .Values.gisCache.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.gisCache.probes.liveness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.gisCache.resources | nindent 12 }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/tertius-gis
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: cache
+          {{- if .Values.gisCache.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tertius.gisCacheClaimName" . }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.gisCache.storage.emptyDirSizeLimit }}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.gisCache.tmpSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tertius.gisCacheName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+spec:
+  type: {{ .Values.gisCache.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.gisCache.service.port }}
+      targetPort: http
+  selector:
+    {{- include "tertius.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+{{- if and .Values.gisCache.storage.enabled (not .Values.gisCache.storage.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tertius.gisCacheClaimName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+  {{- if .Values.gisCache.storage.retain }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.gisCache.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.gisCache.storage.size }}
+{{- end }}
+{{- end }}
+

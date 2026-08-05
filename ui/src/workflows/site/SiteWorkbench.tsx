@@ -7,6 +7,8 @@ import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import { WindRegionMap } from '../structural/WindRegionMap'
+import { GisEvidencePanel } from './GisEvidencePanel'
+import { StructureWindRose } from './StructureWindRose'
 import type {
   SiteCalculation,
   SiteDefinition,
@@ -183,6 +185,11 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     edit({ ...draft, wind: { ...draft.wind, [key]: value } })
   }
 
+  const updateStructure = (structure: SiteDefinition['structure']) => {
+    if (!draft) return
+    edit({ ...draft, structure })
+  }
+
   const updateActionEnvelope = <
     K extends keyof SiteDefinition['wind']['action_envelope'],
   >(
@@ -345,6 +352,12 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     if (!draft) return []
     const values: { id: string, label: string }[] = []
     if (!draft.location.address.trim()) values.push({ id: 'site-address', label: 'enter the site address' })
+    if (draft.structure.orientation_status !== 'verified') {
+      values.push({ id: 'structure-orientation', label: 'verify the structure bearing against site north' })
+    }
+    if (draft.wind.cardinal_direction_multipliers === null) {
+      values.push({ id: 'structure-orientation', label: 'enter the eight cardinal direction multipliers' })
+    }
     if (draft.wind.region_status !== 'verified') values.push({ id: 'wind-region', label: 'verify the wind region' })
     if (draft.wind.table_status !== 'verified') values.push({ id: 'wind-table', label: 'verify the wind tables' })
     if (!draft.project_basis.standards.confirmed) {
@@ -504,6 +517,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                 getAccessToken={getAccessToken}
                 latitude={draft.location.latitude}
                 longitude={draft.location.longitude}
+                footprintLengthM={draft.structure.footprint_length_m}
+                footprintWidthM={draft.structure.footprint_width_m}
+                frontBearingDegrees={draft.structure.front_bearing_degrees}
                 onPick={(latitude, longitude) => void pickCoordinates(latitude, longitude)}
               />
             </div>
@@ -564,6 +580,24 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             </div>
           </section>
 
+          <GisEvidencePanel
+            serverUrl={serverUrl}
+            getAccessToken={getAccessToken}
+            latitude={draft.location.latitude}
+            longitude={draft.location.longitude}
+          />
+
+          <StructureWindRose
+            structure={draft.structure}
+            multipliers={draft.wind.cardinal_direction_multipliers}
+            fallbackMultiplier={draft.wind.direction_multiplier}
+            calculation={calculation}
+            onStructureChange={updateStructure}
+            onMultipliersChange={(cardinalDirectionMultipliers) => updateWind(
+              'cardinal_direction_multipliers', cardinalDirectionMultipliers,
+            )}
+          />
+
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <h2 className="font-semibold text-slate-100">Exposure multipliers</h2>
             <p className="mt-1 text-xs text-slate-500">
@@ -579,8 +613,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                     event.target.value.trim() ? numberValue(event.target.value) : null,
                   )} />
               </Field>
-              <Field label="Direction Md">
+              <Field label="Fallback direction Md" hint="Used for every direction until cardinal inputs are enabled.">
                 <input type="number" min="0.01" step="0.01" className={inputClass} value={draft.wind.direction_multiplier}
+                  disabled={draft.wind.cardinal_direction_multipliers !== null}
                   onChange={(event) => updateWind('direction_multiplier', numberValue(event.target.value))} />
               </Field>
               <Field label="Shielding Ms">
@@ -738,6 +773,8 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   ['Terrain multiplier', calculation.terrain_height_multiplier.toFixed(3)],
                   ['Site speed Vsit', `${calculation.site_wind_speed_m_s.toFixed(3)} m/s`],
                   ['Dynamic pressure qz', `${calculation.q_z_kPa.toFixed(6)} kPa`],
+                  ['Governing cardinal', calculation.governing_cardinal_direction],
+                  ['Front bearing', `${calculation.structure.front_bearing_degrees.toFixed(0)}° true`],
                   ['ULS return period', `${calculation.annual_recurrence_interval_years} years`],
                   ['Envelope', calculation.action_envelope.enclosure.replace('_', ' ')],
                   ['Case selection', calculation.action_envelope.coefficient_selection_policy.replaceAll('_', ' ')],

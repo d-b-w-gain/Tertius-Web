@@ -151,6 +151,46 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+gisCache:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/d-b-w-gain/tertius-gis-cache
+    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-gis-cache"}
+    pullPolicy: IfNotPresent
+  port: 8000
+  service:
+    type: ClusterIP
+    port: 8000
+  maxUploadBytes: 536870912
+  maxRasterPixels: 250000000
+  tmpSizeLimit: 4Gi
+  storage:
+    enabled: true
+    existingClaim: ""
+    size: 100Gi
+    storageClassName: ""
+    retain: true
+    emptyDirSizeLimit: 1Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+      ephemeral-storage: 4Gi
+  probes:
+    startup:
+      failureThreshold: 60
+      periodSeconds: 5
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
 piAgent:
   enabled: false
   image:

@@ -23,6 +23,7 @@ image behavior, and environment contracts.
 | KEDA ScaledJob | enabled by chart when CRD exists | not present | not present | k3s required |
 | CloudNativePG | app and Keycloak clusters | container Postgres | container Postgres | k3s required |
 | PVCs | chart/operator storage | Compose named volumes | Compose named volumes | intentional adapter |
+| GIS evidence cache | TiTiler/rio-tiler image with retained RWO PVC; API-only ingress | same image with retained named volume and host debug port | same image and storage contract | evidence IDs and provenance are parity-required; Helm NetworkPolicy is k3s-only |
 | NetworkPolicy | chart policies | not present | not present | k3s required |
 | OTEL collector | chart collector | local collector | local collector | protocol/name parity required |
 | metrics backend | optional local chart backend | VictoriaMetrics | VictoriaMetrics | local-only unless enabled |
@@ -40,3 +41,7 @@ Postgres, or Keycloak service names. Docker bridge networking still provides
 general outbound internet access required for the subscription provider, so it
 is a weaker egress boundary than the Helm NetworkPolicy and is not evidence of
 destination-level filtering.
+
+The GIS cache accepts uploaded rasters from the API and never resolves a caller-
+supplied URL. Compose exposes port `18004` for focused diagnostics; the Helm
+Service remains cluster-internal and its NetworkPolicy admits only API pods.

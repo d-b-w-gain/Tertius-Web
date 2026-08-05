@@ -56,6 +56,20 @@ describe('apiFetch', () => {
     expect(new Headers(postInit.headers).get('X-CSRF-Token')).toBe('csrf-token')
   })
 
+  it('lets the browser set the multipart boundary for FormData requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('{}', { status: 201 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { apiFetch } = await loadClient()
+    const body = new FormData()
+    body.set('provider', 'manual-upload')
+
+    await apiFetch('/api/site/gis/evidence', vi.fn(), { method: 'POST', body })
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit
+    expect(new Headers(init.headers).has('Content-Type')).toBe(false)
+    expect(init.body).toBe(body)
+  })
+
   it('deduplicates concurrent readonly requests for the same endpoint', async () => {
     let resolveFetch: (response: Response) => void = () => {}
     const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => {

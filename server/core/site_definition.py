@@ -74,6 +74,34 @@ class SiteLocation(SiteContract):
     longitude: float = Field(default=150.8885637, ge=-180, le=180)
 
 
+class SiteStructurePlacement(SiteContract):
+    """Plan placement used to rotate cardinal wind into building directions.
+
+    ``front_bearing_degrees`` is clockwise from true north and describes the
+    outward normal of the nominated front face. The footprint is a site-plan
+    aid only; it must not alter authored Build123D geometry.
+    """
+
+    footprint_length_m: float = Field(default=12.0, gt=0)
+    footprint_width_m: float = Field(default=6.0, gt=0)
+    front_bearing_degrees: float = Field(default=0.0, ge=0, lt=360)
+    front_definition: Literal[
+        "long_wall_normal", "gable_ridge_normal", "manual"
+    ] = "long_wall_normal"
+    orientation_status: Literal["suggested", "verified"] = "suggested"
+
+
+class SiteCardinalDirectionMultipliers(SiteContract):
+    n: float = Field(default=1.0, gt=0)
+    ne: float = Field(default=1.0, gt=0)
+    e: float = Field(default=1.0, gt=0)
+    se: float = Field(default=1.0, gt=0)
+    s: float = Field(default=1.0, gt=0)
+    sw: float = Field(default=1.0, gt=0)
+    w: float = Field(default=1.0, gt=0)
+    nw: float = Field(default=1.0, gt=0)
+
+
 class SiteWindActionEnvelope(SiteContract):
     enclosure: Literal["enclosed", "open_sided"] = "enclosed"
     openings_operating_state: Literal["normally_closed", "normally_open"] = (
@@ -96,7 +124,11 @@ class SiteWindDefinition(SiteContract):
     terrain_category: Literal["1", "2", "2.5", "3", "4"] = "3"
     annual_probability_uls: str = ""
     reference_height_m: float = Field(default=3.0, gt=0)
+    # Retained as the conservative/backward-compatible fallback for existing
+    # tertius_site.py files. Once the eight cardinal values are authored, the
+    # calculation envelope uses their maximum and reports face-specific cases.
     direction_multiplier: float = Field(default=1.0, gt=0)
+    cardinal_direction_multipliers: SiteCardinalDirectionMultipliers | None = None
     shielding_multiplier: float = Field(default=1.0, gt=0)
     topographic_multiplier: float = Field(default=1.0, gt=0)
     climate_change_multiplier: float | None = Field(default=None, gt=0)
@@ -109,6 +141,7 @@ class SiteDefinition(SiteContract):
     schema_version: Literal["1.0"] = "1.0"
     project_basis: SiteProjectBasis = Field(default_factory=SiteProjectBasis)
     location: SiteLocation = Field(default_factory=SiteLocation)
+    structure: SiteStructurePlacement = Field(default_factory=SiteStructurePlacement)
     wind: SiteWindDefinition = Field(default_factory=SiteWindDefinition)
 
 
@@ -238,13 +271,85 @@ def site_definition_revision(site: SiteDefinition) -> str:
 
 
 def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
+    cardinal_bearings = (
+        ("N", 0.0, "n"),
+        ("NE", 45.0, "ne"),
+        ("E", 90.0, "e"),
+        ("SE", 135.0, "se"),
+        ("S", 180.0, "s"),
+        ("SW", 225.0, "sw"),
+        ("W", 270.0, "w"),
+        ("NW", 315.0, "nw"),
+    )
+    authored_multipliers = site.wind.cardinal_direction_multipliers
+    if authored_multipliers is None:
+        multipliers = {
+            key: site.wind.direction_multiplier for _, _, key in cardinal_bearings
+        }
+        directional_mode = "single_conservative"
+    else:
+        multipliers = authored_multipliers.model_dump(mode="json")
+        directional_mode = "cardinal"
+
+    cardinal_wind_speeds: list[dict[str, Any]] = []
+    for direction, bearing, key in cardinal_bearings:
+        sector = compute_site_wind(
+            region=site.wind.region,
+            terrain_category=site.wind.terrain_category,
+            importance_level=site.project_basis.importance_level,
+            annual_probability_uls=site.wind.annual_probability_uls,
+            reference_height_m=site.wind.reference_height_m,
+            direction_multiplier=multipliers[key],
+            shielding_multiplier=site.wind.shielding_multiplier,
+            topographic_multiplier=site.wind.topographic_multiplier,
+            climate_change_multiplier=site.wind.climate_change_multiplier,
+        )
+        cardinal_wind_speeds.append(
+            {
+                "direction": direction,
+                "bearing_degrees": bearing,
+                "direction_multiplier": sector["direction_multiplier"],
+                "site_wind_speed_m_s": sector["site_wind_speed_m_s"],
+                "q_z_kPa": sector["q_z_kPa"],
+            }
+        )
+
+    def angular_distance(first: float, second: float) -> float:
+        return abs((first - second + 180.0) % 360.0 - 180.0)
+
+    building_face_wind_speeds: list[dict[str, Any]] = []
+    for face, offset in (("front", 0.0), ("right", 90.0), ("back", 180.0), ("left", 270.0)):
+        bearing = (site.structure.front_bearing_degrees + offset) % 360.0
+        contributing = [
+            sector
+            for sector in cardinal_wind_speeds
+            if angular_distance(float(sector["bearing_degrees"]), bearing) <= 45.0
+        ]
+        governing = max(contributing, key=lambda value: value["site_wind_speed_m_s"])
+        building_face_wind_speeds.append(
+            {
+                "face": face,
+                "bearing_degrees": round(bearing, 6),
+                "site_wind_speed_m_s": governing["site_wind_speed_m_s"],
+                "q_z_kPa": governing["q_z_kPa"],
+                "governing_cardinal_direction": governing["direction"],
+                "contributing_cardinal_directions": [
+                    sector["direction"] for sector in contributing
+                ],
+            }
+        )
+
+    governing_sector = max(
+        cardinal_wind_speeds,
+        key=lambda value: value["site_wind_speed_m_s"],
+    )
     calculation = compute_site_wind(
         region=site.wind.region,
         terrain_category=site.wind.terrain_category,
         importance_level=site.project_basis.importance_level,
         annual_probability_uls=site.wind.annual_probability_uls,
         reference_height_m=site.wind.reference_height_m,
-        direction_multiplier=site.wind.direction_multiplier,
+        direction_multiplier=governing_sector["direction_multiplier"],
         shielding_multiplier=site.wind.shielding_multiplier,
         topographic_multiplier=site.wind.topographic_multiplier,
         climate_change_multiplier=site.wind.climate_change_multiplier,
@@ -253,6 +358,8 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
         "revision": site_definition_revision(site),
         "site_ready": bool(
             site.location.address.strip()
+            and site.structure.orientation_status == "verified"
+            and authored_multipliers is not None
             and site.wind.region_status == "verified"
             and site.wind.table_status == "verified"
             and site.project_basis.standards.confirmed
@@ -260,6 +367,11 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
         "site_address": site.location.address,
         "latitude": site.location.latitude,
         "longitude": site.location.longitude,
+        "structure": site.structure.model_dump(mode="json"),
+        "directional_mode": directional_mode,
+        "cardinal_wind_speeds": cardinal_wind_speeds,
+        "building_face_wind_speeds": building_face_wind_speeds,
+        "governing_cardinal_direction": governing_sector["direction"],
         "region_area": site.wind.region_area,
         "region_source": site.wind.region_source,
         "region_approximate": site.wind.region_approximate,

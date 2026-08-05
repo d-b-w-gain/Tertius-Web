@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+import httpx
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Path, Query, UploadFile
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
+from core.config import get_settings
 from core.db import get_db
 from core.models import Project, UserWorkspaceState
 from core.repositories import ProjectRepository
@@ -33,6 +36,45 @@ app = FastAPI(
     title="Tertius Site and Design Basis Workbench",
     dependencies=[Depends(require_site_workbench)],
 )
+
+GIS_EVIDENCE_PATTERN = r"^gisv1-[0-9a-f]{32}$"
+GIS_UPSTREAM_TIMEOUT_SECONDS = 120.0
+
+
+def _gis_cache_url() -> str:
+    url = get_settings().gis_cache_url.strip().rstrip("/")
+    if not url:
+        raise HTTPException(status_code=503, detail="GIS cache is not enabled")
+    return url
+
+
+def _gis_detail(response: httpx.Response, fallback: str) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return fallback
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return detail if isinstance(detail, str) else fallback
+
+
+def _checked_gis_response(response: httpx.Response, fallback: str) -> httpx.Response:
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=_gis_detail(response, fallback),
+        )
+    return response
+
+
+def _gis_request(method: str, path: str, **kwargs) -> httpx.Response:
+    try:
+        with httpx.Client(
+            timeout=GIS_UPSTREAM_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        ) as client:
+            return client.request(method, f"{_gis_cache_url()}{path}", **kwargs)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="GIS cache is unavailable") from exc
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -159,3 +201,105 @@ def get_wind_regions_geojson(
         return JSONResponse(content=wind_region_geojson())
     except SiteWindError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/gis/health")
+def get_gis_health(_ctx: AuthContext = Depends(get_auth_context)):
+    response = _checked_gis_response(
+        _gis_request("GET", "/health/ready"),
+        "GIS cache health check failed",
+    )
+    return response.json()
+
+
+@app.post("/gis/evidence", status_code=201)
+async def upload_gis_evidence(
+    raster: UploadFile = File(description="Single-band elevation GeoTIFF"),
+    provider: str = Form(min_length=1, max_length=80),
+    dataset: str = Form(min_length=1, max_length=200),
+    licence: str = Form(min_length=1, max_length=200),
+    attribution: str = Form(min_length=1, max_length=500),
+    dataset_version: str = Form(default="manual-test", min_length=1, max_length=120),
+    source_uri: str | None = Form(default=None, max_length=2048),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    data = {
+        "provider": provider,
+        "dataset": dataset,
+        "dataset_version": dataset_version,
+        "licence": licence,
+        "attribution": attribution,
+    }
+    if source_uri:
+        data["source_uri"] = source_uri
+
+    def forward_upload() -> httpx.Response:
+        return _gis_request(
+            "POST",
+            "/v1/evidence",
+            data=data,
+            files={
+                "raster": (
+                    raster.filename or "terrain.tif",
+                    raster.file,
+                    raster.content_type or "image/tiff",
+                )
+            },
+        )
+
+    try:
+        response = await run_in_threadpool(forward_upload)
+        response = _checked_gis_response(response, "GIS evidence upload failed")
+        return JSONResponse(status_code=201, content=response.json())
+    finally:
+        await raster.close()
+
+
+@app.get("/gis/evidence/{evidence_id}")
+def get_gis_evidence(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request("GET", f"/v1/evidence/{evidence_id}"),
+        "GIS evidence lookup failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/evidence/{evidence_id}/point")
+def get_gis_elevation_point(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    latitude: float = Query(ge=-90, le=90),
+    longitude: float = Query(ge=-180, le=180),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            f"/v1/raster/point/{longitude},{latitude}",
+            params={"evidence_id": evidence_id},
+        ),
+        "GIS elevation query failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/evidence/{evidence_id}/preview.png")
+def get_gis_preview(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            "/v1/raster/preview.png",
+            params={"evidence_id": evidence_id, "rescale": "0,255"},
+        ),
+        "GIS preview failed",
+    )
+    return Response(
+        content=response.content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, no-store"},
+    )

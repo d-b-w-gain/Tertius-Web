@@ -34,6 +34,7 @@ metadata:
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
   API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
+  GIS_CACHE_URL: {{ ternary (printf "http://%s:%d" (include "tertius.gisCacheName" .) (.Values.gisCache.service.port | int)) "" .Values.gisCache.enabled | quote }}
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}

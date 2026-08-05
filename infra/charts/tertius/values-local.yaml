@@ -71,6 +71,17 @@ api:
       cpu: "2"
       memory: 2Gi
 
+gisCache:
+  enabled: true
+  image:
+    repository: localhost/tertius-gis-cache
+    tag: local
+    pullPolicy: IfNotPresent
+  storage:
+    enabled: true
+    size: 20Gi
+    storageClassName: local-path
+
 compileJobs:
   runtimeClassName: ""
   maxReplicaCount: 1

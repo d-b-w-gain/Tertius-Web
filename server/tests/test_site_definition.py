@@ -7,6 +7,7 @@ from core.compile_runtime import (
     structural_runtime_files_hash,
 )
 from core.site_definition import (
+    SiteCardinalDirectionMultipliers,
     SiteDefinitionError,
     apply_site_definition,
     calculate_site_definition,
@@ -23,7 +24,19 @@ def verified_site():
     site.wind.region = "A2"
     site.wind.region_status = "verified"
     site.wind.table_status = "verified"
+    site.wind.cardinal_direction_multipliers = SiteCardinalDirectionMultipliers(**{
+        "n": 0.90,
+        "ne": 0.85,
+        "e": 0.80,
+        "se": 0.85,
+        "s": 0.95,
+        "sw": 1.00,
+        "w": 0.90,
+        "nw": 0.85,
+    })
     site.wind.reference_height_m = 1.6
+    site.structure.front_bearing_degrees = 20.0
+    site.structure.orientation_status = "verified"
     site.project_basis.standards.confirmed = True
     site.project_basis.standards.combinations = "AS/NZS 1170.0:2002"
     site.project_basis.standards.permanent_and_imposed = "AS/NZS 1170.1:2002"
@@ -124,6 +137,57 @@ def test_site_calculation_keeps_derived_values_out_of_source():
     assert calculation["q_z_kPa"] == pytest.approx(0.683438)
     assert calculation["annual_recurrence_interval_years"] == 500
     assert calculation["revision"]
+    assert calculation["directional_mode"] == "cardinal"
+    assert calculation["governing_cardinal_direction"] == "SW"
+    assert calculation["building_face_wind_speeds"] == [
+        {
+            "face": "front",
+            "bearing_degrees": 20.0,
+            "site_wind_speed_m_s": pytest.approx(30.375),
+            "q_z_kPa": pytest.approx(0.553584),
+            "governing_cardinal_direction": "N",
+            "contributing_cardinal_directions": ["N", "NE"],
+        },
+        {
+            "face": "right",
+            "bearing_degrees": 110.0,
+            "site_wind_speed_m_s": pytest.approx(28.6875),
+            "q_z_kPa": pytest.approx(0.493784),
+            "governing_cardinal_direction": "SE",
+            "contributing_cardinal_directions": ["E", "SE"],
+        },
+        {
+            "face": "back",
+            "bearing_degrees": 200.0,
+            "site_wind_speed_m_s": pytest.approx(33.75),
+            "q_z_kPa": pytest.approx(0.683438),
+            "governing_cardinal_direction": "SW",
+            "contributing_cardinal_directions": ["S", "SW"],
+        },
+        {
+            "face": "left",
+            "bearing_degrees": 290.0,
+            "site_wind_speed_m_s": pytest.approx(30.375),
+            "q_z_kPa": pytest.approx(0.553584),
+            "governing_cardinal_direction": "W",
+            "contributing_cardinal_directions": ["W", "NW"],
+        },
+    ]
+
+
+def test_legacy_single_direction_multiplier_remains_conservative_but_incomplete():
+    site = default_site_definition()
+    site.location.address = "14 Porter St"
+    site.wind.direction_multiplier = 0.95
+    site.wind.region_status = "verified"
+    site.wind.table_status = "verified"
+    site.project_basis.standards.confirmed = True
+
+    calculation = calculate_site_definition(site)
+
+    assert calculation["directional_mode"] == "single_conservative"
+    assert calculation["site_ready"] is False
+    assert {sector["direction_multiplier"] for sector in calculation["cardinal_wind_speeds"]} == {0.95}
 
 
 def test_site_overlay_recalculates_wind_load_without_changing_topology():

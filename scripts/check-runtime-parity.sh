@@ -78,6 +78,14 @@ contains "$ROOT_DIR/scripts/harness-compose.sh" 'pi-agent-auth' "Compose harness
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'finally:' "Pi worker must clean its temporary workspace on every outcome"
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'shutil\.rmtree\(root\)' "Pi worker must remove each temporary workspace"
 contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-pi-agent:local' "k3s CI image list must preload the Pi agent image"
+contains "$ROOT_DIR/docker-compose.yml" 'gis-cache:' "Compose dev must define the GIS cache"
+contains "$ROOT_DIR/docker-compose.yml" 'GIS_CACHE_URL:[[:space:]]*http://gis-cache:8000' "Compose API must use the internal GIS cache service"
+contains "$ROOT_DIR/server/.env.example" '^GIS_CACHE_URL=' "API env example must document the GIS cache endpoint"
+contains "$ROOT_DIR/server/core/config.py" 'gis_cache_url:' "API settings must expose the GIS cache endpoint"
+contains "$ROOT_DIR/Dockerfile.gis" 'USER 1000:1000' "GIS cache image must run as non-root"
+contains "$CHART_DIR/templates/gis-cache.yaml" 'readOnlyRootFilesystem:[[:space:]]*true' "Helm GIS cache must use a read-only root filesystem"
+contains "$CHART_DIR/templates/gis-cache-networkpolicy.yaml" 'app.kubernetes.io/component: api' "Helm GIS cache ingress must be API-only"
+contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-gis-cache:local' "k3s CI image list must preload the GIS cache image"
 contains "$CHART_DIR/values.yaml" 'tracesBackend:' "Helm values must define tracesBackend"
 contains "$CHART_DIR/templates/otel-collector.yaml" 'otlphttp/victoriatraces' "Helm collector must define VictoriaTraces exporter"
 contains "$ROOT_DIR/infra/otel/otel-collector-local.yaml" 'otlphttp/victoriatraces' "Local collector must define VictoriaTraces exporter"
@@ -153,7 +161,17 @@ def validate(config):
     assert not (forbidden & set(env))
     api_env = services["backend"]["environment"]
     assert api_env["PI_AGENT_RESULT_CONSUMER"] == "pi-agent-result-api"
+    assert api_env["GIS_CACHE_URL"] == "http://gis-cache:8000"
     assert not (forbidden & set(api_env))
+    gis = services["gis-cache"]
+    assert gis["user"] == "1000:1000"
+    assert gis["read_only"] is True and gis["init"] is True
+    assert gis["cap_drop"] == ["ALL"]
+    assert gis["pids_limit"] == 128
+    assert gis["security_opt"] == ["no-new-privileges:true"]
+    assert gis["environment"]["GIS_CACHE_ROOT"] == "/var/lib/tertius-gis"
+    assert len(gis["volumes"]) == 1
+    assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
 
 configs = []
 for path in sys.argv[1:]:
@@ -226,6 +244,8 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'tertius\.billing\.usage\.llm\.tokens' "${file} must include billing subject"
   contains "$file" 'tertius-api' "${file} must include API service name"
   contains "$file" 'tertius-ui' "${file} must include UI service name"
+  contains "$file" 'tertius-gis-cache|gis-cache' "${file} must include GIS cache service name"
+  contains "$file" 'GIS_CACHE_URL' "${file} must include the internal GIS cache URL"
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"
@@ -254,6 +274,7 @@ not_contains "$TMP_DIR/compose-parity.yaml" '5173:5173|published: "5173"|target:
 not_contains "$TMP_DIR/compose-parity.yaml" 'node:20|npm install|npm run dev|CHOKIDAR_USEPOLLING|source: .*/ui|source: .*/server' "Compose parity must not retain dev image, commands, HMR env, or API/UI bind mounts"
 contains "$TMP_DIR/compose-parity.yaml" '18080|published: "18080"' "Compose parity must expose default UI port 18080"
 contains "$TMP_DIR/compose-parity.yaml" '18000|published: "18000"' "Compose parity must expose default API port 18000"
+contains "$TMP_DIR/compose-parity.yaml" '18004|published: "18004"' "Compose parity must expose default GIS cache port 18004"
 
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18080' "Harness docs must document UI port 18080"
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18000' "Harness docs must document API port 18000"

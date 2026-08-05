@@ -57,6 +57,17 @@ jobs:
           cache-from: type=gha,scope=tertius-api
           cache-to: type=gha,mode=max,scope=tertius-api,ignore-error=true
 
+      - name: Build and push GIS cache smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gis
+          target: gis-cache
+          push: true
+          tags: ghcr.io/d-b-w-gain/tertius-gis-cache:${{ steps.vars.outputs.image_tag }}
+          cache-from: type=gha,scope=tertius-gis-cache
+          cache-to: type=gha,mode=max,scope=tertius-gis-cache,ignore-error=true
+
       - name: Build and push UI smoke image
         uses: docker/build-push-action@v6
         with:
@@ -142,6 +153,20 @@ jobs:
             ghcr.io/d-b-w-gain/tertius-pi-agent:master
           cache-from: type=gha,scope=tertius-pi-agent
           cache-to: type=gha,mode=max,scope=tertius-pi-agent
+
+      - name: Build and push GIS cache image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gis
+          target: gis-cache
+          push: true
+          tags: |
+            ghcr.io/d-b-w-gain/tertius-gis-cache:${{ steps.vars.outputs.image_tag }}
+            ghcr.io/d-b-w-gain/tertius-gis-cache:sha-${{ steps.vars.outputs.short_sha }}
+            ghcr.io/d-b-w-gain/tertius-gis-cache:master
+          cache-from: type=gha,scope=tertius-gis-cache
+          cache-to: type=gha,mode=max,scope=tertius-gis-cache
 
       - name: Build and push UI image
         uses: docker/build-push-action@v6
@@ -235,7 +260,7 @@ jobs:
                 --head "${PROMOTION_BRANCH}" \
                 --base master \
                 --title "chore: promote ${IMAGE_TAG}" \
-                --body "Promotes the API, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
+                --body "Promotes the API, GIS cache, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
             )"
             pr_number="${pr_url##*/}"
           fi

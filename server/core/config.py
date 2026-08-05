@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     auth_session_idle_seconds: int = Field(default=604800, gt=0)
     auth_session_max_seconds: int = Field(default=2592000, gt=0)
     artifact_retention_limit: int = Field(default=10)
+    gis_cache_url: str = Field(default="")
     nats_url: str = Field(default="nats://localhost:4222")
     compile_stream_name: str = Field(default="TERTIUS_COMPILE")
     compile_request_subject: str = Field(default="tertius.compile.request")

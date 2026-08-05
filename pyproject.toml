@@ -13,6 +13,7 @@ dependencies = [
     "fpdf2",
     "fonttools",
     "pydantic-settings",
+    "python-multipart",
     "SQLAlchemy>=2.0",
     "psycopg[binary]",
     "alembic",
