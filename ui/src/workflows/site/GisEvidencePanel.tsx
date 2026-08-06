@@ -129,7 +129,7 @@ export function GisEvidencePanel({
     setIsBusy(true)
     setError(null)
     setPoint(null)
-    setStatus('Fetching the bounded GA 30 m terrain patch for this site…')
+    setStatus('Selecting the best official terrain source for this site…')
     try {
       const query = new URLSearchParams({
         latitude: String(latitude),
@@ -151,7 +151,7 @@ export function GisEvidencePanel({
       onEvidenceChange?.(nextManifest)
       setStatus('Terrain cached. Reading elevation at the site point…')
       await queryPoint(nextManifest.evidence_id)
-      setStatus('Official GA terrain evidence is ready. Design inputs remain unchanged pending review.')
+      setStatus(`${nextManifest.source.provider} terrain evidence is ready. Design inputs remain unchanged pending review.`)
     } catch (fetchFailure) {
       setError(fetchFailure instanceof Error ? fetchFailure.message : 'Terrain acquisition failed')
       setStatus('')
@@ -199,7 +199,7 @@ export function GisEvidencePanel({
             </span>
           </div>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-400">
-            Fetch a site-sized patch from Geoscience Australia, or upload a licensed higher-resolution state GeoTIFF.
+            Fetch the best official site-sized DEM available: NSW 5 m terrain locally, with Geoscience Australia 30 m terrain as the national fallback.
             Results are evidence only and never change terrain category or wind multipliers automatically.
           </p>
         </div>
@@ -236,11 +236,11 @@ export function GisEvidencePanel({
           <button type="button" disabled={isBusy || !health}
             onClick={() => void fetchOfficialTerrain()}
             className="rounded bg-cyan-600 px-3 py-2 text-xs font-bold text-white hover:bg-cyan-500 disabled:opacity-50">
-            {isBusy ? 'Processing terrain…' : 'Fetch GA terrain for this site'}
+            {isBusy ? 'Processing terrain…' : 'Fetch best terrain for this site'}
           </button>
         </div>
         <p className="mt-2 text-[10px] leading-4 text-slate-500">
-          Reads only the selected window from GA&apos;s 1-second SRTM DEM and stores a reproducible local COG.
+          NSW sites use the 5 m bare-earth DEM. The 2 m contour product is a vertical contour interval derived from that DEM, so it is not used as the 3D height surface.
         </p>
       </div>
 
@@ -310,7 +310,8 @@ export function GisEvidencePanel({
               <dt>Source</dt><dd>{manifest.source.provider} · {manifest.source.dataset}</dd>
               <dt>Raster</dt><dd>{manifest.asset.width} × {manifest.asset.height} · {manifest.asset.dtype}</dd>
               <dt>CRS</dt><dd>{manifest.asset.crs}</dd>
-              <dt>Resolution</dt><dd>{manifest.asset.resolution.join(' × ')}</dd>
+              <dt>Resolution</dt><dd>{manifest.asset.resolution.join(' × ')} {manifest.asset.crs === 'EPSG:4326' ? 'degrees' : 'm'}</dd>
+              <dt>Licence</dt><dd>{manifest.source.licence}</dd>
               <dt>Size</dt><dd>{formatBytes(manifest.asset.size_bytes)}</dd>
               <dt>Site elevation</dt><dd className="font-mono text-cyan-200">
                 {typeof elevation === 'number' ? `${elevation.toFixed(3)} raster units` : 'No data at site point'}

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import rasterio
 from rasterio.windows import from_bounds
 
 from .models import EvidenceManifest, SourceMetadata
+from .nsw_terrain import NswTerrainProvider, NswTerrainUnavailable
 from .settings import GisCacheSettings
 from .store import EvidenceStore, EvidenceValidationError
 
@@ -24,9 +26,11 @@ class TerrainFetcher:
         self.settings = settings
         self.store = store
         self.requests_dir = settings.root / "requests"
+        self.nsw = NswTerrainProvider(settings, store)
 
     def initialize(self) -> None:
         self.requests_dir.mkdir(parents=True, exist_ok=True)
+        self.nsw.initialize()
 
     def fetch(
         self, latitude: float, longitude: float, radius_m: int | None = None
@@ -37,10 +41,42 @@ class TerrainFetcher:
                 f"terrain radius exceeds {self.settings.terrain_max_radius_m} metres"
             )
         self.initialize()
+        if self.settings.nsw_terrain_enabled:
+            try:
+                sheet = self.nsw.find_sheet(latitude, longitude)
+                if sheet is not None:
+                    return self._cached_fetch(
+                        provider=f"nsw-5m-{sheet.dem_id}",
+                        latitude=latitude,
+                        longitude=longitude,
+                        radius=radius,
+                        acquire=lambda: self.nsw.fetch(
+                            sheet, latitude, longitude, radius
+                        ),
+                    )
+            except NswTerrainUnavailable:
+                pass
+        return self._cached_fetch(
+            provider="ga-srtm-1sec-v1.0",
+            latitude=latitude,
+            longitude=longitude,
+            radius=radius,
+            acquire=lambda: self._fetch_ga(latitude, longitude, radius),
+        )
+
+    def _cached_fetch(
+        self,
+        *,
+        provider: str,
+        latitude: float,
+        longitude: float,
+        radius: int,
+        acquire: Callable[[], EvidenceManifest],
+    ) -> EvidenceManifest:
         request_key = sha256(
             json.dumps(
                 {
-                    "provider": "ga-srtm-1sec-v1.0",
+                    "provider": provider,
                     "latitude": round(latitude, 6),
                     "longitude": round(longitude, 6),
                     "radius_m": radius,
@@ -57,6 +93,17 @@ class TerrainFetcher:
             except KeyError, ValueError, OSError:
                 request_path.unlink(missing_ok=True)
 
+        manifest = acquire()
+        temp = request_path.with_suffix(".tmp")
+        temp.write_text(
+            json.dumps({"evidence_id": manifest.evidence_id}), encoding="utf-8"
+        )
+        temp.replace(request_path)
+        return manifest
+
+    def _fetch_ga(
+        self, latitude: float, longitude: float, radius: int
+    ) -> EvidenceManifest:
         lat_delta = radius / 111_320.0
         lon_delta = radius / (111_320.0 * max(math.cos(math.radians(latitude)), 0.2))
         bounds = (
@@ -128,11 +175,6 @@ class TerrainFetcher:
             )
             with path.open("rb") as handle:
                 manifest = self.store.ingest(handle, source)
-            temp = request_path.with_suffix(".tmp")
-            temp.write_text(
-                json.dumps({"evidence_id": manifest.evidence_id}), encoding="utf-8"
-            )
-            temp.replace(request_path)
             return manifest
         except rasterio.errors.RasterioError as exc:
             raise EvidenceValidationError(f"GA terrain fetch failed: {exc}") from exc

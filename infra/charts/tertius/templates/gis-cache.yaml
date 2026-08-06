@@ -59,6 +59,14 @@ spec:
               value: {{ printf "%d" (.Values.gisCache.terrainMaxRadiusM | int64) | quote }}
             - name: GIS_GA_TERRAIN_SOURCE_URL
               value: {{ .Values.gisCache.gaTerrainSourceUrl | quote }}
+            - name: GIS_NSW_TERRAIN_ENABLED
+              value: {{ .Values.gisCache.nswTerrain.enabled | quote }}
+            - name: GIS_NSW_ELEVATION_INDEX_URL
+              value: {{ .Values.gisCache.nswTerrain.elevationIndexUrl | quote }}
+            - name: GIS_NSW_DEM_DOWNLOAD_BASE_URL
+              value: {{ .Values.gisCache.nswTerrain.demDownloadBaseUrl | quote }}
+            - name: GIS_NSW_MAX_ARCHIVE_BYTES
+              value: {{ printf "%d" (.Values.gisCache.nswTerrain.maxArchiveBytes | int64) | quote }}
             - name: OTEL_SERVICE_NAME
               value: tertius-gis-cache
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

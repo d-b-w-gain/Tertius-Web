@@ -152,7 +152,7 @@ Use a separate namespace/release such as `tertius-gis-smoke`; do not hand-edit t
 3. Render/lint the chart with `values-local.yaml`, GIS enabled, and other components reduced or disabled where the chart supports it.
 4. Install the isolated release through Helm/harness.
 5. Use `kubectl` to wait for the PVC, Deployment, and endpoint readiness.
-6. Acquire one small GA 30 m extract and one small high-resolution state extract through the service contract.
+6. Acquire one small GA 30 m fallback extract and one NSW Spatial Services 5 m DEM extract through the service contract. The NSW provider resolves the official map-sheet index and caches the normalized sheet; the 2 m contour product is an overlay/reference source, not the z surface.
 7. Verify numerical point/profile output and one visualization tile against local GDAL/QGIS results.
 8. Restart the pod and prove the second request is a persistent cache hit with no upstream dependency.
 9. Prove an arbitrary URL/private-IP request is rejected before any network call.

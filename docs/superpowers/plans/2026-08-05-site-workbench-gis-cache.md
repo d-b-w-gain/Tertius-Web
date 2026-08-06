@@ -128,6 +128,7 @@ This epic extends that boundary. It does not replace the current structural calc
 - Modify: Site workflow API routes
 
 - [x] Add replaceable address-geocoding contracts and candidate confirmation; persist the confirmed coordinate and human-readable address independently of provider-specific IDs. The first provider is a compact G-NAF GDA2020 address-point index, initially configured for NSW.
+- [x] Prefer the NSW Spatial Services 5 m bare-earth DEM for covered sites by resolving the official elevation map-sheet index, caching a normalized local sheet once, and clipping reproducible site COGs. Retain the GA 1-second DEM as the national fallback; keep the derived 2 m contour product out of the 3D height path to avoid terraced surfaces.
 - [ ] Generate terrain/topographic evidence by compass sector using a documented radius, sampling grid, and algorithm version.
 - [ ] Separate raw measurements (elevation profile, slope, relief, roughness inputs) from suggested engineering categories/multipliers.
 - [ ] Return uncertainty, coverage gaps, resolution, source age, and conservative fallback reasons per sector.

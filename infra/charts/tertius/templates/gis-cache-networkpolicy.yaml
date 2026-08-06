@@ -36,7 +36,8 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # The service itself allowlists official data.gov.au and DEA source URLs.
+    # The service itself allowlists official data.gov.au, DEA and NSW Spatial
+    # Services source URLs; standard NetworkPolicy cannot constrain FQDNs.
     - ports:
         - protocol: TCP
           port: 443

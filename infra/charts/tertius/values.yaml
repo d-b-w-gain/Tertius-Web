@@ -168,6 +168,11 @@ gisCache:
   terrainDefaultRadiusM: 2000
   terrainMaxRadiusM: 10000
   gaTerrainSourceUrl: "https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif"
+  nswTerrain:
+    enabled: true
+    elevationIndexUrl: "https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0/query"
+    demDownloadBaseUrl: "https://portal.spatial.nsw.gov.au/download/dem"
+    maxArchiveBytes: 419430400
   tmpSizeLimit: 4Gi
   storage:
     enabled: true

@@ -172,6 +172,9 @@ def validate(config):
     assert gis["environment"]["GIS_CACHE_ROOT"] == "/var/lib/tertius-gis"
     assert gis["environment"]["GIS_GNAF_STATES"] == "NSW"
     assert gis["environment"]["GIS_TERRAIN_DEFAULT_RADIUS_M"] == "2000"
+    assert gis["environment"]["GIS_NSW_TERRAIN_ENABLED"] == "true"
+    assert gis["environment"]["GIS_NSW_ELEVATION_INDEX_URL"].endswith("/Elevation_Index_Public/FeatureServer/0/query")
+    assert gis["environment"]["GIS_NSW_DEM_DOWNLOAD_BASE_URL"] == "https://portal.spatial.nsw.gov.au/download/dem"
     assert len(gis["volumes"]) == 1
     assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
 

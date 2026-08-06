@@ -24,6 +24,15 @@ def _states(name: str, default: str) -> tuple[str, ...]:
     return values
 
 
+def _boolean(name: str, default: bool) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 @dataclass(frozen=True)
 class GisCacheSettings:
     root: Path
@@ -36,6 +45,13 @@ class GisCacheSettings:
         "https://dea-public-data.s3-ap-southeast-2.amazonaws.com/"
         "projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif"
     )
+    nsw_terrain_enabled: bool = True
+    nsw_elevation_index_url: str = (
+        "https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/"
+        "Elevation_Index_Public/FeatureServer/0/query"
+    )
+    nsw_dem_download_base_url: str = "https://portal.spatial.nsw.gov.au/download/dem"
+    nsw_max_archive_bytes: int = 419_430_400
 
     @classmethod
     def from_env(cls) -> GisCacheSettings:
@@ -51,5 +67,15 @@ class GisCacheSettings:
             terrain_source_url=os.getenv(
                 "GIS_GA_TERRAIN_SOURCE_URL",
                 cls.terrain_source_url,
+            ),
+            nsw_terrain_enabled=_boolean("GIS_NSW_TERRAIN_ENABLED", True),
+            nsw_elevation_index_url=os.getenv(
+                "GIS_NSW_ELEVATION_INDEX_URL", cls.nsw_elevation_index_url
+            ),
+            nsw_dem_download_base_url=os.getenv(
+                "GIS_NSW_DEM_DOWNLOAD_BASE_URL", cls.nsw_dem_download_base_url
+            ),
+            nsw_max_archive_bytes=_positive_int(
+                "GIS_NSW_MAX_ARCHIVE_BYTES", 419_430_400
             ),
         )

@@ -44,7 +44,7 @@ app = FastAPI(
 )
 
 GIS_EVIDENCE_PATTERN = r"^gisv1-[0-9a-f]{32}$"
-GIS_UPSTREAM_TIMEOUT_SECONDS = 120.0
+GIS_UPSTREAM_TIMEOUT_SECONDS = 300.0
 
 
 def _gis_cache_url() -> str:
@@ -305,7 +305,7 @@ def fetch_gis_site_terrain(
                 "radius_m": radius_m,
             },
         ),
-        "GA terrain acquisition failed",
+        "Terrain acquisition failed",
     )
     return JSONResponse(status_code=201, content=response.json())
 

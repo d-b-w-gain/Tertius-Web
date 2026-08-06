@@ -51,7 +51,7 @@ afterEach(() => {
 })
 
 describe('GisEvidencePanel', () => {
-  it('fetches and inspects the official GA terrain window for the site', async () => {
+  it('fetches and inspects the best official terrain window for the site', async () => {
     apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => {
       if (url.endsWith('/gis/health')) {
         return new Response(JSON.stringify({
@@ -63,8 +63,8 @@ describe('GisEvidencePanel', () => {
           ...manifest,
           source: {
             ...manifest.source,
-            provider: 'Geoscience Australia - Digital Earth Australia',
-            dataset: '1 second SRTM Digital Elevation Model (DEM)',
+            provider: 'NSW Spatial Services',
+            dataset: 'NSW 5 metre Digital Elevation Model',
           },
         }), { status: 201 })
       }
@@ -89,10 +89,10 @@ describe('GisEvidencePanel', () => {
     />)
 
     expect(await screen.findByText(/GIS cache ready/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Fetch GA terrain for this site' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Fetch best terrain for this site' }))
 
     expect(await screen.findByText('52.000 raster units')).toBeInTheDocument()
-    expect(screen.getByText(/Official GA terrain evidence is ready/)).toBeInTheDocument()
+    expect(screen.getByText(/NSW Spatial Services terrain evidence is ready/)).toBeInTheDocument()
     const fetchCall = apiFetch.mock.calls.find((call) => String(call[0]).includes('/gis/terrain/site?'))
     expect(fetchCall?.[0]).toContain('radius_m=2000')
   })

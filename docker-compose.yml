@@ -92,6 +92,10 @@ services:
       GIS_TERRAIN_DEFAULT_RADIUS_M: ${GIS_TERRAIN_DEFAULT_RADIUS_M:-2000}
       GIS_TERRAIN_MAX_RADIUS_M: ${GIS_TERRAIN_MAX_RADIUS_M:-10000}
       GIS_GA_TERRAIN_SOURCE_URL: ${GIS_GA_TERRAIN_SOURCE_URL:-https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif}
+      GIS_NSW_TERRAIN_ENABLED: ${GIS_NSW_TERRAIN_ENABLED:-true}
+      GIS_NSW_ELEVATION_INDEX_URL: ${GIS_NSW_ELEVATION_INDEX_URL:-https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0/query}
+      GIS_NSW_DEM_DOWNLOAD_BASE_URL: ${GIS_NSW_DEM_DOWNLOAD_BASE_URL:-https://portal.spatial.nsw.gov.au/download/dem}
+      GIS_NSW_MAX_ARCHIVE_BYTES: ${GIS_NSW_MAX_ARCHIVE_BYTES:-419430400}
     volumes:
       - tertius-gis-cache:/var/lib/tertius-gis
     tmpfs:
