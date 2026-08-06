@@ -127,6 +127,36 @@ const response: SiteWorkbenchResponse = {
       opening_capacity_status: 'unverified',
       coefficient_selection_policy: 'worst_available_credible',
     },
+    standard_table_evidence: {
+      dataset_version: 'key-changes-2021-v1',
+      standard_reference: 'AS/NZS 1170.2:2021',
+      source: {
+        title: 'Key changes to AS/NZS 1170.2-2021',
+        author: 'Chris Hackney',
+        published_date: '2021-10-28',
+        filename: 'Key-Changes-to-AS-NZS-1170.2-2021.pdf',
+        sha256: 'fixture-sha',
+        source_type: 'secondary_summary_presentation',
+      },
+      verification: {
+        status: 'requires_licensed_standard_check',
+        message: 'Verify against the licensed standard.',
+      },
+      region: 'A2',
+      direction_multipliers: {
+        n: 0.85, ne: 0.75, e: 0.85, se: 0.95,
+        s: 0.95, sw: 0.95, w: 1, nw: 0.95,
+      },
+      climate_change_multiplier: 1,
+      applied_tables: [
+        { id: 'md', table_number: '3.2(A)', title: 'Direction Md', source_page: 5, applicability: [] },
+        { id: 'mc', table_number: '3.3', title: 'Climate Mc', source_page: 6, applicability: [] },
+      ],
+      report_table_index: [
+        { id: 'md', table_number: '3.2(A)', title: 'Direction Md', source_page: 5 },
+        { id: 'mc', table_number: '3.3', title: 'Climate Mc', source_page: 6 },
+      ],
+    },
   },
 }
 
@@ -161,6 +191,9 @@ describe('SiteWorkbench', () => {
       name: 'Class 10a — non-habitable garage, carport or shed',
     })).toBeInTheDocument()
     expect(screen.getByText('NCC working recommendation: Importance Level 2')).toBeInTheDocument()
+    expect(screen.getByText('Site Explorer')).toBeInTheDocument()
+    expect(screen.getByRole('separator', { name: 'Resize derived-results panel' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide derived-results panel' })).toBeInTheDocument()
     expect(screen.getByText('Structure orientation & directional wind')).toBeInTheDocument()
     expect(screen.getByText('Front bearing 20° true')).toBeInTheDocument()
     expect(screen.getByText('Governing SW · qz 0.683 kPa')).toBeInTheDocument()
@@ -252,5 +285,39 @@ describe('SiteWorkbench', () => {
     expect(submitted.wind.cardinal_direction_multipliers).toEqual({
       n: 1, ne: 1, e: 1, se: 1, s: 1, sw: 1, w: 1, nw: 1,
     })
+  })
+
+  it('applies digitised regional Md and Mc values without marking the tables verified', async () => {
+    mocks.apiFetch.mockImplementation(async (url: string) => (
+      new Response(JSON.stringify(url.endsWith('/calculate')
+        ? response.calculation
+        : url.endsWith('/gis/health')
+          ? { status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000 }
+          : response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ))
+
+    render(<SiteWorkbench isActive />)
+
+    const apply = await screen.findByRole('button', {
+      name: 'Use Table 3.2(A) Md and Table 3.3 Mc',
+    })
+    fireEvent.click(apply)
+    expect(screen.getByText(/licensed-standard verification is still required/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Recalculate' }))
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some((call) => String(call[0]).endsWith('/calculate')),
+    ).toBe(true))
+    const calculateCall = mocks.apiFetch.mock.calls.find((call) => String(call[0]).endsWith('/calculate'))
+    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    expect(submitted.wind.cardinal_direction_multipliers).toEqual({
+      n: 0.85, ne: 0.75, e: 0.85, se: 0.95,
+      s: 0.95, sw: 0.95, w: 1, nw: 0.95,
+    })
+    expect(submitted.wind.climate_change_multiplier).toBe(1)
+    expect(submitted.wind.table_status).toBe('starter')
   })
 })

@@ -29,6 +29,12 @@ from core.structural.site_wind import (
     lookup_wind_region,
     wind_region_geojson,
 )
+from core.structural.wind_standard_tables import (
+    WindStandardTableError,
+    load_wind_standard_dataset,
+    site_report_evidence,
+    site_table_evidence,
+)
 from core.workbench_access import require_site_workbench
 
 
@@ -171,6 +177,50 @@ def calculate_site(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get("/standards/as-nzs-1170-2-2021/site-values")
+def get_site_standard_values(
+    region: str = Query(min_length=1, max_length=8),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        return site_table_evidence(region)
+    except WindStandardTableError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/standards/as-nzs-1170-2-2021/tables")
+def get_wind_standard_tables(
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        return load_wind_standard_dataset()
+    except WindStandardTableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/report/evidence")
+def download_site_report_evidence(
+    site: SiteDefinition,
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    try:
+        calculation = calculate_site_definition(site)
+        payload = site_report_evidence(
+            site.model_dump(mode="json"),
+            calculation,
+        )
+    except (SiteWindError, WindStandardTableError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="tertius-site-wind-evidence.json"'
+            )
+        },
+    )
+
+
 @app.get("/wind/region")
 def get_wind_region(
     latitude: float,
@@ -210,6 +260,54 @@ def get_gis_health(_ctx: AuthContext = Depends(get_auth_context)):
         "GIS cache health check failed",
     )
     return response.json()
+
+
+@app.get("/gis/geocode/status")
+def get_gis_geocode_status(_ctx: AuthContext = Depends(get_auth_context)):
+    response = _checked_gis_response(
+        _gis_request("GET", "/v1/geocode/status"),
+        "G-NAF status lookup failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/geocode")
+def geocode_site_address(
+    query: str = Query(min_length=3, max_length=300),
+    limit: int = Query(default=5, ge=1, le=10),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            "/v1/geocode",
+            params={"q": query, "limit": limit},
+        ),
+        "G-NAF address search failed",
+    )
+    return response.json()
+
+
+@app.post("/gis/terrain/site", status_code=201)
+def fetch_gis_site_terrain(
+    latitude: float = Query(ge=-44.5, le=-9.0),
+    longitude: float = Query(ge=112.0, le=154.0),
+    radius_m: int = Query(default=2000, ge=100, le=10000),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "POST",
+            "/v1/terrain/site",
+            json={
+                "latitude": latitude,
+                "longitude": longitude,
+                "radius_m": radius_m,
+            },
+        ),
+        "GA terrain acquisition failed",
+    )
+    return JSONResponse(status_code=201, content=response.json())
 
 
 @app.post("/gis/evidence", status_code=201)
@@ -302,4 +400,53 @@ def get_gis_preview(
         content=response.content,
         media_type="image/png",
         headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@app.get("/gis/evidence/{evidence_id}/terrain-rgb/{z}/{x}/{y}.png")
+def get_gis_terrain_rgb_tile(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    z: int = Path(ge=0, le=22),
+    x: int = Path(ge=0),
+    y: int = Path(ge=0),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            f"/v1/evidence/{evidence_id}/terrain-rgb/{z}/{x}/{y}.png",
+        ),
+        "GIS terrain tile failed",
+    )
+    return Response(
+        content=response.content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@app.get("/gis/evidence/{evidence_id}/relief/{z}/{x}/{y}.png")
+def get_gis_relief_tile(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    z: int = Path(ge=0, le=22),
+    x: int = Path(ge=0),
+    y: int = Path(ge=0),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            f"/v1/raster/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
+            params={
+                "evidence_id": evidence_id,
+                "rescale": "-20,500",
+                "colormap_name": "terrain",
+            },
+        ),
+        "GIS terrain relief tile failed",
+    )
+    return Response(
+        content=response.content,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
     )

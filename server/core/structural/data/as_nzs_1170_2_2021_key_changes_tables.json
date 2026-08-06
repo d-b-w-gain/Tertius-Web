@@ -1,0 +1,191 @@
+{
+  "schema_version": "1.0",
+  "dataset_version": "key-changes-2021-v1",
+  "standard_reference": "AS/NZS 1170.2:2021",
+  "source": {
+    "title": "Key changes to AS/NZS 1170.2-2021",
+    "author": "Chris Hackney",
+    "published_date": "2021-10-28",
+    "filename": "Key-Changes-to-AS-NZS-1170.2-2021.pdf",
+    "sha256": "c866da386d04013d1dc9027765bd7268e99c4486b286ac54a69b45a2c940c6a4",
+    "source_type": "secondary_summary_presentation"
+  },
+  "verification": {
+    "status": "requires_licensed_standard_check",
+    "message": "Digitised from a secondary key-changes presentation. Verify every value and its applicability against the licensed project edition and amendments before design certification."
+  },
+  "tables": {
+    "wind_direction_multiplier_australia": {
+      "table_number": "3.2(A)",
+      "title": "Wind direction multiplier Md - Australia",
+      "source_page": 5,
+      "columns": ["direction", "A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2/C/D"],
+      "rows": [
+        {"direction": "N", "A0": 0.90, "A1": 0.90, "A2": 0.85, "A3": 0.90, "A4": 0.85, "A5": 0.95, "B1": 0.75, "B2/C/D": 0.90},
+        {"direction": "NE", "A0": 0.85, "A1": 0.85, "A2": 0.75, "A3": 0.75, "A4": 0.75, "A5": 0.80, "B1": 0.75, "B2/C/D": 0.90},
+        {"direction": "E", "A0": 0.85, "A1": 0.85, "A2": 0.85, "A3": 0.75, "A4": 0.75, "A5": 0.80, "B1": 0.85, "B2/C/D": 0.90},
+        {"direction": "SE", "A0": 0.90, "A1": 0.80, "A2": 0.95, "A3": 0.90, "A4": 0.80, "A5": 0.80, "B1": 0.90, "B2/C/D": 0.90},
+        {"direction": "S", "A0": 0.90, "A1": 0.80, "A2": 0.95, "A3": 0.90, "A4": 0.80, "A5": 0.80, "B1": 0.95, "B2/C/D": 0.90},
+        {"direction": "SW", "A0": 0.95, "A1": 0.95, "A2": 0.95, "A3": 0.95, "A4": 0.90, "A5": 0.95, "B1": 0.95, "B2/C/D": 0.90},
+        {"direction": "W", "A0": 1.00, "A1": 1.00, "A2": 1.00, "A3": 1.00, "A4": 1.00, "A5": 1.00, "B1": 0.95, "B2/C/D": 0.90},
+        {"direction": "NW", "A0": 0.95, "A1": 0.95, "A2": 0.95, "A3": 0.95, "A4": 1.00, "A5": 0.95, "B1": 0.90, "B2/C/D": 0.90}
+      ],
+      "applicability": [
+        "Use the B2/C/D column for regions B2, C and D.",
+        "The presentation identifies Md=1.0 exceptions for specified stand-alone circular or polygonal structures and for cladding and immediate supporting members in B2, C and D."
+      ]
+    },
+    "wind_direction_multiplier_new_zealand": {
+      "table_number": "3.2(B)",
+      "title": "Wind direction multiplier Md - New Zealand",
+      "source_page": 5,
+      "columns": ["direction", "NZ1", "NZ2", "NZ3", "NZ4"],
+      "rows": [
+        {"direction": "N", "NZ1": 0.90, "NZ2": 0.95, "NZ3": 1.00, "NZ4": 0.95},
+        {"direction": "NE", "NZ1": 0.95, "NZ2": 0.90, "NZ3": 0.75, "NZ4": 0.75},
+        {"direction": "E", "NZ1": 0.95, "NZ2": 0.80, "NZ3": 0.75, "NZ4": 0.75},
+        {"direction": "SE", "NZ1": 0.95, "NZ2": 0.90, "NZ3": 0.85, "NZ4": 0.75},
+        {"direction": "S", "NZ1": 0.90, "NZ2": 0.95, "NZ3": 0.95, "NZ4": 0.85},
+        {"direction": "SW", "NZ1": 1.00, "NZ2": 1.00, "NZ3": 0.95, "NZ4": 0.95},
+        {"direction": "W", "NZ1": 1.00, "NZ2": 1.00, "NZ3": 0.90, "NZ4": 1.00},
+        {"direction": "NW", "NZ1": 0.95, "NZ2": 1.00, "NZ3": 1.00, "NZ4": 1.00}
+      ],
+      "applicability": ["Retained for report evidence; the current Site workflow supports Australian regions only."]
+    },
+    "climate_change_multiplier": {
+      "table_number": "3.3",
+      "title": "Climate change multiplier Mc",
+      "source_page": 6,
+      "columns": ["wind_region", "Mc"],
+      "rows": [
+        {"wind_region": "A0-A5", "Mc": 1.00},
+        {"wind_region": "B1", "Mc": 1.00},
+        {"wind_region": "B2", "Mc": 1.05},
+        {"wind_region": "C", "Mc": 1.05},
+        {"wind_region": "D", "Mc": 1.05},
+        {"wind_region": "NZ1-NZ4", "Mc": 1.00}
+      ],
+      "applicability": ["The presentation notes that future amendments may adjust these values."]
+    },
+    "internal_pressure_openings": {
+      "table_number": "5.1(B)",
+      "title": "Internal pressure coefficients for openings greater than 0.5 percent",
+      "source_page": 14,
+      "columns": ["dominant_opening_ratio", "windward", "leeward", "side", "roof"],
+      "rows": [
+        {"dominant_opening_ratio": "0.5_or_less", "windward": "-0.3, 0.0", "leeward": "-0.3, 0.0", "side": "-0.3, 0.0", "roof": "-0.3, 0.0"},
+        {"dominant_opening_ratio": "1", "windward": "-0.1, 0.2", "leeward": "-0.3, 0.0", "side": "-0.3, 0.0", "roof": "-0.3, 0.0"},
+        {"dominant_opening_ratio": "2", "windward": "0.7 Ka Kl Cp,e", "leeward": "Ka Kl Cp,e", "side": "Ka Kl Cp,e", "roof": "Ka Kl Cp,e"},
+        {"dominant_opening_ratio": "3", "windward": "0.85 Ka Kl Cp,e", "leeward": "Ka Kl Cp,e", "side": "Ka Kl Cp,e", "roof": "Ka Kl Cp,e"},
+        {"dominant_opening_ratio": "6_or_more", "windward": "Ka Kl Cp,e", "leeward": "Ka Kl Cp,e", "side": "Ka Kl Cp,e", "roof": "Ka Kl Cp,e"}
+      ],
+      "applicability": ["Do not automate until opening areas, opening location, Cp,e, Ka and Kl are modelled and verified."]
+    },
+    "area_reduction_factor": {
+      "table_number": "5.4",
+      "title": "Area reduction factor Ka",
+      "source_page": 16,
+      "columns": ["loaded_area_m2", "roof_or_side_wall", "windward_wall_h_lt_25m", "leeward_wall_h_lt_25m"],
+      "rows": [
+        {"loaded_area_m2": 10, "roof_or_side_wall": 1.00, "windward_wall_h_lt_25m": 1.00, "leeward_wall_h_lt_25m": 1.00},
+        {"loaded_area_m2": 25, "roof_or_side_wall": 0.90, "windward_wall_h_lt_25m": 0.95, "leeward_wall_h_lt_25m": 1.00},
+        {"loaded_area_m2": 100, "roof_or_side_wall": 0.80, "windward_wall_h_lt_25m": 0.90, "leeward_wall_h_lt_25m": 0.95}
+      ],
+      "applicability": ["Use endpoint values outside the tabulated area range and linearly interpolate intermediate areas; otherwise Ka=1.0 where the table does not apply."]
+    },
+    "local_pressure_factor": {
+      "table_number": "5.6",
+      "title": "Local pressure factor Kl",
+      "source_page": 18,
+      "columns": ["sign", "surface", "zone", "aspect_ratio", "loaded_area_limit", "distance_from_edge", "Kl"],
+      "rows": [
+        {"sign": "positive", "surface": "windward_wall", "zone": "WA1", "aspect_ratio": "all", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "anywhere", "Kl": 1.5},
+        {"sign": "positive", "surface": "other", "zone": "other", "aspect_ratio": "all", "loaded_area_limit": "all", "distance_from_edge": "all", "Kl": 1.0},
+        {"sign": "negative", "surface": "roof_upwind_corner_pitch_lt_10deg", "zone": "RC1", "aspect_ratio": "all", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<a from two roof edges", "Kl": 3.0},
+        {"sign": "negative", "surface": "roof_downwind_corner_pitch_ge_10deg", "zone": "RC2", "aspect_ratio": "all", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<a from roof edge and ridge", "Kl": 3.0},
+        {"sign": "negative", "surface": "roof_upwind_edge", "zone": "RA1", "aspect_ratio": "all", "loaded_area_limit": "A<=a^2", "distance_from_edge": "<a", "Kl": 1.5},
+        {"sign": "negative", "surface": "roof_upwind_edge", "zone": "RA2", "aspect_ratio": "all", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<0.5a", "Kl": 2.0},
+        {"sign": "negative", "surface": "roof_downwind_side_hip_or_ridge_pitch_ge_10deg", "zone": "RA3", "aspect_ratio": "all", "loaded_area_limit": "A<=a^2", "distance_from_edge": "<a", "Kl": 1.5},
+        {"sign": "negative", "surface": "roof_downwind_side_hip_or_ridge_pitch_ge_10deg", "zone": "RA4", "aspect_ratio": "all", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<0.5a", "Kl": 2.0},
+        {"sign": "negative", "surface": "side_wall_near_windward_edge", "zone": "SA1", "aspect_ratio": "<=1", "loaded_area_limit": "A<=a^2", "distance_from_edge": "<a", "Kl": 1.5},
+        {"sign": "negative", "surface": "side_wall_near_windward_edge", "zone": "SA2", "aspect_ratio": "<=1", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<0.5a", "Kl": 2.0},
+        {"sign": "negative", "surface": "side_wall_near_windward_edge", "zone": "SA3", "aspect_ratio": ">1", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": ">a", "Kl": 1.5},
+        {"sign": "negative", "surface": "side_wall_near_windward_edge", "zone": "SA4", "aspect_ratio": ">1", "loaded_area_limit": "A<=a^2", "distance_from_edge": "<a", "Kl": 2.0},
+        {"sign": "negative", "surface": "side_wall_near_windward_edge", "zone": "SA5", "aspect_ratio": ">1", "loaded_area_limit": "A<=0.25a^2", "distance_from_edge": "<0.5a", "Kl": 3.0},
+        {"sign": "negative", "surface": "other", "zone": "other", "aspect_ratio": "all", "loaded_area_limit": "all", "distance_from_edge": "all", "Kl": 1.0}
+      ],
+      "applicability": ["Do not automate until surface zones, loaded area, roof pitch and aspect ratio are derived from the candidate design."]
+    },
+    "turbulence_intensity": {
+      "table_number": "6.1",
+      "title": "Turbulence intensity Iz",
+      "source_page": 19,
+      "columns": ["height_m", "TC1", "TC2", "TC2.5", "TC3", "TC4"],
+      "rows": [
+        {"height_m": "<=5", "TC1": 0.128, "TC2": 0.196, "TC2.5": 0.234, "TC3": 0.271, "TC4": 0.342},
+        {"height_m": 10, "TC1": 0.117, "TC2": 0.183, "TC2.5": 0.211, "TC3": 0.239, "TC4": 0.342},
+        {"height_m": 15, "TC1": 0.112, "TC2": 0.176, "TC2.5": 0.201, "TC3": 0.225, "TC4": 0.342},
+        {"height_m": 20, "TC1": 0.109, "TC2": 0.171, "TC2.5": 0.193, "TC3": 0.215, "TC4": 0.342},
+        {"height_m": 30, "TC1": 0.104, "TC2": 0.162, "TC2.5": 0.183, "TC3": 0.203, "TC4": 0.305},
+        {"height_m": 40, "TC1": 0.101, "TC2": 0.156, "TC2.5": 0.178, "TC3": 0.195, "TC4": 0.285},
+        {"height_m": 50, "TC1": 0.099, "TC2": 0.151, "TC2.5": 0.170, "TC3": 0.188, "TC4": 0.270},
+        {"height_m": 75, "TC1": 0.095, "TC2": 0.140, "TC2.5": 0.158, "TC3": 0.176, "TC4": 0.248},
+        {"height_m": 100, "TC1": 0.092, "TC2": 0.131, "TC2.5": 0.149, "TC3": 0.166, "TC4": 0.233},
+        {"height_m": 150, "TC1": 0.089, "TC2": 0.117, "TC2.5": 0.134, "TC3": 0.150, "TC4": 0.210},
+        {"height_m": 200, "TC1": 0.087, "TC2": 0.107, "TC2.5": 0.123, "TC3": 0.139, "TC4": 0.196}
+      ],
+      "applicability": ["Retained as report evidence for dynamic-response workflows; it does not affect the current low-rise static site calculation."]
+    },
+    "vortex_shedding_constants": {
+      "table_number": "6.2",
+      "title": "Vortex shedding constants",
+      "source_page": 21,
+      "columns": ["constant", "Re<=1e5", "Re=5e5", "Re>=1e6"],
+      "rows": [
+        {"constant": "aL", "Re<=1e5": 0.4, "Re=5e5": 0.4, "Re>=1e6": 0.4},
+        {"constant": "Ka,max", "Re<=1e5": 2.0, "Re=5e5": 0.5, "Re>=1e6": 1.0},
+        {"constant": "Cc", "Re<=1e5": 0.02, "Re=5e5": 0.005, "Re>=1e6": 0.01}
+      ],
+      "applicability": ["Interpolate linearly against log10(Re) between tabulated Reynolds-number points."]
+    }
+  },
+  "rules": {
+    "internal_pressure_volume_factor": {
+      "source_page": 15,
+      "definition": "x = 100 A^(3/2) / Vol",
+      "pieces": [
+        {"condition": "x<0.09", "Kv": 0.85},
+        {"condition": "0.09<=x<=3", "Kv": "1.01 + 0.15 log10(x)"},
+        {"condition": "x>3", "Kv": 1.085}
+      ],
+      "otherwise": 1.0
+    },
+    "terrain_averaging": {
+      "source_page": 7,
+      "averaging_distance": "xa = max(500 m, 40z)",
+      "lag_distance": "xl = 20z",
+      "low_rise_height_basis": "For buildings not exceeding 25 m, z is the average roof height h."
+    },
+    "shielding": {
+      "source_page": 8,
+      "default": "Ms=1.0 where shielding does not apply or is ignored, including structures over 25 m.",
+      "spacing_parameter": "s = ls / sqrt(hs bs)",
+      "average_spacing": "ls = h(10/ns + 5)",
+      "vegetation": "Trees and vegetation are not credited as shielding."
+    },
+    "topographic_multiplier": {
+      "source_page": 9,
+      "A4_or_NZ_above_500m": "Mt = Mh Mlee (1 + 0.00015 E)",
+      "A0": "Mt = 0.5 + 0.5 Mh",
+      "other_regions": "Mt = max(Mh, Mlee)",
+      "minor_hill": "A hill feature with H<10 m may be ignored."
+    },
+    "action_combination_factor": {
+      "source_page": 17,
+      "two_contributing_surfaces": 0.9,
+      "three_or_more_contributing_surfaces": 0.8,
+      "minimum_Ka_times_Kce": 0.8,
+      "internal_surface_threshold": "An internal surface is not effective where |Cp,i|<0.4."
+    }
+  }
+}

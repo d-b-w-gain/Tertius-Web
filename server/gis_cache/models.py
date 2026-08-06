@@ -44,3 +44,26 @@ class EvidenceManifest(BaseModel):
     created_at: datetime
     source: SourceMetadata
     asset: RasterAsset
+
+
+class GeocodeCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str
+    latitude: float
+    longitude: float
+    address_pid: str
+    geocode_type: str
+    confidence: int | None = None
+    source: Literal["G-NAF"] = "G-NAF"
+    quality: Literal["address_point"] = "address_point"
+    dataset_version: str
+    attribution: str
+
+
+class TerrainSiteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float = Field(ge=-44.5, le=-9.0)
+    longitude: float = Field(ge=112.0, le=154.0)
+    radius_m: int | None = Field(default=None, ge=100)

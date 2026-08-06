@@ -87,7 +87,41 @@ def test_site_workbench_rejects_users_without_the_keycloak_role():
     assert response.json()["detail"] == "Site workbench access required"
 
 
-def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(monkeypatch):
+def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidence():
+    context = AuthContext(
+        user_id=uuid4(),
+        tenant_id=uuid4(),
+        keycloak_subject="site-table-test",
+        email="tables@example.com",
+        roles=frozenset({SITE_WORKBENCH_ROLE}),
+    )
+    site_server.app.dependency_overrides[get_auth_context] = lambda: context
+    try:
+        with TestClient(site_server.app) as client:
+            values = client.get(
+                "/standards/as-nzs-1170-2-2021/site-values",
+                params={"region": "A2"},
+            )
+            site = client.post("/calculate", json={})
+            report = client.post("/report/evidence", json={})
+    finally:
+        site_server.app.dependency_overrides.clear()
+
+    assert values.status_code == 200
+    assert values.json()["direction_multipliers"]["w"] == 1.0
+    assert values.json()["climate_change_multiplier"] == 1.0
+    assert site.status_code == 200
+    assert site.json()["standard_table_evidence"]["region"] == "A2"
+    assert report.status_code == 200
+    assert report.headers["content-disposition"].endswith(
+        '"tertius-site-wind-evidence.json"'
+    )
+    assert len(report.json()["digitised_tables"]) == 8
+
+
+def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(
+    monkeypatch,
+):
     context = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -118,6 +152,22 @@ def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(mon
                 )
             if url.endswith("/v1/evidence"):
                 return httpx.Response(201, json={"evidence_id": evidence_id})
+            if url.endswith("/v1/geocode"):
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "address": "14 PORTER ST, NORTH WOLLONGONG NSW 2500",
+                            "latitude": -34.4125,
+                            "longitude": 150.8886,
+                            "address_pid": "GANSW123",
+                            "source": "G-NAF",
+                            "quality": "address_point",
+                        }
+                    ],
+                )
+            if url.endswith("/v1/terrain/site"):
+                return httpx.Response(201, json={"evidence_id": evidence_id})
             if "/v1/raster/point/" in url:
                 return httpx.Response(
                     200,
@@ -129,16 +179,29 @@ def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(mon
                 )
             if url.endswith("/v1/raster/preview.png"):
                 return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nfixture")
+            if "/terrain-rgb/" in url or "/v1/raster/tiles/" in url:
+                return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nfixture")
             raise AssertionError(f"Unexpected GIS request: {method} {url}")
 
-    monkeypatch.setattr(site_server, "get_settings", lambda: SimpleNamespace(
-        gis_cache_url="http://tertius-gis-cache:8000",
-    ))
+    monkeypatch.setattr(
+        site_server,
+        "get_settings",
+        lambda: SimpleNamespace(
+            gis_cache_url="http://tertius-gis-cache:8000",
+        ),
+    )
     monkeypatch.setattr(site_server.httpx, "Client", ClientStub)
     site_server.app.dependency_overrides[get_auth_context] = lambda: context
     try:
         with TestClient(site_server.app) as client:
             health = client.get("/gis/health")
+            geocode = client.get(
+                "/gis/geocode", params={"query": "14 Porter St", "limit": 5}
+            )
+            terrain = client.post(
+                "/gis/terrain/site",
+                params={"latitude": -34.4125, "longitude": 150.8886, "radius_m": 2000},
+            )
             upload = client.post(
                 "/gis/evidence",
                 files={"raster": ("terrain.tif", b"fixture", "image/tiff")},
@@ -155,6 +218,12 @@ def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(mon
                 params={"latitude": -33.005, "longitude": 150.005},
             )
             preview = client.get(f"/gis/evidence/{evidence_id}/preview.png")
+            terrain_rgb = client.get(
+                f"/gis/evidence/{evidence_id}/terrain-rgb/18/240947/157788.png"
+            )
+            relief = client.get(
+                f"/gis/evidence/{evidence_id}/relief/18/240947/157788.png"
+            )
             invalid = client.get(
                 "/gis/evidence/http://169.254.169.254/latest/point",
                 params={"latitude": -33.005, "longitude": 150.005},
@@ -163,14 +232,20 @@ def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(mon
         site_server.app.dependency_overrides.clear()
 
     assert health.json()["status"] == "ready"
+    assert geocode.json()[0]["quality"] == "address_point"
+    assert terrain.status_code == 201
     assert upload.status_code == 201
     assert upload.json()["evidence_id"] == evidence_id
     assert point.json()["values"] == [84.0]
     assert preview.status_code == 200
     assert preview.headers["content-type"] == "image/png"
     assert preview.headers["cache-control"] == "private, no-store"
+    assert terrain_rgb.status_code == 200
+    assert relief.status_code == 200
     assert invalid.status_code in {404, 422}
-    upload_call = next(call for call in calls if call[0] == "POST")
+    upload_call = next(call for call in calls if call[1].endswith("/v1/evidence"))
     assert upload_call[1] == "http://tertius-gis-cache:8000/v1/evidence"
     assert upload_call[2]["data"]["provider"] == "manual-upload"
+    terrain_call = next(call for call in calls if call[1].endswith("/v1/terrain/site"))
+    assert terrain_call[2]["json"]["radius_m"] == 2000
     assert all("169.254.169.254" not in url for _, url, _ in calls)

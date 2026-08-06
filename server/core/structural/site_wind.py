@@ -7,6 +7,11 @@ from math import cos, hypot, pi
 from pathlib import Path
 from typing import Any
 
+from core.structural.wind_standard_tables import (
+    AUSTRALIAN_REGIONS,
+    lookup_climate_change_multiplier,
+)
+
 
 # Ported from the working ContextUI shed/FBD wind_pressure.py calculation.
 # The version is deliberately retained so design.py snapshots and calculation
@@ -73,16 +78,8 @@ V_R_TABLE_AU: dict[tuple[str, int], float] = {
 }
 
 M_C_TABLE: dict[str, float] = {
-    "A0": 1.0,
-    "A1": 1.0,
-    "A2": 1.0,
-    "A3": 1.0,
-    "A4": 1.0,
-    "A5": 1.0,
-    "B1": 1.0,
-    "B2": 1.05,
-    "C": 1.05,
-    "D": 1.05,
+    region: lookup_climate_change_multiplier(region)
+    for region in AUSTRALIAN_REGIONS
 }
 
 M_Z_CAT_TABLE: dict[float, dict[str, float]] = {

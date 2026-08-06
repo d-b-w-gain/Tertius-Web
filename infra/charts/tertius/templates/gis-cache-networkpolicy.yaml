@@ -36,6 +36,10 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # The service itself allowlists official data.gov.au and DEA source URLs.
+    - ports:
+        - protocol: TCP
+          port: 443
     {{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled }}
     - to:
         - podSelector:
@@ -47,4 +51,3 @@ spec:
           port: 4317
     {{- end }}
 {{- end }}
-

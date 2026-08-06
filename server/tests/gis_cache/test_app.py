@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from io import BytesIO
 from pathlib import Path
 
@@ -90,6 +91,31 @@ def test_ingests_deterministic_cog_and_serves_titiler_endpoints(tmp_path: Path):
         )
         assert preview.status_code == 200, preview.text
         assert preview.headers["content-type"] == "image/png"
+
+        # Use a tile larger than the fixture so masked pixels surround the DEM.
+        # The terrain encoder must fill those pixels with sane elevation rather
+        # than RGB zero, which Terrarium clients decode as -32768 metres.
+        z = 14
+        x = int((150.005 + 180) / 360 * 2**z)
+        y = int(
+            (1 - math.asinh(math.tan(math.radians(-33.005))) / math.pi)
+            / 2
+            * 2**z
+        )
+        terrain_rgb = client.get(
+            f"/v1/evidence/{evidence_id}/terrain-rgb/{z}/{x}/{y}.png"
+        )
+        assert terrain_rgb.status_code == 200, terrain_rgb.text
+        assert terrain_rgb.headers["content-type"] == "image/png"
+        assert terrain_rgb.content.startswith(b"\x89PNG")
+        with MemoryFile(terrain_rgb.content) as memory:
+            with memory.open() as dataset:
+                rgb = dataset.read((1, 2, 3)).astype("float64")
+        decoded_elevation = (
+            rgb[0] * 256.0 + rgb[1] + rgb[2] / 256.0 - 32_768.0
+        )
+        assert decoded_elevation.min() > -1_000
+        assert decoded_elevation.max() < 1_000
 
         arbitrary_url = client.get(
             "/v1/raster/info", params={"url": "http://169.254.169.254/latest"}

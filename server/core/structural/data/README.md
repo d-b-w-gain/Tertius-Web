@@ -28,3 +28,17 @@ The guide does not publish generic portal-rafter restraint resistance or
 connection stiffness for that assembly, so those fields deliberately remain
 null/unverified. The resolver must not substitute the guide's configuration-
 specific transverse purlin capacity tables for the missing restraint evidence.
+
+# AS/NZS 1170.2 key-changes table evidence
+
+`as_nzs_1170_2_2021_key_changes_tables.json` is a machine-readable extraction
+of the numeric tables visible in the supplied “Key changes to AS/NZS
+1170.2-2021” presentation. It includes source-page and file-hash provenance.
+
+This is a secondary summary, not a copy of the licensed Standard. Every value
+and its applicability must be checked against the licensed project edition and
+amendments before certification. The Site workbench may suggest the Australian
+Table 3.2(A) `Md` values and Table 3.3 `Mc` value, but it never marks that
+evidence verified automatically. Tables that require opening geometry, surface
+zones, loaded areas or dynamic-response inputs are report evidence only until
+those inputs are modelled.

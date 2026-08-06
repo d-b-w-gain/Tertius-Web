@@ -88,6 +88,10 @@ services:
       GIS_CACHE_ROOT: /var/lib/tertius-gis
       GIS_MAX_UPLOAD_BYTES: ${GIS_MAX_UPLOAD_BYTES:-536870912}
       GIS_MAX_RASTER_PIXELS: ${GIS_MAX_RASTER_PIXELS:-250000000}
+      GIS_GNAF_STATES: ${GIS_GNAF_STATES:-NSW}
+      GIS_TERRAIN_DEFAULT_RADIUS_M: ${GIS_TERRAIN_DEFAULT_RADIUS_M:-2000}
+      GIS_TERRAIN_MAX_RADIUS_M: ${GIS_TERRAIN_MAX_RADIUS_M:-10000}
+      GIS_GA_TERRAIN_SOURCE_URL: ${GIS_GA_TERRAIN_SOURCE_URL:-https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif}
     volumes:
       - tertius-gis-cache:/var/lib/tertius-gis
     tmpfs:

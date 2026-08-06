@@ -92,6 +92,40 @@ export type SiteCalculation = {
   formula: string
   verify_against: string
   action_envelope: SiteDefinition['wind']['action_envelope']
+  standard_table_evidence?: WindStandardEvidence
+}
+
+export type WindStandardEvidence = {
+  dataset_version: string
+  standard_reference: string
+  source: {
+    title: string
+    author: string
+    published_date: string
+    filename: string
+    sha256: string
+    source_type: 'secondary_summary_presentation'
+  }
+  verification: {
+    status: 'requires_licensed_standard_check'
+    message: string
+  }
+  region: string
+  direction_multipliers: NonNullable<SiteDefinition['wind']['cardinal_direction_multipliers']>
+  climate_change_multiplier: number
+  applied_tables: Array<{
+    id: string
+    table_number: string
+    title: string
+    source_page: number
+    applicability: string[]
+  }>
+  report_table_index: Array<{
+    id: string
+    table_number: string
+    title: string
+    source_page: number
+  }>
 }
 
 export type SiteWorkbenchResponse = {
@@ -140,4 +174,17 @@ export type GisPointResult = {
   coordinates: [number, number]
   values: Array<number | null>
   band_names: string[]
+}
+
+export type GisGeocodeCandidate = {
+  address: string
+  latitude: number
+  longitude: number
+  address_pid: string
+  geocode_type: string
+  confidence: number | null
+  source: 'G-NAF'
+  quality: 'address_point'
+  dataset_version: string
+  attribution: string
 }

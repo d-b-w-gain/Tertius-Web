@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { apiFetch } from '../../api/client'
 import type { GisCacheHealth, GisEvidenceManifest, GisPointResult } from './contracts'
@@ -9,6 +9,7 @@ type GisEvidencePanelProps = {
   getAccessToken: () => Promise<string>
   latitude: number
   longitude: number
+  onEvidenceChange?: (manifest: GisEvidenceManifest) => void
 }
 
 function responseDetail(payload: unknown, fallback: string) {
@@ -30,6 +31,7 @@ export function GisEvidencePanel({
   getAccessToken,
   latitude,
   longitude,
+  onEvidenceChange,
 }: GisEvidencePanelProps) {
   const [health, setHealth] = useState<GisCacheHealth | null>(null)
   const [healthError, setHealthError] = useState<string | null>(null)
@@ -44,6 +46,8 @@ export function GisEvidencePanel({
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [radiusM, setRadiusM] = useState(2000)
+  const [previewUrl, setPreviewUrl] = useState('')
 
   const checkHealth = useCallback(async () => {
     setHealthError(null)
@@ -109,6 +113,7 @@ export function GisEvidencePanel({
       }
       const nextManifest = payload as GisEvidenceManifest
       setManifest(nextManifest)
+      onEvidenceChange?.(nextManifest)
       setStatus('Evidence cached. Reading the current site coordinate…')
       await queryPoint(nextManifest.evidence_id)
       setStatus('Test evidence is ready. No design input has been changed.')
@@ -118,12 +123,70 @@ export function GisEvidencePanel({
     } finally {
       setIsBusy(false)
     }
-  }, [attribution, dataset, datasetVersion, file, getAccessToken, licence, provider, queryPoint, serverUrl])
+  }, [attribution, dataset, datasetVersion, file, getAccessToken, licence, onEvidenceChange, provider, queryPoint, serverUrl])
+
+  const fetchOfficialTerrain = useCallback(async () => {
+    setIsBusy(true)
+    setError(null)
+    setPoint(null)
+    setStatus('Fetching the bounded GA 30 m terrain patch for this site…')
+    try {
+      const query = new URLSearchParams({
+        latitude: String(latitude),
+        longitude: String(longitude),
+        radius_m: String(radiusM),
+      })
+      const response = await apiFetch(`${serverUrl}/gis/terrain/site?${query}`, getAccessToken, {
+        method: 'POST',
+      })
+      const payload = await response.json().catch(() => null) as
+        | GisEvidenceManifest
+        | { detail?: string }
+        | null
+      if (!response.ok) {
+        throw new Error(responseDetail(payload, `Terrain acquisition returned ${response.status}`))
+      }
+      const nextManifest = payload as GisEvidenceManifest
+      setManifest(nextManifest)
+      onEvidenceChange?.(nextManifest)
+      setStatus('Terrain cached. Reading elevation at the site point…')
+      await queryPoint(nextManifest.evidence_id)
+      setStatus('Official GA terrain evidence is ready. Design inputs remain unchanged pending review.')
+    } catch (fetchFailure) {
+      setError(fetchFailure instanceof Error ? fetchFailure.message : 'Terrain acquisition failed')
+      setStatus('')
+    } finally {
+      setIsBusy(false)
+    }
+  }, [getAccessToken, latitude, longitude, onEvidenceChange, queryPoint, radiusM, serverUrl])
 
   const elevation = point?.values[0]
-  const previewUrl = useMemo(() => (
-    manifest ? `${serverUrl}/gis/evidence/${manifest.evidence_id}/preview.png` : ''
-  ), [manifest, serverUrl])
+
+  useEffect(() => {
+    if (!manifest) {
+      setPreviewUrl('')
+      return
+    }
+    let cancelled = false
+    let objectUrl = ''
+    void apiFetch(
+      `${serverUrl}/gis/evidence/${manifest.evidence_id}/preview.png`,
+      getAccessToken,
+    ).then((response) => {
+      if (!response.ok) throw new Error(`Preview returned ${response.status}`)
+      return response.blob()
+    }).then((blob) => {
+      if (cancelled) return
+      objectUrl = URL.createObjectURL(blob)
+      setPreviewUrl(objectUrl)
+    }).catch(() => {
+      if (!cancelled) setPreviewUrl('')
+    })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [getAccessToken, manifest, serverUrl])
 
   return (
     <section className="rounded border border-sky-500/40 bg-sky-950/10 p-4" data-testid="gis-evidence-panel">
@@ -136,7 +199,7 @@ export function GisEvidencePanel({
             </span>
           </div>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-400">
-            Upload a small, single-band elevation GeoTIFF to exercise the cache at this site.
+            Fetch a site-sized patch from Geoscience Australia, or upload a licensed higher-resolution state GeoTIFF.
             Results are evidence only and never change terrain category or wind multipliers automatically.
           </p>
         </div>
@@ -156,6 +219,33 @@ export function GisEvidencePanel({
           : `GIS cache unavailable${healthError ? ` · ${healthError}` : ' · checking…'}`}
       </div>
 
+      <div className="mt-3 rounded border border-cyan-500/30 bg-cyan-950/20 p-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="block">
+            <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+              Site radius
+            </span>
+            <select className="mt-1 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              value={radiusM} onChange={(event) => setRadiusM(Number(event.target.value))}>
+              <option value={1000}>1 km</option>
+              <option value={2000}>2 km</option>
+              <option value={5000}>5 km</option>
+              <option value={10000}>10 km</option>
+            </select>
+          </label>
+          <button type="button" disabled={isBusy || !health}
+            onClick={() => void fetchOfficialTerrain()}
+            className="rounded bg-cyan-600 px-3 py-2 text-xs font-bold text-white hover:bg-cyan-500 disabled:opacity-50">
+            {isBusy ? 'Processing terrain…' : 'Fetch GA terrain for this site'}
+          </button>
+        </div>
+        <p className="mt-2 text-[10px] leading-4 text-slate-500">
+          Reads only the selected window from GA&apos;s 1-second SRTM DEM and stores a reproducible local COG.
+        </p>
+      </div>
+
+      <details className="mt-3 rounded border border-slate-800 bg-slate-950/50 p-3">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-300">Upload higher-resolution terrain</summary>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="block md:col-span-2">
           <span className="block text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
@@ -203,6 +293,7 @@ export function GisEvidencePanel({
         className="mt-3 rounded bg-sky-600 px-3 py-2 text-xs font-bold text-white hover:bg-sky-500 disabled:opacity-50">
         {isBusy ? 'Processing terrain…' : 'Cache and inspect terrain'}
       </button>
+      </details>
 
       {(status || error) && (
         <p className={`mt-3 text-xs ${error ? 'text-red-300' : 'text-sky-200'}`} role="status">
@@ -227,7 +318,11 @@ export function GisEvidencePanel({
             </dl>
           </div>
           <figure className="overflow-hidden rounded border border-slate-800 bg-slate-950/70 p-2">
-            <img src={previewUrl} alt="Cached terrain raster preview" className="h-44 w-full object-contain [image-rendering:pixelated]" />
+            {previewUrl ? (
+              <img src={previewUrl} alt="Cached terrain raster preview" className="h-44 w-full object-contain [image-rendering:pixelated]" />
+            ) : (
+              <div className="flex h-44 items-center justify-center text-[10px] text-slate-600">Rendering preview…</div>
+            )}
             <figcaption className="mt-2 text-[10px] text-slate-500">
               Diagnostic rendering of the cached analysis raster.
             </figcaption>

@@ -170,6 +170,8 @@ def validate(config):
     assert gis["pids_limit"] == 128
     assert gis["security_opt"] == ["no-new-privileges:true"]
     assert gis["environment"]["GIS_CACHE_ROOT"] == "/var/lib/tertius-gis"
+    assert gis["environment"]["GIS_GNAF_STATES"] == "NSW"
+    assert gis["environment"]["GIS_TERRAIN_DEFAULT_RADIUS_M"] == "2000"
     assert len(gis["volumes"]) == 1
     assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
 

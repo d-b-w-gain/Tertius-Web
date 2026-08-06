@@ -164,6 +164,10 @@ gisCache:
     port: 8000
   maxUploadBytes: 536870912
   maxRasterPixels: 250000000
+  gnafStates: "NSW"
+  terrainDefaultRadiusM: 2000
+  terrainMaxRadiusM: 10000
+  gaTerrainSourceUrl: "https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif"
   tmpSizeLimit: 4Gi
   storage:
     enabled: true

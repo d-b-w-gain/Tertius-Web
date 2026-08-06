@@ -127,7 +127,7 @@ This epic extends that boundary. It does not replace the current structural calc
 - Modify: `server/core/structural/site_wind.py`
 - Modify: Site workflow API routes
 
-- [ ] Add replaceable address-geocoding contracts and candidate confirmation; persist the confirmed coordinate and human-readable address independently of provider-specific IDs.
+- [x] Add replaceable address-geocoding contracts and candidate confirmation; persist the confirmed coordinate and human-readable address independently of provider-specific IDs. The first provider is a compact G-NAF GDA2020 address-point index, initially configured for NSW.
 - [ ] Generate terrain/topographic evidence by compass sector using a documented radius, sampling grid, and algorithm version.
 - [ ] Separate raw measurements (elevation profile, slope, relief, roughness inputs) from suggested engineering categories/multipliers.
 - [ ] Return uncertainty, coverage gaps, resolution, source age, and conservative fallback reasons per sector.
@@ -146,9 +146,11 @@ This epic extends that boundary. It does not replace the current structural calc
 - Modify: `ui/src/workflows/site/contracts.ts`
 - Modify: `ui/src/workflows/site/SiteWorkbench.test.tsx`
 
-- [ ] Add address search, bounded candidate list, map/coordinate confirmation, and manual-coordinate fallback.
+- [x] Add address search, bounded candidate list, map/coordinate confirmation, and manual-coordinate fallback.
 - [ ] Show selected and alternative source coverage, resolution, DEM/DSM type, datum, age, licence/attribution, and cache/upstream state.
-- [x] Add true-north structure placement and a compass-sector view that keeps standards-derived `M_d` separate from GIS-derived terrain/topographic evidence. The first slice accepts licensed/manual `M_d` inputs; directional GIS terrain/topography remains pending.
+- [x] Add true-north structure placement and a compass-sector view that keeps standards-derived `M_d` separate from GIS-derived terrain/topographic evidence. The workbench can explicitly adopt digitised Table 3.2(A) regional `M_d` and Table 3.3 `M_c` suggestions while retaining the licensed-standard verification gate; directional GIS terrain/topography remains pending.
+- [x] Digitise the eight numeric tables and related rules visible in the supplied AS/NZS 1170.2:2021 key-changes presentation, retain source-page/file-hash provenance, and expose a deterministic JSON evidence bundle for downstream site-report generation.
+- [x] Add a dominant Site Explorer with collapsible feature drawers, a draggable desktop inspector split, independently selectable street/satellite/blank base maps and wind/terrain evidence, fast Leaflet 2D, and an optional MapLibre WebGL terrain view. The rich view loads the active Extus candidate GLB, fits and grounds it inside the verified footprint, applies the true-north bearing, and retains the footprint extrusion as the no-artifact/error fallback.
 - [ ] Show raw evidence, suggested value, current verified value, uncertainty, fallback reason, and effect on `V_sit`/`q_z`.
 - [ ] Require an explicit review action before adopting suggestions; capture reviewer, reason, time, and applicable standards edition.
 - [ ] Preserve manual overrides and make stale/changed source evidence obvious.

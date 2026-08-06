@@ -51,6 +51,14 @@ spec:
               value: {{ printf "%d" (.Values.gisCache.maxUploadBytes | int64) | quote }}
             - name: GIS_MAX_RASTER_PIXELS
               value: {{ printf "%d" (.Values.gisCache.maxRasterPixels | int64) | quote }}
+            - name: GIS_GNAF_STATES
+              value: {{ .Values.gisCache.gnafStates | quote }}
+            - name: GIS_TERRAIN_DEFAULT_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.terrainDefaultRadiusM | int64) | quote }}
+            - name: GIS_TERRAIN_MAX_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.terrainMaxRadiusM | int64) | quote }}
+            - name: GIS_GA_TERRAIN_SOURCE_URL
+              value: {{ .Values.gisCache.gaTerrainSourceUrl | quote }}
             - name: OTEL_SERVICE_NAME
               value: tertius-gis-cache
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -135,4 +143,3 @@ spec:
       storage: {{ .Values.gisCache.storage.size }}
 {{- end }}
 {{- end }}
-

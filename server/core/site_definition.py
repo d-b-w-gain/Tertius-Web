@@ -13,6 +13,7 @@ from core.structural.site_wind import (
     REGION_SOURCE,
     compute_site_wind,
 )
+from core.structural.wind_standard_tables import site_table_evidence
 
 
 SITE_DEFINITION_FILENAME = "tertius_site.py"
@@ -378,6 +379,7 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
         "region_status": site.wind.region_status,
         "table_status": site.wind.table_status,
         "action_envelope": site.wind.action_envelope.model_dump(mode="json"),
+        "standard_table_evidence": site_table_evidence(site.wind.region),
         **calculation,
     }
 
