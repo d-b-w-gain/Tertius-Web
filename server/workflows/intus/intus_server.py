@@ -518,7 +518,11 @@ def _serialize_llm_edit_history_message(
     request_payload = job.request_payload or {}
     result_payload = job.result_payload or {}
     request_files = request_payload.get("files")
-    artifact = compile_repo.artifact_for_job(compile_job.id) if compile_job is not None else None
+    artifact = (
+        compile_repo.artifact_for_job(compile_job.id, compile_job.export_format)
+        if compile_job is not None
+        else None
+    )
     message = {
         "job_id": str(job.id),
         "prompt": str(request_payload.get("prompt") or ""),
@@ -908,7 +912,11 @@ def get_compile_job_status(
     if job is None:
         return JSONResponse(status_code=404, content={"error": "Compile job not found"})
 
-    artifact = compile_repo.artifact_for_job(job.id) if job.status == "succeeded" else None
+    artifact = (
+        compile_repo.artifact_for_job(job.id, job.export_format)
+        if job.status == "succeeded"
+        else None
+    )
     return {
         "job_id": str(job.id),
         "status": job.status,

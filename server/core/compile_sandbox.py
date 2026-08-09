@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
+from .structural.authoring_runtime import helper_source as structural_helper_source
 from .tertius_bom_runtime import TERTIUS_BOM_HELPER_SOURCE
 
 SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views", "timus_bounds"}
+STRUCTURAL_MANIFEST_FILENAME = "tertius-structural-manifest.json"
 
 
 SANDBOX_SCRIPT = r"""
@@ -32,6 +34,7 @@ project_dir = Path.cwd()
 export_format = sys.argv[1].lower()
 quality_arg = sys.argv[2].lower() if len(sys.argv) > 2 else None
 output_path = project_dir / f"output.{export_format}"
+structural_manifest_path = project_dir / "tertius-structural-manifest.json"
 env = {"bd": bd, "build123d": bd}
 
 project_dir_str = str(project_dir.resolve())
@@ -54,6 +57,21 @@ try:
         exec(design_code, env)
     finally:
         uninstall_tertius_provenance()
+
+    structural_manifest = env.get("TERTIUS_STRUCTURAL")
+    if structural_manifest is not None:
+        if not isinstance(structural_manifest, dict):
+            raise RuntimeError("TERTIUS_STRUCTURAL must resolve to a dictionary")
+        structural_manifest_path.write_text(
+            json.dumps(
+                structural_manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
 
     shapes = []
     for val in env.values():
@@ -122,6 +140,100 @@ try:
                 visual_bom_by_label[label] = metadata
 
     compound = bd.Compound(final_shapes, children=final_shapes) if len(final_shapes) > 1 else final_shapes[0]
+
+    structural_manifest = env.get("TERTIUS_STRUCTURAL")
+    structural_authoring = (
+        structural_manifest.get("authoring", {})
+        if isinstance(structural_manifest, dict)
+        else {}
+    )
+    if structural_authoring.get("mode") == "generated":
+        marked_roots = [
+            shape
+            for shape in final_shapes
+            if getattr(shape, "tertius_structural_manifest", None)
+            is structural_manifest
+        ]
+        if len(final_shapes) != 1 or len(marked_roots) != 1:
+            raise RuntimeError(
+                "Structural geometry audit failed: generated structural projects "
+                "must export exactly the StructuralModel.assembly(...) root; raw "
+                "or unregistered global shapes were also exported."
+            )
+
+        declared_components = structural_manifest.get("components", [])
+        declared_ids = {
+            component.get("id")
+            for component in declared_components
+            if isinstance(component, dict)
+        }
+        assembled_ids = set(structural_authoring.get("assembly_component_ids", []))
+        if declared_ids != assembled_ids:
+            raise RuntimeError(
+                "Structural geometry audit failed: the generated manifest and "
+                "structural assembly contain different component IDs."
+            )
+
+        assembly_shape_ids = {id(node) for node in bd.PreOrderIter(marked_roots[0])}
+        container_shapes = []
+        visited_containers = set()
+
+        def collect_container_shapes(value):
+            if isinstance(value, bd.Shape):
+                container_shapes.append(value)
+                return
+            if isinstance(value, dict):
+                container_id = id(value)
+                if container_id in visited_containers:
+                    return
+                visited_containers.add(container_id)
+                for item in value.values():
+                    collect_container_shapes(item)
+                return
+            if isinstance(value, (list, tuple, set)):
+                container_id = id(value)
+                if container_id in visited_containers:
+                    return
+                visited_containers.add(container_id)
+                for item in value:
+                    collect_container_shapes(item)
+
+        for value in env.values():
+            collect_container_shapes(value)
+        unassembled_shapes = [
+            str(getattr(shape, "label", "") or type(shape).__name__)
+            for shape in container_shapes
+            if getattr(shape, "wrapped", None) is not None
+            and id(shape) not in assembly_shape_ids
+        ]
+        if unassembled_shapes:
+            raise RuntimeError(
+                "Structural geometry audit failed: Build123D shapes exposed by "
+                "design containers were not registered in "
+                f"StructuralModel.assembly(...): {sorted(unassembled_shapes)}."
+            )
+
+        label_counts = {}
+        for node in bd.PreOrderIter(marked_roots[0]):
+            label = str(getattr(node, "label", "") or "")
+            if label:
+                label_counts[label] = label_counts.get(label, 0) + 1
+        missing_visual_nodes = []
+        duplicate_visual_nodes = []
+        for component in declared_components:
+            if not isinstance(component, dict):
+                continue
+            node_id = str(component.get("visual_node_id") or "")
+            if label_counts.get(node_id, 0) == 0:
+                missing_visual_nodes.append(node_id)
+            elif label_counts[node_id] > 1:
+                duplicate_visual_nodes.append(node_id)
+        if missing_visual_nodes or duplicate_visual_nodes:
+            raise RuntimeError(
+                "Structural geometry audit failed: visual node linkage mismatch; "
+                f"missing={sorted(missing_visual_nodes)}, "
+                f"duplicate={sorted(duplicate_visual_nodes)}."
+            )
 
     def visual_metadata_tree(value):
         metadata = getattr(value, "tertius_bom", None)
@@ -561,6 +673,7 @@ class CompileSandboxResult:
     stdout: str
     stderr: str
     error: str | None
+    structural_manifest_path: Path | None = None
 
 
 def _subprocess_output_text(value: str | bytes | None) -> str:
@@ -619,6 +732,8 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
         bom_helper_path.write_text(TERTIUS_BOM_HELPER_SOURCE, encoding="utf-8")
     provenance_helper_path = project_dir / "tertius_provenance.py"
     provenance_helper_path.write_text(TERTIUS_PROVENANCE_HELPER_SOURCE, encoding="utf-8")
+    structural_helper_path = project_dir / "tertius_structural.py"
+    structural_helper_path.write_text(structural_helper_source(), encoding="utf-8")
     args = [sys.executable, "-c", SANDBOX_SCRIPT, ext]
     if quality:
         args.append(quality)
@@ -680,4 +795,9 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
         stdout=stdout,
         stderr=stderr,
         error=None,
+        structural_manifest_path=(
+            project_dir / STRUCTURAL_MANIFEST_FILENAME
+            if (project_dir / STRUCTURAL_MANIFEST_FILENAME).is_file()
+            else None
+        ),
     )

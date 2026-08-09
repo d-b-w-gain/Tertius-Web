@@ -1210,6 +1210,18 @@ wheels = [
 ]
 
 [[package]]
+name = "prettytable"
+version = "3.18.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/74/ba08d81e668ccfe8658d7520a307e63c19862c08eb4ccb26f356c5239a7a/prettytable-3.18.0.tar.gz", hash = "sha256:439217116152244369caf3d9f1caf2f9fe29b03bd79e88d2928c8e718c95d680", size = 76373, upload-time = "2026-06-22T16:07:50.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/be/2e6798ace5cc036f5d05d36b7b2fd85346f1a708c87060890b070d0ec607/prettytable-3.18.0-py3-none-any.whl", hash = "sha256:b3346e0e6f79180833aebaac088ae926340586cf6d7d991b9eb125b65f72313a", size = 37357, upload-time = "2026-06-22T16:07:48.595Z" },
+]
+
+[[package]]
 name = "prompt-toolkit"
 version = "3.0.52"
 source = { registry = "https://pypi.org/simple" }
@@ -1397,6 +1409,21 @@ wheels = [
 [package.optional-dependencies]
 crypto = [
     { name = "cryptography" },
+]
+
+[[package]]
+name = "pynitefea"
+version = "2.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "prettytable" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bc/9d/07c8e1710d4d0caa6c182b1bf4408708cdfb5467ce93b806e864746f2183/pynitefea-2.4.1.tar.gz", hash = "sha256:757342047ee26970fe6223966c683b9d8367fd8186dab1053c1d685f95ca9e52", size = 187199, upload-time = "2026-03-09T15:28:10.108Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/a1/bc24eb41c4ea817f3eddb3ab22798bee92ee14dd31dd60868530cd86e597/pynitefea-2.4.1-py3-none-any.whl", hash = "sha256:77b09aa51eeff8a0e5571a5a6ecf92feee54173780934d81d0253aca725bb506", size = 190100, upload-time = "2026-03-09T15:28:08.807Z" },
 ]
 
 [[package]]
@@ -1686,6 +1713,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pynitefea" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1721,6 +1749,7 @@ requires-dist = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extras = ["crypto"] },
+    { name = "pynitefea", specifier = "==2.4.1" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"] },
 ]

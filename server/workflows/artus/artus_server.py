@@ -27,6 +27,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_MISSING_LITERAL = object()
+
+
+def scalar_assignment_literal(node: ast.AST):
+    """Resolve an editable scalar assignment, including signed numerics."""
+
+    if isinstance(node, ast.Constant):
+        value = node.value
+        return (
+            value
+            if type(value).__name__ in {"int", "float", "str", "bool"}
+            else _MISSING_LITERAL
+        )
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.USub, ast.UAdd))
+        and isinstance(node.operand, ast.Constant)
+    ):
+        value = node.operand.value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return -value if isinstance(node.op, ast.USub) else value
+    return _MISSING_LITERAL
+
 
 def get_active_design_code(db: Session, ctx: AuthContext) -> tuple[str, str] | None:
     state = db.scalar(
@@ -67,7 +90,7 @@ def unparse_expr(node):
         return ""
     try:
         return ast.unparse(node)
-    except:
+    except Exception:
         return "<?>"
 
 def extract_dependencies(node):
@@ -426,21 +449,20 @@ def get_features(ctx: AuthContext = Depends(get_auth_context), db: Session = Dep
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        if isinstance(node.value, ast.Constant):
-                            val = node.value.value
+                        val = scalar_assignment_literal(node.value)
+                        if val is not _MISSING_LITERAL:
                             t = type(val).__name__
-                            if t in ("int", "float", "str", "bool"):
-                                line_idx = node.lineno - 1
-                                raw_line = lines[line_idx]
-                                comment = ""
-                                if "#" in raw_line:
-                                    comment = raw_line.split("#", 1)[1].strip()
-                                variables.append({
-                                    "name": target.id,
-                                    "value": val,
-                                    "type": t,
-                                    "description": comment
-                                })
+                            line_idx = node.lineno - 1
+                            raw_line = lines[line_idx]
+                            comment = ""
+                            if "#" in raw_line:
+                                comment = raw_line.split("#", 1)[1].strip()
+                            variables.append({
+                                "name": target.id,
+                                "value": val,
+                                "type": t,
+                                "description": comment
+                            })
             
             # 2. Extract Geometric Operations (Contexts and Top-level Exprs)
             operations.extend(parse_tree(node))
@@ -485,21 +507,20 @@ def update_features(
         lines = content.splitlines()
         tree = ast.parse(content)
         
-        assignments: dict[str, ast.Assign] = {}
+        assignments: dict[str, tuple[ast.Assign, Any]] = {}
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        if isinstance(node.value, ast.Constant):
-                            assignments[target.id] = node
+                        old_value = scalar_assignment_literal(node.value)
+                        if old_value is not _MISSING_LITERAL:
+                            assignments[target.id] = (node, old_value)
 
         for key, new_val in req.updates.items():
             if key in assignments:
-                node = assignments[key]
+                node, old_val = assignments[key]
                 line_idx = node.lineno - 1
                 raw_line = lines[line_idx]
-                assert isinstance(node.value, ast.Constant)
-                old_val = node.value.value
                 
                 start_col = getattr(node.value, "col_offset", None)
                 end_col = getattr(node.value, "end_col_offset", None)

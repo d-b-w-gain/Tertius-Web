@@ -3,12 +3,12 @@ import base64
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from pydantic import BaseModel
 from sqlalchemy import select
 
 from core.compile_messages import CompileResultPayload
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 from core.models import now_utc
+from core.structural.contracts import CompiledStructuralManifest
 
 
 def result_payload(job, seeded_tenant, **overrides):
@@ -66,6 +66,57 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
     assert artifact.content_type == "model/stl"
+
+
+def test_apply_compile_result_records_structural_manifest_sidecar(
+    db_session,
+    seeded_tenant,
+):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+    )
+    db_session.add(job)
+    db_session.commit()
+    compiled = CompiledStructuralManifest(
+        source_hash="a" * 64,
+        design_hash="b" * 64,
+        declaration={
+            "title": "Catalogue fixture",
+            "components": [],
+            "connections": [],
+            "loads": [],
+        },
+    )
+
+    applied = apply_compile_result(
+        db_session,
+        result_payload(
+            job,
+            seeded_tenant,
+            export_format="glb",
+            structural_manifest_json=compiled.model_dump_json(),
+        ),
+        consumer_settings(),
+    )
+
+    artifacts = db_session.scalars(
+        select(Artifact)
+        .where(Artifact.compile_job_id == job.id)
+        .order_by(Artifact.kind)
+    ).all()
+    assert applied is True
+    assert [artifact.kind for artifact in artifacts] == ["glb", "structural"]
+    assert artifacts[1].content_type == "application/json"
+    persisted = CompiledStructuralManifest.model_validate_json(
+        artifacts[1].content
+    )
+    assert persisted.declaration["title"] == "Catalogue fixture"
 
 
 def test_apply_compile_result_records_failure(db_session, seeded_tenant):

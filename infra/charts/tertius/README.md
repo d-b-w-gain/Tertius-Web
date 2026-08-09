@@ -167,6 +167,26 @@ rtk kubectl get secret tertius-keycloak-initial-admin -n tertius -o json \
 
 Decoded Secret values are plaintext credentials. Do not paste them into tickets, logs, pull requests, or committed files.
 
+### Optional engineering workbenches
+
+Site and Structural are installed with Tertius but are hidden from general CAD
+users. Access is controlled by the `workbench-site` and
+`workbench-structural` Keycloak realm roles. The composite
+`engineering-workbenches` role grants both. The local smoke user receives the
+composite role automatically when its realm is first imported.
+
+To enable the engineering suite for an account in the Keycloak admin console:
+
+1. Select the `tertius` realm and open **Users**.
+2. Select the user, open **Role mapping**, and choose **Assign role**.
+3. Filter by realm roles and assign `engineering-workbenches`.
+4. Ask the user to sign out and back in so the refreshed access token contains
+   the new roles.
+
+Removing the composite role disables both tabs. Assign either individual role
+when a user should have access to only one workbench. The API enforces the same
+roles, so hiding a tab is not the security boundary.
+
 `values-local.yaml` creates placeholder database Secrets for local testing only. Cloudflare Tunnel is disabled by default; create the token Secret before enabling it:
 
 ```bash

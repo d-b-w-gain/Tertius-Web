@@ -32,11 +32,15 @@ def claims_to_principal(claims: dict) -> Principal:
     subject = claims.get("sub")
     if not subject:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token subject is missing")
+    realm_access = claims.get("realm_access")
+    raw_roles = realm_access.get("roles", []) if isinstance(realm_access, dict) else []
+    roles = frozenset(role for role in raw_roles if isinstance(role, str))
     return Principal(
         keycloak_subject=subject,
         email=claims.get("email"),
         username=claims.get("preferred_username"),
         display_name=claims.get("name"),
+        roles=roles,
     )
 
 
@@ -124,6 +128,40 @@ def clear_auth_cookies(response: Response) -> None:
         response.delete_cookie(name, path="/")
 
 
+def keycloak_token_url(settings) -> str:
+    jwks_url = settings.keycloak_jwks_url.rstrip("/")
+    suffix = "/protocol/openid-connect/certs"
+    if jwks_url.endswith(suffix):
+        return f"{jwks_url[: -len(suffix)]}/protocol/openid-connect/token"
+    return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+
+
+def keycloak_logout_url(settings) -> str:
+    token_url = keycloak_token_url(settings)
+    return f"{token_url[: -len('/token')]}/logout"
+
+
+def logout_keycloak_session(session: AuthSession) -> bool:
+    settings = get_settings()
+    data = {
+        "client_id": settings.oidc_client_id,
+        "refresh_token": session.refresh_token,
+    }
+    if settings.oidc_client_secret:
+        data["client_secret"] = settings.oidc_client_secret
+
+    try:
+        response = httpx.post(keycloak_logout_url(settings), data=data, timeout=10)
+    except httpx.RequestError as exc:
+        logger.warning("Keycloak session logout request failed: %s", exc)
+        return False
+
+    if response.status_code >= 400:
+        logger.warning("Keycloak session logout returned %s", response.status_code)
+        return False
+    return True
+
+
 def require_csrf(request: Request, session: AuthSession) -> None:
     if request.method.upper() in SAFE_METHODS:
         return
@@ -134,7 +172,7 @@ def require_csrf(request: Request, session: AuthSession) -> None:
 
 def refresh_session_access_token(session: AuthSession) -> None:
     settings = get_settings()
-    token_url = f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+    token_url = keycloak_token_url(settings)
     data = {
         "grant_type": "refresh_token",
         "client_id": settings.oidc_client_id,
@@ -160,7 +198,10 @@ def refresh_session_access_token(session: AuthSession) -> None:
         )
 
     if response.status_code >= 400:
-        logger.info("Keycloak token refresh rejected stored session with status %s", response.status_code)
+        logger.info(
+            "Keycloak token refresh rejected stored session with status %s",
+            response.status_code,
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication expired")
 
     try:
@@ -245,7 +286,10 @@ def get_auth_context(
     if credentials is None or credentials.scheme.lower() != "bearer":
         cookie_ctx = get_cookie_auth_context(request, response, db)
         if cookie_ctx is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing authentication")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authentication",
+            )
         return cookie_ctx
 
     try:

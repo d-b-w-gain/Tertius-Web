@@ -10,6 +10,7 @@ class Principal:
     email: str | None
     username: str | None
     display_name: str | None
+    roles: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -18,3 +19,4 @@ class AuthContext:
     tenant_id: UUID
     keycloak_subject: str
     email: str | None
+    roles: frozenset[str] = frozenset()

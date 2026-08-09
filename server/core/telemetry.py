@@ -175,6 +175,7 @@ def workflow_from_route(path: str) -> str:
         ("/api/artus", "artus"),
         ("/api/extus", "extus"),
         ("/api/timus", "timus"),
+        ("/api/structural", "structural"),
     ):
         if path.startswith(prefix):
             return workflow

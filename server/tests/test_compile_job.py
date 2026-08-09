@@ -2,6 +2,8 @@ import asyncio
 import base64
 import hashlib
 import importlib
+import json
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -102,6 +104,71 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     assert message_id == f"compile-result:{result.job_id}:succeeded"
 
 
+def test_compile_job_attaches_hashed_compiled_structural_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    from core.compile_runtime import runtime_files_hash
+    from core.structural.contracts import CompiledStructuralManifest
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    output_path = tmp_path / "output.glb"
+    output_path.write_bytes(b"glb")
+    manifest_path = tmp_path / "tertius-structural-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "title": "Catalogue fixture",
+                "components": [
+                    {
+                        "id": "ground",
+                        "label": "Ground",
+                        "kind": "ground",
+                        "visual_node_id": "ground",
+                        "grounded": True,
+                    }
+                ],
+                "connections": [],
+                "loads": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox",
+        lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            structural_manifest_path=manifest_path,
+            stdout="",
+            stderr="",
+            error=None,
+        ),
+    )
+    design_source = "shape = 'queued'\n"
+    source_files = [
+        CompileSourceFile(filename="design.py", content=design_source),
+        CompileSourceFile(filename="catalog.json.py", content='{"version":"1"}'),
+    ]
+    msg = FakeMsg(command_payload(export_format="glb", files=source_files))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
+
+    result = publisher.published[0][1]
+    compiled = CompiledStructuralManifest.model_validate_json(
+        result.structural_manifest_json
+    )
+    assert compiled.source_hash == runtime_files_hash(
+        {file.filename: file.content for file in source_files}
+    )
+    assert compiled.design_hash == hashlib.sha256(
+        design_source.encode("utf-8")
+    ).hexdigest()
+    assert compiled.declaration["title"] == "Catalogue fixture"
+
+
 def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
     from workflows.intus.compile_job import handle_compile_request_message
 
@@ -149,6 +216,43 @@ def test_compile_job_publishes_failure_and_acks(monkeypatch):
     assert result.status == "failed"
     assert result.error_code == "sandbox_error"
     assert result.retryable is True
+
+
+def test_compile_job_keeps_event_loop_responsive_during_compile(monkeypatch):
+    import workflows.intus.compile_job as compile_job
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_execute(command, settings):
+        started.set()
+        if not release.wait(timeout=2):
+            raise AssertionError("event loop did not release the compile thread")
+        return compile_job._failed_result(
+            command,
+            compile_job.now_utc(),
+            error="expected fixture failure",
+            error_code="sandbox_error",
+            user_message="Compile failed. Fix the model source and try again.",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(compile_job, "execute_compile_command", blocked_execute)
+    msg = FakeMsg(command_payload())
+    publisher = FakePublisher()
+
+    async def run_scenario():
+        operation = asyncio.create_task(
+            compile_job.handle_compile_request_message(msg, publisher, job_settings())
+        )
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait, 0.5), timeout=1)
+        release.set()
+        await asyncio.wait_for(operation, timeout=1)
+
+    asyncio.run(run_scenario())
+
+    assert msg.acked is True
+    assert publisher.published[0][1].error == "expected fixture failure"
 
 
 def test_compile_job_truncates_huge_sandbox_error_to_publish_failure(monkeypatch):
