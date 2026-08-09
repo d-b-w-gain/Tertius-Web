@@ -2,6 +2,7 @@ import socket
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import func, select
 
 from core.llm_file_edit import TokenUsage
@@ -119,6 +120,98 @@ def test_submit_commits_job_and_publishes_selected_persisted_files(authenticated
     assert command.conversation.recent_turns[-1].assistant_summary == "Adjusted the bracket"
 
 
+@pytest.mark.parametrize(
+    "model_id",
+    ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"],
+)
+def test_submit_dispatches_selected_model_consistently(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    model_id,
+):
+    enable_pi(monkeypatch)
+    design = design_file(db_session, seeded_tenant)
+    commands = []
+    queued_metric_models = []
+    real_metric_attributes = intus_server.pi_agent_metric_attributes
+
+    async def publish(_settings, command):
+        commands.append(command)
+
+    def capture_metric_attributes(**kwargs):
+        queued_metric_models.append(kwargs["model"])
+        return real_metric_attributes(**kwargs)
+
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", publish)
+    monkeypatch.setattr(
+        intus_server,
+        "pi_agent_metric_attributes",
+        capture_metric_attributes,
+    )
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Change length",
+            "model_id": model_id,
+            "files": [file_pointer(design)],
+        },
+    )
+
+    assert response.status_code == 202
+    job = db_session.get(LlmEditJob, UUID(response.json()["job_id"]))
+    assert job.request_payload["dispatched_model"] == model_id
+    assert [command.model for command in commands] == [model_id]
+    assert queued_metric_models == [model_id]
+
+
+@pytest.mark.parametrize(
+    "model_selection",
+    [{}, {"model_id": ""}],
+    ids=["omitted", "blank"],
+)
+def test_submit_defaults_omitted_or_blank_model_to_sol(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    model_selection,
+):
+    enable_pi(monkeypatch)
+    design = design_file(db_session, seeded_tenant)
+    commands = []
+
+    async def publish(_settings, command):
+        commands.append(command)
+        raise RuntimeError("NATS unavailable")
+
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", publish)
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Change length",
+            "files": [file_pointer(design)],
+            **model_selection,
+        },
+    )
+
+    assert response.status_code == 202
+    job = db_session.get(LlmEditJob, UUID(response.json()["job_id"]))
+    assert job.status == "queued"
+    assert job.request_payload["dispatched_model"] == "gpt-5.6-sol"
+    assert [command.model for command in commands] == ["gpt-5.6-sol"]
+    history = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs"
+    )
+    history_entry = next(
+        message
+        for message in history.json()["messages"]
+        if message["job_id"] == str(job.id)
+    )
+    assert history_entry["model"] == "gpt-5.6-sol"
+
+
 def test_submit_estimates_the_complete_shared_worker_prompt(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
@@ -155,6 +248,51 @@ def test_submit_estimates_the_complete_shared_worker_prompt(
         active_filename=design.filename,
     )
     assert captured["source_bytes"] == len(design.content.encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("operational_cap", "expected_max_chars"),
+    [(400_000, 300_000), (200_000, 200_000)],
+)
+def test_submit_uses_fixed_context_budget_and_ignores_legacy_tier(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+    operational_cap,
+    expected_max_chars,
+):
+    settings = enable_pi(monkeypatch).model_copy(
+        update={"llm_file_edit_max_context_chars": operational_cap}
+    )
+    design = design_file(db_session, seeded_tenant)
+    captured = {}
+
+    def capture_selection(**kwargs):
+        captured.update(kwargs)
+        return kwargs["files"]
+
+    async def publish(_settings, _command):
+        return None
+
+    monkeypatch.setattr(intus_server, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        intus_server,
+        "select_domain_context_files",
+        capture_selection,
+    )
+    monkeypatch.setattr(intus_server, "publish_pi_agent_command", publish)
+    response = authenticated_intus_client.post(
+        "/projects/default_purlin/files/llm-edit/jobs",
+        json={
+            "prompt": "Change length",
+            "files": [file_pointer(design)],
+            "context_tier": "very_high",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["max_chars"] == expected_max_chars
 
 
 def test_submit_returns_fixed_unavailable_response_when_policy_cannot_load(
@@ -305,6 +443,7 @@ def test_submit_rejects_unsupported_model_before_publish(
 
     assert response.status_code == 400
     assert response.json()["error"] == "unsupported_model"
+    assert db_session.scalar(select(func.count()).select_from(LlmEditJob)) == 0
 
 
 def test_ambiguous_publish_failure_stays_queued_and_returns_accepted(authenticated_intus_client, db_session, seeded_tenant, monkeypatch):
@@ -464,6 +603,61 @@ def test_project_with_active_job_rejects_second_submit(authenticated_intus_clien
         json={"prompt": "second", "files": [file_pointer(design)]},
     )
     assert response.status_code == 409
+
+
+def test_history_model_prefers_result_then_dispatch_and_keeps_legacy_fallback(
+    authenticated_intus_client,
+    db_session,
+    seeded_tenant,
+):
+    common = {
+        "tenant_id": seeded_tenant.tenant_id,
+        "project_id": seeded_tenant.project_id,
+        "requested_by": seeded_tenant.user_id,
+        "status": "failed",
+    }
+    result_job = LlmEditJob(
+        **common,
+        request_payload={
+            "prompt": "Result provenance",
+            "files": [],
+            "dispatched_model": "dispatch-model",
+            "model_id": "legacy-model",
+        },
+        result_payload={"model": "result-model"},
+    )
+    dispatched_job = LlmEditJob(
+        **common,
+        request_payload={
+            "prompt": "Dispatch provenance",
+            "files": [],
+            "dispatched_model": "dispatch-model",
+            "model_id": "legacy-model",
+        },
+    )
+    legacy_job = LlmEditJob(
+        **common,
+        request_payload={
+            "prompt": "Legacy provenance",
+            "files": [],
+            "model_id": "legacy-model",
+        },
+    )
+    db_session.add_all([result_job, dispatched_job, legacy_job])
+    db_session.commit()
+
+    response = authenticated_intus_client.get(
+        "/projects/default_purlin/files/llm-edit/jobs"
+    )
+
+    assert response.status_code == 200
+    models_by_job_id = {
+        message["job_id"]: message["model"]
+        for message in response.json()["messages"]
+    }
+    assert models_by_job_id[str(result_job.id)] == "result-model"
+    assert models_by_job_id[str(dispatched_job.id)] == "dispatch-model"
+    assert models_by_job_id[str(legacy_job.id)] == "legacy-model"
 
 
 def test_job_status_preserves_public_contract_and_returns_validated_progress(

@@ -114,8 +114,6 @@ export type LlmModelsResponse = {
   models: LlmModelOption[]
 }
 
-export type LlmEditContextTier = 'low' | 'medium' | 'high' | 'very_high'
-
 export type ProjectStorage = {
   listProjects: () => Promise<string[]>
   getActiveProject: () => Promise<string>
@@ -135,7 +133,6 @@ export type ProjectStorage = {
       files: Array<{ id: string; filename: string; updated_at: string }>
       active_file_id?: string
       model_id?: string
-      context_tier?: LlmEditContextTier
       metadata?: Record<string, string>
     },
   ) => Promise<{ success: boolean; job_id: string; status: string }>
