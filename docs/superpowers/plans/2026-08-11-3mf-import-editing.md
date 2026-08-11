@@ -413,17 +413,17 @@ rtk git commit -m "feat: convert 3mf assets to faceted brep"
 - Create: `server/tests/test_import_3mf_result_consumer.py`
 - Modify: `server/main.py`
 
-- [ ] **Step 1: Write failing worker lifecycle tests**
+- [x] **Step 1: Write failing worker lifecycle tests**
 
 Test source fetch/digest verification, running transition, heartbeats, success refs, conversion error mapping, timeout, result publish retry, ACK only after publish, NAK on transient object-store/NATS failure, idempotent duplicate result, provenance mismatch, and atomic derived-asset/source creation.
 
-- [ ] **Step 2: Run focused tests and confirm missing workers**
+- [x] **Step 2: Run focused tests and confirm missing workers**
 
 Run: `rtk uv run pytest -q server/tests/test_import_3mf_job.py server/tests/test_import_3mf_result_consumer.py`
 
 Expected: FAIL during collection.
 
-- [ ] **Step 3: Implement one-shot worker using existing compile/Pi patterns**
+- [x] **Step 3: Implement one-shot worker using existing compile/Pi patterns**
 
 ```python
 async def execute_import_command(command, object_store, publisher, settings):
@@ -442,17 +442,17 @@ async def execute_import_command(command, object_store, publisher, settings):
 
 Use the existing trace propagation, bounded telemetry, heartbeat, result-publish retry, and ACK/NAK conventions. Never log source/derived bytes, project/user IDs, object keys, filenames, or raw metadata.
 
-- [ ] **Step 4: Implement result consumer and stale-job reconciliation**
+- [x] **Step 4: Implement result consumer and stale-job reconciliation**
 
 Fetch BREP and manifest by reference, verify both, parse the manifest, call `ProjectImportRepository.apply_success`, and persist generated source atomically. Map terminal errors through a fixed code-to-user-message table. Reconcile stale running jobs to retryable failure after the configured lease.
 
-- [ ] **Step 5: Run focused pipeline tests**
+- [x] **Step 5: Run focused pipeline tests**
 
 Run: `rtk uv run pytest -q server/tests/test_import_3mf_job.py server/tests/test_import_3mf_result_consumer.py`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit workers**
+- [x] **Step 6: Commit workers**
 
 ```bash
 rtk git add server/workflows/intus/import_3mf_job.py server/workflows/intus/import_3mf_result_consumer.py server/start-import-3mf-job.sh server/tests/test_import_3mf_job.py server/tests/test_import_3mf_result_consumer.py server/main.py
