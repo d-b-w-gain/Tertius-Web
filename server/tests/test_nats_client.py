@@ -681,6 +681,51 @@ async def test_ensure_import_stream_refetches_after_stream_and_consumer_create_r
 
 
 @pytest.mark.asyncio
+async def test_ensure_import_stream_preserves_operator_managed_stream_fields():
+    from nats.js.api import (
+        DiscardPolicy,
+        RetentionPolicy,
+        StorageType,
+        StreamConfig,
+    )
+
+    jetstream = FakeJetStream()
+    current = StreamConfig(
+        name="TERTIUS_IMPORT_3MF",
+        subjects=["old.subject"],
+        retention=RetentionPolicy.INTEREST,
+        max_bytes=987654321,
+        discard=DiscardPolicy.OLD,
+        max_age=12345,
+        max_msg_size=64,
+        storage=StorageType.FILE,
+        num_replicas=3,
+        duplicate_window=77,
+        deny_delete=True,
+        deny_purge=True,
+    )
+    jetstream.streams["TERTIUS_IMPORT_3MF"] = SimpleNamespace(config=current)
+
+    await ensure_import_stream(FakeConnection(jetstream), Settings())
+
+    updated = jetstream.streams["TERTIUS_IMPORT_3MF"]
+    assert updated.subjects == [
+        "tertius.import.3mf.request",
+        "tertius.import.3mf.result",
+    ]
+    assert updated.max_msg_size == 1024 * 1024
+    assert updated.retention == RetentionPolicy.INTEREST
+    assert updated.max_bytes == 987654321
+    assert updated.discard == DiscardPolicy.OLD
+    assert updated.max_age == 12345
+    assert updated.storage == StorageType.FILE
+    assert updated.num_replicas == 3
+    assert updated.duplicate_window == 77
+    assert updated.deny_delete is True
+    assert updated.deny_purge is True
+
+
+@pytest.mark.asyncio
 async def test_import_pull_subscriptions_use_stable_durables():
     jetstream = FakeJetStream()
     settings = Settings()

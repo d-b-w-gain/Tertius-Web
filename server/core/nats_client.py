@@ -363,12 +363,10 @@ async def ensure_import_stream(nc, settings):
     try:
         info = await js.stream_info(settings.import_3mf_stream_name)
         current = info.config if hasattr(info, "config") else info
-        if (
-            sorted(list(getattr(current, "subjects", []) or [])) != sorted(subjects)
-            or getattr(current, "max_msg_size", None)
-            != settings.import_3mf_message_max_bytes
-        ):
-            await js.update_stream(desired_stream)
+        if _import_stream_has_drift(current, subjects, settings):
+            await js.update_stream(
+                _copy_import_stream_with_owned_fields(current, subjects, settings)
+            )
     except NotFoundError:
         try:
             await js.add_stream(desired_stream)
@@ -377,13 +375,10 @@ async def ensure_import_stream(nc, settings):
                 raise
             info = await js.stream_info(settings.import_3mf_stream_name)
             current = info.config if hasattr(info, "config") else info
-            if (
-                sorted(list(getattr(current, "subjects", []) or []))
-                != sorted(subjects)
-                or getattr(current, "max_msg_size", None)
-                != settings.import_3mf_message_max_bytes
-            ):
-                await js.update_stream(desired_stream)
+            if _import_stream_has_drift(current, subjects, settings):
+                await js.update_stream(
+                    _copy_import_stream_with_owned_fields(current, subjects, settings)
+                )
 
     consumers = (
         ConsumerConfig(
@@ -461,6 +456,22 @@ def _is_already_exists(exc: Exception) -> bool:
         return False
     description = (exc.description or "").lower()
     return exc.code == 400 and ("already" in description or "in use" in description)
+
+
+def _import_stream_has_drift(current, subjects, settings) -> bool:
+    return sorted(list(getattr(current, "subjects", []) or [])) != sorted(
+        subjects
+    ) or (
+        getattr(current, "max_msg_size", None)
+        != settings.import_3mf_message_max_bytes
+    )
+
+
+def _copy_import_stream_with_owned_fields(current, subjects, settings):
+    desired = copy(current)
+    desired.subjects = list(subjects)
+    desired.max_msg_size = settings.import_3mf_message_max_bytes
+    return desired
 
 
 async def pull_compile_subscription(js, settings):
