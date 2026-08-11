@@ -199,6 +199,8 @@ class ProjectImportJob(Base):
             name="fk_project_import_jobs_project_tenant",
             ondelete="CASCADE",
         ),
+        # No ondelete action: immutable import audit attribution intentionally
+        # restricts deleting a membership referenced by requested_by.
         ForeignKeyConstraint(
             ["tenant_id", "requested_by"],
             ["tenant_memberships.tenant_id", "tenant_memberships.user_id"],
