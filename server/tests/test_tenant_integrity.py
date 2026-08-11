@@ -1,7 +1,17 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from core.models import AppUser, Artifact, CompileJob, Project, ProjectFile, Tenant, UserWorkspaceState
+from core.models import (
+    AppUser,
+    Artifact,
+    CompileJob,
+    CompileJobAsset,
+    Project,
+    ProjectAsset,
+    ProjectFile,
+    Tenant,
+    UserWorkspaceState,
+)
 
 
 def make_user(email: str = "user@example.com") -> AppUser:
@@ -131,6 +141,55 @@ def test_artifact_compile_job_must_match_artifact_project(db_session):
             storage_key="artifacts/output.pdf",
             content_type="application/pdf",
             content=b"%PDF",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_compile_job_asset_must_match_asset_tenant_and_project(db_session):
+    user = make_user()
+    tenant_a = Tenant(name="Tenant A")
+    tenant_b = Tenant(name="Tenant B")
+    db_session.add_all([user, tenant_a, tenant_b])
+    db_session.flush()
+    project_a = Project(tenant_id=tenant_a.id, name="Project A", created_by=user.id)
+    project_b = Project(tenant_id=tenant_b.id, name="Project B", created_by=user.id)
+    db_session.add_all([project_a, project_b])
+    db_session.flush()
+    asset_b = ProjectAsset(
+        tenant_id=tenant_b.id,
+        project_id=project_b.id,
+        logical_name="source.brep",
+        display_name="source.brep",
+        kind="derived_brep",
+        media_type="application/vnd.opencascade.brep",
+        content=b"brep",
+        byte_size=4,
+        sha256="0" * 64,
+        revision=1,
+    )
+    job_a = CompileJob(
+        tenant_id=tenant_a.id,
+        project_id=project_a.id,
+        requested_by=user.id,
+        status="queued",
+        export_format="glb",
+    )
+    db_session.add_all([asset_b, job_a])
+    db_session.flush()
+    db_session.add(
+        CompileJobAsset(
+            compile_job_id=job_a.id,
+            tenant_id=tenant_a.id,
+            project_id=project_a.id,
+            project_asset_id=asset_b.id,
+            logical_filename="source.brep",
+            sha256=asset_b.sha256,
+            byte_size=asset_b.byte_size,
+            object_bucket="TERTIUS_ASSETS",
+            object_key="sha256/brep",
         )
     )
 
