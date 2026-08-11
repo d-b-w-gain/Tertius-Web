@@ -65,6 +65,7 @@ from workflows.intus.pi_agent_result_consumer import (
     run_pi_agent_active_observer,
     run_pi_agent_result_consumer,
 )
+from workflows.intus.import_3mf_result_consumer import run_import_result_consumer
 from core.provisioning import provision_user_context
 
 _compile_result_stop_event: asyncio.Event | None = None
@@ -73,12 +74,16 @@ _pi_agent_result_stop_event: asyncio.Event | None = None
 _pi_agent_result_task: asyncio.Task | None = None
 _pi_agent_active_stop_event: asyncio.Event | None = None
 _pi_agent_active_task: asyncio.Task | None = None
+_import_3mf_result_stop_event: asyncio.Event | None = None
+_import_3mf_result_task: asyncio.Task | None = None
 
 
 async def start_compile_result_consumer():
     global _compile_result_stop_event, _compile_result_task
     _compile_result_stop_event = asyncio.Event()
-    _compile_result_task = asyncio.create_task(run_result_consumer(_compile_result_stop_event))
+    _compile_result_task = asyncio.create_task(
+        run_result_consumer(_compile_result_stop_event)
+    )
 
 
 async def stop_compile_result_consumer():
@@ -97,7 +102,9 @@ async def start_pi_agent_result_consumer():
     if not settings.pi_agent_enabled:
         return
     _pi_agent_result_stop_event = asyncio.Event()
-    _pi_agent_result_task = asyncio.create_task(run_pi_agent_result_consumer(_pi_agent_result_stop_event))
+    _pi_agent_result_task = asyncio.create_task(
+        run_pi_agent_result_consumer(_pi_agent_result_stop_event)
+    )
 
 
 async def stop_pi_agent_result_consumer():
@@ -116,7 +123,9 @@ async def start_pi_agent_active_observer():
     if not settings.pi_agent_enabled:
         return
     _pi_agent_active_stop_event = asyncio.Event()
-    _pi_agent_active_task = asyncio.create_task(run_pi_agent_active_observer(_pi_agent_active_stop_event))
+    _pi_agent_active_task = asyncio.create_task(
+        run_pi_agent_active_observer(_pi_agent_active_stop_event)
+    )
 
 
 async def stop_pi_agent_active_observer():
@@ -130,9 +139,29 @@ async def stop_pi_agent_active_observer():
             pass
 
 
+async def start_import_3mf_result_consumer():
+    global _import_3mf_result_stop_event, _import_3mf_result_task
+    _import_3mf_result_stop_event = asyncio.Event()
+    _import_3mf_result_task = asyncio.create_task(
+        run_import_result_consumer(_import_3mf_result_stop_event)
+    )
+
+
+async def stop_import_3mf_result_consumer():
+    if _import_3mf_result_stop_event is not None:
+        _import_3mf_result_stop_event.set()
+    if _import_3mf_result_task is not None:
+        _import_3mf_result_task.cancel()
+        try:
+            await _import_3mf_result_task
+        except asyncio.CancelledError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await start_compile_result_consumer()
+    await start_import_3mf_result_consumer()
     await start_pi_agent_active_observer()
     await start_pi_agent_result_consumer()
     try:
@@ -140,6 +169,7 @@ async def lifespan(_app: FastAPI):
     finally:
         await stop_pi_agent_result_consumer()
         await stop_pi_agent_active_observer()
+        await stop_import_3mf_result_consumer()
         await stop_compile_result_consumer()
 
 
@@ -175,7 +205,9 @@ async def telemetry_request_context(request: Request, call_next):
             "workflow": workflow,
         }
         counter_add("tertius.api.request.count", 1, attributes)
-        histogram_record("tertius.api.request.duration", elapsed_seconds(start), attributes)
+        histogram_record(
+            "tertius.api.request.duration", elapsed_seconds(start), attributes
+        )
         current_span = trace.get_current_span()
         if current_span.is_recording():
             current_span.set_attribute("http.route", str(route))
@@ -220,7 +252,9 @@ def _unb64url(data: str) -> bytes:
 
 def _sign_payload(payload: dict) -> str:
     raw = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    signature = hmac.new(_auth_state_secret(), raw.encode("ascii"), hashlib.sha256).digest()
+    signature = hmac.new(
+        _auth_state_secret(), raw.encode("ascii"), hashlib.sha256
+    ).digest()
     return f"{raw}.{_b64url(signature)}"
 
 
@@ -228,16 +262,26 @@ def _unsign_payload(value: str) -> dict:
     try:
         raw, signature = value.split(".", 1)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state") from exc
-    expected = _b64url(hmac.new(_auth_state_secret(), raw.encode("ascii"), hashlib.sha256).digest())
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state"
+        ) from exc
+    expected = _b64url(
+        hmac.new(_auth_state_secret(), raw.encode("ascii"), hashlib.sha256).digest()
+    )
     if not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state"
+        )
     return json.loads(_unb64url(raw))
 
 
 def _external_url(request: Request, path: str) -> str:
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    )
     return f"{proto}://{host}{path}"
 
 
@@ -282,7 +326,9 @@ def auth_login(
             "code_challenge_method": "S256",
         }
     )
-    response = RedirectResponse(f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/auth?{params}")
+    response = RedirectResponse(
+        f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/auth?{params}"
+    )
     response.set_cookie(
         settings.auth_oauth_state_cookie_name,
         state_cookie,
@@ -304,12 +350,20 @@ def auth_callback(
 ):
     stored = request.cookies.get(settings.auth_oauth_state_cookie_name)
     if not stored:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing OAuth state")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Missing OAuth state"
+        )
     payload = _unsign_payload(stored)
     if payload.get("state") != state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
-    if int(payload.get("iat", 0)) < int((utc_now() - timedelta(minutes=10)).timestamp()):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expired OAuth state")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state"
+        )
+    if int(payload.get("iat", 0)) < int(
+        (utc_now() - timedelta(minutes=10)).timestamp()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Expired OAuth state"
+        )
 
     redirect_uri = _external_url(request, "/api/auth/callback")
     token_data = {
@@ -388,7 +442,9 @@ def auth_logout(request: Request, response: Response, db=Depends(get_db)):
     identity_provider_logout = False
     if session_token:
         session = db.scalar(
-            select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token))
+            select(AuthSession).where(
+                AuthSession.session_token_hash == session_token_hash(session_token)
+            )
         )
         if session is not None:
             identity_provider_logout = logout_keycloak_session(session)

@@ -758,6 +758,9 @@ async def test_import_pull_subscriptions_use_stable_durables():
         ("import_3mf_ack_wait_seconds", 0),
         ("import_3mf_max_deliver", 0),
         ("import_3mf_message_max_bytes", 0),
+        ("import_3mf_timeout_seconds", 0),
+        ("import_3mf_timeout_seconds", 301),
+        ("import_3mf_running_lease_seconds", 0),
         ("project_asset_object_bucket", "bad.bucket"),
         ("import_3mf_stream_name", "bad.stream"),
         ("import_3mf_worker_queue", "bad queue"),
@@ -791,3 +794,10 @@ def test_import_worker_and_result_durables_must_be_distinct():
             import_3mf_worker_queue="same-durable",
             import_3mf_result_consumer="same-durable",
         )
+
+
+def test_import_running_lease_must_exceed_converter_timeout():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="lease must exceed"):
+        Settings(import_3mf_timeout_seconds=300, import_3mf_running_lease_seconds=300)
