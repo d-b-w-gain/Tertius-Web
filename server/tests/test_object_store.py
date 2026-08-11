@@ -356,3 +356,111 @@ def test_object_ref_rejects_extra_fields():
             byte_size=3,
             secret="not allowed",
         )
+
+
+class SdkShapedSubscription:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.error = None
+        self.unsubscribe_calls = 0
+        self.attempted_chunks = 0
+
+    @property
+    def messages(self):
+        async def iterate():
+            for chunk in self.chunks:
+                self.attempted_chunks += 1
+                yield SimpleNamespace(data=chunk)
+            if self.error is not None:
+                raise self.error
+
+        return iterate()
+
+    async def unsubscribe(self):
+        self.unsubscribe_calls += 1
+
+
+class SdkShapedJetStream:
+    def __init__(self, subscription):
+        self.subscription = subscription
+        self.subscribe_calls = []
+
+    async def subscribe(self, subject, *, ordered_consumer):
+        self.subscribe_calls.append((subject, ordered_consumer))
+        return self.subscription
+
+
+class SdkShapedObjectStore:
+    def __init__(self, content_size, chunks):
+        self._name = "TERTIUS_ASSETS"
+        self.subscription = SdkShapedSubscription(chunks)
+        self._js = SdkShapedJetStream(self.subscription)
+        self.content_size = content_size
+
+    async def get_info(self, key):
+        return SimpleNamespace(
+            name=key,
+            bucket=self._name,
+            nuid="object-nuid",
+            size=self.content_size,
+            deleted=False,
+            is_link=lambda: False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sdk_shaped_fetch_unsubscribes_exactly_once_on_success():
+    content = b"abc"
+    digest = hashlib.sha256(content).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(content),
+    )
+    store = SdkShapedObjectStore(len(content), [b"a", b"bc"])
+
+    assert await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref) == content
+
+    assert store._js.subscribe_calls == [
+        ("$O.TERTIUS_ASSETS.C.object-nuid", True)
+    ]
+    assert store.subscription.unsubscribe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_shaped_fetch_unsubscribes_once_and_stops_on_overflow():
+    expected = b"abc"
+    digest = hashlib.sha256(expected).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(expected),
+    )
+    store = SdkShapedObjectStore(len(expected), [b"ab", b"cd", b"not-read"])
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store.subscription.attempted_chunks == 2
+    assert store.subscription.unsubscribe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_shaped_fetch_unsubscribes_once_on_subscription_error():
+    expected = b"abc"
+    digest = hashlib.sha256(expected).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(expected),
+    )
+    store = SdkShapedObjectStore(len(expected), [b"a"])
+    store.subscription.error = RuntimeError("subscription failed")
+
+    with pytest.raises(ObjectStoreUnavailableError, match="operation failed"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store.subscription.unsubscribe_calls == 1

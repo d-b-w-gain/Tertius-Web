@@ -126,7 +126,7 @@ class ProjectObjectStore:
         )
         try:
             try:
-                await self.store.get(ref.key, writeinto=writer)
+                await _read_object_into(self.store, info, ref.key, writer)
             except Exception as exc:
                 if _is_not_found(exc):
                     raise ObjectNotFoundError("object was not found") from exc
@@ -164,6 +164,40 @@ def _is_integrity_error(exc: Exception) -> bool:
     from nats.js.errors import BadObjectMetaError, DigestMismatchError
 
     return isinstance(exc, (BadObjectMetaError, DigestMismatchError))
+
+
+async def _read_object_into(store, info, key: str, writer) -> None:
+    if hasattr(store, "_js") and hasattr(store, "_name"):
+        await _read_nats_2_15_object_into(store, info, writer)
+        return
+    await store.get(key, writeinto=writer)
+
+
+async def _read_nats_2_15_object_into(store, info, writer) -> None:
+    """Read nats-py 2.15 object chunks while always closing the subscription.
+
+    nats-py 2.15 exposes the JetStream context and bucket only as ``_js`` and
+    ``_name``. Its public ``ObjectStore.get(writeinto=...)`` does not unsubscribe
+    if the writer rejects a chunk, so this compatibility shim isolates those two
+    private attributes. Subscription iteration and cleanup use public APIs.
+    """
+    from nats.js.object_store import OBJ_CHUNKS_PRE_TEMPLATE
+
+    if info.size == 0:
+        return
+    nuid = getattr(info, "nuid", None)
+    if not isinstance(nuid, str) or not nuid:
+        raise ObjectIntegrityError("object metadata integrity check failed")
+    subject = OBJ_CHUNKS_PRE_TEMPLATE.format(bucket=store._name, obj=nuid)
+    subscription = await store._js.subscribe(subject, ordered_consumer=True)
+    try:
+        async for message in subscription.messages:
+            writer.write(message.data)
+            if writer.byte_size == info.size:
+                return
+        raise ObjectIntegrityError("object integrity check failed")
+    finally:
+        await subscription.unsubscribe()
 
 
 class _BoundedHashingWriter:
