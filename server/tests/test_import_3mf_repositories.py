@@ -266,11 +266,11 @@ def test_retry_reuses_job_with_new_execution_and_clears_terminal_state(
     assert retried.finished_at is None
 
 
-def test_retry_rejects_nonfailed_or_nonretryable_jobs(db_session, seeded_tenant):
+def test_retry_classifies_active_and_nonretryable_jobs(db_session, seeded_tenant):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, _, job = _create_import(repo, seeded_tenant)
 
-    with pytest.raises(ImportNotRetryableError):
+    with pytest.raises(ActiveProjectImportError):
         repo.retry(job.id)
 
     repo.mark_failed(

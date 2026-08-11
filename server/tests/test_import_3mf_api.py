@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import threading
 from hashlib import sha256
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
-from core.models import Project, ProjectAsset, ProjectImportJob
+from core.models import (
+    AppUser,
+    Project,
+    ProjectAsset,
+    ProjectImportJob,
+    TenantMembership,
+)
 from core.object_store import ObjectRef
 from core.project_assets import (
     IMPORT_3MF_CONVERSION_VERSION,
@@ -331,6 +339,55 @@ def test_status_is_tenant_scoped_and_has_no_private_asset_fields(
     assert isolated.json() == {"error": "import_job_not_found"}
 
 
+def test_status_and_retry_are_requested_user_scoped_within_tenant(
+    authenticated_intus_client, db_session, seeded_tenant, import_transport
+):
+    created = _post(authenticated_intus_client).json()
+    job = db_session.get(ProjectImportJob, created["job_id"])
+    ProjectImportRepository(db_session, seeded_tenant.tenant_id).mark_failed(
+        job.id,
+        job.execution_id,
+        error="conversion failed",
+        error_code="invalid_3mf",
+        user_message="This 3MF could not be converted.",
+        retryable=True,
+    )
+    other_user = AppUser(keycloak_subject="same-tenant-other")
+    db_session.add(other_user)
+    db_session.flush()
+    db_session.add(
+        TenantMembership(
+            tenant_id=seeded_tenant.tenant_id,
+            user_id=other_user.id,
+            role="member",
+        )
+    )
+    db_session.commit()
+    intus_server.app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        user_id=other_user.id,
+        tenant_id=seeded_tenant.tenant_id,
+        keycloak_subject="same-tenant-other",
+        email=None,
+    )
+
+    status_response = authenticated_intus_client.get(
+        f"/projects/imports/3mf/jobs/{job.id}"
+    )
+    retry_response = authenticated_intus_client.post(
+        f"/projects/imports/3mf/jobs/{job.id}/retry"
+    )
+
+    assert status_response.status_code == retry_response.status_code == 404
+    assert (
+        status_response.json()
+        == retry_response.json()
+        == {"error": "import_job_not_found"}
+    )
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.attempt == 1
+
+
 def test_succeeded_status_exposes_only_bounded_public_manifest(
     authenticated_intus_client, db_session, seeded_tenant, import_transport
 ):
@@ -470,6 +527,26 @@ def test_retry_rejects_active_job_with_exact_conflict(
     assert response.json() == {"error": "import_already_active"}
 
 
+def test_retry_rejects_terminal_nonretryable_job_with_exact_conflict(
+    authenticated_intus_client, db_session, import_transport
+):
+    created = _post(authenticated_intus_client).json()
+    job = db_session.get(ProjectImportJob, created["job_id"])
+    job.status = "failed"
+    job.retryable = False
+    db_session.commit()
+
+    response = authenticated_intus_client.post(
+        f"/projects/imports/3mf/jobs/{job.id}/retry"
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"error": "import_not_retryable"}
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.attempt == 1
+
+
 def test_retry_publish_failure_restores_failed_attempt(
     authenticated_intus_client, db_session, seeded_tenant, import_transport, monkeypatch
 ):
@@ -501,3 +578,94 @@ def test_retry_publish_failure_restores_failed_attempt(
     assert job.attempt == 1
     assert job.execution_id == original_execution
     assert job.retryable is True
+
+
+def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
+    postgres_url, db_session, seeded_tenant, monkeypatch
+):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _project, _source, job = repo.create_import(
+        project_name="falcon9",
+        requested_by=seeded_tenant.user_id,
+        display_name="falcon9.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=b"3MF",
+    )
+    repo.mark_failed(
+        job.id,
+        job.execution_id,
+        error="conversion failed",
+        error_code="invalid_3mf",
+        user_message="This 3MF could not be converted.",
+        retryable=True,
+    )
+    job_id = job.id
+    db_session.commit()
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_db():
+        with SessionFactory() as session:
+            yield session
+
+    intus_server.app.dependency_overrides[get_db] = override_db
+    intus_server.app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        user_id=seeded_tenant.user_id,
+        tenant_id=seeded_tenant.tenant_id,
+        keycloak_subject="kc-test",
+        email="test@example.com",
+    )
+    published = []
+    publish_lock = threading.Lock()
+
+    async def put(content: bytes) -> ObjectRef:
+        digest = sha256(content).hexdigest()
+        return ObjectRef(
+            bucket="TERTIUS_ASSETS",
+            key=f"sha256/{digest}",
+            sha256=digest,
+            byte_size=len(content),
+        )
+
+    async def publish(command):
+        with publish_lock:
+            published.append(command)
+
+    monkeypatch.setattr(intus_server, "put_import_source", put)
+    monkeypatch.setattr(intus_server, "publish_import_3mf_command", publish)
+    barrier = threading.Barrier(2)
+    outcomes = []
+    errors = []
+
+    def retry_request():
+        try:
+            barrier.wait(timeout=10)
+            with TestClient(intus_server.app) as client:
+                response = client.post(f"/projects/imports/3mf/jobs/{job_id}/retry")
+            with publish_lock:
+                outcomes.append((response.status_code, response.json()))
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=retry_request, daemon=True) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+    finally:
+        intus_server.app.dependency_overrides.clear()
+        engine.dispose()
+
+    assert not errors
+    assert not any(thread.is_alive() for thread in threads)
+    assert sorted(status_code for status_code, _payload in outcomes) == [202, 409]
+    conflict = next(payload for status_code, payload in outcomes if status_code == 409)
+    assert conflict == {"error": "import_already_active"}
+    assert len(published) == 1
+    db_session.expire_all()
+    persisted = db_session.get(ProjectImportJob, job_id)
+    assert persisted.status == "queued"
+    assert persisted.attempt == 2
+    assert persisted.execution_id == published[0].execution_id

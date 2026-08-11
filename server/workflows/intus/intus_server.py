@@ -402,7 +402,9 @@ def get_import_3mf_job(
     guest_response = _reject_guest(ctx)
     if guest_response is not None:
         return guest_response
-    job = ProjectImportRepository(db, ctx.tenant_id).get_job(job_id)
+    job = ProjectImportRepository(db, ctx.tenant_id).get_job_for_user(
+        job_id, ctx.user_id
+    )
     if job is None:
         return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
     payload = _public_import_job(db, ctx.tenant_id, job)
@@ -421,7 +423,7 @@ async def retry_import_3mf_job(
     if guest_response is not None:
         return guest_response
     repo = ProjectImportRepository(db, ctx.tenant_id)
-    existing = repo.get_job(job_id)
+    existing = repo.get_job_for_user(job_id, ctx.user_id)
     if existing is None:
         return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
     if existing.status in {"queued", "running"}:

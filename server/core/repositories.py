@@ -769,6 +769,17 @@ class ProjectImportRepository:
             )
         )
 
+    def get_job_for_user(
+        self, job_id: UUID, requested_by: UUID
+    ) -> ProjectImportJob | None:
+        return self.db.scalar(
+            select(ProjectImportJob).where(
+                ProjectImportJob.id == job_id,
+                ProjectImportJob.tenant_id == self.tenant_id,
+                ProjectImportJob.requested_by == requested_by,
+            )
+        )
+
     def _lock_job(self, job_id: UUID) -> ProjectImportJob:
         job = self.db.scalar(
             select(ProjectImportJob)
@@ -926,6 +937,10 @@ class ProjectImportRepository:
                 if project is None:
                     raise ValueError("Project not found")
                 job = self._lock_job(job_id)
+                if job.status in {"queued", "running"}:
+                    raise ActiveProjectImportError(
+                        "Project already has an active import"
+                    )
                 if job.status != "failed" or not job.retryable:
                     raise ImportNotRetryableError("Import job is not retryable")
                 active = self.db.scalar(
