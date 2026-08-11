@@ -2,11 +2,13 @@ from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
 from alembic.command import downgrade, upgrade
 from alembic.config import Config
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import DBAPIError
 
 from core.config import get_settings
 from core.db import Base
@@ -22,9 +24,9 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     config.set_main_option("script_location", str(server_dir / "migrations"))
     config.set_main_option("sqlalchemy.url", postgres_url)
 
+    engine = create_engine(postgres_url, pool_pre_ping=True)
     upgrade(config, "head")
 
-    engine = create_engine(postgres_url, pool_pre_ping=True)
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
     engine.dispose()
@@ -81,14 +83,108 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: st
     config.set_main_option("script_location", str(server_dir / "migrations"))
     config.set_main_option("sqlalchemy.url", postgres_url)
 
+    engine = create_engine(postgres_url, pool_pre_ping=True)
     upgrade(config, "head")
+
+    user_id = uuid4()
+    tenant_id = uuid4()
+    project_id = uuid4()
+    asset_id = uuid4()
+    compile_job_id = uuid4()
+    compile_asset_id = uuid4()
+    created_at = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO app_users (id, keycloak_subject, created_at, last_seen_at) "
+                "VALUES (:id, :subject, :created_at, :created_at)"
+            ),
+            {"id": user_id, "subject": "immutable-migration-user", "created_at": created_at},
+        )
+        connection.execute(
+            text("INSERT INTO tenants (id, name, created_at) VALUES (:id, :name, :created_at)"),
+            {"id": tenant_id, "name": "Immutable tenant", "created_at": created_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO projects (id, tenant_id, name, created_by, created_at, updated_at) "
+                "VALUES (:id, :tenant_id, :name, :user_id, :created_at, :created_at)"
+            ),
+            {"id": project_id, "tenant_id": tenant_id, "name": "immutable-project", "user_id": user_id, "created_at": created_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO project_assets "
+                "(id, tenant_id, project_id, logical_name, display_name, kind, media_type, content, byte_size, sha256, revision, created_at) "
+                "VALUES (:id, :tenant_id, :project_id, 'source.3mf', 'source.3mf', 'source_3mf', "
+                "'application/octet-stream', :content, 3, :sha256, 1, :created_at)"
+            ),
+            {
+                "id": asset_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "content": b"3mf",
+                "sha256": "0" * 64,
+                "created_at": created_at,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO compile_jobs (id, tenant_id, project_id, requested_by, status, export_format, retryable, attempt_count, created_at) "
+                "VALUES (:id, :tenant_id, :project_id, :user_id, 'queued', 'glb', false, 0, :created_at)"
+            ),
+            {
+                "id": compile_job_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "user_id": user_id,
+                "created_at": created_at,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO compile_job_assets "
+                "(id, compile_job_id, tenant_id, project_id, project_asset_id, logical_filename, sha256, byte_size, object_bucket, object_key, created_at) "
+                "VALUES (:id, :job_id, :tenant_id, :project_id, :asset_id, 'source.3mf', :sha256, 3, 'assets', 'sha256/source', :created_at)"
+            ),
+            {
+                "id": compile_asset_id,
+                "job_id": compile_job_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "asset_id": asset_id,
+                "sha256": "0" * 64,
+                "created_at": created_at,
+            },
+        )
+
+    with pytest.raises(DBAPIError, match="project_assets rows are immutable"):
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE project_assets SET content = :content WHERE id = :id"),
+                {"content": b"changed", "id": asset_id},
+            )
+    with pytest.raises(DBAPIError, match="compile_job_assets rows are immutable"):
+        with engine.begin() as connection:
+            connection.execute(
+                text("UPDATE compile_job_assets SET object_key = 'changed' WHERE id = :id"),
+                {"id": compile_asset_id},
+            )
+
     downgrade(config, "0010_llm_edit_progress")
 
-    engine = create_engine(postgres_url, pool_pre_ping=True)
     inspector = inspect(engine)
     assert "project_assets" not in inspector.get_table_names()
     assert "project_import_jobs" not in inspector.get_table_names()
     assert "compile_job_assets" not in inspector.get_table_names()
+    with engine.connect() as connection:
+        immutable_functions = connection.scalar(
+            text(
+                "SELECT count(*) FROM pg_proc WHERE proname IN "
+                "('tertius_reject_project_asset_update', 'tertius_reject_compile_job_asset_update')"
+            )
+        )
+    assert immutable_functions == 0
 
     upgrade(config, "head")
     inspector = inspect(engine)

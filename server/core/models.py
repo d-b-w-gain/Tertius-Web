@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -197,6 +198,11 @@ class ProjectImportJob(Base):
             ["projects.id", "projects.tenant_id"],
             name="fk_project_import_jobs_project_tenant",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "requested_by"],
+            ["tenant_memberships.tenant_id", "tenant_memberships.user_id"],
+            name="fk_project_import_jobs_requester_tenant_membership",
         ),
         ForeignKeyConstraint(
             ["source_asset_id", "project_id", "tenant_id"],
@@ -512,6 +518,20 @@ class CompileJobAsset(Base):
     object_bucket: Mapped[str] = mapped_column(String(255), nullable=False)
     object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class ImmutablePersistenceError(RuntimeError):
+    pass
+
+
+@event.listens_for(ProjectAsset, "before_update")
+def _reject_project_asset_update(*_args) -> None:
+    raise ImmutablePersistenceError("project_assets rows are immutable")
+
+
+@event.listens_for(CompileJobAsset, "before_update")
+def _reject_compile_job_asset_update(*_args) -> None:
+    raise ImmutablePersistenceError("compile_job_assets rows are immutable")
 
 
 class Artifact(Base):

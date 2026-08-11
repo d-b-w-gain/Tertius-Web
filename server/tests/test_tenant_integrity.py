@@ -1,4 +1,5 @@
 import pytest
+from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 
 from core.models import (
@@ -9,7 +10,9 @@ from core.models import (
     Project,
     ProjectAsset,
     ProjectFile,
+    ProjectImportJob,
     Tenant,
+    TenantMembership,
     UserWorkspaceState,
 )
 
@@ -190,6 +193,51 @@ def test_compile_job_asset_must_match_asset_tenant_and_project(db_session):
             byte_size=asset_b.byte_size,
             object_bucket="TERTIUS_ASSETS",
             object_key="sha256/brep",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_project_import_requested_by_must_be_member_of_job_tenant(db_session):
+    user_a = make_user("a@example.com")
+    user_b = make_user("b@example.com")
+    tenant_a = Tenant(name="Tenant A")
+    tenant_b = Tenant(name="Tenant B")
+    db_session.add_all([user_a, user_b, tenant_a, tenant_b])
+    db_session.flush()
+    db_session.add_all(
+        [
+            TenantMembership(tenant_id=tenant_a.id, user_id=user_a.id, role="owner"),
+            TenantMembership(tenant_id=tenant_b.id, user_id=user_b.id, role="owner"),
+        ]
+    )
+    project_a = Project(tenant_id=tenant_a.id, name="Project A", created_by=user_a.id)
+    db_session.add(project_a)
+    db_session.flush()
+    source = ProjectAsset(
+        tenant_id=tenant_a.id,
+        project_id=project_a.id,
+        logical_name="source.3mf",
+        display_name="source.3mf",
+        kind="source_3mf",
+        media_type="application/octet-stream",
+        content=b"3mf",
+        byte_size=3,
+        sha256="0" * 64,
+        revision=1,
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add(
+        ProjectImportJob(
+            tenant_id=tenant_a.id,
+            project_id=project_a.id,
+            requested_by=user_b.id,
+            source_asset_id=source.id,
+            execution_id=uuid4(),
+            status="queued",
         )
     )
 
