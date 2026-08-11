@@ -411,6 +411,7 @@ class SdkShapedObjectStore:
         self.subscription = SdkShapedSubscription(chunks)
         self._js = SdkShapedJetStream(self.subscription)
         self.content_size = content_size
+        self.nuid = "object-nuid"
         if metadata_content is None:
             metadata_content = b"".join(chunks)[:content_size]
         self.metadata_digest = nats_sha256_digest(metadata_content)
@@ -421,7 +422,7 @@ class SdkShapedObjectStore:
         return ObjectInfo(
             name=key,
             bucket=self._name,
-            nuid="object-nuid",
+            nuid=self.nuid,
             size=self.content_size,
             digest=self.metadata_digest,
             deleted=False,
@@ -446,6 +447,26 @@ async def test_sdk_shaped_fetch_unsubscribes_exactly_once_on_success():
         ("$O.TERTIUS_ASSETS.C.object-nuid", True)
     ]
     assert store.subscription.unsubscribe_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_nuid", [None, ""])
+async def test_sdk_shaped_empty_object_rejects_missing_nuid(invalid_nuid):
+    content = b""
+    digest = hashlib.sha256(content).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=0,
+    )
+    store = SdkShapedObjectStore(0, [content])
+    store.nuid = invalid_nuid
+
+    with pytest.raises(ObjectIntegrityError, match="metadata integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store._js.subscribe_calls == []
 
 
 @pytest.mark.asyncio
