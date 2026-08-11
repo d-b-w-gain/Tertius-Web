@@ -17,13 +17,20 @@ class FakeObjectStore:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
         self.put_calls: list[tuple[str, bytes]] = []
+        self.get_calls: list[tuple[str, object]] = []
 
-    async def get(self, key: str):
+    async def get(self, key: str, writeinto=None):
         from nats.js.errors import ObjectNotFoundError as NatsObjectNotFoundError
 
         if key not in self.objects:
             raise NatsObjectNotFoundError
-        return SimpleNamespace(data=self.objects[key])
+        self.get_calls.append((key, writeinto))
+        assert writeinto is not None
+        content = self.objects[key]
+        midpoint = max(1, len(content) // 2)
+        writeinto.write(content[:midpoint])
+        writeinto.write(content[midpoint:])
+        return SimpleNamespace(data=None)
 
     async def put(self, key: str, content: bytes):
         self.put_calls.append((key, content))
@@ -48,6 +55,7 @@ async def test_put_is_digest_addressed_and_idempotent():
     assert second == first
     assert store.put_calls == [(f"sha256/{digest}", b"abc")]
     assert await adapter.get(first) == b"abc"
+    assert all(writeinto is not None for _, writeinto in store.get_calls)
 
 
 @pytest.mark.asyncio
@@ -109,6 +117,105 @@ async def test_get_rejects_key_that_is_not_derived_from_reference_digest():
         await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
 
 
+@pytest.mark.asyncio
+async def test_get_rejects_same_length_content_with_wrong_digest():
+    store = FakeObjectStore()
+    expected = b"abc"
+    digest = hashlib.sha256(expected).hexdigest()
+    key = f"sha256/{digest}"
+    store.objects[key] = b"xyz"
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS", key=key, sha256=digest, byte_size=len(expected)
+    )
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_stream_that_exceeds_configured_maximum_while_writing():
+    store = FakeObjectStore()
+    content = b"abcd"
+    digest = hashlib.sha256(content).hexdigest()
+    key = f"sha256/{digest}"
+    store.objects[key] = content
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS", key=key, sha256=digest, byte_size=len(content)
+    )
+
+    with pytest.raises(ObjectIntegrityError, match="too large"):
+        await ProjectObjectStore(
+            store, "TERTIUS_ASSETS", max_object_bytes=3
+        ).get(ref)
+
+
+@pytest.mark.asyncio
+async def test_get_discards_bytes_beyond_declared_size_without_growing_spool():
+    store = FakeObjectStore()
+    expected = b"abc"
+    digest = hashlib.sha256(expected).hexdigest()
+    key = f"sha256/{digest}"
+    store.objects[key] = b"abcd"
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS", key=key, sha256=digest, byte_size=len(expected)
+    )
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    writer = store.get_calls[-1][1]
+    assert writer.byte_size == 4
+    assert writer.stored_byte_size == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_error", ["digest", "metadata"])
+async def test_get_maps_nats_integrity_errors_to_object_integrity(backend_error):
+    from nats.js.errors import BadObjectMetaError, DigestMismatchError
+
+    class BrokenStore(FakeObjectStore):
+        async def get(self, key: str, writeinto=None):
+            if backend_error == "digest":
+                raise DigestMismatchError
+            raise BadObjectMetaError
+
+    digest = hashlib.sha256(b"abc").hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(BrokenStore(), "TERTIUS_ASSETS").get(ref)
+
+
+@pytest.mark.asyncio
+async def test_get_closes_spooled_file_when_backend_fails_after_writing():
+    class BrokenStore(FakeObjectStore):
+        writer = None
+
+        async def get(self, key: str, writeinto=None):
+            self.writer = writeinto
+            writeinto.write(b"a")
+            raise RuntimeError("connection lost")
+
+    store = BrokenStore()
+    digest = hashlib.sha256(b"abc").hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+
+    with pytest.raises(ObjectStoreUnavailableError):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store.writer.closed is True
+
+
 def test_adapter_rejects_invalid_bucket_name():
     with pytest.raises(ValidationError):
         ProjectObjectStore(FakeObjectStore(), "bad.bucket")
@@ -117,7 +224,7 @@ def test_adapter_rejects_invalid_bucket_name():
 @pytest.mark.asyncio
 async def test_put_maps_backend_failure_without_exposing_digest():
     class BrokenStore(FakeObjectStore):
-        async def get(self, key: str):
+        async def get(self, key: str, writeinto=None):
             from nats.js.errors import ObjectNotFoundError as NatsObjectNotFoundError
 
             raise NatsObjectNotFoundError

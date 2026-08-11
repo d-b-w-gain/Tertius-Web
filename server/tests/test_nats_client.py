@@ -105,7 +105,8 @@ class FakeJetStream:
             raise BucketNotFoundError
         return self.object_stores[bucket]
 
-    async def create_object_store(self, *, config):
+    async def create_object_store(self, bucket, *, config):
+        assert bucket == config.bucket
         store = SimpleNamespace(bucket=config.bucket)
         self.object_stores[config.bucket] = store
         self.created_object_store_configs.append(config)
@@ -528,6 +529,24 @@ async def test_ensure_project_object_store_creates_bounded_bucket():
 
 
 @pytest.mark.asyncio
+async def test_ensure_project_object_store_refetches_after_create_race():
+    from nats.js.errors import BadRequestError
+
+    class RaceJetStream(FakeJetStream):
+        async def create_object_store(self, bucket, *, config):
+            await super().create_object_store(bucket, config=config)
+            raise BadRequestError(
+                code=400, err_code=10058, description="stream name already in use"
+            )
+
+    jetstream = RaceJetStream()
+
+    store = await ensure_project_object_store(FakeConnection(jetstream), Settings())
+
+    assert store is jetstream.object_stores["TERTIUS_ASSETS"]
+
+
+@pytest.mark.asyncio
 async def test_ensure_project_object_store_reconciles_existing_bucket_limits():
     jetstream = FakeJetStream()
     connection = FakeConnection(jetstream)
@@ -578,7 +597,7 @@ async def test_ensure_import_stream_creates_subjects_and_bounded_consumers():
 
 
 @pytest.mark.asyncio
-async def test_ensure_import_stream_reconciles_stream_and_immutable_consumers():
+async def test_ensure_import_stream_fails_without_deleting_immutable_consumer_state():
     jetstream = FakeJetStream()
     connection = FakeConnection(jetstream)
     settings = Settings()
@@ -589,7 +608,7 @@ async def test_ensure_import_stream_reconciles_stream_and_immutable_consumers():
             max_msg_size=-1,
         )
     )
-    jetstream.consumers[("TERTIUS_IMPORT_3MF", "import-3mf-workers")] = SimpleNamespace(
+    existing_consumer = SimpleNamespace(
         config=SimpleNamespace(
             durable_name="import-3mf-workers",
             filter_subject="old.subject",
@@ -597,17 +616,68 @@ async def test_ensure_import_stream_reconciles_stream_and_immutable_consumers():
             ack_policy=None,
             ack_wait=1,
             max_deliver=99,
-        )
+        ),
+        num_ack_pending=7,
+    )
+    jetstream.consumers[("TERTIUS_IMPORT_3MF", "import-3mf-workers")] = (
+        existing_consumer
     )
 
-    await ensure_import_stream(connection, settings)
+    with pytest.raises(nats_client.JetStreamConfigurationError, match="incompatible"):
+        await ensure_import_stream(connection, settings)
 
     stream = jetstream.streams["TERTIUS_IMPORT_3MF"]
     assert stream.subjects == [
         "tertius.import.3mf.request",
         "tertius.import.3mf.result",
     ]
-    assert jetstream.deleted_consumers == [("TERTIUS_IMPORT_3MF", "import-3mf-workers")]
+    assert jetstream.deleted_consumers == []
+    assert (
+        jetstream.consumers[("TERTIUS_IMPORT_3MF", "import-3mf-workers")]
+        is existing_consumer
+    )
+    assert existing_consumer.num_ack_pending == 7
+
+
+@pytest.mark.asyncio
+async def test_ensure_import_stream_refetches_after_stream_and_consumer_create_races():
+    from nats.js.errors import BadRequestError
+
+    class RaceJetStream(FakeJetStream):
+        def __init__(self):
+            super().__init__()
+            self.stream_raced = False
+            self.consumer_raced = False
+
+        async def add_stream(self, config):
+            await super().add_stream(config)
+            if not self.stream_raced:
+                self.stream_raced = True
+                raise BadRequestError(
+                    code=400,
+                    err_code=10058,
+                    description="stream name already in use",
+                )
+
+        async def add_consumer(self, stream_name, config):
+            await super().add_consumer(stream_name, config)
+            if not self.consumer_raced:
+                self.consumer_raced = True
+                raise BadRequestError(
+                    code=400,
+                    err_code=10013,
+                    description="consumer name already in use",
+                )
+
+    jetstream = RaceJetStream()
+
+    result = await ensure_import_stream(FakeConnection(jetstream), Settings())
+
+    assert result is jetstream
+    assert set(jetstream.consumers) == {
+        ("TERTIUS_IMPORT_3MF", "import-3mf-workers"),
+        ("TERTIUS_IMPORT_3MF", "import-3mf-result-api"),
+    }
 
 
 @pytest.mark.asyncio
@@ -643,6 +713,12 @@ async def test_import_pull_subscriptions_use_stable_durables():
         ("import_3mf_ack_wait_seconds", 0),
         ("import_3mf_max_deliver", 0),
         ("import_3mf_message_max_bytes", 0),
+        ("project_asset_object_bucket", "bad.bucket"),
+        ("import_3mf_stream_name", "bad.stream"),
+        ("import_3mf_worker_queue", "bad queue"),
+        ("import_3mf_result_consumer", "bad.consumer"),
+        ("import_3mf_request_subject", "tertius.import.*"),
+        ("import_3mf_result_subject", "tertius.import.>"),
     ],
 )
 def test_import_transport_settings_are_bounded(field, value):
@@ -650,3 +726,23 @@ def test_import_transport_settings_are_bounded(field, value):
 
     with pytest.raises(ValidationError):
         Settings(**{field: value})
+
+
+def test_import_request_and_result_subjects_must_be_distinct():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="must be distinct"):
+        Settings(
+            import_3mf_request_subject="tertius.import.3mf.same",
+            import_3mf_result_subject="tertius.import.3mf.same",
+        )
+
+
+def test_import_worker_and_result_durables_must_be_distinct():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="durable names must be distinct"):
+        Settings(
+            import_3mf_worker_queue="same-durable",
+            import_3mf_result_consumer="same-durable",
+        )
