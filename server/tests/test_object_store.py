@@ -1,3 +1,4 @@
+import base64
 import hashlib
 from types import SimpleNamespace
 
@@ -11,6 +12,11 @@ from core.object_store import (
     ObjectStoreUnavailableError,
     ProjectObjectStore,
 )
+
+
+def nats_sha256_digest(content: bytes) -> str:
+    digest = hashlib.sha256(content).digest()
+    return f"SHA-256={base64.urlsafe_b64encode(digest).decode('ascii')}"
 
 
 class FakeObjectStore:
@@ -30,6 +36,7 @@ class FakeObjectStore:
             name=key,
             bucket="TERTIUS_ASSETS",
             size=len(self.objects[key]),
+            digest=nats_sha256_digest(self.objects[key]),
             deleted=False,
             is_link=lambda: False,
         )
@@ -204,6 +211,7 @@ async def test_get_aborts_immediately_when_stream_exceeds_preflight_size():
         async def get_info(self, key: str):
             info = await super().get_info(key)
             info.size = 3
+            info.digest = nats_sha256_digest(b"abc")
             return info
 
         async def get(self, key: str, writeinto=None):
@@ -362,15 +370,22 @@ class SdkShapedSubscription:
     def __init__(self, chunks):
         self.chunks = chunks
         self.error = None
+        self.pending_override = None
         self.unsubscribe_calls = 0
         self.attempted_chunks = 0
 
     @property
     def messages(self):
         async def iterate():
-            for chunk in self.chunks:
+            for index, chunk in enumerate(self.chunks):
                 self.attempted_chunks += 1
-                yield SimpleNamespace(data=chunk)
+                num_pending = len(self.chunks) - index - 1
+                if self.pending_override is not None:
+                    num_pending = self.pending_override[index]
+                yield SimpleNamespace(
+                    data=chunk,
+                    metadata=SimpleNamespace(num_pending=num_pending),
+                )
             if self.error is not None:
                 raise self.error
 
@@ -391,20 +406,25 @@ class SdkShapedJetStream:
 
 
 class SdkShapedObjectStore:
-    def __init__(self, content_size, chunks):
+    def __init__(self, content_size, chunks, *, metadata_content=None):
         self._name = "TERTIUS_ASSETS"
         self.subscription = SdkShapedSubscription(chunks)
         self._js = SdkShapedJetStream(self.subscription)
         self.content_size = content_size
+        if metadata_content is None:
+            metadata_content = b"".join(chunks)[:content_size]
+        self.metadata_digest = nats_sha256_digest(metadata_content)
 
     async def get_info(self, key):
-        return SimpleNamespace(
+        from nats.js.api import ObjectInfo
+
+        return ObjectInfo(
             name=key,
             bucket=self._name,
             nuid="object-nuid",
             size=self.content_size,
+            digest=self.metadata_digest,
             deleted=False,
-            is_link=lambda: False,
         )
 
 
@@ -457,10 +477,63 @@ async def test_sdk_shaped_fetch_unsubscribes_once_on_subscription_error():
         sha256=digest,
         byte_size=len(expected),
     )
-    store = SdkShapedObjectStore(len(expected), [b"a"])
+    store = SdkShapedObjectStore(
+        len(expected), [b"a"], metadata_content=expected
+    )
     store.subscription.error = RuntimeError("subscription failed")
+    store.subscription.pending_override = [1]
 
     with pytest.raises(ObjectStoreUnavailableError, match="operation failed"):
         await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
 
     assert store.subscription.unsubscribe_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sdk_shaped_fetch_rejects_exact_prefix_when_chunks_remain():
+    expected = b"abc"
+    digest = hashlib.sha256(expected).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(expected),
+    )
+    store = SdkShapedObjectStore(len(expected), [b"abc", b"evil"])
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store.subscription.attempted_chunks == 1
+    assert store.subscription.unsubscribe_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata_digest",
+    [
+        nats_sha256_digest(b"different"),
+        "sha-256=not-strict",
+        "SHA-512=abcd",
+        "SHA-256=not-base64!",
+        "SHA-256=YWJj",
+    ],
+)
+async def test_get_rejects_mismatched_or_malformed_nats_metadata_digest(
+    metadata_digest,
+):
+    content = b"abc"
+    digest = hashlib.sha256(content).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(content),
+    )
+    store = SdkShapedObjectStore(len(content), [content])
+    store.metadata_digest = metadata_digest
+
+    with pytest.raises(ObjectIntegrityError, match="metadata integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store._js.subscribe_calls == []
