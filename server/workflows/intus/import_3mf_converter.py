@@ -297,7 +297,7 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
     source_unit: Import3mfUnit | None = None
     factor: float | None = None
     current_object: _ObjectCounts | None = None
-    resource_object_count = 0
+    mesh_object_count = 0
     component_elements = False
     build_item_count = 0
     build_ids: set[str | None] = set()
@@ -311,8 +311,6 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
                 raise _invalid_archive()
             factor = UNIT_TO_MM[getattr(bd.Unit, source_unit)]
         elif event == "start" and tag == "object":
-            resource_object_count += 1
-            limits.enforce("objects", resource_object_count)
             source_name = element.attrib.get("name", "")
             if len(source_name) > MAX_3MF_SOURCE_NAME_CHARS:
                 raise Import3mfError(
@@ -354,7 +352,6 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
             component_elements = True
         elif event == "start" and tag == "item":
             build_item_count += 1
-            limits.enforce("objects", build_item_count)
             object_id = element.attrib.get("objectid")
             duplicate_build_id = duplicate_build_id or object_id in build_ids
             build_ids.add(object_id)
@@ -363,6 +360,8 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
             )
         elif event == "end" and tag == "object" and current_object is not None:
             if current_object.has_mesh:
+                mesh_object_count += 1
+                limits.enforce("objects", mesh_object_count)
                 names.append(current_object.source_name)
                 vertex_counts.append(current_object.vertices)
                 triangle_counts.append(current_object.triangles)
@@ -416,13 +415,27 @@ def _with_bounded_xml(archive, info, max_bytes, parser):
 
 
 def _secure_iterparse(stream, events=("end",)):
-    return DefusedElementTree.iterparse(
+    requested_events = frozenset(events)
+    ancestors = []
+    for event, element in DefusedElementTree.iterparse(
         stream,
-        events=events,
+        events=("start", "end"),
         forbid_dtd=True,
         forbid_entities=True,
         forbid_external=True,
-    )
+    ):
+        if event == "start":
+            ancestors.append(element)
+            if event in requested_events:
+                yield event, element
+            continue
+
+        if event in requested_events:
+            yield event, element
+        ancestors.pop()
+        if ancestors:
+            ancestors[-1].remove(element)
+        element.clear()
 
 
 def _validate_xml_document(stream: BinaryIO) -> None:

@@ -103,6 +103,50 @@ def test_command_bounds_trace_state():
 
 
 @pytest.mark.parametrize(
+    "tracestate",
+    [
+        "vendor=value, second=other",
+        "vendor=value ,\tsecond=other\t",
+        "a= leading space",
+        f"{'a' * 256}=value",
+        f"{'1' + 'a' * 240}@{'s' + 'b' * 13}=value",
+        f"a={'v' * 256}",
+        ",".join(f"a{index}=v" for index in range(32)),
+    ],
+)
+def test_command_accepts_w3c_tracestate_keys_and_ows(tracestate):
+    assert (
+        Import3mfCommand.model_validate(
+            {**command_payload(), "tracestate": tracestate}
+        ).tracestate
+        == tracestate
+    )
+
+
+@pytest.mark.parametrize(
+    "tracestate",
+    [
+        "1vendor=value",
+        "vendor.name=value",
+        "Vendor=value",
+        "@system=value",
+        "tenant@=value",
+        "tenant@1system=value",
+        f"{'1' + 'a' * 241}@system=value",
+        f"tenant@{'s' + 'b' * 14}=value",
+        f"a={'v' * 257}",
+        ",".join(f"a{index}=v" for index in range(33)),
+        "vendor=value\x0b,second=other",
+        "vendor=value,\rsecond=other",
+        "vendor=value, vendor=other",
+    ],
+)
+def test_command_rejects_invalid_w3c_tracestate_members(tracestate):
+    with pytest.raises(ValidationError):
+        Import3mfCommand.model_validate({**command_payload(), "tracestate": tracestate})
+
+
+@pytest.mark.parametrize(
     "message_type", [Import3mfCommand, Import3mfProgress, Import3mfResult]
 )
 def test_schema_version_rejects_bool(message_type, manifest_summary):
@@ -297,6 +341,8 @@ def test_result_reference_limits_and_provenance_mismatch_are_rejected(manifest_s
 def test_messages_round_trip_through_json_ipc(manifest_summary):
     command = Import3mfCommand.model_validate(command_payload())
     assert Import3mfCommand.model_validate_json(command.model_dump_json()) == command
+    progress = Import3mfProgress.for_command(command, stage="converting", percent=50)
+    assert Import3mfProgress.model_validate_json(progress.model_dump_json()) == progress
     result = Import3mfResult.success_for(
         command,
         brep=object_ref(),

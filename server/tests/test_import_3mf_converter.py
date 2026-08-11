@@ -395,6 +395,82 @@ def test_streaming_parser_accepts_chunks_and_fails_early_on_vertex_limit():
         _parse_model_metadata(Chunked(document), ArchiveLimits(vertices=1_999))
 
 
+def test_streaming_parser_detaches_completed_wide_siblings(monkeypatch):
+    child_count = 1_000_000
+    document = b"<root>" + b"<child/>" * child_count + b"</root>"
+    original_iterparse = converter_module.DefusedElementTree.iterparse
+    maximum_root_children = 0
+
+    def tracking_iterparse(*args, **kwargs):
+        nonlocal maximum_root_children
+        requested_events = kwargs.pop("events", ("end",))
+        root = None
+        for event, element in original_iterparse(
+            *args, events=("start", "end"), **kwargs
+        ):
+            if event == "start" and root is None:
+                root = element
+            if event in requested_events:
+                yield event, element
+            if root is not None:
+                maximum_root_children = max(maximum_root_children, len(root))
+
+    monkeypatch.setattr(
+        converter_module.DefusedElementTree, "iterparse", tracking_iterparse
+    )
+    converter_module._validate_xml_document(io.BytesIO(document))
+
+    assert maximum_root_children < child_count // 20
+
+
+def test_component_only_objects_do_not_consume_mesh_object_limit():
+    vertices, triangles = box_mesh()
+
+    def model_document(component_count: int, mesh_count: int) -> bytes:
+        components = "".join(
+            f'<object id="{index}" type="model"><components>'
+            f'<component objectid="{component_count + 1}"/>'
+            "</components></object>"
+            for index in range(1, component_count + 1)
+        )
+        meshes = []
+        build = []
+        for mesh_index in range(mesh_count):
+            object_id = component_count + mesh_index + 1
+            vertex_xml = "".join(
+                f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in vertices
+            )
+            triangle_xml = "".join(
+                f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in triangles
+            )
+            meshes.append(
+                f'<object id="{object_id}" type="model" name="Mesh {mesh_index}">'
+                f"<mesh><vertices>{vertex_xml}</vertices>"
+                f"<triangles>{triangle_xml}</triangles></mesh></object>"
+            )
+            build.append(f'<item objectid="{object_id}"/>')
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<model unit="millimeter" '
+            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            f"<resources>{components}{''.join(meshes)}</resources>"
+            f"<build>{''.join(build)}</build></model>"
+        ).encode()
+
+    exact = validate_3mf_archive(
+        make_3mf(objects=[], model_document=model_document(100, 1)),
+        limits=ArchiveLimits(objects=1),
+    )
+    assert exact.source_names == ("Mesh 0",)
+    assert exact.has_unpreserved_components
+
+    with pytest.raises(Import3mfError, match="3mf_resource_limit"):
+        validate_3mf_archive(
+            make_3mf(objects=[], model_document=model_document(100, 2)),
+            limits=ArchiveLimits(objects=1),
+        )
+
+
 def test_subprocess_kills_process_tree_on_timeout(tmp_path):
     marker = tmp_path / "child"
     script = tmp_path / "hang.py"
