@@ -106,11 +106,15 @@ class Settings(BaseSettings):
     import_3mf_message_max_bytes: int = Field(
         default=1024 * 1024, gt=0, le=8 * 1024 * 1024
     )
+    import_3mf_timeout_seconds: int = Field(default=300, gt=0, le=300)
+    import_3mf_running_lease_seconds: int = Field(default=360, gt=0, le=3600)
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)
     pi_agent_models_json: str = Field(default=DEFAULT_PI_AGENT_MODELS_JSON)
-    pi_agent_thinking: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] = Field(default="medium")
+    pi_agent_thinking: Literal[
+        "off", "minimal", "low", "medium", "high", "xhigh", "max"
+    ] = Field(default="medium")
     pi_agent_timeout_seconds: int = Field(default=480, gt=0)
     pi_agent_max_turns: int = Field(default=24, gt=0)
     pi_agent_max_tool_calls: int = Field(default=96, gt=0)
@@ -161,20 +165,31 @@ class Settings(BaseSettings):
             raise ValueError("import request and result subjects must be distinct")
         if self.import_3mf_worker_queue == self.import_3mf_result_consumer:
             raise ValueError("import durable names must be distinct")
+        if self.import_3mf_running_lease_seconds <= self.import_3mf_timeout_seconds:
+            raise ValueError("import running lease must exceed the conversion timeout")
         return self
 
     @model_validator(mode="after")
     def populate_database_url(self):
         if self.database_url:
             return self
-        if self.app_db_host and self.app_db_name and self.app_db_owner and self.app_db_password:
+        if (
+            self.app_db_host
+            and self.app_db_name
+            and self.app_db_owner
+            and self.app_db_password
+        ):
             username = quote_plus(self.app_db_owner)
             password = quote_plus(self.app_db_password)
             host = self.app_db_host
             database = quote_plus(self.app_db_name)
-            self.database_url = f"postgresql+psycopg://{username}:{password}@{host}:5432/{database}"
+            self.database_url = (
+                f"postgresql+psycopg://{username}:{password}@{host}:5432/{database}"
+            )
         else:
-            self.database_url = "postgresql+psycopg://tertius:tertius@localhost:5432/tertius"
+            self.database_url = (
+                "postgresql+psycopg://tertius:tertius@localhost:5432/tertius"
+            )
         return self
 
     @property
@@ -185,16 +200,24 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+        return [
+            origin.strip()
+            for origin in self.allowed_origins.split(",")
+            if origin.strip()
+        ]
 
     @property
     def pi_agent_models(self) -> tuple[PiAgentModelOption, ...]:
-        return validate_default_pi_agent_model(self.pi_agent_models_json, self.pi_agent_model)
+        return validate_default_pi_agent_model(
+            self.pi_agent_models_json, self.pi_agent_model
+        )
 
     @property
     def pi_agent_model_label(self) -> str:
         return next(
-            model.label for model in self.pi_agent_models if model.id == self.pi_agent_model
+            model.label
+            for model in self.pi_agent_models
+            if model.id == self.pi_agent_model
         )
 
 
