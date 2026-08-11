@@ -304,16 +304,21 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
     return await _apply_success_threaded(result, brep_content, manifest_content)
 
 
-async def _result_heartbeat(
-    msg,
-    ack_wait_seconds: float,
+async def _result_heartbeat(msg, ack_wait_seconds: float) -> None:
+    interval = max(0.1, min(30.0, ack_wait_seconds / 3))
+    while True:
+        await asyncio.sleep(interval)
+        await msg.in_progress()
+
+
+async def _result_lease_heartbeat(
     envelope: Import3mfProgress | Import3mfResult,
+    ack_wait_seconds: float,
 ) -> None:
     interval = max(0.1, min(30.0, ack_wait_seconds / 3))
     while True:
         await asyncio.sleep(interval)
         await _touch_import_lease_threaded(envelope)
-        await msg.in_progress()
 
 
 async def handle_import_result_message(msg, db, object_store, settings) -> None:
@@ -334,9 +339,21 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
         kind=SpanKind.CONSUMER,
         attributes=_attributes(envelope=envelope_type, status="processing"),
     ):
-        heartbeat = asyncio.create_task(
-            _result_heartbeat(msg, settings.import_3mf_ack_wait_seconds, envelope)
+        ack_heartbeat = asyncio.create_task(
+            _result_heartbeat(msg, settings.import_3mf_ack_wait_seconds)
         )
+        lease_heartbeat = asyncio.create_task(
+            _result_lease_heartbeat(
+                envelope,
+                settings.import_3mf_ack_wait_seconds,
+            )
+        )
+        monitors = {ack_heartbeat, lease_heartbeat}
+
+        async def stop_monitors() -> None:
+            for monitor in monitors:
+                monitor.cancel()
+            await asyncio.gather(*monitors, return_exceptions=True)
 
         async def apply() -> str:
             if isinstance(envelope, Import3mfProgress):
@@ -346,10 +363,11 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
         operation = asyncio.create_task(apply())
         try:
             done, _ = await asyncio.wait(
-                {operation, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+                {operation, *monitors}, return_when=asyncio.FIRST_COMPLETED
             )
-            if heartbeat in done:
-                await heartbeat
+            finished_monitors = monitors.intersection(done)
+            if finished_monitors:
+                await asyncio.gather(*finished_monitors)
                 raise RuntimeError("result heartbeat ended unexpectedly")
             outcome = await operation
         except ObjectNotFoundError, ObjectStoreUnavailableError:
@@ -359,12 +377,14 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
             logger.warning(
                 "3MF import result object transport is temporarily unavailable"
             )
+            await stop_monitors()
             await msg.nak()
             return
         except asyncio.CancelledError:
             operation.cancel()
             await asyncio.gather(operation, return_exceptions=True)
             db.rollback()
+            await stop_monitors()
             await msg.nak()
             raise
         except Exception:
@@ -372,11 +392,11 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
             await asyncio.gather(operation, return_exceptions=True)
             db.rollback()
             logger.warning("3MF import result could not be applied")
+            await stop_monitors()
             await msg.nak()
             return
         finally:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
+            await stop_monitors()
 
         await msg.ack()
         labels = _attributes(envelope=envelope_type, status=outcome)

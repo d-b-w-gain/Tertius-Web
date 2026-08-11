@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
 
 from core.import_3mf_messages import (
     Import3mfCommand,
     Import3mfProgress,
     Import3mfResult,
 )
+from core.models import ProjectAsset, ProjectImportJob
 from core.object_store import (
     ObjectIntegrityError,
     ObjectRef,
     ObjectStoreUnavailableError,
 )
-from core.project_assets import IMPORT_3MF_CONVERSION_VERSION, public_manifest_summary
+from core.project_assets import (
+    IMPORT_3MF_CONVERSION_VERSION,
+    THREE_MF_MEDIA_TYPE,
+    public_manifest_summary,
+)
+from core.repositories import ProjectImportRepository
+from workflows.intus import import_3mf_result_consumer as result_consumer
 from workflows.intus.import_3mf_result_consumer import (
     handle_import_result_message,
     reconcile_stale_import_jobs,
@@ -597,6 +607,113 @@ async def test_ack_waits_for_inflight_database_lease_touch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_nats_heartbeat_continues_while_postgres_lease_touch_waits_for_apply_lock(
+    monkeypatch,
+    postgres_url,
+    db_session,
+    seeded_tenant,
+):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    project, source, job = repo.create_import(
+        project_name="locked-import",
+        requested_by=seeded_tenant.user_id,
+        display_name="locked.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=SOURCE,
+    )
+    repo.mark_running(job.id, job.execution_id)
+    db_session.commit()
+    cmd = Import3mfCommand(
+        schema_version=1,
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=project.id,
+        user_id=seeded_tenant.user_id,
+        attempt=job.attempt,
+        execution_id=job.execution_id,
+        source=ref(SOURCE),
+        conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+    )
+    result, values = success_result(cmd)
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.SessionLocal", SessionFactory
+    )
+    original_apply = ProjectImportRepository.apply_success
+    original_touch = result_consumer._touch_import_lease
+    lock_acquired = threading.Event()
+    touch_started = threading.Event()
+    touch_finished = threading.Event()
+    touch_results: list[bool] = []
+    apply_count = 0
+
+    def locked_apply(self, **kwargs):
+        nonlocal apply_count
+        apply_count += 1
+        self._lock_job(kwargs["job_id"])
+        lock_acquired.set()
+        time.sleep(0.5)
+        return original_apply(self, **kwargs)
+
+    def tracked_touch(envelope):
+        touch_started.set()
+        touched = original_touch(envelope)
+        touch_results.append(touched)
+        touch_finished.set()
+        return touched
+
+    monkeypatch.setattr(ProjectImportRepository, "apply_success", locked_apply)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._touch_import_lease",
+        tracked_touch,
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    blocked_heartbeats = 0
+
+    class ContentionMessage(Message):
+        async def in_progress(self):
+            nonlocal blocked_heartbeats
+            if touch_started.is_set() and not touch_finished.is_set():
+                blocked_heartbeats += 1
+            await super().in_progress()
+
+    msg = ContentionMessage(result.model_dump_json().encode())
+    baseline_tasks = set(asyncio.all_tasks())
+
+    await handle_import_result_message(msg, db_session, Store(values), runtime)
+    await asyncio.sleep(0)
+
+    assert lock_acquired.is_set()
+    assert touch_started.is_set() and touch_finished.is_set()
+    assert blocked_heartbeats >= 3
+    assert touch_results == [False]
+    assert msg.events[-1] == "ack"
+    assert msg.events.count("ack") == 1
+    assert apply_count == 1
+    with SessionFactory() as verification:
+        persisted = verification.get(ProjectImportJob, job.id)
+        assert persisted is not None and persisted.status == "succeeded"
+        assert (
+            verification.scalar(
+                select(func.count())
+                .select_from(ProjectAsset)
+                .where(ProjectAsset.project_id == project.id)
+            )
+            == 3
+        )
+    leaked_tasks = {
+        task
+        for task in asyncio.all_tasks()
+        if task not in baseline_tasks and task is not asyncio.current_task()
+    }
+    assert not leaked_tasks
+    engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_database_lease_heartbeat_failure_naks_without_terminal_race(
     monkeypatch,
 ):
@@ -636,7 +753,9 @@ async def test_database_lease_heartbeat_failure_naks_without_terminal_race(
     msg = Message(result.model_dump_json().encode())
     await handle_import_result_message(msg, DB(), SlowStore(values), runtime)
 
-    assert msg.events == ["nak"]
+    assert "heartbeat" in msg.events
+    assert msg.events[-1] == "nak"
+    assert "ack" not in msg.events
     assert apply_count == 0
 
 
