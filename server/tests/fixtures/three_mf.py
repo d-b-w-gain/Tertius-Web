@@ -26,6 +26,8 @@ def make_3mf(
     relationship_target: str = "/3D/3dmodel.model",
     include_relationship: bool = True,
     build_transform: str | None = None,
+    model_document: bytes | None = None,
+    relationships_document: bytes | None = None,
 ) -> bytes:
     object_xml: list[str] = []
     build_xml: list[str] = []
@@ -47,12 +49,15 @@ def make_3mf(
         transform = f' transform="{build_transform}"' if build_transform else ""
         build_xml.append(f'<item objectid="{object_id}"{transform}/>')
     model = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        f'<model unit="{_UNIT_NAMES[unit]}" xml:lang="en-US" '
-        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-        f"<resources>{''.join(object_xml)}</resources>"
-        f"<build>{''.join(build_xml)}</build></model>"
-    ).encode()
+        model_document
+        or (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<model unit="{_UNIT_NAMES[unit]}" xml:lang="en-US" '
+            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            f"<resources>{''.join(object_xml)}</resources>"
+            f"<build>{''.join(build_xml)}</build></model>"
+        ).encode()
+    )
     content_types = (
         b'<?xml version="1.0" encoding="UTF-8"?>'
         b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -61,12 +66,15 @@ def make_3mf(
         b"</Types>"
     )
     relationships = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        f'<Relationship Target="{relationship_target}" Id="rel0" '
-        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
-        "</Relationships>"
-    ).encode()
+        relationships_document
+        or (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Target="{relationship_target}" Id="rel0" '
+            'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+            "</Relationships>"
+        ).encode()
+    )
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=compression) as archive:
         archive.writestr("[Content_Types].xml", content_types)
@@ -113,3 +121,18 @@ def make_box_3mf(*, unit: str = "MM", size: float = 1.0, name: str = "Box") -> b
 
 def make_open_shell_3mf(*, name: str = "Panel") -> bytes:
     return make_3mf(objects=[(name, [(0, 0, 0), (10, 0, 0), (0, 10, 0)], [(0, 1, 2)])])
+
+
+def make_invalid_multishell_solid_3mf(*, name: str = "Disconnected") -> bytes:
+    first_vertices, first_triangles = box_mesh()
+    second_vertices = [(x + 2, y, z) for x, y, z in first_vertices]
+    return make_3mf(
+        objects=[
+            (
+                name,
+                first_vertices + second_vertices,
+                first_triangles
+                + [(a + 8, b + 8, c + 8) for a, b, c in first_triangles],
+            )
+        ]
+    )

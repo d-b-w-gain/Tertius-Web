@@ -3,7 +3,14 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Annotated, Self
 
 from core.object_store import ObjectRef
@@ -15,7 +22,14 @@ from core.project_assets import (
 )
 
 
-TraceValue = Annotated[str, StringConstraints(max_length=512)]
+TraceParent = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"),
+]
+TraceState = Annotated[
+    str,
+    StringConstraints(min_length=3, max_length=512, pattern=r"^[\x20-\x7e]+$"),
+]
 ErrorCode = Annotated[
     str,
     StringConstraints(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
@@ -32,6 +46,37 @@ Import3mfProgressStage = Literal["validating", "converting", "persisting"]
 class StrictImportMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    @field_validator("schema_version", mode="before", check_fields=False)
+    @classmethod
+    def schema_version_is_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("schema_version must be an integer")
+        return value
+
+    @field_validator("traceparent", check_fields=False)
+    @classmethod
+    def valid_traceparent(cls, value: str | None) -> str | None:
+        if value is not None:
+            version, trace_id, parent_id, _ = value.split("-")
+            if version == "ff" or trace_id == "0" * 32 or parent_id == "0" * 16:
+                raise ValueError("traceparent identifiers must be non-zero")
+        return value
+
+    @field_validator("tracestate", check_fields=False)
+    @classmethod
+    def valid_tracestate(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        members = value.split(",")
+        keys = [member.split("=", 1)[0] for member in members if "=" in member]
+        if (
+            len(members) > 32
+            or len(keys) != len(set(keys))
+            or any(_invalid_tracestate_member(member) for member in members)
+        ):
+            raise ValueError("tracestate must contain valid W3C list members")
+        return value
+
 
 class Import3mfCommand(StrictImportMessage):
     schema_version: Literal[1]
@@ -43,12 +88,12 @@ class Import3mfCommand(StrictImportMessage):
     execution_id: UUID
     source: ObjectRef
     conversion_version: Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
-    traceparent: TraceValue | None = None
-    tracestate: TraceValue | None = None
+    traceparent: TraceParent | None = None
+    tracestate: TraceState | None = None
 
     @model_validator(mode="after")
     def validate_source_size(self) -> Self:
-        if self.source.byte_size > MAX_3MF_UPLOAD_BYTES:
+        if not 0 < self.source.byte_size <= MAX_3MF_UPLOAD_BYTES:
             raise ValueError("source reference exceeds the 3MF upload limit")
         return self
 
@@ -97,8 +142,8 @@ class Import3mfResult(StrictImportMessage):
     execution_id: UUID
     source: ObjectRef
     conversion_version: Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
-    traceparent: TraceValue | None = None
-    tracestate: TraceValue | None = None
+    traceparent: TraceParent | None = None
+    tracestate: TraceState | None = None
     status: Literal["succeeded", "failed"]
     brep: ObjectRef | None = None
     manifest: ObjectRef | None = None
@@ -111,7 +156,7 @@ class Import3mfResult(StrictImportMessage):
     def validate_outcome(self) -> Self:
         outputs = (self.brep, self.manifest, self.summary)
         errors = (self.error_code, self.user_message)
-        if self.source.byte_size > MAX_3MF_UPLOAD_BYTES:
+        if not 0 < self.source.byte_size <= MAX_3MF_UPLOAD_BYTES:
             raise ValueError("source reference exceeds the 3MF upload limit")
         if self.status == "succeeded":
             if any(value is None for value in outputs) or any(
@@ -121,10 +166,12 @@ class Import3mfResult(StrictImportMessage):
                     "successful results require only BREP, manifest, and summary"
                 )
             assert self.brep is not None and self.manifest is not None
-            if self.brep.byte_size > MAX_3MF_DERIVED_BREP_BYTES:
+            if not 0 < self.brep.byte_size <= MAX_3MF_DERIVED_BREP_BYTES:
                 raise ValueError("BREP reference exceeds the derived asset limit")
-            if self.manifest.byte_size > MAX_3MF_MANIFEST_BYTES:
+            if not 0 < self.manifest.byte_size <= MAX_3MF_MANIFEST_BYTES:
                 raise ValueError("manifest reference exceeds the manifest limit")
+            if not (self.source.bucket == self.brep.bucket == self.manifest.bucket):
+                raise ValueError("asset references must use the same configured bucket")
         elif any(value is not None for value in outputs) or any(
             value is None for value in errors
         ):
@@ -203,3 +250,15 @@ class Import3mfResult(StrictImportMessage):
             user_message=user_message,
             duration_ms=duration_ms,
         )
+
+
+def _invalid_tracestate_member(member: str) -> bool:
+    if member != member.strip() or member.count("=") != 1:
+        return True
+    key, value = member.split("=", 1)
+    if not key or not value or len(key) > 256 or len(value) > 256:
+        return True
+    allowed_key = set("abcdefghijklmnopqrstuvwxyz0123456789_-*/@.")
+    return any(character not in allowed_key for character in key) or any(
+        character in ",=" or not " " <= character <= "~" for character in value
+    )
