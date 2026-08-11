@@ -85,13 +85,18 @@ def conversion_output() -> ConversionOutput:
 
 
 class Store:
-    def __init__(self, *, fail_get: bool = False):
+    def __init__(self, *, fail_get: bool = False, integrity_get: bool = False):
         self.fail_get = fail_get
+        self.integrity_get = integrity_get
         self.puts: list[bytes] = []
 
     async def get(self, _ref):
         if self.fail_get:
             raise ObjectStoreUnavailableError("transient")
+        if self.integrity_get:
+            from core.object_store import ObjectIntegrityError
+
+            raise ObjectIntegrityError("digest mismatch")
         return SOURCE
 
     async def put(self, value: bytes):
@@ -103,6 +108,7 @@ class Publisher:
     def __init__(self, failures: int = 0, events: list[str] | None = None):
         self.failures = failures
         self.messages = []
+        self.calls = []
         self.events = events if events is not None else []
 
     async def publish_json(self, _subject, message, **_kwargs):
@@ -111,6 +117,7 @@ class Publisher:
             self.failures -= 1
             raise RuntimeError("nats unavailable")
         self.messages.append(message)
+        self.calls.append((_subject, message, _kwargs))
 
 
 class Message:
@@ -203,6 +210,51 @@ async def test_transient_object_failure_naks_without_publishing():
         message.__class__.__name__ == "Import3mfProgress"
         for message in publisher.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_source_integrity_error_publishes_terminal_result_before_ack():
+    events: list[str] = []
+    publisher = Publisher(events=events)
+    msg = Message(command().model_dump_json().encode(), events)
+    await handle_import_request_message(
+        msg, Store(integrity_get=True), publisher, settings()
+    )
+    assert events[-2:] == ["publish", "ack"]
+    result = publisher.messages[-1]
+    assert result.status == "failed"
+    assert result.error_code == "asset_integrity_error"
+    assert "nak" not in events
+
+
+@pytest.mark.asyncio
+async def test_handler_propagates_linked_trace_headers_to_progress_and_result(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess",
+        lambda *_args: conversion_output(),
+    )
+    cmd = command()
+    publisher = Publisher()
+    msg = Message(cmd.model_dump_json().encode())
+    await handle_import_request_message(msg, Store(), publisher, settings())
+
+    assert publisher.calls
+    for _subject, _message, kwargs in publisher.calls:
+        assert (
+            kwargs["headers"]["traceparent"].split("-")[1]
+            == cmd.traceparent.split("-")[1]
+        )
+        assert kwargs["headers"]["tracestate"] == cmd.tracestate
+
+    fallback_publisher = Publisher()
+    malformed = Message(cmd.model_dump_json().encode())
+    malformed.headers = {"traceparent": "malformed"}
+    await handle_import_request_message(
+        malformed, Store(), fallback_publisher, settings()
+    )
+    assert fallback_publisher.calls[-1][2]["headers"]["traceparent"] == cmd.traceparent
 
 
 @pytest.mark.asyncio
