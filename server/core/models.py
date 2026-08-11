@@ -6,6 +6,7 @@ from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -101,7 +103,11 @@ class ProjectFile(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "filename", name="uq_project_file_name"),
         UniqueConstraint("id", "tenant_id", name="uq_project_files_id_tenant"),
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -113,10 +119,161 @@ class ProjectFile(Base):
     project: Mapped[Project] = relationship(back_populates="files")
 
 
+class ProjectAsset(Base):
+    __tablename__ = "project_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "tenant_id",
+            name="uq_project_assets_id_project_tenant",
+        ),
+        UniqueConstraint(
+            "project_id",
+            "kind",
+            "revision",
+            name="uq_project_assets_project_kind_revision",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            name="fk_project_assets_project_tenant",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "kind IN ('source_3mf', 'derived_brep', 'import_manifest')",
+            name="ck_project_assets_kind",
+        ),
+        CheckConstraint(
+            "byte_size >= 0",
+            name="ck_project_assets_byte_size_nonnegative",
+        ),
+        CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_assets_sha256",
+        ),
+        CheckConstraint(
+            "revision > 0",
+            name="ck_project_assets_revision_positive",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    logical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[bytes] = mapped_column(
+        LargeBinary,
+        nullable=False,
+        deferred=True,
+        deferred_raiseload=True,
+    )
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    conversion_version: Mapped[Optional[str]] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class ProjectImportJob(Base):
+    __tablename__ = "project_import_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "tenant_id",
+            name="uq_project_import_jobs_id_project_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            name="fk_project_import_jobs_project_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["source_asset_id", "project_id", "tenant_id"],
+            [
+                "project_assets.id",
+                "project_assets.project_id",
+                "project_assets.tenant_id",
+            ],
+            name="fk_project_import_jobs_source_asset_scope",
+        ),
+        ForeignKeyConstraint(
+            ["brep_asset_id", "project_id", "tenant_id"],
+            [
+                "project_assets.id",
+                "project_assets.project_id",
+                "project_assets.tenant_id",
+            ],
+            name="fk_project_import_jobs_brep_asset_scope",
+        ),
+        ForeignKeyConstraint(
+            ["manifest_asset_id", "project_id", "tenant_id"],
+            [
+                "project_assets.id",
+                "project_assets.project_id",
+                "project_assets.tenant_id",
+            ],
+            name="fk_project_import_jobs_manifest_asset_scope",
+        ),
+        CheckConstraint(
+            "attempt > 0",
+            name="ck_project_import_jobs_attempt_positive",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_project_import_jobs_status",
+        ),
+        Index(
+            "uq_project_import_jobs_active_project",
+            "project_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_users.id"), nullable=False)
+    source_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    brep_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    manifest_asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, default=uuid.uuid4, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    user_message: Mapped[Optional[str]] = mapped_column(Text)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    progress_payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
 class SourceSnapshot(Base):
     __tablename__ = "source_snapshots"
     __table_args__ = (
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -132,7 +289,12 @@ class SourceSnapshotFile(Base):
     __tablename__ = "source_snapshot_files"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    snapshot_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("source_snapshots.id", ondelete="CASCADE"), nullable=False, index=True)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("source_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -164,7 +326,11 @@ class CompileJob(Base):
     __tablename__ = "compile_jobs"
     __table_args__ = (
         UniqueConstraint("id", "project_id", "tenant_id", name="uq_compile_jobs_id_project_tenant"),
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
         Index("ix_compile_jobs_originating_llm_edit", "originating_llm_edit_job_id"),
     )
 
@@ -218,7 +384,11 @@ class CompileUsageRecord(Base):
 class LlmUsageRecord(Base):
     __tablename__ = "llm_usage_records"
     __table_args__ = (
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="SET NULL (project_id)"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="SET NULL (project_id)",
+        ),
         UniqueConstraint("event_id", name="uq_llm_usage_records_event_id"),
         Index("ix_llm_usage_records_tenant_created", "tenant_id", "created_at"),
         Index("ix_llm_usage_records_user_created", "user_id", "created_at"),
@@ -247,7 +417,11 @@ class LlmEditJob(Base):
     __tablename__ = "llm_edit_jobs"
     __table_args__ = (
         UniqueConstraint("id", "project_id", "tenant_id", name="uq_llm_edit_jobs_id_project_tenant"),
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
         Index("ix_llm_edit_jobs_created_at", "tenant_id", "created_at"),
     )
 
@@ -289,10 +463,65 @@ class CompileJobFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
+class CompileJobAsset(Base):
+    __tablename__ = "compile_job_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "compile_job_id",
+            "logical_filename",
+            name="uq_compile_job_assets_job_filename",
+        ),
+        ForeignKeyConstraint(
+            ["compile_job_id", "project_id", "tenant_id"],
+            ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
+            name="fk_compile_job_assets_compile_job_scope",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["project_asset_id", "project_id", "tenant_id"],
+            [
+                "project_assets.id",
+                "project_assets.project_id",
+                "project_assets.tenant_id",
+            ],
+            name="fk_compile_job_assets_project_asset_scope",
+        ),
+        CheckConstraint(
+            "byte_size >= 0",
+            name="ck_compile_job_assets_byte_size_nonnegative",
+        ),
+        CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_compile_job_assets_sha256",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    compile_job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    project_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    logical_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_bucket: Mapped[str] = mapped_column(String(255), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
 class Artifact(Base):
     __tablename__ = "artifacts"
     __table_args__ = (
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
         ForeignKeyConstraint(
             ["compile_job_id", "project_id", "tenant_id"],
             ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
@@ -315,8 +544,17 @@ class Artifact(Base):
 class TimusSettings(Base):
     __tablename__ = "timus_settings"
     __table_args__ = (
-        UniqueConstraint("user_id", "tenant_id", "project_id", name="uq_timus_settings_user_tenant_project"),
-        ForeignKeyConstraint(["project_id", "tenant_id"], ["projects.id", "projects.tenant_id"], ondelete="CASCADE"),
+        UniqueConstraint(
+            "user_id",
+            "tenant_id",
+            "project_id",
+            name="uq_timus_settings_user_tenant_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

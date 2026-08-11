@@ -2,7 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from alembic.command import upgrade
+from alembic.command import downgrade, upgrade
 from alembic.config import Config
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -36,30 +36,28 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "project_files" in table_names
     assert "artifacts" in table_names
     assert "compile_jobs" in table_names
-    artifact_columns = {
-        column["name"]: column for column in inspector.get_columns("artifacts")
-    }
+    artifact_columns = {column["name"]: column for column in inspector.get_columns("artifacts")}
     assert "content" in artifact_columns
-    assert str(artifact_columns["content"]["type"]).lower() in {"bytea", "blob", "largebinary"}
-    assert artifact_columns["content"]["nullable"] is True
-    compile_job_columns = {
-        column["name"]: column for column in inspector.get_columns("compile_jobs")
+    assert str(artifact_columns["content"]["type"]).lower() in {
+        "bytea",
+        "blob",
+        "largebinary",
     }
+    assert artifact_columns["content"]["nullable"] is True
+    compile_job_columns = {column["name"]: column for column in inspector.get_columns("compile_jobs")}
     assert "claim_token" in compile_job_columns
     assert "claimed_at" in compile_job_columns
     assert "lease_expires_at" in compile_job_columns
     assert "attempt_count" in compile_job_columns
-    llm_edit_job_columns = {
-        column["name"]: column
-        for column in inspector.get_columns("llm_edit_jobs")
-    }
+    llm_edit_job_columns = {column["name"]: column for column in inspector.get_columns("llm_edit_jobs")}
     assert llm_edit_job_columns["progress_payload"]["nullable"] is False
     assert llm_edit_job_columns["progress_payload"]["default"] is None
 
     assert "compile_job_files" in table_names
-    snapshot_columns = {
-        column["name"]: column for column in inspector.get_columns("compile_job_files")
-    }
+    assert "project_assets" in table_names
+    assert "project_import_jobs" in table_names
+    assert "compile_job_assets" in table_names
+    snapshot_columns = {column["name"]: column for column in inspector.get_columns("compile_job_files")}
     assert {
         "id",
         "compile_job_id",
@@ -69,6 +67,38 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
         "content",
         "created_at",
     } <= set(snapshot_columns)
+
+    active_indexes = {index["name"]: index for index in inspector.get_indexes("project_import_jobs")}
+    assert active_indexes["uq_project_import_jobs_active_project"]["unique"] is True
+    assert "status" in str(active_indexes["uq_project_import_jobs_active_project"].get("dialect_options", {}))
+
+
+def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: str, monkeypatch):
+    server_dir = Path(__file__).parents[1]
+    monkeypatch.setenv("DATABASE_URL", postgres_url)
+    get_settings.cache_clear()
+    config = Config(str(server_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(server_dir / "migrations"))
+    config.set_main_option("sqlalchemy.url", postgres_url)
+
+    upgrade(config, "head")
+    downgrade(config, "0010_llm_edit_progress")
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    inspector = inspect(engine)
+    assert "project_assets" not in inspector.get_table_names()
+    assert "project_import_jobs" not in inspector.get_table_names()
+    assert "compile_job_assets" not in inspector.get_table_names()
+
+    upgrade(config, "head")
+    inspector = inspect(engine)
+    assert {
+        "project_assets",
+        "project_import_jobs",
+        "compile_job_assets",
+    } <= set(inspector.get_table_names())
+    engine.dispose()
+    get_settings.cache_clear()
 
 
 def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):
@@ -97,9 +127,7 @@ def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):
     assert diffs == []
 
 
-def test_progress_migration_backfills_existing_llm_edit_job(
-    postgres_url: str, monkeypatch
-):
+def test_progress_migration_backfills_existing_llm_edit_job(postgres_url: str, monkeypatch):
     server_dir = Path(__file__).parents[1]
     monkeypatch.setenv("DATABASE_URL", postgres_url)
     get_settings.cache_clear()
@@ -192,15 +220,10 @@ def test_progress_migration_backfills_existing_llm_edit_job(
     upgrade(config, "head")
     with engine.connect() as connection:
         progress_payload = connection.scalar(
-            text(
-                "SELECT progress_payload FROM llm_edit_jobs WHERE id = :job_id"
-            ),
+            text("SELECT progress_payload FROM llm_edit_jobs WHERE id = :job_id"),
             {"job_id": job_id},
         )
-    progress_column = {
-        column["name"]: column
-        for column in inspect(engine).get_columns("llm_edit_jobs")
-    }["progress_payload"]
+    progress_column = {column["name"]: column for column in inspect(engine).get_columns("llm_edit_jobs")}["progress_payload"]
 
     engine.dispose()
     get_settings.cache_clear()

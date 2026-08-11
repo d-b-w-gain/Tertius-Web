@@ -3,18 +3,41 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, undefer
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import (
+    Artifact,
+    CompileJob,
+    CompileJobAsset,
+    CompileJobFile,
+    CompileUsageRecord,
+    LlmEditJob,
+    Project,
+    ProjectAsset,
+    ProjectFile,
+    ProjectImportJob,
+    SourceSnapshot,
+    SourceSnapshotFile,
+    now_utc,
+)
+from core.project_assets import (
+    BREP_MEDIA_TYPE,
+    IMPORT_3MF_CONVERSION_VERSION,
+    MANIFEST_MEDIA_TYPE,
+    Import3mfManifest,
+    generated_3mf_design_source,
+)
 from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
 
 
@@ -22,9 +45,7 @@ FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 WORKER_LOST_ERROR = "Compile worker stopped before reporting a result"
 WORKER_LOST_ERROR_CODE = "worker_lost"
-WORKER_LOST_USER_MESSAGE = (
-    "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
-)
+WORKER_LOST_USER_MESSAGE = "Compile worker stopped unexpectedly. The model may have exceeded available memory or the worker was restarted."
 LLM_EDIT_WORKER_LOST_ERROR = "LLM edit worker stopped before reporting a result"
 LLM_EDIT_WORKER_LOST_ERROR_CODE = "worker_lost"
 LLM_EDIT_WORKER_LOST_USER_MESSAGE = "AI generation stopped unexpectedly. Try again."
@@ -44,6 +65,42 @@ class ProgressBatchApplyOutcome(StrEnum):
 
 class FileVersionConflictError(RuntimeError):
     pass
+
+
+class ActiveProjectImportError(RuntimeError):
+    pass
+
+
+class AssetIntegrityError(RuntimeError):
+    pass
+
+
+class ImportNotRetryableError(RuntimeError):
+    pass
+
+
+class ProjectNameConflictError(RuntimeError):
+    pass
+
+
+class StaleImportExecutionError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ProjectAssetMetadata:
+    id: UUID
+    tenant_id: UUID
+    project_id: UUID
+    logical_name: str
+    display_name: str
+    kind: str
+    media_type: str
+    byte_size: int
+    sha256: str
+    revision: int
+    conversion_version: str | None
+    created_at: datetime
 
 
 def normalize_file_version(value: datetime) -> str:
@@ -72,9 +129,7 @@ class ProjectRepository:
         self.tenant_id = tenant_id
 
     def list_projects(self) -> list[str]:
-        projects = self.db.scalars(
-            select(Project).where(Project.tenant_id == self.tenant_id).order_by(Project.name)
-        ).all()
+        projects = self.db.scalars(select(Project).where(Project.tenant_id == self.tenant_id).order_by(Project.name)).all()
         return [project.name for project in projects]
 
     def get_project(self, name: str) -> Project | None:
@@ -153,7 +208,10 @@ class ProjectRepository:
 
         files = self.db.scalars(
             select(ProjectFile)
-            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+            )
             .order_by(ProjectFile.filename)
         ).all()
         filenames = [file.filename for file in files]
@@ -168,13 +226,13 @@ class ProjectRepository:
             return []
         files = self.db.scalars(
             select(ProjectFile)
-            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+            )
             .order_by(ProjectFile.filename)
         ).all()
-        rows = [
-            {"id": file.id, "filename": file.filename, "updated_at": file.updated_at}
-            for file in files
-        ]
+        rows = [{"id": file.id, "filename": file.filename, "updated_at": file.updated_at} for file in files]
         rows.sort(key=lambda row: (row["filename"] != "design.py", row["filename"]))
         return rows
 
@@ -193,7 +251,14 @@ class ProjectRepository:
         )
         return None if file is None else file.content
 
-    def stage_code_update(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
+    def stage_code_update(
+        self,
+        project_name: str,
+        filename: str,
+        content: str,
+        user_id: UUID,
+        message: str,
+    ) -> bool:
         filename = require_valid_python_filename(filename)
         project = self.get_project(project_name)
         if project is None:
@@ -207,7 +272,12 @@ class ProjectRepository:
             )
         )
         if file is None:
-            file = ProjectFile(tenant_id=self.tenant_id, project_id=project.id, filename=filename, content=content)
+            file = ProjectFile(
+                tenant_id=self.tenant_id,
+                project_id=project.id,
+                filename=filename,
+                content=content,
+            )
             self.db.add(file)
         else:
             file.content = content
@@ -218,7 +288,14 @@ class ProjectRepository:
         self._snapshot(project, user_id, message)
         return True
 
-    def save_code(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
+    def save_code(
+        self,
+        project_name: str,
+        filename: str,
+        content: str,
+        user_id: UUID,
+        message: str,
+    ) -> bool:
         saved = self.stage_code_update(project_name, filename, content, user_id, message)
         if saved:
             self.db.commit()
@@ -330,7 +407,10 @@ class ProjectRepository:
 
         files = self.db.scalars(
             select(ProjectFile)
-            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+            )
             .order_by(ProjectFile.filename)
         ).all()
         return {file.filename: file.content for file in files}
@@ -342,7 +422,10 @@ class ProjectRepository:
 
         rows = self.db.scalars(
             select(SourceSnapshot)
-            .where(SourceSnapshot.tenant_id == self.tenant_id, SourceSnapshot.project_id == project.id)
+            .where(
+                SourceSnapshot.tenant_id == self.tenant_id,
+                SourceSnapshot.project_id == project.id,
+            )
             .order_by(SourceSnapshot.created_at.desc())
             .limit(50)
         ).all()
@@ -351,7 +434,10 @@ class ProjectRepository:
     def _snapshot(self, project: Project, user_id: UUID, message: str) -> SourceSnapshot:
         files = self.db.scalars(
             select(ProjectFile)
-            .where(ProjectFile.tenant_id == self.tenant_id, ProjectFile.project_id == project.id)
+            .where(
+                ProjectFile.tenant_id == self.tenant_id,
+                ProjectFile.project_id == project.id,
+            )
             .order_by(ProjectFile.filename)
         ).all()
         digest_input = "\n".join(f"{file.filename}:{file.content}" for file in files)
@@ -366,8 +452,432 @@ class ProjectRepository:
         self.db.flush()
 
         for file in files:
-            self.db.add(SourceSnapshotFile(snapshot_id=snapshot.id, filename=file.filename, content=file.content))
+            self.db.add(
+                SourceSnapshotFile(
+                    snapshot_id=snapshot.id,
+                    filename=file.filename,
+                    content=file.content,
+                )
+            )
         return snapshot
+
+
+class ProjectAssetRepository:
+    _METADATA_COLUMNS = (
+        ProjectAsset.id,
+        ProjectAsset.tenant_id,
+        ProjectAsset.project_id,
+        ProjectAsset.logical_name,
+        ProjectAsset.display_name,
+        ProjectAsset.kind,
+        ProjectAsset.media_type,
+        ProjectAsset.byte_size,
+        ProjectAsset.sha256,
+        ProjectAsset.revision,
+        ProjectAsset.conversion_version,
+        ProjectAsset.created_at,
+    )
+
+    def __init__(self, db: Session, tenant_id: UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+
+    def create(
+        self,
+        *,
+        project_id: UUID,
+        logical_name: str,
+        display_name: str,
+        kind: str,
+        media_type: str,
+        content: bytes,
+        revision: int,
+        conversion_version: str | None = None,
+    ) -> ProjectAsset:
+        immutable_content = bytes(content)
+        row = ProjectAsset(
+            tenant_id=self.tenant_id,
+            project_id=project_id,
+            logical_name=logical_name,
+            display_name=display_name,
+            kind=kind,
+            media_type=media_type,
+            content=immutable_content,
+            byte_size=len(immutable_content),
+            sha256=hashlib.sha256(immutable_content).hexdigest(),
+            revision=revision,
+            conversion_version=conversion_version,
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    @staticmethod
+    def _metadata(row) -> ProjectAssetMetadata:
+        return ProjectAssetMetadata(**dict(row._mapping))
+
+    def get_metadata(self, asset_id: UUID, *, project_id: UUID | None = None) -> ProjectAssetMetadata | None:
+        stmt = select(*self._METADATA_COLUMNS).where(
+            ProjectAsset.id == asset_id,
+            ProjectAsset.tenant_id == self.tenant_id,
+        )
+        if project_id is not None:
+            stmt = stmt.where(ProjectAsset.project_id == project_id)
+        row = self.db.execute(stmt).one_or_none()
+        return None if row is None else self._metadata(row)
+
+    def list_metadata(self, project_id: UUID) -> list[ProjectAssetMetadata]:
+        rows = self.db.execute(
+            select(*self._METADATA_COLUMNS)
+            .where(
+                ProjectAsset.tenant_id == self.tenant_id,
+                ProjectAsset.project_id == project_id,
+            )
+            .order_by(ProjectAsset.kind, ProjectAsset.revision, ProjectAsset.id)
+        ).all()
+        return [self._metadata(row) for row in rows]
+
+    def get_content(self, asset_id: UUID, *, project_id: UUID | None = None) -> bytes | None:
+        stmt = select(ProjectAsset.content).where(
+            ProjectAsset.id == asset_id,
+            ProjectAsset.tenant_id == self.tenant_id,
+        )
+        if project_id is not None:
+            stmt = stmt.where(ProjectAsset.project_id == project_id)
+        return self.db.scalar(stmt)
+
+    def allocate_revision(self, project_id: UUID, *, import_job_id: UUID | None = None) -> int:
+        if import_job_id is None:
+            lock = self.db.scalar(
+                select(Project)
+                .where(
+                    Project.id == project_id,
+                    Project.tenant_id == self.tenant_id,
+                )
+                .with_for_update()
+            )
+        else:
+            lock = self.db.scalar(
+                select(ProjectImportJob)
+                .where(
+                    ProjectImportJob.id == import_job_id,
+                    ProjectImportJob.project_id == project_id,
+                    ProjectImportJob.tenant_id == self.tenant_id,
+                )
+                .with_for_update()
+            )
+        if lock is None:
+            raise ValueError("Project import scope not found")
+        current = self.db.scalar(
+            select(func.max(ProjectAsset.revision)).where(
+                ProjectAsset.tenant_id == self.tenant_id,
+                ProjectAsset.project_id == project_id,
+                ProjectAsset.kind.in_(["derived_brep", "import_manifest"]),
+            )
+        )
+        return (current or 0) + 1
+
+    def successful_import_pair(self, project_id: UUID) -> tuple[ProjectAsset, ProjectAsset] | None:
+        job = self.db.scalar(
+            select(ProjectImportJob)
+            .where(
+                ProjectImportJob.tenant_id == self.tenant_id,
+                ProjectImportJob.project_id == project_id,
+                ProjectImportJob.status == "succeeded",
+                ProjectImportJob.brep_asset_id.is_not(None),
+                ProjectImportJob.manifest_asset_id.is_not(None),
+            )
+            .order_by(
+                ProjectImportJob.finished_at.desc(),
+                ProjectImportJob.created_at.desc(),
+                ProjectImportJob.id.desc(),
+            )
+        )
+        if job is None:
+            return None
+        rows = self.db.scalars(
+            select(ProjectAsset)
+            .options(undefer(ProjectAsset.content))
+            .where(
+                ProjectAsset.tenant_id == self.tenant_id,
+                ProjectAsset.project_id == project_id,
+                ProjectAsset.id.in_([job.brep_asset_id, job.manifest_asset_id]),
+            )
+        ).all()
+        by_id = {row.id: row for row in rows}
+        if job.brep_asset_id not in by_id or job.manifest_asset_id not in by_id:
+            raise AssetIntegrityError("successful import assets are incomplete")
+        return by_id[job.brep_asset_id], by_id[job.manifest_asset_id]
+
+
+class ProjectImportRepository:
+    def __init__(self, db: Session, tenant_id: UUID):
+        self.db = db
+        self.tenant_id = tenant_id
+        self.assets = ProjectAssetRepository(db, tenant_id)
+
+    def create_import(
+        self,
+        *,
+        project_name: str,
+        requested_by: UUID,
+        display_name: str,
+        media_type: str,
+        content: bytes,
+    ) -> tuple[Project, ProjectAsset, ProjectImportJob]:
+        project_name = require_valid_project_name(project_name)
+        try:
+            with self.db.begin_nested():
+                collision = self.db.scalar(
+                    select(Project).where(
+                        Project.tenant_id == self.tenant_id,
+                        Project.name == project_name,
+                    )
+                )
+                if collision is not None:
+                    raise ProjectNameConflictError("Project name already exists")
+                project = Project(
+                    tenant_id=self.tenant_id,
+                    name=project_name,
+                    created_by=requested_by,
+                )
+                self.db.add(project)
+                self.db.flush()
+                source = self.assets.create(
+                    project_id=project.id,
+                    logical_name="source.3mf",
+                    display_name=display_name,
+                    kind="source_3mf",
+                    media_type=media_type,
+                    content=content,
+                    revision=1,
+                )
+                job = self.create_queued(project.id, requested_by, source.id)
+            return project, source, job
+        except IntegrityError as exc:
+            raise ProjectNameConflictError("Project name already exists") from exc
+
+    def create_queued(self, project_id: UUID, requested_by: UUID, source_asset_id: UUID) -> ProjectImportJob:
+        try:
+            with self.db.begin_nested():
+                project = self.db.scalar(
+                    select(Project)
+                    .where(
+                        Project.id == project_id,
+                        Project.tenant_id == self.tenant_id,
+                    )
+                    .with_for_update()
+                )
+                if project is None:
+                    raise ValueError("Project not found")
+                source = self.db.scalar(
+                    select(ProjectAsset.id).where(
+                        ProjectAsset.id == source_asset_id,
+                        ProjectAsset.project_id == project_id,
+                        ProjectAsset.tenant_id == self.tenant_id,
+                        ProjectAsset.kind == "source_3mf",
+                    )
+                )
+                if source is None:
+                    raise AssetIntegrityError("Source asset is outside project scope")
+                active = self.db.scalar(
+                    select(ProjectImportJob.id).where(
+                        ProjectImportJob.project_id == project_id,
+                        ProjectImportJob.tenant_id == self.tenant_id,
+                        ProjectImportJob.status.in_(["queued", "running"]),
+                    )
+                )
+                if active is not None:
+                    raise ActiveProjectImportError("Project already has an active import")
+                job = ProjectImportJob(
+                    tenant_id=self.tenant_id,
+                    project_id=project_id,
+                    requested_by=requested_by,
+                    source_asset_id=source_asset_id,
+                    attempt=1,
+                    execution_id=uuid.uuid4(),
+                    status="queued",
+                    retryable=False,
+                    progress_payload={},
+                )
+                self.db.add(job)
+                self.db.flush()
+            return job
+        except IntegrityError as exc:
+            raise ActiveProjectImportError("Project already has an active import") from exc
+
+    def get_job(self, job_id: UUID) -> ProjectImportJob | None:
+        return self.db.scalar(
+            select(ProjectImportJob).where(
+                ProjectImportJob.id == job_id,
+                ProjectImportJob.tenant_id == self.tenant_id,
+            )
+        )
+
+    def _lock_job(self, job_id: UUID) -> ProjectImportJob:
+        job = self.db.scalar(
+            select(ProjectImportJob)
+            .where(
+                ProjectImportJob.id == job_id,
+                ProjectImportJob.tenant_id == self.tenant_id,
+            )
+            .with_for_update()
+        )
+        if job is None:
+            raise ValueError("Import job not found")
+        return job
+
+    @staticmethod
+    def _require_execution(job: ProjectImportJob, execution_id: UUID) -> None:
+        if job.execution_id != execution_id:
+            raise StaleImportExecutionError("Import execution is stale")
+
+    def mark_running(self, job_id: UUID, execution_id: UUID) -> ProjectImportJob:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status not in {"queued", "running"}:
+            raise ValueError("Import job is terminal")
+        job.status = "running"
+        if job.started_at is None:
+            job.started_at = now_utc()
+        self.db.flush()
+        return job
+
+    def mark_progress(self, job_id: UUID, execution_id: UUID, progress_payload: dict) -> ProjectImportJob:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status not in {"queued", "running"}:
+            raise ValueError("Import job is terminal")
+        job.progress_payload = dict(progress_payload)
+        flag_modified(job, "progress_payload")
+        self.db.flush()
+        return job
+
+    def mark_failed(
+        self,
+        job_id: UUID,
+        execution_id: UUID,
+        *,
+        error: str,
+        error_code: str,
+        user_message: str,
+        retryable: bool,
+    ) -> ProjectImportJob:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status not in {"queued", "running"}:
+            raise ValueError("Import job is terminal")
+        job.status = "failed"
+        job.error = error
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = retryable
+        job.finished_at = now_utc()
+        self.db.flush()
+        return job
+
+    def retry(self, job_id: UUID) -> ProjectImportJob:
+        job = self._lock_job(job_id)
+        if job.status != "failed" or not job.retryable:
+            raise ImportNotRetryableError("Import job is not retryable")
+        job.attempt += 1
+        job.execution_id = uuid.uuid4()
+        job.status = "queued"
+        job.error = None
+        job.error_code = None
+        job.user_message = None
+        job.retryable = False
+        job.progress_payload = {}
+        flag_modified(job, "progress_payload")
+        job.brep_asset_id = None
+        job.manifest_asset_id = None
+        job.started_at = None
+        job.finished_at = None
+        self.db.flush()
+        return job
+
+    def apply_success(
+        self,
+        *,
+        job_id: UUID,
+        execution_id: UUID,
+        source_sha256: str,
+        brep_content: bytes,
+        manifest_content: bytes,
+        user_id: UUID,
+    ) -> ProjectImportJob:
+        with self.db.begin_nested():
+            job = self._lock_job(job_id)
+            self._require_execution(job, execution_id)
+            source = self.db.scalar(
+                select(ProjectAsset).where(
+                    ProjectAsset.id == job.source_asset_id,
+                    ProjectAsset.project_id == job.project_id,
+                    ProjectAsset.tenant_id == self.tenant_id,
+                    ProjectAsset.kind == "source_3mf",
+                )
+            )
+            if source is None or source.sha256 != source_sha256:
+                raise AssetIntegrityError("source digest mismatch")
+            if job.status == "succeeded":
+                return job
+            if job.status not in {"queued", "running"}:
+                raise ValueError("Import job is terminal")
+            manifest = Import3mfManifest.model_validate_json(manifest_content)
+            brep_bytes = bytes(brep_content)
+            brep_sha256 = hashlib.sha256(brep_bytes).hexdigest()
+            if manifest.source_sha256 != source.sha256:
+                raise AssetIntegrityError("manifest source digest mismatch")
+            if manifest.brep_sha256 != brep_sha256 or manifest.brep_byte_size != len(brep_bytes):
+                raise AssetIntegrityError("manifest BREP integrity mismatch")
+            revision = self.assets.allocate_revision(job.project_id, import_job_id=job.id)
+            brep = self.assets.create(
+                project_id=job.project_id,
+                logical_name="source.brep",
+                display_name="source.brep",
+                kind="derived_brep",
+                media_type=BREP_MEDIA_TYPE,
+                content=brep_bytes,
+                revision=revision,
+                conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+            )
+            manifest_asset = self.assets.create(
+                project_id=job.project_id,
+                logical_name="source.manifest.json",
+                display_name="source.manifest.json",
+                kind="import_manifest",
+                media_type=MANIFEST_MEDIA_TYPE,
+                content=bytes(manifest_content),
+                revision=revision,
+                conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+            )
+            project = self.db.scalar(
+                select(Project).where(
+                    Project.id == job.project_id,
+                    Project.tenant_id == self.tenant_id,
+                )
+            )
+            if project is None:
+                raise ValueError("Project not found")
+            staged = ProjectRepository(self.db, self.tenant_id).stage_code_update(
+                project.name,
+                "design.py",
+                generated_3mf_design_source(),
+                user_id,
+                "Import 3MF",
+            )
+            if not staged:
+                raise ValueError("Project not found")
+            job.brep_asset_id = brep.id
+            job.manifest_asset_id = manifest_asset.id
+            job.status = "succeeded"
+            job.error = None
+            job.error_code = None
+            job.user_message = None
+            job.retryable = False
+            job.finished_at = now_utc()
+            self.db.flush()
+        return job
 
 
 class CompileRepository:
@@ -509,6 +1019,60 @@ class CompileRepository:
                 )
             )
 
+    def snapshot_job_assets(
+        self,
+        job: CompileJob,
+        assets: dict[str, tuple[ProjectAsset, str, str]],
+    ) -> None:
+        if job.tenant_id != self.tenant_id:
+            raise ValueError("Compile job is outside tenant scope")
+        paired_assets = [asset for asset, _, _ in assets.values()]
+        by_kind = {asset.kind: asset for asset in paired_assets}
+        if len(paired_assets) != 2 or set(by_kind) != {
+            "derived_brep",
+            "import_manifest",
+        }:
+            raise AssetIntegrityError("Compile assets are not a derived import pair")
+        successful_pair = self.db.scalar(
+            select(ProjectImportJob.id).where(
+                ProjectImportJob.tenant_id == self.tenant_id,
+                ProjectImportJob.project_id == job.project_id,
+                ProjectImportJob.status == "succeeded",
+                ProjectImportJob.brep_asset_id == by_kind["derived_brep"].id,
+                ProjectImportJob.manifest_asset_id == by_kind["import_manifest"].id,
+            )
+        )
+        if successful_pair is None:
+            raise AssetIntegrityError(
+                "Compile assets are not from one successful import"
+            )
+        for logical_filename, (asset, object_bucket, object_key) in assets.items():
+            if asset.tenant_id != self.tenant_id or asset.project_id != job.project_id:
+                raise AssetIntegrityError("Compile asset is outside job scope")
+            self.db.add(
+                CompileJobAsset(
+                    compile_job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    project_id=job.project_id,
+                    project_asset_id=asset.id,
+                    logical_filename=logical_filename,
+                    sha256=asset.sha256,
+                    byte_size=asset.byte_size,
+                    object_bucket=object_bucket,
+                    object_key=object_key,
+                )
+            )
+        self.db.flush()
+
+    def assets_for_job(self, job_id: UUID, *, project_id: UUID | None = None) -> list[CompileJobAsset]:
+        stmt = select(CompileJobAsset).where(
+            CompileJobAsset.compile_job_id == job_id,
+            CompileJobAsset.tenant_id == self.tenant_id,
+        )
+        if project_id is not None:
+            stmt = stmt.where(CompileJobAsset.project_id == project_id)
+        return list(self.db.scalars(stmt.order_by(CompileJobAsset.logical_filename)))
+
     def files_for_job(self, job_id: UUID) -> dict[str, str]:
         rows = self.db.scalars(
             select(CompileJobFile).where(
@@ -545,11 +1109,7 @@ class CompileRepository:
                     or_(
                         (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
                         (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < cutoff)),
-                        (
-                            CompileJob.claimed_at.is_(None)
-                            & CompileJob.lease_expires_at.is_(None)
-                            & (CompileJob.created_at < cutoff)
-                        ),
+                        (CompileJob.claimed_at.is_(None) & CompileJob.lease_expires_at.is_(None) & (CompileJob.created_at < cutoff)),
                     ),
                 )
                 .order_by(CompileJob.lease_expires_at, CompileJob.created_at)
@@ -579,17 +1139,10 @@ class CompileRepository:
                         & or_(
                             (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
                             (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < running_cutoff)),
-                            (
-                                CompileJob.claimed_at.is_(None)
-                                & CompileJob.lease_expires_at.is_(None)
-                                & (CompileJob.created_at < running_cutoff)
-                            ),
+                            (CompileJob.claimed_at.is_(None) & CompileJob.lease_expires_at.is_(None) & (CompileJob.created_at < running_cutoff)),
                         )
                     ),
-                    (
-                        (CompileJob.status == "queued")
-                        & (CompileJob.created_at < queued_cutoff)
-                    ),
+                    ((CompileJob.status == "queued") & (CompileJob.created_at < queued_cutoff)),
                 ),
             )
             .values(
@@ -666,7 +1219,6 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
-
     def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)
         query = (
@@ -693,9 +1245,7 @@ class CompileRepository:
         )
         if kind is not None:
             query = query.where(Artifact.kind == kind.lower())
-        return self.db.scalar(
-            query.order_by(Artifact.created_at.desc(), Artifact.id.desc())
-        )
+        return self.db.scalar(query.order_by(Artifact.created_at.desc(), Artifact.id.desc()))
 
     def record_usage(
         self,
@@ -743,7 +1293,13 @@ class LlmEditRepository:
         self.db = db
         self.tenant_id = tenant_id
 
-    def start_job(self, project_id: UUID, user_id: UUID, request_payload: dict, status: str = "queued") -> LlmEditJob:
+    def start_job(
+        self,
+        project_id: UUID,
+        user_id: UUID,
+        request_payload: dict,
+        status: str = "queued",
+    ) -> LlmEditJob:
         job = LlmEditJob(
             tenant_id=self.tenant_id,
             project_id=project_id,
@@ -786,11 +1342,7 @@ class LlmEditRepository:
             return ProgressBatchApplyOutcome.IGNORED_TERMINAL
 
         try:
-            persisted = (
-                PiAgentProgressSnapshot.model_validate(job.progress_payload)
-                if job.progress_payload
-                else None
-            )
+            persisted = PiAgentProgressSnapshot.model_validate(job.progress_payload) if job.progress_payload else None
         except ValidationError:
             return ProgressBatchApplyOutcome.REJECTED_SNAPSHOT
         if persisted is not None and persisted.execution_id == batch.execution_id:
@@ -801,10 +1353,7 @@ class LlmEditRepository:
             events = [*persisted.events, *batch.events]
             truncated_before_sequence = persisted.truncated_before_sequence
         else:
-            if (
-                persisted is not None
-                and batch.execution_started_at <= persisted.execution_started_at
-            ):
+            if persisted is not None and batch.execution_started_at <= persisted.execution_started_at:
                 return ProgressBatchApplyOutcome.STALE_EXECUTION
             events = list(batch.events)
             truncated_before_sequence = None
@@ -823,10 +1372,7 @@ class LlmEditRepository:
             truncated_before_sequence=truncated_before_sequence,
             events=events,
         )
-        while (
-            len(snapshot.model_dump_json().encode("utf-8"))
-            > PI_AGENT_PROGRESS_MAX_BYTES
-        ):
+        while len(snapshot.model_dump_json().encode("utf-8")) > PI_AGENT_PROGRESS_MAX_BYTES:
             discarded_event = events[0]
             events = events[1:]
             snapshot = snapshot.model_copy(
@@ -1028,7 +1574,12 @@ class UsageRepository:
             .order_by("day")
         ).all()
         return [
-            {"day": str(row[0]), "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            {
+                "day": str(row[0]),
+                "job_count": row[1],
+                "cost_cents": row[2],
+                "compute_seconds": row[3],
+            }
             for row in rows
         ]
 
@@ -1048,7 +1599,12 @@ class UsageRepository:
             .order_by("month")
         ).all()
         return [
-            {"month": str(row[0]), "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            {
+                "month": str(row[0]),
+                "job_count": row[1],
+                "cost_cents": row[2],
+                "compute_seconds": row[3],
+            }
             for row in rows
         ]
 
@@ -1069,7 +1625,13 @@ class UsageRepository:
             .order_by(func.sum(CompileUsageRecord.cost_cents).desc())
         ).all()
         return [
-            {"project_id": str(row[0]), "project_name": row[1], "job_count": row[2], "cost_cents": row[3], "compute_seconds": row[4]}
+            {
+                "project_id": str(row[0]),
+                "project_name": row[1],
+                "job_count": row[2],
+                "cost_cents": row[3],
+                "compute_seconds": row[4],
+            }
             for row in rows
         ]
 
@@ -1086,7 +1648,12 @@ class UsageRepository:
             .order_by(func.sum(CompileUsageRecord.cost_cents).desc())
         ).all()
         return [
-            {"export_format": row[0], "job_count": row[1], "cost_cents": row[2], "compute_seconds": row[3]}
+            {
+                "export_format": row[0],
+                "job_count": row[1],
+                "cost_cents": row[2],
+                "compute_seconds": row[3],
+            }
             for row in rows
         ]
 
