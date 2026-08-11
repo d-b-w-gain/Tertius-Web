@@ -60,7 +60,7 @@
 - Create: `server/core/project_assets.py`
 - Create: `server/tests/test_project_assets.py`
 
-- [ ] **Step 1: Write failing manifest, name, limit, and source-template tests**
+- [x] **Step 1: Write failing manifest, name, limit, and source-template tests**
 
 ```python
 def test_import_manifest_rejects_shell_marked_boolean_capable():
@@ -88,13 +88,13 @@ def test_generated_source_uses_repo_owned_loader():
     )
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the module is missing**
+- [x] **Step 2: Run the focused tests and confirm the module is missing**
 
 Run: `rtk uv run pytest -q server/tests/test_project_assets.py`
 
 Expected: FAIL during collection because `core.project_assets` does not exist.
 
-- [ ] **Step 3: Implement exact constants, Pydantic schemas, safe naming, and source generation**
+- [x] **Step 3: Implement exact constants, Pydantic schemas, safe naming, and source generation**
 
 ```python
 MAX_3MF_UPLOAD_BYTES = 128 * 1024 * 1024
@@ -129,13 +129,13 @@ class Import3mfPart(BaseModel):
         return self
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run: `rtk uv run pytest -q server/tests/test_project_assets.py`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the domain contract**
+- [x] **Step 5: Commit the domain contract**
 
 ```bash
 rtk git add server/core/project_assets.py server/tests/test_project_assets.py
