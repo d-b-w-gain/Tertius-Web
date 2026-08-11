@@ -11,12 +11,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from core.models import (
+    AppUser,
     Project,
     ProjectAsset,
     ProjectFile,
     ProjectImportJob,
     SourceSnapshot,
     SourceSnapshotFile,
+    Tenant,
+    TenantMembership,
 )
 from core.project_assets import (
     BREP_MEDIA_TYPE,
@@ -102,6 +105,12 @@ def test_project_asset_repository_computes_immutable_content_metadata(db_session
     assert repo.get_content(asset.id) == content
     assert repo.get_content(asset.id, project_id=uuid4()) is None
 
+    asset.content = b"mutated"
+    asset.byte_size = 7
+    asset.sha256 = hashlib.sha256(asset.content).hexdigest()
+    with pytest.raises(RuntimeError, match="immutable"):
+        db_session.flush()
+
 
 def test_project_asset_metadata_queries_do_not_load_binary_content(db_session, seeded_tenant):
     repo = ProjectAssetRepository(db_session, seeded_tenant.tenant_id)
@@ -163,6 +172,28 @@ def test_create_import_collision_leaves_no_partial_asset_or_job(db_session, seed
     with pytest.raises(ProjectNameConflictError):
         _create_import(repo, seeded_tenant, name="default_purlin")
 
+    assert db_session.scalars(select(ProjectAsset)).all() == []
+    assert db_session.scalars(select(ProjectImportJob)).all() == []
+
+
+def test_create_import_rejects_user_from_another_tenant_without_partial_state(db_session, seeded_tenant):
+    other_user = AppUser(keycloak_subject="other-tenant-user")
+    other_tenant = Tenant(name="Other tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    db_session.flush()
+
+    with pytest.raises(ValueError, match="tenant member"):
+        ProjectImportRepository(db_session, seeded_tenant.tenant_id).create_import(
+            project_name="cross_tenant_import",
+            requested_by=other_user.id,
+            display_name="model.3mf",
+            media_type=THREE_MF_MEDIA_TYPE,
+            content=b"3mf",
+        )
+
+    assert db_session.scalar(select(Project).where(Project.name == "cross_tenant_import")) is None
     assert db_session.scalars(select(ProjectAsset)).all() == []
     assert db_session.scalars(select(ProjectImportJob)).all() == []
 
@@ -333,6 +364,34 @@ def test_apply_success_failure_leaves_no_partial_derived_state(failure, db_sessi
     assert job.status == "queued"
 
 
+def test_apply_success_rejects_arbitrary_snapshot_user(db_session, seeded_tenant):
+    other_user = AppUser(keycloak_subject="wrong-result-user")
+    other_tenant = Tenant(name="Wrong result tenant")
+    db_session.add_all([other_user, other_tenant])
+    db_session.flush()
+    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    db_session.flush()
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    project, source, job = _create_import(repo, seeded_tenant)
+    brep = b"brep"
+
+    with pytest.raises(ValueError, match="requested user"):
+        repo.apply_success(
+            job_id=job.id,
+            execution_id=job.execution_id,
+            source_sha256=source.sha256,
+            brep_content=brep,
+            manifest_content=_manifest_bytes(b"3mf-source", brep),
+            user_id=other_user.id,
+        )
+
+    assert db_session.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all() == []
+    assert db_session.scalars(select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)).all() == []
+    assert db_session.scalars(
+        select(ProjectAsset).where(ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf")
+    ).all() == []
+
+
 def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seeded_tenant):
     import_repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     project, source, import_job = _create_import(import_repo, seeded_tenant)
@@ -407,6 +466,10 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
     }
     assert all(row.tenant_id == seeded_tenant.tenant_id for row in first_snapshot)
     assert CompileRepository(db_session, uuid4()).assets_for_job(compile_job.id) == []
+
+    first_snapshot[0].object_key = "sha256/mutated"
+    with pytest.raises(RuntimeError, match="immutable"):
+        db_session.flush()
 
 
 def test_revision_allocation_serializes_concurrent_writers(postgres_url, db_session, seeded_tenant):

@@ -29,6 +29,7 @@ from core.models import (
     ProjectImportJob,
     SourceSnapshot,
     SourceSnapshotFile,
+    TenantMembership,
     now_utc,
 )
 from core.project_assets import (
@@ -616,6 +617,16 @@ class ProjectImportRepository:
         self.tenant_id = tenant_id
         self.assets = ProjectAssetRepository(db, tenant_id)
 
+    def _require_requester(self, requested_by: UUID) -> None:
+        membership = self.db.scalar(
+            select(TenantMembership.id).where(
+                TenantMembership.tenant_id == self.tenant_id,
+                TenantMembership.user_id == requested_by,
+            )
+        )
+        if membership is None:
+            raise ValueError("Import requester must be a tenant member")
+
     def create_import(
         self,
         *,
@@ -626,6 +637,7 @@ class ProjectImportRepository:
         content: bytes,
     ) -> tuple[Project, ProjectAsset, ProjectImportJob]:
         project_name = require_valid_project_name(project_name)
+        self._require_requester(requested_by)
         try:
             with self.db.begin_nested():
                 collision = self.db.scalar(
@@ -658,6 +670,7 @@ class ProjectImportRepository:
             raise ProjectNameConflictError("Project name already exists") from exc
 
     def create_queued(self, project_id: UUID, requested_by: UUID, source_asset_id: UUID) -> ProjectImportJob:
+        self._require_requester(requested_by)
         try:
             with self.db.begin_nested():
                 project = self.db.scalar(
@@ -809,6 +822,8 @@ class ProjectImportRepository:
         with self.db.begin_nested():
             job = self._lock_job(job_id)
             self._require_execution(job, execution_id)
+            if user_id != job.requested_by:
+                raise ValueError("Import result requested user does not match the job")
             source = self.db.scalar(
                 select(ProjectAsset).where(
                     ProjectAsset.id == job.source_asset_id,
@@ -863,7 +878,7 @@ class ProjectImportRepository:
                 project.name,
                 "design.py",
                 generated_3mf_design_source(),
-                user_id,
+                job.requested_by,
                 "Import 3MF",
             )
             if not staged:
