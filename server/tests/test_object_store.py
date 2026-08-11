@@ -18,6 +18,21 @@ class FakeObjectStore:
         self.objects: dict[str, bytes] = {}
         self.put_calls: list[tuple[str, bytes]] = []
         self.get_calls: list[tuple[str, object]] = []
+        self.info_calls: list[str] = []
+
+    async def get_info(self, key: str):
+        from nats.js.errors import ObjectNotFoundError as NatsObjectNotFoundError
+
+        self.info_calls.append(key)
+        if key not in self.objects:
+            raise NatsObjectNotFoundError
+        return SimpleNamespace(
+            name=key,
+            bucket="TERTIUS_ASSETS",
+            size=len(self.objects[key]),
+            deleted=False,
+            is_link=lambda: False,
+        )
 
     async def get(self, key: str, writeinto=None):
         from nats.js.errors import ObjectNotFoundError as NatsObjectNotFoundError
@@ -133,6 +148,36 @@ async def test_get_rejects_same_length_content_with_wrong_digest():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("metadata_problem", ["size", "link", "deleted"])
+async def test_get_rejects_invalid_metadata_before_downloading(metadata_problem):
+    class InvalidMetadataStore(FakeObjectStore):
+        async def get_info(self, key: str):
+            info = await super().get_info(key)
+            if metadata_problem == "size":
+                info.size = 4
+            elif metadata_problem == "link":
+                info.is_link = lambda: True
+            else:
+                info.deleted = True
+            return info
+
+    store = InvalidMetadataStore()
+    content = b"abc"
+    digest = hashlib.sha256(content).hexdigest()
+    key = f"sha256/{digest}"
+    store.objects[key] = content
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS", key=key, sha256=digest, byte_size=len(content)
+    )
+    error = ObjectNotFoundError if metadata_problem == "deleted" else ObjectIntegrityError
+
+    with pytest.raises(error):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+    assert store.get_calls == []
+
+
+@pytest.mark.asyncio
 async def test_get_rejects_stream_that_exceeds_configured_maximum_while_writing():
     store = FakeObjectStore()
     content = b"abcd"
@@ -150,8 +195,24 @@ async def test_get_rejects_stream_that_exceeds_configured_maximum_while_writing(
 
 
 @pytest.mark.asyncio
-async def test_get_discards_bytes_beyond_declared_size_without_growing_spool():
-    store = FakeObjectStore()
+async def test_get_aborts_immediately_when_stream_exceeds_preflight_size():
+    class OverflowStore(FakeObjectStore):
+        def __init__(self):
+            super().__init__()
+            self.attempted_chunks = 0
+
+        async def get_info(self, key: str):
+            info = await super().get_info(key)
+            info.size = 3
+            return info
+
+        async def get(self, key: str, writeinto=None):
+            self.get_calls.append((key, writeinto))
+            for chunk in (b"ab", b"cd", b"must-not-be-written"):
+                self.attempted_chunks += 1
+                writeinto.write(chunk)
+
+    store = OverflowStore()
     expected = b"abc"
     digest = hashlib.sha256(expected).hexdigest()
     key = f"sha256/{digest}"
@@ -163,9 +224,7 @@ async def test_get_discards_bytes_beyond_declared_size_without_growing_spool():
     with pytest.raises(ObjectIntegrityError, match="integrity"):
         await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
 
-    writer = store.get_calls[-1][1]
-    assert writer.byte_size == 4
-    assert writer.stored_byte_size == 3
+    assert store.attempted_chunks == 2
 
 
 @pytest.mark.asyncio
@@ -177,6 +236,28 @@ async def test_get_maps_nats_integrity_errors_to_object_integrity(backend_error)
         async def get(self, key: str, writeinto=None):
             if backend_error == "digest":
                 raise DigestMismatchError
+            raise BadObjectMetaError
+
+    digest = hashlib.sha256(b"abc").hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+    store = BrokenStore()
+    store.objects[ref.key] = b"abc"
+
+    with pytest.raises(ObjectIntegrityError, match="integrity"):
+        await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)
+
+
+@pytest.mark.asyncio
+async def test_get_maps_invalid_preflight_metadata_to_integrity_error():
+    from nats.js.errors import BadObjectMetaError
+
+    class BrokenStore(FakeObjectStore):
+        async def get_info(self, key: str):
             raise BadObjectMetaError
 
     digest = hashlib.sha256(b"abc").hexdigest()
@@ -209,6 +290,7 @@ async def test_get_closes_spooled_file_when_backend_fails_after_writing():
         sha256=digest,
         byte_size=3,
     )
+    store.objects[ref.key] = b"abc"
 
     with pytest.raises(ObjectStoreUnavailableError):
         await ProjectObjectStore(store, "TERTIUS_ASSETS").get(ref)

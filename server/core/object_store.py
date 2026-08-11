@@ -96,6 +96,31 @@ class ProjectObjectStore:
         if ref.byte_size > self.max_object_bytes:
             raise ObjectIntegrityError("object is too large")
 
+        try:
+            info = await self.store.get_info(ref.key)
+        except Exception as exc:
+            if _is_not_found(exc):
+                raise ObjectNotFoundError("object was not found") from exc
+            if _is_integrity_error(exc):
+                raise ObjectIntegrityError("object integrity check failed") from exc
+            raise ObjectStoreUnavailableError("object store operation failed") from exc
+        if getattr(info, "deleted", False):
+            raise ObjectNotFoundError("object was not found")
+        try:
+            is_link = info.is_link()
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ObjectIntegrityError("object metadata integrity check failed") from exc
+        metadata_size = getattr(info, "size", None)
+        if (
+            is_link
+            or isinstance(metadata_size, bool)
+            or not isinstance(metadata_size, int)
+            or metadata_size != ref.byte_size
+            or getattr(info, "name", None) != ref.key
+            or getattr(info, "bucket", None) != ref.bucket
+        ):
+            raise ObjectIntegrityError("object metadata integrity check failed")
+
         writer = _BoundedHashingWriter(
             max_bytes=min(ref.byte_size, self.max_object_bytes)
         )
@@ -145,7 +170,6 @@ class _BoundedHashingWriter:
     def __init__(self, *, max_bytes: int):
         self._max_bytes = max_bytes
         self._byte_size = 0
-        self._stored_size = 0
         self._digest = hashlib.sha256()
         self._file = SpooledTemporaryFile(
             max_size=min(SPOOL_MEMORY_BYTES, max(1, max_bytes)), mode="w+b"
@@ -154,10 +178,6 @@ class _BoundedHashingWriter:
     @property
     def byte_size(self) -> int:
         return self._byte_size
-
-    @property
-    def stored_byte_size(self) -> int:
-        return self._stored_size
 
     @property
     def sha256(self) -> str:
@@ -169,12 +189,11 @@ class _BoundedHashingWriter:
 
     def write(self, data: bytes) -> int:
         content = bytes(data)
+        if self._byte_size + len(content) > self._max_bytes:
+            raise ObjectIntegrityError("object integrity check failed")
         self._digest.update(content)
         self._byte_size += len(content)
-        remaining = max(0, self._max_bytes - self._stored_size)
-        if remaining:
-            self._stored_size += self._file.write(content[:remaining])
-        return len(content)
+        return self._file.write(content)
 
     def read(self) -> bytes:
         self._file.seek(0)
