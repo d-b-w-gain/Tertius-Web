@@ -244,7 +244,7 @@ rtk git commit -m "feat: persist 3mf project imports"
 - Modify: `server/core/nats_client.py`
 - Modify: `server/tests/test_nats_client.py`
 
-- [ ] **Step 1: Write failing adapter and bucket-configuration tests**
+- [x] **Step 1: Write failing adapter and bucket-configuration tests**
 
 ```python
 @pytest.mark.asyncio
@@ -261,13 +261,13 @@ async def test_get_rejects_size_or_digest_mismatch(fake_object_store):
         await ProjectObjectStore(fake_object_store, "TERTIUS_ASSETS").get(ref)
 ```
 
-- [ ] **Step 2: Run tests to confirm missing adapter**
+- [x] **Step 2: Run tests to confirm missing adapter**
 
 Run: `rtk uv run pytest -q server/tests/test_object_store.py server/tests/test_nats_client.py -k object`
 
 Expected: FAIL because object-store helpers/settings are absent.
 
-- [ ] **Step 3: Implement object references, safe put/get, and bucket reconciliation**
+- [x] **Step 3: Implement object references, safe put/get, and bucket reconciliation**
 
 ```python
 class ObjectRef(BaseModel):
@@ -297,13 +297,13 @@ class ProjectObjectStore:
 
 Add bounded settings for bucket name, TTL/max bytes, import subjects, stream, durable consumers, ACK wait, and max delivery. Extend `ensure_*` helpers without logging keys/digests as metric labels.
 
-- [ ] **Step 4: Run object-store and NATS tests**
+- [x] **Step 4: Run object-store and NATS tests**
 
 Run: `rtk uv run pytest -q server/tests/test_object_store.py server/tests/test_nats_client.py`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit object transport**
+- [x] **Step 5: Commit object transport**
 
 ```bash
 rtk git add server/core/object_store.py server/core/config.py server/core/nats_client.py server/tests/test_object_store.py server/tests/test_nats_client.py
