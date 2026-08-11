@@ -8,7 +8,7 @@ from time import perf_counter
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from core.config import get_settings
 from core.db import SessionLocal
@@ -141,6 +141,95 @@ async def _apply_progress(db, progress: Import3mfProgress) -> str:
         return "stale"
 
 
+def _touch_import_lease(envelope: Import3mfProgress | Import3mfResult) -> bool:
+    touched_at = now_utc()
+    with SessionLocal() as db:
+        job_id = db.scalar(
+            update(ProjectImportJob)
+            .where(
+                ProjectImportJob.id == envelope.job_id,
+                ProjectImportJob.attempt == envelope.attempt,
+                ProjectImportJob.execution_id == envelope.execution_id,
+                ProjectImportJob.status.in_(("queued", "running")),
+            )
+            .values(
+                status="running",
+                started_at=func.coalesce(ProjectImportJob.started_at, touched_at),
+                heartbeat_at=touched_at,
+            )
+            .returning(ProjectImportJob.id)
+        )
+        db.commit()
+        return job_id is not None
+
+
+async def _touch_import_lease_threaded(
+    envelope: Import3mfProgress | Import3mfResult,
+) -> bool:
+    task = asyncio.create_task(asyncio.to_thread(_touch_import_lease, envelope))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+        raise
+
+
+def _apply_success_in_fresh_session(
+    result: Import3mfResult,
+    brep_content: bytes,
+    manifest_content: bytes,
+) -> str:
+    with SessionLocal() as db:
+        loaded = _load_result_job(db, result)
+        if loaded is None:
+            db.rollback()
+            return "stale"
+        job, _source = loaded
+        if job.status in {"succeeded", "failed"}:
+            db.rollback()
+            return "duplicate"
+
+        repo = ProjectImportRepository(db, result.tenant_id)
+        try:
+            repo.apply_success(
+                job_id=result.job_id,
+                execution_id=result.execution_id,
+                source_sha256=result.source.sha256,
+                brep_content=brep_content,
+                manifest_content=manifest_content,
+                user_id=job.requested_by,
+            )
+        except StaleImportExecutionError, ValueError:
+            db.rollback()
+            return "stale"
+        except AssetIntegrityError:
+            _mark_safe_failure(repo, result, "asset_integrity_error")
+            db.commit()
+            return "failed"
+        db.commit()
+        return "succeeded"
+
+
+async def _apply_success_threaded(
+    result: Import3mfResult,
+    brep_content: bytes,
+    manifest_content: bytes,
+) -> str:
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            _apply_success_in_fresh_session,
+            result,
+            brep_content,
+            manifest_content,
+        )
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+        raise
+
+
 async def _apply_result(db, result: Import3mfResult, object_store, settings) -> str:
     loaded = _load_result_job(db, result)
     if loaded is None:
@@ -186,6 +275,7 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
         db.commit()
         return "failed"
 
+    db.rollback()
     try:
         brep_content = await object_store.get(result.brep)
         manifest_content = await object_store.get(result.manifest)
@@ -210,30 +300,19 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
         db.commit()
         return "failed"
 
-    try:
-        repo.apply_success(
-            job_id=result.job_id,
-            execution_id=result.execution_id,
-            source_sha256=result.source.sha256,
-            brep_content=brep_content,
-            manifest_content=manifest_content,
-            user_id=job.requested_by,
-        )
-    except StaleImportExecutionError, ValueError:
-        db.rollback()
-        return "stale"
-    except AssetIntegrityError:
-        _mark_safe_failure(repo, result, "asset_integrity_error")
-        db.commit()
-        return "failed"
-    db.commit()
-    return "succeeded"
+    db.rollback()
+    return await _apply_success_threaded(result, brep_content, manifest_content)
 
 
-async def _result_heartbeat(msg, ack_wait_seconds: float) -> None:
+async def _result_heartbeat(
+    msg,
+    ack_wait_seconds: float,
+    envelope: Import3mfProgress | Import3mfResult,
+) -> None:
     interval = max(0.1, min(30.0, ack_wait_seconds / 3))
     while True:
         await asyncio.sleep(interval)
+        await _touch_import_lease_threaded(envelope)
         await msg.in_progress()
 
 
@@ -256,7 +335,7 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
         attributes=_attributes(envelope=envelope_type, status="processing"),
     ):
         heartbeat = asyncio.create_task(
-            _result_heartbeat(msg, settings.import_3mf_ack_wait_seconds)
+            _result_heartbeat(msg, settings.import_3mf_ack_wait_seconds, envelope)
         )
 
         async def apply() -> str:

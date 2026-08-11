@@ -594,6 +594,42 @@ def test_subprocess_kills_process_tree_on_cancellation(tmp_path):
     assert not marker.exists()
 
 
+def test_cancellation_after_pipe_eof_kills_tree_without_waiting_for_timeout(tmp_path):
+    import threading
+    import time
+
+    marker = tmp_path / "eof-child"
+    script = tmp_path / "eof-hang.py"
+    child_code = (
+        "import pathlib,time;time.sleep(1);"
+        f"pathlib.Path({os.fspath(marker)!r}).write_text('alive')"
+    )
+    script.write_text(
+        "import os, subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "os.close(1); os.close(2)\n"
+        "time.sleep(60)\n"
+    )
+    cancel = threading.Event()
+    timer = threading.Timer(0.2, cancel.set)
+    started = time.monotonic()
+    timer.start()
+    try:
+        with pytest.raises(Import3mfError, match="conversion_cancelled"):
+            run_converter_subprocess(
+                make_box_3mf(),
+                timeout_seconds=30,
+                cancel_event=cancel,
+                worker_command=[sys.executable, os.fspath(script)],
+            )
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 2
+    time.sleep(1.2)
+    assert not marker.exists()
+
+
 def test_subprocess_has_empty_shutdown_stderr_allowlist_and_clean_success(tmp_path):
     assert ALLOWED_PYLIB3MF_SHUTDOWN_STDERR == frozenset()
     source = make_box_3mf()
