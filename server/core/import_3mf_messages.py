@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -28,7 +29,7 @@ TraceParent = Annotated[
 ]
 TraceState = Annotated[
     str,
-    StringConstraints(min_length=3, max_length=512, pattern=r"^[\x20-\x7e]+$"),
+    StringConstraints(min_length=3, max_length=512),
 ]
 ErrorCode = Annotated[
     str,
@@ -68,13 +69,19 @@ class StrictImportMessage(BaseModel):
         if value is None:
             return None
         members = value.split(",")
-        keys = [member.split("=", 1)[0] for member in members if "=" in member]
-        if (
-            len(members) > 32
-            or len(keys) != len(set(keys))
-            or any(_invalid_tracestate_member(member) for member in members)
-        ):
+        keys: list[str] = []
+        if len(members) > 32:
             raise ValueError("tracestate must contain valid W3C list members")
+        for index, raw_member in enumerate(members):
+            if index == 0 and raw_member.startswith((" ", "\t")):
+                raise ValueError("tracestate must contain valid W3C list members")
+            member = raw_member.rstrip(" \t")
+            if index:
+                member = member.lstrip(" \t")
+            key = _tracestate_member_key(member)
+            if key is None or key in keys:
+                raise ValueError("tracestate must contain valid W3C list members")
+            keys.append(key)
         return value
 
 
@@ -252,13 +259,25 @@ class Import3mfResult(StrictImportMessage):
         )
 
 
-def _invalid_tracestate_member(member: str) -> bool:
-    if member != member.strip() or member.count("=") != 1:
-        return True
+_SIMPLE_TRACESTATE_KEY = re.compile(r"^[a-z][a-z0-9_\-*/]{0,255}$")
+_TENANT_TRACESTATE_KEY = re.compile(
+    r"^[a-z0-9][a-z0-9_\-*/]{0,240}@[a-z][a-z0-9_\-*/]{0,13}$"
+)
+
+
+def _tracestate_member_key(member: str) -> str | None:
+    if member.count("=") != 1:
+        return None
     key, value = member.split("=", 1)
-    if not key or not value or len(key) > 256 or len(value) > 256:
-        return True
-    allowed_key = set("abcdefghijklmnopqrstuvwxyz0123456789_-*/@.")
-    return any(character not in allowed_key for character in key) or any(
-        character in ",=" or not " " <= character <= "~" for character in value
+    valid_key = (
+        _SIMPLE_TRACESTATE_KEY.fullmatch(key) is not None
+        or _TENANT_TRACESTATE_KEY.fullmatch(key) is not None
     )
+    valid_value = (
+        1 <= len(value) <= 256
+        and value[-1] != " "
+        and all(
+            " " <= character <= "~" and character not in ",=" for character in value
+        )
+    )
+    return key if valid_key and valid_value else None
