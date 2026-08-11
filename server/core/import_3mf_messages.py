@@ -33,7 +33,7 @@ TraceState = Annotated[
 ]
 ErrorCode = Annotated[
     str,
-    StringConstraints(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"),
+    StringConstraints(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_]*$"),
 ]
 UserMessage = Annotated[
     str,

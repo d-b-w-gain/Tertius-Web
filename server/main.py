@@ -65,7 +65,10 @@ from workflows.intus.pi_agent_result_consumer import (
     run_pi_agent_active_observer,
     run_pi_agent_result_consumer,
 )
-from workflows.intus.import_3mf_result_consumer import run_import_result_consumer
+from workflows.intus.import_3mf_result_consumer import (
+    run_import_reconciler,
+    run_import_result_consumer,
+)
 from core.provisioning import provision_user_context
 
 _compile_result_stop_event: asyncio.Event | None = None
@@ -76,6 +79,7 @@ _pi_agent_active_stop_event: asyncio.Event | None = None
 _pi_agent_active_task: asyncio.Task | None = None
 _import_3mf_result_stop_event: asyncio.Event | None = None
 _import_3mf_result_task: asyncio.Task | None = None
+_import_3mf_reconcile_task: asyncio.Task | None = None
 
 
 async def start_compile_result_consumer():
@@ -140,10 +144,16 @@ async def stop_pi_agent_active_observer():
 
 
 async def start_import_3mf_result_consumer():
-    global _import_3mf_result_stop_event, _import_3mf_result_task
+    global \
+        _import_3mf_result_stop_event, \
+        _import_3mf_result_task, \
+        _import_3mf_reconcile_task
     _import_3mf_result_stop_event = asyncio.Event()
     _import_3mf_result_task = asyncio.create_task(
         run_import_result_consumer(_import_3mf_result_stop_event)
+    )
+    _import_3mf_reconcile_task = asyncio.create_task(
+        run_import_reconciler(_import_3mf_result_stop_event)
     )
 
 
@@ -154,6 +164,12 @@ async def stop_import_3mf_result_consumer():
         _import_3mf_result_task.cancel()
         try:
             await _import_3mf_result_task
+        except asyncio.CancelledError:
+            pass
+    if _import_3mf_reconcile_task is not None:
+        _import_3mf_reconcile_task.cancel()
+        try:
+            await _import_3mf_reconcile_task
         except asyncio.CancelledError:
             pass
 
