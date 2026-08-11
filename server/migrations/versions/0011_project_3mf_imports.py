@@ -35,8 +35,12 @@ def upgrade() -> None:
             "kind IN ('source_3mf', 'derived_brep', 'import_manifest')",
             name="ck_project_assets_kind",
         ),
-        sa.CheckConstraint("byte_size >= 0", name="ck_project_assets_byte_size_nonnegative"),
-        sa.CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="ck_project_assets_sha256"),
+        sa.CheckConstraint(
+            "byte_size >= 0", name="ck_project_assets_byte_size_nonnegative"
+        ),
+        sa.CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'", name="ck_project_assets_sha256"
+        ),
         sa.CheckConstraint("revision > 0", name="ck_project_assets_revision_positive"),
         sa.ForeignKeyConstraint(
             ["project_id", "tenant_id"],
@@ -102,8 +106,11 @@ def upgrade() -> None:
         sa.Column("progress_payload", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("attempt > 0", name="ck_project_import_jobs_attempt_positive"),
+        sa.CheckConstraint(
+            "attempt > 0", name="ck_project_import_jobs_attempt_positive"
+        ),
         sa.CheckConstraint(
             "status IN ('queued', 'running', 'succeeded', 'failed')",
             name="ck_project_import_jobs_status",
@@ -158,8 +165,12 @@ def upgrade() -> None:
             name="uq_project_import_jobs_id_project_tenant",
         ),
     )
-    op.create_index("ix_project_import_jobs_project_id", "project_import_jobs", ["project_id"])
-    op.create_index("ix_project_import_jobs_tenant_id", "project_import_jobs", ["tenant_id"])
+    op.create_index(
+        "ix_project_import_jobs_project_id", "project_import_jobs", ["project_id"]
+    )
+    op.create_index(
+        "ix_project_import_jobs_tenant_id", "project_import_jobs", ["tenant_id"]
+    )
     op.create_index(
         "uq_project_import_jobs_active_project",
         "project_import_jobs",
@@ -181,8 +192,12 @@ def upgrade() -> None:
         sa.Column("object_bucket", sa.String(length=255), nullable=False),
         sa.Column("object_key", sa.String(length=1024), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint("byte_size >= 0", name="ck_compile_job_assets_byte_size_nonnegative"),
-        sa.CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="ck_compile_job_assets_sha256"),
+        sa.CheckConstraint(
+            "byte_size >= 0", name="ck_compile_job_assets_byte_size_nonnegative"
+        ),
+        sa.CheckConstraint(
+            "sha256 ~ '^[0-9a-f]{64}$'", name="ck_compile_job_assets_sha256"
+        ),
         sa.ForeignKeyConstraint(
             ["compile_job_id", "project_id", "tenant_id"],
             ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
@@ -216,8 +231,12 @@ def upgrade() -> None:
         "compile_job_assets",
         ["project_asset_id"],
     )
-    op.create_index("ix_compile_job_assets_project_id", "compile_job_assets", ["project_id"])
-    op.create_index("ix_compile_job_assets_tenant_id", "compile_job_assets", ["tenant_id"])
+    op.create_index(
+        "ix_compile_job_assets_project_id", "compile_job_assets", ["project_id"]
+    )
+    op.create_index(
+        "ix_compile_job_assets_tenant_id", "compile_job_assets", ["tenant_id"]
+    )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION tertius_reject_compile_job_asset_update()
@@ -245,11 +264,17 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER trg_compile_job_assets_immutable ON compile_job_assets")
     op.drop_index("ix_compile_job_assets_tenant_id", table_name="compile_job_assets")
     op.drop_index("ix_compile_job_assets_project_id", table_name="compile_job_assets")
-    op.drop_index("ix_compile_job_assets_project_asset_id", table_name="compile_job_assets")
-    op.drop_index("ix_compile_job_assets_compile_job_id", table_name="compile_job_assets")
+    op.drop_index(
+        "ix_compile_job_assets_project_asset_id", table_name="compile_job_assets"
+    )
+    op.drop_index(
+        "ix_compile_job_assets_compile_job_id", table_name="compile_job_assets"
+    )
     op.drop_table("compile_job_assets")
     op.execute("DROP FUNCTION tertius_reject_compile_job_asset_update()")
-    op.drop_index("uq_project_import_jobs_active_project", table_name="project_import_jobs")
+    op.drop_index(
+        "uq_project_import_jobs_active_project", table_name="project_import_jobs"
+    )
     op.drop_index("ix_project_import_jobs_tenant_id", table_name="project_import_jobs")
     op.drop_index("ix_project_import_jobs_project_id", table_name="project_import_jobs")
     op.drop_table("project_import_jobs")

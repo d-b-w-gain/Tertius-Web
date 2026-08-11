@@ -11,11 +11,17 @@ from core.import_3mf_messages import (
     Import3mfProgress,
     Import3mfResult,
 )
-from core.object_store import ObjectRef, ObjectStoreUnavailableError
+from core.object_store import (
+    ObjectIntegrityError,
+    ObjectRef,
+    ObjectStoreUnavailableError,
+)
 from core.project_assets import IMPORT_3MF_CONVERSION_VERSION, public_manifest_summary
 from workflows.intus.import_3mf_result_consumer import (
     handle_import_result_message,
     reconcile_stale_import_jobs,
+    run_import_reconciler,
+    run_import_result_consumer,
 )
 from test_import_3mf_job import SOURCE, conversion_output, ref
 
@@ -67,13 +73,16 @@ class Message:
 
 
 class Store:
-    def __init__(self, values, *, transient=False):
+    def __init__(self, values, *, transient=False, integrity=False):
         self.values = values
         self.transient = transient
+        self.integrity = integrity
 
     async def get(self, key):
         if self.transient:
             raise ObjectStoreUnavailableError("temporary")
+        if self.integrity:
+            raise ObjectIntegrityError("digest mismatch")
         return self.values[key]
 
 
@@ -97,6 +106,14 @@ def settings():
     )
 
 
+def source_row(cmd):
+    return SimpleNamespace(
+        sha256=cmd.source.sha256,
+        byte_size=cmd.source.byte_size,
+        kind="source_3mf",
+    )
+
+
 @pytest.mark.asyncio
 async def test_success_verifies_manifest_and_uses_locked_requester(monkeypatch):
     cmd = command()
@@ -110,7 +127,7 @@ async def test_success_verifies_manifest_and_uses_locked_requester(monkeypatch):
         execution_id=cmd.execution_id,
         project_id=cmd.project_id,
     )
-    source = SimpleNamespace(sha256=cmd.source.sha256)
+    source = source_row(cmd)
 
     class Repo:
         def __init__(self, _db, tenant_id):
@@ -128,10 +145,19 @@ async def test_success_verifies_manifest_and_uses_locked_requester(monkeypatch):
     )
     db = DB()
     msg = Message(result.model_dump_json().encode())
+    ordering = []
+    msg.events = ordering
+    original_commit = db.commit
+
+    def ordered_commit():
+        ordering.append("commit")
+        original_commit()
+
+    db.commit = ordered_commit
 
     await handle_import_result_message(msg, db, Store(values), settings())
 
-    assert msg.events == ["ack"]
+    assert msg.events == ["commit", "ack"]
     assert db.commits == 1
     assert captured["user_id"] == cmd.user_id
     assert captured["brep_content"] == values[result.brep]
@@ -172,13 +198,13 @@ async def test_invalid_manifest_becomes_safe_terminal_failure(monkeypatch):
     )
     monkeypatch.setattr(
         "workflows.intus.import_3mf_result_consumer._load_result_job",
-        lambda _db, _result: (job, SimpleNamespace()),
+        lambda _db, _result: (job, source_row(cmd)),
     )
     msg = Message(result.model_dump_json().encode())
     db = DB()
     await handle_import_result_message(msg, db, Store(values), settings())
     assert msg.events == ["ack"]
-    assert failed["error_code"] == "invalid_result"
+    assert failed["error_code"] == "asset_integrity_error"
     assert "private.3mf" not in str(failed)
 
 
@@ -198,7 +224,7 @@ async def test_transient_fetch_naks_and_rolls_back(monkeypatch):
     )
     monkeypatch.setattr(
         "workflows.intus.import_3mf_result_consumer._load_result_job",
-        lambda _db, _result: (job, SimpleNamespace()),
+        lambda _db, _result: (job, source_row(cmd)),
     )
     db = DB()
     msg = Message(result.model_dump_json().encode())
@@ -235,12 +261,12 @@ async def test_cross_bucket_result_is_safely_failed_without_fetch(monkeypatch):
     )
     monkeypatch.setattr(
         "workflows.intus.import_3mf_result_consumer._load_result_job",
-        lambda _db, _result: (job, SimpleNamespace()),
+        lambda _db, _result: (job, source_row(cmd)),
     )
     msg = Message(result.model_dump_json().encode())
     await handle_import_result_message(msg, DB(), Store({}, transient=True), settings())
     assert msg.events == ["ack"]
-    assert failed["error_code"] == "invalid_result"
+    assert failed["error_code"] == "asset_integrity_error"
 
 
 @pytest.mark.asyncio
@@ -280,7 +306,7 @@ async def test_terminal_worker_failure_uses_fixed_message_and_acks(monkeypatch):
     )
     monkeypatch.setattr(
         "workflows.intus.import_3mf_result_consumer._load_result_job",
-        lambda _db, _result: (job, SimpleNamespace()),
+        lambda _db, _result: (job, source_row(cmd)),
     )
     msg = Message(result.model_dump_json().encode())
     await handle_import_result_message(msg, DB(), Store({}), settings())
@@ -324,13 +350,15 @@ def test_reconciles_only_stale_running_jobs(monkeypatch):
         id=uuid4(),
         tenant_id=uuid4(),
         execution_id=uuid4(),
-        started_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        started_at=datetime.now(timezone.utc),
+        heartbeat_at=datetime.now(timezone.utc) - timedelta(hours=1),
     )
     fresh = SimpleNamespace(
         id=uuid4(),
         tenant_id=uuid4(),
         execution_id=uuid4(),
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        heartbeat_at=datetime.now(timezone.utc),
     )
     failed = []
     monkeypatch.setattr(
@@ -342,13 +370,237 @@ def test_reconciles_only_stale_running_jobs(monkeypatch):
         def __init__(self, *_args):
             pass
 
-        def mark_failed(self, job_id, *_args, **kwargs):
+        def fail_if_stale(self, job_id, *_args, **kwargs):
             failed.append((job_id, kwargs))
+            return True
 
     monkeypatch.setattr(
         "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
     )
     db = DB()
     assert reconcile_stale_import_jobs(db, settings()) == 1
-    assert failed[0][1]["retryable"] is True
+    assert failed[0][1]["error_code"] == "worker_lost"
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_source_digest_mismatch_uses_exact_asset_integrity_code(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    failed = {}
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+    source = source_row(cmd)
+    source.sha256 = "0" * 64
+
+    class Repo:
+        def __init__(self, *_args):
+            pass
+
+        def mark_failed(self, *_args, **kwargs):
+            failed.update(kwargs)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source),
+    )
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), Store(values), settings())
+    assert msg.events == ["ack"]
+    assert failed["error_code"] == "asset_integrity_error"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_runs_independently_of_nats_setup(monkeypatch):
+    stop = __import__("asyncio").Event()
+    calls = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rollback(self):
+            pass
+
+    def reconcile(_db, _settings):
+        calls.append("reconcile")
+        stop.set()
+        return 0
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.SessionLocal", Session
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.reconcile_stale_import_jobs",
+        reconcile,
+    )
+    await run_import_reconciler(stop, interval_seconds=0.01)
+    assert calls == ["reconcile"]
+
+
+@pytest.mark.asyncio
+async def test_main_starts_and_stops_consumer_and_independent_reconciler(monkeypatch):
+    import main
+
+    started = []
+
+    async def consumer(stop):
+        started.append("consumer")
+        await stop.wait()
+
+    async def reconciler(stop):
+        started.append("reconciler")
+        await stop.wait()
+
+    monkeypatch.setattr(main, "run_import_result_consumer", consumer)
+    monkeypatch.setattr(main, "run_import_reconciler", reconciler)
+    await main.start_import_3mf_result_consumer()
+    await __import__("asyncio").sleep(0)
+    assert started == ["consumer", "reconciler"]
+    await main.stop_import_3mf_result_consumer()
+
+
+@pytest.mark.asyncio
+async def test_brep_integrity_mismatch_uses_exact_asset_integrity_code(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    failed = {}
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+
+    class Repo:
+        def __init__(self, *_args):
+            pass
+
+        def mark_failed(self, *_args, **kwargs):
+            failed.update(kwargs)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(
+        msg, DB(), Store(values, integrity=True), settings()
+    )
+    assert msg.events == ["ack"]
+    assert failed["error_code"] == "asset_integrity_error"
+
+
+@pytest.mark.asyncio
+async def test_terminal_duplicate_and_out_of_order_progress_ack(monkeypatch):
+    cmd = command()
+    result, _ = success_result(cmd)
+    terminal = SimpleNamespace(status="succeeded", requested_by=cmd.user_id)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (terminal, source_row(cmd)),
+    )
+    duplicate = Message(result.model_dump_json().encode())
+    await handle_import_result_message(
+        duplicate, DB(), Store({}, transient=True), settings()
+    )
+    assert duplicate.events == ["ack"]
+
+    progress = Import3mfProgress.for_command(cmd, stage="persisting", percent=90)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._progress_tenant_id",
+        lambda *_: None,
+    )
+    late = Message(progress.model_dump_json().encode())
+    await handle_import_result_message(late, DB(), Store({}), settings())
+    assert late.events == ["ack"]
+
+
+@pytest.mark.asyncio
+async def test_transient_database_failure_naks(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("db unavailable")),
+    )
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), Store(values), settings())
+    assert msg.events == ["nak"]
+
+
+@pytest.mark.asyncio
+async def test_manifest_summary_mismatch_uses_asset_integrity_code(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    assert result.summary is not None
+    result = result.model_copy(
+        update={"summary": result.summary.model_copy(update={"warnings": ("changed",)})}
+    )
+    failed = {}
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+
+    class Repo:
+        def __init__(self, *_args):
+            pass
+
+        def mark_failed(self, *_args, **kwargs):
+            failed.update(kwargs)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), Store(values), settings())
+    assert msg.events == ["ack"]
+    assert failed["error_code"] == "asset_integrity_error"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_runs_while_nats_setup_fails(monkeypatch):
+    stop = __import__("asyncio").Event()
+    reconciled = __import__("asyncio").Event()
+
+    async def broken_connect(_url):
+        raise RuntimeError("nats down")
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def rollback(self):
+            pass
+
+    def reconcile(*_args):
+        reconciled.set()
+        stop.set()
+        return 0
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.connect_nats", broken_connect
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.SessionLocal", Session
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.reconcile_stale_import_jobs",
+        reconcile,
+    )
+    consumer = __import__("asyncio").create_task(run_import_result_consumer(stop))
+    reconciler = __import__("asyncio").create_task(
+        run_import_reconciler(stop, interval_seconds=0.01)
+    )
+    await __import__("asyncio").wait_for(reconciled.wait(), timeout=1)
+    consumer.cancel()
+    await __import__("asyncio").gather(consumer, reconciler, return_exceptions=True)
+    assert reconciled.is_set()

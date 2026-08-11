@@ -51,8 +51,7 @@ _SAFE_FAILURES: dict[str, str] = {
     "3mf_resource_limit": "The 3MF exceeds an import resource limit.",
     "3mf_conversion_timeout": "The 3MF conversion timed out.",
     "conversion_failed": "The 3MF conversion failed safely.",
-    "source_integrity": "The uploaded 3MF could not be verified.",
-    "object_integrity": "The converted 3MF objects could not be verified.",
+    "asset_integrity_error": "The imported 3MF assets could not be verified.",
 }
 
 
@@ -90,7 +89,7 @@ async def execute_import_command(
         source = await object_store.get(command.source)
     except ObjectIntegrityError as exc:
         raise Import3mfError(
-            "source_integrity", _SAFE_FAILURES["source_integrity"]
+            "asset_integrity_error", _SAFE_FAILURES["asset_integrity_error"]
         ) from exc
     await report("converting", 20)
     output = await asyncio.to_thread(
@@ -201,8 +200,8 @@ async def handle_import_request_message(
             except ObjectIntegrityError:
                 produced = Import3mfResult.failure_for(
                     command,
-                    error_code="object_integrity",
-                    user_message=_SAFE_FAILURES["object_integrity"],
+                    error_code="asset_integrity_error",
+                    user_message=_SAFE_FAILURES["asset_integrity_error"],
                     duration_ms=min(300_000, round(elapsed_seconds(started) * 1000)),
                 )
             if (

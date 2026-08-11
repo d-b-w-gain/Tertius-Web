@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -87,7 +88,9 @@ def _create_import(repo, seeded, *, name="imported", source=b"3mf-source"):
     )
 
 
-def test_project_asset_repository_computes_immutable_content_metadata(db_session, seeded_tenant):
+def test_project_asset_repository_computes_immutable_content_metadata(
+    db_session, seeded_tenant
+):
     repo = ProjectAssetRepository(db_session, seeded_tenant.tenant_id)
     content = b"immutable 3mf bytes"
 
@@ -113,7 +116,9 @@ def test_project_asset_repository_computes_immutable_content_metadata(db_session
         db_session.flush()
 
 
-def test_project_asset_metadata_queries_do_not_load_binary_content(db_session, seeded_tenant):
+def test_project_asset_metadata_queries_do_not_load_binary_content(
+    db_session, seeded_tenant
+):
     repo = ProjectAssetRepository(db_session, seeded_tenant.tenant_id)
     asset = repo.create(
         project_id=seeded_tenant.project_id,
@@ -151,7 +156,9 @@ def test_project_asset_repository_is_tenant_scoped(db_session, seeded_tenant):
     assert other_repo.get_content(asset.id) is None
 
 
-def test_create_import_stages_empty_project_source_asset_and_job_atomically(db_session, seeded_tenant):
+def test_create_import_stages_empty_project_source_asset_and_job_atomically(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
 
     project, source, job = _create_import(repo, seeded_tenant)
@@ -161,13 +168,20 @@ def test_create_import_stages_empty_project_source_asset_and_job_atomically(db_s
     assert source.kind == "source_3mf"
     assert job.source_asset_id == source.id
     assert job.status == "queued"
-    assert db_session.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all() == []
+    assert (
+        db_session.scalars(
+            select(ProjectFile).where(ProjectFile.project_id == project.id)
+        ).all()
+        == []
+    )
 
     db_session.rollback()
     assert db_session.scalar(select(Project).where(Project.name == "imported")) is None
 
 
-def test_create_import_collision_leaves_no_partial_asset_or_job(db_session, seeded_tenant):
+def test_create_import_collision_leaves_no_partial_asset_or_job(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
 
     with pytest.raises(ProjectNameConflictError):
@@ -177,12 +191,16 @@ def test_create_import_collision_leaves_no_partial_asset_or_job(db_session, seed
     assert db_session.scalars(select(ProjectImportJob)).all() == []
 
 
-def test_create_import_rejects_user_from_another_tenant_without_partial_state(db_session, seeded_tenant):
+def test_create_import_rejects_user_from_another_tenant_without_partial_state(
+    db_session, seeded_tenant
+):
     other_user = AppUser(keycloak_subject="other-tenant-user")
     other_tenant = Tenant(name="Other tenant")
     db_session.add_all([other_user, other_tenant])
     db_session.flush()
-    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    db_session.add(
+        TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner")
+    )
     db_session.flush()
 
     with pytest.raises(ValueError, match="tenant member"):
@@ -194,7 +212,10 @@ def test_create_import_rejects_user_from_another_tenant_without_partial_state(db
             content=b"3mf",
         )
 
-    assert db_session.scalar(select(Project).where(Project.name == "cross_tenant_import")) is None
+    assert (
+        db_session.scalar(select(Project).where(Project.name == "cross_tenant_import"))
+        is None
+    )
     assert db_session.scalars(select(ProjectAsset)).all() == []
     assert db_session.scalars(select(ProjectImportJob)).all() == []
 
@@ -206,10 +227,14 @@ def test_import_repository_allows_only_one_active_job(db_session, seeded_tenant)
     with pytest.raises(ActiveProjectImportError):
         repo.create_queued(job.project_id, seeded_tenant.user_id, source.id)
 
-    assert db_session.scalars(select(ProjectImportJob).where(ProjectImportJob.project_id == job.project_id)).all() == [job]
+    assert db_session.scalars(
+        select(ProjectImportJob).where(ProjectImportJob.project_id == job.project_id)
+    ).all() == [job]
 
 
-def test_retry_reuses_job_with_new_execution_and_clears_terminal_state(db_session, seeded_tenant):
+def test_retry_reuses_job_with_new_execution_and_clears_terminal_state(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, _, job = _create_import(repo, seeded_tenant)
     old_execution = job.execution_id
@@ -260,7 +285,9 @@ def test_retry_rejects_nonfailed_or_nonretryable_jobs(db_session, seeded_tenant)
         repo.retry(job.id)
 
 
-def test_retry_rejects_existing_active_import_without_mutating_failed_job(db_session, seeded_tenant):
+def test_retry_rejects_existing_active_import_without_mutating_failed_job(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, source, failed_job = _create_import(repo, seeded_tenant)
     repo.mark_failed(
@@ -271,7 +298,9 @@ def test_retry_rejects_existing_active_import_without_mutating_failed_job(db_ses
         user_message="Try again.",
         retryable=True,
     )
-    active_job = repo.create_queued(failed_job.project_id, seeded_tenant.user_id, source.id)
+    active_job = repo.create_queued(
+        failed_job.project_id, seeded_tenant.user_id, source.id
+    )
 
     with pytest.raises(ActiveProjectImportError):
         repo.retry(failed_job.id)
@@ -283,7 +312,9 @@ def test_retry_rejects_existing_active_import_without_mutating_failed_job(db_ses
     assert active_job.status == "queued"
 
 
-def test_retry_and_create_queued_serialize_to_one_active_job(postgres_url, db_session, seeded_tenant):
+def test_retry_and_create_queued_serialize_to_one_active_job(
+    postgres_url, db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, source, failed_job = _create_import(repo, seeded_tenant)
     repo.mark_failed(
@@ -309,7 +340,9 @@ def test_retry_and_create_queued_serialize_to_one_active_job(postgres_url, db_se
         try:
             with SessionFactory() as session:
                 barrier.wait(timeout=10)
-                ProjectImportRepository(session, seeded_tenant.tenant_id).retry(failed_job_id)
+                ProjectImportRepository(session, seeded_tenant.tenant_id).retry(
+                    failed_job_id
+                )
                 session.commit()
                 outcomes.append("retry")
         except ActiveProjectImportError:
@@ -331,7 +364,10 @@ def test_retry_and_create_queued_serialize_to_one_active_job(postgres_url, db_se
         except Exception as exc:  # pragma: no cover - asserted below
             errors.append(exc)
 
-    threads = [threading.Thread(target=retry_failed, daemon=True), threading.Thread(target=create_new, daemon=True)]
+    threads = [
+        threading.Thread(target=retry_failed, daemon=True),
+        threading.Thread(target=create_new, daemon=True),
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -343,14 +379,22 @@ def test_retry_and_create_queued_serialize_to_one_active_job(postgres_url, db_se
     assert len(outcomes) == 2
     assert sum(outcome in {"retry", "create"} for outcome in outcomes) == 1
     db_session.expire_all()
-    assert db_session.scalar(
-        select(func.count()).select_from(ProjectImportJob).where(
-            ProjectImportJob.project_id == project_id,
-            ProjectImportJob.status.in_(["queued", "running"]),
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(ProjectImportJob)
+            .where(
+                ProjectImportJob.project_id == project_id,
+                ProjectImportJob.status.in_(["queued", "running"]),
+            )
         )
-    ) == 1
+        == 1
+    )
 
-def test_stale_execution_cannot_update_or_complete_retried_job(db_session, seeded_tenant):
+
+def test_stale_execution_cannot_update_or_complete_retried_job(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, source, job = _create_import(repo, seeded_tenant)
     stale_execution = job.execution_id
@@ -404,7 +448,46 @@ def test_worker_progress_and_failure_messages_are_bounded(db_session, seeded_ten
     assert job.progress_payload == {}
 
 
-def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(db_session, seeded_tenant):
+def test_running_and_progress_refresh_import_heartbeat(db_session, seeded_tenant):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _, _, job = _create_import(repo, seeded_tenant)
+    assert job.heartbeat_at is None
+
+    repo.mark_running(job.id, job.execution_id)
+    first = job.heartbeat_at
+    assert first is not None
+    job.heartbeat_at = first - timedelta(minutes=1)
+    db_session.flush()
+
+    repo.mark_progress(job.id, job.execution_id, {"stage": "converting"})
+    assert job.heartbeat_at is not None and job.heartbeat_at > first
+    assert (
+        repo.fail_if_stale(
+            job.id,
+            job.execution_id,
+            cutoff=datetime.now(timezone.utc) - timedelta(seconds=30),
+            error_code="worker_lost",
+            user_message="Try again.",
+        )
+        is False
+    )
+    job.heartbeat_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    db_session.flush()
+    assert (
+        repo.fail_if_stale(
+            job.id,
+            job.execution_id,
+            cutoff=datetime.now(timezone.utc) - timedelta(seconds=30),
+            error_code="worker_lost",
+            user_message="Try again.",
+        )
+        is True
+    )
+
+
+def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     source_bytes = b"3mf-source"
     brep_bytes = b"OpenCascade BREP"
@@ -423,7 +506,9 @@ def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(db_ses
     assert succeeded.status == "succeeded"
     assert succeeded.brep_asset_id is not None
     assert succeeded.manifest_asset_id is not None
-    pair = ProjectAssetRepository(db_session, seeded_tenant.tenant_id).successful_import_pair(project.id)
+    pair = ProjectAssetRepository(
+        db_session, seeded_tenant.tenant_id
+    ).successful_import_pair(project.id)
     assert pair is not None
     brep, manifest = pair
     assert (brep.kind, brep.revision, brep.content) == (
@@ -432,11 +517,22 @@ def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(db_ses
         brep_bytes,
     )
     assert (manifest.kind, manifest.revision) == ("import_manifest", 1)
-    assert ProjectRepository(db_session, seeded_tenant.tenant_id).get_code(project.name, "design.py") == generated_3mf_design_source()
+    assert (
+        ProjectRepository(db_session, seeded_tenant.tenant_id).get_code(
+            project.name, "design.py"
+        )
+        == generated_3mf_design_source()
+    )
 
-    snapshot = db_session.scalar(select(SourceSnapshot).where(SourceSnapshot.project_id == project.id))
-    snapshot_files = db_session.scalars(select(SourceSnapshotFile).where(SourceSnapshotFile.snapshot_id == snapshot.id)).all()
-    assert [(row.filename, row.content) for row in snapshot_files] == [("design.py", generated_3mf_design_source())]
+    snapshot = db_session.scalar(
+        select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)
+    )
+    snapshot_files = db_session.scalars(
+        select(SourceSnapshotFile).where(SourceSnapshotFile.snapshot_id == snapshot.id)
+    ).all()
+    assert [(row.filename, row.content) for row in snapshot_files] == [
+        ("design.py", generated_3mf_design_source())
+    ]
 
     with pytest.raises(AssetIntegrityError):
         repo.apply_success(
@@ -450,13 +546,19 @@ def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(db_ses
 
 
 @pytest.mark.parametrize("failure", ["source_digest", "manifest"])
-def test_apply_success_failure_leaves_no_partial_derived_state(failure, db_session, seeded_tenant):
+def test_apply_success_failure_leaves_no_partial_derived_state(
+    failure, db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     source_bytes = b"3mf-source"
     brep_bytes = b"brep"
     project, source, job = _create_import(repo, seeded_tenant, source=source_bytes)
     bad_source_digest = "0" * 64 if failure == "source_digest" else source.sha256
-    manifest = b"not-json" if failure == "manifest" else _manifest_bytes(source_bytes, brep_bytes)
+    manifest = (
+        b"not-json"
+        if failure == "manifest"
+        else _manifest_bytes(source_bytes, brep_bytes)
+    )
 
     with pytest.raises((AssetIntegrityError, ValueError)):
         repo.apply_success(
@@ -477,12 +579,24 @@ def test_apply_success_failure_leaves_no_partial_derived_state(failure, db_sessi
         ).all()
         == []
     )
-    assert db_session.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all() == []
-    assert db_session.scalars(select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)).all() == []
+    assert (
+        db_session.scalars(
+            select(ProjectFile).where(ProjectFile.project_id == project.id)
+        ).all()
+        == []
+    )
+    assert (
+        db_session.scalars(
+            select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)
+        ).all()
+        == []
+    )
     assert job.status == "queued"
 
 
-def test_apply_success_rejects_raw_manifest_bytes_above_limit(db_session, seeded_tenant):
+def test_apply_success_rejects_raw_manifest_bytes_above_limit(
+    db_session, seeded_tenant
+):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     source_bytes = b"3mf-source"
     brep = b"brep"
@@ -500,9 +614,14 @@ def test_apply_success_rejects_raw_manifest_bytes_above_limit(db_session, seeded
             user_id=seeded_tenant.user_id,
         )
 
-    assert db_session.scalars(
-        select(ProjectAsset).where(ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf")
-    ).all() == []
+    assert (
+        db_session.scalars(
+            select(ProjectAsset).where(
+                ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf"
+            )
+        ).all()
+        == []
+    )
 
 
 def test_apply_success_rejects_arbitrary_snapshot_user(db_session, seeded_tenant):
@@ -510,7 +629,9 @@ def test_apply_success_rejects_arbitrary_snapshot_user(db_session, seeded_tenant
     other_tenant = Tenant(name="Wrong result tenant")
     db_session.add_all([other_user, other_tenant])
     db_session.flush()
-    db_session.add(TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner"))
+    db_session.add(
+        TenantMembership(tenant_id=other_tenant.id, user_id=other_user.id, role="owner")
+    )
     db_session.flush()
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     project, source, job = _create_import(repo, seeded_tenant)
@@ -526,14 +647,31 @@ def test_apply_success_rejects_arbitrary_snapshot_user(db_session, seeded_tenant
             user_id=other_user.id,
         )
 
-    assert db_session.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all() == []
-    assert db_session.scalars(select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)).all() == []
-    assert db_session.scalars(
-        select(ProjectAsset).where(ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf")
-    ).all() == []
+    assert (
+        db_session.scalars(
+            select(ProjectFile).where(ProjectFile.project_id == project.id)
+        ).all()
+        == []
+    )
+    assert (
+        db_session.scalars(
+            select(SourceSnapshot).where(SourceSnapshot.project_id == project.id)
+        ).all()
+        == []
+    )
+    assert (
+        db_session.scalars(
+            select(ProjectAsset).where(
+                ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf"
+            )
+        ).all()
+        == []
+    )
 
 
-def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seeded_tenant):
+def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(
+    db_session, seeded_tenant
+):
     import_repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     project, source, import_job = _create_import(import_repo, seeded_tenant)
     brep_content = b"brep-v1"
@@ -545,7 +683,9 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
         manifest_content=_manifest_bytes(b"3mf-source", brep_content),
         user_id=seeded_tenant.user_id,
     )
-    brep, manifest = ProjectAssetRepository(db_session, seeded_tenant.tenant_id).successful_import_pair(project.id)
+    brep, manifest = ProjectAssetRepository(
+        db_session, seeded_tenant.tenant_id
+    ).successful_import_pair(project.id)
     compile_repo = CompileRepository(db_session, seeded_tenant.tenant_id)
     swapped_job = compile_repo.start_job(project.id, seeded_tenant.user_id, "glb")
     with pytest.raises(AssetIntegrityError, match="filename"):
@@ -579,7 +719,9 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
         content=b"3mf-source-v2",
         revision=2,
     )
-    import_job_v2 = import_repo.create_queued(project.id, seeded_tenant.user_id, source_v2.id)
+    import_job_v2 = import_repo.create_queued(
+        project.id, seeded_tenant.user_id, source_v2.id
+    )
     brep_v2 = b"brep-v2"
     import_repo.apply_success(
         job_id=import_job_v2.id,
@@ -593,9 +735,7 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
     _, manifest_v2 = ProjectAssetRepository(
         db_session, seeded_tenant.tenant_id
     ).successful_import_pair(project.id)
-    mixed_job = compile_repo.start_job(
-        project.id, seeded_tenant.user_id, "glb"
-    )
+    mixed_job = compile_repo.start_job(project.id, seeded_tenant.user_id, "glb")
     with pytest.raises(AssetIntegrityError):
         compile_repo.snapshot_job_assets(
             mixed_job,
@@ -622,7 +762,9 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
         db_session.flush()
 
 
-def test_revision_allocation_serializes_concurrent_writers(postgres_url, db_session, seeded_tenant):
+def test_revision_allocation_serializes_concurrent_writers(
+    postgres_url, db_session, seeded_tenant
+):
     db_session.commit()
     engine = create_engine(postgres_url, pool_pre_ping=True)
     SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -659,7 +801,10 @@ def test_revision_allocation_serializes_concurrent_writers(postgres_url, db_sess
         except Exception as exc:  # pragma: no cover - asserted below
             errors.append(exc)
 
-    threads = [threading.Thread(target=create_pair, args=(marker,), daemon=True) for marker in (b"one", b"two")]
+    threads = [
+        threading.Thread(target=create_pair, args=(marker,), daemon=True)
+        for marker in (b"one", b"two")
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:

@@ -38,7 +38,9 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "project_files" in table_names
     assert "artifacts" in table_names
     assert "compile_jobs" in table_names
-    artifact_columns = {column["name"]: column for column in inspector.get_columns("artifacts")}
+    artifact_columns = {
+        column["name"]: column for column in inspector.get_columns("artifacts")
+    }
     assert "content" in artifact_columns
     assert str(artifact_columns["content"]["type"]).lower() in {
         "bytea",
@@ -46,12 +48,16 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
         "largebinary",
     }
     assert artifact_columns["content"]["nullable"] is True
-    compile_job_columns = {column["name"]: column for column in inspector.get_columns("compile_jobs")}
+    compile_job_columns = {
+        column["name"]: column for column in inspector.get_columns("compile_jobs")
+    }
     assert "claim_token" in compile_job_columns
     assert "claimed_at" in compile_job_columns
     assert "lease_expires_at" in compile_job_columns
     assert "attempt_count" in compile_job_columns
-    llm_edit_job_columns = {column["name"]: column for column in inspector.get_columns("llm_edit_jobs")}
+    llm_edit_job_columns = {
+        column["name"]: column for column in inspector.get_columns("llm_edit_jobs")
+    }
     assert llm_edit_job_columns["progress_payload"]["nullable"] is False
     assert llm_edit_job_columns["progress_payload"]["default"] is None
 
@@ -59,7 +65,14 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "project_assets" in table_names
     assert "project_import_jobs" in table_names
     assert "compile_job_assets" in table_names
-    snapshot_columns = {column["name"]: column for column in inspector.get_columns("compile_job_files")}
+    import_job_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("project_import_jobs")
+    }
+    assert import_job_columns["heartbeat_at"]["nullable"] is True
+    snapshot_columns = {
+        column["name"]: column for column in inspector.get_columns("compile_job_files")
+    }
     assert {
         "id",
         "compile_job_id",
@@ -70,12 +83,20 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
         "created_at",
     } <= set(snapshot_columns)
 
-    active_indexes = {index["name"]: index for index in inspector.get_indexes("project_import_jobs")}
+    active_indexes = {
+        index["name"]: index for index in inspector.get_indexes("project_import_jobs")
+    }
     assert active_indexes["uq_project_import_jobs_active_project"]["unique"] is True
-    assert "status" in str(active_indexes["uq_project_import_jobs_active_project"].get("dialect_options", {}))
+    assert "status" in str(
+        active_indexes["uq_project_import_jobs_active_project"].get(
+            "dialect_options", {}
+        )
+    )
 
 
-def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: str, monkeypatch):
+def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(
+    postgres_url: str, monkeypatch
+):
     server_dir = Path(__file__).parents[1]
     monkeypatch.setenv("DATABASE_URL", postgres_url)
     get_settings.cache_clear()
@@ -99,10 +120,16 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: st
                 "INSERT INTO app_users (id, keycloak_subject, created_at, last_seen_at) "
                 "VALUES (:id, :subject, :created_at, :created_at)"
             ),
-            {"id": user_id, "subject": "immutable-migration-user", "created_at": created_at},
+            {
+                "id": user_id,
+                "subject": "immutable-migration-user",
+                "created_at": created_at,
+            },
         )
         connection.execute(
-            text("INSERT INTO tenants (id, name, created_at) VALUES (:id, :name, :created_at)"),
+            text(
+                "INSERT INTO tenants (id, name, created_at) VALUES (:id, :name, :created_at)"
+            ),
             {"id": tenant_id, "name": "Immutable tenant", "created_at": created_at},
         )
         connection.execute(
@@ -110,7 +137,13 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: st
                 "INSERT INTO projects (id, tenant_id, name, created_by, created_at, updated_at) "
                 "VALUES (:id, :tenant_id, :name, :user_id, :created_at, :created_at)"
             ),
-            {"id": project_id, "tenant_id": tenant_id, "name": "immutable-project", "user_id": user_id, "created_at": created_at},
+            {
+                "id": project_id,
+                "tenant_id": tenant_id,
+                "name": "immutable-project",
+                "user_id": user_id,
+                "created_at": created_at,
+            },
         )
         connection.execute(
             text(
@@ -167,7 +200,9 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(postgres_url: st
     with pytest.raises(DBAPIError, match="compile_job_assets rows are immutable"):
         with engine.begin() as connection:
             connection.execute(
-                text("UPDATE compile_job_assets SET object_key = 'changed' WHERE id = :id"),
+                text(
+                    "UPDATE compile_job_assets SET object_key = 'changed' WHERE id = :id"
+                ),
                 {"id": compile_asset_id},
             )
 
@@ -223,7 +258,9 @@ def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):
     assert diffs == []
 
 
-def test_progress_migration_backfills_existing_llm_edit_job(postgres_url: str, monkeypatch):
+def test_progress_migration_backfills_existing_llm_edit_job(
+    postgres_url: str, monkeypatch
+):
     server_dir = Path(__file__).parents[1]
     monkeypatch.setenv("DATABASE_URL", postgres_url)
     get_settings.cache_clear()
@@ -319,7 +356,10 @@ def test_progress_migration_backfills_existing_llm_edit_job(postgres_url: str, m
             text("SELECT progress_payload FROM llm_edit_jobs WHERE id = :job_id"),
             {"job_id": job_id},
         )
-    progress_column = {column["name"]: column for column in inspect(engine).get_columns("llm_edit_jobs")}["progress_payload"]
+    progress_column = {
+        column["name"]: column
+        for column in inspect(engine).get_columns("llm_edit_jobs")
+    }["progress_payload"]
 
     engine.dispose()
     get_settings.cache_clear()

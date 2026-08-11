@@ -136,12 +136,20 @@ class ProjectRepository:
         self.tenant_id = tenant_id
 
     def list_projects(self) -> list[str]:
-        projects = self.db.scalars(select(Project).where(Project.tenant_id == self.tenant_id).order_by(Project.name)).all()
+        projects = self.db.scalars(
+            select(Project)
+            .where(Project.tenant_id == self.tenant_id)
+            .order_by(Project.name)
+        ).all()
         return [project.name for project in projects]
 
     def get_project(self, name: str) -> Project | None:
         name = require_valid_project_name(name)
-        return self.db.scalar(select(Project).where(Project.tenant_id == self.tenant_id, Project.name == name))
+        return self.db.scalar(
+            select(Project).where(
+                Project.tenant_id == self.tenant_id, Project.name == name
+            )
+        )
 
     def activate_project(self, project_name: str, user_id: UUID) -> bool:
         project = self.get_project(project_name)
@@ -239,7 +247,10 @@ class ProjectRepository:
             )
             .order_by(ProjectFile.filename)
         ).all()
-        rows = [{"id": file.id, "filename": file.filename, "updated_at": file.updated_at} for file in files]
+        rows = [
+            {"id": file.id, "filename": file.filename, "updated_at": file.updated_at}
+            for file in files
+        ]
         rows.sort(key=lambda row: (row["filename"] != "design.py", row["filename"]))
         return rows
 
@@ -303,7 +314,9 @@ class ProjectRepository:
         user_id: UUID,
         message: str,
     ) -> bool:
-        saved = self.stage_code_update(project_name, filename, content, user_id, message)
+        saved = self.stage_code_update(
+            project_name, filename, content, user_id, message
+        )
         if saved:
             self.db.commit()
         return saved
@@ -366,8 +379,12 @@ class ProjectRepository:
         if expected_updated_at is not None:
             for file_id, expected_version in expected_updated_at.items():
                 file = files.get(file_id)
-                if file is None or normalize_file_version(file.updated_at) != normalize_file_version(expected_version):
-                    raise FileVersionConflictError("Files changed while AI edit was running")
+                if file is None or normalize_file_version(
+                    file.updated_at
+                ) != normalize_file_version(expected_version):
+                    raise FileVersionConflictError(
+                        "Files changed while AI edit was running"
+                    )
         now = now_utc()
         changed: list[ProjectFile] = []
         for file_id, content in updates.items():
@@ -438,7 +455,9 @@ class ProjectRepository:
         ).all()
         return [f"{row.content_hash[:7]} {row.message}" for row in rows]
 
-    def _snapshot(self, project: Project, user_id: UUID, message: str) -> SourceSnapshot:
+    def _snapshot(
+        self, project: Project, user_id: UUID, message: str
+    ) -> SourceSnapshot:
         files = self.db.scalars(
             select(ProjectFile)
             .where(
@@ -523,7 +542,9 @@ class ProjectAssetRepository:
     def _metadata(row) -> ProjectAssetMetadata:
         return ProjectAssetMetadata(**dict(row._mapping))
 
-    def get_metadata(self, asset_id: UUID, *, project_id: UUID | None = None) -> ProjectAssetMetadata | None:
+    def get_metadata(
+        self, asset_id: UUID, *, project_id: UUID | None = None
+    ) -> ProjectAssetMetadata | None:
         stmt = select(*self._METADATA_COLUMNS).where(
             ProjectAsset.id == asset_id,
             ProjectAsset.tenant_id == self.tenant_id,
@@ -544,7 +565,9 @@ class ProjectAssetRepository:
         ).all()
         return [self._metadata(row) for row in rows]
 
-    def get_content(self, asset_id: UUID, *, project_id: UUID | None = None) -> bytes | None:
+    def get_content(
+        self, asset_id: UUID, *, project_id: UUID | None = None
+    ) -> bytes | None:
         stmt = select(ProjectAsset.content).where(
             ProjectAsset.id == asset_id,
             ProjectAsset.tenant_id == self.tenant_id,
@@ -553,9 +576,11 @@ class ProjectAssetRepository:
             stmt = stmt.where(ProjectAsset.project_id == project_id)
         return self.db.scalar(stmt)
 
-    def allocate_revision(self, project_id: UUID, *, import_job_id: UUID | None = None) -> int:
+    def allocate_revision(
+        self, project_id: UUID, *, import_job_id: UUID | None = None
+    ) -> int:
         if import_job_id is None:
-            lock = self.db.scalar(
+            project_lock = self.db.scalar(
                 select(Project)
                 .where(
                     Project.id == project_id,
@@ -563,8 +588,10 @@ class ProjectAssetRepository:
                 )
                 .with_for_update()
             )
+            if project_lock is None:
+                raise ValueError("Project import scope not found")
         else:
-            lock = self.db.scalar(
+            import_lock = self.db.scalar(
                 select(ProjectImportJob)
                 .where(
                     ProjectImportJob.id == import_job_id,
@@ -573,8 +600,8 @@ class ProjectAssetRepository:
                 )
                 .with_for_update()
             )
-        if lock is None:
-            raise ValueError("Project import scope not found")
+            if import_lock is None:
+                raise ValueError("Project import scope not found")
         current = self.db.scalar(
             select(func.max(ProjectAsset.revision)).where(
                 ProjectAsset.tenant_id == self.tenant_id,
@@ -584,7 +611,9 @@ class ProjectAssetRepository:
         )
         return (current or 0) + 1
 
-    def successful_import_pair(self, project_id: UUID) -> tuple[ProjectAsset, ProjectAsset] | None:
+    def successful_import_pair(
+        self, project_id: UUID
+    ) -> tuple[ProjectAsset, ProjectAsset] | None:
         job = self.db.scalar(
             select(ProjectImportJob)
             .where(
@@ -675,7 +704,9 @@ class ProjectImportRepository:
         except IntegrityError as exc:
             raise ProjectNameConflictError("Project name already exists") from exc
 
-    def create_queued(self, project_id: UUID, requested_by: UUID, source_asset_id: UUID) -> ProjectImportJob:
+    def create_queued(
+        self, project_id: UUID, requested_by: UUID, source_asset_id: UUID
+    ) -> ProjectImportJob:
         self._require_requester(requested_by)
         try:
             with self.db.begin_nested():
@@ -707,7 +738,9 @@ class ProjectImportRepository:
                     )
                 )
                 if active is not None:
-                    raise ActiveProjectImportError("Project already has an active import")
+                    raise ActiveProjectImportError(
+                        "Project already has an active import"
+                    )
                 job = ProjectImportJob(
                     tenant_id=self.tenant_id,
                     project_id=project_id,
@@ -723,7 +756,9 @@ class ProjectImportRepository:
                 self.db.flush()
             return job
         except IntegrityError as exc:
-            raise ActiveProjectImportError("Project already has an active import") from exc
+            raise ActiveProjectImportError(
+                "Project already has an active import"
+            ) from exc
 
     def get_job(self, job_id: UUID) -> ProjectImportJob | None:
         return self.db.scalar(
@@ -759,10 +794,13 @@ class ProjectImportRepository:
         job.status = "running"
         if job.started_at is None:
             job.started_at = now_utc()
+        job.heartbeat_at = now_utc()
         self.db.flush()
         return job
 
-    def mark_progress(self, job_id: UUID, execution_id: UUID, progress_payload: dict) -> ProjectImportJob:
+    def mark_progress(
+        self, job_id: UUID, execution_id: UUID, progress_payload: dict
+    ) -> ProjectImportJob:
         try:
             progress_bytes = len(
                 json.dumps(
@@ -772,7 +810,9 @@ class ProjectImportRepository:
                 ).encode("utf-8")
             )
         except (TypeError, ValueError) as exc:
-            raise ValueError("Import progress payload must be JSON serializable") from exc
+            raise ValueError(
+                "Import progress payload must be JSON serializable"
+            ) from exc
         if progress_bytes > IMPORT_PROGRESS_MAX_BYTES:
             raise ValueError("Import progress payload exceeds byte limit")
         job = self._lock_job(job_id)
@@ -780,6 +820,7 @@ class ProjectImportRepository:
         if job.status not in {"queued", "running"}:
             raise ValueError("Import job is terminal")
         job.progress_payload = dict(progress_payload)
+        job.heartbeat_at = now_utc()
         flag_modified(job, "progress_payload")
         self.db.flush()
         return job
@@ -813,6 +854,31 @@ class ProjectImportRepository:
         job.finished_at = now_utc()
         self.db.flush()
         return job
+
+    def fail_if_stale(
+        self,
+        job_id: UUID,
+        execution_id: UUID,
+        *,
+        cutoff: datetime,
+        error_code: str,
+        user_message: str,
+    ) -> bool:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status != "running":
+            return False
+        lease_at = job.heartbeat_at or job.started_at
+        if lease_at is None or lease_at >= cutoff:
+            return False
+        job.status = "failed"
+        job.error = error_code
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = True
+        job.finished_at = now_utc()
+        self.db.flush()
+        return True
 
     def retry(self, job_id: UUID) -> ProjectImportJob:
         scope = self.db.execute(
@@ -862,6 +928,7 @@ class ProjectImportRepository:
                 job.brep_asset_id = None
                 job.manifest_asset_id = None
                 job.started_at = None
+                job.heartbeat_at = None
                 job.finished_at = None
                 self.db.flush()
             return job
@@ -907,9 +974,13 @@ class ProjectImportRepository:
             brep_sha256 = hashlib.sha256(brep_bytes).hexdigest()
             if manifest.source_sha256 != source.sha256:
                 raise AssetIntegrityError("manifest source digest mismatch")
-            if manifest.brep_sha256 != brep_sha256 or manifest.brep_byte_size != len(brep_bytes):
+            if manifest.brep_sha256 != brep_sha256 or manifest.brep_byte_size != len(
+                brep_bytes
+            ):
                 raise AssetIntegrityError("manifest BREP integrity mismatch")
-            revision = self.assets.allocate_revision(job.project_id, import_job_id=job.id)
+            revision = self.assets.allocate_revision(
+                job.project_id, import_job_id=job.id
+            )
             brep = self.assets.create(
                 project_id=job.project_id,
                 logical_name="source.brep",
@@ -1030,7 +1101,9 @@ class CompileRepository:
         job.status = "queued"
         job.error = error
         job.error_code = "publish_pending"
-        job.user_message = "Compile queued but could not be published immediately. It will be retried."
+        job.user_message = (
+            "Compile queued but could not be published immediately. It will be retried."
+        )
         job.retryable = True
         job.claimed_at = None
         job.lease_expires_at = None
@@ -1051,7 +1124,9 @@ class CompileRepository:
         job.retryable = retryable
         job.finished_at = now_utc()
 
-    def claim_job_for_command(self, command: CompileCommand, lease_seconds: int) -> CompileJob | None:
+    def claim_job_for_command(
+        self, command: CompileCommand, lease_seconds: int
+    ) -> CompileJob | None:
         now = now_utc()
         claim_token = uuid.uuid4()
         stmt = (
@@ -1064,7 +1139,8 @@ class CompileRepository:
                 CompileJob.export_format == command.export_format,
                 or_(
                     CompileJob.status == "queued",
-                    (CompileJob.status == "running") & (CompileJob.lease_expires_at < now),
+                    (CompileJob.status == "running")
+                    & (CompileJob.lease_expires_at < now),
                 ),
             )
             .values(
@@ -1154,7 +1230,9 @@ class CompileRepository:
             )
         self.db.flush()
 
-    def assets_for_job(self, job_id: UUID, *, project_id: UUID | None = None) -> list[CompileJobAsset]:
+    def assets_for_job(
+        self, job_id: UUID, *, project_id: UUID | None = None
+    ) -> list[CompileJobAsset]:
         stmt = select(CompileJobAsset).where(
             CompileJobAsset.compile_job_id == job_id,
             CompileJobAsset.tenant_id == self.tenant_id,
@@ -1172,7 +1250,9 @@ class CompileRepository:
         ).all()
         return {row.filename: row.content for row in rows}
 
-    def stale_queued_jobs(self, older_than_seconds: int, limit: int = 50) -> list[CompileJob]:
+    def stale_queued_jobs(
+        self, older_than_seconds: int, limit: int = 50
+    ) -> list[CompileJob]:
         cutoff = now_utc() - timedelta(seconds=older_than_seconds)
         return list(
             self.db.scalars(
@@ -1187,7 +1267,9 @@ class CompileRepository:
             )
         )
 
-    def stale_running_jobs(self, older_than_seconds: int, limit: int = 50) -> list[CompileJob]:
+    def stale_running_jobs(
+        self, older_than_seconds: int, limit: int = 50
+    ) -> list[CompileJob]:
         now = now_utc()
         cutoff = now - timedelta(seconds=older_than_seconds)
         return list(
@@ -1197,9 +1279,19 @@ class CompileRepository:
                     CompileJob.tenant_id == self.tenant_id,
                     CompileJob.status == "running",
                     or_(
-                        (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
-                        (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < cutoff)),
-                        (CompileJob.claimed_at.is_(None) & CompileJob.lease_expires_at.is_(None) & (CompileJob.created_at < cutoff)),
+                        (
+                            CompileJob.lease_expires_at.is_not(None)
+                            & (CompileJob.lease_expires_at < now)
+                        ),
+                        (
+                            CompileJob.claimed_at.is_not(None)
+                            & (CompileJob.claimed_at < cutoff)
+                        ),
+                        (
+                            CompileJob.claimed_at.is_(None)
+                            & CompileJob.lease_expires_at.is_(None)
+                            & (CompileJob.created_at < cutoff)
+                        ),
                     ),
                 )
                 .order_by(CompileJob.lease_expires_at, CompileJob.created_at)
@@ -1227,12 +1319,25 @@ class CompileRepository:
                     (
                         (CompileJob.status == "running")
                         & or_(
-                            (CompileJob.lease_expires_at.is_not(None) & (CompileJob.lease_expires_at < now)),
-                            (CompileJob.claimed_at.is_not(None) & (CompileJob.claimed_at < running_cutoff)),
-                            (CompileJob.claimed_at.is_(None) & CompileJob.lease_expires_at.is_(None) & (CompileJob.created_at < running_cutoff)),
+                            (
+                                CompileJob.lease_expires_at.is_not(None)
+                                & (CompileJob.lease_expires_at < now)
+                            ),
+                            (
+                                CompileJob.claimed_at.is_not(None)
+                                & (CompileJob.claimed_at < running_cutoff)
+                            ),
+                            (
+                                CompileJob.claimed_at.is_(None)
+                                & CompileJob.lease_expires_at.is_(None)
+                                & (CompileJob.created_at < running_cutoff)
+                            ),
                         )
                     ),
-                    ((CompileJob.status == "queued") & (CompileJob.created_at < queued_cutoff)),
+                    (
+                        (CompileJob.status == "queued")
+                        & (CompileJob.created_at < queued_cutoff)
+                    ),
                 ),
             )
             .values(
@@ -1300,7 +1405,8 @@ class CompileRepository:
             project_id=project_id,
             compile_job_id=job_id,
             kind=normalized_kind,
-            storage_key=storage_key or artifact_storage_key(self.tenant_id, project_id, normalized_kind),
+            storage_key=storage_key
+            or artifact_storage_key(self.tenant_id, project_id, normalized_kind),
             content_type=content_type or content_type_for_kind(normalized_kind),
             byte_size=len(content),
             content=content,
@@ -1309,7 +1415,9 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
-    def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
+    def prunable_artifacts(
+        self, project_id: UUID, kind: str, keep_latest: int
+    ) -> list[Artifact]:
         keep_latest = max(0, keep_latest)
         query = (
             select(Artifact)
@@ -1328,14 +1436,18 @@ class CompileRepository:
             self.db.delete(artifact)
         self.db.flush()
 
-    def artifact_for_job(self, job_id: UUID, kind: str | None = None) -> Artifact | None:
+    def artifact_for_job(
+        self, job_id: UUID, kind: str | None = None
+    ) -> Artifact | None:
         query = select(Artifact).where(
             Artifact.tenant_id == self.tenant_id,
             Artifact.compile_job_id == job_id,
         )
         if kind is not None:
             query = query.where(Artifact.kind == kind.lower())
-        return self.db.scalar(query.order_by(Artifact.created_at.desc(), Artifact.id.desc()))
+        return self.db.scalar(
+            query.order_by(Artifact.created_at.desc(), Artifact.id.desc())
+        )
 
     def record_usage(
         self,
@@ -1432,7 +1544,11 @@ class LlmEditRepository:
             return ProgressBatchApplyOutcome.IGNORED_TERMINAL
 
         try:
-            persisted = PiAgentProgressSnapshot.model_validate(job.progress_payload) if job.progress_payload else None
+            persisted = (
+                PiAgentProgressSnapshot.model_validate(job.progress_payload)
+                if job.progress_payload
+                else None
+            )
         except ValidationError:
             return ProgressBatchApplyOutcome.REJECTED_SNAPSHOT
         if persisted is not None and persisted.execution_id == batch.execution_id:
@@ -1443,7 +1559,10 @@ class LlmEditRepository:
             events = [*persisted.events, *batch.events]
             truncated_before_sequence = persisted.truncated_before_sequence
         else:
-            if persisted is not None and batch.execution_started_at <= persisted.execution_started_at:
+            if (
+                persisted is not None
+                and batch.execution_started_at <= persisted.execution_started_at
+            ):
                 return ProgressBatchApplyOutcome.STALE_EXECUTION
             events = list(batch.events)
             truncated_before_sequence = None
@@ -1462,7 +1581,10 @@ class LlmEditRepository:
             truncated_before_sequence=truncated_before_sequence,
             events=events,
         )
-        while len(snapshot.model_dump_json().encode("utf-8")) > PI_AGENT_PROGRESS_MAX_BYTES:
+        while (
+            len(snapshot.model_dump_json().encode("utf-8"))
+            > PI_AGENT_PROGRESS_MAX_BYTES
+        ):
             discarded_event = events[0]
             events = events[1:]
             snapshot = snapshot.model_copy(
@@ -1477,7 +1599,9 @@ class LlmEditRepository:
         self.db.flush()
         return ProgressBatchApplyOutcome.APPLIED
 
-    def list_jobs_for_project(self, project_id: UUID, *, limit: int = 200) -> list[LlmEditJob]:
+    def list_jobs_for_project(
+        self, project_id: UUID, *, limit: int = 200
+    ) -> list[LlmEditJob]:
         normalized_limit = max(1, min(limit, 200))
         return list(
             self.db.scalars(
@@ -1512,7 +1636,9 @@ class LlmEditRepository:
         )
         return list(reversed(jobs))
 
-    def get_compile_job_for_llm_edit(self, project_id: UUID, llm_edit_job_id: UUID) -> CompileJob | None:
+    def get_compile_job_for_llm_edit(
+        self, project_id: UUID, llm_edit_job_id: UUID
+    ) -> CompileJob | None:
         return self.db.scalar(
             select(CompileJob)
             .where(
@@ -1602,7 +1728,9 @@ class LlmEditRepository:
             self.db.flush()
         return self.get_job(project_id, job_id)
 
-    def reconcile_stale_jobs_for_project(self, project_id: UUID, older_than_seconds: int) -> int:
+    def reconcile_stale_jobs_for_project(
+        self, project_id: UUID, older_than_seconds: int
+    ) -> int:
         now = now_utc()
         cutoff = now - timedelta(seconds=older_than_seconds)
         reconciled_ids = self.db.scalars(
@@ -1637,7 +1765,9 @@ class UsageRepository:
             select(
                 func.count(CompileUsageRecord.id),
                 func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
-                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(
+                    func.sum(CompileUsageRecord.compute_duration_seconds), 0.0
+                ),
                 func.coalesce(func.sum(CompileUsageRecord.artifact_byte_size), 0),
             ).where(CompileUsageRecord.tenant_id == self.tenant_id)
         ).one()
@@ -1654,11 +1784,14 @@ class UsageRepository:
                 func.date_trunc("day", CompileUsageRecord.created_at).label("day"),
                 func.count(CompileUsageRecord.id),
                 func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
-                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(
+                    func.sum(CompileUsageRecord.compute_duration_seconds), 0.0
+                ),
             )
             .where(
                 CompileUsageRecord.tenant_id == self.tenant_id,
-                CompileUsageRecord.created_at >= func.now() - func.make_interval(0, 0, 0, days),
+                CompileUsageRecord.created_at
+                >= func.now() - func.make_interval(0, 0, 0, days),
             )
             .group_by("day")
             .order_by("day")
@@ -1679,11 +1812,14 @@ class UsageRepository:
                 func.date_trunc("month", CompileUsageRecord.created_at).label("month"),
                 func.count(CompileUsageRecord.id),
                 func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
-                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(
+                    func.sum(CompileUsageRecord.compute_duration_seconds), 0.0
+                ),
             )
             .where(
                 CompileUsageRecord.tenant_id == self.tenant_id,
-                CompileUsageRecord.created_at >= func.now() - func.make_interval(0, months, 0, 0),
+                CompileUsageRecord.created_at
+                >= func.now() - func.make_interval(0, months, 0, 0),
             )
             .group_by("month")
             .order_by("month")
@@ -1707,7 +1843,9 @@ class UsageRepository:
                 Project.name,
                 func.count(CompileUsageRecord.id),
                 func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
-                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(
+                    func.sum(CompileUsageRecord.compute_duration_seconds), 0.0
+                ),
             )
             .join(Project, Project.id == CompileUsageRecord.project_id)
             .where(CompileUsageRecord.tenant_id == self.tenant_id)
@@ -1731,7 +1869,9 @@ class UsageRepository:
                 CompileUsageRecord.export_format,
                 func.count(CompileUsageRecord.id),
                 func.coalesce(func.sum(CompileUsageRecord.cost_cents), 0),
-                func.coalesce(func.sum(CompileUsageRecord.compute_duration_seconds), 0.0),
+                func.coalesce(
+                    func.sum(CompileUsageRecord.compute_duration_seconds), 0.0
+                ),
             )
             .where(CompileUsageRecord.tenant_id == self.tenant_id)
             .group_by(CompileUsageRecord.export_format)

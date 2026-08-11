@@ -43,9 +43,7 @@ _SAFE_FAILURES: dict[str, tuple[str, bool]] = {
     "3mf_resource_limit": ("The 3MF exceeds an import resource limit.", False),
     "3mf_conversion_timeout": ("The 3MF conversion timed out.", True),
     "conversion_failed": ("The 3MF conversion failed safely.", True),
-    "source_integrity": ("The uploaded 3MF could not be verified.", True),
-    "object_integrity": ("The converted 3MF objects could not be verified.", True),
-    "invalid_result": ("The converted 3MF result could not be verified.", True),
+    "asset_integrity_error": ("The imported 3MF assets could not be verified.", True),
     "worker_lost": ("The 3MF import worker stopped unexpectedly. Try again.", True),
 }
 
@@ -107,13 +105,6 @@ def _load_result_job(db, result: Import3mfResult):
     if row is None:
         return None
     job, source = row
-    if (
-        source.sha256 != result.source.sha256
-        or source.byte_size != result.source.byte_size
-        or source.kind != "source_3mf"
-        or result.source.key != f"sha256/{result.source.sha256}"
-    ):
-        return None
     return job, source
 
 
@@ -154,14 +145,20 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
     if loaded is None:
         db.rollback()
         return "stale"
-    job, _source = loaded
+    job, source = loaded
     if job.status in {"succeeded", "failed"}:
         db.rollback()
         return "duplicate"
 
     repo = ProjectImportRepository(db, result.tenant_id)
-    if result.source.bucket != settings.project_asset_object_bucket:
-        _mark_safe_failure(repo, result, "invalid_result")
+    if (
+        result.source.bucket != settings.project_asset_object_bucket
+        or result.source.key != f"sha256/{result.source.sha256}"
+        or source.sha256 != result.source.sha256
+        or source.byte_size != result.source.byte_size
+        or source.kind != "source_3mf"
+    ):
+        _mark_safe_failure(repo, result, "asset_integrity_error")
         db.commit()
         return "failed"
 
@@ -184,7 +181,7 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
         result.brep.bucket != settings.project_asset_object_bucket
         or result.manifest.bucket != settings.project_asset_object_bucket
     ):
-        _mark_safe_failure(repo, result, "invalid_result")
+        _mark_safe_failure(repo, result, "asset_integrity_error")
         db.commit()
         return "failed"
 
@@ -194,7 +191,7 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
     except ObjectNotFoundError, ObjectStoreUnavailableError:
         raise
     except ObjectIntegrityError:
-        _mark_safe_failure(repo, result, "invalid_result")
+        _mark_safe_failure(repo, result, "asset_integrity_error")
         db.commit()
         return "failed"
 
@@ -208,7 +205,7 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
         ):
             raise ValueError("manifest integrity mismatch")
     except ValidationError, ValueError:
-        _mark_safe_failure(repo, result, "invalid_result")
+        _mark_safe_failure(repo, result, "asset_integrity_error")
         db.commit()
         return "failed"
 
@@ -225,7 +222,7 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
         db.rollback()
         return "stale"
     except AssetIntegrityError:
-        _mark_safe_failure(repo, result, "invalid_result")
+        _mark_safe_failure(repo, result, "asset_integrity_error")
         db.commit()
         return "failed"
     db.commit()
@@ -288,20 +285,21 @@ def reconcile_stale_import_jobs(db, settings) -> int:
     cutoff = now_utc() - timedelta(seconds=settings.import_3mf_running_lease_seconds)
     count = 0
     for job in _running_jobs(db):
-        heartbeat_at = job.started_at or job.created_at
+        heartbeat_at = (
+            getattr(job, "heartbeat_at", None) or job.started_at or job.created_at
+        )
         if heartbeat_at >= cutoff:
             continue
         try:
-            ProjectImportRepository(db, job.tenant_id).mark_failed(
+            failed = ProjectImportRepository(db, job.tenant_id).fail_if_stale(
                 job.id,
                 job.execution_id,
-                error="worker_lost",
+                cutoff=cutoff,
                 error_code="worker_lost",
                 user_message=_SAFE_FAILURES["worker_lost"][0],
-                retryable=True,
             )
             db.commit()
-            count += 1
+            count += int(failed)
         except StaleImportExecutionError, ValueError:
             db.rollback()
     if not count:
@@ -323,17 +321,7 @@ async def run_import_result_consumer(stop_event: asyncio.Event | None = None) ->
                 max_object_bytes=settings.project_asset_object_max_bytes,
             )
             subscription = await pull_import_result_subscription(js, settings)
-            last_reconciliation = asyncio.get_running_loop().time()
             while stop_event is None or not stop_event.is_set():
-                now = asyncio.get_running_loop().time()
-                if now - last_reconciliation >= 60:
-                    with SessionLocal() as db:
-                        try:
-                            reconcile_stale_import_jobs(db, settings)
-                        except Exception:
-                            db.rollback()
-                            logger.warning("3MF stale import reconciliation failed")
-                    last_reconciliation = now
                 try:
                     messages = await subscription.fetch(batch=1, timeout=5)
                 except TimeoutError:
@@ -353,3 +341,23 @@ async def run_import_result_consumer(stop_event: asyncio.Event | None = None) ->
         finally:
             if nc is not None:
                 await nc.close()
+
+
+async def run_import_reconciler(
+    stop_event: asyncio.Event | None = None, *, interval_seconds: float = 60
+) -> None:
+    while stop_event is None or not stop_event.is_set():
+        settings = get_settings()
+        with SessionLocal() as db:
+            try:
+                reconcile_stale_import_jobs(db, settings)
+            except Exception:
+                db.rollback()
+                logger.warning("3MF stale import reconciliation failed")
+        if stop_event is None:
+            await asyncio.sleep(interval_seconds)
+            continue
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except TimeoutError:
+            pass

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -16,6 +18,7 @@ from core.project_assets import (
 )
 from workflows.intus.import_3mf_converter import ConversionOutput, Import3mfError
 from workflows.intus.import_3mf_job import (
+    _heartbeat,
     execute_import_command,
     handle_import_request_message,
 )
@@ -45,6 +48,8 @@ def command() -> Import3mfCommand:
         execution_id=uuid4(),
         source=ref(SOURCE),
         conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+        traceparent="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        tracestate="vendor=value",
     )
 
 
@@ -153,6 +158,8 @@ async def test_execute_fetches_converts_and_stores_only_references(monkeypatch):
     result = await execute_import_command(command(), store, settings(), report)
 
     assert result.status == "succeeded"
+    assert result.traceparent == command().traceparent
+    assert result.tracestate == command().tracestate
     assert store.puts == [output.brep_bytes, output.manifest.model_dump_json().encode()]
     assert progress == [("validating", 5), ("converting", 20), ("persisting", 90)]
     assert "safe-3mf" not in result.model_dump_json()
@@ -207,3 +214,77 @@ async def test_malformed_command_is_terminated_without_echoing_payload(caplog):
 
     assert msg.events == ["term"]
     assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_timeout_publishes_exact_terminal_code_and_acks(monkeypatch):
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess",
+        lambda *_args: (_ for _ in ()).throw(
+            Import3mfError("3mf_conversion_timeout", "private timeout detail")
+        ),
+    )
+    publisher = Publisher()
+    msg = Message(command().model_dump_json().encode())
+    await handle_import_request_message(msg, Store(), publisher, settings())
+    assert msg.events[-1] == "ack"
+    assert publisher.messages[-1].error_code == "3mf_conversion_timeout"
+    assert publisher.messages[-1].user_message == "The 3MF conversion timed out."
+
+
+@pytest.mark.asyncio
+async def test_exhausted_result_publish_retries_nak_without_ack(monkeypatch):
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess",
+        lambda *_args: conversion_output(),
+    )
+    publisher = Publisher(failures=100)
+    msg = Message(command().model_dump_json().encode())
+    await handle_import_request_message(msg, Store(), publisher, settings())
+    assert msg.events[-1] == "nak"
+    assert "ack" not in msg.events
+
+
+@pytest.mark.asyncio
+async def test_success_result_publish_precedes_request_ack(monkeypatch):
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess",
+        lambda *_args: conversion_output(),
+    )
+    events: list[str] = []
+    publisher = Publisher(events=events)
+    msg = Message(command().model_dump_json().encode(), events)
+    await handle_import_request_message(msg, Store(), publisher, settings())
+    assert events[-2:] == ["publish", "ack"]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_repeats_and_failure_naks(monkeypatch):
+    repeated = Message(b"{}")
+    task = __import__("asyncio").create_task(_heartbeat(repeated, 0.3))
+    await __import__("asyncio").sleep(0.25)
+    task.cancel()
+    await __import__("asyncio").gather(task, return_exceptions=True)
+    assert repeated.events.count("heartbeat") >= 2
+
+    async def failed_heartbeat(*_args):
+        raise RuntimeError("nats heartbeat failed")
+
+    async def blocked_execute(*_args):
+        await __import__("asyncio").sleep(60)
+
+    monkeypatch.setattr("workflows.intus.import_3mf_job._heartbeat", failed_heartbeat)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.execute_import_command", blocked_execute
+    )
+    msg = Message(command().model_dump_json().encode())
+    await handle_import_request_message(msg, Store(), Publisher(), settings())
+    assert msg.events == ["nak"]
+
+
+def test_import_launcher_is_executable_one_shot_entrypoint():
+    launcher = Path(__file__).parents[1] / "start-import-3mf-job.sh"
+    assert os.access(launcher, os.X_OK)
+    text = launcher.read_text(encoding="utf-8")
+    assert "set -eu" in text
+    assert "exec python -m workflows.intus.import_3mf_job" in text
