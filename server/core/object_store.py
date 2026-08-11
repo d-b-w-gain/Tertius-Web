@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 from tempfile import SpooledTemporaryFile
 from typing import Annotated, Any
@@ -29,6 +31,7 @@ BucketName = Annotated[
 ]
 DEFAULT_MAX_OBJECT_BYTES = 512 * 1024 * 1024
 SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+NATS_SHA256_PREFIX = "SHA-256="
 
 
 class ObjectRef(BaseModel):
@@ -120,6 +123,9 @@ class ProjectObjectStore:
             or getattr(info, "bucket", None) != ref.bucket
         ):
             raise ObjectIntegrityError("object metadata integrity check failed")
+        metadata_sha256 = _decode_nats_sha256_digest(getattr(info, "digest", None))
+        if metadata_sha256 != ref.sha256:
+            raise ObjectIntegrityError("object metadata integrity check failed")
 
         writer = _BoundedHashingWriter(
             max_bytes=min(ref.byte_size, self.max_object_bytes)
@@ -137,7 +143,11 @@ class ProjectObjectStore:
                 raise ObjectStoreUnavailableError(
                     "object store operation failed"
                 ) from exc
-            if writer.byte_size != ref.byte_size or writer.sha256 != ref.sha256:
+            if (
+                writer.byte_size != ref.byte_size
+                or writer.sha256 != ref.sha256
+                or writer.sha256 != metadata_sha256
+            ):
                 raise ObjectIntegrityError("object integrity check failed")
             return writer.read()
         finally:
@@ -166,6 +176,21 @@ def _is_integrity_error(exc: Exception) -> bool:
     return isinstance(exc, (BadObjectMetaError, DigestMismatchError))
 
 
+def _decode_nats_sha256_digest(value: object) -> str:
+    if not isinstance(value, str) or not value.startswith(NATS_SHA256_PREFIX):
+        raise ObjectIntegrityError("object metadata integrity check failed")
+    encoded = value[len(NATS_SHA256_PREFIX) :]
+    try:
+        encoded_bytes = encoded.encode("ascii")
+        digest = base64.b64decode(encoded_bytes, altchars=b"-_", validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+        raise ObjectIntegrityError("object metadata integrity check failed") from exc
+    canonical = base64.urlsafe_b64encode(digest).decode("ascii")
+    if len(digest) != hashlib.sha256().digest_size or canonical != encoded:
+        raise ObjectIntegrityError("object metadata integrity check failed")
+    return digest.hex()
+
+
 async def _read_object_into(store, info, key: str, writer) -> None:
     if hasattr(store, "_js") and hasattr(store, "_name"):
         await _read_nats_2_15_object_into(store, info, writer)
@@ -192,9 +217,27 @@ async def _read_nats_2_15_object_into(store, info, writer) -> None:
     subscription = await store._js.subscribe(subject, ordered_consumer=True)
     try:
         async for message in subscription.messages:
+            try:
+                num_pending = message.metadata.num_pending
+            except Exception as exc:
+                raise ObjectIntegrityError(
+                    "object message metadata integrity check failed"
+                ) from exc
+            if (
+                isinstance(num_pending, bool)
+                or not isinstance(num_pending, int)
+                or num_pending < 0
+            ):
+                raise ObjectIntegrityError(
+                    "object message metadata integrity check failed"
+                )
             writer.write(message.data)
             if writer.byte_size == info.size:
+                if num_pending != 0:
+                    raise ObjectIntegrityError("object integrity check failed")
                 return
+            if num_pending == 0:
+                raise ObjectIntegrityError("object integrity check failed")
         raise ObjectIntegrityError("object integrity check failed")
     finally:
         await subscription.unsubscribe()
