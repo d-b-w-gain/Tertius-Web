@@ -715,14 +715,38 @@ async def test_ensure_import_stream_preserves_operator_managed_stream_fields():
     ]
     assert updated.max_msg_size == 1024 * 1024
     assert updated.retention == RetentionPolicy.INTEREST
-    assert updated.max_bytes == 987654321
+    assert updated.max_bytes == Settings().import_3mf_stream_max_bytes
     assert updated.discard == DiscardPolicy.OLD
-    assert updated.max_age == 12345
+    assert updated.max_age == Settings().import_3mf_stream_max_age_seconds
     assert updated.storage == StorageType.FILE
     assert updated.num_replicas == 3
     assert updated.duplicate_window == 77
     assert updated.deny_delete is True
     assert updated.deny_purge is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_import_stream_reconciles_retention_only_drift():
+    from nats.js.api import StreamConfig
+
+    settings = Settings()
+    jetstream = FakeJetStream()
+    jetstream.streams[settings.import_3mf_stream_name] = SimpleNamespace(
+        config=StreamConfig(
+            name=settings.import_3mf_stream_name,
+            subjects=[
+                settings.import_3mf_request_subject,
+                settings.import_3mf_result_subject,
+            ],
+            max_msg_size=settings.import_3mf_message_max_bytes,
+            max_age=1,
+            max_bytes=1,
+        )
+    )
+    await ensure_import_stream(FakeConnection(jetstream), settings)
+    updated = jetstream.streams[settings.import_3mf_stream_name]
+    assert updated.max_age == settings.import_3mf_stream_max_age_seconds
+    assert updated.max_bytes == settings.import_3mf_stream_max_bytes
 
 
 @pytest.mark.asyncio
@@ -758,6 +782,9 @@ async def test_import_pull_subscriptions_use_stable_durables():
         ("import_3mf_ack_wait_seconds", 0),
         ("import_3mf_max_deliver", 0),
         ("import_3mf_message_max_bytes", 0),
+        ("import_3mf_stream_max_age_seconds", 0),
+        ("import_3mf_stream_max_bytes", 0),
+        ("import_3mf_queued_lease_seconds", 0),
         ("import_3mf_timeout_seconds", 0),
         ("import_3mf_timeout_seconds", 301),
         ("import_3mf_running_lease_seconds", 0),

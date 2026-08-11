@@ -751,6 +751,7 @@ class ProjectImportRepository:
                     status="queued",
                     retryable=False,
                     progress_payload={},
+                    queued_at=now_utc(),
                 )
                 self.db.add(job)
                 self.db.flush()
@@ -775,6 +776,7 @@ class ProjectImportRepository:
                 ProjectImportJob.id == job_id,
                 ProjectImportJob.tenant_id == self.tenant_id,
             )
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         if job is None:
@@ -880,6 +882,28 @@ class ProjectImportRepository:
         self.db.flush()
         return True
 
+    def fail_if_stale_queued(
+        self,
+        job_id: UUID,
+        execution_id: UUID,
+        *,
+        cutoff: datetime,
+        error_code: str,
+        user_message: str,
+    ) -> bool:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status != "queued" or job.queued_at >= cutoff:
+            return False
+        job.status = "failed"
+        job.error = error_code
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = True
+        job.finished_at = now_utc()
+        self.db.flush()
+        return True
+
     def retry(self, job_id: UUID) -> ProjectImportJob:
         scope = self.db.execute(
             select(ProjectImportJob.id, ProjectImportJob.project_id).where(
@@ -929,6 +953,7 @@ class ProjectImportRepository:
                 job.manifest_asset_id = None
                 job.started_at = None
                 job.heartbeat_at = None
+                job.queued_at = now_utc()
                 job.finished_at = None
                 self.db.flush()
             return job

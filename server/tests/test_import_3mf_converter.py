@@ -562,6 +562,38 @@ def test_subprocess_kills_process_tree_on_timeout(tmp_path):
     assert not marker.exists()
 
 
+def test_subprocess_kills_process_tree_on_cancellation(tmp_path):
+    import threading
+    import time
+
+    marker = tmp_path / "cancelled-child"
+    script = tmp_path / "cancel-hang.py"
+    child_code = (
+        "import pathlib,time;time.sleep(1);"
+        f"pathlib.Path({os.fspath(marker)!r}).write_text('alive')"
+    )
+    script.write_text(
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        "time.sleep(60)\n"
+    )
+    cancel = threading.Event()
+    timer = threading.Timer(0.1, cancel.set)
+    timer.start()
+    try:
+        with pytest.raises(Import3mfError, match="conversion_cancelled"):
+            run_converter_subprocess(
+                make_box_3mf(),
+                timeout_seconds=30,
+                cancel_event=cancel,
+                worker_command=[sys.executable, os.fspath(script)],
+            )
+    finally:
+        timer.cancel()
+    time.sleep(1.2)
+    assert not marker.exists()
+
+
 def test_subprocess_has_empty_shutdown_stderr_allowlist_and_clean_success(tmp_path):
     assert ALLOWED_PYLIB3MF_SHUTDOWN_STDERR == frozenset()
     source = make_box_3mf()

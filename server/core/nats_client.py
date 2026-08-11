@@ -359,6 +359,8 @@ async def ensure_import_stream(nc, settings):
         name=settings.import_3mf_stream_name,
         subjects=subjects,
         max_msg_size=settings.import_3mf_message_max_bytes,
+        max_age=settings.import_3mf_stream_max_age_seconds,
+        max_bytes=settings.import_3mf_stream_max_bytes,
     )
     try:
         info = await js.stream_info(settings.import_3mf_stream_name)
@@ -430,16 +432,14 @@ async def ensure_import_stream(nc, settings):
                 )
                 current = info.config if hasattr(info, "config") else info
                 if (
-                    getattr(current, "deliver_policy", None)
-                    != desired.deliver_policy
+                    getattr(current, "deliver_policy", None) != desired.deliver_policy
                     or getattr(current, "ack_policy", None) != desired.ack_policy
                 ):
                     raise JetStreamConfigurationError(
                         "JetStream consumer has incompatible immutable configuration"
                     ) from exc
                 if (
-                    getattr(current, "filter_subject", None)
-                    != desired.filter_subject
+                    getattr(current, "filter_subject", None) != desired.filter_subject
                     or getattr(current, "ack_wait", None) != desired.ack_wait
                     or getattr(current, "max_deliver", None) != desired.max_deliver
                 ):
@@ -459,11 +459,15 @@ def _is_already_exists(exc: Exception) -> bool:
 
 
 def _import_stream_has_drift(current, subjects, settings) -> bool:
-    return sorted(list(getattr(current, "subjects", []) or [])) != sorted(
-        subjects
-    ) or (
-        getattr(current, "max_msg_size", None)
-        != settings.import_3mf_message_max_bytes
+    return (
+        sorted(list(getattr(current, "subjects", []) or [])) != sorted(subjects)
+        or (
+            getattr(current, "max_msg_size", None)
+            != settings.import_3mf_message_max_bytes
+        )
+        or getattr(current, "max_age", None)
+        != settings.import_3mf_stream_max_age_seconds
+        or getattr(current, "max_bytes", None) != settings.import_3mf_stream_max_bytes
     )
 
 
@@ -471,6 +475,8 @@ def _copy_import_stream_with_owned_fields(current, subjects, settings):
     desired = copy(current)
     desired.subjects = list(subjects)
     desired.max_msg_size = settings.import_3mf_message_max_bytes
+    desired.max_age = settings.import_3mf_stream_max_age_seconds
+    desired.max_bytes = settings.import_3mf_stream_max_bytes
     return desired
 
 

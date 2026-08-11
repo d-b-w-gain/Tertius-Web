@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import zipfile
@@ -611,6 +612,7 @@ def _validate_brep_round_trip(
 def run_converter_subprocess(
     source: bytes,
     timeout_seconds: float = DEFAULT_CONVERSION_TIMEOUT_SECONDS,
+    cancel_event: threading.Event | None = None,
     *,
     worker_command: list[str] | None = None,
 ) -> ConversionOutput:
@@ -650,7 +652,14 @@ def run_converter_subprocess(
                 "conversion_failed", "The 3MF converter could not be started."
             ) from exc
         try:
-            stdout_bytes, stderr_bytes = _communicate_bounded(process, timeout_seconds)
+            stdout_bytes, stderr_bytes = _communicate_bounded(
+                process, timeout_seconds, cancel_event=cancel_event
+            )
+        except InterruptedError as exc:
+            _terminate_process_group(process)
+            raise Import3mfError(
+                "conversion_cancelled", "The 3MF conversion was cancelled."
+            ) from exc
         except TimeoutError as exc:
             _terminate_process_group(process)
             raise Import3mfError(
@@ -730,7 +739,10 @@ def run_converter_subprocess(
 
 
 def _communicate_bounded(
-    process: subprocess.Popen[bytes], timeout_seconds: float
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float,
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[bytes, bytes]:
     if process.stdout is None or process.stderr is None:
         raise RuntimeError("converter subprocess pipes are unavailable")
@@ -744,6 +756,8 @@ def _communicate_bounded(
     deadline = time.monotonic() + timeout_seconds
     try:
         while selector.get_map():
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
@@ -761,6 +775,8 @@ def _communicate_bounded(
                     )
                 captured.extend(chunk)
         remaining = deadline - time.monotonic()
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError
         if remaining <= 0:
             raise TimeoutError
         process.wait(timeout=remaining)
