@@ -208,11 +208,11 @@ async def _read_nats_2_15_object_into(store, info, writer) -> None:
     """
     from nats.js.object_store import OBJ_CHUNKS_PRE_TEMPLATE
 
-    if info.size == 0:
-        return
     nuid = getattr(info, "nuid", None)
     if not isinstance(nuid, str) or not nuid:
         raise ObjectIntegrityError("object metadata integrity check failed")
+    if info.size == 0:
+        return
     subject = OBJ_CHUNKS_PRE_TEMPLATE.format(bucket=store._name, obj=nuid)
     subscription = await store._js.subscribe(subject, ordered_consumer=True)
     try:
