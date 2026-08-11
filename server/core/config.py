@@ -59,6 +59,38 @@ class Settings(BaseSettings):
     compile_timeout_seconds: int = Field(default=600)
     compile_request_max_bytes: int = Field(default=8 * 1024 * 1024)
     compile_result_max_bytes: int = Field(default=90 * 1024 * 1024)
+    project_asset_object_bucket: str = Field(
+        default="TERTIUS_ASSETS",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    project_asset_object_ttl_seconds: int = Field(
+        default=7 * 24 * 60 * 60, gt=0, le=365 * 24 * 60 * 60
+    )
+    project_asset_object_max_bytes: int = Field(
+        default=2 * 1024 * 1024 * 1024, gt=0, le=64 * 1024 * 1024 * 1024
+    )
+    import_3mf_stream_name: str = Field(
+        default="TERTIUS_IMPORT_3MF", min_length=1, max_length=255
+    )
+    import_3mf_request_subject: str = Field(
+        default="tertius.import.3mf.request", min_length=1, max_length=255
+    )
+    import_3mf_result_subject: str = Field(
+        default="tertius.import.3mf.result", min_length=1, max_length=255
+    )
+    import_3mf_worker_queue: str = Field(
+        default="import-3mf-workers", min_length=1, max_length=255
+    )
+    import_3mf_result_consumer: str = Field(
+        default="import-3mf-result-api", min_length=1, max_length=255
+    )
+    import_3mf_ack_wait_seconds: int = Field(default=360, gt=0, le=3600)
+    import_3mf_max_deliver: int = Field(default=2, gt=0, le=10)
+    import_3mf_message_max_bytes: int = Field(
+        default=1024 * 1024, gt=0, le=8 * 1024 * 1024
+    )
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)

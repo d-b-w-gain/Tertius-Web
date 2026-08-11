@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -306,6 +307,108 @@ async def ensure_billing_stream(nc, settings):
     return js
 
 
+async def ensure_project_object_store(nc, settings):
+    from nats.js.api import ObjectStoreConfig
+    from nats.js.errors import BucketNotFoundError
+
+    js = nc.jetstream()
+    bucket = settings.project_asset_object_bucket
+    try:
+        store = await js.object_store(bucket)
+    except BucketNotFoundError:
+        return await js.create_object_store(
+            config=ObjectStoreConfig(
+                bucket=bucket,
+                ttl=settings.project_asset_object_ttl_seconds,
+                max_bytes=settings.project_asset_object_max_bytes,
+            )
+        )
+
+    info = await js.stream_info(f"OBJ_{bucket}")
+    current = info.config if hasattr(info, "config") else info
+    if (
+        getattr(current, "max_age", None) != settings.project_asset_object_ttl_seconds
+        or getattr(current, "max_bytes", None)
+        != settings.project_asset_object_max_bytes
+    ):
+        desired = copy(current)
+        desired.max_age = settings.project_asset_object_ttl_seconds
+        desired.max_bytes = settings.project_asset_object_max_bytes
+        await js.update_stream(desired)
+    return store
+
+
+async def ensure_import_stream(nc, settings):
+    from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, StreamConfig
+    from nats.js.errors import NotFoundError
+
+    js = nc.jetstream()
+    subjects = [
+        settings.import_3mf_request_subject,
+        settings.import_3mf_result_subject,
+    ]
+    desired_stream = StreamConfig(
+        name=settings.import_3mf_stream_name,
+        subjects=subjects,
+        max_msg_size=settings.import_3mf_message_max_bytes,
+    )
+    try:
+        info = await js.stream_info(settings.import_3mf_stream_name)
+        current = info.config if hasattr(info, "config") else info
+        if (
+            sorted(list(getattr(current, "subjects", []) or [])) != sorted(subjects)
+            or getattr(current, "max_msg_size", None)
+            != settings.import_3mf_message_max_bytes
+        ):
+            await js.update_stream(desired_stream)
+    except NotFoundError:
+        await js.add_stream(desired_stream)
+
+    consumers = (
+        ConsumerConfig(
+            durable_name=settings.import_3mf_worker_queue,
+            filter_subject=settings.import_3mf_request_subject,
+            deliver_policy=DeliverPolicy.ALL,
+            ack_policy=AckPolicy.EXPLICIT,
+            ack_wait=settings.import_3mf_ack_wait_seconds,
+            max_deliver=settings.import_3mf_max_deliver,
+        ),
+        ConsumerConfig(
+            durable_name=settings.import_3mf_result_consumer,
+            filter_subject=settings.import_3mf_result_subject,
+            deliver_policy=DeliverPolicy.ALL,
+            ack_policy=AckPolicy.EXPLICIT,
+            ack_wait=settings.import_3mf_ack_wait_seconds,
+            max_deliver=settings.import_3mf_max_deliver,
+        ),
+    )
+    for desired in consumers:
+        try:
+            info = await js.consumer_info(
+                settings.import_3mf_stream_name, desired.durable_name
+            )
+            current = info.config if hasattr(info, "config") else info
+            immutable_drift = (
+                getattr(current, "deliver_policy", None) != desired.deliver_policy
+                or getattr(current, "ack_policy", None) != desired.ack_policy
+            )
+            mutable_drift = (
+                getattr(current, "filter_subject", None) != desired.filter_subject
+                or getattr(current, "ack_wait", None) != desired.ack_wait
+                or getattr(current, "max_deliver", None) != desired.max_deliver
+            )
+            if immutable_drift:
+                await js.delete_consumer(
+                    settings.import_3mf_stream_name, desired.durable_name
+                )
+                await js.add_consumer(settings.import_3mf_stream_name, desired)
+            elif mutable_drift:
+                await js.add_consumer(settings.import_3mf_stream_name, desired)
+        except NotFoundError:
+            await js.add_consumer(settings.import_3mf_stream_name, desired)
+    return js
+
+
 async def pull_compile_subscription(js, settings):
     return await js.pull_subscribe(
         settings.compile_request_subject,
@@ -335,4 +438,20 @@ async def pull_pi_agent_result_subscription(js, settings):
         settings.pi_agent_result_subject,
         durable=settings.pi_agent_result_consumer,
         stream=settings.pi_agent_stream_name,
+    )
+
+
+async def pull_import_request_subscription(js, settings):
+    return await js.pull_subscribe(
+        settings.import_3mf_request_subject,
+        durable=settings.import_3mf_worker_queue,
+        stream=settings.import_3mf_stream_name,
+    )
+
+
+async def pull_import_result_subscription(js, settings):
+    return await js.pull_subscribe(
+        settings.import_3mf_result_subject,
+        durable=settings.import_3mf_result_consumer,
+        stream=settings.import_3mf_stream_name,
     )
