@@ -19,6 +19,8 @@ from core.nats_client import (
     NatsPublisher,
     ensure_billing_stream,
     ensure_compile_stream,
+    ensure_import_stream,
+    ensure_project_object_store,
     extract_nats_context,
 )
 
@@ -42,6 +44,8 @@ class FakeJetStream:
         self.deleted_consumers = []
         self.core_published = []
         self.pull_subscriptions = []
+        self.object_stores = {}
+        self.created_object_store_configs = []
 
     async def pull_subscribe(self, subject, *, durable, stream):
         subscription = (subject, durable, stream)
@@ -93,6 +97,26 @@ class FakeJetStream:
     async def delete_consumer(self, stream_name, consumer_name):
         self.deleted_consumers.append((stream_name, consumer_name))
         del self.consumers[(stream_name, consumer_name)]
+
+    async def object_store(self, bucket):
+        from nats.js.errors import BucketNotFoundError
+
+        if bucket not in self.object_stores:
+            raise BucketNotFoundError
+        return self.object_stores[bucket]
+
+    async def create_object_store(self, *, config):
+        store = SimpleNamespace(bucket=config.bucket)
+        self.object_stores[config.bucket] = store
+        self.created_object_store_configs.append(config)
+        self.streams[f"OBJ_{config.bucket}"] = SimpleNamespace(
+            config=SimpleNamespace(
+                name=f"OBJ_{config.bucket}",
+                max_age=config.ttl,
+                max_bytes=config.max_bytes,
+            )
+        )
+        return store
 
 
 class FakeConnection:
@@ -483,3 +507,146 @@ async def test_pi_agent_result_consumer_is_explicit_ack_and_independent_from_req
         "pi-agent-result-api",
         "TERTIUS_PI_AGENT",
     )
+
+
+@pytest.mark.asyncio
+async def test_ensure_project_object_store_creates_bounded_bucket():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings(
+        project_asset_object_ttl_seconds=7200,
+        project_asset_object_max_bytes=32 * 1024 * 1024,
+    )
+
+    store = await ensure_project_object_store(connection, settings)
+
+    assert store is jetstream.object_stores["TERTIUS_ASSETS"]
+    config = jetstream.created_object_store_configs[0]
+    assert config.bucket == "TERTIUS_ASSETS"
+    assert config.ttl == 7200
+    assert config.max_bytes == 32 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_ensure_project_object_store_reconciles_existing_bucket_limits():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings(
+        project_asset_object_ttl_seconds=7200,
+        project_asset_object_max_bytes=32 * 1024 * 1024,
+    )
+    existing = SimpleNamespace(bucket="TERTIUS_ASSETS")
+    jetstream.object_stores["TERTIUS_ASSETS"] = existing
+    jetstream.streams["OBJ_TERTIUS_ASSETS"] = SimpleNamespace(
+        config=SimpleNamespace(name="OBJ_TERTIUS_ASSETS", max_age=60, max_bytes=1024)
+    )
+
+    store = await ensure_project_object_store(connection, settings)
+
+    assert store is existing
+    config = jetstream.streams["OBJ_TERTIUS_ASSETS"]
+    assert config.max_age == 7200
+    assert config.max_bytes == 32 * 1024 * 1024
+    assert jetstream.created_object_store_configs == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_import_stream_creates_subjects_and_bounded_consumers():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings(import_3mf_ack_wait_seconds=301, import_3mf_max_deliver=3)
+
+    result = await ensure_import_stream(connection, settings)
+
+    assert result is jetstream
+    stream = jetstream.streams["TERTIUS_IMPORT_3MF"]
+    assert stream.subjects == [
+        "tertius.import.3mf.request",
+        "tertius.import.3mf.result",
+    ]
+    assert stream.max_msg_size == 1024 * 1024
+    worker = jetstream.consumers[("TERTIUS_IMPORT_3MF", "import-3mf-workers")]
+    result_consumer = jetstream.consumers[
+        ("TERTIUS_IMPORT_3MF", "import-3mf-result-api")
+    ]
+    assert worker.filter_subject == "tertius.import.3mf.request"
+    assert result_consumer.filter_subject == "tertius.import.3mf.result"
+    assert worker.ack_wait == 301
+    assert worker.max_deliver == 3
+    assert result_consumer.ack_wait == 301
+    assert result_consumer.max_deliver == 3
+
+
+@pytest.mark.asyncio
+async def test_ensure_import_stream_reconciles_stream_and_immutable_consumers():
+    jetstream = FakeJetStream()
+    connection = FakeConnection(jetstream)
+    settings = Settings()
+    jetstream.streams["TERTIUS_IMPORT_3MF"] = SimpleNamespace(
+        config=SimpleNamespace(
+            name="TERTIUS_IMPORT_3MF",
+            subjects=["old.subject"],
+            max_msg_size=-1,
+        )
+    )
+    jetstream.consumers[("TERTIUS_IMPORT_3MF", "import-3mf-workers")] = SimpleNamespace(
+        config=SimpleNamespace(
+            durable_name="import-3mf-workers",
+            filter_subject="old.subject",
+            deliver_policy=None,
+            ack_policy=None,
+            ack_wait=1,
+            max_deliver=99,
+        )
+    )
+
+    await ensure_import_stream(connection, settings)
+
+    stream = jetstream.streams["TERTIUS_IMPORT_3MF"]
+    assert stream.subjects == [
+        "tertius.import.3mf.request",
+        "tertius.import.3mf.result",
+    ]
+    assert jetstream.deleted_consumers == [("TERTIUS_IMPORT_3MF", "import-3mf-workers")]
+
+
+@pytest.mark.asyncio
+async def test_import_pull_subscriptions_use_stable_durables():
+    jetstream = FakeJetStream()
+    settings = Settings()
+
+    request = await nats_client.pull_import_request_subscription(jetstream, settings)
+    result = await nats_client.pull_import_result_subscription(jetstream, settings)
+
+    assert request == (
+        "tertius.import.3mf.request",
+        "import-3mf-workers",
+        "TERTIUS_IMPORT_3MF",
+    )
+    assert result == (
+        "tertius.import.3mf.result",
+        "import-3mf-result-api",
+        "TERTIUS_IMPORT_3MF",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_asset_object_ttl_seconds", 0),
+        ("project_asset_object_max_bytes", 0),
+        ("import_3mf_stream_name", ""),
+        ("import_3mf_request_subject", ""),
+        ("import_3mf_result_subject", ""),
+        ("import_3mf_worker_queue", ""),
+        ("import_3mf_result_consumer", ""),
+        ("import_3mf_ack_wait_seconds", 0),
+        ("import_3mf_max_deliver", 0),
+        ("import_3mf_message_max_bytes", 0),
+    ],
+)
+def test_import_transport_settings_are_bounded(field, value):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
