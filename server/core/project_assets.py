@@ -8,8 +8,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    NonNegativeInt,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -24,6 +24,13 @@ MAX_3MF_COORDINATE_MM = 1_000_000.0
 MAX_3MF_MANIFEST_BYTES = 256 * 1024
 MAX_3MF_DERIVED_BREP_BYTES = 512 * 1024 * 1024
 IMPORT_3MF_CONVERSION_VERSION = "tertius-3mf-brep-v1-build123d-0.8.0"
+THREE_MF_MEDIA_TYPE = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+SOURCE_3MF_MEDIA_TYPE = THREE_MF_MEDIA_TYPE
+OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
+BREP_MEDIA_TYPE = "application/vnd.opencascade.brep"
+DERIVED_BREP_MEDIA_TYPE = BREP_MEDIA_TYPE
+MANIFEST_MEDIA_TYPE = "application/json"
+IMPORT_MANIFEST_MEDIA_TYPE = MANIFEST_MEDIA_TYPE
 
 MAX_3MF_SOURCE_NAME_CHARS = 160
 MAX_3MF_WARNINGS = 64
@@ -33,10 +40,22 @@ Import3mfUnit = Literal["MC", "MM", "CM", "M", "IN", "FT"]
 Import3mfShapeType = Literal["solid", "shell"]
 SafePartName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,79}$")]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-WarningText = Annotated[str, StringConstraints(max_length=MAX_3MF_WARNING_CHARS)]
+WarningText = Annotated[
+    str,
+    StringConstraints(
+        max_length=MAX_3MF_WARNING_CHARS,
+        pattern=r"^[^\x00-\x1f\x7f-\x9f]*$",
+    ),
+]
+StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 CoordinateMm = Annotated[
     float,
-    Field(ge=-MAX_3MF_COORDINATE_MM, le=MAX_3MF_COORDINATE_MM, allow_inf_nan=False),
+    Field(
+        strict=True,
+        ge=-MAX_3MF_COORDINATE_MM,
+        le=MAX_3MF_COORDINATE_MM,
+        allow_inf_nan=False,
+    ),
 ]
 
 _UNIT_SCALE_TO_MM: dict[str, float] = {
@@ -51,7 +70,7 @@ _UNSAFE_PART_NAME = re.compile(r"[^a-z0-9]+")
 
 
 class StrictAssetModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class Import3mfBounds(StrictAssetModel):
@@ -66,14 +85,14 @@ class Import3mfBounds(StrictAssetModel):
 
 
 class Import3mfPart(StrictAssetModel):
-    index: NonNegativeInt
+    index: StrictNonNegativeInt
     name: SafePartName
     source_name: str = Field(max_length=MAX_3MF_SOURCE_NAME_CHARS)
     shape_type: Import3mfShapeType
-    boolean_capable: bool
-    is_valid: bool
-    vertex_count: NonNegativeInt = Field(le=MAX_3MF_VERTICES)
-    triangle_count: NonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
+    boolean_capable: bool = Field(strict=True)
+    is_valid: bool = Field(strict=True)
+    vertex_count: StrictNonNegativeInt = Field(le=MAX_3MF_VERTICES)
+    triangle_count: StrictNonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
     bounds_mm: Import3mfBounds
 
     @model_validator(mode="after")
@@ -88,14 +107,21 @@ class Import3mfManifest(StrictAssetModel):
     conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
     source_sha256: Sha256Digest
     brep_sha256: Sha256Digest
-    brep_byte_size: int = Field(ge=1, le=MAX_3MF_DERIVED_BREP_BYTES)
+    brep_byte_size: int = Field(strict=True, ge=1, le=MAX_3MF_DERIVED_BREP_BYTES)
     source_unit: Import3mfUnit
-    scale_to_mm: float = Field(gt=0, allow_inf_nan=False)
-    object_count: int = Field(ge=1, le=MAX_3MF_OBJECTS)
-    total_vertices: NonNegativeInt = Field(le=MAX_3MF_VERTICES)
-    total_triangles: NonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
+    scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
+    object_count: int = Field(strict=True, ge=1, le=MAX_3MF_OBJECTS)
+    total_vertices: StrictNonNegativeInt = Field(le=MAX_3MF_VERTICES)
+    total_triangles: StrictNonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
     warnings: tuple[WarningText, ...] = Field(default_factory=tuple, max_length=MAX_3MF_WARNINGS)
     parts: tuple[Import3mfPart, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def validate_schema_version_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("schema_version must be the integer 1")
+        return value
 
     @model_validator(mode="after")
     def validate_manifest_invariants(self):
@@ -118,11 +144,11 @@ class Import3mfManifest(StrictAssetModel):
 
 
 class Import3mfPartSummary(StrictAssetModel):
-    index: NonNegativeInt
+    index: StrictNonNegativeInt
     name: SafePartName
     shape_type: Import3mfShapeType
-    boolean_capable: bool
-    is_valid: bool
+    boolean_capable: bool = Field(strict=True)
+    is_valid: bool = Field(strict=True)
     bounds_mm: Import3mfBounds
 
     @model_validator(mode="after")
@@ -135,10 +161,10 @@ class Import3mfPartSummary(StrictAssetModel):
 class Import3mfManifestSummary(StrictAssetModel):
     conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
     source_unit: Import3mfUnit
-    scale_to_mm: float = Field(gt=0, allow_inf_nan=False)
-    object_count: int = Field(ge=1, le=MAX_3MF_OBJECTS)
-    total_vertices: NonNegativeInt = Field(le=MAX_3MF_VERTICES)
-    total_triangles: NonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
+    scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
+    object_count: int = Field(strict=True, ge=1, le=MAX_3MF_OBJECTS)
+    total_vertices: StrictNonNegativeInt = Field(le=MAX_3MF_VERTICES)
+    total_triangles: StrictNonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
     warnings: tuple[WarningText, ...] = Field(default_factory=tuple, max_length=MAX_3MF_WARNINGS)
     parts: tuple[Import3mfPartSummary, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
 
@@ -160,7 +186,7 @@ class Import3mfAssetContextSummary(StrictAssetModel):
 
     conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
     source_unit: Import3mfUnit
-    scale_to_mm: float = Field(gt=0, allow_inf_nan=False)
+    scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
     parts: tuple[Import3mfPartSummary, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
 
     @model_validator(mode="after")
@@ -184,7 +210,7 @@ def public_manifest_summary(manifest: Import3mfManifest) -> Import3mfManifestSum
         total_vertices=manifest.total_vertices,
         total_triangles=manifest.total_triangles,
         warnings=manifest.warnings,
-        parts=[
+        parts=tuple(
             Import3mfPartSummary(
                 index=part.index,
                 name=part.name,
@@ -194,7 +220,7 @@ def public_manifest_summary(manifest: Import3mfManifest) -> Import3mfManifestSum
                 bounds_mm=part.bounds_mm,
             )
             for part in manifest.parts
-        ],
+        ),
     )
 
 
