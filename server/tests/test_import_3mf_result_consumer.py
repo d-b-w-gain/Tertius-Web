@@ -345,6 +345,35 @@ async def test_progress_marks_running_and_is_idempotent(monkeypatch):
     assert calls[1][0:3] == ("progress", progress.job_id, progress.execution_id)
 
 
+@pytest.mark.asyncio
+async def test_consumer_extracts_worker_linked_trace_headers(monkeypatch):
+    cmd = command()
+    progress = Import3mfProgress.for_command(cmd, stage="converting", percent=20)
+    trace_headers = {
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "tracestate": "vendor=value",
+    }
+    observed = []
+    from core.nats_client import extract_nats_context as real_extract
+
+    def extract(headers):
+        observed.append(dict(headers))
+        return real_extract(headers)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.extract_nats_context", extract
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._progress_tenant_id",
+        lambda *_: None,
+    )
+    msg = Message(progress.model_dump_json().encode())
+    msg.headers = trace_headers
+    await handle_import_result_message(msg, DB(), Store({}), settings())
+    assert msg.events == ["ack"]
+    assert observed == [trace_headers]
+
+
 def test_reconciles_only_stale_running_jobs(monkeypatch):
     stale = SimpleNamespace(
         id=uuid4(),

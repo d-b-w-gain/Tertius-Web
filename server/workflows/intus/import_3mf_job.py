@@ -116,10 +116,13 @@ async def _publish_with_retry(
     message,
     *,
     message_id: str,
+    headers: dict[str, str] | None = None,
 ) -> None:
     for attempt in range(_PUBLISH_ATTEMPTS):
         try:
-            await publisher.publish_json(subject, message, message_id=message_id)
+            await publisher.publish_json(
+                subject, message, message_id=message_id, headers=headers
+            )
             return
         except Exception:
             if attempt + 1 == _PUBLISH_ATTEMPTS:
@@ -174,6 +177,15 @@ async def handle_import_request_message(
         )
         started = perf_counter()
 
+        def linked_trace_headers() -> dict[str, str]:
+            linked: dict[str, str] = {}
+            propagate.inject(linked)
+            if "traceparent" not in linked and command.traceparent is not None:
+                linked["traceparent"] = command.traceparent
+            if "tracestate" not in linked and command.tracestate is not None:
+                linked["tracestate"] = command.tracestate
+            return linked
+
         async def report(progress: Import3mfProgress) -> None:
             await _publish_with_retry(
                 publisher,
@@ -182,6 +194,7 @@ async def handle_import_request_message(
                 message_id=_hashed_message_id(
                     "import-progress", command, f"{progress.stage}:{progress.percent}"
                 ),
+                headers=linked_trace_headers(),
             )
 
         async def process_and_publish() -> Import3mfResult:
@@ -214,6 +227,7 @@ async def handle_import_request_message(
                 settings.import_3mf_result_subject,
                 produced,
                 message_id=_hashed_message_id("import-result", command),
+                headers=linked_trace_headers(),
             )
             return produced
 
