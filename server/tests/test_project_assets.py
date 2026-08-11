@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import core.project_assets as project_assets
 from pydantic import ValidationError
 
 from core.project_assets import (
@@ -64,8 +65,10 @@ def manifest_payload(**part_overrides):
 def test_resource_constants_are_centralized_at_exact_values():
     assert MAX_3MF_UPLOAD_BYTES == 128 * 1024 * 1024
     assert MAX_3MF_ARCHIVE_ENTRIES == 2_048
+    assert project_assets.MAX_3MF_BUILD_ITEMS == 10_000
     assert MAX_3MF_UNCOMPRESSED_BYTES == 512 * 1024 * 1024
     assert MAX_3MF_XML_BYTES == 64 * 1024 * 1024
+    assert project_assets.MAX_3MF_XML_DEPTH == 256
     assert MAX_3MF_OBJECTS == 2_048
     assert MAX_3MF_VERTICES == 10_000_000
     assert MAX_3MF_TRIANGLES == 10_000_000
@@ -73,7 +76,10 @@ def test_resource_constants_are_centralized_at_exact_values():
     assert MAX_3MF_MANIFEST_BYTES == 256 * 1024
     assert MAX_3MF_DERIVED_BREP_BYTES == 512 * 1024 * 1024
     assert IMPORT_3MF_CONVERSION_VERSION == "tertius-3mf-brep-v1-build123d-0.8.0"
-    assert SOURCE_3MF_MEDIA_TYPE == "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+    assert (
+        SOURCE_3MF_MEDIA_TYPE
+        == "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+    )
     assert THREE_MF_MEDIA_TYPE == SOURCE_3MF_MEDIA_TYPE
     assert OCTET_STREAM_MEDIA_TYPE == "application/octet-stream"
     assert DERIVED_BREP_MEDIA_TYPE == "application/vnd.opencascade.brep"
@@ -136,7 +142,14 @@ def test_import_manifest_rejects_inconsistent_counts(field, value):
 
 @pytest.mark.parametrize(
     ("unit", "scale"),
-    [("MC", 0.001), ("MM", 1.0), ("CM", 10.0), ("M", 1000.0), ("IN", 25.4), ("FT", 304.8)],
+    [
+        ("MC", 0.001),
+        ("MM", 1.0),
+        ("CM", 10.0),
+        ("M", 1000.0),
+        ("IN", 25.4),
+        ("FT", 304.8),
+    ],
 )
 def test_import_manifest_accepts_supported_units_and_exact_scale(unit, scale):
     payload = manifest_payload()
@@ -153,9 +166,13 @@ def test_import_manifest_rejects_unsupported_unit_or_wrong_scale():
 
 def test_part_requires_boolean_capability_exactly_for_valid_solid():
     with pytest.raises(ValidationError, match="boolean_capable"):
-        Import3mfManifest.model_validate(manifest_payload(is_valid=False, boolean_capable=True))
+        Import3mfManifest.model_validate(
+            manifest_payload(is_valid=False, boolean_capable=True)
+        )
     with pytest.raises(ValidationError, match="boolean_capable"):
-        Import3mfManifest.model_validate(manifest_payload(is_valid=True, boolean_capable=False))
+        Import3mfManifest.model_validate(
+            manifest_payload(is_valid=True, boolean_capable=False)
+        )
     manifest = Import3mfManifest.model_validate(
         manifest_payload(shape_type="shell", is_valid=False, boolean_capable=False)
     )
@@ -183,7 +200,10 @@ def test_import_manifest_rejects_serialization_over_size_limit():
     payload["object_count"] = MAX_3MF_OBJECTS
     payload["total_vertices"] = template["vertex_count"] * MAX_3MF_OBJECTS
     payload["total_triangles"] = template["triangle_count"] * MAX_3MF_OBJECTS
-    assert len(json.dumps(payload, separators=(",", ":")).encode()) > MAX_3MF_MANIFEST_BYTES
+    assert (
+        len(json.dumps(payload, separators=(",", ":")).encode())
+        > MAX_3MF_MANIFEST_BYTES
+    )
     with pytest.raises(ValidationError, match="serialized size"):
         Import3mfManifest.model_validate(payload)
 
@@ -225,7 +245,9 @@ def test_strict_models_and_public_summary_exclude_arbitrary_or_raw_metadata():
     assert "brep_sha256" not in summary
     assert "source_name" not in summary["parts"][0]
     with pytest.raises(ValidationError, match="Extra inputs"):
-        type(public_manifest_summary(manifest)).model_validate({**summary, "metadata": {}})
+        type(public_manifest_summary(manifest)).model_validate(
+            {**summary, "metadata": {}}
+        )
 
 
 def test_validated_manifest_cannot_be_mutated_past_its_invariants():
@@ -237,12 +259,16 @@ def test_validated_manifest_cannot_be_mutated_past_its_invariants():
 
 
 def test_public_summary_rejects_invalid_part_and_collection_invariants():
-    summary = public_manifest_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    summary = public_manifest_summary(
+        Import3mfManifest.model_validate(manifest_payload())
+    ).model_dump()
     summary["parts"][0]["shape_type"] = "shell"
     with pytest.raises(ValidationError, match="boolean_capable"):
         Import3mfManifestSummary.model_validate(summary)
 
-    summary = public_manifest_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    summary = public_manifest_summary(
+        Import3mfManifest.model_validate(manifest_payload())
+    ).model_dump()
     summary["object_count"] = 2
     with pytest.raises(ValidationError, match="object_count"):
         Import3mfManifestSummary.model_validate(summary)
@@ -251,7 +277,9 @@ def test_public_summary_rejects_invalid_part_and_collection_invariants():
 def test_ai_safe_context_summary_excludes_warnings_digests_and_raw_names():
     payload = manifest_payload(source_name="raw metadata")
     payload["warnings"] = ("warning may contain converter detail",)
-    context = asset_context_summary(Import3mfManifest.model_validate(payload)).model_dump()
+    context = asset_context_summary(
+        Import3mfManifest.model_validate(payload)
+    ).model_dump()
     serialized = json.dumps(context)
     assert "warning may contain converter detail" not in serialized
     assert "raw metadata" not in serialized
@@ -262,9 +290,20 @@ def test_ai_safe_context_summary_excludes_warnings_digests_and_raw_names():
 @pytest.mark.parametrize(
     ("mutation", "error_match"),
     [
-        (lambda payload: payload.update(brep_byte_size=MAX_3MF_DERIVED_BREP_BYTES + 1), "less than"),
-        (lambda payload: payload.update(total_vertices=MAX_3MF_VERTICES + 1), "less than"),
-        (lambda payload: payload.update(total_triangles=MAX_3MF_TRIANGLES + 1), "less than"),
+        (
+            lambda payload: payload.update(
+                brep_byte_size=MAX_3MF_DERIVED_BREP_BYTES + 1
+            ),
+            "less than",
+        ),
+        (
+            lambda payload: payload.update(total_vertices=MAX_3MF_VERTICES + 1),
+            "less than",
+        ),
+        (
+            lambda payload: payload.update(total_triangles=MAX_3MF_TRIANGLES + 1),
+            "less than",
+        ),
         (lambda payload: payload["parts"][0].update(source_name="x" * 161), "160"),
         (lambda payload: payload.update(warnings=("w",) * 65), "64"),
         (lambda payload: payload.update(warnings=("w" * 241,)), "240"),
@@ -344,7 +383,9 @@ def test_manifest_rejects_coerced_scalar_values(mutation):
     ],
 )
 def test_public_summary_rejects_coerced_scalar_values(mutation):
-    payload = public_manifest_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    payload = public_manifest_summary(
+        Import3mfManifest.model_validate(manifest_payload())
+    ).model_dump()
     mutation(payload)
     with pytest.raises(ValidationError):
         Import3mfManifestSummary.model_validate(payload)
@@ -361,13 +402,17 @@ def test_public_summary_rejects_coerced_scalar_values(mutation):
     ],
 )
 def test_ai_context_summary_rejects_coerced_scalar_values(mutation):
-    payload = asset_context_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    payload = asset_context_summary(
+        Import3mfManifest.model_validate(manifest_payload())
+    ).model_dump()
     mutation(payload)
     with pytest.raises(ValidationError):
         Import3mfAssetContextSummary.model_validate(payload)
 
 
-@pytest.mark.parametrize("warning", ["line one\nline two", "nul\x00byte", "delete\x7fbyte"])
+@pytest.mark.parametrize(
+    "warning", ["line one\nline two", "nul\x00byte", "delete\x7fbyte"]
+)
 def test_manifest_rejects_warning_control_characters(warning):
     with pytest.raises(ValidationError):
         Import3mfManifest.model_validate({**manifest_payload(), "warnings": (warning,)})

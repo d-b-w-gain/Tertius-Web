@@ -157,13 +157,21 @@ Generated names are unique, ASCII-safe identifiers. Duplicate or blank source na
 | ZIP entries | 2,048 | API envelope preflight and worker validation |
 | Total uncompressed ZIP bytes | 512 MiB | Central-directory preflight and worker extraction |
 | Single XML part | 64 MiB | Worker parser preflight |
+| XML nesting depth | 256 open elements | Worker streaming parser, before retaining the next ancestor |
 | Mesh objects | 2,048 | Worker before BREP conversion |
+| Build items | 10,000 total items, including repeated object IDs | Worker streaming metadata parser, before retaining an ID for duplicate detection |
 | Total vertices | 10,000,000 | Worker before BREP conversion |
 | Total triangles | 10,000,000 | Worker before BREP conversion |
 | Absolute normalized coordinate | 1,000,000 mm | Worker numeric validation |
 | Manifest JSON | 256 KiB | Worker result validation and persistence |
 | Conversion wall time | 300 seconds | Import worker process-tree timeout |
 | Derived BREP bytes | 512 MiB | Worker result and object-store put |
+
+There is no separate total-XML-element ceiling: a compatible ceiling would need
+to exceed the declared 10,000,000 vertex and 10,000,000 triangle limits. The
+single-part byte limit, streaming parent detachment, nesting and build-item
+limits, geometry-specific counters, and conversion timeout bound the relevant
+memory and processing risks without contradicting those geometry limits.
 
 3MF is treated as untrusted ZIP/XML/native-parser input. Reject encrypted entries, traversal paths, absolute paths, duplicate canonical entry names, unsupported compression methods, non-finite coordinates, missing 3D model relationships, and digest/size mismatches. Parse and convert only under the canonical k3s one-shot-worker controls: non-root, dropped capabilities, read-only root, bounded `/tmp`, no service-account token, isolated network, process timeout, CPU/memory/ephemeral-storage limits, and gVisor when enabled.
 
