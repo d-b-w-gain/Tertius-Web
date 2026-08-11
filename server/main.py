@@ -69,6 +69,7 @@ from workflows.intus.import_3mf_result_consumer import (
     run_import_reconciler,
     run_import_result_consumer,
 )
+from workflows.intus.import_3mf_outbox_dispatcher import run_import_outbox_dispatcher
 from core.provisioning import provision_user_context
 
 _compile_result_stop_event: asyncio.Event | None = None
@@ -80,6 +81,8 @@ _pi_agent_active_task: asyncio.Task | None = None
 _import_3mf_result_stop_event: asyncio.Event | None = None
 _import_3mf_result_task: asyncio.Task | None = None
 _import_3mf_reconcile_task: asyncio.Task | None = None
+_import_3mf_outbox_stop_event: asyncio.Event | None = None
+_import_3mf_outbox_task: asyncio.Task | None = None
 
 
 async def start_compile_result_consumer():
@@ -174,9 +177,29 @@ async def stop_import_3mf_result_consumer():
             pass
 
 
+async def start_import_3mf_outbox_dispatcher():
+    global _import_3mf_outbox_stop_event, _import_3mf_outbox_task
+    _import_3mf_outbox_stop_event = asyncio.Event()
+    _import_3mf_outbox_task = asyncio.create_task(
+        run_import_outbox_dispatcher(_import_3mf_outbox_stop_event)
+    )
+
+
+async def stop_import_3mf_outbox_dispatcher():
+    if _import_3mf_outbox_stop_event is not None:
+        _import_3mf_outbox_stop_event.set()
+    if _import_3mf_outbox_task is not None:
+        _import_3mf_outbox_task.cancel()
+        try:
+            await _import_3mf_outbox_task
+        except asyncio.CancelledError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await start_compile_result_consumer()
+    await start_import_3mf_outbox_dispatcher()
     await start_import_3mf_result_consumer()
     await start_pi_agent_active_observer()
     await start_pi_agent_result_consumer()
@@ -186,6 +209,7 @@ async def lifespan(_app: FastAPI):
         await stop_pi_agent_result_consumer()
         await stop_pi_agent_active_observer()
         await stop_import_3mf_result_consumer()
+        await stop_import_3mf_outbox_dispatcher()
         await stop_compile_result_consumer()
 
 

@@ -20,7 +20,9 @@
 
 ### ADR-001: Upload-time conversion with immutable provenance
 
-`POST /api/intus/projects/imports/3mf` stores the original bytes in a tenant/project-scoped `ProjectAsset`, creates a `ProjectImportJob`, and publishes a small NATS command referencing a JetStream object-store key and SHA-256 digest. The API performs bounded streaming upload checks and ZIP envelope preflight only. It does not invoke lib3mf or OpenCascade.
+`POST /api/intus/projects/imports/3mf` authenticates before multipart parsing, performs bounded streaming upload checks and ZIP-envelope preflight, and puts the source in the digest-addressed transport cache. One PostgreSQL transaction then stores the original bytes in a tenant/project-scoped `ProjectAsset`, creates a `ProjectImportJob`, and inserts an immutable command-outbox row referencing the object-store key and SHA-256 digest. It does not invoke lib3mf or OpenCascade and never publishes to NATS inside the request transaction.
+
+An independent API-lifecycle dispatcher claims committed outbox rows with `FOR UPDATE SKIP LOCKED`, commits a bounded owner/attempt lease, publishes the exact persisted command with a deterministic `Nats-Msg-Id`, and conditionally marks the row sent. Expired leases are reclaimable. A crash after publish but before marking sent can republish only the same deterministic message identity, which JetStream deduplicates safely. NATS publication outages leave the import job and pending outbox durable for bounded backoff/retry; they do not roll back an accepted import.
 
 The isolated import worker fetches the exact source object, verifies its digest, parses and converts it, and publishes a result containing derived object-store references plus a bounded manifest. The API result consumer verifies digests, persists the derived BREP and manifest as immutable assets, marks the job terminal, and creates the generated `design.py` in one transaction.
 
@@ -217,7 +219,8 @@ Compose remains a development adapter and must document that it does not equal t
 | Invalid/encrypted/traversal ZIP | Envelope/worker validation | Failed job `invalid_3mf_archive` | Re-export valid 3MF | No raw entry names in metrics |
 | Resource counts exceed limits | Worker preflight | Failed job `3mf_resource_limit` | Simplify/export a smaller mesh | Bounded limit category |
 | Unsupported unit or non-finite/extreme coordinate | Worker numeric validation | Failed job `invalid_3mf_geometry` | Correct source units/geometry | No coordinate values in labels |
-| Object store unavailable on upload | Put/publish failure | `503 import_unavailable`; transaction rolls back or remains retryable before publish | Retry | Existing NATS availability signals |
+| Object store unavailable before enqueue | Source-cache put failure | `503 import_unavailable`; no project/job/outbox transaction is committed | Retry | Existing NATS availability signals |
+| NATS command publication unavailable | Outbox dispatcher publish failure | Accepted job and pending outbox remain durable; bounded backoff retries without client action | Wait or retry after terminal conversion failure | Bounded outbox status/error code only |
 | Import worker timeout/OOM | Job deadline/reconciler | Failed job `3mf_conversion_timeout` or bounded worker failure | Simplify mesh and retry | No source bytes or names in logs |
 | No manifold solids | Manifest contains only shells | Import succeeds with warning; transforms/assembly work; booleans are unavailable | Repair source mesh externally if booleans are required | Count by bounded shape type |
 | BREP or manifest digest mismatch | Result consumer/runtime verification | Job or compile fails closed with `asset_integrity_error` | Retry conversion; operator inspects transport | Digest is not a metric label |

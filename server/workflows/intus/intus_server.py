@@ -6,15 +6,18 @@ import importlib.util
 import logging
 from pathlib import Path
 import re
+from tempfile import SpooledTemporaryFile
 from typing import Any, Optional, cast
 from uuid import UUID
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, File, Form, UploadFile, status
+from fastapi import Depends, FastAPI, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from opentelemetry import propagate
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.datastructures import UploadFile as StarletteUploadFile
+from starlette.formparsers import MultiPartException
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
@@ -22,7 +25,6 @@ from core.compile_messages import CompileCommand, CompileSourceFile, assert_mess
 from core.config import get_settings
 from core.db import get_db
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
-from core.import_3mf_messages import Import3mfCommand
 from core.models import (
     CompileJob,
     LlmEditJob,
@@ -35,13 +37,11 @@ from core.nats_client import (
     NatsPublisher,
     connect_nats,
     ensure_compile_stream,
-    ensure_import_stream,
     ensure_pi_agent_stream,
     ensure_project_object_store,
 )
 from core.object_store import ObjectRef, ProjectObjectStore
 from core.project_assets import (
-    IMPORT_3MF_CONVERSION_VERSION,
     MAX_3MF_UPLOAD_BYTES,
     OCTET_STREAM_MEDIA_TYPE,
     THREE_MF_MEDIA_TYPE,
@@ -90,6 +90,7 @@ from core.repositories import (
 )
 from workflows.intus.usage_server import llm_usage_router, router as usage_router
 from workflows.intus.pi_agent_result_consumer import reconcile_stale_pi_agent_job
+from workflows.intus.import_3mf_converter import Import3mfError, validate_3mf_archive
 
 app = FastAPI(title="Intus Compiler Server")
 app.include_router(usage_router)
@@ -147,6 +148,11 @@ async def publish_compile_command(command: CompileCommand) -> None:
 
 
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+UPLOAD_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+MAX_3MF_MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+MAX_3MF_MULTIPART_REQUEST_BYTES = (
+    MAX_3MF_UPLOAD_BYTES + MAX_3MF_MULTIPART_OVERHEAD_BYTES
+)
 _SAFE_3MF_DISPLAY_NAME = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,155}\.3mf$", re.IGNORECASE
 )
@@ -167,60 +173,90 @@ async def put_import_source(content: bytes) -> ObjectRef:
         await nc.close()
 
 
-async def publish_import_3mf_command(command: Import3mfCommand) -> None:
-    settings = get_settings()
-    nc = await connect_nats(settings.nats_url)
-    try:
-        js = await ensure_import_stream(nc, settings)
-        identity = f"{command.job_id}:{command.attempt}:{command.execution_id}"
-        message_id = f"import-request:{sha256(identity.encode()).hexdigest()}"
-        await NatsPublisher(js).publish_json(
-            settings.import_3mf_request_subject,
-            command,
-            message_id=message_id,
-        )
-        await nc.flush()
-    finally:
-        await nc.close()
-
-
 async def _read_bounded_3mf(upload: UploadFile) -> bytes:
-    chunks: list[bytes] = []
     byte_size = 0
-    while True:
-        chunk = await upload.read(UPLOAD_CHUNK_BYTES)
-        if not chunk:
-            break
-        byte_size += len(chunk)
-        if byte_size > MAX_3MF_UPLOAD_BYTES:
-            raise OverflowError("3MF upload exceeds the compressed size limit")
-        chunks.append(chunk)
-    if byte_size == 0:
-        raise ValueError("3MF upload is empty")
-    return b"".join(chunks)
+    digest = sha256()
+    with SpooledTemporaryFile(max_size=UPLOAD_SPOOL_MEMORY_BYTES) as spool:
+        while True:
+            chunk = await upload.read(UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            if len(chunk) > UPLOAD_CHUNK_BYTES:
+                raise ValueError("3MF upload reader exceeded its chunk contract")
+            byte_size += len(chunk)
+            if byte_size > MAX_3MF_UPLOAD_BYTES:
+                raise OverflowError("3MF upload exceeds the compressed size limit")
+            digest.update(chunk)
+            spool.write(chunk)
+        if byte_size == 0:
+            raise ValueError("3MF upload is empty")
+        spool.seek(0)
+        content = spool.read(MAX_3MF_UPLOAD_BYTES + 1)
+    if len(content) != byte_size or sha256(content).digest() != digest.digest():
+        raise ValueError("3MF upload spool integrity check failed")
+    return content
 
 
-def _import_command(
-    *,
-    job: ProjectImportJob,
-    ctx: AuthContext,
-    source_ref: ObjectRef,
-) -> Import3mfCommand:
+class _MultipartRequestTooLarge(RuntimeError):
+    pass
+
+
+class _BoundedReceive:
+    def __init__(self, receive, max_bytes: int):
+        self.receive = receive
+        self.max_bytes = max_bytes
+        self.byte_size = 0
+
+    async def __call__(self):
+        message = await self.receive()
+        if message.get("type") == "http.request":
+            body = message.get("body", b"")
+            self.byte_size += len(body)
+            if self.byte_size > self.max_bytes:
+                raise _MultipartRequestTooLarge
+        return message
+
+
+async def _authenticated_import_form(request: Request) -> tuple[str, UploadFile]:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError as exc:
+            raise ValueError("invalid multipart content length") from exc
+        if declared_bytes < 0 or declared_bytes > MAX_3MF_MULTIPART_REQUEST_BYTES:
+            raise _MultipartRequestTooLarge
+    bounded_request = Request(
+        request.scope,
+        receive=_BoundedReceive(request.receive, MAX_3MF_MULTIPART_REQUEST_BYTES),
+    )
+    try:
+        form = await bounded_request.form(
+            max_files=1,
+            max_fields=1,
+            max_part_size=MAX_3MF_UPLOAD_BYTES,
+        )
+    except _MultipartRequestTooLarge:
+        raise
+    except (MultiPartException, ValueError) as exc:
+        raise ValueError("invalid multipart upload") from exc
+    items = list(form.multi_items())
+    if len(items) != 2:
+        raise ValueError("multipart upload must contain exactly two parts")
+    fields = {key: value for key, value in items}
+    if set(fields) != {"project_name", "file"}:
+        raise ValueError("multipart upload fields are invalid")
+    project_name = fields["project_name"]
+    upload = fields["file"]
+    if not isinstance(project_name, str) or not isinstance(upload, StarletteUploadFile):
+        raise ValueError("multipart upload field types are invalid")
+    return project_name, cast(UploadFile, upload)
+
+
+def _current_import_trace() -> tuple[str | None, str | None]:
     trace_headers: dict[str, str] = {}
     propagate.inject(trace_headers)
-    return Import3mfCommand(
-        schema_version=1,
-        job_id=job.id,
-        tenant_id=ctx.tenant_id,
-        project_id=job.project_id,
-        user_id=ctx.user_id,
-        attempt=job.attempt,
-        execution_id=job.execution_id,
-        source=source_ref,
-        conversion_version=IMPORT_3MF_CONVERSION_VERSION,
-        traceparent=trace_headers.get("traceparent"),
-        tracestate=trace_headers.get("tracestate"),
-    )
+    return trace_headers.get("traceparent"), trace_headers.get("tracestate")
 
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -329,22 +365,23 @@ def _public_import_job(
 
 @app.post("/projects/imports/3mf")
 async def import_3mf(
-    project_name: str | None = Form(None),
-    file: UploadFile | None = File(None),
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
     guest_response = _reject_guest(ctx)
     if guest_response is not None:
         return guest_response
-    if project_name is None:
-        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_project_name")
+    try:
+        project_name, file = await _authenticated_import_form(request)
+    except _MultipartRequestTooLarge:
+        return _import_error(status.HTTP_413_CONTENT_TOO_LARGE, "import_too_large")
+    except ValueError:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
     try:
         project_name = require_valid_project_name(project_name)
     except ValueError:
         return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_project_name")
-    if file is None:
-        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
     filename = file.filename or ""
     media_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if (
@@ -355,24 +392,29 @@ async def import_3mf(
     try:
         content = await _read_bounded_3mf(file)
     except OverflowError:
-        return _import_error(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "import_too_large"
-        )
+        return _import_error(status.HTTP_413_CONTENT_TOO_LARGE, "import_too_large")
     except ValueError:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
+    try:
+        validate_3mf_archive(content)
+    except Import3mfError as exc:
+        if exc.code == "3mf_resource_limit":
+            return _import_error(status.HTTP_413_CONTENT_TOO_LARGE, "import_too_large")
         return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
 
     repo = ProjectImportRepository(db, ctx.tenant_id)
     try:
-        project, _source, job = repo.create_import(
+        source_ref = await put_import_source(content)
+        traceparent, tracestate = _current_import_trace()
+        project, _source, job, _outbox = repo.create_import_and_enqueue(
             project_name=project_name,
             requested_by=ctx.user_id,
             display_name=filename,
             media_type=media_type,
             content=content,
-        )
-        source_ref = await put_import_source(content)
-        await publish_import_3mf_command(
-            _import_command(job=job, ctx=ctx, source_ref=source_ref)
+            source_ref=source_ref,
+            traceparent=traceparent,
+            tracestate=tracestate,
         )
         db.commit()
     except ProjectNameConflictError:
@@ -428,16 +470,22 @@ async def retry_import_3mf_job(
         return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
     if existing.status in {"queued", "running"}:
         return _import_error(status.HTTP_409_CONFLICT, "import_already_active")
+    if existing.status != "failed" or not existing.retryable:
+        return _import_error(status.HTTP_409_CONFLICT, "import_not_retryable")
+    content = repo.assets.get_content(
+        existing.source_asset_id, project_id=existing.project_id
+    )
+    if content is None:
+        return _import_error(status.HTTP_503_SERVICE_UNAVAILABLE, "import_unavailable")
+    db.rollback()
     try:
-        job = repo.retry(job_id)
-        content = repo.assets.get_content(
-            job.source_asset_id, project_id=job.project_id
-        )
-        if content is None:
-            raise RuntimeError("Import source is unavailable")
         source_ref = await put_import_source(content)
-        await publish_import_3mf_command(
-            _import_command(job=job, ctx=ctx, source_ref=source_ref)
+        traceparent, tracestate = _current_import_trace()
+        job, _outbox = ProjectImportRepository(db, ctx.tenant_id).retry_and_enqueue(
+            job_id,
+            source_ref=source_ref,
+            traceparent=traceparent,
+            tracestate=tracestate,
         )
         db.commit()
     except ActiveProjectImportError:

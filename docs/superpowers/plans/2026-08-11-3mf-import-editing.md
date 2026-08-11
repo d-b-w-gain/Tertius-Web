@@ -468,7 +468,7 @@ rtk git commit -m "feat: run asynchronous 3mf imports"
 
 - [ ] **Step 1: Write failing authenticated API tests**
 
-Test guest/unauthenticated rejection, valid multipart upload, exact 128 MiB boundary, suffix/content-type rules, invalid project name, collision rollback, source/object-store/publish transaction, status tenant scope, safe response shape, failed retry, concurrent retry conflict, and no binary/object key leakage.
+Test authentication before multipart parsing, valid multipart upload, exact 128 MiB boundary, bounded chunked/no-length overflow, strict part counts, suffix/content-type rules, hardened ZIP-envelope preflight, invalid project name, collision rollback, atomic source/job/outbox creation, status tenant/user scope, safe response shape, failed retry, concurrent retry conflict, and no binary/object key leakage.
 
 ```python
 def test_import_3mf_creates_new_project_and_queues(authenticated_client, make_3mf):
@@ -490,7 +490,9 @@ Expected: FAIL because routes do not exist.
 
 - [ ] **Step 3: Implement chunked upload and job endpoints**
 
-Use FastAPI `UploadFile` and read no more than 1 MiB per iteration. Roll back project/asset/job rows if object-store put or command publish fails before the request returns. Return only public DTO fields. The retry route reuses the immutable source asset and increments attempt under a row lock.
+Accept `Request` plus authentication dependencies so FastAPI cannot parse the multipart body before authorization. Reject an oversized declared length before parsing and wrap ASGI receive with an aggregate byte cap for chunked/no-length bodies. Parse exactly one file and one project-name field, read the `UploadFile` in chunks no larger than 1 MiB into a spooled file, materialize one bounded bytes object, and reuse the Task 4 ZIP-envelope preflight before any persistence.
+
+Put the digest-addressed source object before taking project/job locks. Atomically create or retry the project asset/job together with an immutable bounded command-outbox row, commit, and return `202`; do not publish in the request. An independent main-lifecycle dispatcher commits `FOR UPDATE SKIP LOCKED` claims and leases, publishes exact persisted payloads with deterministic message IDs, conditionally marks sent, reclaims expired leases, and uses bounded backoff/status/error codes. Return only public DTO fields. The retry route reuses the immutable source asset, ensures the source object before locking, and atomically increments attempt plus inserts the new outbox row.
 
 - [ ] **Step 4: Run endpoint tests**
 

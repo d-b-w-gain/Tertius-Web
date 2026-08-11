@@ -8,12 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from starlette.requests import Request
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
+from core.import_3mf_messages import Import3mfCommand
 from core.models import (
     AppUser,
+    Import3mfCommandOutbox,
     Project,
     ProjectAsset,
     ProjectImportJob,
@@ -28,12 +31,13 @@ from core.project_assets import (
     Import3mfManifest,
 )
 from core.repositories import ProjectImportRepository
+from tests.fixtures.three_mf import box_mesh, make_3mf, make_box_3mf
 from workflows.intus import intus_server
+from workflows.intus.import_3mf_converter import Import3mfError
 
 
 @pytest.fixture()
 def import_transport(monkeypatch):
-    published = []
     stored = []
 
     async def put(content: bytes) -> ObjectRef:
@@ -46,12 +50,15 @@ def import_transport(monkeypatch):
             byte_size=len(content),
         )
 
-    async def publish(command):
-        published.append(command)
-
     monkeypatch.setattr(intus_server, "put_import_source", put)
-    monkeypatch.setattr(intus_server, "publish_import_3mf_command", publish)
-    return stored, published
+    return stored
+
+
+def _outbox_commands(db_session) -> list[Import3mfCommand]:
+    rows = db_session.scalars(
+        select(Import3mfCommandOutbox).order_by(Import3mfCommandOutbox.created_at)
+    ).all()
+    return [Import3mfCommand.model_validate_json(row.payload) for row in rows]
 
 
 def _post(
@@ -59,9 +66,11 @@ def _post(
     *,
     name="falcon9",
     filename="falcon9.3mf",
-    content=b"3MF",
+    content=None,
     media_type=THREE_MF_MEDIA_TYPE,
 ):
+    if content is None:
+        content = make_box_3mf()
     return client.post(
         "/projects/imports/3mf",
         data={"project_name": name},
@@ -72,9 +81,10 @@ def _post(
 def test_import_3mf_creates_new_project_and_queues(
     authenticated_intus_client, db_session, seeded_tenant, import_transport
 ):
-    stored, published = import_transport
+    stored = import_transport
 
-    response = _post(authenticated_intus_client)
+    content = make_box_3mf()
+    response = _post(authenticated_intus_client, content=content)
 
     assert response.status_code == 202
     assert response.json().keys() == {"success", "job_id", "project_name", "status"}
@@ -93,14 +103,15 @@ def test_import_3mf_creates_new_project_and_queues(
         ProjectImportRepository(db_session, seeded_tenant.tenant_id).assets.get_content(
             asset.id
         )
-        == b"3MF"
+        == content
     )
     job = db_session.scalars(
         select(ProjectImportJob).where(ProjectImportJob.project_id == project.id)
     ).one()
-    assert stored == [b"3MF"]
-    assert len(published) == 1
-    command = published[0]
+    assert stored == [content]
+    commands = _outbox_commands(db_session)
+    assert len(commands) == 1
+    command = commands[0]
     assert (command.job_id, command.project_id, command.tenant_id, command.user_id) == (
         job.id,
         project.id,
@@ -109,8 +120,8 @@ def test_import_3mf_creates_new_project_and_queues(
     )
     assert command.attempt == job.attempt == 1
     assert command.execution_id == job.execution_id
-    assert command.source.sha256 == sha256(b"3MF").hexdigest()
-    assert command.source.byte_size == 3
+    assert command.source.sha256 == sha256(content).hexdigest()
+    assert command.source.byte_size == len(content)
 
 
 def test_import_3mf_accepts_generic_octet_stream(
@@ -139,7 +150,7 @@ def test_import_3mf_rejects_missing_multipart_fields_as_bad_request(
     )
     assert response.status_code == 400
     assert response.json()["error"] in {"invalid_3mf_upload", "invalid_project_name"}
-    assert import_transport == ([], [])
+    assert import_transport == []
 
 
 @pytest.mark.parametrize(
@@ -159,7 +170,7 @@ def test_import_3mf_rejects_unsafe_filename_and_content_type(
     )
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_3mf_upload"}
-    assert import_transport == ([], [])
+    assert import_transport == []
 
 
 def test_import_3mf_rejects_invalid_name_and_collision_without_partial_rows(
@@ -177,27 +188,13 @@ def test_import_3mf_rejects_invalid_name_and_collision_without_partial_rows(
     assert db_session.scalar(select(ProjectAsset)) is None
 
 
-@pytest.mark.parametrize("failed_stage", ["put", "publish"])
-def test_import_3mf_rolls_back_database_when_transport_fails(
-    authenticated_intus_client, db_session, monkeypatch, failed_stage
+def test_import_3mf_has_no_database_side_effect_when_object_put_fails(
+    authenticated_intus_client, db_session, monkeypatch
 ):
-    async def put(content: bytes) -> ObjectRef:
-        if failed_stage == "put":
-            raise RuntimeError("private store failure")
-        digest = sha256(content).hexdigest()
-        return ObjectRef(
-            bucket="TERTIUS_ASSETS",
-            key=f"sha256/{digest}",
-            sha256=digest,
-            byte_size=len(content),
-        )
-
-    async def publish(_command):
-        if failed_stage == "publish":
-            raise RuntimeError("private publish failure")
+    async def put(_content: bytes) -> ObjectRef:
+        raise RuntimeError("private store failure")
 
     monkeypatch.setattr(intus_server, "put_import_source", put)
-    monkeypatch.setattr(intus_server, "publish_import_3mf_command", publish)
 
     response = _post(authenticated_intus_client)
 
@@ -207,6 +204,25 @@ def test_import_3mf_rolls_back_database_when_transport_fails(
     assert db_session.scalar(select(Project).where(Project.name == "falcon9")) is None
     assert db_session.scalar(select(ProjectImportJob)) is None
     assert db_session.scalar(select(ProjectAsset)) is None
+    assert db_session.scalar(select(Import3mfCommandOutbox)) is None
+
+
+def test_import_3mf_commit_failure_publishes_nothing_and_rolls_back_outbox(
+    authenticated_intus_client, db_session, import_transport, monkeypatch
+):
+    def fail_commit():
+        raise RuntimeError("private commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    response = _post(authenticated_intus_client)
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "import_unavailable"}
+    assert len(import_transport) == 1
+    assert db_session.scalar(select(Project).where(Project.name == "falcon9")) is None
+    assert db_session.scalar(select(ProjectImportJob)) is None
+    assert db_session.scalar(select(ProjectAsset)) is None
+    assert db_session.scalar(select(Import3mfCommandOutbox)) is None
 
 
 def test_import_3mf_rejects_guest_before_storage(
@@ -229,7 +245,51 @@ def test_import_3mf_rejects_guest_before_storage(
         response.json() == {"error": "authentication_required"}
         for response in responses
     )
-    assert import_transport == ([], [])
+    assert import_transport == []
+
+
+def test_guest_is_rejected_before_multipart_parsing(
+    authenticated_intus_client, seeded_tenant, monkeypatch
+):
+    intus_server.app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        user_id=seeded_tenant.user_id,
+        tenant_id=seeded_tenant.tenant_id,
+        keycloak_subject="guest",
+        email=None,
+        roles=frozenset({"guest"}),
+    )
+
+    async def forbidden_form(_request, **_kwargs):
+        raise AssertionError("multipart parser ran before authorization")
+
+    monkeypatch.setattr(Request, "form", forbidden_form)
+    response = authenticated_intus_client.post(
+        "/projects/imports/3mf",
+        content=b"malformed multipart body",
+        headers={"Content-Type": "multipart/form-data; boundary=missing"},
+    )
+    assert response.status_code == 403
+    assert response.json() == {"error": "authentication_required"}
+
+
+def test_oversized_content_length_is_rejected_before_form_parser(
+    authenticated_intus_client, monkeypatch
+):
+    monkeypatch.setattr(
+        intus_server, "MAX_3MF_MULTIPART_REQUEST_BYTES", 8, raising=False
+    )
+
+    async def forbidden_form(_request, **_kwargs):
+        raise AssertionError("oversized request reached multipart parser")
+
+    monkeypatch.setattr(Request, "form", forbidden_form)
+    response = authenticated_intus_client.post(
+        "/projects/imports/3mf",
+        content=b"123456789",
+        headers={"Content-Type": "multipart/form-data; boundary=x"},
+    )
+    assert response.status_code == 413
+    assert response.json() == {"error": "import_too_large"}
 
 
 def test_import_3mf_requires_authentication(db_session):
@@ -245,6 +305,48 @@ def test_import_3mf_requires_authentication(db_session):
         assert all(response.status_code in {401, 403} for response in responses)
     finally:
         intus_server.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"not a zip archive",
+        make_3mf(
+            objects=[("Box", *box_mesh())],
+            extra_entries={"../escape": b"private"},
+        ),
+    ],
+)
+def test_archive_preflight_rejects_unsafe_envelope_without_side_effects(
+    authenticated_intus_client, db_session, import_transport, content
+):
+    response = _post(authenticated_intus_client, content=content)
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_3mf_upload"}
+    assert db_session.scalar(select(Project).where(Project.name == "falcon9")) is None
+    assert db_session.scalar(select(ProjectAsset)) is None
+    assert db_session.scalar(select(ProjectImportJob)) is None
+    assert import_transport == []
+
+
+def test_encrypted_archive_preflight_failure_has_zero_side_effects(
+    authenticated_intus_client, db_session, import_transport, monkeypatch
+):
+    def encrypted_rejection(_content):
+        raise Import3mfError(
+            "invalid_3mf_archive", "The file is not a safe 3MF archive."
+        )
+
+    monkeypatch.setattr(intus_server, "validate_3mf_archive", encrypted_rejection)
+    response = _post(authenticated_intus_client)
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_3mf_upload"}
+    assert db_session.scalar(select(Project).where(Project.name == "falcon9")) is None
+    assert db_session.scalar(select(ProjectAsset)) is None
+    assert db_session.scalar(select(ProjectImportJob)) is None
+    assert db_session.scalar(select(Import3mfCommandOutbox)) is None
+    assert import_transport == []
 
 
 @pytest.mark.anyio
@@ -288,6 +390,35 @@ async def test_bounded_reader_rejects_one_byte_over_exact_limit(monkeypatch):
     with pytest.raises(OverflowError):
         await intus_server._read_bounded_3mf(upload)
     assert max(upload.calls) <= 1024 * 1024
+
+
+@pytest.mark.anyio
+async def test_chunked_multipart_request_aborts_at_total_request_limit(monkeypatch):
+    monkeypatch.setattr(intus_server, "MAX_3MF_MULTIPART_REQUEST_BYTES", 8)
+    messages = iter(
+        [
+            {
+                "type": "http.request",
+                "body": b"123456789",
+                "more_body": False,
+            }
+        ]
+    )
+
+    async def receive():
+        return next(messages)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/projects/imports/3mf",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=bounded")],
+        },
+        receive=receive,
+    )
+    with pytest.raises(intus_server._MultipartRequestTooLarge):
+        await intus_server._authenticated_import_form(request)
 
 
 def test_status_is_tenant_scoped_and_has_no_private_asset_fields(
@@ -453,10 +584,8 @@ def test_succeeded_status_exposes_only_bounded_public_manifest(
 
 
 def test_import_command_captures_current_trace_context(
-    authenticated_intus_client, import_transport, monkeypatch
+    authenticated_intus_client, db_session, import_transport, monkeypatch
 ):
-    _stored, published = import_transport
-
     def inject(headers):
         headers["traceparent"] = (
             "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -465,17 +594,16 @@ def test_import_command_captures_current_trace_context(
 
     monkeypatch.setattr(intus_server.propagate, "inject", inject)
     assert _post(authenticated_intus_client).status_code == 202
+    command = _outbox_commands(db_session)[0]
     assert (
-        published[0].traceparent
-        == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        command.traceparent == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     )
-    assert published[0].tracestate == "vendor=value"
+    assert command.tracestate == "vendor=value"
 
 
 def test_failed_import_can_retry_with_same_source_and_new_execution(
     authenticated_intus_client, db_session, seeded_tenant, import_transport
 ):
-    _stored, published = import_transport
     created = _post(authenticated_intus_client).json()
     job = db_session.get(ProjectImportJob, created["job_id"])
     original_execution = job.execution_id
@@ -510,10 +638,12 @@ def test_failed_import_can_retry_with_same_source_and_new_execution(
     assert job.attempt == 2
     assert job.execution_id != original_execution
     assert job.source_asset_id == original_source
-    retry_command = published[-1]
+    commands = _outbox_commands(db_session)
+    assert len(commands) == 2
+    retry_command = commands[-1]
     assert retry_command.attempt == 2
     assert retry_command.execution_id == job.execution_id
-    assert retry_command.source.sha256 == published[0].source.sha256
+    assert retry_command.source.sha256 == commands[0].source.sha256
 
 
 def test_retry_rejects_active_job_with_exact_conflict(
@@ -547,7 +677,7 @@ def test_retry_rejects_terminal_nonretryable_job_with_exact_conflict(
     assert job.attempt == 1
 
 
-def test_retry_publish_failure_restores_failed_attempt(
+def test_retry_commit_failure_restores_failed_attempt_and_outbox(
     authenticated_intus_client, db_session, seeded_tenant, import_transport, monkeypatch
 ):
     created = _post(authenticated_intus_client).json()
@@ -563,10 +693,12 @@ def test_retry_publish_failure_restores_failed_attempt(
     )
     db_session.commit()
 
-    async def fail_publish(_command):
-        raise RuntimeError("private publish failure")
+    original_outbox_count = len(_outbox_commands(db_session))
 
-    monkeypatch.setattr(intus_server, "publish_import_3mf_command", fail_publish)
+    def fail_commit():
+        raise RuntimeError("private commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
     response = authenticated_intus_client.post(
         f"/projects/imports/3mf/jobs/{job.id}/retry"
     )
@@ -578,19 +710,31 @@ def test_retry_publish_failure_restores_failed_attempt(
     assert job.attempt == 1
     assert job.execution_id == original_execution
     assert job.retryable is True
+    assert len(_outbox_commands(db_session)) == original_outbox_count
 
 
 def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
     postgres_url, db_session, seeded_tenant, monkeypatch
 ):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
-    _project, _source, job = repo.create_import(
+    source_content = b"3MF"
+    source_digest = sha256(source_content).hexdigest()
+    source_ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{source_digest}",
+        sha256=source_digest,
+        byte_size=len(source_content),
+    )
+    _project, _source, job, initial_outbox = repo.create_import_and_enqueue(
         project_name="falcon9",
         requested_by=seeded_tenant.user_id,
         display_name="falcon9.3mf",
         media_type=THREE_MF_MEDIA_TYPE,
-        content=b"3MF",
+        content=source_content,
+        source_ref=source_ref,
     )
+    initial_outbox.status = "sent"
+    initial_outbox.sent_at = initial_outbox.created_at
     repo.mark_failed(
         job.id,
         job.execution_id,
@@ -616,8 +760,7 @@ def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
         keycloak_subject="kc-test",
         email="test@example.com",
     )
-    published = []
-    publish_lock = threading.Lock()
+    outcome_lock = threading.Lock()
 
     async def put(content: bytes) -> ObjectRef:
         digest = sha256(content).hexdigest()
@@ -628,12 +771,7 @@ def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
             byte_size=len(content),
         )
 
-    async def publish(command):
-        with publish_lock:
-            published.append(command)
-
     monkeypatch.setattr(intus_server, "put_import_source", put)
-    monkeypatch.setattr(intus_server, "publish_import_3mf_command", publish)
     barrier = threading.Barrier(2)
     outcomes = []
     errors = []
@@ -643,7 +781,7 @@ def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
             barrier.wait(timeout=10)
             with TestClient(intus_server.app) as client:
                 response = client.post(f"/projects/imports/3mf/jobs/{job_id}/retry")
-            with publish_lock:
+            with outcome_lock:
                 outcomes.append((response.status_code, response.json()))
         except Exception as exc:  # pragma: no cover - asserted below
             errors.append(exc)
@@ -663,9 +801,14 @@ def test_concurrent_retry_requests_publish_once_and_loser_gets_active_conflict(
     assert sorted(status_code for status_code, _payload in outcomes) == [202, 409]
     conflict = next(payload for status_code, payload in outcomes if status_code == 409)
     assert conflict == {"error": "import_already_active"}
-    assert len(published) == 1
     db_session.expire_all()
     persisted = db_session.get(ProjectImportJob, job_id)
     assert persisted.status == "queued"
     assert persisted.attempt == 2
-    assert persisted.execution_id == published[0].execution_id
+    commands = _outbox_commands(db_session)
+    assert len(commands) == 2
+    assert persisted.execution_id == commands[-1].execution_id
+    pending = db_session.scalars(
+        select(Import3mfCommandOutbox).where(Import3mfCommandOutbox.status == "pending")
+    ).all()
+    assert len(pending) == 1
