@@ -18,9 +18,14 @@ _UNIT_NAMES = {
 def make_3mf(
     *,
     unit: str = "MM",
-    objects: Iterable[tuple[str, list[tuple[float, float, float]], list[tuple[int, int, int]]]],
+    objects: Iterable[
+        tuple[str, list[tuple[float, float, float]], list[tuple[int, int, int]]]
+    ],
     extra_entries: dict[str, bytes] | None = None,
     compression: int = zipfile.ZIP_DEFLATED,
+    relationship_target: str = "/3D/3dmodel.model",
+    include_relationship: bool = True,
+    build_transform: str | None = None,
 ) -> bytes:
     object_xml: list[str] = []
     build_xml: list[str] = []
@@ -39,7 +44,8 @@ def make_3mf(
             f"<mesh><vertices>{vertex_xml}</vertices><triangles>{triangle_xml}</triangles></mesh>"
             "</object>"
         )
-        build_xml.append(f'<item objectid="{object_id}"/>')
+        transform = f' transform="{build_transform}"' if build_transform else ""
+        build_xml.append(f'<item objectid="{object_id}"{transform}/>')
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<model unit="{_UNIT_NAMES[unit]}" xml:lang="en-US" '
@@ -55,16 +61,17 @@ def make_3mf(
         b"</Types>"
     )
     relationships = (
-        b'<?xml version="1.0" encoding="UTF-8"?>'
-        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        b'<Relationship Target="/3D/3dmodel.model" Id="rel0" '
-        b'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
-        b"</Relationships>"
-    )
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Target="{relationship_target}" Id="rel0" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+        "</Relationships>"
+    ).encode()
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=compression) as archive:
         archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", relationships)
+        if include_relationship:
+            archive.writestr("_rels/.rels", relationships)
         archive.writestr("3D/3dmodel.model", model)
         for path, content in (extra_entries or {}).items():
             archive.writestr(path, content)
@@ -73,13 +80,28 @@ def make_3mf(
 
 def box_mesh(size: float = 1.0):
     vertices = [
-        (0, 0, 0), (size, 0, 0), (size, size, 0), (0, size, 0),
-        (0, 0, size), (size, 0, size), (size, size, size), (0, size, size),
+        (0, 0, 0),
+        (size, 0, 0),
+        (size, size, 0),
+        (0, size, 0),
+        (0, 0, size),
+        (size, 0, size),
+        (size, size, size),
+        (0, size, size),
     ]
     triangles = [
-        (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
-        (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
-        (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+        (0, 2, 1),
+        (0, 3, 2),
+        (4, 5, 6),
+        (4, 6, 7),
+        (0, 1, 5),
+        (0, 5, 4),
+        (1, 2, 6),
+        (1, 6, 5),
+        (2, 3, 7),
+        (2, 7, 6),
+        (3, 0, 4),
+        (3, 4, 7),
     ]
     return vertices, triangles
 
@@ -90,6 +112,4 @@ def make_box_3mf(*, unit: str = "MM", size: float = 1.0, name: str = "Box") -> b
 
 
 def make_open_shell_3mf(*, name: str = "Panel") -> bytes:
-    return make_3mf(
-        objects=[(name, [(0, 0, 0), (10, 0, 0), (0, 10, 0)], [(0, 1, 2)])]
-    )
+    return make_3mf(objects=[(name, [(0, 0, 0), (10, 0, 0), (0, 10, 0)], [(0, 1, 2)])])
