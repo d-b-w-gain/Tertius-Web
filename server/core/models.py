@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     event,
+    inspect as sa_inspect,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -330,6 +331,66 @@ class ProjectImportJob(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class Import3mfCommandOutbox(Base):
+    __tablename__ = "import_3mf_command_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id", "execution_id", name="uq_import_3mf_outbox_job_execution"
+        ),
+        UniqueConstraint("message_id", name="uq_import_3mf_outbox_message_id"),
+        ForeignKeyConstraint(
+            ["job_id", "project_id", "tenant_id"],
+            [
+                "project_import_jobs.id",
+                "project_import_jobs.project_id",
+                "project_import_jobs.tenant_id",
+            ],
+            name="fk_import_3mf_outbox_job_scope",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'leased', 'sent', 'failed')",
+            name="ck_import_3mf_outbox_status",
+        ),
+        CheckConstraint(
+            "dispatch_attempt >= 0 AND dispatch_attempt <= 10",
+            name="ck_import_3mf_outbox_dispatch_attempt",
+        ),
+        CheckConstraint(
+            "octet_length(payload) > 0 AND octet_length(payload) <= 4096",
+            name="ck_import_3mf_outbox_payload_bytes",
+        ),
+        Index(
+            "ix_import_3mf_outbox_claim",
+            "status",
+            "available_at",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    message_id: Mapped[str] = mapped_column(String(79), nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    dispatch_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+    lease_owner: Mapped[Optional[str]] = mapped_column(String(128))
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    error_code: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class SourceSnapshot(Base):
@@ -648,6 +709,22 @@ def _reject_project_asset_update(*_args) -> None:
 @event.listens_for(CompileJobAsset, "before_update")
 def _reject_compile_job_asset_update(*_args) -> None:
     raise ImmutablePersistenceError("compile_job_assets rows are immutable")
+
+
+@event.listens_for(Import3mfCommandOutbox, "before_update")
+def _reject_import_3mf_outbox_command_update(_mapper, _connection, target) -> None:
+    state = sa_inspect(target)
+    immutable_fields = (
+        "job_id",
+        "tenant_id",
+        "project_id",
+        "execution_id",
+        "message_id",
+        "payload",
+        "created_at",
+    )
+    if any(state.attrs[field].history.has_changes() for field in immutable_fields):
+        raise ImmutablePersistenceError("import command outbox payload is immutable")
 
 
 class Artifact(Base):

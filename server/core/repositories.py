@@ -11,12 +11,14 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy import desc, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, undefer
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
+from core.import_3mf_messages import Import3mfCommand
 from core.models import (
     Artifact,
     CompileJob,
@@ -24,6 +26,7 @@ from core.models import (
     CompileJobFile,
     CompileUsageRecord,
     LlmEditJob,
+    Import3mfCommandOutbox,
     Project,
     ProjectAsset,
     ProjectFile,
@@ -33,6 +36,7 @@ from core.models import (
     TenantMembership,
     now_utc,
 )
+from core.object_store import ObjectRef
 from core.project_assets import (
     BREP_MEDIA_TYPE,
     IMPORT_3MF_CONVERSION_VERSION,
@@ -58,6 +62,11 @@ IMPORT_PROGRESS_MAX_BYTES = 64 * 1024
 IMPORT_ERROR_MAX_CHARS = 2_000
 IMPORT_ERROR_CODE_MAX_CHARS = 64
 IMPORT_USER_MESSAGE_MAX_CHARS = 500
+IMPORT_3MF_OUTBOX_MAX_PAYLOAD_BYTES = 4 * 1024
+IMPORT_3MF_OUTBOX_MAX_ATTEMPTS = 10
+IMPORT_3MF_OUTBOX_MAX_ERROR_CODE_CHARS = 64
+IMPORT_3MF_OUTBOX_BASE_BACKOFF_SECONDS = 1
+IMPORT_3MF_OUTBOX_MAX_BACKOFF_SECONDS = 300
 
 
 class ProgressBatchApplyOutcome(StrEnum):
@@ -646,11 +655,290 @@ class ProjectAssetRepository:
         return by_id[job.brep_asset_id], by_id[job.manifest_asset_id]
 
 
+class Import3mfCommandOutboxRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    @staticmethod
+    def message_id(command: Import3mfCommand) -> str:
+        identity = f"{command.job_id}:{command.attempt}:{command.execution_id}"
+        return f"import-request:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+    def enqueue(self, command: Import3mfCommand) -> Import3mfCommandOutbox:
+        if not isinstance(command, Import3mfCommand):
+            raise TypeError("command must be an Import3mfCommand")
+        payload = command.model_dump_json().encode("utf-8")
+        if len(payload) > IMPORT_3MF_OUTBOX_MAX_PAYLOAD_BYTES:
+            raise ValueError("Import command payload exceeds byte limit")
+        message_id = self.message_id(command)
+        row_id = uuid.uuid4()
+        inserted_id = self.db.scalar(
+            pg_insert(Import3mfCommandOutbox)
+            .values(
+                id=row_id,
+                job_id=command.job_id,
+                tenant_id=command.tenant_id,
+                project_id=command.project_id,
+                execution_id=command.execution_id,
+                message_id=message_id,
+                payload=payload,
+                status="pending",
+                dispatch_attempt=0,
+                available_at=now_utc(),
+                created_at=now_utc(),
+            )
+            .on_conflict_do_nothing()
+            .returning(Import3mfCommandOutbox.id)
+        )
+        existing = self.db.scalar(
+            select(Import3mfCommandOutbox).where(
+                Import3mfCommandOutbox.id == (inserted_id or row_id)
+            )
+        )
+        if existing is None:
+            existing = self.db.scalar(
+                select(Import3mfCommandOutbox).where(
+                    Import3mfCommandOutbox.job_id == command.job_id,
+                    Import3mfCommandOutbox.execution_id == command.execution_id,
+                )
+            )
+        if existing is None:
+            raise ValueError("Import command message identity conflicts")
+        if existing.message_id != message_id or existing.payload != payload:
+            raise ValueError("Import command identity payload does not match")
+        return existing
+
+    def claim_batch(
+        self,
+        *,
+        lease_owner: str,
+        lease_duration: timedelta,
+        limit: int,
+        now: datetime | None = None,
+    ) -> list[Import3mfCommandOutbox]:
+        if not lease_owner or len(lease_owner) > 128:
+            raise ValueError("Import outbox lease owner is invalid")
+        if lease_duration <= timedelta(0):
+            raise ValueError("Import outbox lease duration must be positive")
+        if not 0 < limit <= 100:
+            raise ValueError("Import outbox claim limit must be between 1 and 100")
+        claimed_at = now or now_utc()
+        exhausted = self.db.scalars(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.status == "leased",
+                Import3mfCommandOutbox.lease_expires_at <= claimed_at,
+                Import3mfCommandOutbox.dispatch_attempt
+                >= IMPORT_3MF_OUTBOX_MAX_ATTEMPTS,
+            )
+            .with_for_update(skip_locked=True)
+        ).all()
+        for row in exhausted:
+            row.status = "failed"
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.error_code = "attempts_exhausted"
+        rows = self.db.scalars(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.available_at <= claimed_at,
+                Import3mfCommandOutbox.dispatch_attempt
+                < IMPORT_3MF_OUTBOX_MAX_ATTEMPTS,
+                or_(
+                    Import3mfCommandOutbox.status == "pending",
+                    (
+                        (Import3mfCommandOutbox.status == "leased")
+                        & (Import3mfCommandOutbox.lease_expires_at <= claimed_at)
+                    ),
+                ),
+            )
+            .order_by(
+                Import3mfCommandOutbox.available_at,
+                Import3mfCommandOutbox.created_at,
+                Import3mfCommandOutbox.id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        lease_expires_at = claimed_at + lease_duration
+        for row in rows:
+            row.status = "leased"
+            row.dispatch_attempt += 1
+            row.lease_owner = lease_owner
+            row.lease_expires_at = lease_expires_at
+            row.error_code = None
+        self.db.flush()
+        return list(rows)
+
+    def supersede_other_executions(
+        self, job_id: UUID, *, current_execution_id: UUID
+    ) -> None:
+        rows = self.db.scalars(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.job_id == job_id,
+                Import3mfCommandOutbox.execution_id != current_execution_id,
+                Import3mfCommandOutbox.status.in_(["pending", "leased"]),
+            )
+            .with_for_update()
+        ).all()
+        for row in rows:
+            row.status = "failed"
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.error_code = "superseded"
+        self.db.flush()
+
+    def mark_sent(
+        self,
+        outbox_id: UUID,
+        *,
+        lease_owner: str,
+        dispatch_attempt: int,
+        now: datetime | None = None,
+    ) -> bool:
+        if not 0 < dispatch_attempt <= IMPORT_3MF_OUTBOX_MAX_ATTEMPTS:
+            raise ValueError("Import outbox dispatch attempt is invalid")
+        completed_at = now or now_utc()
+        row = self.db.scalar(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.id == outbox_id,
+                Import3mfCommandOutbox.status == "leased",
+                Import3mfCommandOutbox.lease_owner == lease_owner,
+                Import3mfCommandOutbox.dispatch_attempt == dispatch_attempt,
+                Import3mfCommandOutbox.lease_expires_at > completed_at,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            return False
+        row.status = "sent"
+        row.sent_at = completed_at
+        row.lease_owner = None
+        row.lease_expires_at = None
+        row.error_code = None
+        self.db.flush()
+        return True
+
+    def mark_failed(
+        self,
+        outbox_id: UUID,
+        *,
+        lease_owner: str,
+        dispatch_attempt: int,
+        error_code: str,
+        now: datetime | None = None,
+    ) -> bool:
+        if not 0 < dispatch_attempt <= IMPORT_3MF_OUTBOX_MAX_ATTEMPTS:
+            raise ValueError("Import outbox dispatch attempt is invalid")
+        if not error_code or len(error_code) > IMPORT_3MF_OUTBOX_MAX_ERROR_CODE_CHARS:
+            raise ValueError("Import outbox error code is invalid")
+        failed_at = now or now_utc()
+        row = self.db.scalar(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.id == outbox_id,
+                Import3mfCommandOutbox.status == "leased",
+                Import3mfCommandOutbox.lease_owner == lease_owner,
+                Import3mfCommandOutbox.dispatch_attempt == dispatch_attempt,
+                Import3mfCommandOutbox.lease_expires_at > failed_at,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            return False
+        row.error_code = error_code
+        row.lease_owner = None
+        row.lease_expires_at = None
+        if row.dispatch_attempt >= IMPORT_3MF_OUTBOX_MAX_ATTEMPTS:
+            row.status = "failed"
+        else:
+            exponent = max(row.dispatch_attempt - 1, 0)
+            delay_seconds = min(
+                IMPORT_3MF_OUTBOX_BASE_BACKOFF_SECONDS * (2**exponent),
+                IMPORT_3MF_OUTBOX_MAX_BACKOFF_SECONDS,
+            )
+            row.status = "pending"
+            row.available_at = failed_at + timedelta(seconds=delay_seconds)
+        self.db.flush()
+        return True
+
+
 class ProjectImportRepository:
     def __init__(self, db: Session, tenant_id: UUID):
         self.db = db
         self.tenant_id = tenant_id
         self.assets = ProjectAssetRepository(db, tenant_id)
+        self.outbox = Import3mfCommandOutboxRepository(db)
+
+    @staticmethod
+    def _require_matching_source_ref(
+        source_ref: ObjectRef, *, sha256: str, byte_size: int
+    ) -> None:
+        if (
+            source_ref.sha256 != sha256
+            or source_ref.byte_size != byte_size
+            or source_ref.key != f"sha256/{sha256}"
+        ):
+            raise ValueError("Import source reference does not match source content")
+
+    def _command_for_job(
+        self,
+        job: ProjectImportJob,
+        *,
+        source_ref: ObjectRef,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
+    ) -> Import3mfCommand:
+        return Import3mfCommand(
+            schema_version=1,
+            job_id=job.id,
+            tenant_id=self.tenant_id,
+            project_id=job.project_id,
+            user_id=job.requested_by,
+            attempt=job.attempt,
+            execution_id=job.execution_id,
+            source=source_ref,
+            conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+            traceparent=traceparent,
+            tracestate=tracestate,
+        )
+
+    def create_import_and_enqueue(
+        self,
+        *,
+        project_name: str,
+        requested_by: UUID,
+        display_name: str,
+        media_type: str,
+        content: bytes,
+        source_ref: ObjectRef,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
+    ) -> tuple[Project, ProjectAsset, ProjectImportJob, Import3mfCommandOutbox]:
+        self._require_matching_source_ref(
+            source_ref,
+            sha256=hashlib.sha256(content).hexdigest(),
+            byte_size=len(content),
+        )
+        with self.db.begin_nested():
+            project, source, job = self.create_import(
+                project_name=project_name,
+                requested_by=requested_by,
+                display_name=display_name,
+                media_type=media_type,
+                content=content,
+            )
+            outbox = self.outbox.enqueue(
+                self._command_for_job(
+                    job,
+                    source_ref=source_ref,
+                    traceparent=traceparent,
+                    tracestate=tracestate,
+                )
+            )
+        return project, source, job, outbox
 
     def _require_requester(self, requested_by: UUID) -> None:
         membership = self.db.scalar(
@@ -976,6 +1264,37 @@ class ProjectImportRepository:
             raise ActiveProjectImportError(
                 "Project already has an active import"
             ) from exc
+
+    def retry_and_enqueue(
+        self,
+        job_id: UUID,
+        *,
+        source_ref: ObjectRef,
+        traceparent: str | None = None,
+        tracestate: str | None = None,
+    ) -> tuple[ProjectImportJob, Import3mfCommandOutbox]:
+        with self.db.begin_nested():
+            job = self.retry(job_id)
+            source = self.assets.get_metadata(
+                job.source_asset_id, project_id=job.project_id
+            )
+            if source is None:
+                raise AssetIntegrityError("Import source asset is unavailable")
+            self._require_matching_source_ref(
+                source_ref, sha256=source.sha256, byte_size=source.byte_size
+            )
+            self.outbox.supersede_other_executions(
+                job.id, current_execution_id=job.execution_id
+            )
+            outbox = self.outbox.enqueue(
+                self._command_for_job(
+                    job,
+                    source_ref=source_ref,
+                    traceparent=traceparent,
+                    tracestate=tracestate,
+                )
+            )
+        return job, outbox
 
     def apply_success(
         self,

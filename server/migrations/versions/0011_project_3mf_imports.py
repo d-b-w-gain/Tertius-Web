@@ -181,6 +181,102 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "import_3mf_command_outbox",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("job_id", sa.Uuid(), nullable=False),
+        sa.Column("tenant_id", sa.Uuid(), nullable=False),
+        sa.Column("project_id", sa.Uuid(), nullable=False),
+        sa.Column("execution_id", sa.Uuid(), nullable=False),
+        sa.Column("message_id", sa.String(length=79), nullable=False),
+        sa.Column("payload", sa.LargeBinary(), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("dispatch_attempt", sa.Integer(), nullable=False),
+        sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("lease_owner", sa.String(length=128), nullable=True),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("error_code", sa.String(length=64), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("sent_at", sa.DateTime(timezone=True), nullable=True),
+        sa.CheckConstraint(
+            "status IN ('pending', 'leased', 'sent', 'failed')",
+            name="ck_import_3mf_outbox_status",
+        ),
+        sa.CheckConstraint(
+            "dispatch_attempt >= 0 AND dispatch_attempt <= 10",
+            name="ck_import_3mf_outbox_dispatch_attempt",
+        ),
+        sa.CheckConstraint(
+            "octet_length(payload) > 0 AND octet_length(payload) <= 4096",
+            name="ck_import_3mf_outbox_payload_bytes",
+        ),
+        sa.ForeignKeyConstraint(
+            ["job_id", "project_id", "tenant_id"],
+            [
+                "project_import_jobs.id",
+                "project_import_jobs.project_id",
+                "project_import_jobs.tenant_id",
+            ],
+            name="fk_import_3mf_outbox_job_scope",
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "job_id", "execution_id", name="uq_import_3mf_outbox_job_execution"
+        ),
+        sa.UniqueConstraint("message_id", name="uq_import_3mf_outbox_message_id"),
+    )
+    op.create_index(
+        "ix_import_3mf_command_outbox_job_id",
+        "import_3mf_command_outbox",
+        ["job_id"],
+    )
+    op.create_index(
+        "ix_import_3mf_command_outbox_project_id",
+        "import_3mf_command_outbox",
+        ["project_id"],
+    )
+    op.create_index(
+        "ix_import_3mf_command_outbox_tenant_id",
+        "import_3mf_command_outbox",
+        ["tenant_id"],
+    )
+    op.create_index(
+        "ix_import_3mf_outbox_claim",
+        "import_3mf_command_outbox",
+        ["status", "available_at", "lease_expires_at"],
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION tertius_protect_import_3mf_outbox_command()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            IF NEW.job_id IS DISTINCT FROM OLD.job_id
+               OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+               OR NEW.project_id IS DISTINCT FROM OLD.project_id
+               OR NEW.execution_id IS DISTINCT FROM OLD.execution_id
+               OR NEW.message_id IS DISTINCT FROM OLD.message_id
+               OR NEW.payload IS DISTINCT FROM OLD.payload
+               OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+                RAISE EXCEPTION 'import command outbox payload is immutable'
+                    USING ERRCODE = '55000';
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_import_3mf_outbox_command_immutable
+        BEFORE UPDATE ON import_3mf_command_outbox
+        FOR EACH ROW
+        EXECUTE FUNCTION tertius_protect_import_3mf_outbox_command()
+        """
+    )
+
+    op.create_table(
         "compile_job_assets",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("compile_job_id", sa.Uuid(), nullable=False),
@@ -273,6 +369,25 @@ def downgrade() -> None:
     )
     op.drop_table("compile_job_assets")
     op.execute("DROP FUNCTION tertius_reject_compile_job_asset_update()")
+    op.execute(
+        "DROP TRIGGER trg_import_3mf_outbox_command_immutable "
+        "ON import_3mf_command_outbox"
+    )
+    op.drop_index("ix_import_3mf_outbox_claim", table_name="import_3mf_command_outbox")
+    op.drop_index(
+        "ix_import_3mf_command_outbox_tenant_id",
+        table_name="import_3mf_command_outbox",
+    )
+    op.drop_index(
+        "ix_import_3mf_command_outbox_project_id",
+        table_name="import_3mf_command_outbox",
+    )
+    op.drop_index(
+        "ix_import_3mf_command_outbox_job_id",
+        table_name="import_3mf_command_outbox",
+    )
+    op.drop_table("import_3mf_command_outbox")
+    op.execute("DROP FUNCTION tertius_protect_import_3mf_outbox_command()")
     op.drop_index(
         "uq_project_import_jobs_active_project", table_name="project_import_jobs"
     )

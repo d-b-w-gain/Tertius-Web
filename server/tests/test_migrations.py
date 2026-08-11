@@ -64,6 +64,7 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "compile_job_files" in table_names
     assert "project_assets" in table_names
     assert "project_import_jobs" in table_names
+    assert "import_3mf_command_outbox" in table_names
     assert "compile_job_assets" in table_names
     import_job_columns = {
         column["name"]: column
@@ -71,6 +72,26 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     }
     assert import_job_columns["heartbeat_at"]["nullable"] is True
     assert import_job_columns["queued_at"]["nullable"] is False
+    outbox_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("import_3mf_command_outbox")
+    }
+    assert {
+        "job_id",
+        "tenant_id",
+        "project_id",
+        "execution_id",
+        "message_id",
+        "payload",
+        "status",
+        "dispatch_attempt",
+        "available_at",
+        "lease_owner",
+        "lease_expires_at",
+        "error_code",
+        "sent_at",
+    } <= set(outbox_columns)
+    assert outbox_columns["payload"]["nullable"] is False
     snapshot_columns = {
         column["name"]: column for column in inspector.get_columns("compile_job_files")
     }
@@ -212,12 +233,15 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(
     inspector = inspect(engine)
     assert "project_assets" not in inspector.get_table_names()
     assert "project_import_jobs" not in inspector.get_table_names()
+    assert "import_3mf_command_outbox" not in inspector.get_table_names()
     assert "compile_job_assets" not in inspector.get_table_names()
     with engine.connect() as connection:
         immutable_functions = connection.scalar(
             text(
                 "SELECT count(*) FROM pg_proc WHERE proname IN "
-                "('tertius_reject_project_asset_update', 'tertius_reject_compile_job_asset_update')"
+                "('tertius_reject_project_asset_update', "
+                "'tertius_reject_compile_job_asset_update', "
+                "'tertius_protect_import_3mf_outbox_command')"
             )
         )
     assert immutable_functions == 0
@@ -227,6 +251,7 @@ def test_3mf_import_migration_downgrades_and_reupgrades_cleanly(
     assert {
         "project_assets",
         "project_import_jobs",
+        "import_3mf_command_outbox",
         "compile_job_assets",
     } <= set(inspector.get_table_names())
     engine.dispose()
