@@ -5,10 +5,11 @@ from hashlib import sha256
 import importlib.util
 import logging
 from pathlib import Path
+import re
 from typing import Any, Optional, cast
 from uuid import UUID
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, File, Form, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from opentelemetry import propagate
@@ -21,10 +22,43 @@ from core.compile_messages import CompileCommand, CompileSourceFile, assert_mess
 from core.config import get_settings
 from core.db import get_db
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
-from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
-from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
-from core.pi_agent_conversation import next_conversation_context, render_conversation_context
-from core.pi_agent_messages import PiAgentCommand, PiAgentProgressSnapshot, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
+from core.import_3mf_messages import Import3mfCommand
+from core.models import (
+    CompileJob,
+    LlmEditJob,
+    Project,
+    ProjectFile,
+    ProjectImportJob,
+    UserWorkspaceState,
+)
+from core.nats_client import (
+    NatsPublisher,
+    connect_nats,
+    ensure_compile_stream,
+    ensure_import_stream,
+    ensure_pi_agent_stream,
+    ensure_project_object_store,
+)
+from core.object_store import ObjectRef, ProjectObjectStore
+from core.project_assets import (
+    IMPORT_3MF_CONVERSION_VERSION,
+    MAX_3MF_UPLOAD_BYTES,
+    OCTET_STREAM_MEDIA_TYPE,
+    THREE_MF_MEDIA_TYPE,
+    Import3mfManifest,
+    public_manifest_summary,
+)
+from core.pi_agent_conversation import (
+    next_conversation_context,
+    render_conversation_context,
+)
+from core.pi_agent_messages import (
+    PiAgentCommand,
+    PiAgentProgressSnapshot,
+    PiAgentSourceFile,
+    assert_pi_agent_command_size,
+    pi_agent_command_message_id,
+)
 from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
@@ -42,9 +76,15 @@ from core.telemetry import (
     counter_add,
 )
 from core.repositories import (
+    ActiveProjectImportError,
     CompileRepository,
+    ImportNotRetryableError,
+    ProjectAssetRepository,
+    ProjectImportRepository,
+    ProjectNameConflictError,
     ProjectRepository,
     normalize_file_version,
+    require_valid_project_name,
     require_valid_python_filename,
     LlmEditRepository,
 )
@@ -65,19 +105,23 @@ app.add_middleware(
 )
 
 # â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
+TEMPLATE_FILE = Path(__file__).parent / "templates" / "default_purlin.py"
+
 
 def get_default_purlin():
     if TEMPLATE_FILE.exists():
         return TEMPLATE_FILE.read_text(encoding="utf-8")
     return ""
 
+
 DEFAULT_PURLIN = get_default_purlin()
+
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
     file: Optional[str] = "design.py"
+
 
 class CompileRequest(BaseModel):
     code: str
@@ -102,11 +146,84 @@ async def publish_compile_command(command: CompileCommand) -> None:
         await nc.close()
 
 
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+_SAFE_3MF_DISPLAY_NAME = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_. -]{0,155}\.3mf$", re.IGNORECASE
+)
+_APPROVED_3MF_MEDIA_TYPES = frozenset({THREE_MF_MEDIA_TYPE, OCTET_STREAM_MEDIA_TYPE})
 
+
+async def put_import_source(content: bytes) -> ObjectRef:
+    settings = get_settings()
+    nc = await connect_nats(settings.nats_url)
+    try:
+        raw_store = await ensure_project_object_store(nc, settings)
+        return await ProjectObjectStore(
+            raw_store,
+            settings.project_asset_object_bucket,
+            max_object_bytes=MAX_3MF_UPLOAD_BYTES,
+        ).put(content)
+    finally:
+        await nc.close()
+
+
+async def publish_import_3mf_command(command: Import3mfCommand) -> None:
+    settings = get_settings()
+    nc = await connect_nats(settings.nats_url)
+    try:
+        js = await ensure_import_stream(nc, settings)
+        identity = f"{command.job_id}:{command.attempt}:{command.execution_id}"
+        message_id = f"import-request:{sha256(identity.encode()).hexdigest()}"
+        await NatsPublisher(js).publish_json(
+            settings.import_3mf_request_subject,
+            command,
+            message_id=message_id,
+        )
+        await nc.flush()
+    finally:
+        await nc.close()
+
+
+async def _read_bounded_3mf(upload: UploadFile) -> bytes:
+    chunks: list[bytes] = []
+    byte_size = 0
+    while True:
+        chunk = await upload.read(UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        byte_size += len(chunk)
+        if byte_size > MAX_3MF_UPLOAD_BYTES:
+            raise OverflowError("3MF upload exceeds the compressed size limit")
+        chunks.append(chunk)
+    if byte_size == 0:
+        raise ValueError("3MF upload is empty")
+    return b"".join(chunks)
+
+
+def _import_command(
+    *,
+    job: ProjectImportJob,
+    ctx: AuthContext,
+    source_ref: ObjectRef,
+) -> Import3mfCommand:
+    trace_headers: dict[str, str] = {}
+    propagate.inject(trace_headers)
+    return Import3mfCommand(
+        schema_version=1,
+        job_id=job.id,
+        tenant_id=ctx.tenant_id,
+        project_id=job.project_id,
+        user_id=ctx.user_id,
+        attempt=job.attempt,
+        execution_id=job.execution_id,
+        source=source_ref,
+        conversion_version=IMPORT_3MF_CONVERSION_VERSION,
+        traceparent=trace_headers.get("traceparent"),
+        tracestate=trace_headers.get("tracestate"),
+    )
 
 
 # â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
 
 
 @app.get("/health")
@@ -114,8 +231,11 @@ def health():
     has_b3d = importlib.util.find_spec("build123d") is not None
     return {"status": "ok", "build123d_installed": has_b3d}
 
+
 @app.get("/project_name")
-def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def get_project_name(
+    ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)
+):
     state = db.scalar(
         select(UserWorkspaceState).where(
             UserWorkspaceState.user_id == ctx.user_id,
@@ -134,24 +254,230 @@ def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session =
         return {"project_name": ""}
     return {"project_name": project.name}
 
+
 @app.get("/projects")
-def list_projects(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def list_projects(
+    ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)
+):
     return {"projects": ProjectRepository(db, ctx.tenant_id).list_projects()}
 
+
+def _reject_guest(ctx: AuthContext) -> JSONResponse | None:
+    if "guest" in {role.lower() for role in ctx.roles}:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"error": "authentication_required"},
+        )
+    return None
+
+
+def _import_error(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error": error})
+
+
+def _public_import_progress(progress: dict[str, Any]) -> dict[str, Any] | None:
+    stage = progress.get("stage")
+    percent = progress.get("percent")
+    if stage not in {"validating", "converting", "persisting"}:
+        return None
+    public: dict[str, Any] = {"stage": stage}
+    if type(percent) is int and 0 <= percent <= 100:
+        public["percent"] = percent
+    return public
+
+
+def _public_import_job(
+    db: Session, tenant_id: UUID, job: ProjectImportJob
+) -> dict[str, Any] | None:
+    project_name = db.scalar(
+        select(Project.name).where(
+            Project.id == job.project_id,
+            Project.tenant_id == tenant_id,
+        )
+    )
+    if project_name is None:
+        return None
+    payload: dict[str, Any] = {
+        "job_id": str(job.id),
+        "project_name": project_name,
+        "status": job.status,
+        "progress": _public_import_progress(job.progress_payload)
+        if job.progress_payload
+        else None,
+        "warnings": [],
+        "error_code": job.error_code,
+        "user_message": job.user_message,
+        "retryable": job.retryable,
+        "manifest": None,
+    }
+    if job.status == "succeeded" and job.manifest_asset_id is not None:
+        manifest_bytes = ProjectAssetRepository(db, tenant_id).get_content(
+            job.manifest_asset_id,
+            project_id=job.project_id,
+        )
+        if manifest_bytes is not None:
+            try:
+                manifest = Import3mfManifest.model_validate_json(manifest_bytes)
+            except ValidationError:
+                logger.warning("Stored 3MF manifest failed validation")
+            else:
+                summary = public_manifest_summary(manifest)
+                payload["warnings"] = list(summary.warnings)
+                payload["manifest"] = summary.model_dump(mode="json")
+    return payload
+
+
+@app.post("/projects/imports/3mf")
+async def import_3mf(
+    project_name: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    guest_response = _reject_guest(ctx)
+    if guest_response is not None:
+        return guest_response
+    if project_name is None:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_project_name")
+    try:
+        project_name = require_valid_project_name(project_name)
+    except ValueError:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_project_name")
+    if file is None:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
+    filename = file.filename or ""
+    media_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if (
+        not _SAFE_3MF_DISPLAY_NAME.fullmatch(filename)
+        or media_type not in _APPROVED_3MF_MEDIA_TYPES
+    ):
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
+    try:
+        content = await _read_bounded_3mf(file)
+    except OverflowError:
+        return _import_error(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "import_too_large"
+        )
+    except ValueError:
+        return _import_error(status.HTTP_400_BAD_REQUEST, "invalid_3mf_upload")
+
+    repo = ProjectImportRepository(db, ctx.tenant_id)
+    try:
+        project, _source, job = repo.create_import(
+            project_name=project_name,
+            requested_by=ctx.user_id,
+            display_name=filename,
+            media_type=media_type,
+            content=content,
+        )
+        source_ref = await put_import_source(content)
+        await publish_import_3mf_command(
+            _import_command(job=job, ctx=ctx, source_ref=source_ref)
+        )
+        db.commit()
+    except ProjectNameConflictError:
+        db.rollback()
+        return _import_error(status.HTTP_409_CONFLICT, "project_name_conflict")
+    except Exception:
+        db.rollback()
+        logger.warning("3MF import could not be queued")
+        return _import_error(status.HTTP_503_SERVICE_UNAVAILABLE, "import_unavailable")
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "success": True,
+            "job_id": str(job.id),
+            "project_name": project.name,
+            "status": "queued",
+        },
+    )
+
+
+@app.get("/projects/imports/3mf/jobs/{job_id}")
+def get_import_3mf_job(
+    job_id: UUID,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    guest_response = _reject_guest(ctx)
+    if guest_response is not None:
+        return guest_response
+    job = ProjectImportRepository(db, ctx.tenant_id).get_job(job_id)
+    if job is None:
+        return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
+    payload = _public_import_job(db, ctx.tenant_id, job)
+    if payload is None:
+        return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
+    return payload
+
+
+@app.post("/projects/imports/3mf/jobs/{job_id}/retry")
+async def retry_import_3mf_job(
+    job_id: UUID,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    guest_response = _reject_guest(ctx)
+    if guest_response is not None:
+        return guest_response
+    repo = ProjectImportRepository(db, ctx.tenant_id)
+    existing = repo.get_job(job_id)
+    if existing is None:
+        return _import_error(status.HTTP_404_NOT_FOUND, "import_job_not_found")
+    if existing.status in {"queued", "running"}:
+        return _import_error(status.HTTP_409_CONFLICT, "import_already_active")
+    try:
+        job = repo.retry(job_id)
+        content = repo.assets.get_content(
+            job.source_asset_id, project_id=job.project_id
+        )
+        if content is None:
+            raise RuntimeError("Import source is unavailable")
+        source_ref = await put_import_source(content)
+        await publish_import_3mf_command(
+            _import_command(job=job, ctx=ctx, source_ref=source_ref)
+        )
+        db.commit()
+    except ActiveProjectImportError:
+        db.rollback()
+        return _import_error(status.HTTP_409_CONFLICT, "import_already_active")
+    except ImportNotRetryableError:
+        db.rollback()
+        return _import_error(status.HTTP_409_CONFLICT, "import_not_retryable")
+    except Exception:
+        db.rollback()
+        logger.warning("3MF import retry could not be queued")
+        return _import_error(status.HTTP_503_SERVICE_UNAVAILABLE, "import_unavailable")
+    payload = _public_import_job(db, ctx.tenant_id, job)
+    assert payload is not None
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+
+
 @app.post("/projects/{name}/new")
-def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def new_project(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
         existing = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
     if existing:
-        return JSONResponse(status_code=400, content={"error": "Project already exists"})
+        return JSONResponse(
+            status_code=400, content={"error": "Project already exists"}
+        )
     repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
     return {"success": True, "project": name}
 
+
 @app.post("/projects/{name}/activate")
-def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def activate_project(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
         success = repo.activate_project(name, ctx.user_id)
@@ -161,8 +487,13 @@ def activate_project(name: str, ctx: AuthContext = Depends(get_auth_context), db
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
+
 @app.get("/projects/{name}/files")
-def list_files(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def list_files(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
         if repo.get_project(name) is None:
@@ -183,6 +514,7 @@ def list_files(name: str, ctx: AuthContext = Depends(get_auth_context), db: Sess
         ],
     }
 
+
 @app.get("/projects/{name}/code")
 def get_code(
     name: str,
@@ -197,6 +529,7 @@ def get_code(
     if code is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return {"code": code}
+
 
 @app.get("/projects/{name}/status")
 def get_status(
@@ -224,8 +557,13 @@ def get_status(
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return {"mtime": project_file.updated_at.timestamp()}
 
+
 @app.get("/projects/{name}/git_status")
-def get_git_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def get_git_status(
+    name: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     try:
         history = ProjectRepository(db, ctx.tenant_id).snapshot_history(name)
     except ValueError as exc:
@@ -235,8 +573,14 @@ def get_git_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: 
     commit = history[0].split(" ", 1)[0] if history else ""
     return {"is_git": True, "commit": commit, "history": history}
 
+
 @app.post("/projects/{name}/save")
-def save_code(name: str, req: CodeRequest, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def save_code(
+    name: str,
+    req: CodeRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     file = req.file or "design.py"
     try:
         saved = ProjectRepository(db, ctx.tenant_id).save_code(
@@ -252,8 +596,14 @@ def save_code(name: str, req: CodeRequest, ctx: AuthContext = Depends(get_auth_c
         return JSONResponse(status_code=404, content={"error": "Project not found"})
     return {"success": True}
 
+
 @app.delete("/projects/{name}/file")
-def delete_file(name: str, file: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
+def delete_file(
+    name: str,
+    file: str,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
     try:
         deleted = ProjectRepository(db, ctx.tenant_id).delete_file(name, file)
     except ValueError as exc:
@@ -261,6 +611,7 @@ def delete_file(name: str, file: str, ctx: AuthContext = Depends(get_auth_contex
     if not deleted:
         return JSONResponse(status_code=404, content={"error": "File not found"})
     return {"success": True}
+
 
 @app.post("/projects/{name}/compile")
 async def compile_project(
@@ -320,12 +671,17 @@ async def compile_project(
             export_format=ext,
             quality=req.quality,
             created_at=job.created_at,
-            files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
+            files=[
+                CompileSourceFile(filename=filename, content=content)
+                for filename, content in files.items()
+            ],
             request_id=request_id,
             originating_llm_edit_job_id=req.originating_llm_edit_job_id,
         )
         try:
-            assert_message_size(command, get_settings().compile_request_max_bytes, "request")
+            assert_message_size(
+                command, get_settings().compile_request_max_bytes, "request"
+            )
         except ValueError as exc:
             compile_repo.finish_job(
                 job,
@@ -348,13 +704,20 @@ async def compile_project(
                     "retryable": False,
                 },
             )
-        compile_repo.mark_job_dispatched(job, lease_seconds=get_settings().compile_ack_wait_seconds)
+        compile_repo.mark_job_dispatched(
+            job, lease_seconds=get_settings().compile_ack_wait_seconds
+        )
         db.commit()
         committed = True
         await publish_compile_command(command)
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            content={"success": True, "job_id": str(job.id), "status": "queued", "format": ext},
+            content={
+                "success": True,
+                "job_id": str(job.id),
+                "status": "queued",
+                "format": ext,
+            },
         )
 
     except Exception as exc:
@@ -402,14 +765,10 @@ async def compile_project(
                     "retryable": True,
                 },
             )
-        return JSONResponse(status_code=200, content={
-            "success": False,
-            "error": str(exc),
-            "short": str(exc)
-        })
-
-
-
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "error": str(exc), "short": str(exc)},
+        )
 
 
 def _llm_edit_job_content(job: LlmEditJob) -> str:
@@ -422,11 +781,17 @@ def _llm_edit_job_content(job: LlmEditJob) -> str:
 
         files = _llm_edit_job_files(job)
         changed_files = [file for file in files if file.get("changed") is not False]
-        file_summary = " ".join(str(file.get("summary")) for file in files if file.get("summary"))
+        file_summary = " ".join(
+            str(file.get("summary")) for file in files if file.get("summary")
+        )
         outcome = job.result_payload.get("outcome")
         parts = [
-            f"Updated {len(changed_files) or len(files)} file(s)." if outcome == "changed" else f"AI returned {outcome}.",
-            f"Model: {job.result_payload.get('model')}." if job.result_payload.get("model") else "",
+            f"Updated {len(changed_files) or len(files)} file(s)."
+            if outcome == "changed"
+            else f"AI returned {outcome}.",
+            f"Model: {job.result_payload.get('model')}."
+            if job.result_payload.get("model")
+            else "",
             file_summary,
         ]
         return " ".join(part for part in parts if part)
@@ -443,7 +808,9 @@ def _llm_edit_job_files(job: LlmEditJob) -> list[dict[str, Any]]:
     for file in files:
         if not isinstance(file, dict):
             continue
-        projected.append({key: value for key, value in file.items() if key != "content"})
+        projected.append(
+            {key: value for key, value in file.items() if key != "content"}
+        )
     return projected
 
 
@@ -531,10 +898,14 @@ def _serialize_llm_edit_history_message(
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "status": job.status,
         "model": _llm_edit_job_model(job),
-        "metadata": request_payload.get("metadata") if isinstance(request_payload.get("metadata"), dict) else {},
+        "metadata": request_payload.get("metadata")
+        if isinstance(request_payload.get("metadata"), dict)
+        else {},
         "usage": result_payload.get("usage"),
         "files": _llm_edit_job_files(job),
-        "requested_file_count": len(request_files) if isinstance(request_files, list) else 0,
+        "requested_file_count": len(request_files)
+        if isinstance(request_files, list)
+        else 0,
         "compile": (
             {
                 "job_id": str(compile_job.id),
@@ -551,26 +922,8 @@ def _serialize_llm_edit_history_message(
     return message
 
 
-
-
-
-
-
-
-
-
-
 def _llm_file_edit_job_attributes() -> dict[str, str]:
     return {"llm.operation": "files.llm_edit", "workflow": "intus"}
-
-
-
-
-
-
-
-
-
 
 
 async def publish_pi_agent_command(settings, command: PiAgentCommand) -> None:
@@ -602,15 +955,28 @@ async def start_llm_file_edit_job(
     publication_attempted = False
     try:
         if not settings.pi_agent_enabled:
-            return JSONResponse(status_code=503, content={"success": False, "error": "AI editing is not configured", "retryable": False})
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "error": "AI editing is not configured",
+                    "retryable": False,
+                },
+            )
         project = repo.get_project(name)
         if project is None:
-            return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Project not found"},
+            )
         locked_project = db.scalar(
             select(Project).where(Project.id == project.id).with_for_update()
         )
         if locked_project is None:
-            return JSONResponse(status_code=404, content={"success": False, "error": "Project not found"})
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Project not found"},
+            )
         project = locked_project
         active_job = db.scalar(
             select(LlmEditJob)
@@ -623,9 +989,19 @@ async def start_llm_file_edit_job(
         )
         if active_job is not None:
             db.rollback()
-            return JSONResponse(status_code=409, content={"success": False, "error": "An AI edit is already running for this project", "retryable": True})
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "error": "An AI edit is already running for this project",
+                    "retryable": True,
+                },
+            )
         if selected_model not in {model.id for model in settings.pi_agent_models}:
-            return JSONResponse(status_code=400, content={"success": False, "error": "unsupported_model"})
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "unsupported_model"},
+            )
 
         seen_ids: set[UUID] = set()
         for pointer in req.files:
@@ -637,16 +1013,31 @@ async def start_llm_file_edit_job(
             raise ValueError("Active file id is not in the request")
         rows = repo.files_by_ids(name, [pointer.id for pointer in req.files])
         if set(rows) != seen_ids:
-            return JSONResponse(status_code=404, content={"success": False, "error": "File not found"})
+            return JSONResponse(
+                status_code=404, content={"success": False, "error": "File not found"}
+            )
         for pointer in req.files:
             row = rows[pointer.id]
             if row.filename != pointer.filename:
                 raise ValueError("File pointer does not match filename")
-            if normalize_file_version(row.updated_at) != normalize_file_version(pointer.updated_at):
-                return JSONResponse(status_code=409, content={"success": False, "error": "Files changed while AI edit was running. Reload and try again.", "retryable": False})
+            if normalize_file_version(row.updated_at) != normalize_file_version(
+                pointer.updated_at
+            ):
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "success": False,
+                        "error": "Files changed while AI edit was running. Reload and try again.",
+                        "retryable": False,
+                    },
+                )
 
         editable = [
-            DomainEditableFile(id=rows[p.id].id, filename=rows[p.id].filename, content=rows[p.id].content)
+            DomainEditableFile(
+                id=rows[p.id].id,
+                filename=rows[p.id].filename,
+                content=rows[p.id].content,
+            )
             for p in req.files
         ]
         selected = select_domain_context_files(
@@ -668,8 +1059,7 @@ async def start_llm_file_edit_job(
             (
                 rows[pointer.id].filename
                 for pointer in req.files
-                if pointer.id == req.active_file_id
-                and pointer.id in selected_ids
+                if pointer.id == req.active_file_id and pointer.id in selected_ids
             ),
             None,
         )
@@ -685,9 +1075,7 @@ async def start_llm_file_edit_job(
         estimate = estimate_pi_agent_usage(
             system_prompt=prompt_snapshot.content,
             user_prompt=user_prompt,
-            source_bytes=sum(
-                len(file.content.encode("utf-8")) for file in selected
-            ),
+            source_bytes=sum(len(file.content.encode("utf-8")) for file in selected),
             metadata=req.metadata,
             max_output_tokens=settings.pi_agent_estimated_output_tokens,
         )
@@ -737,7 +1125,9 @@ async def start_llm_file_edit_job(
         propagate.inject(trace_headers)
         request_payload["dispatch_traceparent"] = trace_headers.get("traceparent")
         request_payload["dispatch_tracestate"] = trace_headers.get("tracestate")
-        job = job_repo.start_job(project.id, ctx.user_id, request_payload, status="queued")
+        job = job_repo.start_job(
+            project.id, ctx.user_id, request_payload, status="queued"
+        )
         command = PiAgentCommand(
             schema_version=2,
             job_id=job.id,
@@ -788,19 +1178,41 @@ async def start_llm_file_edit_job(
         )
     except LlmUsageLimitExceeded:
         db.rollback()
-        return JSONResponse(status_code=429, content={"success": False, "error": "LLM generation limit exceeded.", "retryable": True})
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "error": "LLM generation limit exceeded.",
+                "retryable": True,
+            },
+        )
     except ValueError as exc:
         db.rollback()
-        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+        return JSONResponse(
+            status_code=400, content={"success": False, "error": str(exc)}
+        )
     except Exception:
         logger.exception("Failed to dispatch Pi agent job")
         db.rollback()
         if publication_attempted and job is not None:
-            return JSONResponse(status_code=202, content={"success": True, "job_id": str(job.id), "status": "queued"})
-        return JSONResponse(status_code=503, content={"success": False, "error": "Could not prepare AI edit job", "retryable": True})
+            return JSONResponse(
+                status_code=202,
+                content={"success": True, "job_id": str(job.id), "status": "queued"},
+            )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "Could not prepare AI edit job",
+                "retryable": True,
+            },
+        )
 
     assert job is not None
-    return JSONResponse(status_code=202, content={"success": True, "job_id": str(job.id), "status": "queued"})
+    return JSONResponse(
+        status_code=202,
+        content={"success": True, "job_id": str(job.id), "status": "queued"},
+    )
 
 
 @app.get("/projects/{name}/files/llm-edit/jobs")
@@ -856,14 +1268,18 @@ def get_llm_file_edit_job_status(
 
     job = llm_edit_repo.get_job(project.id, job_id)
     if job is None:
-        return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
+        return JSONResponse(
+            status_code=404, content={"error": "LLM edit job not found"}
+        )
 
     settings = get_settings()
     reconcile_stale_pi_agent_job(db, job, settings)
     db.commit()
     db.refresh(job)
     if job is None:
-        return JSONResponse(status_code=404, content={"error": "LLM edit job not found"})
+        return JSONResponse(
+            status_code=404, content={"error": "LLM edit job not found"}
+        )
 
     return {
         "job_id": str(job.id),
@@ -877,9 +1293,6 @@ def get_llm_file_edit_job_status(
         "created_at": job.created_at.isoformat(),
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
-
-
-
 
 
 @app.get("/projects/{name}/compile/jobs/{job_id}")
@@ -930,6 +1343,8 @@ def get_compile_job_status(
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8891)
