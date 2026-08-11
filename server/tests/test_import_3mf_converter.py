@@ -24,17 +24,20 @@ from tests.fixtures.three_mf import (
     box_mesh,
     make_3mf,
     make_box_3mf,
+    make_invalid_multishell_solid_3mf,
     make_open_shell_3mf,
 )
 from workflows.intus.import_3mf_converter import (
     ALLOWED_PYLIB3MF_SHUTDOWN_STDERR,
     ArchiveLimits,
     BREP_BOUNDS_ABS_TOLERANCE_MM,
+    ConverterStatus,
     Import3mfError,
     convert_3mf_bytes,
     load_brep_bytes,
     run_converter_subprocess,
     validate_3mf_archive,
+    _parse_model_metadata,
     _validate_brep_round_trip,
 )
 
@@ -65,13 +68,18 @@ def test_converter_uses_deterministic_unique_names(tmp_path):
 
 
 def test_converter_preserves_two_first_level_objects(tmp_path):
-    mesh = box_mesh()
+    first = box_mesh(1)
+    second_vertices, second_triangles = box_mesh(2)
+    second = ([(x + 5, y, z) for x, y, z in second_vertices], second_triangles)
     result = convert_3mf_bytes(
-        make_3mf(objects=[("First", *mesh), ("Second", *mesh)]), tmp_path
+        make_3mf(objects=[("First", *first), ("Second", *second)]), tmp_path
     )
     loaded = load_brep_bytes(result.brep_bytes, tmp_path / "two.brep")
     assert result.manifest.object_count == 2
     assert len(loaded.first_level_shapes()) == 2
+    assert [part.name for part in result.manifest.parts] == ["first", "second"]
+    assert result.manifest.parts[0].bounds_mm.max == (1.0, 1.0, 1.0)
+    assert result.manifest.parts[1].bounds_mm.min == (5.0, 0.0, 0.0)
 
 
 def test_converter_maps_invalid_source_metadata_to_bounded_error(tmp_path):
@@ -86,11 +94,27 @@ def test_solid_shell_roundtrip_and_boolean(tmp_path):
     assert len(parts) == 1
     assert solid.manifest.parts[0].shape_type == "solid"
     cut = parts[0] - bd.Cylinder(2, 20)
-    assert cut.is_valid
+    assert cut.is_valid()
     assert 0 < cut.volume < parts[0].volume
     shell = convert_3mf_bytes(make_open_shell_3mf(), tmp_path / "shell")
     assert shell.manifest.parts[0].shape_type == "shell"
     assert not shell.manifest.parts[0].boolean_capable
+
+
+def test_invalid_closed_multishell_solid_is_not_boolean_capable(tmp_path):
+    result = convert_3mf_bytes(make_invalid_multishell_solid_3mf(), tmp_path)
+    part_manifest = result.manifest.parts[0]
+    assert part_manifest.shape_type == "solid"
+    assert not part_manifest.is_valid
+    assert not part_manifest.boolean_capable
+
+
+def test_conversion_is_deterministic(tmp_path):
+    source = make_box_3mf(size=7)
+    first = convert_3mf_bytes(source, tmp_path / "first")
+    second = convert_3mf_bytes(source, tmp_path / "second")
+    assert first.brep_bytes == second.brep_bytes
+    assert first.manifest == second.manifest
 
 
 def test_output_digest_size_and_source_manifest_contract(tmp_path):
@@ -312,6 +336,65 @@ def test_xml_entity_bomb_is_rejected():
         validate_3mf_archive(source)
 
 
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '<!DOCTYPE model [<!ENTITY payload "boom">]>',
+        '<!DOCTYPE model [<!ENTITY payload SYSTEM "file:///etc/passwd">]>',
+    ],
+)
+def test_utf16_dtd_and_entities_are_rejected_for_all_encodings(declaration):
+    model = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        f"{declaration}"
+        '<model unit="millimeter" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        "<resources>&payload;</resources><build/></model>"
+    ).encode("utf-16")
+    source = make_3mf(objects=[("Box", *box_mesh())], model_document=model)
+    with pytest.raises(Import3mfError, match="invalid_3mf_archive"):
+        validate_3mf_archive(source)
+
+
+def test_utf16_external_entity_in_relationships_is_rejected():
+    relationships = (
+        '<?xml version="1.0" encoding="UTF-16"?>'
+        '<!DOCTYPE Relationships [<!ENTITY target SYSTEM "file:///etc/passwd">]>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Target="&target;" Id="rel0" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>'
+        "</Relationships>"
+    ).encode("utf-16")
+    source = make_3mf(
+        objects=[("Box", *box_mesh())], relationships_document=relationships
+    )
+    with pytest.raises(Import3mfError, match="invalid_3mf_archive"):
+        validate_3mf_archive(source)
+
+
+def test_streaming_parser_accepts_chunks_and_fails_early_on_vertex_limit():
+    vertices = [(float(index), 0.0, 0.0) for index in range(2_000)]
+    source = make_3mf(objects=[("Points", vertices, [])])
+    with pytest.raises(Import3mfError, match="3mf_resource_limit"):
+        validate_3mf_archive(source, limits=ArchiveLimits(vertices=1_999))
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        document = archive.read("3D/3dmodel.model")
+
+    class Chunked(io.BytesIO):
+        max_requested = 0
+
+        def read(self, size=-1):
+            self.max_requested = max(self.max_requested, size)
+            return super().read(min(size, 127) if size >= 0 else 127)
+
+    stream = Chunked(document)
+    metadata = _parse_model_metadata(stream, ArchiveLimits(vertices=2_000))
+    assert metadata.vertex_counts == (2_000,)
+    assert stream.max_requested <= 16 * 1024
+    with pytest.raises(Import3mfError, match="3mf_resource_limit"):
+        _parse_model_metadata(Chunked(document), ArchiveLimits(vertices=1_999))
+
+
 def test_subprocess_kills_process_tree_on_timeout(tmp_path):
     marker = tmp_path / "child"
     script = tmp_path / "hang.py"
@@ -344,13 +427,60 @@ def test_subprocess_has_empty_shutdown_stderr_allowlist_and_clean_success(tmp_pa
     assert direct.manifest.object_count == 1
 
 
+@pytest.mark.parametrize(
+    ("source", "code"),
+    [
+        (b"not zip", "invalid_3mf_archive"),
+        (make_box_3mf(size=float("nan")), "invalid_3mf_geometry"),
+        (make_box_3mf(size=MAX_3MF_COORDINATE_MM + 1), "3mf_resource_limit"),
+    ],
+)
+def test_subprocess_preserves_bounded_domain_error(source, code):
+    with pytest.raises(Import3mfError, match=code) as raised:
+        run_converter_subprocess(source, timeout_seconds=30)
+    assert raised.value.code == code
+
+
+def test_converter_status_json_is_strict_and_bounded():
+    success = ConverterStatus(schema_version=1, status="succeeded")
+    assert ConverterStatus.model_validate_json(success.model_dump_json()) == success
+    with pytest.raises(ValueError):
+        ConverterStatus.model_validate_json(
+            '{"schema_version":true,"status":"succeeded"}'
+        )
+    with pytest.raises(ValueError):
+        ConverterStatus.model_validate(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "error_code": "invalid_3mf_archive",
+                "user_message": "raw source metadata",
+            }
+        )
+
+
+def test_subprocess_malformed_status_fails_closed(tmp_path):
+    script = tmp_path / "bad-status.py"
+    script.write_text(
+        "import pathlib,sys\n"
+        "pathlib.Path(sys.argv[5]).write_text('{bad json')\n"
+        "raise SystemExit(1)\n"
+    )
+    with pytest.raises(Import3mfError, match="conversion_failed"):
+        run_converter_subprocess(
+            make_box_3mf(),
+            timeout_seconds=30,
+            worker_command=[sys.executable, os.fspath(script)],
+        )
+
+
 def test_subprocess_fails_closed_on_unexpected_stderr_after_valid_output(tmp_path):
     script = tmp_path / "noisy.py"
     script.write_text(
         "import sys\n"
         "from pathlib import Path\n"
         "from workflows.intus.import_3mf_converter import _child\n"
-        "status = _child(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))\n"
+        "status = _child(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]), Path(sys.argv[5]))\n"
         "sys.stderr.write('unexpected native warning\\n')\n"
         "raise SystemExit(status)\n"
     )

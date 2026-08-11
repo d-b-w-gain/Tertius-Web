@@ -79,6 +79,50 @@ def test_command_bounds_trace_state():
         Import3mfCommand.model_validate({**command_payload(), "traceparent": "x" * 513})
     with pytest.raises(ValidationError):
         Import3mfCommand.model_validate({**command_payload(), "tracestate": "x" * 513})
+    for traceparent in (
+        "not-w3c",
+        "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+        "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
+        "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    ):
+        with pytest.raises(ValidationError):
+            Import3mfCommand.model_validate(
+                {**command_payload(), "traceparent": traceparent}
+            )
+    for tracestate in (
+        "bad\nstate",
+        "missing-equals",
+        "a=b,,c=d",
+        "duplicate=one,duplicate=two",
+    ):
+        with pytest.raises(ValidationError):
+            Import3mfCommand.model_validate(
+                {**command_payload(), "tracestate": tracestate}
+            )
+
+
+@pytest.mark.parametrize(
+    "message_type", [Import3mfCommand, Import3mfProgress, Import3mfResult]
+)
+def test_schema_version_rejects_bool(message_type, manifest_summary):
+    command = Import3mfCommand.model_validate(command_payload())
+    if message_type is Import3mfCommand:
+        payload = command.model_dump()
+    elif message_type is Import3mfProgress:
+        payload = Import3mfProgress.for_command(
+            command, stage="validating", percent=0
+        ).model_dump()
+    else:
+        payload = Import3mfResult.success_for(
+            command,
+            brep=object_ref(),
+            manifest=object_ref(),
+            summary=manifest_summary,
+            duration_ms=1,
+        ).model_dump()
+    with pytest.raises(ValidationError):
+        message_type.model_validate({**payload, "schema_version": True})
 
 
 def test_attempt_execution_and_source_reference_are_strict_and_bounded():
@@ -221,6 +265,24 @@ def test_result_reference_limits_and_provenance_mismatch_are_rejected(manifest_s
         ).brep
         == exact_brep
     )
+    zero = object_ref().model_copy(update={"byte_size": 0})
+    with pytest.raises(ValidationError):
+        Import3mfResult.success_for(
+            command,
+            brep=zero,
+            manifest=object_ref(),
+            summary=manifest_summary,
+            duration_ms=1,
+        )
+    other_bucket = object_ref().model_copy(update={"bucket": "OTHER_ASSETS"})
+    with pytest.raises(ValidationError):
+        Import3mfResult.success_for(
+            command,
+            brep=other_bucket,
+            manifest=object_ref(),
+            summary=manifest_summary,
+            duration_ms=1,
+        )
     oversized_manifest = object_ref().model_copy(update={"byte_size": 256 * 1024 + 1})
     with pytest.raises(ValidationError):
         Import3mfResult.success_for(
@@ -229,4 +291,24 @@ def test_result_reference_limits_and_provenance_mismatch_are_rejected(manifest_s
             manifest=oversized_manifest,
             summary=manifest_summary,
             duration_ms=1,
+        )
+
+
+def test_messages_round_trip_through_json_ipc(manifest_summary):
+    command = Import3mfCommand.model_validate(command_payload())
+    assert Import3mfCommand.model_validate_json(command.model_dump_json()) == command
+    result = Import3mfResult.success_for(
+        command,
+        brep=object_ref(),
+        manifest=object_ref(),
+        summary=manifest_summary,
+        duration_ms=1,
+    )
+    assert Import3mfResult.model_validate_json(result.model_dump_json()) == result
+    with pytest.raises(ValidationError):
+        Import3mfResult.model_validate(
+            {
+                **result.model_dump(),
+                "traceparent": "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            }
         )
