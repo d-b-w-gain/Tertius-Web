@@ -114,6 +114,8 @@ def upgrade() -> None:
             name="fk_project_import_jobs_project_tenant",
             ondelete="CASCADE",
         ),
+        # Deliberately RESTRICT membership deletion while an import audit row
+        # references it. Immutable requested_by attribution must not be orphaned.
         sa.ForeignKeyConstraint(
             ["tenant_id", "requested_by"],
             ["tenant_memberships.tenant_id", "tenant_memberships.user_id"],

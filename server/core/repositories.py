@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from core.project_assets import (
     BREP_MEDIA_TYPE,
     IMPORT_3MF_CONVERSION_VERSION,
     MANIFEST_MEDIA_TYPE,
+    MAX_3MF_MANIFEST_BYTES,
     Import3mfManifest,
     generated_3mf_design_source,
 )
@@ -52,6 +54,10 @@ LLM_EDIT_WORKER_LOST_ERROR_CODE = "worker_lost"
 LLM_EDIT_WORKER_LOST_USER_MESSAGE = "AI generation stopped unexpectedly. Try again."
 PI_AGENT_PROGRESS_MAX_EVENTS = 128
 PI_AGENT_PROGRESS_MAX_BYTES = 64 * 1024
+IMPORT_PROGRESS_MAX_BYTES = 64 * 1024
+IMPORT_ERROR_MAX_CHARS = 2_000
+IMPORT_ERROR_CODE_MAX_CHARS = 64
+IMPORT_USER_MESSAGE_MAX_CHARS = 500
 
 
 class ProgressBatchApplyOutcome(StrEnum):
@@ -757,6 +763,18 @@ class ProjectImportRepository:
         return job
 
     def mark_progress(self, job_id: UUID, execution_id: UUID, progress_payload: dict) -> ProjectImportJob:
+        try:
+            progress_bytes = len(
+                json.dumps(
+                    progress_payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Import progress payload must be JSON serializable") from exc
+        if progress_bytes > IMPORT_PROGRESS_MAX_BYTES:
+            raise ValueError("Import progress payload exceeds byte limit")
         job = self._lock_job(job_id)
         self._require_execution(job, execution_id)
         if job.status not in {"queued", "running"}:
@@ -776,6 +794,13 @@ class ProjectImportRepository:
         user_message: str,
         retryable: bool,
     ) -> ProjectImportJob:
+        for label, value, max_chars in (
+            ("error", error, IMPORT_ERROR_MAX_CHARS),
+            ("error code", error_code, IMPORT_ERROR_CODE_MAX_CHARS),
+            ("user message", user_message, IMPORT_USER_MESSAGE_MAX_CHARS),
+        ):
+            if len(value) > max_chars:
+                raise ValueError(f"Import {label} exceeds character limit")
         job = self._lock_job(job_id)
         self._require_execution(job, execution_id)
         if job.status not in {"queued", "running"}:
@@ -790,24 +815,60 @@ class ProjectImportRepository:
         return job
 
     def retry(self, job_id: UUID) -> ProjectImportJob:
-        job = self._lock_job(job_id)
-        if job.status != "failed" or not job.retryable:
-            raise ImportNotRetryableError("Import job is not retryable")
-        job.attempt += 1
-        job.execution_id = uuid.uuid4()
-        job.status = "queued"
-        job.error = None
-        job.error_code = None
-        job.user_message = None
-        job.retryable = False
-        job.progress_payload = {}
-        flag_modified(job, "progress_payload")
-        job.brep_asset_id = None
-        job.manifest_asset_id = None
-        job.started_at = None
-        job.finished_at = None
-        self.db.flush()
-        return job
+        scope = self.db.execute(
+            select(ProjectImportJob.id, ProjectImportJob.project_id).where(
+                ProjectImportJob.id == job_id,
+                ProjectImportJob.tenant_id == self.tenant_id,
+            )
+        ).one_or_none()
+        if scope is None:
+            raise ValueError("Import job not found")
+        try:
+            with self.db.begin_nested():
+                project = self.db.scalar(
+                    select(Project)
+                    .where(
+                        Project.id == scope.project_id,
+                        Project.tenant_id == self.tenant_id,
+                    )
+                    .with_for_update()
+                )
+                if project is None:
+                    raise ValueError("Project not found")
+                job = self._lock_job(job_id)
+                if job.status != "failed" or not job.retryable:
+                    raise ImportNotRetryableError("Import job is not retryable")
+                active = self.db.scalar(
+                    select(ProjectImportJob.id).where(
+                        ProjectImportJob.project_id == job.project_id,
+                        ProjectImportJob.tenant_id == self.tenant_id,
+                        ProjectImportJob.id != job.id,
+                        ProjectImportJob.status.in_(["queued", "running"]),
+                    )
+                )
+                if active is not None:
+                    raise ActiveProjectImportError(
+                        "Project already has an active import"
+                    )
+                job.attempt += 1
+                job.execution_id = uuid.uuid4()
+                job.status = "queued"
+                job.error = None
+                job.error_code = None
+                job.user_message = None
+                job.retryable = False
+                job.progress_payload = {}
+                flag_modified(job, "progress_payload")
+                job.brep_asset_id = None
+                job.manifest_asset_id = None
+                job.started_at = None
+                job.finished_at = None
+                self.db.flush()
+            return job
+        except IntegrityError as exc:
+            raise ActiveProjectImportError(
+                "Project already has an active import"
+            ) from exc
 
     def apply_success(
         self,
@@ -838,7 +899,10 @@ class ProjectImportRepository:
                 return job
             if job.status not in {"queued", "running"}:
                 raise ValueError("Import job is terminal")
-            manifest = Import3mfManifest.model_validate_json(manifest_content)
+            manifest_bytes = bytes(manifest_content)
+            if len(manifest_bytes) > MAX_3MF_MANIFEST_BYTES:
+                raise ValueError("Import manifest exceeds raw byte limit")
+            manifest = Import3mfManifest.model_validate_json(manifest_bytes)
             brep_bytes = bytes(brep_content)
             brep_sha256 = hashlib.sha256(brep_bytes).hexdigest()
             if manifest.source_sha256 != source.sha256:
@@ -862,7 +926,7 @@ class ProjectImportRepository:
                 display_name="source.manifest.json",
                 kind="import_manifest",
                 media_type=MANIFEST_MEDIA_TYPE,
-                content=bytes(manifest_content),
+                content=manifest_bytes,
                 revision=revision,
                 conversion_version=IMPORT_3MF_CONVERSION_VERSION,
             )
@@ -1041,6 +1105,17 @@ class CompileRepository:
     ) -> None:
         if job.tenant_id != self.tenant_id:
             raise ValueError("Compile job is outside tenant scope")
+        expected_filenames = {
+            "source.brep": "derived_brep",
+            "source.manifest.json": "import_manifest",
+        }
+        if set(assets) != set(expected_filenames) or any(
+            asset.kind != expected_filenames[logical_filename]
+            for logical_filename, (asset, _, _) in assets.items()
+        ):
+            raise AssetIntegrityError(
+                "Compile asset kind does not match its hydrated filename"
+            )
         paired_assets = [asset for asset, _, _ in assets.values()]
         by_kind = {asset.kind: asset for asset in paired_assets}
         if len(paired_assets) != 2 or set(by_kind) != {

@@ -25,6 +25,7 @@ from core.project_assets import (
     BREP_MEDIA_TYPE,
     IMPORT_3MF_CONVERSION_VERSION,
     MANIFEST_MEDIA_TYPE,
+    MAX_3MF_MANIFEST_BYTES,
     THREE_MF_MEDIA_TYPE,
     generated_3mf_design_source,
 )
@@ -259,6 +260,96 @@ def test_retry_rejects_nonfailed_or_nonretryable_jobs(db_session, seeded_tenant)
         repo.retry(job.id)
 
 
+def test_retry_rejects_existing_active_import_without_mutating_failed_job(db_session, seeded_tenant):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _, source, failed_job = _create_import(repo, seeded_tenant)
+    repo.mark_failed(
+        failed_job.id,
+        failed_job.execution_id,
+        error="lost",
+        error_code="worker_lost",
+        user_message="Try again.",
+        retryable=True,
+    )
+    active_job = repo.create_queued(failed_job.project_id, seeded_tenant.user_id, source.id)
+
+    with pytest.raises(ActiveProjectImportError):
+        repo.retry(failed_job.id)
+
+    db_session.refresh(failed_job)
+    assert failed_job.status == "failed"
+    assert failed_job.retryable is True
+    assert failed_job.attempt == 1
+    assert active_job.status == "queued"
+
+
+def test_retry_and_create_queued_serialize_to_one_active_job(postgres_url, db_session, seeded_tenant):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _, source, failed_job = _create_import(repo, seeded_tenant)
+    repo.mark_failed(
+        failed_job.id,
+        failed_job.execution_id,
+        error="lost",
+        error_code="worker_lost",
+        user_message="Try again.",
+        retryable=True,
+    )
+    project_id = failed_job.project_id
+    source_id = source.id
+    failed_job_id = failed_job.id
+    db_session.commit()
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+    errors: list[Exception] = []
+
+    def retry_failed() -> None:
+        try:
+            with SessionFactory() as session:
+                barrier.wait(timeout=10)
+                ProjectImportRepository(session, seeded_tenant.tenant_id).retry(failed_job_id)
+                session.commit()
+                outcomes.append("retry")
+        except ActiveProjectImportError:
+            outcomes.append("retry_active")
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    def create_new() -> None:
+        try:
+            with SessionFactory() as session:
+                barrier.wait(timeout=10)
+                ProjectImportRepository(session, seeded_tenant.tenant_id).create_queued(
+                    project_id, seeded_tenant.user_id, source_id
+                )
+                session.commit()
+                outcomes.append("create")
+        except ActiveProjectImportError:
+            outcomes.append("create_active")
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=retry_failed, daemon=True), threading.Thread(target=create_new, daemon=True)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+    engine.dispose()
+
+    assert not errors
+    assert not any(thread.is_alive() for thread in threads)
+    assert len(outcomes) == 2
+    assert sum(outcome in {"retry", "create"} for outcome in outcomes) == 1
+    db_session.expire_all()
+    assert db_session.scalar(
+        select(func.count()).select_from(ProjectImportJob).where(
+            ProjectImportJob.project_id == project_id,
+            ProjectImportJob.status.in_(["queued", "running"]),
+        )
+    ) == 1
+
 def test_stale_execution_cannot_update_or_complete_retried_job(db_session, seeded_tenant):
     repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
     _, source, job = _create_import(repo, seeded_tenant)
@@ -284,6 +375,33 @@ def test_stale_execution_cannot_update_or_complete_retried_job(db_session, seede
             manifest_content=_manifest_bytes(b"3mf-source", b"brep"),
             user_id=seeded_tenant.user_id,
         )
+
+
+def test_worker_progress_and_failure_messages_are_bounded(db_session, seeded_tenant):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _, _, job = _create_import(repo, seeded_tenant)
+
+    with pytest.raises(ValueError, match="progress payload"):
+        repo.mark_progress(job.id, job.execution_id, {"message": "é" * (64 * 1024)})
+
+    for field, value in (
+        ("error", "x" * 2001),
+        ("error_code", "x" * 65),
+        ("user_message", "x" * 501),
+    ):
+        kwargs = {
+            "error": "worker failed",
+            "error_code": "worker_failed",
+            "user_message": "Try again.",
+            "retryable": True,
+        }
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=field.replace("_", " ")):
+            repo.mark_failed(job.id, job.execution_id, **kwargs)
+
+    db_session.refresh(job)
+    assert job.status == "queued"
+    assert job.progress_payload == {}
 
 
 def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(db_session, seeded_tenant):
@@ -364,6 +482,29 @@ def test_apply_success_failure_leaves_no_partial_derived_state(failure, db_sessi
     assert job.status == "queued"
 
 
+def test_apply_success_rejects_raw_manifest_bytes_above_limit(db_session, seeded_tenant):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    source_bytes = b"3mf-source"
+    brep = b"brep"
+    project, source, job = _create_import(repo, seeded_tenant, source=source_bytes)
+    canonical = _manifest_bytes(source_bytes, brep)
+    oversized = canonical + b" " * (MAX_3MF_MANIFEST_BYTES - len(canonical) + 1)
+
+    with pytest.raises(ValueError, match="manifest.*byte limit"):
+        repo.apply_success(
+            job_id=job.id,
+            execution_id=job.execution_id,
+            source_sha256=source.sha256,
+            brep_content=brep,
+            manifest_content=oversized,
+            user_id=seeded_tenant.user_id,
+        )
+
+    assert db_session.scalars(
+        select(ProjectAsset).where(ProjectAsset.project_id == project.id, ProjectAsset.kind != "source_3mf")
+    ).all() == []
+
+
 def test_apply_success_rejects_arbitrary_snapshot_user(db_session, seeded_tenant):
     other_user = AppUser(keycloak_subject="wrong-result-user")
     other_tenant = Tenant(name="Wrong result tenant")
@@ -406,6 +547,15 @@ def test_compile_asset_snapshot_is_tenant_scoped_and_immutable(db_session, seede
     )
     brep, manifest = ProjectAssetRepository(db_session, seeded_tenant.tenant_id).successful_import_pair(project.id)
     compile_repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    swapped_job = compile_repo.start_job(project.id, seeded_tenant.user_id, "glb")
+    with pytest.raises(AssetIntegrityError, match="filename"):
+        compile_repo.snapshot_job_assets(
+            swapped_job,
+            {
+                "source.manifest.json": (brep, "TERTIUS_ASSETS", "sha256/brep-v1"),
+                "source.brep": (manifest, "TERTIUS_ASSETS", "sha256/manifest-v1"),
+            },
+        )
     compile_job = compile_repo.start_job(project.id, seeded_tenant.user_id, "glb")
     compile_repo.snapshot_job_assets(
         compile_job,

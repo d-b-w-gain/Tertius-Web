@@ -243,3 +243,43 @@ def test_project_import_requested_by_must_be_member_of_job_tenant(db_session):
 
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_import_audit_attribution_restricts_membership_deletion(db_session):
+    user = make_user("audit@example.com")
+    tenant = Tenant(name="Audit tenant")
+    db_session.add_all([user, tenant])
+    db_session.flush()
+    membership = TenantMembership(tenant_id=tenant.id, user_id=user.id, role="owner")
+    project = Project(tenant_id=tenant.id, name="Audit project", created_by=user.id)
+    db_session.add_all([membership, project])
+    db_session.flush()
+    source = ProjectAsset(
+        tenant_id=tenant.id,
+        project_id=project.id,
+        logical_name="source.3mf",
+        display_name="source.3mf",
+        kind="source_3mf",
+        media_type="application/octet-stream",
+        content=b"3mf",
+        byte_size=3,
+        sha256="0" * 64,
+        revision=1,
+    )
+    db_session.add(source)
+    db_session.flush()
+    db_session.add(
+        ProjectImportJob(
+            tenant_id=tenant.id,
+            project_id=project.id,
+            requested_by=user.id,
+            source_asset_id=source.id,
+            execution_id=uuid4(),
+            status="failed",
+        )
+    )
+    db_session.commit()
+
+    db_session.delete(membership)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
