@@ -319,7 +319,7 @@ rtk git commit -m "feat: add project asset object transport"
 - Create: `server/tests/test_import_3mf_messages.py`
 - Create: `server/tests/test_import_3mf_converter.py`
 
-- [ ] **Step 1: Write failing message and conversion tests**
+- [x] **Step 1: Write failing message and conversion tests**
 
 Cover all six unit factors, one/two object imports, blank/duplicate names, manifold solid, open shell, BREP round trip, simple box-minus-cylinder boolean, malformed archive, encrypted/traversal ZIP, non-finite/extreme coordinates, and every exact resource threshold.
 
@@ -343,17 +343,17 @@ def test_manifold_import_supports_boolean(tmp_path):
     assert cut.volume < model.volume
 ```
 
-- [ ] **Step 2: Run tests and verify missing contracts/converter**
+- [x] **Step 2: Run tests and verify missing contracts/converter**
 
 Run: `rtk uv run pytest -q server/tests/test_import_3mf_messages.py server/tests/test_import_3mf_converter.py`
 
 Expected: FAIL during collection.
 
-- [ ] **Step 3: Implement strict Pydantic message contracts**
+- [x] **Step 3: Implement strict Pydantic message contracts**
 
 `Import3mfCommand` contains schema version, job/tenant/project/user IDs, source `ObjectRef`, conversion version, and trace state. `Import3mfResult` contains matching provenance, outcome, BREP/manifest `ObjectRef`s on success, bounded manifest summary, duration, or one bounded error code/user message on failure. Reject extra fields and any embedded `bytes`/base64 field.
 
-- [ ] **Step 4: Implement ZIP preflight and converter**
+- [x] **Step 4: Implement ZIP preflight and converter**
 
 ```python
 UNIT_TO_MM = {
@@ -390,13 +390,13 @@ def convert_3mf_bytes(source: bytes, workdir: Path) -> ConversionOutput:
 
 The converter runs in its own subprocess with the 300-second process-tree timeout. Capture py-lib3mf shutdown stderr separately; ignore only the exact known deallocator text after a successful validated output, and fail on other stderr when the subprocess exit status is non-zero.
 
-- [ ] **Step 5: Run converter tests**
+- [x] **Step 5: Run converter tests**
 
 Run: `rtk uv run pytest -q server/tests/test_import_3mf_messages.py server/tests/test_import_3mf_converter.py`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit converter**
+- [x] **Step 6: Commit converter**
 
 ```bash
 rtk git add server/core/import_3mf_messages.py server/workflows/intus/import_3mf_converter.py server/tests/fixtures/three_mf.py server/tests/test_import_3mf_messages.py server/tests/test_import_3mf_converter.py
