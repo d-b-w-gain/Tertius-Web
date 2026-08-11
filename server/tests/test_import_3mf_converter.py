@@ -8,6 +8,7 @@ import sys
 import zipfile
 
 import build123d as bd
+import core.project_assets as project_assets
 import pytest
 import workflows.intus.import_3mf_converter as converter_module
 
@@ -226,7 +227,9 @@ def test_requires_valid_root_3d_model_relationship(source):
         ("archive_entries", MAX_3MF_ARCHIVE_ENTRIES),
         ("uncompressed_bytes", MAX_3MF_UNCOMPRESSED_BYTES),
         ("xml_bytes", 64 * 1024 * 1024),
+        ("xml_depth", project_assets.MAX_3MF_XML_DEPTH),
         ("objects", MAX_3MF_OBJECTS),
+        ("build_items", project_assets.MAX_3MF_BUILD_ITEMS),
         ("vertices", MAX_3MF_VERTICES),
         ("triangles", MAX_3MF_TRIANGLES),
     ],
@@ -250,7 +253,9 @@ def test_every_archive_resource_limit_accepts_actual_exact_and_rejects_over(
             for info in infos
             if info.filename.lower().endswith((".xml", ".model"))
         ),
+        "xml_depth": 6,
         "objects": 1,
+        "build_items": 1,
         "vertices": 8,
         "triangles": 12,
     }[field]
@@ -421,6 +426,67 @@ def test_streaming_parser_detaches_completed_wide_siblings(monkeypatch):
     converter_module._validate_xml_document(io.BytesIO(document))
 
     assert maximum_root_children < child_count // 20
+
+
+def test_xml_depth_limit_accepts_exact_and_rejects_over_before_tail_is_read():
+    max_depth = project_assets.MAX_3MF_XML_DEPTH
+    exact_document = b"<n>" * max_depth + b"</n>" * max_depth
+    converter_module._validate_xml_document(io.BytesIO(exact_document))
+
+    over_document = (
+        b"<n>" * (max_depth + 1) + b"tail" * 250_000 + b"</n>" * (max_depth + 1)
+    )
+
+    class Chunked(io.BytesIO):
+        def read(self, size=-1):
+            return super().read(min(size, 64) if size >= 0 else 64)
+
+    stream = Chunked(over_document)
+    with pytest.raises(Import3mfError, match="3mf_resource_limit"):
+        converter_module._validate_xml_document(stream)
+    assert stream.tell() < len(over_document) // 100
+
+
+@pytest.mark.parametrize("repeated_ids", [False, True])
+def test_build_item_limit_accepts_exact_and_rejects_over(repeated_ids):
+    vertices, triangles = box_mesh()
+
+    def model_document(item_count: int) -> bytes:
+        vertex_xml = "".join(
+            f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in vertices
+        )
+        triangle_xml = "".join(
+            f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in triangles
+        )
+        items = "".join(
+            f'<item objectid="{1 if repeated_ids else index + 1}"/>'
+            for index in range(item_count)
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<model unit="millimeter" '
+            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            '<resources><object id="1" type="model" name="Mesh">'
+            f"<mesh><vertices>{vertex_xml}</vertices>"
+            f"<triangles>{triangle_xml}</triangles></mesh></object></resources>"
+            f"<build>{items}</build></model>"
+        ).encode()
+
+    exact = validate_3mf_archive(
+        make_3mf(
+            objects=[],
+            model_document=model_document(project_assets.MAX_3MF_BUILD_ITEMS),
+        )
+    )
+    assert exact.has_unpreserved_components
+
+    with pytest.raises(Import3mfError, match="3mf_resource_limit"):
+        validate_3mf_archive(
+            make_3mf(
+                objects=[],
+                model_document=model_document(project_assets.MAX_3MF_BUILD_ITEMS + 1),
+            )
+        )
 
 
 def test_component_only_objects_do_not_consume_mesh_object_limit():

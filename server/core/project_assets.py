@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -17,14 +17,15 @@ MAX_3MF_UPLOAD_BYTES = 128 * 1024 * 1024
 MAX_3MF_ARCHIVE_ENTRIES = 2_048
 MAX_3MF_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_3MF_XML_BYTES = 64 * 1024 * 1024
+MAX_3MF_XML_DEPTH = 256
 MAX_3MF_OBJECTS = 2_048
+MAX_3MF_BUILD_ITEMS = 10_000
 MAX_3MF_VERTICES = 10_000_000
 MAX_3MF_TRIANGLES = 10_000_000
 MAX_3MF_COORDINATE_MM = 1_000_000.0
 MAX_3MF_MANIFEST_BYTES = 256 * 1024
 MAX_3MF_DERIVED_BREP_BYTES = 512 * 1024 * 1024
-IMPORT_3MF_CONVERSION_VERSION = "tertius-3mf-brep-v1-build123d-0.8.0"
-Import3mfConversionVersion = Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
+IMPORT_3MF_CONVERSION_VERSION: Final = "tertius-3mf-brep-v1-build123d-0.8.0"
 THREE_MF_MEDIA_TYPE = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
 SOURCE_3MF_MEDIA_TYPE = THREE_MF_MEDIA_TYPE
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
@@ -39,6 +40,7 @@ MAX_3MF_WARNING_CHARS = 240
 
 Import3mfUnit = Literal["MC", "MM", "CM", "M", "IN", "FT"]
 Import3mfShapeType = Literal["solid", "shell"]
+Import3mfConversionVersion = Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
 SafePartName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,79}$")]
 Sha256Digest = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 WarningText = Annotated[
@@ -80,7 +82,10 @@ class Import3mfBounds(StrictAssetModel):
 
     @model_validator(mode="after")
     def validate_axis_order(self):
-        if any(minimum > maximum for minimum, maximum in zip(self.min, self.max, strict=True)):
+        if any(
+            minimum > maximum
+            for minimum, maximum in zip(self.min, self.max, strict=True)
+        ):
             raise ValueError("bounds min must not exceed max on any axis")
         return self
 
@@ -114,7 +119,9 @@ class Import3mfManifest(StrictAssetModel):
     object_count: int = Field(strict=True, ge=1, le=MAX_3MF_OBJECTS)
     total_vertices: StrictNonNegativeInt = Field(le=MAX_3MF_VERTICES)
     total_triangles: StrictNonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
-    warnings: tuple[WarningText, ...] = Field(default_factory=tuple, max_length=MAX_3MF_WARNINGS)
+    warnings: tuple[WarningText, ...] = Field(
+        default_factory=tuple, max_length=MAX_3MF_WARNINGS
+    )
     parts: tuple[Import3mfPart, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
 
     @field_validator("schema_version", mode="before")
@@ -166,8 +173,12 @@ class Import3mfManifestSummary(StrictAssetModel):
     object_count: int = Field(strict=True, ge=1, le=MAX_3MF_OBJECTS)
     total_vertices: StrictNonNegativeInt = Field(le=MAX_3MF_VERTICES)
     total_triangles: StrictNonNegativeInt = Field(le=MAX_3MF_TRIANGLES)
-    warnings: tuple[WarningText, ...] = Field(default_factory=tuple, max_length=MAX_3MF_WARNINGS)
-    parts: tuple[Import3mfPartSummary, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
+    warnings: tuple[WarningText, ...] = Field(
+        default_factory=tuple, max_length=MAX_3MF_WARNINGS
+    )
+    parts: tuple[Import3mfPartSummary, ...] = Field(
+        min_length=1, max_length=MAX_3MF_OBJECTS
+    )
 
     @model_validator(mode="after")
     def validate_summary_invariants(self):
@@ -188,7 +199,9 @@ class Import3mfAssetContextSummary(StrictAssetModel):
     conversion_version: Import3mfConversionVersion
     source_unit: Import3mfUnit
     scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
-    parts: tuple[Import3mfPartSummary, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
+    parts: tuple[Import3mfPartSummary, ...] = Field(
+        min_length=1, max_length=MAX_3MF_OBJECTS
+    )
 
     @model_validator(mode="after")
     def validate_context_invariants(self):
@@ -242,7 +255,11 @@ def safe_part_names(source_names: list[str]) -> list[str]:
     result: list[str] = []
 
     for index, source_name in enumerate(source_names):
-        ascii_name = unicodedata.normalize("NFKD", source_name).encode("ascii", "ignore").decode()
+        ascii_name = (
+            unicodedata.normalize("NFKD", source_name)
+            .encode("ascii", "ignore")
+            .decode()
+        )
         base = _UNSAFE_PART_NAME.sub("_", ascii_name.lower()).strip("_")
         if not base:
             base = f"part_{index + 1:03d}"

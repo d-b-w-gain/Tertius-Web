@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import BinaryIO, ClassVar, cast
-from xml.etree.ElementTree import ParseError
+from xml.etree.ElementTree import Element, ParseError
 
 import build123d as bd
 from defusedxml import ElementTree as DefusedElementTree
@@ -27,6 +27,7 @@ from typing_extensions import Literal, Self
 from core.project_assets import (
     IMPORT_3MF_CONVERSION_VERSION,
     MAX_3MF_ARCHIVE_ENTRIES,
+    MAX_3MF_BUILD_ITEMS,
     MAX_3MF_COORDINATE_MM,
     MAX_3MF_DERIVED_BREP_BYTES,
     MAX_3MF_MANIFEST_BYTES,
@@ -37,6 +38,7 @@ from core.project_assets import (
     MAX_3MF_UPLOAD_BYTES,
     MAX_3MF_VERTICES,
     MAX_3MF_XML_BYTES,
+    MAX_3MF_XML_DEPTH,
     Import3mfBounds,
     Import3mfManifest,
     Import3mfPart,
@@ -123,7 +125,9 @@ class ArchiveLimits:
         "archive_entries": MAX_3MF_ARCHIVE_ENTRIES,
         "uncompressed_bytes": MAX_3MF_UNCOMPRESSED_BYTES,
         "xml_bytes": MAX_3MF_XML_BYTES,
+        "xml_depth": MAX_3MF_XML_DEPTH,
         "objects": MAX_3MF_OBJECTS,
+        "build_items": MAX_3MF_BUILD_ITEMS,
         "vertices": MAX_3MF_VERTICES,
         "triangles": MAX_3MF_TRIANGLES,
     }
@@ -189,7 +193,9 @@ def validate_3mf_archive(
                 archive,
                 relationship_info,
                 limits.values["xml_bytes"],
-                _model_target_from_relationships,
+                lambda stream: _model_target_from_relationships(
+                    stream, max_depth=limits.values["xml_depth"]
+                ),
             )
             model_info = canonical_entries.get(model_path)
             if model_info is None or not model_path.endswith(_MODEL_SUFFIX):
@@ -205,7 +211,9 @@ def validate_3mf_archive(
                         archive,
                         info,
                         limits.values["xml_bytes"],
-                        _validate_xml_document,
+                        lambda stream: _validate_xml_document(
+                            stream, max_depth=limits.values["xml_depth"]
+                        ),
                     )
             return _with_bounded_xml(
                 archive,
@@ -248,9 +256,9 @@ def _canonical_entry_name(name: str) -> str:
     return "/".join(PurePosixPath(normalized).parts).casefold()
 
 
-def _model_target_from_relationships(stream: BinaryIO) -> str:
+def _model_target_from_relationships(stream: BinaryIO, *, max_depth: int) -> str:
     target: str | None = None
-    for _, element in _secure_iterparse(stream):
+    for _, element in _secure_iterparse(stream, max_depth=max_depth):
         if (
             _local_name(element.tag) == "Relationship"
             and element.attrib.get("Type", "").rstrip("/").endswith("/3dmodel")
@@ -303,7 +311,11 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
     build_ids: set[str | None] = set()
     duplicate_build_id = False
     transformed_build_item = False
-    for event, element in _secure_iterparse(stream, events=("start", "end")):
+    for event, element in _secure_iterparse(
+        stream,
+        events=("start", "end"),
+        max_depth=limits.values["xml_depth"],
+    ):
         tag = _local_name(element.tag)
         if event == "start" and tag == "model":
             source_unit = unit_names.get(element.attrib.get("unit", "millimeter"))
@@ -352,6 +364,7 @@ def _parse_model_metadata(stream: BinaryIO, limits: ArchiveLimits) -> _ArchiveMe
             component_elements = True
         elif event == "start" and tag == "item":
             build_item_count += 1
+            limits.enforce("build_items", build_item_count)
             object_id = element.attrib.get("objectid")
             duplicate_build_id = duplicate_build_id or object_id in build_ids
             build_ids.add(object_id)
@@ -414,9 +427,9 @@ def _with_bounded_xml(archive, info, max_bytes, parser):
         return parser(_BoundedXmlReader(stream, max_bytes))
 
 
-def _secure_iterparse(stream, events=("end",)):
+def _secure_iterparse(stream, events=("end",), *, max_depth: int = MAX_3MF_XML_DEPTH):
     requested_events = frozenset(events)
-    ancestors = []
+    ancestors: list[Element] = []
     for event, element in DefusedElementTree.iterparse(
         stream,
         events=("start", "end"),
@@ -425,6 +438,10 @@ def _secure_iterparse(stream, events=("end",)):
         forbid_external=True,
     ):
         if event == "start":
+            if len(ancestors) >= max_depth:
+                raise Import3mfError(
+                    "3mf_resource_limit", "The 3MF exceeds an import resource limit."
+                )
             ancestors.append(element)
             if event in requested_events:
                 yield event, element
@@ -438,8 +455,10 @@ def _secure_iterparse(stream, events=("end",)):
         element.clear()
 
 
-def _validate_xml_document(stream: BinaryIO) -> None:
-    for _, element in _secure_iterparse(stream):
+def _validate_xml_document(
+    stream: BinaryIO, *, max_depth: int = MAX_3MF_XML_DEPTH
+) -> None:
+    for _, element in _secure_iterparse(stream, max_depth=max_depth):
         element.clear()
 
 
