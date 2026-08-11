@@ -5,7 +5,11 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from core.import_3mf_messages import Import3mfCommand, Import3mfProgress, Import3mfResult
+from core.import_3mf_messages import (
+    Import3mfCommand,
+    Import3mfProgress,
+    Import3mfResult,
+)
 from core.object_store import ObjectRef
 from core.project_assets import (
     IMPORT_3MF_CONVERSION_VERSION,
@@ -16,14 +20,22 @@ from core.project_assets import (
 
 
 def object_ref() -> ObjectRef:
-    return ObjectRef(bucket="TERTIUS_ASSETS", key=f"sha256/{'a' * 64}", sha256="a" * 64, byte_size=10)
+    return ObjectRef(
+        bucket="TERTIUS_ASSETS", key=f"sha256/{'a' * 64}", sha256="a" * 64, byte_size=10
+    )
 
 
 def command_payload() -> dict[str, object]:
     return {
         "schema_version": 1,
-        "job_id": uuid4(), "tenant_id": uuid4(), "project_id": uuid4(), "user_id": uuid4(),
-        "source": object_ref(), "conversion_version": IMPORT_3MF_CONVERSION_VERSION,
+        "job_id": uuid4(),
+        "tenant_id": uuid4(),
+        "project_id": uuid4(),
+        "user_id": uuid4(),
+        "attempt": 1,
+        "execution_id": uuid4(),
+        "source": object_ref(),
+        "conversion_version": IMPORT_3MF_CONVERSION_VERSION,
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
         "tracestate": "vendor=value",
     }
@@ -69,28 +81,77 @@ def test_command_bounds_trace_state():
         Import3mfCommand.model_validate({**command_payload(), "tracestate": "x" * 513})
 
 
+def test_attempt_execution_and_source_reference_are_strict_and_bounded():
+    with pytest.raises(ValidationError):
+        Import3mfCommand.model_validate({**command_payload(), "attempt": "1"})
+    with pytest.raises(ValidationError):
+        Import3mfCommand.model_validate({**command_payload(), "attempt": 0})
+    with pytest.raises(ValidationError):
+        Import3mfCommand.model_validate(
+            {**command_payload(), "execution_id": str(uuid4())}
+        )
+    oversized = object_ref().model_copy(update={"byte_size": 128 * 1024 * 1024 + 1})
+    with pytest.raises(ValidationError):
+        Import3mfCommand.model_validate({**command_payload(), "source": oversized})
+    boundary = object_ref().model_copy(update={"byte_size": 128 * 1024 * 1024})
+    assert (
+        Import3mfCommand.model_validate(
+            {**command_payload(), "source": boundary}
+        ).source
+        == boundary
+    )
+
+
 def test_progress_is_strict_and_bounded():
     progress = Import3mfProgress(
-        schema_version=1, job_id=uuid4(), stage="converting", percent=50
+        schema_version=1,
+        job_id=uuid4(),
+        attempt=1,
+        execution_id=uuid4(),
+        stage="converting",
+        percent=50,
     )
     assert progress.percent == 50
     with pytest.raises(ValidationError):
         Import3mfProgress(
-            schema_version=1, job_id=uuid4(), stage="converting", percent=101
+            schema_version=1,
+            job_id=uuid4(),
+            attempt=1,
+            execution_id=uuid4(),
+            stage="converting",
+            percent=101,
         )
+    command = Import3mfCommand.model_validate(command_payload())
+    matching = Import3mfProgress.for_command(command, stage="validating", percent=0)
+    matching.assert_matches(command)
+    with pytest.raises(ValueError, match="provenance"):
+        matching.model_copy(update={"execution_id": uuid4()}).assert_matches(command)
     with pytest.raises(ValidationError):
         Import3mfProgress.model_validate(
-            {"schema_version": 1, "job_id": uuid4(), "stage": "converting", "percent": "50"}
+            {
+                "schema_version": 1,
+                "job_id": uuid4(),
+                "attempt": 1,
+                "execution_id": uuid4(),
+                "stage": "converting",
+                "percent": "50",
+            }
         )
 
 
 def test_result_success_requires_refs_and_summary(manifest_summary):
     command = Import3mfCommand.model_validate(command_payload())
     result = Import3mfResult.success_for(
-        command, brep=object_ref(), manifest=object_ref(), summary=manifest_summary, duration_ms=25
+        command,
+        brep=object_ref(),
+        manifest=object_ref(),
+        summary=manifest_summary,
+        duration_ms=25,
     )
     assert result.status == "succeeded"
     assert result.job_id == command.job_id
+    assert result.attempt == command.attempt
+    assert result.execution_id == command.execution_id
     assert result.duration_ms == 25
     with pytest.raises(ValidationError):
         Import3mfResult.model_validate({**result.model_dump(), "error_code": "bad"})
@@ -99,11 +160,73 @@ def test_result_success_requires_refs_and_summary(manifest_summary):
 def test_result_failure_requires_bounded_error_and_no_outputs():
     command = Import3mfCommand.model_validate(command_payload())
     result = Import3mfResult.failure_for(
-        command, error_code="invalid_3mf", user_message="The 3MF is invalid.", duration_ms=1
+        command,
+        error_code="invalid_3mf",
+        user_message="The 3MF is invalid.",
+        duration_ms=1,
     )
     assert result.status == "failed"
     assert result.brep is None
     with pytest.raises(ValidationError):
-        Import3mfResult.failure_for(command, error_code="e" * 65, user_message="bad", duration_ms=1)
+        Import3mfResult.failure_for(
+            command, error_code="e" * 65, user_message="bad", duration_ms=1
+        )
     with pytest.raises(ValidationError):
-        Import3mfResult.failure_for(command, error_code="bad", user_message="x" * 241, duration_ms=1)
+        Import3mfResult.failure_for(
+            command, error_code="bad", user_message="x" * 241, duration_ms=1
+        )
+
+
+def test_result_reference_limits_and_provenance_mismatch_are_rejected(manifest_summary):
+    command = Import3mfCommand.model_validate(command_payload())
+    success = Import3mfResult.success_for(
+        command,
+        brep=object_ref(),
+        manifest=object_ref(),
+        summary=manifest_summary,
+        duration_ms=1,
+    )
+    success.assert_matches(command)
+    oversized_source = object_ref().model_copy(
+        update={"byte_size": 128 * 1024 * 1024 + 1}
+    )
+    with pytest.raises(ValidationError):
+        Import3mfResult.model_validate(
+            {**success.model_dump(), "source": oversized_source}
+        )
+    with pytest.raises(ValueError, match="provenance"):
+        success.model_copy(update={"attempt": 2}).assert_matches(command)
+    with pytest.raises(ValueError, match="provenance"):
+        success.model_copy(update={"traceparent": "different"}).assert_matches(command)
+    oversized_brep = object_ref().model_copy(
+        update={"byte_size": 512 * 1024 * 1024 + 1}
+    )
+    with pytest.raises(ValidationError):
+        Import3mfResult.success_for(
+            command,
+            brep=oversized_brep,
+            manifest=object_ref(),
+            summary=manifest_summary,
+            duration_ms=1,
+        )
+    exact_brep = object_ref().model_copy(update={"byte_size": 512 * 1024 * 1024})
+    exact_manifest = object_ref().model_copy(update={"byte_size": 256 * 1024})
+    assert (
+        Import3mfResult.success_for(
+            command,
+            brep=exact_brep,
+            manifest=exact_manifest,
+            summary=manifest_summary,
+            duration_ms=1,
+        ).brep
+        == exact_brep
+    )
+    oversized_manifest = object_ref().model_copy(update={"byte_size": 256 * 1024 + 1})
+    with pytest.raises(ValidationError):
+        Import3mfResult.success_for(
+            command,
+            brep=object_ref(),
+            manifest=oversized_manifest,
+            summary=manifest_summary,
+            duration_ms=1,
+        )
