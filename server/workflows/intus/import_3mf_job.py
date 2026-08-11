@@ -70,6 +70,25 @@ def _hashed_message_id(prefix: str, command: Import3mfCommand, suffix: str = "")
     return f"{prefix}:{digest}"
 
 
+def _import_parent_context(command: Import3mfCommand, headers):
+    if headers is not None:
+        incoming = extract_nats_context(headers)
+        if trace.get_current_span(incoming).get_span_context().is_valid:
+            return incoming
+    carrier = {
+        key: value
+        for key, value in {
+            "traceparent": command.traceparent,
+            "tracestate": command.tracestate,
+        }.items()
+        if value is not None
+    }
+    fallback = propagate.extract(carrier)
+    if trace.get_current_span(fallback).get_span_context().is_valid:
+        return fallback
+    return trace.set_span_in_context(trace.INVALID_SPAN)
+
+
 async def execute_import_command(
     command: Import3mfCommand,
     object_store: ProjectObjectStore,
@@ -152,19 +171,7 @@ async def handle_import_request_message(
         await msg.term()
         return
 
-    headers = getattr(msg, "headers", None)
-    if headers is not None:
-        context = extract_nats_context(headers)
-    else:
-        carrier = {
-            key: value
-            for key, value in {
-                "traceparent": command.traceparent,
-                "tracestate": command.tracestate,
-            }.items()
-            if value is not None
-        }
-        context = propagate.extract(carrier)
+    context = _import_parent_context(command, getattr(msg, "headers", None))
 
     with trace.get_tracer(__name__).start_as_current_span(
         "import_3mf.command.consume",

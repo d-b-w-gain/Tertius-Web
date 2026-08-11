@@ -231,6 +231,18 @@ async def test_source_integrity_error_publishes_terminal_result_before_ack():
 async def test_handler_propagates_linked_trace_headers_to_progress_and_result(
     monkeypatch,
 ):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.trace.get_tracer", provider.get_tracer
+    )
     monkeypatch.setattr(
         "workflows.intus.import_3mf_job.run_converter_subprocess",
         lambda *_args: conversion_output(),
@@ -254,7 +266,20 @@ async def test_handler_propagates_linked_trace_headers_to_progress_and_result(
     await handle_import_request_message(
         malformed, Store(), fallback_publisher, settings()
     )
-    assert fallback_publisher.calls[-1][2]["headers"]["traceparent"] == cmd.traceparent
+    published_traceparent = fallback_publisher.calls[-1][2]["headers"]["traceparent"]
+    assert published_traceparent.split("-")[1] == cmd.traceparent.split("-")[1]
+    assert published_traceparent.split("-")[2] != cmd.traceparent.split("-")[2]
+    consume_spans = [
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == "import_3mf.command.consume"
+    ]
+    assert len(consume_spans) == 2
+    fallback_span = consume_spans[-1]
+    assert f"{fallback_span.context.trace_id:032x}" == cmd.traceparent.split("-")[1]
+    assert fallback_span.parent is not None
+    assert f"{fallback_span.parent.span_id:016x}" == cmd.traceparent.split("-")[2]
+    provider.shutdown()
 
 
 @pytest.mark.asyncio
