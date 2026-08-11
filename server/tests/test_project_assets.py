@@ -4,6 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from core.project_assets import (
+    BREP_MEDIA_TYPE,
+    DERIVED_BREP_MEDIA_TYPE,
+    IMPORT_MANIFEST_MEDIA_TYPE,
     IMPORT_3MF_CONVERSION_VERSION,
     MAX_3MF_ARCHIVE_ENTRIES,
     MAX_3MF_COORDINATE_MM,
@@ -15,8 +18,13 @@ from core.project_assets import (
     MAX_3MF_UPLOAD_BYTES,
     MAX_3MF_VERTICES,
     MAX_3MF_XML_BYTES,
-    Import3mfManifestSummary,
+    OCTET_STREAM_MEDIA_TYPE,
+    MANIFEST_MEDIA_TYPE,
+    SOURCE_3MF_MEDIA_TYPE,
+    THREE_MF_MEDIA_TYPE,
+    Import3mfAssetContextSummary,
     Import3mfManifest,
+    Import3mfManifestSummary,
     asset_context_summary,
     generated_3mf_design_source,
     public_manifest_summary,
@@ -34,7 +42,7 @@ def manifest_payload(**part_overrides):
         "is_valid": True,
         "vertex_count": 8,
         "triangle_count": 12,
-        "bounds_mm": {"min": [0, 0, 0], "max": [1, 2, 3]},
+        "bounds_mm": {"min": (0, 0, 0), "max": (1, 2, 3)},
     }
     part.update(part_overrides)
     return {
@@ -48,8 +56,8 @@ def manifest_payload(**part_overrides):
         "object_count": 1,
         "total_vertices": part["vertex_count"],
         "total_triangles": part["triangle_count"],
-        "warnings": [],
-        "parts": [part],
+        "warnings": (),
+        "parts": (part,),
     }
 
 
@@ -65,6 +73,13 @@ def test_resource_constants_are_centralized_at_exact_values():
     assert MAX_3MF_MANIFEST_BYTES == 256 * 1024
     assert MAX_3MF_DERIVED_BREP_BYTES == 512 * 1024 * 1024
     assert IMPORT_3MF_CONVERSION_VERSION == "tertius-3mf-brep-v1-build123d-0.8.0"
+    assert SOURCE_3MF_MEDIA_TYPE == "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
+    assert THREE_MF_MEDIA_TYPE == SOURCE_3MF_MEDIA_TYPE
+    assert OCTET_STREAM_MEDIA_TYPE == "application/octet-stream"
+    assert DERIVED_BREP_MEDIA_TYPE == "application/vnd.opencascade.brep"
+    assert BREP_MEDIA_TYPE == DERIVED_BREP_MEDIA_TYPE
+    assert IMPORT_MANIFEST_MEDIA_TYPE == "application/json"
+    assert MANIFEST_MEDIA_TYPE == IMPORT_MANIFEST_MEDIA_TYPE
 
 
 def test_import_manifest_rejects_shell_marked_boolean_capable():
@@ -96,7 +111,7 @@ def test_import_manifest_requires_contiguous_indices_from_zero():
 def test_import_manifest_rejects_duplicate_names():
     payload = manifest_payload()
     second = {**payload["parts"][0], "index": 1}
-    payload["parts"].append(second)
+    payload["parts"] += (second,)
     payload["object_count"] = 2
     payload["total_vertices"] = 16
     payload["total_triangles"] = 24
@@ -149,9 +164,9 @@ def test_part_requires_boolean_capability_exactly_for_valid_solid():
 
 def test_bounds_reject_reversed_non_finite_or_extreme_coordinates():
     for bounds in (
-        {"min": [2, 0, 0], "max": [1, 1, 1]},
-        {"min": [0, 0, 0], "max": [float("inf"), 1, 1]},
-        {"min": [0, 0, 0], "max": [MAX_3MF_COORDINATE_MM + 1, 1, 1]},
+        {"min": (2, 0, 0), "max": (1, 1, 1)},
+        {"min": (0, 0, 0), "max": (float("inf"), 1, 1)},
+        {"min": (0, 0, 0), "max": (MAX_3MF_COORDINATE_MM + 1, 1, 1)},
     ):
         with pytest.raises(ValidationError):
             Import3mfManifest.model_validate(manifest_payload(bounds_mm=bounds))
@@ -159,12 +174,12 @@ def test_bounds_reject_reversed_non_finite_or_extreme_coordinates():
 
 def test_import_manifest_rejects_serialization_over_size_limit():
     payload = manifest_payload(source_name="x" * 160)
-    payload["warnings"] = ["w" * 240 for _ in range(64)]
+    payload["warnings"] = tuple("w" * 240 for _ in range(64))
     template = payload["parts"][0]
-    payload["parts"] = [
+    payload["parts"] = tuple(
         {**template, "index": index, "name": f"part_{index + 1:04d}"}
         for index in range(MAX_3MF_OBJECTS)
-    ]
+    )
     payload["object_count"] = MAX_3MF_OBJECTS
     payload["total_vertices"] = template["vertex_count"] * MAX_3MF_OBJECTS
     payload["total_triangles"] = template["triangle_count"] * MAX_3MF_OBJECTS
@@ -235,7 +250,7 @@ def test_public_summary_rejects_invalid_part_and_collection_invariants():
 
 def test_ai_safe_context_summary_excludes_warnings_digests_and_raw_names():
     payload = manifest_payload(source_name="raw metadata")
-    payload["warnings"] = ["warning may contain converter detail"]
+    payload["warnings"] = ("warning may contain converter detail",)
     context = asset_context_summary(Import3mfManifest.model_validate(payload)).model_dump()
     serialized = json.dumps(context)
     assert "warning may contain converter detail" not in serialized
@@ -251,8 +266,8 @@ def test_ai_safe_context_summary_excludes_warnings_digests_and_raw_names():
         (lambda payload: payload.update(total_vertices=MAX_3MF_VERTICES + 1), "less than"),
         (lambda payload: payload.update(total_triangles=MAX_3MF_TRIANGLES + 1), "less than"),
         (lambda payload: payload["parts"][0].update(source_name="x" * 161), "160"),
-        (lambda payload: payload.update(warnings=["w"] * 65), "64"),
-        (lambda payload: payload.update(warnings=["w" * 241]), "240"),
+        (lambda payload: payload.update(warnings=("w",) * 65), "64"),
+        (lambda payload: payload.update(warnings=("w" * 241,)), "240"),
     ],
 )
 def test_manifest_rejects_values_above_security_boundaries(mutation, error_match):
@@ -272,7 +287,7 @@ def test_manifest_accepts_exact_numeric_and_metadata_boundaries():
         brep_byte_size=MAX_3MF_DERIVED_BREP_BYTES,
         total_vertices=MAX_3MF_VERTICES,
         total_triangles=MAX_3MF_TRIANGLES,
-        warnings=["w" * 240] * 64,
+        warnings=("w" * 240,) * 64,
     )
     manifest = Import3mfManifest.model_validate(payload)
     assert manifest.brep_byte_size == MAX_3MF_DERIVED_BREP_BYTES
@@ -282,10 +297,99 @@ def test_manifest_accepts_exact_numeric_and_metadata_boundaries():
 def test_manifest_rejects_more_than_maximum_parts():
     payload = manifest_payload(vertex_count=0, triangle_count=0)
     template = payload["parts"][0]
-    payload["parts"] = [
+    payload["parts"] = tuple(
         {**template, "index": index, "name": f"part_{index + 1:04d}"}
         for index in range(MAX_3MF_OBJECTS + 1)
-    ]
+    )
     payload["object_count"] = MAX_3MF_OBJECTS
     with pytest.raises(ValidationError, match="2048"):
+        Import3mfManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload["parts"][0].update(index="0"),
+        lambda payload: payload["parts"][0].update(vertex_count=8.0),
+        lambda payload: payload["parts"][0].update(boolean_capable="true"),
+        lambda payload: payload["parts"][0].update(is_valid=1),
+        lambda payload: payload.update(schema_version=1.0),
+        lambda payload: payload.update(schema_version=True),
+        lambda payload: payload.update(scale_to_mm="1.0"),
+        lambda payload: payload.update(total_vertices="8"),
+        lambda payload: payload["parts"][0]["bounds_mm"].update(max=("1", 2, 3)),
+        lambda payload: payload.update(brep_byte_size="123"),
+        lambda payload: payload.update(source_sha256=b"a" * 64),
+        lambda payload: payload["parts"][0].update(name=b"part_001"),
+        lambda payload: payload["parts"][0].update(source_name=b"raw"),
+        lambda payload: payload.update(warnings=(b"warning",)),
+    ],
+)
+def test_manifest_rejects_coerced_scalar_values(mutation):
+    payload = manifest_payload()
+    mutation(payload)
+    with pytest.raises(ValidationError):
+        Import3mfManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.update(object_count="1"),
+        lambda payload: payload.update(scale_to_mm="1.0"),
+        lambda payload: payload["parts"][0].update(index=0.0),
+        lambda payload: payload["parts"][0].update(boolean_capable=1),
+        lambda payload: payload["parts"][0].update(name=b"part_001"),
+        lambda payload: payload["parts"][0]["bounds_mm"].update(min=("0", 0, 0)),
+    ],
+)
+def test_public_summary_rejects_coerced_scalar_values(mutation):
+    payload = public_manifest_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    mutation(payload)
+    with pytest.raises(ValidationError):
+        Import3mfManifestSummary.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.update(scale_to_mm="1.0"),
+        lambda payload: payload["parts"][0].update(index=0.0),
+        lambda payload: payload["parts"][0].update(boolean_capable="true"),
+        lambda payload: payload["parts"][0].update(name=b"part_001"),
+        lambda payload: payload["parts"][0]["bounds_mm"].update(max=(1, 2, "3")),
+    ],
+)
+def test_ai_context_summary_rejects_coerced_scalar_values(mutation):
+    payload = asset_context_summary(Import3mfManifest.model_validate(manifest_payload())).model_dump()
+    mutation(payload)
+    with pytest.raises(ValidationError):
+        Import3mfAssetContextSummary.model_validate(payload)
+
+
+@pytest.mark.parametrize("warning", ["line one\nline two", "nul\x00byte", "delete\x7fbyte"])
+def test_manifest_rejects_warning_control_characters(warning):
+    with pytest.raises(ValidationError):
+        Import3mfManifest.model_validate({**manifest_payload(), "warnings": (warning,)})
+
+
+def test_strict_scalars_still_accept_json_arrays_for_tuple_fields():
+    manifest = Import3mfManifest.model_validate_json(json.dumps(manifest_payload()))
+    assert isinstance(manifest.parts, tuple)
+    assert isinstance(manifest.warnings, tuple)
+    assert isinstance(manifest.parts[0].bounds_mm.min, tuple)
+
+
+@pytest.mark.parametrize("field", ["parts", "warnings"])
+def test_python_collection_coercion_is_rejected(field):
+    payload = Import3mfManifest.model_validate(manifest_payload()).model_dump()
+    payload[field] = list(payload[field])
+    with pytest.raises(ValidationError):
+        Import3mfManifest.model_validate(payload)
+
+
+def test_python_coordinate_list_coercion_is_rejected():
+    payload = Import3mfManifest.model_validate(manifest_payload()).model_dump()
+    payload["parts"][0]["bounds_mm"]["min"] = [0, 0, 0]
+    with pytest.raises(ValidationError):
         Import3mfManifest.model_validate(payload)
