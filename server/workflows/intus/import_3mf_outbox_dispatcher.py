@@ -90,6 +90,15 @@ async def dispatch_import_outbox_once(
             )
             failed += 1
             continue
+        with session_factory() as db:
+            dispatchable = Import3mfCommandOutboxRepository(db).lock_dispatchable_claim(
+                claimed_row.id,
+                lease_owner=lease_owner,
+                dispatch_attempt=claimed_row.dispatch_attempt,
+            )
+            db.commit()
+        if not dispatchable:
+            continue
         try:
             await publisher.publish_json(
                 settings.import_3mf_request_subject,

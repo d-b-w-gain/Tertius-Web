@@ -46,6 +46,10 @@ _SAFE_FAILURES: dict[str, tuple[str, bool]] = {
     "asset_integrity_error": ("The imported 3MF assets could not be verified.", True),
     "worker_lost": ("The 3MF import worker stopped unexpectedly. Try again.", True),
     "worker_not_started": ("The 3MF import worker did not start. Try again.", True),
+    "command_dispatch_failed": (
+        "The 3MF import could not be started. Try again.",
+        True,
+    ),
 }
 
 
@@ -427,15 +431,17 @@ def reconcile_stale_import_jobs(db, settings) -> int:
     cutoff = now_utc() - timedelta(seconds=settings.import_3mf_running_lease_seconds)
     count = 0
     for job in _queued_jobs(db):
-        if job.queued_at >= queued_cutoff:
-            continue
         try:
-            failed = ProjectImportRepository(db, job.tenant_id).fail_if_stale_queued(
+            failed = ProjectImportRepository(
+                db, job.tenant_id
+            ).reconcile_queued_delivery(
                 job.id,
                 job.execution_id,
-                cutoff=queued_cutoff,
-                error_code="worker_not_started",
-                user_message=_SAFE_FAILURES["worker_not_started"][0],
+                sent_cutoff=queued_cutoff,
+                worker_not_started_message=_SAFE_FAILURES["worker_not_started"][0],
+                command_dispatch_failed_message=_SAFE_FAILURES[
+                    "command_dispatch_failed"
+                ][0],
             )
             db.commit()
             count += int(failed)

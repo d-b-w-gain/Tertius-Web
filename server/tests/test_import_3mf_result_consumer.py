@@ -469,7 +469,9 @@ def test_reconciles_stale_queued_but_protects_fresh_queued(monkeypatch):
         def __init__(self, *_args):
             pass
 
-        def fail_if_stale_queued(self, job_id, *_args, **kwargs):
+        def reconcile_queued_delivery(self, job_id, *_args, **kwargs):
+            if job_id != stale.id:
+                return False
             failed.append((job_id, kwargs))
             return True
 
@@ -479,7 +481,130 @@ def test_reconciles_stale_queued_but_protects_fresh_queued(monkeypatch):
     db = DB()
     assert reconcile_stale_import_jobs(db, settings()) == 1
     assert failed[0][0] == stale.id
-    assert failed[0][1]["error_code"] == "worker_not_started"
+    assert failed[0][1]["worker_not_started_message"].startswith("The 3MF")
+
+
+@pytest.mark.parametrize("outbox_status", ["pending", "leased"])
+def test_reconciler_preserves_old_queued_job_while_current_command_is_unsent(
+    monkeypatch, db_session, seeded_tenant, outbox_status
+):
+    now = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _project, _source, job, outbox = repo.create_import_and_enqueue(
+        project_name=f"unsent-{outbox_status}",
+        requested_by=seeded_tenant.user_id,
+        display_name="unsent.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=SOURCE,
+        source_ref=ref(SOURCE),
+    )
+    job.queued_at = now - timedelta(hours=1)
+    outbox.status = outbox_status
+    if outbox_status == "leased":
+        outbox.dispatch_attempt = 1
+        outbox.lease_owner = "dispatcher-a"
+        outbox.lease_expires_at = now - timedelta(minutes=20)
+    db_session.commit()
+    monkeypatch.setattr(result_consumer, "now_utc", lambda: now)
+
+    assert reconcile_stale_import_jobs(db_session, settings()) == 0
+    db_session.refresh(job)
+    assert job.status == "queued"
+
+
+@pytest.mark.parametrize(
+    ("elapsed_seconds", "expected_status"),
+    [(180, "queued"), (181, "failed")],
+)
+def test_reconciler_measures_worker_start_lease_from_command_sent_at(
+    monkeypatch, db_session, seeded_tenant, elapsed_seconds, expected_status
+):
+    now = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _project, _source, job, outbox = repo.create_import_and_enqueue(
+        project_name=f"sent-{elapsed_seconds}",
+        requested_by=seeded_tenant.user_id,
+        display_name="sent.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=SOURCE,
+        source_ref=ref(SOURCE),
+    )
+    job.queued_at = now - timedelta(days=1)
+    outbox.status = "sent"
+    outbox.sent_at = now - timedelta(seconds=elapsed_seconds)
+    db_session.commit()
+    monkeypatch.setattr(result_consumer, "now_utc", lambda: now)
+
+    expected_count = int(expected_status == "failed")
+    assert reconcile_stale_import_jobs(db_session, settings()) == expected_count
+    db_session.refresh(job)
+    assert job.status == expected_status
+    if expected_status == "failed":
+        assert job.error_code == "worker_not_started"
+        assert job.retryable is True
+
+
+def test_reconciler_fails_current_queued_job_when_command_dispatch_is_terminal(
+    monkeypatch, db_session, seeded_tenant
+):
+    now = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _project, _source, job, outbox = repo.create_import_and_enqueue(
+        project_name="dispatch-failed",
+        requested_by=seeded_tenant.user_id,
+        display_name="failed.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=SOURCE,
+        source_ref=ref(SOURCE),
+    )
+    outbox.status = "failed"
+    outbox.error_code = "attempts_exhausted"
+    db_session.commit()
+    monkeypatch.setattr(result_consumer, "now_utc", lambda: now)
+
+    assert reconcile_stale_import_jobs(db_session, settings()) == 1
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert job.error == "command_dispatch_failed"
+    assert job.error_code == "command_dispatch_failed"
+    assert job.user_message == "The 3MF import could not be started. Try again."
+    assert job.retryable is True
+
+
+def test_reconciler_ignores_failed_outbox_from_previous_execution_after_retry(
+    monkeypatch, db_session, seeded_tenant
+):
+    now = datetime(2026, 8, 11, 12, tzinfo=timezone.utc)
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _project, _source, job, old_outbox = repo.create_import_and_enqueue(
+        project_name="retried-dispatch",
+        requested_by=seeded_tenant.user_id,
+        display_name="retry.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=SOURCE,
+        source_ref=ref(SOURCE),
+    )
+    repo.mark_failed(
+        job.id,
+        job.execution_id,
+        error="worker_lost",
+        error_code="worker_lost",
+        user_message="Try again.",
+        retryable=True,
+    )
+    retried, current_outbox = repo.retry_and_enqueue(job.id, source_ref=ref(SOURCE))
+    retried.queued_at = now - timedelta(days=1)
+    old_outbox.status = "failed"
+    old_outbox.error_code = "attempts_exhausted"
+    db_session.commit()
+    monkeypatch.setattr(result_consumer, "now_utc", lambda: now)
+
+    assert reconcile_stale_import_jobs(db_session, settings()) == 0
+    db_session.refresh(retried)
+    db_session.refresh(current_outbox)
+    assert retried.status == "queued"
+    assert retried.execution_id == current_outbox.execution_id
+    assert current_outbox.status == "pending"
 
 
 @pytest.mark.asyncio

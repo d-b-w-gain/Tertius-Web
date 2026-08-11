@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
 from core.import_3mf_messages import Import3mfCommand
-from core.models import ProjectImportJob
+from core.models import Import3mfCommandOutbox, ProjectImportJob
 from core.object_store import ObjectRef
 from core.project_assets import THREE_MF_MEDIA_TYPE
 from core.repositories import ProjectImportRepository
@@ -60,7 +61,7 @@ async def test_dispatch_commits_claim_before_publish_and_marks_sent(monkeypatch)
         def rollback(self):
             events.append("rollback")
 
-    sessions = iter((Session(), Session()))
+    sessions = iter((Session(), Session(), Session()))
 
     class Repo:
         calls = 0
@@ -72,6 +73,9 @@ async def test_dispatch_commits_claim_before_publish_and_marks_sent(monkeypatch)
             Repo.calls += 1
             return [row]
 
+        def lock_dispatchable_claim(self, *_args, **_kwargs):
+            return True
+
         def mark_sent(self, outbox_id, *, lease_owner, dispatch_attempt):
             assert outbox_id == row.id
             assert lease_owner == "dispatcher-a"
@@ -81,7 +85,7 @@ async def test_dispatch_commits_claim_before_publish_and_marks_sent(monkeypatch)
 
     class Publisher:
         async def publish_json(self, subject, message, *, message_id):
-            assert events == ["commit"]
+            assert events == ["commit", "commit"]
             assert subject == "tertius.import.3mf.request"
             assert message == command
             assert message.model_dump_json().encode() == row.payload
@@ -102,7 +106,7 @@ async def test_dispatch_commits_claim_before_publish_and_marks_sent(monkeypatch)
 
     assert outcome.claimed == outcome.sent == 1
     assert outcome.failed == 0
-    assert events == ["commit", "publish", "mark_sent", "commit"]
+    assert events == ["commit", "commit", "publish", "mark_sent", "commit"]
 
 
 @pytest.mark.asyncio
@@ -140,6 +144,9 @@ async def test_publish_failure_is_persisted_with_fixed_error_code(monkeypatch):
         def claim_batch(self, **_kwargs):
             Repo.claims += 1
             return [row] if Repo.claims == 1 else []
+
+        def lock_dispatchable_claim(self, *_args, **_kwargs):
+            return True
 
         def mark_failed(self, outbox_id, *, lease_owner, dispatch_attempt, error_code):
             marked.append((outbox_id, lease_owner, dispatch_attempt, error_code))
@@ -198,6 +205,9 @@ async def test_reclaimed_delivery_reuses_identical_nats_message_id(monkeypatch):
 
         def claim_batch(self, **_kwargs):
             return [row]
+
+        def lock_dispatchable_claim(self, *_args, **_kwargs):
+            return True
 
         def mark_sent(self, *_args, **_kwargs):
             return False
@@ -302,3 +312,135 @@ async def test_immediate_dispatch_observes_committed_import_job(
     assert outcome.sent == 1
     assert observed[0] is not None
     assert observed[0].id == job_id
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_never_publishes_command_for_terminal_job(
+    postgres_url, db_session, seeded_tenant
+):
+    from workflows.intus.import_3mf_outbox_dispatcher import (
+        dispatch_import_outbox_once,
+    )
+
+    source = b"source"
+    source_digest = sha256(source).hexdigest()
+    source_ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{source_digest}",
+        sha256=source_digest,
+        byte_size=len(source),
+    )
+    _project, _asset, job, outbox = ProjectImportRepository(
+        db_session, seeded_tenant.tenant_id
+    ).create_import_and_enqueue(
+        project_name="terminal-before-dispatch",
+        requested_by=seeded_tenant.user_id,
+        display_name="terminal.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=source,
+        source_ref=source_ref,
+    )
+    job.status = "failed"
+    job.error = "cancelled"
+    job.error_code = "cancelled"
+    job.user_message = "Cancelled."
+    job.retryable = False
+    db_session.commit()
+    published = []
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    class Publisher:
+        async def publish_json(self, *_args, **_kwargs):
+            published.append(True)
+
+    try:
+        outcome = await dispatch_import_outbox_once(
+            SessionFactory,
+            Publisher(),
+            SimpleNamespace(
+                import_3mf_request_subject="tertius.import.3mf.request",
+                import_3mf_outbox_lease_seconds=30,
+                import_3mf_outbox_batch_size=10,
+            ),
+            lease_owner="terminal-dispatcher",
+        )
+    finally:
+        engine.dispose()
+
+    db_session.refresh(outbox)
+    assert outcome.claimed == outcome.sent == outcome.failed == 0
+    assert published == []
+    assert outbox.status == "failed"
+    assert outbox.error_code == "job_terminal"
+    assert db_session.scalar(select(Import3mfCommandOutbox.id)) == outbox.id
+
+
+@pytest.mark.asyncio
+async def test_slow_publish_does_not_hold_job_or_database_locks(
+    postgres_url, db_session, seeded_tenant
+):
+    from workflows.intus.import_3mf_outbox_dispatcher import (
+        dispatch_import_outbox_once,
+    )
+
+    source = b"source"
+    source_digest = sha256(source).hexdigest()
+    source_ref = ObjectRef(
+        bucket="TERTIUS_ASSETS",
+        key=f"sha256/{source_digest}",
+        sha256=source_digest,
+        byte_size=len(source),
+    )
+    _project, _asset, job, _outbox = ProjectImportRepository(
+        db_session, seeded_tenant.tenant_id
+    ).create_import_and_enqueue(
+        project_name="slow-dispatch",
+        requested_by=seeded_tenant.user_id,
+        display_name="slow.3mf",
+        media_type=THREE_MF_MEDIA_TYPE,
+        content=source,
+        source_ref=source_ref,
+    )
+    job_id = job.id
+    db_session.commit()
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    publish_started = asyncio.Event()
+    release_publish = asyncio.Event()
+
+    class Publisher:
+        async def publish_json(self, *_args, **_kwargs):
+            publish_started.set()
+            await release_publish.wait()
+
+    def lock_job_during_publish() -> bool:
+        with SessionFactory() as independent:
+            independent.execute(text("SET LOCAL lock_timeout = '250ms'"))
+            locked = independent.scalar(
+                select(ProjectImportJob)
+                .where(ProjectImportJob.id == job_id)
+                .with_for_update()
+            )
+            independent.commit()
+            return locked is not None
+
+    dispatch = asyncio.create_task(
+        dispatch_import_outbox_once(
+            SessionFactory,
+            Publisher(),
+            SimpleNamespace(
+                import_3mf_request_subject="tertius.import.3mf.request",
+                import_3mf_outbox_lease_seconds=30,
+                import_3mf_outbox_batch_size=10,
+            ),
+            lease_owner="slow-dispatcher",
+        )
+    )
+    try:
+        await asyncio.wait_for(publish_started.wait(), timeout=2)
+        assert await asyncio.to_thread(lock_job_during_publish) is True
+    finally:
+        release_publish.set()
+        await dispatch
+        engine.dispose()

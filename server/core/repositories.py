@@ -723,15 +723,49 @@ class Import3mfCommandOutboxRepository:
         if not 0 < limit <= 100:
             raise ValueError("Import outbox claim limit must be between 1 and 100")
         claimed_at = now or now_utc()
+        stale = self.db.scalars(
+            select(Import3mfCommandOutbox)
+            .join(
+                ProjectImportJob, ProjectImportJob.id == Import3mfCommandOutbox.job_id
+            )
+            .where(
+                Import3mfCommandOutbox.status.in_(["pending", "leased"]),
+                or_(
+                    ProjectImportJob.execution_id
+                    != Import3mfCommandOutbox.execution_id,
+                    ProjectImportJob.status.not_in(["queued", "running"]),
+                ),
+            )
+            .with_for_update(of=Import3mfCommandOutbox, skip_locked=True)
+        ).all()
+        for row in stale:
+            current_execution = self.db.scalar(
+                select(ProjectImportJob.execution_id).where(
+                    ProjectImportJob.id == row.job_id
+                )
+            )
+            row.status = "failed"
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.error_code = (
+                "superseded"
+                if current_execution != row.execution_id
+                else "job_terminal"
+            )
         exhausted = self.db.scalars(
             select(Import3mfCommandOutbox)
+            .join(
+                ProjectImportJob, ProjectImportJob.id == Import3mfCommandOutbox.job_id
+            )
             .where(
                 Import3mfCommandOutbox.status == "leased",
                 Import3mfCommandOutbox.lease_expires_at <= claimed_at,
                 Import3mfCommandOutbox.dispatch_attempt
                 >= IMPORT_3MF_OUTBOX_MAX_ATTEMPTS,
+                ProjectImportJob.execution_id == Import3mfCommandOutbox.execution_id,
+                ProjectImportJob.status.in_(["queued", "running"]),
             )
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=Import3mfCommandOutbox, skip_locked=True)
         ).all()
         for row in exhausted:
             row.status = "failed"
@@ -740,6 +774,9 @@ class Import3mfCommandOutboxRepository:
             row.error_code = "attempts_exhausted"
         rows = self.db.scalars(
             select(Import3mfCommandOutbox)
+            .join(
+                ProjectImportJob, ProjectImportJob.id == Import3mfCommandOutbox.job_id
+            )
             .where(
                 Import3mfCommandOutbox.available_at <= claimed_at,
                 Import3mfCommandOutbox.dispatch_attempt
@@ -751,6 +788,8 @@ class Import3mfCommandOutboxRepository:
                         & (Import3mfCommandOutbox.lease_expires_at <= claimed_at)
                     ),
                 ),
+                ProjectImportJob.execution_id == Import3mfCommandOutbox.execution_id,
+                ProjectImportJob.status.in_(["queued", "running"]),
             )
             .order_by(
                 Import3mfCommandOutbox.available_at,
@@ -758,7 +797,7 @@ class Import3mfCommandOutboxRepository:
                 Import3mfCommandOutbox.id,
             )
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=Import3mfCommandOutbox, skip_locked=True)
         ).all()
         lease_expires_at = claimed_at + lease_duration
         for row in rows:
@@ -769,6 +808,58 @@ class Import3mfCommandOutboxRepository:
             row.error_code = None
         self.db.flush()
         return list(rows)
+
+    def lock_dispatchable_claim(
+        self,
+        outbox_id: UUID,
+        *,
+        lease_owner: str,
+        dispatch_attempt: int,
+        now: datetime | None = None,
+    ) -> bool:
+        checked_at = now or now_utc()
+        scope = self.db.execute(
+            select(
+                Import3mfCommandOutbox.job_id,
+                Import3mfCommandOutbox.execution_id,
+            ).where(Import3mfCommandOutbox.id == outbox_id)
+        ).one_or_none()
+        if scope is None:
+            return False
+        job = self.db.scalar(
+            select(ProjectImportJob)
+            .where(ProjectImportJob.id == scope.job_id)
+            .with_for_update()
+        )
+        row = self.db.scalar(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.id == outbox_id,
+                Import3mfCommandOutbox.status == "leased",
+                Import3mfCommandOutbox.lease_owner == lease_owner,
+                Import3mfCommandOutbox.dispatch_attempt == dispatch_attempt,
+                Import3mfCommandOutbox.lease_expires_at > checked_at,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            return False
+        if (
+            job is None
+            or job.execution_id != row.execution_id
+            or job.status not in {"queued", "running"}
+        ):
+            row.status = "failed"
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.error_code = (
+                "superseded"
+                if job is not None and job.execution_id != row.execution_id
+                else "job_terminal"
+            )
+            self.db.flush()
+            return False
+        return True
 
     def supersede_other_executions(
         self, job_id: UUID, *, current_execution_id: UUID
@@ -1194,6 +1285,61 @@ class ProjectImportRepository:
         self._require_execution(job, execution_id)
         if job.status != "queued" or job.queued_at >= cutoff:
             return False
+        job.status = "failed"
+        job.error = error_code
+        job.error_code = error_code
+        job.user_message = user_message
+        job.retryable = True
+        job.finished_at = now_utc()
+        self.db.flush()
+        return True
+
+    def reconcile_queued_delivery(
+        self,
+        job_id: UUID,
+        execution_id: UUID,
+        *,
+        sent_cutoff: datetime,
+        worker_not_started_message: str,
+        command_dispatch_failed_message: str,
+    ) -> bool:
+        job = self._lock_job(job_id)
+        self._require_execution(job, execution_id)
+        if job.status != "queued":
+            return False
+        outbox = self.db.scalar(
+            select(Import3mfCommandOutbox)
+            .where(
+                Import3mfCommandOutbox.job_id == job.id,
+                Import3mfCommandOutbox.execution_id == job.execution_id,
+            )
+            .with_for_update()
+        )
+        if outbox is not None and outbox.status in {"pending", "leased"}:
+            return False
+        if (
+            outbox is not None
+            and outbox.status == "sent"
+            and outbox.sent_at is not None
+            and outbox.sent_at >= sent_cutoff
+        ):
+            return False
+        if (
+            outbox is not None
+            and outbox.status == "sent"
+            and outbox.sent_at is not None
+        ):
+            error_code = "worker_not_started"
+            user_message = worker_not_started_message
+        else:
+            error_code = "command_dispatch_failed"
+            user_message = command_dispatch_failed_message
+        for label, value, max_chars in (
+            ("error code", error_code, IMPORT_ERROR_CODE_MAX_CHARS),
+            ("user message", user_message, IMPORT_USER_MESSAGE_MAX_CHARS),
+        ):
+            if len(value) > max_chars:
+                raise ValueError(f"Import {label} exceeds character limit")
         job.status = "failed"
         job.error = error_code
         job.error_code = error_code

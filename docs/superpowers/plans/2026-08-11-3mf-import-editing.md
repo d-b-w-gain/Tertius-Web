@@ -444,7 +444,7 @@ Use the existing trace propagation, bounded telemetry, heartbeat, result-publish
 
 - [x] **Step 4: Implement result consumer and stale-job reconciliation**
 
-Fetch BREP and manifest by reference, verify both, parse the manifest, call `ProjectImportRepository.apply_success`, and persist generated source atomically. Map terminal errors through a fixed code-to-user-message table. Reconcile stale running jobs to retryable failure after the configured lease.
+Fetch BREP and manifest by reference, verify both, parse the manifest, call `ProjectImportRepository.apply_success`, and persist generated source atomically. Map terminal errors through a fixed code-to-user-message table. Reconcile stale running jobs to retryable failure after the configured lease. For queued jobs, lock and recheck the current execution's outbox: pending/leased delivery remains queued, the worker-start lease begins at `sent_at`, and terminal delivery becomes retryable `command_dispatch_failed`; ignore all older-execution outbox rows.
 
 - [x] **Step 5: Run focused pipeline tests**
 
@@ -492,7 +492,7 @@ Expected: FAIL because routes do not exist.
 
 Accept `Request` plus authentication dependencies so FastAPI cannot parse the multipart body before authorization. Reject an oversized declared length before parsing and wrap ASGI receive with an aggregate byte cap for chunked/no-length bodies. Parse exactly one file and one project-name field, read the `UploadFile` in chunks no larger than 1 MiB into a spooled file, materialize one bounded bytes object, and reuse the Task 4 ZIP-envelope preflight before any persistence.
 
-Put the digest-addressed source object before taking project/job locks. Atomically create or retry the project asset/job together with an immutable bounded command-outbox row, commit, and return `202`; do not publish in the request. An independent main-lifecycle dispatcher commits `FOR UPDATE SKIP LOCKED` claims and leases, publishes exact persisted payloads with deterministic message IDs, conditionally marks sent, reclaims expired leases, and uses bounded backoff/status/error codes. Return only public DTO fields. The retry route reuses the immutable source asset, ensures the source object before locking, and atomically increments attempt plus inserts the new outbox row.
+Put the digest-addressed source object before taking project/job locks. Atomically create or retry the project asset/job together with an immutable bounded command-outbox row, commit, and return `202`; do not publish in the request. An independent main-lifecycle dispatcher commits `FOR UPDATE SKIP LOCKED` claims and leases only for matching active job executions, closes a short committed pre-publish recheck before NATS I/O, publishes exact persisted payloads with deterministic message IDs, conditionally marks sent, reclaims expired leases, and uses bounded backoff/status/error codes. No database lock spans the publish await. Return only public DTO fields. The retry route reuses the immutable source asset, ensures the source object before locking, and atomically increments attempt plus inserts the new outbox row.
 
 - [ ] **Step 4: Run endpoint tests**
 
