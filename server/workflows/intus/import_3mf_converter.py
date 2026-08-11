@@ -774,14 +774,16 @@ def _communicate_bounded(
                         "The 3MF converter output exceeded its limit.",
                     )
                 captured.extend(chunk)
-        remaining = deadline - time.monotonic()
-        if cancel_event is not None and cancel_event.is_set():
-            raise InterruptedError
-        if remaining <= 0:
-            raise TimeoutError
-        process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError from exc
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            try:
+                process.wait(timeout=min(remaining, 0.1))
+            except subprocess.TimeoutExpired:
+                continue
     finally:
         selector.close()
     return bytes(streams[process.stdout.fileno()]), bytes(

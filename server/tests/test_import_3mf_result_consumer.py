@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -100,6 +102,12 @@ class DB:
     def rollback(self):
         self.rollbacks += 1
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
 
 def settings():
     return SimpleNamespace(
@@ -149,21 +157,26 @@ async def test_success_verifies_manifest_and_uses_locked_requester(monkeypatch):
         lambda _db, _result: (job, source),
     )
     db = DB()
+    apply_db = DB()
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.SessionLocal", lambda: apply_db
+    )
     msg = Message(result.model_dump_json().encode())
     ordering = []
     msg.events = ordering
-    original_commit = db.commit
+    original_commit = apply_db.commit
 
     def ordered_commit():
         ordering.append("commit")
         original_commit()
 
-    db.commit = ordered_commit
+    apply_db.commit = ordered_commit
 
     await handle_import_result_message(msg, db, Store(values), settings())
 
     assert msg.events == ["commit", "ack"]
-    assert db.commits == 1
+    assert db.commits == 0
+    assert apply_db.commits == 1
     assert captured["user_id"] == cmd.user_id
     assert captured["brep_content"] == values[result.brep]
 
@@ -469,20 +482,18 @@ async def test_slow_result_processing_heartbeats_until_commit_then_acks(monkeypa
         lambda *_: (job, source_row(cmd)),
     )
 
-    class Repo:
-        def __init__(self, *_args):
-            pass
-
-        def apply_success(self, **_kwargs):
-            pass
-
     class SlowStore(Store):
         async def get(self, key):
-            await __import__("asyncio").sleep(0.15)
+            await asyncio.sleep(0.15)
             return await super().get(key)
 
     monkeypatch.setattr(
-        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+        "workflows.intus.import_3mf_result_consumer._touch_import_lease",
+        lambda _envelope: True,
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._apply_success_in_fresh_session",
+        lambda *_args: "succeeded",
     )
     runtime = settings()
     runtime.import_3mf_ack_wait_seconds = 0.3
@@ -490,6 +501,143 @@ async def test_slow_result_processing_heartbeats_until_commit_then_acks(monkeypa
     await handle_import_result_message(msg, DB(), SlowStore(values), runtime)
     assert "heartbeat" in msg.events
     assert msg.events[-1] == "ack"
+
+
+@pytest.mark.asyncio
+async def test_slow_sync_apply_keeps_message_and_database_lease_alive(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+
+    touches: list[datetime] = []
+    ordering: list[str] = []
+    apply_count = 0
+
+    def touch(_envelope):
+        touches.append(datetime.now(timezone.utc))
+        return True
+
+    def slow_apply(*_args):
+        nonlocal apply_count
+        apply_count += 1
+        time.sleep(0.35)
+        ordering.append("commit")
+        return "succeeded"
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._touch_import_lease", touch
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._apply_success_in_fresh_session",
+        slow_apply,
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    msg = Message(result.model_dump_json().encode())
+
+    async def ordered_ack():
+        ordering.append("ack")
+        msg.events.append("ack")
+
+    msg.ack = ordered_ack
+    await handle_import_result_message(msg, DB(), Store(values), runtime)
+
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(seconds=0.2)
+    assert len(touches) >= 3
+    assert touches[-1] >= stale_cutoff
+    assert msg.events.count("heartbeat") >= 3
+    assert ordering == ["commit", "ack"]
+    assert apply_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ack_waits_for_inflight_database_lease_touch(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+    ordering: list[str] = []
+
+    def slow_touch(_envelope):
+        ordering.append("touch-start")
+        time.sleep(0.2)
+        ordering.append("touch-end")
+        return True
+
+    def apply(*_args):
+        time.sleep(0.15)
+        return "succeeded"
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._touch_import_lease", slow_touch
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._apply_success_in_fresh_session",
+        apply,
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    msg = Message(result.model_dump_json().encode())
+
+    async def ordered_ack():
+        ordering.append("ack")
+        msg.events.append("ack")
+
+    msg.ack = ordered_ack
+    await handle_import_result_message(msg, DB(), Store(values), runtime)
+
+    assert ordering == ["touch-start", "touch-end", "ack"]
+
+
+@pytest.mark.asyncio
+async def test_database_lease_heartbeat_failure_naks_without_terminal_race(
+    monkeypatch,
+):
+    cmd = command()
+    result, values = success_result(cmd)
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+
+    def failed_touch(_envelope):
+        raise RuntimeError("database temporarily unavailable")
+
+    apply_count = 0
+
+    def apply(*_args):
+        nonlocal apply_count
+        apply_count += 1
+        return "succeeded"
+
+    class SlowStore(Store):
+        async def get(self, key):
+            await asyncio.sleep(0.3)
+            return await super().get(key)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._touch_import_lease",
+        failed_touch,
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._apply_success_in_fresh_session",
+        apply,
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), SlowStore(values), runtime)
+
+    assert msg.events == ["nak"]
+    assert apply_count == 0
 
 
 @pytest.mark.asyncio
