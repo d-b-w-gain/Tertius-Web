@@ -72,19 +72,34 @@ class Settings(BaseSettings):
         default=2 * 1024 * 1024 * 1024, gt=0, le=64 * 1024 * 1024 * 1024
     )
     import_3mf_stream_name: str = Field(
-        default="TERTIUS_IMPORT_3MF", min_length=1, max_length=255
+        default="TERTIUS_IMPORT_3MF",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+$",
     )
     import_3mf_request_subject: str = Field(
-        default="tertius.import.3mf.request", min_length=1, max_length=255
+        default="tertius.import.3mf.request",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$",
     )
     import_3mf_result_subject: str = Field(
-        default="tertius.import.3mf.result", min_length=1, max_length=255
+        default="tertius.import.3mf.result",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$",
     )
     import_3mf_worker_queue: str = Field(
-        default="import-3mf-workers", min_length=1, max_length=255
+        default="import-3mf-workers",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+$",
     )
     import_3mf_result_consumer: str = Field(
-        default="import-3mf-result-api", min_length=1, max_length=255
+        default="import-3mf-result-api",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9_-]+$",
     )
     import_3mf_ack_wait_seconds: int = Field(default=360, gt=0, le=3600)
     import_3mf_max_deliver: int = Field(default=2, gt=0, le=10)
@@ -138,6 +153,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_pi_agent_model_catalog(self):
         validate_default_pi_agent_model(self.pi_agent_models_json, self.pi_agent_model)
+        return self
+
+    @model_validator(mode="after")
+    def validate_import_transport(self):
+        if self.import_3mf_request_subject == self.import_3mf_result_subject:
+            raise ValueError("import request and result subjects must be distinct")
+        if self.import_3mf_worker_queue == self.import_3mf_result_consumer:
+            raise ValueError("import durable names must be distinct")
         return self
 
     @model_validator(mode="after")

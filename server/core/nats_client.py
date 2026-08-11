@@ -81,6 +81,10 @@ class NatsPublisher:
         counter_add("tertius.nats.publish.count", 1, {"nats_subject": subject})
 
 
+class JetStreamConfigurationError(RuntimeError):
+    """A durable JetStream resource cannot be reconciled without data loss."""
+
+
 def merge_nats_headers(
     headers: dict[str, str] | None = None, *, message_id: str | None = None
 ) -> dict[str, str]:
@@ -316,13 +320,17 @@ async def ensure_project_object_store(nc, settings):
     try:
         store = await js.object_store(bucket)
     except BucketNotFoundError:
-        return await js.create_object_store(
-            config=ObjectStoreConfig(
-                bucket=bucket,
-                ttl=settings.project_asset_object_ttl_seconds,
-                max_bytes=settings.project_asset_object_max_bytes,
-            )
+        config = ObjectStoreConfig(
+            bucket=bucket,
+            ttl=settings.project_asset_object_ttl_seconds,
+            max_bytes=settings.project_asset_object_max_bytes,
         )
+        try:
+            store = await js.create_object_store(bucket, config=config)
+        except Exception as exc:
+            if not _is_already_exists(exc):
+                raise
+            store = await js.object_store(bucket)
 
     info = await js.stream_info(f"OBJ_{bucket}")
     current = info.config if hasattr(info, "config") else info
@@ -362,7 +370,20 @@ async def ensure_import_stream(nc, settings):
         ):
             await js.update_stream(desired_stream)
     except NotFoundError:
-        await js.add_stream(desired_stream)
+        try:
+            await js.add_stream(desired_stream)
+        except Exception as exc:
+            if not _is_already_exists(exc):
+                raise
+            info = await js.stream_info(settings.import_3mf_stream_name)
+            current = info.config if hasattr(info, "config") else info
+            if (
+                sorted(list(getattr(current, "subjects", []) or []))
+                != sorted(subjects)
+                or getattr(current, "max_msg_size", None)
+                != settings.import_3mf_message_max_bytes
+            ):
+                await js.update_stream(desired_stream)
 
     consumers = (
         ConsumerConfig(
@@ -398,15 +419,48 @@ async def ensure_import_stream(nc, settings):
                 or getattr(current, "max_deliver", None) != desired.max_deliver
             )
             if immutable_drift:
-                await js.delete_consumer(
-                    settings.import_3mf_stream_name, desired.durable_name
+                raise JetStreamConfigurationError(
+                    "JetStream consumer has incompatible immutable configuration"
                 )
-                await js.add_consumer(settings.import_3mf_stream_name, desired)
             elif mutable_drift:
                 await js.add_consumer(settings.import_3mf_stream_name, desired)
         except NotFoundError:
-            await js.add_consumer(settings.import_3mf_stream_name, desired)
+            try:
+                await js.add_consumer(settings.import_3mf_stream_name, desired)
+            except Exception as exc:
+                if not _is_already_exists(exc):
+                    raise
+                info = await js.consumer_info(
+                    settings.import_3mf_stream_name, desired.durable_name
+                )
+                current = info.config if hasattr(info, "config") else info
+                if (
+                    getattr(current, "deliver_policy", None)
+                    != desired.deliver_policy
+                    or getattr(current, "ack_policy", None) != desired.ack_policy
+                ):
+                    raise JetStreamConfigurationError(
+                        "JetStream consumer has incompatible immutable configuration"
+                    ) from exc
+                if (
+                    getattr(current, "filter_subject", None)
+                    != desired.filter_subject
+                    or getattr(current, "ack_wait", None) != desired.ack_wait
+                    or getattr(current, "max_deliver", None) != desired.max_deliver
+                ):
+                    await js.add_consumer(settings.import_3mf_stream_name, desired)
     return js
+
+
+def _is_already_exists(exc: Exception) -> bool:
+    from nats.js.errors import APIError, ObjectAlreadyExists
+
+    if isinstance(exc, ObjectAlreadyExists):
+        return True
+    if not isinstance(exc, APIError):
+        return False
+    description = (exc.description or "").lower()
+    return exc.code == 400 and ("already" in description or "in use" in description)
 
 
 async def pull_compile_subscription(js, settings):

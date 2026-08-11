@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from tempfile import SpooledTemporaryFile
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
@@ -26,6 +27,8 @@ BucketName = Annotated[
     str,
     StringConstraints(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_-]+$"),
 ]
+DEFAULT_MAX_OBJECT_BYTES = 512 * 1024 * 1024
+SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 
 
 class ObjectRef(BaseModel):
@@ -45,9 +48,20 @@ class ObjectRef(BaseModel):
 
 
 class ProjectObjectStore:
-    def __init__(self, store: Any, bucket: str):
+    def __init__(
+        self,
+        store: Any,
+        bucket: str,
+        *,
+        max_object_bytes: int = DEFAULT_MAX_OBJECT_BYTES,
+    ):
+        if isinstance(max_object_bytes, bool) or not isinstance(max_object_bytes, int):
+            raise TypeError("max_object_bytes must be an integer")
+        if max_object_bytes <= 0:
+            raise ValueError("max_object_bytes must be positive")
         self.store = store
         self.bucket = TypeAdapter(BucketName).validate_python(bucket, strict=True)
+        self.max_object_bytes = max_object_bytes
 
     async def put(self, content: bytes) -> ObjectRef:
         if not isinstance(content, bytes):
@@ -79,24 +93,30 @@ class ProjectObjectStore:
             raise ObjectIntegrityError("object reference integrity check failed")
         if ref.key != f"sha256/{ref.sha256}":
             raise ObjectIntegrityError("object reference integrity check failed")
+        if ref.byte_size > self.max_object_bytes:
+            raise ObjectIntegrityError("object is too large")
 
+        writer = _BoundedHashingWriter(
+            max_bytes=min(ref.byte_size, self.max_object_bytes)
+        )
         try:
-            result = await self.store.get(ref.key)
-        except Exception as exc:
-            if _is_not_found(exc):
-                raise ObjectNotFoundError("object was not found") from exc
-            raise ObjectStoreUnavailableError("object store operation failed") from exc
-
-        try:
-            content = bytes(result.data)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise ObjectIntegrityError("object integrity check failed") from exc
-        if (
-            len(content) != ref.byte_size
-            or hashlib.sha256(content).hexdigest() != ref.sha256
-        ):
-            raise ObjectIntegrityError("object integrity check failed")
-        return content
+            try:
+                await self.store.get(ref.key, writeinto=writer)
+            except Exception as exc:
+                if _is_not_found(exc):
+                    raise ObjectNotFoundError("object was not found") from exc
+                if _is_integrity_error(exc):
+                    raise ObjectIntegrityError("object integrity check failed") from exc
+                if isinstance(exc, ObjectIntegrityError):
+                    raise
+                raise ObjectStoreUnavailableError(
+                    "object store operation failed"
+                ) from exc
+            if writer.byte_size != ref.byte_size or writer.sha256 != ref.sha256:
+                raise ObjectIntegrityError("object integrity check failed")
+            return writer.read()
+        finally:
+            writer.close()
 
     async def _get_existing(self, ref: ObjectRef) -> ObjectRef:
         await self.get(ref)
@@ -113,3 +133,52 @@ def _is_not_found(exc: Exception) -> bool:
     return isinstance(
         exc, (KeyNotFoundError, NatsObjectNotFoundError, ObjectDeletedError)
     )
+
+
+def _is_integrity_error(exc: Exception) -> bool:
+    from nats.js.errors import BadObjectMetaError, DigestMismatchError
+
+    return isinstance(exc, (BadObjectMetaError, DigestMismatchError))
+
+
+class _BoundedHashingWriter:
+    def __init__(self, *, max_bytes: int):
+        self._max_bytes = max_bytes
+        self._byte_size = 0
+        self._stored_size = 0
+        self._digest = hashlib.sha256()
+        self._file = SpooledTemporaryFile(
+            max_size=min(SPOOL_MEMORY_BYTES, max(1, max_bytes)), mode="w+b"
+        )
+
+    @property
+    def byte_size(self) -> int:
+        return self._byte_size
+
+    @property
+    def stored_byte_size(self) -> int:
+        return self._stored_size
+
+    @property
+    def sha256(self) -> str:
+        return self._digest.hexdigest()
+
+    @property
+    def closed(self) -> bool:
+        return self._file.closed
+
+    def write(self, data: bytes) -> int:
+        content = bytes(data)
+        self._digest.update(content)
+        self._byte_size += len(content)
+        remaining = max(0, self._max_bytes - self._stored_size)
+        if remaining:
+            self._stored_size += self._file.write(content[:remaining])
+        return len(content)
+
+    def read(self) -> bytes:
+        self._file.seek(0)
+        return self._file.read()
+
+    def close(self) -> None:
+        self._file.close()
