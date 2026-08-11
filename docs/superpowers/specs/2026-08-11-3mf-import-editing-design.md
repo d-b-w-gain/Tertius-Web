@@ -41,6 +41,8 @@ Build123D 0.8.0 `Mesher.read()` reconstructs each mesh as triangular faces, sews
 
 The converter places the ordered shapes in one Build123D `Compound`, exports it with `export_brep`, and stores object names and solid/shell status by child index in the manifest. The compile runtime imports the BREP once through `import_brep`, reapplies manifest labels, and returns an `Imported3mfModel` wrapper with ordered `parts`, `parts_by_name`, `compound`, and manifest metadata.
 
+Build123D 0.8.0 preserves topological child order across this BREP round trip but does not preserve the Python `Compound.children` tree. The runtime enumerates first-level imported topology in manifest-index order, validates count/type/bounds, reapplies labels, and builds a fresh compound with labelled children. It never relies on `restored.children`.
+
 The first implementation uses the mesh objects returned by Build123D 0.8.0. It records a `component_graph_not_preserved` warning when 3MF build-item/component instancing or transforms cannot be represented by that reader. It does not silently claim full 3MF assembly fidelity.
 
 ### ADR-003: Binary transport uses JetStream object storage
@@ -121,6 +123,8 @@ Deleting or replacing source assets is outside this MVP. Asset metadata endpoint
   "schema_version": 1,
   "conversion_version": "tertius-3mf-brep-v1-build123d-0.8.0",
   "source_sha256": "<64 lowercase hex>",
+  "brep_sha256": "<64 lowercase hex>",
+  "brep_byte_size": 1,
   "source_unit": "MM",
   "scale_to_mm": 1.0,
   "object_count": 1,
