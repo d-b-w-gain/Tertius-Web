@@ -151,7 +151,7 @@ rtk git commit -m "feat: define 3mf import domain"
 - Modify: `server/tests/test_repositories.py`
 - Test: `server/tests/test_migrations.py`
 
-- [ ] **Step 1: Add failing tenant-isolation, active-job, retry, result-atomicity, and compile-snapshot repository tests**
+- [x] **Step 1: Add failing tenant-isolation, active-job, retry, result-atomicity, and compile-snapshot repository tests**
 
 ```python
 def test_project_asset_repository_is_tenant_scoped(db_session, seeded):
@@ -170,13 +170,13 @@ def test_import_repository_allows_only_one_active_job(db_session, seeded):
         repo.create_queued(seeded["project_a"], seeded["user_a"], seeded["asset_a"])
 ```
 
-- [ ] **Step 2: Run tests and confirm missing models/repositories**
+- [x] **Step 2: Run tests and confirm missing models/repositories**
 
 Run: `rtk uv run pytest -q server/tests/test_repositories.py -k 'project_asset or project_import or compile_job_asset'`
 
 Expected: FAIL because the new entities and repositories are undefined.
 
-- [ ] **Step 3: Add SQLAlchemy entities and migration**
+- [x] **Step 3: Add SQLAlchemy entities and migration**
 
 Implement `ProjectAsset`, `ProjectImportJob`, and `CompileJobAsset` with the columns and composite foreign keys in the approved design. The migration must create a PostgreSQL partial unique index equivalent to:
 
@@ -192,7 +192,7 @@ op.create_index(
 
 Store `sha256` as exactly 64 lowercase hexadecimal characters, `byte_size` as non-negative integer, and `ProjectAsset.content` as non-null `LargeBinary`. Add composite tenant/project constraints to every new cross-table relationship.
 
-- [ ] **Step 4: Implement repositories with staged transaction boundaries**
+- [x] **Step 4: Implement repositories with staged transaction boundaries**
 
 ```python
 class ProjectAssetRepository:
@@ -222,13 +222,13 @@ class ProjectImportRepository:
         # ProjectRepository boundary, then mark succeeded before one commit.
 ```
 
-- [ ] **Step 5: Run repository and migration tests**
+- [x] **Step 5: Run repository and migration tests**
 
 Run: `rtk uv run pytest -q server/tests/test_repositories.py server/tests/test_migrations.py`
 
 Expected: PASS, or the repository's documented Docker/Testcontainers permission blocker before test execution; if blocked, rerun with the required Docker access.
 
-- [ ] **Step 6: Commit persistence**
+- [x] **Step 6: Commit persistence**
 
 ```bash
 rtk git add server/migrations/versions/0011_project_3mf_imports.py server/core/models.py server/core/repositories.py server/tests/test_repositories.py server/tests/test_migrations.py
