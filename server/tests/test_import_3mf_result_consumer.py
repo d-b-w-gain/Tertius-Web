@@ -71,6 +71,9 @@ class Message:
     async def term(self):
         self.events.append("term")
 
+    async def in_progress(self):
+        self.events.append("heartbeat")
+
 
 class Store:
     def __init__(self, values, *, transient=False, integrity=False):
@@ -102,6 +105,8 @@ def settings():
     return SimpleNamespace(
         project_asset_object_bucket="TERTIUS_ASSETS",
         import_3mf_message_max_bytes=1024 * 1024,
+        import_3mf_ack_wait_seconds=360,
+        import_3mf_queued_lease_seconds=180,
         import_3mf_running_lease_seconds=360,
     )
 
@@ -394,6 +399,9 @@ def test_reconciles_only_stale_running_jobs(monkeypatch):
         "workflows.intus.import_3mf_result_consumer._running_jobs",
         lambda _db: [stale, fresh],
     )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._queued_jobs", lambda _db: []
+    )
 
     class Repo:
         def __init__(self, *_args):
@@ -410,6 +418,94 @@ def test_reconciles_only_stale_running_jobs(monkeypatch):
     assert reconcile_stale_import_jobs(db, settings()) == 1
     assert failed[0][1]["error_code"] == "worker_lost"
     assert db.commits == 1
+
+
+def test_reconciles_stale_queued_but_protects_fresh_queued(monkeypatch):
+    stale = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        execution_id=uuid4(),
+        queued_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    fresh = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        execution_id=uuid4(),
+        queued_at=datetime.now(timezone.utc),
+    )
+    failed = []
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._queued_jobs",
+        lambda _db: [stale, fresh],
+    )
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._running_jobs", lambda _db: []
+    )
+
+    class Repo:
+        def __init__(self, *_args):
+            pass
+
+        def fail_if_stale_queued(self, job_id, *_args, **kwargs):
+            failed.append((job_id, kwargs))
+            return True
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+    )
+    db = DB()
+    assert reconcile_stale_import_jobs(db, settings()) == 1
+    assert failed[0][0] == stale.id
+    assert failed[0][1]["error_code"] == "worker_not_started"
+
+
+@pytest.mark.asyncio
+async def test_slow_result_processing_heartbeats_until_commit_then_acks(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+    job = SimpleNamespace(status="running", requested_by=cmd.user_id)
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._load_result_job",
+        lambda *_: (job, source_row(cmd)),
+    )
+
+    class Repo:
+        def __init__(self, *_args):
+            pass
+
+        def apply_success(self, **_kwargs):
+            pass
+
+    class SlowStore(Store):
+        async def get(self, key):
+            await __import__("asyncio").sleep(0.15)
+            return await super().get(key)
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer.ProjectImportRepository", Repo
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), SlowStore(values), runtime)
+    assert "heartbeat" in msg.events
+    assert msg.events[-1] == "ack"
+
+
+@pytest.mark.asyncio
+async def test_result_heartbeat_failure_naks_without_ack(monkeypatch):
+    cmd = command()
+    result, values = success_result(cmd)
+
+    async def failed(*_args):
+        raise RuntimeError("heartbeat failed")
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_result_consumer._result_heartbeat", failed
+    )
+    msg = Message(result.model_dump_json().encode())
+    await handle_import_result_message(msg, DB(), Store(values), settings())
+    assert msg.events == ["nak"]
 
 
 @pytest.mark.asyncio

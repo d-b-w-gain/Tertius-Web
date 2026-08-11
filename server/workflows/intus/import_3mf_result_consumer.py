@@ -45,6 +45,7 @@ _SAFE_FAILURES: dict[str, tuple[str, bool]] = {
     "conversion_failed": ("The 3MF conversion failed safely.", True),
     "asset_integrity_error": ("The imported 3MF assets could not be verified.", True),
     "worker_lost": ("The 3MF import worker stopped unexpectedly. Try again.", True),
+    "worker_not_started": ("The 3MF import worker did not start. Try again.", True),
 }
 
 
@@ -229,6 +230,13 @@ async def _apply_result(db, result: Import3mfResult, object_store, settings) -> 
     return "succeeded"
 
 
+async def _result_heartbeat(msg, ack_wait_seconds: float) -> None:
+    interval = max(0.1, min(30.0, ack_wait_seconds / 3))
+    while True:
+        await asyncio.sleep(interval)
+        await msg.in_progress()
+
+
 async def handle_import_result_message(msg, db, object_store, settings) -> None:
     try:
         envelope = _parse_envelope(msg.data, settings.import_3mf_message_max_bytes)
@@ -247,23 +255,49 @@ async def handle_import_result_message(msg, db, object_store, settings) -> None:
         kind=SpanKind.CONSUMER,
         attributes=_attributes(envelope=envelope_type, status="processing"),
     ):
-        try:
+        heartbeat = asyncio.create_task(
+            _result_heartbeat(msg, settings.import_3mf_ack_wait_seconds)
+        )
+
+        async def apply() -> str:
             if isinstance(envelope, Import3mfProgress):
-                outcome = await _apply_progress(db, envelope)
-            else:
-                outcome = await _apply_result(db, envelope, object_store, settings)
+                return await _apply_progress(db, envelope)
+            return await _apply_result(db, envelope, object_store, settings)
+
+        operation = asyncio.create_task(apply())
+        try:
+            done, _ = await asyncio.wait(
+                {operation, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                await heartbeat
+                raise RuntimeError("result heartbeat ended unexpectedly")
+            outcome = await operation
         except ObjectNotFoundError, ObjectStoreUnavailableError:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
             db.rollback()
             logger.warning(
                 "3MF import result object transport is temporarily unavailable"
             )
             await msg.nak()
             return
+        except asyncio.CancelledError:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+            db.rollback()
+            await msg.nak()
+            raise
         except Exception:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
             db.rollback()
             logger.warning("3MF import result could not be applied")
             await msg.nak()
             return
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
 
         await msg.ack()
         labels = _attributes(envelope=envelope_type, status=outcome)
@@ -281,9 +315,33 @@ def _running_jobs(db):
     ).all()
 
 
+def _queued_jobs(db):
+    return db.scalars(
+        select(ProjectImportJob).where(ProjectImportJob.status == "queued")
+    ).all()
+
+
 def reconcile_stale_import_jobs(db, settings) -> int:
+    queued_cutoff = now_utc() - timedelta(
+        seconds=settings.import_3mf_queued_lease_seconds
+    )
     cutoff = now_utc() - timedelta(seconds=settings.import_3mf_running_lease_seconds)
     count = 0
+    for job in _queued_jobs(db):
+        if job.queued_at >= queued_cutoff:
+            continue
+        try:
+            failed = ProjectImportRepository(db, job.tenant_id).fail_if_stale_queued(
+                job.id,
+                job.execution_id,
+                cutoff=queued_cutoff,
+                error_code="worker_not_started",
+                user_message=_SAFE_FAILURES["worker_not_started"][0],
+            )
+            db.commit()
+            count += int(failed)
+        except StaleImportExecutionError, ValueError:
+            db.rollback()
     for job in _running_jobs(db):
         heartbeat_at = (
             getattr(job, "heartbeat_at", None) or job.started_at or job.created_at

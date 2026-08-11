@@ -106,8 +106,11 @@ class Settings(BaseSettings):
     import_3mf_message_max_bytes: int = Field(
         default=1024 * 1024, gt=0, le=8 * 1024 * 1024
     )
+    import_3mf_stream_max_age_seconds: int = Field(default=86400, gt=0)
+    import_3mf_stream_max_bytes: int = Field(default=1024 * 1024 * 1024, gt=0)
     import_3mf_timeout_seconds: int = Field(default=300, gt=0, le=300)
-    import_3mf_running_lease_seconds: int = Field(default=360, gt=0, le=3600)
+    import_3mf_queued_lease_seconds: int = Field(default=180, gt=0, le=3600)
+    import_3mf_running_lease_seconds: int = Field(default=600, gt=0, le=3600)
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)

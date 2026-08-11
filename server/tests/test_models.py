@@ -27,6 +27,7 @@ def test_import_asset_models_expose_immutable_columns_and_checks():
     assert ProjectImportJob.__table__.c.execution_id.nullable is False
     assert ProjectImportJob.__table__.c.progress_payload.nullable is False
     assert ProjectImportJob.__table__.c.heartbeat_at.nullable is True
+    assert ProjectImportJob.__table__.c.queued_at.nullable is False
     assert CompileJobAsset.__table__.c.object_bucket.nullable is False
     assert CompileJobAsset.__table__.c.object_key.nullable is False
 

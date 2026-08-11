@@ -70,6 +70,7 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
         for column in inspector.get_columns("project_import_jobs")
     }
     assert import_job_columns["heartbeat_at"]["nullable"] is True
+    assert import_job_columns["queued_at"]["nullable"] is False
     snapshot_columns = {
         column["name"]: column for column in inspector.get_columns("compile_job_files")
     }

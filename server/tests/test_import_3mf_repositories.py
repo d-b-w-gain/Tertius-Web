@@ -485,6 +485,88 @@ def test_running_and_progress_refresh_import_heartbeat(db_session, seeded_tenant
     )
 
 
+def test_retry_refreshes_queued_lease_and_locked_recheck_protects_fresh_job(
+    db_session, seeded_tenant
+):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    _, _, job = _create_import(repo, seeded_tenant)
+    initial = job.queued_at
+    repo.mark_failed(
+        job.id,
+        job.execution_id,
+        error="worker_not_started",
+        error_code="worker_not_started",
+        user_message="Try again.",
+        retryable=True,
+    )
+    retried = repo.retry(job.id)
+    assert retried.queued_at >= initial
+    assert (
+        repo.fail_if_stale_queued(
+            retried.id,
+            retried.execution_id,
+            cutoff=datetime.now(timezone.utc) - timedelta(seconds=30),
+            error_code="worker_not_started",
+            user_message="Try again.",
+        )
+        is False
+    )
+
+
+def test_concurrent_result_redelivery_creates_one_derived_revision(
+    postgres_url, db_session, seeded_tenant
+):
+    repo = ProjectImportRepository(db_session, seeded_tenant.tenant_id)
+    source_bytes = b"3mf-source"
+    brep = b"brep"
+    project, source, job = _create_import(repo, seeded_tenant, source=source_bytes)
+    repo.mark_running(job.id, job.execution_id)
+    identity = (job.id, job.execution_id, source.sha256)
+    db_session.commit()
+
+    engine = create_engine(postgres_url, pool_pre_ping=True)
+    SessionFactory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def deliver():
+        try:
+            with SessionFactory() as session:
+                barrier.wait(timeout=10)
+                ProjectImportRepository(session, seeded_tenant.tenant_id).apply_success(
+                    job_id=identity[0],
+                    execution_id=identity[1],
+                    source_sha256=identity[2],
+                    brep_content=brep,
+                    manifest_content=_manifest_bytes(source_bytes, brep),
+                    user_id=seeded_tenant.user_id,
+                )
+                session.commit()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=deliver, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+    engine.dispose()
+    assert not errors
+    assert not any(thread.is_alive() for thread in threads)
+    db_session.expire_all()
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(ProjectAsset)
+            .where(
+                ProjectAsset.project_id == project.id,
+                ProjectAsset.kind.in_(["derived_brep", "import_manifest"]),
+            )
+        )
+        == 2
+    )
+
+
 def test_apply_success_is_atomic_and_persists_exact_generated_source_pair(
     db_session, seeded_tenant
 ):

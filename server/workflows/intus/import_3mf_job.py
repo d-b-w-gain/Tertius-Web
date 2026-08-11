@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 from time import perf_counter
 
 from opentelemetry import propagate, trace
@@ -13,6 +14,7 @@ from core.config import get_settings
 from core.import_3mf_messages import (
     Import3mfCommand,
     Import3mfProgress,
+    Import3mfProgressStage,
     Import3mfResult,
 )
 from core.nats_client import (
@@ -111,11 +113,21 @@ async def execute_import_command(
             "asset_integrity_error", _SAFE_FAILURES["asset_integrity_error"]
         ) from exc
     await report("converting", 20)
-    output = await asyncio.to_thread(
-        run_converter_subprocess,
-        source,
-        settings.import_3mf_timeout_seconds,
+    cancel_event = threading.Event()
+    conversion = asyncio.create_task(
+        asyncio.to_thread(
+            run_converter_subprocess,
+            source,
+            settings.import_3mf_timeout_seconds,
+            cancel_event,
+        )
     )
+    try:
+        output = await asyncio.shield(conversion)
+    except asyncio.CancelledError:
+        cancel_event.set()
+        await asyncio.shield(asyncio.gather(conversion, return_exceptions=True))
+        raise
     await report("persisting", 90)
     brep_ref = await object_store.put(output.brep_bytes)
     manifest_bytes = output.manifest.model_dump_json().encode("utf-8")
@@ -149,11 +161,13 @@ async def _publish_with_retry(
             await asyncio.sleep(0.1 * (2**attempt))
 
 
-async def _heartbeat(msg, ack_wait_seconds: float) -> None:
+async def _heartbeat(msg, ack_wait_seconds: float, progress_callback=None) -> None:
     interval = max(0.1, min(30.0, ack_wait_seconds / 3))
     while True:
         await asyncio.sleep(interval)
         await msg.in_progress()
+        if progress_callback is not None:
+            await progress_callback()
 
 
 async def handle_import_request_message(
@@ -179,10 +193,12 @@ async def handle_import_request_message(
         kind=SpanKind.CONSUMER,
         attributes=_bounded_attributes(status="started"),
     ):
-        heartbeat = asyncio.create_task(
-            _heartbeat(msg, settings.import_3mf_ack_wait_seconds)
-        )
         started = perf_counter()
+        progress_stage: Import3mfProgressStage = "validating"
+        progress_percent = 5
+        progress_sequence = 0
+        progress_enabled = True
+        progress_publish_lock = asyncio.Lock()
 
         def linked_trace_headers() -> dict[str, str]:
             linked: dict[str, str] = {}
@@ -194,6 +210,9 @@ async def handle_import_request_message(
             return linked
 
         async def report(progress: Import3mfProgress) -> None:
+            nonlocal progress_stage, progress_percent
+            progress_stage = progress.stage
+            progress_percent = progress.percent
             await _publish_with_retry(
                 publisher,
                 settings.import_3mf_result_subject,
@@ -204,7 +223,39 @@ async def handle_import_request_message(
                 headers=linked_trace_headers(),
             )
 
+        async def report_heartbeat_progress() -> None:
+            nonlocal progress_sequence
+            async with progress_publish_lock:
+                if not progress_enabled:
+                    return
+                progress_sequence += 1
+                progress = Import3mfProgress.for_command(
+                    command,
+                    stage=progress_stage,
+                    percent=progress_percent,
+                )
+                await _publish_with_retry(
+                    publisher,
+                    settings.import_3mf_result_subject,
+                    progress,
+                    message_id=_hashed_message_id(
+                        "import-progress-heartbeat",
+                        command,
+                        str(progress_sequence),
+                    ),
+                    headers=linked_trace_headers(),
+                )
+
+        heartbeat = asyncio.create_task(
+            _heartbeat(
+                msg,
+                settings.import_3mf_ack_wait_seconds,
+                report_heartbeat_progress,
+            )
+        )
+
         async def process_and_publish() -> Import3mfResult:
+            nonlocal progress_enabled
             try:
                 produced = await execute_import_command(
                     command, object_store, settings, report
@@ -229,6 +280,8 @@ async def handle_import_request_message(
                 > settings.import_3mf_message_max_bytes
             ):
                 raise ValueError("result envelope exceeds configured limit")
+            async with progress_publish_lock:
+                progress_enabled = False
             await _publish_with_retry(
                 publisher,
                 settings.import_3mf_result_subject,

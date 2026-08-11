@@ -154,7 +154,7 @@ async def test_execute_fetches_converts_and_stores_only_references(monkeypatch):
     output = conversion_output()
     monkeypatch.setattr(
         "workflows.intus.import_3mf_job.run_converter_subprocess",
-        lambda source, timeout: output,
+        lambda *_args: output,
     )
     store = Store()
     progress = []
@@ -357,6 +357,63 @@ async def test_heartbeat_repeats_and_failure_naks(monkeypatch):
     msg = Message(command().model_dump_json().encode())
     await handle_import_request_message(msg, Store(), Publisher(), settings())
     assert msg.events == ["nak"]
+
+
+@pytest.mark.asyncio
+async def test_execute_cancellation_signals_and_joins_converter_thread(monkeypatch):
+    import asyncio
+    import threading
+
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def cancellable(_source, _timeout, cancel_event):
+        started.set()
+        assert cancel_event.wait(timeout=2)
+        stopped.set()
+        raise Import3mfError("conversion_cancelled", "cancelled")
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess", cancellable
+    )
+    task = asyncio.create_task(execute_import_command(command(), Store(), settings()))
+    await asyncio.to_thread(started.wait, 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_conversion_heartbeat_publishes_recurring_progress_before_terminal(
+    monkeypatch,
+):
+    import time
+
+    def slow_converter(*_args):
+        time.sleep(0.25)
+        return conversion_output()
+
+    monkeypatch.setattr(
+        "workflows.intus.import_3mf_job.run_converter_subprocess", slow_converter
+    )
+    runtime = settings()
+    runtime.import_3mf_ack_wait_seconds = 0.3
+    publisher = Publisher()
+    msg = Message(command().model_dump_json().encode())
+    await handle_import_request_message(msg, Store(), publisher, runtime)
+    heartbeat_calls = [
+        call
+        for call in publisher.calls
+        if call[2]["message_id"].startswith("import-progress-heartbeat:")
+    ]
+    assert len(heartbeat_calls) >= 2
+    terminal_index = next(
+        index
+        for index, call in enumerate(publisher.calls)
+        if call[2]["message_id"].startswith("import-result:")
+    )
+    assert all(publisher.calls.index(call) < terminal_index for call in heartbeat_calls)
 
 
 def test_import_launcher_is_executable_one_shot_entrypoint():
