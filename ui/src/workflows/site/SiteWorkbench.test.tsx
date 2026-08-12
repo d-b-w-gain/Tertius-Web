@@ -62,6 +62,7 @@ const response: SiteWorkbenchResponse = {
       region_approximate: true,
       region_status: 'verified',
       table_status: 'verified',
+      table_dataset_version: 'AS1170.2-2021-starter-v2',
       terrain_category: '3',
       annual_probability_uls: '',
       reference_height_m: 1.6,
@@ -166,6 +167,64 @@ afterEach(() => {
 })
 
 describe('SiteWorkbench', () => {
+  it('replaces starter dimensions with the active candidate model bounds', async () => {
+    mocks.apiFetch.mockImplementation(async (url: string) => {
+      if (url.endsWith('/api/extus/status')) {
+        return new Response(JSON.stringify({
+          mtime: 1234,
+          site_dimensions: {
+            schema_version: 'tertius.model-site-dimensions.v1',
+            model_artifact_id: 'candidate-model-1',
+            footprint_length_m: 5.2,
+            footprint_width_m: 3.1,
+            overall_height_m: 3.04,
+            reference_height_m: 2.72,
+            roof_eave_height_m: 2.4,
+            roof_ridge_height_m: 3.04,
+            reference_height_basis: 'mid-height of roof components',
+            source: 'compiled Build123D analytic bounds',
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (url.endsWith('/calculate')) {
+        return new Response(JSON.stringify(response.calculation), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/gis/health')) {
+        return new Response(JSON.stringify({
+          status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+        }))
+      }
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    render(<SiteWorkbench isActive />)
+
+    expect(await screen.findByText('active model · 5.20 × 3.10 m · h 2.72 m')).toBeInTheDocument()
+    expect(screen.getByRole('spinbutton', { name: 'Footprint length metres' })).toHaveValue(5.2)
+    expect(screen.getByRole('spinbutton', { name: 'Footprint depth metres' })).toHaveValue(3.1)
+    expect(screen.getByRole('spinbutton', {
+      name: /Reference height z/i,
+    })).toHaveValue(2.72)
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some(([url]) => String(url).endsWith('/calculate')),
+    ).toBe(true))
+    const calculateCall = mocks.apiFetch.mock.calls.find(([url]) => String(url).endsWith('/calculate'))
+    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    expect(submitted.structure).toMatchObject({
+      footprint_length_m: 5.2,
+      footprint_width_m: 3.1,
+    })
+    expect(submitted.wind.reference_height_m).toBe(2.72)
+    expect(submitted.wind.multiplier_evidence).toBeNull()
+  })
+
   it('shows NCC classification choices and identifies the exact missing confirmation', async () => {
     mocks.apiFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
       url.endsWith('/gis/health') ? {
@@ -231,7 +290,7 @@ describe('SiteWorkbench', () => {
       window.removeEventListener('tertius:site-basis-changed', changed)
     }
 
-    expect(mocks.apiFetch).toHaveBeenCalledTimes(3)
+    expect(mocks.apiFetch.mock.calls.length).toBeGreaterThanOrEqual(3)
     const saveCall = mocks.apiFetch.mock.calls.find((call) => call[2]?.method === 'PUT')
     expect(saveCall).toBeDefined()
     expect(saveCall?.[0]).toBe('/api/site/active')
@@ -319,5 +378,85 @@ describe('SiteWorkbench', () => {
     })
     expect(submitted.wind.climate_change_multiplier).toBe(1)
     expect(submitted.wind.table_status).toBe('starter')
+  })
+
+  it('offers the evidence PDF in the header and loads site terrain automatically', async () => {
+    const terrainManifest = {
+      evidence_id: 'gisv1-automatic-terrain',
+      created_at: '2026-08-09T00:00:00Z',
+      source: {
+        provider: 'NSW Spatial Services',
+        dataset: 'NSW 5 metre Digital Elevation Model',
+        dataset_version: 'test',
+        licence: 'CC BY 4.0',
+        attribution: 'NSW Spatial Services',
+      },
+      asset: {
+        content_sha256: 'a'.repeat(64),
+        relative_path: 'source/site.tif',
+        media_type: 'image/tiff',
+        size_bytes: 4096,
+        width: 16,
+        height: 16,
+        band_count: 1,
+        dtype: 'float32',
+        crs: 'EPSG:4326',
+        bounds: [150.8, -34.5, 150.9, -34.4],
+        resolution: [0.001, 0.001],
+        nodata: -9999,
+      },
+    }
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:site-report'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    mocks.apiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/gis/terrain/site?')) {
+        return new Response(JSON.stringify(terrainManifest), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.endsWith('/report/site-wind.pdf')) {
+        return new Response(new Blob(['%PDF-1.4']), {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf' },
+        })
+      }
+      if (url.endsWith('/gis/health')) {
+        return new Response(JSON.stringify({
+          status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+        }))
+      }
+      if (url.endsWith('/preview.png')) {
+        return new Response(new Uint8Array([137, 80, 78, 71]), {
+          headers: { 'Content-Type': 'image/png' },
+        })
+      }
+      return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    render(<SiteWorkbench isActive />)
+
+    const reportButton = await screen.findByRole('button', {
+      name: 'Download PDF evidence report',
+    })
+    fireEvent.click(reportButton)
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some(([url]) => String(url).endsWith('/report/site-wind.pdf')),
+    ).toBe(true))
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some(([url]) => String(url).includes('/gis/terrain/site?')),
+    ).toBe(true), { timeout: 2500 })
+    expect(screen.getByText(/terrain loaded once and attached to this site/i)).toBeInTheDocument()
   })
 })

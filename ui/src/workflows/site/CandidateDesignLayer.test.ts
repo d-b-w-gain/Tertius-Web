@@ -1,7 +1,7 @@
-import { Box3, BoxGeometry, Mesh, MeshBasicMaterial, Vector3 } from 'three'
+import { Box3, BoxGeometry, Group, Mesh, MeshBasicMaterial, Vector3 } from 'three'
 import { describe, expect, it } from 'vitest'
 
-import { placeCandidateModelOnSite } from './CandidateDesignLayer'
+import { applyCandidateRepresentation, placeCandidateModelOnSite } from './CandidateDesignLayer'
 
 
 describe('placeCandidateModelOnSite', () => {
@@ -39,5 +39,30 @@ describe('placeCandidateModelOnSite', () => {
     const size = bounds.getSize(new Vector3())
     expect(size.y).toBeCloseTo(5.9)
     expect(size.z).toBeCloseTo(3.231)
+  })
+})
+
+describe('applyCandidateRepresentation', () => {
+  it('retains envelope-labelled meshes and hides structural internals', () => {
+    const root = new Group()
+    const cladding = new Mesh(new BoxGeometry(1, 1, 1))
+    cladding.name = 'wall_cladding_sheet'
+    const frame = new Mesh(new BoxGeometry(1, 1, 1))
+    frame.name = 'portal_frame_member'
+    root.add(cladding, frame)
+
+    expect(applyCandidateRepresentation(root, 'envelope')).toBe(1)
+    expect(cladding.visible).toBe(true)
+    expect(frame.visible).toBe(false)
+  })
+
+  it('honours explicit site-envelope metadata independently of node names', () => {
+    const root = new Group()
+    const flashing = new Mesh(new BoxGeometry(1, 1, 1))
+    flashing.userData.tertius_representation = 'site_envelope'
+    root.add(flashing)
+
+    expect(applyCandidateRepresentation(root, 'envelope')).toBe(1)
+    expect(flashing.visible).toBe(true)
   })
 })

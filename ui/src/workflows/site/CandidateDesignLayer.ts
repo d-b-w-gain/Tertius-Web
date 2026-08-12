@@ -12,6 +12,7 @@ type CandidateLayerOptions = {
   getAccessToken: () => Promise<string>
   footprintLengthM: number
   footprintWidthM: number
+  representation: CandidateRepresentation
   getPlacement: () => {
     longitude: number
     latitude: number
@@ -20,6 +21,7 @@ type CandidateLayerOptions = {
 }
 
 export type CandidateUpAxis = 'x' | 'y' | 'z'
+export type CandidateRepresentation = 'envelope' | 'full'
 
 export type CandidateModelPlacement = {
   upAxis: CandidateUpAxis
@@ -97,12 +99,58 @@ function parseModel(buffer: ArrayBuffer) {
   })
 }
 
+function representationTags(object: THREE.Object3D): string[] {
+  const direct = object.userData?.tertius_representation
+  const nested = object.userData?.tertius?.representations
+  return [direct, ...(Array.isArray(nested) ? nested : [])]
+    .flatMap((value) => typeof value === 'string' ? value.split(/[\s,]+/) : [])
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+export function applyCandidateRepresentation(
+  root: THREE.Object3D,
+  representation: CandidateRepresentation,
+): number {
+  const meshes: THREE.Mesh[] = []
+  root.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) meshes.push(child as THREE.Mesh)
+  })
+  if (representation === 'full') {
+    meshes.forEach((mesh) => { mesh.visible = true })
+    return meshes.length
+  }
+
+  const envelopePattern = /(^|[_\s-])(site[_\s-]?envelope|cladding|flashing|sheet|roof|wall|door|window|gutter|downpipe)([_\s-]|$)/i
+  const selected = meshes.filter((mesh) => {
+    const tags: string[] = []
+    const names: string[] = []
+    let current: THREE.Object3D | null = mesh
+    while (current && current !== root.parent) {
+      tags.push(...representationTags(current))
+      if (current.name) names.push(current.name)
+      current = current.parent
+    }
+    return tags.includes('site_envelope') || envelopePattern.test(names.join(' '))
+  })
+  // Older designs may not yet carry semantic node names.  Showing the full
+  // candidate is safer than silently presenting an empty site representation.
+  if (selected.length === 0) {
+    meshes.forEach((mesh) => { mesh.visible = true })
+    return meshes.length
+  }
+  const selectedSet = new Set(selected)
+  meshes.forEach((mesh) => { mesh.visible = selectedSet.has(mesh) })
+  return selected.length
+}
+
 export async function loadCandidateDesignLayer(options: CandidateLayerOptions) {
   const response = await apiFetch(options.modelUrl, options.getAccessToken)
   if (!response.ok) throw new Error(`Candidate model returned ${response.status}`)
   const asset = await parseModel(await response.arrayBuffer())
   const model = new THREE.Group()
   model.add(asset)
+  applyCandidateRepresentation(model, options.representation)
   const placement = placeCandidateModelOnSite(
     model,
     options.footprintLengthM,

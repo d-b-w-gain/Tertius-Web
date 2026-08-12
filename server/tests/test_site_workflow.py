@@ -33,7 +33,11 @@ def test_site_workbench_creates_project_owned_definition_without_compile(monkeyp
         def save_code(self, project_name, filename, content, user_id, message):
             assert project_name == project.name
             assert user_id == context.user_id
-            assert message == "Update site and design basis"
+            assert message in {
+                "Update site and design basis",
+                "Update persisted site structure placement",
+                "Attach cached site terrain evidence",
+            }
             storage[filename] = content
             return True
 
@@ -58,13 +62,31 @@ def test_site_workbench_creates_project_owned_definition_without_compile(monkeyp
             payload["wind"]["table_status"] = "verified"
             payload["project_basis"]["standards"]["confirmed"] = True
             saved = client.put("/active", json=payload)
+            placement = client.put(
+                "/active/placement",
+                json={"latitude": -34.4117, "longitude": 150.8909},
+            )
+            terrain = client.put(
+                "/active/terrain-evidence",
+                json={
+                    "evidence_id": "gisv1-0123456789abcdef0123456789abcdef",
+                    "site_latitude": payload["location"]["latitude"],
+                    "site_longitude": payload["location"]["longitude"],
+                    "radius_m": 2000,
+                },
+            )
             reloaded = client.get("/active")
     finally:
         site_server.app.dependency_overrides.clear()
 
     assert saved.status_code == 200
+    assert placement.status_code == 200
+    assert terrain.status_code == 200
     assert saved.json()["calculation"]["site_ready"] is True
     assert reloaded.json()["exists"] is True
+    assert reloaded.json()["site_dict"]["structure"]["placement_latitude"] == -34.4117
+    assert reloaded.json()["site_dict"]["location"]["latitude"] == payload["location"]["latitude"]
+    assert reloaded.json()["site_dict"]["terrain_evidence"]["evidence_id"].startswith("gisv1-")
     assert "site_dict = {" in storage["tertius_site.py"]
     assert "q_z_kPa" not in storage["tertius_site.py"]
 
@@ -87,7 +109,9 @@ def test_site_workbench_rejects_users_without_the_keycloak_role():
     assert response.json()["detail"] == "Site workbench access required"
 
 
-def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidence():
+def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidence(
+    monkeypatch,
+):
     context = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -95,7 +119,15 @@ def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidenc
         email="tables@example.com",
         roles=frozenset({SITE_WORKBENCH_ROLE}),
     )
+    project = SimpleNamespace(id=uuid4(), name="structural-wind-report-test")
+    monkeypatch.setattr(site_server, "get_active_project", lambda _db, _ctx: project)
+    monkeypatch.setattr(
+        site_server,
+        "fetch_site_report_spatial_context",
+        lambda **_kwargs: {},
+    )
     site_server.app.dependency_overrides[get_auth_context] = lambda: context
+    site_server.app.dependency_overrides[get_db] = lambda: object()
     try:
         with TestClient(site_server.app) as client:
             values = client.get(
@@ -104,6 +136,7 @@ def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidenc
             )
             site = client.post("/calculate", json={})
             report = client.post("/report/evidence", json={})
+            pdf_report = client.post("/report/site-wind.pdf", json={})
     finally:
         site_server.app.dependency_overrides.clear()
 
@@ -117,6 +150,12 @@ def test_site_workbench_serves_table_suggestions_and_downloadable_report_evidenc
         '"tertius-site-wind-evidence.json"'
     )
     assert len(report.json()["digitised_tables"]) == 8
+    assert pdf_report.status_code == 200
+    assert pdf_report.headers["content-type"] == "application/pdf"
+    assert pdf_report.headers["content-disposition"].endswith(
+        '"tertius-site-wind-basis.pdf"'
+    )
+    assert pdf_report.content.startswith(b"%PDF-")
 
 
 def test_site_workbench_proxies_gis_evidence_without_exposing_arbitrary_urls(

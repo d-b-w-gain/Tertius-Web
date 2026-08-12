@@ -5,8 +5,13 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { apiFetch } from '../../api/client'
 import { structureFootprintCoordinates } from '../structural/WindRegionMap'
 import { loadCandidateDesignLayer } from './CandidateDesignLayer'
-import type { CandidateUpAxis } from './CandidateDesignLayer'
+import type { CandidateRepresentation, CandidateUpAxis } from './CandidateDesignLayer'
 import type { SiteBaseMapMode, SiteGroundMode } from './SiteExplorer'
+import type {
+  GisBuildingEvidence,
+  GisDirectionalWindMultiplierEvidence,
+  GisSiteBoundaryEvidence,
+} from './contracts'
 
 
 const DIRECTIONS = [
@@ -30,6 +35,11 @@ type Props = {
   terrainEvidenceId: string | null
   terrainEvidenceBounds: [number, number, number, number] | null
   candidateModelUrl: string | null
+  candidateRepresentation: CandidateRepresentation
+  cameraMode: 'plan' | 'perspective'
+  siteBoundary: GisSiteBoundaryEvidence | null
+  buildingEvidence: GisBuildingEvidence | null
+  directionalEvidence: GisDirectionalWindMultiplierEvidence | null
   onPick: (latitude: number, longitude: number) => void
 }
 
@@ -110,6 +120,7 @@ export function RichSiteMap(props: Props) {
   const propsRef = useRef(props)
   const initialPositionRef = useRef({ latitude: props.latitude, longitude: props.longitude })
   const initialBaseMapRef = useRef(props.baseMapMode)
+  const initialCameraModeRef = useRef(props.cameraMode)
   const [message, setMessage] = useState('Loading 3D site view…')
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [candidateUpAxis, setCandidateUpAxis] = useState<CandidateUpAxis | null>(null)
@@ -158,6 +169,15 @@ export function RichSiteMap(props: Props) {
             maxzoom: 19,
             attribution: 'Imagery © Esri and contributors',
           },
+          nsw: {
+            type: 'raster',
+            tiles: [
+              'https://portal.spatial.nsw.gov.au/aid/tile/rest/services/NSWWebImagery/MapServer/tile/{z}/{y}/{x}',
+            ],
+            tileSize: 256,
+            maxzoom: 23,
+            attribution: 'Imagery © NSW Spatial Services',
+          },
         },
         layers: [{
           id: 'street', type: 'raster', source: 'street',
@@ -165,12 +185,15 @@ export function RichSiteMap(props: Props) {
         }, {
           id: 'satellite', type: 'raster', source: 'satellite',
           layout: { visibility: initialBaseMapRef.current === 'satellite' ? 'visible' : 'none' },
+        }, {
+          id: 'nsw', type: 'raster', source: 'nsw',
+          layout: { visibility: initialBaseMapRef.current === 'nsw' ? 'visible' : 'none' },
         }],
       },
       center: [initialPosition.longitude, initialPosition.latitude],
-      zoom: 18,
-      pitch: 62,
-      bearing: -20,
+      zoom: initialCameraModeRef.current === 'plan' ? 19 : 18,
+      pitch: initialCameraModeRef.current === 'plan' ? 0 : 62,
+      bearing: initialCameraModeRef.current === 'plan' ? 0 : -20,
       maxPitch: 80,
       canvasContextAttributes: { antialias: true },
       transformRequest: (url) => (
@@ -180,6 +203,7 @@ export function RichSiteMap(props: Props) {
       ),
     })
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left')
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-left')
     map.on('click', (event) => {
       propsRef.current.onPick(event.lngLat.lat, event.lngLat.lng)
     })
@@ -188,7 +212,8 @@ export function RichSiteMap(props: Props) {
     map.on('error', (event) => {
       const errorMessage = event.error?.message
       if (errorMessage?.includes('tile.openstreetmap.org')
-        || errorMessage?.includes('server.arcgisonline.com')) return
+        || errorMessage?.includes('server.arcgisonline.com')
+        || errorMessage?.includes('portal.spatial.nsw.gov.au')) return
       if (errorMessage) setMessage(errorMessage)
     })
     mapRef.current = map
@@ -204,10 +229,110 @@ export function RichSiteMap(props: Props) {
     const apply = () => {
       map.setLayoutProperty('street', 'visibility', props.baseMapMode === 'street' ? 'visible' : 'none')
       map.setLayoutProperty('satellite', 'visibility', props.baseMapMode === 'satellite' ? 'visible' : 'none')
+      map.setLayoutProperty('nsw', 'visibility', props.baseMapMode === 'nsw' ? 'visible' : 'none')
     }
     if (map.isStyleLoaded()) apply()
     else map.once('load', apply)
   }, [props.baseMapMode])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (props.cameraMode === 'plan') {
+      map.easeTo({ pitch: 0, bearing: 0, zoom: Math.max(map.getZoom(), 19), duration: 450 })
+    } else {
+      map.easeTo({ pitch: 62, bearing: -20, zoom: Math.min(map.getZoom(), 19), duration: 450 })
+    }
+  }, [props.cameraMode])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const apply = () => {
+      const data = props.siteBoundary
+        ? { type: 'FeatureCollection', features: [props.siteBoundary.feature] }
+        : { type: 'FeatureCollection', features: [] }
+      if (!map.getSource('site-boundary')) {
+        map.addSource('site-boundary', { type: 'geojson', data: data as any })
+        map.addLayer({
+          id: 'site-boundary-fill', type: 'fill', source: 'site-boundary',
+          paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.08 },
+        })
+        map.addLayer({
+          id: 'site-boundary-line', type: 'line', source: 'site-boundary',
+          paint: { 'line-color': '#fbbf24', 'line-width': 2, 'line-dasharray': [3, 2] },
+        })
+      } else {
+        (map.getSource('site-boundary') as maplibregl.GeoJSONSource).setData(data as any)
+      }
+    }
+    if (map.isStyleLoaded()) apply()
+    else map.once('load', apply)
+  }, [props.siteBoundary])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const apply = () => {
+      const includedIds = new Set(
+        Object.values(props.directionalEvidence?.directions ?? {})
+          .flatMap((direction) => direction.shielding_building_ids),
+      )
+      const features = (props.buildingEvidence?.features ?? []).map((feature) => ({
+        type: 'Feature',
+        properties: {
+          source_id: feature.source_id,
+          height: feature.height_m ?? 3,
+          height_lower_m: feature.height_lower_m,
+          height_upper_m: feature.height_upper_m,
+          height_method: feature.height_observations?.[0]?.method ?? 'source estimate',
+          included: includedIds.has(feature.source_id),
+          confidence: feature.confidence,
+          outline_source: feature.outline_source ?? 'unknown',
+          height_source: feature.height_source ?? 'unknown',
+        },
+        geometry: feature.geometry,
+      }))
+      const data = { type: 'FeatureCollection', features }
+      if (!map.getSource('shielding-buildings')) {
+        map.addSource('shielding-buildings', { type: 'geojson', data: data as any })
+        map.addLayer({
+          id: 'shielding-building-volumes', type: 'fill-extrusion', source: 'shielding-buildings',
+          paint: {
+            'fill-extrusion-color': [
+              'case',
+              ['get', 'included'], '#10b981',
+              ['match', ['get', 'outline_source'],
+                'OpenStreetMap', '#22d3ee',
+                'Microsoft ML Buildings', '#facc15',
+                '#a78bfa'],
+            ],
+            'fill-extrusion-height': ['get', 'height'],
+            'fill-extrusion-base': 0,
+            'fill-extrusion-opacity': ['case', ['get', 'included'], 0.55, 0.20],
+          },
+        })
+        map.addLayer({
+          id: 'shielding-building-lines', type: 'line', source: 'shielding-buildings',
+          paint: {
+            'line-color': [
+              'case',
+              ['get', 'included'], '#6ee7b7',
+              ['match', ['get', 'outline_source'],
+                'OpenStreetMap', '#67e8f9',
+                'Microsoft ML Buildings', '#fde047',
+                '#c4b5fd'],
+            ],
+            'line-width': ['case', ['get', 'included'], 2, 1],
+          },
+        })
+      } else {
+        (map.getSource('shielding-buildings') as maplibregl.GeoJSONSource).setData(data as any)
+      }
+    }
+    if (map.isStyleLoaded()) apply()
+    else map.once('load', apply)
+  }, [props.buildingEvidence, props.directionalEvidence])
 
   useEffect(() => {
     const map = mapRef.current
@@ -295,6 +420,7 @@ export function RichSiteMap(props: Props) {
           getAccessToken: props.getAccessToken,
           footprintLengthM: props.footprintLengthM,
           footprintWidthM: props.footprintWidthM,
+          representation: props.candidateRepresentation,
           getPlacement: () => {
             const current = propsRef.current
             return {
@@ -342,6 +468,7 @@ export function RichSiteMap(props: Props) {
     }
   }, [
     props.candidateModelUrl,
+    props.candidateRepresentation,
     props.footprintLengthM,
     props.footprintWidthM,
     props.getAccessToken,
@@ -464,10 +591,11 @@ export function RichSiteMap(props: Props) {
         {props.terrainMode === 'terrain' ? 'cached DEM ground · 1× elevation' : 'flat ground'}
         {` · z${viewZoom.toFixed(1)}`}
         {candidateUpAxis ? ` · candidate ${candidateUpAxis.toUpperCase()}-up` : ''}
+        {candidateUpAxis ? ` · ${props.candidateRepresentation}` : ''}
         {candidateSizeM
           ? ` · ${candidateSizeM.map((value) => value.toFixed(1)).join(' × ')} m`
           : ''}
-        {' · click to reposition the site'}
+        {' · click to position the structure'}
       </div>
     </div>
   )

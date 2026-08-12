@@ -54,6 +54,10 @@ export function StructureWindRose({
     DIRECTIONS.map(({ key }) => [key, fallbackMultiplier]),
   ) as NonNullable<SiteDefinition['wind']['cardinal_direction_multipliers']>
   const maxMultiplier = Math.max(...Object.values(displayedMultipliers), 0.01)
+  const maxSiteSpeed = Math.max(
+    ...(calculation?.cardinal_wind_speeds.map((sector) => sector.site_wind_speed_m_s) ?? [0.01]),
+    0.01,
+  )
 
   const updateStructure = <K extends keyof SiteDefinition['structure']>(
     key: K,
@@ -91,8 +95,11 @@ export function StructureWindRose({
               <circle cx="120" cy="120" r="61" fill="none" stroke="#1e293b" />
               {DIRECTIONS.map(({ key, label, bearing }) => {
                 const labelPoint = polarPoint(bearing, 105)
-                const rayPoint = polarPoint(bearing, 43 + 43 * displayedMultipliers[key] / maxMultiplier)
                 const sector = calculation?.cardinal_wind_speeds.find((item) => item.direction === label)
+                const relativeValue = sector
+                  ? sector.site_wind_speed_m_s / maxSiteSpeed
+                  : displayedMultipliers[key] / maxMultiplier
+                const rayPoint = polarPoint(bearing, 43 + 43 * relativeValue)
                 return (
                   <g key={key}>
                     <line x1="120" y1="120" x2={rayPoint.x} y2={rayPoint.y}
@@ -102,7 +109,7 @@ export function StructureWindRose({
                       {label}
                     </text>
                     {sector && (
-                      <title>{`${label}: Md ${sector.direction_multiplier.toFixed(2)}, ${sector.site_wind_speed_m_s.toFixed(2)} m/s`}</title>
+                      <title>{`${label}: Md ${sector.direction_multiplier.toFixed(3)} × Mz,cat ${(sector.terrain_height_multiplier ?? calculation?.terrain_height_multiplier ?? 1).toFixed(3)} × Ms ${(sector.shielding_multiplier ?? 1).toFixed(3)} × Mt ${(sector.topographic_multiplier ?? 1).toFixed(3)} = ${sector.site_wind_speed_m_s.toFixed(2)} m/s`}</title>
                     )}
                   </g>
                 )
@@ -207,6 +214,25 @@ export function StructureWindRose({
 
       {calculation && (
         <div className="mt-5 border-t border-slate-800 pt-4">
+          <h3 className="text-sm font-semibold text-slate-200">Complete directional site speeds</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Each sector composes its own Md × Mz,cat × Ms × Mt before any building-face maximum is taken.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+            {calculation.cardinal_wind_speeds.map((sector) => (
+              <div key={sector.direction} className="rounded border border-slate-800 bg-slate-950/70 p-2 text-center">
+                <div className="text-[10px] font-bold text-slate-400">{sector.direction}</div>
+                <div className="mt-1 font-mono text-sm text-cyan-200">{sector.site_wind_speed_m_s.toFixed(2)}</div>
+                <div className="text-[9px] text-slate-600">m/s</div>
+                <div className="mt-2 font-mono text-[9px] leading-4 text-slate-500">
+                  {sector.direction_multiplier.toFixed(2)} × {(sector.terrain_height_multiplier ?? calculation.terrain_height_multiplier).toFixed(2)}<br />
+                  × {(sector.shielding_multiplier ?? 1).toFixed(2)} × {(sector.topographic_multiplier ?? 1).toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-5 border-t border-slate-800 pt-4">
           <h3 className="text-sm font-semibold text-slate-200">Building design directions</h3>
           <p className="mt-1 text-xs text-slate-500">
             Each face takes the worst cardinal site speed within ±45° of its outward bearing.
@@ -224,6 +250,7 @@ export function StructureWindRose({
                 </div>
               </div>
             ))}
+          </div>
           </div>
         </div>
       )}

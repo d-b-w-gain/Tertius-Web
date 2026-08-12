@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Path, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -17,11 +18,14 @@ from core.site_definition import (
     SITE_DEFINITION_FILENAME,
     SiteDefinition,
     SiteDefinitionError,
+    SiteTerrainEvidenceReference,
     calculate_site_definition,
     default_site_definition,
     parse_site_definition,
     render_site_definition,
 )
+from core.site_report_spatial import fetch_site_report_spatial_context
+from core.site_wind_report import build_site_wind_report
 from core.structural.site_wind import (
     REGION_SOURCE,
     REGION_VERIFY_AGAINST,
@@ -45,6 +49,11 @@ app = FastAPI(
 
 GIS_EVIDENCE_PATTERN = r"^gisv1-[0-9a-f]{32}$"
 GIS_UPSTREAM_TIMEOUT_SECONDS = 300.0
+
+
+class SitePlacementUpdate(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
 
 def _gis_cache_url() -> str:
@@ -122,6 +131,42 @@ def _response(project: Project, site: SiteDefinition, *, exists: bool) -> dict:
     }
 
 
+def _saved_site_or_default(
+    project: Project,
+    repository: ProjectRepository,
+) -> SiteDefinition:
+    source = repository.get_code(project.name, SITE_DEFINITION_FILENAME)
+    if source is None:
+        return default_site_definition()
+    try:
+        return parse_site_definition(source)
+    except SiteDefinitionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _save_site_patch(
+    project: Project,
+    repository: ProjectRepository,
+    site: SiteDefinition,
+    user_id,
+    message: str,
+) -> dict:
+    try:
+        calculate_site_definition(site)
+    except SiteWindError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    saved = repository.save_code(
+        project.name,
+        SITE_DEFINITION_FILENAME,
+        render_site_definition(site),
+        user_id,
+        message,
+    )
+    if not saved:
+        raise HTTPException(status_code=404, detail="Active project no longer exists")
+    return _response(project, site, exists=True)
+
+
 @app.get("/active")
 def get_active_site(
     ctx: AuthContext = Depends(get_auth_context),
@@ -164,6 +209,53 @@ def save_active_site(
     if not saved:
         raise HTTPException(status_code=404, detail="Active project no longer exists")
     return _response(project, site, exists=True)
+
+
+@app.put("/active/placement")
+def save_active_structure_placement(
+    placement: SitePlacementUpdate,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = _project_or_404(db, ctx)
+    repository = ProjectRepository(db, ctx.tenant_id)
+    site = _saved_site_or_default(project, repository)
+    patched = site.model_copy(
+        update={
+            "structure": site.structure.model_copy(
+                update={
+                    "placement_latitude": placement.latitude,
+                    "placement_longitude": placement.longitude,
+                }
+            )
+        }
+    )
+    return _save_site_patch(
+        project,
+        repository,
+        patched,
+        ctx.user_id,
+        "Update persisted site structure placement",
+    )
+
+
+@app.put("/active/terrain-evidence")
+def save_active_terrain_evidence(
+    evidence: SiteTerrainEvidenceReference,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = _project_or_404(db, ctx)
+    repository = ProjectRepository(db, ctx.tenant_id)
+    site = _saved_site_or_default(project, repository)
+    patched = site.model_copy(update={"terrain_evidence": evidence})
+    return _save_site_patch(
+        project,
+        repository,
+        patched,
+        ctx.user_id,
+        "Attach cached site terrain evidence",
+    )
 
 
 @app.post("/calculate")
@@ -216,6 +308,63 @@ def download_site_report_evidence(
         headers={
             "Content-Disposition": (
                 'attachment; filename="tertius-site-wind-evidence.json"'
+            )
+        },
+    )
+
+
+@app.post("/report/site-wind.pdf")
+def download_site_wind_report(
+    site: SiteDefinition,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project = _project_or_404(db, ctx)
+    try:
+        calculation = calculate_site_definition(site)
+        evidence = site_report_evidence(
+            site.model_dump(mode="json"),
+            calculation,
+        )
+        spatial_context = fetch_site_report_spatial_context(
+            latitude=site.location.latitude,
+            longitude=site.location.longitude,
+            gis_cache_url=get_settings().gis_cache_url,
+            terrain_profile_distance_m=max(
+                500.0, 40.0 * site.wind.reference_height_m
+            ),
+            terrain_evidence_id=(
+                site.terrain_evidence.evidence_id
+                if site.terrain_evidence is not None
+                else None
+            ),
+            placement_latitude=(
+                site.structure.placement_latitude or site.location.latitude
+            ),
+            placement_longitude=(
+                site.structure.placement_longitude or site.location.longitude
+            ),
+            reference_height_m=site.wind.reference_height_m,
+            footprint_length_m=site.structure.footprint_length_m,
+            footprint_width_m=site.structure.footprint_width_m,
+            front_bearing_degrees=site.structure.front_bearing_degrees,
+            wind_region=site.wind.region,
+        )
+        content = build_site_wind_report(
+            project_name=project.name,
+            site=site.model_dump(mode="json"),
+            calculation=calculation,
+            evidence=evidence,
+            spatial_context=spatial_context,
+        )
+    except (SiteWindError, WindStandardTableError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="tertius-site-wind-basis.pdf"'
             )
         },
     )
@@ -308,6 +457,98 @@ def fetch_gis_site_terrain(
         "Terrain acquisition failed",
     )
     return JSONResponse(status_code=201, content=response.json())
+
+
+@app.get("/gis/wind-multipliers/site")
+def fetch_gis_site_wind_multipliers(
+    latitude: float = Query(ge=-44.5, le=-9.0),
+    longitude: float = Query(ge=112.0, le=154.0),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            "/v1/wind-multipliers/site",
+            params={"latitude": latitude, "longitude": longitude},
+        ),
+        "Directional wind multiplier acquisition failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/evidence/{evidence_id}/local-wind")
+def fetch_gis_local_wind_analysis(
+    evidence_id: str = Path(pattern=GIS_EVIDENCE_PATTERN),
+    latitude: float = Query(ge=-44.5, le=-9.0),
+    longitude: float = Query(ge=112.0, le=154.0),
+    placement_latitude: float = Query(ge=-44.5, le=-9.0),
+    placement_longitude: float = Query(ge=112.0, le=154.0),
+    reference_height_m: float = Query(gt=0, le=200),
+    footprint_length_m: float = Query(gt=0, le=2000),
+    footprint_width_m: float = Query(gt=0, le=2000),
+    front_bearing_degrees: float = Query(ge=0, lt=360),
+    wind_region: str = Query(min_length=2, max_length=3),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "placement_latitude": placement_latitude,
+        "placement_longitude": placement_longitude,
+        "reference_height_m": reference_height_m,
+        "footprint_length_m": footprint_length_m,
+        "footprint_width_m": footprint_width_m,
+        "front_bearing_degrees": front_bearing_degrees,
+        "wind_region": wind_region,
+    }
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            f"/v1/evidence/{evidence_id}/local-wind",
+            params=params,
+        ),
+        "Local directional wind analysis failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/cadastre/site")
+def fetch_gis_site_boundary(
+    latitude: float = Query(ge=-37.6, le=-28.0),
+    longitude: float = Query(ge=140.9, le=154.0),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            "/v1/cadastre/site",
+            params={"latitude": latitude, "longitude": longitude},
+        ),
+        "NSW property boundary lookup failed",
+    )
+    return response.json()
+
+
+@app.get("/gis/buildings/site")
+def fetch_gis_site_buildings(
+    latitude: float = Query(ge=-44.5, le=-9.0),
+    longitude: float = Query(ge=112.0, le=154.0),
+    radius_m: float = Query(default=220, ge=50, le=5000),
+    _ctx: AuthContext = Depends(get_auth_context),
+):
+    response = _checked_gis_response(
+        _gis_request(
+            "GET",
+            "/v1/buildings/site",
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "radius_m": radius_m,
+            },
+        ),
+        "Building evidence lookup failed",
+    )
+    return response.json()
 
 
 @app.post("/gis/evidence", status_code=201)

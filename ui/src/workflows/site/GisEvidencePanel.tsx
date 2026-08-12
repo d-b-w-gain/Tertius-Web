@@ -9,6 +9,7 @@ type GisEvidencePanelProps = {
   getAccessToken: () => Promise<string>
   latitude: number
   longitude: number
+  initialEvidence?: GisEvidenceManifest | null
   onEvidenceChange?: (manifest: GisEvidenceManifest) => void
 }
 
@@ -31,6 +32,7 @@ export function GisEvidencePanel({
   getAccessToken,
   latitude,
   longitude,
+  initialEvidence = null,
   onEvidenceChange,
 }: GisEvidencePanelProps) {
   const [health, setHealth] = useState<GisCacheHealth | null>(null)
@@ -69,6 +71,13 @@ export function GisEvidencePanel({
   useEffect(() => {
     void checkHealth()
   }, [checkHealth])
+
+  useEffect(() => {
+    if (!initialEvidence) return
+    setManifest((current) => (
+      current?.evidence_id === initialEvidence.evidence_id ? current : initialEvidence
+    ))
+  }, [initialEvidence])
 
   const queryPoint = useCallback(async (evidenceId: string) => {
     const query = new URLSearchParams({

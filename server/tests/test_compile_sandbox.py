@@ -4,6 +4,9 @@ import time
 from pathlib import Path
 
 from core.compile_sandbox import run_compile_sandbox
+from core.procurement_analysis import analyze_design_sources, analyze_gltf_tree, build_procurement_analysis
+from core.tertius_bom_runtime import TERTIUS_BOM_HELPER_SOURCE
+from workflows.extus.extus_server import gltf_to_scene_tree
 
 
 def test_compile_sandbox_rejects_unsupported_export_format_before_spawn(tmp_path):
@@ -198,6 +201,13 @@ building = bd.Compound(children=[part], label="Colour test assembly")
     ]
     assert [1.0, 0.0, 0.0, 1.0] in base_colors
     assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
+    geometry = gltf_json["extras"]["tertiusModelGeometry"]
+    assert geometry["schema_version"] == "tertius.model-site-dimensions.v1"
+    assert geometry["footprint_length_m"] == 0.02
+    assert geometry["footprint_width_m"] == 0.02
+    assert geometry["overall_height_m"] == 0.02
+    assert geometry["reference_height_m"] == 0.02
+    assert geometry["source"] == "compiled Build123D analytic bounds"
 
 
 def test_compile_sandbox_marks_build123d_alpha_color_as_blended_in_glb(tmp_path):
@@ -276,6 +286,87 @@ building = bd.Compound(children=[plate], label="BoM test assembly")
     assert metadata["material"] == "steel"
     assert metadata["colour"] == "Surfmist"
     assert metadata["dimensions"] == {"length_mm": 120, "width_mm": 80}
+
+
+def test_compile_sandbox_replaces_stale_project_bom_runtime(tmp_path):
+    (tmp_path / "tertius_bom.py").write_text(
+        "raise RuntimeError('stale project helper must not run')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+from tertius_bom import bom_item
+
+@bom_item
+def make_plate(part_number="PLATE-CURRENT", quantity=1, unit="each"):
+    return bd.Solid.make_box(20, 10, 5)
+
+building = bd.Compound(children=[make_plate()], label="Current BoM runtime")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert (tmp_path / "tertius_bom.py").read_text(encoding="utf-8") == TERTIUS_BOM_HELPER_SOURCE
+
+
+def test_compile_sandbox_exports_imported_wrapped_and_moved_bom_item_metadata(tmp_path):
+    (tmp_path / "parts.py").write_text(
+        """
+from dataclasses import dataclass
+import build123d as bd
+from tertius_bom import bom_item
+
+@dataclass(frozen=True)
+class CatalogueComponent:
+    shape: bd.Shape
+
+@bom_item
+def catalogue_plate(part_number="PLATE-WRAPPED", quantity=1, unit="each", length_mm=120):
+    shape = bd.Solid.make_box(80, length_mm, 6)
+    shape.label = part_number
+    return CatalogueComponent(shape=shape)
+
+placed_plate = catalogue_plate().shape.moved(bd.Location((50, 0, 0)))
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+from parts import placed_plate
+
+building = bd.Compound(children=[placed_plate], label="Imported wrapped BoM assembly")
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    assert result.output_path is not None
+    data = result.output_path.read_bytes()
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+    source = analyze_design_sources({
+        "design.py": (tmp_path / "design.py").read_text(encoding="utf-8"),
+        "parts.py": (tmp_path / "parts.py").read_text(encoding="utf-8"),
+    })
+    tree = analyze_gltf_tree(gltf_to_scene_tree(gltf_json))
+    analysis = build_procurement_analysis(source, tree)
+    requirements = [
+        item for item in analysis["requirements"]
+        if item.get("part_number") == "PLATE-WRAPPED"
+    ]
+
+    assert len(requirements) == 1
+    assert requirements[0]["dimensions"] == {"length_mm": 120}
+    assert requirements[0]["quantity"] == 1
+    assert requirements[0]["quantity_source"] == "visual_instances"
 
 
 def test_compile_sandbox_preserves_labels_inside_moved_compound_in_glb(tmp_path):

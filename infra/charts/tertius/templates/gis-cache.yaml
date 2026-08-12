@@ -59,6 +59,14 @@ spec:
               value: {{ printf "%d" (.Values.gisCache.terrainMaxRadiusM | int64) | quote }}
             - name: GIS_GA_TERRAIN_SOURCE_URL
               value: {{ .Values.gisCache.gaTerrainSourceUrl | quote }}
+            - name: GIS_GA_WIND_MULTIPLIERS_ENABLED
+              value: {{ .Values.gisCache.gaWindMultipliers.enabled | quote }}
+            - name: GIS_GA_WIND_MULTIPLIERS_BASE_URL
+              value: {{ .Values.gisCache.gaWindMultipliers.baseUrl | quote }}
+            - name: GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.gaWindMultipliers.timeoutSeconds | quote }}
+            - name: GIS_GA_WIND_MULTIPLIER_WORKERS
+              value: {{ .Values.gisCache.gaWindMultipliers.workers | quote }}
             - name: GIS_NSW_TERRAIN_ENABLED
               value: {{ .Values.gisCache.nswTerrain.enabled | quote }}
             - name: GIS_NSW_ELEVATION_INDEX_URL
@@ -67,6 +75,36 @@ spec:
               value: {{ .Values.gisCache.nswTerrain.demDownloadBaseUrl | quote }}
             - name: GIS_NSW_MAX_ARCHIVE_BYTES
               value: {{ printf "%d" (.Values.gisCache.nswTerrain.maxArchiveBytes | int64) | quote }}
+            - name: GIS_NSW_PROPERTY_FEATURE_URL
+              value: {{ .Values.gisCache.nswCadastre.propertyFeatureUrl | quote }}
+            - name: GIS_NSW_PROPERTY_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.nswCadastre.timeoutSeconds | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_ENABLED
+              value: {{ .Values.gisCache.buildings.microsoftEnabled | quote }}
+            - name: GIS_OVERTURE_BUILDINGS_ENABLED
+              value: {{ .Values.gisCache.buildings.overtureEnabled | quote }}
+            - name: GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.overtureTimeoutSeconds | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_INDEX_URL
+              value: {{ .Values.gisCache.buildings.microsoftIndexUrl | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.timeoutSeconds | quote }}
+            - name: GIS_ELVIS_BUILDING_HEIGHTS_ENABLED
+              value: {{ .Values.gisCache.buildings.elvisHeights.enabled | quote }}
+            - name: GIS_ELVIS_DOWNLOADABLES_URL
+              value: {{ .Values.gisCache.buildings.elvisHeights.downloadablesUrl | quote }}
+            - name: GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.radiusM | int64) | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.elvisHeights.timeoutSeconds | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_MAX_BYTES
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.maxTileBytes | int64) | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.maxSiteBytes | int64) | quote }}
+            - name: GIS_ELVIS_AWS_REGION
+              value: {{ .Values.gisCache.buildings.elvisHeights.awsRegion | quote }}
+            - name: GIS_ELVIS_IDENTITY_POOL_ID
+              value: {{ .Values.gisCache.buildings.elvisHeights.identityPoolId | quote }}
             - name: OTEL_SERVICE_NAME
               value: tertius-gis-cache
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

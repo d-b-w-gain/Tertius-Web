@@ -3,9 +3,16 @@ import { useEffect, useState } from 'react'
 import { apiFetch } from '../../api/client'
 import { WindRegionMap } from '../structural/WindRegionMap'
 import { RichSiteMap } from './RichSiteMap'
+import type {
+  CandidateModelSiteDimensions,
+  GisBuildingEvidence,
+  GisDirectionalWindMultiplierEvidence,
+  GisSiteBoundaryEvidence,
+} from './contracts'
+import type { CandidateRepresentation } from './CandidateDesignLayer'
 
 
-export type SiteBaseMapMode = 'street' | 'satellite' | 'none'
+export type SiteBaseMapMode = 'street' | 'nsw' | 'satellite' | 'none'
 export type SiteGroundMode = 'flat' | 'terrain'
 
 type Props = {
@@ -21,6 +28,10 @@ type Props = {
   cardinalMultipliers: Record<string, number> | null
   terrainEvidenceId: string | null
   terrainEvidenceBounds: [number, number, number, number] | null
+  siteBoundary: GisSiteBoundaryEvidence | null
+  buildingEvidence?: GisBuildingEvidence | null
+  directionalEvidence?: GisDirectionalWindMultiplierEvidence | null
+  onCandidateDimensions?: (dimensions: CandidateModelSiteDimensions) => void
   onPick: (latitude: number, longitude: number) => void
 }
 
@@ -28,14 +39,23 @@ export function SiteExplorer(props: Props) {
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
   const [hasOpened3d, setHasOpened3d] = useState(false)
   const [overlayMode, setOverlayMode] = useState<'wind' | 'terrain' | 'none'>('wind')
-  const [baseMapMode, setBaseMapMode] = useState<SiteBaseMapMode>('street')
+  const [baseMapMode, setBaseMapMode] = useState<SiteBaseMapMode>('nsw')
   const [groundMode, setGroundMode] = useState<SiteGroundMode>('flat')
   const [richCapable, setRichCapable] = useState(true)
   const [candidateModelUrl, setCandidateModelUrl] = useState<string | null>(null)
   const [candidateModelState, setCandidateModelState] = useState<'idle' | 'loading' | 'ready' | 'missing'>('idle')
+  const [candidateRepresentation, setCandidateRepresentation] = useState<CandidateRepresentation>('envelope')
+  const [cameraMode, setCameraMode] = useState<'plan' | 'perspective'>('plan')
+  const [candidateDimensions, setCandidateDimensions] = useState<CandidateModelSiteDimensions | null>(null)
 
   useEffect(() => {
-    setGroundMode(props.terrainEvidenceId ? 'terrain' : 'flat')
+    if (props.terrainEvidenceId) {
+      setGroundMode('terrain')
+      setOverlayMode('terrain')
+      return
+    }
+    setGroundMode('flat')
+    setOverlayMode('wind')
   }, [props.terrainEvidenceId])
 
   useEffect(() => {
@@ -48,7 +68,6 @@ export function SiteExplorer(props: Props) {
   }, [])
 
   useEffect(() => {
-    if (viewMode !== '3d') return
     let cancelled = false
     const checkCandidate = async () => {
       setCandidateModelState((current) => current === 'ready' ? current : 'loading')
@@ -61,11 +80,18 @@ export function SiteExplorer(props: Props) {
           }
           return
         }
-        const payload = await response.json() as { mtime?: number }
+        const payload = await response.json() as {
+          mtime?: number
+          site_dimensions?: CandidateModelSiteDimensions
+        }
         if (!payload.mtime) throw new Error('Model status did not include an artifact timestamp')
         if (!cancelled) {
           setCandidateModelUrl(`${props.extusServerUrl}/model?t=${encodeURIComponent(payload.mtime)}`)
           setCandidateModelState('ready')
+          if (payload.site_dimensions) {
+            setCandidateDimensions(payload.site_dimensions)
+            props.onCandidateDimensions?.(payload.site_dimensions)
+          }
         }
       } catch {
         if (!cancelled) {
@@ -80,7 +106,7 @@ export function SiteExplorer(props: Props) {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [props.extusServerUrl, props.getAccessToken, viewMode])
+  }, [props.extusServerUrl, props.getAccessToken, props.onCandidateDimensions])
 
   return (
     <section className="rounded border border-cyan-500/40 bg-slate-900/60 p-3" data-testid="site-explorer">
@@ -102,7 +128,8 @@ export function SiteExplorer(props: Props) {
             <select aria-label="Site base map" className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs font-normal text-slate-200"
               value={baseMapMode} onChange={(event) => setBaseMapMode(event.target.value as SiteBaseMapMode)}>
               <option value="street">Street</option>
-              <option value="satellite">Satellite</option>
+              <option value="nsw">NSW government imagery</option>
+              <option value="satellite">Satellite (Esri)</option>
               <option value="none">No base</option>
             </select>
           </label>
@@ -111,7 +138,7 @@ export function SiteExplorer(props: Props) {
             <select aria-label="Site map layer" className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs font-normal text-slate-200"
               value={overlayMode} onChange={(event) => setOverlayMode(event.target.value as typeof overlayMode)}>
               <option value="wind">Wind regions</option>
-              <option value="terrain" disabled={!props.terrainEvidenceId}>Terrain relief</option>
+              <option value="terrain" disabled={!props.terrainEvidenceId}>Terrain relief (cached DEM)</option>
               <option value="none">Base map only</option>
             </select>
           </label>
@@ -138,12 +165,56 @@ export function SiteExplorer(props: Props) {
             </button>
           </div>
           {viewMode === '3d' && (
-            <span className="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-400">
-              {candidateModelState === 'ready'
-                ? 'active candidate model'
-                : candidateModelState === 'loading'
-                  ? 'finding candidate model…'
-                  : 'footprint fallback'}
+            <>
+              <label className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                View
+                <select aria-label="Candidate site camera" className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs font-normal text-slate-200"
+                  value={cameraMode} onChange={(event) => setCameraMode(event.target.value as typeof cameraMode)}>
+                  <option value="plan">Plan from above</option>
+                  <option value="perspective">3D perspective</option>
+                </select>
+              </label>
+              <label className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                Candidate
+                <select aria-label="Candidate model representation" className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs font-normal text-slate-200"
+                  value={candidateRepresentation}
+                  onChange={(event) => setCandidateRepresentation(event.target.value as CandidateRepresentation)}>
+                  <option value="envelope">Envelope only (fast)</option>
+                  <option value="full">Full model</option>
+                </select>
+              </label>
+              <span className="rounded border border-slate-700 px-2 py-1 text-[10px] text-slate-400">
+                {candidateModelState === 'ready'
+                  ? 'active candidate model'
+                  : candidateModelState === 'loading'
+                    ? 'finding candidate model…'
+                    : 'footprint fallback'}
+              </span>
+            </>
+          )}
+          {props.siteBoundary && (
+            <span className="rounded border border-amber-400/40 bg-amber-950/20 px-2 py-1 text-[10px] text-amber-200">
+              property boundary · {props.siteBoundary.feature.properties.address || 'selected parcel'}
+            </span>
+          )}
+          {candidateDimensions && (
+            <span
+              className="rounded border border-cyan-400/40 bg-cyan-950/20 px-2 py-1 text-[10px] text-cyan-200"
+              title={`${candidateDimensions.source}; ${candidateDimensions.reference_height_basis}; overall height ${candidateDimensions.overall_height_m.toFixed(2)} m`}
+            >
+              active model · {candidateDimensions.footprint_length_m.toFixed(2)} × {candidateDimensions.footprint_width_m.toFixed(2)} m · h {candidateDimensions.reference_height_m.toFixed(2)} m
+            </span>
+          )}
+          {props.buildingEvidence && (
+            <span
+              className="rounded border border-emerald-400/40 bg-emerald-950/20 px-2 py-1 text-[10px] text-emerald-200"
+              title={[
+                ...Object.entries(props.buildingEvidence.source_counts ?? {}).map(([source, count]) => `${source}: ${count}`),
+                ...Object.entries(props.buildingEvidence.height_method_counts ?? {}).map(([method, count]) => `${method} heights: ${count}`),
+                ...(props.buildingEvidence.quality?.warnings ?? []),
+              ].join('\n')}
+            >
+              {props.buildingEvidence.quality?.source_fusion ? 'fused' : 'single-source'} shielding context · {props.buildingEvidence.footprint_count} buildings · {props.buildingEvidence.height_method_counts?.classified_lidar ?? 0} LiDAR · {props.buildingEvidence.height_method_counts?.source_storeys ?? 0} storey-derived · {props.buildingEvidence.measured_height_count} bounded heights
             </span>
           )}
         </div>
@@ -156,6 +227,8 @@ export function SiteExplorer(props: Props) {
         >
           <WindRegionMap
             {...props}
+            buildingEvidence={props.buildingEvidence ?? null}
+            directionalEvidence={props.directionalEvidence ?? null}
             overlayMode={overlayMode}
             baseMapMode={baseMapMode}
             className="h-full"
@@ -169,10 +242,14 @@ export function SiteExplorer(props: Props) {
           >
             <RichSiteMap
               {...props}
+              buildingEvidence={props.buildingEvidence ?? null}
+              directionalEvidence={props.directionalEvidence ?? null}
               overlayMode={overlayMode}
               baseMapMode={baseMapMode}
               terrainMode={groundMode}
               candidateModelUrl={candidateModelUrl}
+              candidateRepresentation={candidateRepresentation}
+              cameraMode={cameraMode}
             />
           </div>
         )}

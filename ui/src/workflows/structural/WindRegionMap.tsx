@@ -3,6 +3,12 @@ import L from 'leaflet'
 import markerIconUrl from 'leaflet/dist/images/marker-icon.png'
 import markerIconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png'
+
+import type {
+  GisBuildingEvidence,
+  GisDirectionalWindMultiplierEvidence,
+  GisSiteBoundaryEvidence,
+} from '../site/contracts'
 import 'leaflet/dist/leaflet.css'
 
 import { apiFetch } from '../../api/client'
@@ -39,6 +45,9 @@ type Props = {
   cardinalMultipliers?: Record<string, number> | null
   overlayMode?: 'wind' | 'terrain' | 'none'
   terrainEvidenceId?: string | null
+  siteBoundary?: GisSiteBoundaryEvidence | null
+  buildingEvidence?: GisBuildingEvidence | null
+  directionalEvidence?: GisDirectionalWindMultiplierEvidence | null
   baseMapMode?: SiteBaseMapMode
   className?: string
   onPick: (latitude: number, longitude: number) => void
@@ -105,6 +114,9 @@ export function WindRegionMap({
   cardinalMultipliers = null,
   overlayMode = 'wind',
   terrainEvidenceId = null,
+  siteBoundary = null,
+  buildingEvidence = null,
+  directionalEvidence = null,
   baseMapMode = 'street',
   className = 'h-64',
   onPick,
@@ -116,6 +128,8 @@ export function WindRegionMap({
   const placementLayerRef = useRef<any>(null)
   const cardinalLayerRef = useRef<any>(null)
   const terrainLayerRef = useRef<any>(null)
+  const boundaryLayerRef = useRef<any>(null)
+  const buildingLayerRef = useRef<any>(null)
   const baseLayerRef = useRef<any>(null)
   const onPickRef = useRef(onPick)
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
@@ -132,6 +146,12 @@ export function WindRegionMap({
       zoom: 4,
       scrollWheelZoom: true,
     })
+    L.control.scale({
+      position: 'bottomleft',
+      metric: true,
+      imperial: false,
+      maxWidth: 120,
+    }).addTo(map)
     map.on('click', (event: L.LeafletMouseEvent) => {
       onPickRef.current(event.latlng.lat, event.latlng.lng)
     })
@@ -145,6 +165,8 @@ export function WindRegionMap({
       placementLayerRef.current = null
       cardinalLayerRef.current = null
       terrainLayerRef.current = null
+      boundaryLayerRef.current = null
+      buildingLayerRef.current = null
       baseLayerRef.current = null
     }
   }, [])
@@ -155,15 +177,20 @@ export function WindRegionMap({
     baseLayerRef.current = null
     if (!map || status !== 'ready' || baseMapMode === 'none') return
     const satellite = baseMapMode === 'satellite'
+    const nswImagery = baseMapMode === 'nsw'
     const layer = L.tileLayer(
-      satellite
+      nswImagery
+        ? 'https://portal.spatial.nsw.gov.au/aid/tile/rest/services/NSWWebImagery/MapServer/tile/{z}/{y}/{x}'
+        : satellite
         ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
         : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
       {
-        attribution: satellite
+        attribution: nswImagery
+          ? 'Imagery &copy; NSW Spatial Services'
+          : satellite
           ? 'Imagery &copy; Esri and contributors'
           : '&copy; OpenStreetMap contributors',
-        maxZoom: satellite ? 19 : 18,
+        maxZoom: nswImagery ? 23 : satellite ? 19 : 18,
       },
     ).addTo(map)
     layer.bringToBack()
@@ -281,6 +308,89 @@ export function WindRegionMap({
 
   useEffect(() => {
     const map = mapRef.current
+    boundaryLayerRef.current?.remove()
+    boundaryLayerRef.current = null
+    if (!map || !siteBoundary) return
+    const layer = L.geoJSON({
+      type: 'FeatureCollection',
+      features: [siteBoundary.feature],
+    } as any, {
+      style: {
+        color: '#fbbf24',
+        fillColor: '#f59e0b',
+        fillOpacity: 0.08,
+        opacity: 0.95,
+        weight: 2,
+        dashArray: '8 6',
+      },
+    }).bindTooltip(
+      `Property boundary · ${siteBoundary.feature.properties.address || 'NSW Spatial Services'}`,
+      { sticky: true },
+    ).addTo(map)
+    boundaryLayerRef.current = layer
+    return () => {
+      boundaryLayerRef.current?.remove()
+      boundaryLayerRef.current = null
+    }
+  }, [siteBoundary, status])
+
+  useEffect(() => {
+    const map = mapRef.current
+    buildingLayerRef.current?.remove()
+    buildingLayerRef.current = null
+    if (!map || !buildingEvidence) return
+    const includedIds = new Set(
+      Object.values(directionalEvidence?.directions ?? {})
+        .flatMap((direction) => direction.shielding_building_ids),
+    )
+    const collection = {
+      type: 'FeatureCollection',
+      features: buildingEvidence.features.map((feature) => ({
+        type: 'Feature',
+        properties: {
+          ...feature,
+          included: includedIds.has(feature.source_id),
+        },
+        geometry: feature.geometry,
+      })),
+    }
+    const layer = L.geoJSON(collection as any, {
+      style: (feature: any) => {
+        const included = Boolean(feature?.properties?.included)
+        const outlineSource = String(feature?.properties?.outline_source ?? '')
+        const contextColour = outlineSource === 'OpenStreetMap'
+          ? '#22d3ee'
+          : outlineSource === 'Microsoft ML Buildings'
+            ? '#facc15'
+            : '#a78bfa'
+        return {
+          color: included ? '#34d399' : contextColour,
+          fillColor: included ? '#059669' : contextColour,
+          fillOpacity: included ? 0.28 : 0.08,
+          opacity: included ? 0.95 : 0.55,
+          weight: included ? 2 : 1,
+        }
+      },
+      onEachFeature: (feature: any, featureLayer: any) => {
+        const properties = feature?.properties ?? {}
+        const state = properties.included ? 'included for shielding' : 'context only'
+        const height = properties.height_m == null ? 'height unavailable' : `${Number(properties.height_m).toFixed(1)} m high`
+        const source = properties.outline_source || 'unknown outline source'
+        const heightSource = properties.height_source
+          ? `height: ${properties.height_source}`
+          : 'height source unavailable'
+        featureLayer.bindTooltip(`${source} · ${state} · ${height} · ${heightSource}`, { sticky: true })
+      },
+    }).addTo(map)
+    buildingLayerRef.current = layer
+    return () => {
+      buildingLayerRef.current?.remove()
+      buildingLayerRef.current = null
+    }
+  }, [buildingEvidence, directionalEvidence, status])
+
+  useEffect(() => {
+    const map = mapRef.current
     if (!map) return
     if (latitude == null || longitude == null) {
       markerRef.current?.remove()
@@ -392,7 +502,7 @@ export function WindRegionMap({
       )}
       {status === 'ready' && (
         <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-slate-950/80 px-2 py-1 text-[9px] text-slate-300">
-          Click to choose site coordinates
+          Click to position the structure
         </div>
       )}
     </div>

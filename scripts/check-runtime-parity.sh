@@ -173,8 +173,27 @@ def validate(config):
     assert gis["environment"]["GIS_GNAF_STATES"] == "NSW"
     assert gis["environment"]["GIS_TERRAIN_DEFAULT_RADIUS_M"] == "2000"
     assert gis["environment"]["GIS_NSW_TERRAIN_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_BASE_URL"] == "https://thredds.nci.org.au/thredds"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_WORKERS"] == "8"
     assert gis["environment"]["GIS_NSW_ELEVATION_INDEX_URL"].endswith("/Elevation_Index_Public/FeatureServer/0/query")
     assert gis["environment"]["GIS_NSW_DEM_DOWNLOAD_BASE_URL"] == "https://portal.spatial.nsw.gov.au/download/dem"
+    assert gis["environment"]["GIS_NSW_PROPERTY_FEATURE_URL"].endswith("/NSW_Land_Parcel_Property_Theme/FeatureServer/12/query")
+    assert gis["environment"]["GIS_NSW_PROPERTY_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_INDEX_URL"].endswith("/2026-07-24/dataset-links.csv")
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHTS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_ELVIS_DOWNLOADABLES_URL"] == "https://api.elevation.fsdf.org.au/elevation/downloadables"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M"] == "120"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS"] == "180"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_MAX_BYTES"] == "268435456"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES"] == "536870912"
+    assert gis["environment"]["GIS_ELVIS_AWS_REGION"] == "ap-southeast-2"
+    assert gis["environment"]["GIS_ELVIS_IDENTITY_POOL_ID"] == "ap-southeast-2:56462c13-533a-4f84-9a68-631dcd3345ad"
     assert len(gis["volumes"]) == 1
     assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
 
@@ -251,6 +270,10 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'tertius-ui' "${file} must include UI service name"
   contains "$file" 'tertius-gis-cache|gis-cache' "${file} must include GIS cache service name"
   contains "$file" 'GIS_CACHE_URL' "${file} must include the internal GIS cache URL"
+  contains "$file" 'GIS_NSW_PROPERTY_FEATURE_URL' "${file} must include the NSW property boundary service contract"
+  contains "$file" 'GIS_MICROSOFT_BUILDINGS_INDEX_URL' "${file} must include the reusable open building-data contract"
+  contains "$file" 'GIS_OVERTURE_BUILDINGS_ENABLED' "${file} must include the reconciled building-data contract"
+  contains "$file" 'GIS_ELVIS_BUILDING_HEIGHTS_ENABLED' "${file} must include the classified point-cloud height contract"
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"

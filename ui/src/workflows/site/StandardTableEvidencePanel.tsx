@@ -22,26 +22,33 @@ export function StandardTableEvidencePanel({
   onApply,
 }: StandardTableEvidencePanelProps) {
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState<'pdf' | 'json' | null>(null)
   const currentEvidence = evidence?.region === site.wind.region ? evidence : null
 
-  const download = async () => {
+  const download = async (kind: 'pdf' | 'json') => {
     setDownloadError(null)
+    setDownloading(kind)
     try {
-      const response = await apiFetch(`${serverUrl}/report/evidence`, getAccessToken, {
+      const path = kind === 'pdf' ? '/report/site-wind.pdf' : '/report/evidence'
+      const response = await apiFetch(`${serverUrl}${path}`, getAccessToken, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(site),
       })
-      if (!response.ok) throw new Error(`Report evidence returned ${response.status}`)
+      if (!response.ok) throw new Error(`Site report returned ${response.status}`)
       const blob = await response.blob()
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = 'tertius-site-wind-evidence.json'
+      anchor.download = kind === 'pdf'
+        ? 'tertius-site-wind-basis.pdf'
+        : 'tertius-site-wind-evidence.json'
       anchor.click()
       URL.revokeObjectURL(url)
     } catch (error) {
-      setDownloadError(error instanceof Error ? error.message : 'Could not download report evidence')
+      setDownloadError(error instanceof Error ? error.message : 'Could not download site report')
+    } finally {
+      setDownloading(null)
     }
   }
 
@@ -56,10 +63,16 @@ export function StandardTableEvidencePanel({
             project tables verified.
           </p>
         </div>
-        <button type="button" onClick={() => void download()}
-          className="rounded border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500">
-          Download report evidence
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => void download('pdf')} disabled={downloading !== null}
+            className="rounded border border-cyan-500/60 bg-cyan-950/30 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-950/60 disabled:opacity-50">
+            {downloading === 'pdf' ? 'Building report…' : 'Download site wind report'}
+          </button>
+          <button type="button" onClick={() => void download('json')} disabled={downloading !== null}
+            className="rounded border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-500 disabled:opacity-50">
+            {downloading === 'json' ? 'Building evidence…' : 'Evidence JSON'}
+          </button>
+        </div>
       </div>
 
       {!currentEvidence ? (

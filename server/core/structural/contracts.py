@@ -783,6 +783,15 @@ class StructuralWindActionBasis(StructuralContract):
     coefficient_selection_policy: (
         Literal["worst_available_credible", "verified_only"] | None
     ) = None
+    building_face: Literal["front", "right", "back", "left"] | None = None
+    face_bearing_degrees: float | None = None
+    structural_action_direction: Literal["+X", "-X", "+Y", "-Y"] | None = None
+    governing_cardinal_direction: (
+        Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"] | None
+    ) = None
+    contributing_cardinal_directions: list[
+        Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    ] = Field(default_factory=list)
     verifier_hash: str
     provenance: str
 

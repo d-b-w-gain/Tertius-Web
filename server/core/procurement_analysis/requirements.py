@@ -49,7 +49,6 @@ def _source_match_score(component: dict[str, Any], call: dict[str, Any]) -> tupl
         if missing_scope_tokens and scope_overlap:
             score -= len(missing_scope_tokens) * 3
             reasons.append(f"scope mismatch: {', '.join(sorted(missing_scope_tokens))}")
-    label_tokens = _tokens(label_text)
     component_tokens = _tokens(component_text)
     visual_leaf_count = _visual_leaf_count(component)
     visual_part_number, _trace = _visual_label_part_number(component)
@@ -846,8 +845,13 @@ def _visual_quantity_evidence(component: dict[str, Any], metadata: dict[str, Any
     visual_count_is_quantity = visual_count is not None and _allows_visual_quantity(unit)
 
     if visual_count is not None and visual_count_is_quantity:
-        quantity = visual_count
-        source = "visual_instances"
+        per_visual_quantity = explicit_quantity or 1
+        quantity = visual_count * per_visual_quantity
+        source = (
+            "visual_instances"
+            if per_visual_quantity == 1
+            else "visual_instances_x_metadata_quantity"
+        )
         confidence = "verified"
         orderable = True
     elif visual_count is not None and non_discrete_quantity_unit and explicit_quantity is not None:
@@ -870,19 +874,10 @@ def _visual_quantity_evidence(component: dict[str, Any], metadata: dict[str, Any
         "assembly_instance_multiplier": 1,
         "source_call_count": 1,
     }
+    if visual_count is not None and visual_count_is_quantity:
+        trace["per_visual_quantity"] = explicit_quantity or 1
     if unit is not None:
         trace["quantity_unit"] = unit
-    if (
-        explicit_quantity not in {None, 1}
-        and visual_count is not None
-        and visual_count_is_quantity
-        and explicit_quantity != visual_count
-    ):
-        confidence = "diagnostic"
-        trace["mismatch"] = {
-            "explicit_quantity": explicit_quantity,
-            "visual_instance_count": visual_count,
-        }
 
     return {
         "quantity": quantity,

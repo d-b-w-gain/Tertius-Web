@@ -12,6 +12,8 @@
 
 **Deployment plan:** [Local k3s and production rollout](2026-08-05-site-workbench-gis-cache-deployment.md)
 
+**Directional multiplier plan:** [Full `M_d`, `M_z,cat`, `M_s`, and `M_t` ability](2026-08-09-directional-site-wind-multipliers.md)
+
 ---
 
 ## Product outcome
@@ -136,6 +138,9 @@ This epic extends that boundary. It does not replace the current structural calc
 - [ ] Create an immutable site evidence manifest identified by schema, source digests, algorithm version, and configuration version.
 - [ ] Store only reviewed inputs in `tertius_site.py`; reference evidence by stable manifest identity and do not write derived wind speed, pressure, or member loads there.
 - [ ] Make review/override state explicit: suggested, stale, verified, overridden, unavailable, and conservative fallback.
+- [x] Fuse the current Overture building release (including OSM and Microsoft-contributed features), retain outline and height provenance independently, and cache the fused site result.
+- [x] Gate local shielding adoption on building-height completeness; when local evidence is incomplete, retain the directional GA shielding baseline instead of substituting `M_s = 1.0`.
+- [ ] Add optional site-local imagery segmentation and DSM/LiDAR height inference as a separately versioned evidence source; do not infer engineering heights from imagery footprints alone.
 
 **Gate:** Re-analysis with identical evidence/config is deterministic. Any source or algorithm change creates a new manifest and marks prior suggestions stale without altering verified design inputs.
 
@@ -152,6 +157,7 @@ This epic extends that boundary. It does not replace the current structural calc
 - [x] Add true-north structure placement and a compass-sector view that keeps standards-derived `M_d` separate from GIS-derived terrain/topographic evidence. The workbench can explicitly adopt digitised Table 3.2(A) regional `M_d` and Table 3.3 `M_c` suggestions while retaining the licensed-standard verification gate; directional GIS terrain/topography remains pending.
 - [x] Digitise the eight numeric tables and related rules visible in the supplied AS/NZS 1170.2:2021 key-changes presentation, retain source-page/file-hash provenance, and expose a deterministic JSON evidence bundle for downstream site-report generation.
 - [x] Add a dominant Site Explorer with collapsible feature drawers, a draggable desktop inspector split, independently selectable street/satellite/blank base maps and wind/terrain evidence, fast Leaflet 2D, and an optional MapLibre WebGL terrain view. The rich view loads the active Extus candidate GLB, fits and grounds it inside the verified footprint, applies the true-north bearing, and retains the footprint extrusion as the no-artifact/error fallback.
+- [x] Add NSW government imagery as the preferred NSW base map and expose fused building counts, height coverage, source split, provenance and completeness warnings in the Site Explorer.
 - [ ] Show raw evidence, suggested value, current verified value, uncertainty, fallback reason, and effect on `V_sit`/`q_z`.
 - [ ] Require an explicit review action before adopting suggestions; capture reviewer, reason, time, and applicable standards edition.
 - [ ] Preserve manual overrides and make stale/changed source evidence obvious.
@@ -176,7 +182,7 @@ This epic extends that boundary. It does not replace the current structural calc
 - [ ] Add traces without addresses, coordinates, raw IDs, arbitrary URLs, cache hashes, or raster payloads.
 - [ ] Add dashboards/alerts for sustained upstream failure, cache corruption, eviction pressure, provider throttling, and evidence-build latency.
 - [ ] Document cache backup/restore, rebuild, schema/algorithm invalidation, attribution, licence review, and incident behavior.
-- [ ] Add `scripts/check-runtime-parity.sh` coverage for every new runtime variable.
+- [x] Add `scripts/check-runtime-parity.sh` coverage for every new runtime variable introduced by the Overture building provider.
 
 **Gate:** Runtime parity checks pass and a NetworkPolicy test proves that only approved API-to-cache and cache-to-provider paths are available.
 

@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -43,6 +45,99 @@ def consumer_settings():
         billing_format_multiplier_gltf=2.0,
         billing_format_multiplier_glb=2.0,
     )
+
+
+def test_apply_compile_result_routes_bom_manifest_to_sidecar_without_database(
+    monkeypatch,
+):
+    import workflows.intus.compile_result_consumer as consumer
+
+    job_id = uuid4()
+    tenant_id = uuid4()
+    project_id = uuid4()
+    job = SimpleNamespace(
+        id=job_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        status="running",
+        export_format="glb",
+        claimed_at=None,
+    )
+    recorded: list[dict] = []
+
+    class FakeRepository:
+        def get_job_for_result(self, result):
+            return job
+
+        def record_artifact(
+            self,
+            project_id,
+            compile_job_id,
+            kind,
+            content,
+            content_type=None,
+        ):
+            recorded.append(
+                {
+                    "project_id": project_id,
+                    "compile_job_id": compile_job_id,
+                    "kind": kind,
+                    "content": content,
+                    "content_type": content_type,
+                }
+            )
+            return SimpleNamespace(id=uuid4())
+
+        def finish_job(self, target, status, **kwargs):
+            target.status = status
+
+        def prunable_artifacts(self, *args, **kwargs):
+            return []
+
+        def delete_artifacts(self, artifacts):
+            assert artifacts == []
+
+    class FakeDatabase:
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    repository = FakeRepository()
+    monkeypatch.setattr(consumer, "CompileRepository", lambda *args: repository)
+    monkeypatch.setattr(consumer, "_record_usage_if_applicable", lambda *args, **kwargs: None)
+    manifest = {
+        "version": 1,
+        "source_snapshot_hash": "a" * 64,
+        "scopes": [],
+        "components": [],
+        "requirements": [],
+        "diagnostics": [],
+    }
+    result = CompileResultPayload(
+        job_id=job_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        export_format="glb",
+        status="succeeded",
+        artifact_content_base64=base64.b64encode(b"glb").decode("ascii"),
+        artifact_byte_size=3,
+        bom_manifest_json=json.dumps(manifest),
+        worker_started_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
+        worker_finished_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
+    )
+
+    applied = consumer.apply_compile_result(
+        FakeDatabase(),
+        result,
+        SimpleNamespace(artifact_retention_limit=10),
+    )
+
+    assert applied is True
+    assert [artifact["kind"] for artifact in recorded] == ["glb", "bom_manifest"]
+    assert json.loads(recorded[1]["content"]) == manifest
+    assert recorded[1]["content_type"] == "application/json"
 
 
 def test_apply_compile_result_records_artifact_and_marks_success(db_session, seeded_tenant):
@@ -117,6 +212,52 @@ def test_apply_compile_result_records_structural_manifest_sidecar(
         artifacts[1].content
     )
     assert persisted.declaration["title"] == "Catalogue fixture"
+
+
+def test_apply_compile_result_records_bom_manifest_sidecar(
+    db_session,
+    seeded_tenant,
+):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+    )
+    db_session.add(job)
+    db_session.commit()
+    manifest = {
+        "version": 1,
+        "source_snapshot_hash": "a" * 64,
+        "scopes": [],
+        "components": [],
+        "requirements": [],
+        "diagnostics": [{"code": "fixture", "severity": "info"}],
+    }
+
+    applied = apply_compile_result(
+        db_session,
+        result_payload(
+            job,
+            seeded_tenant,
+            export_format="glb",
+            bom_manifest_json=json.dumps(manifest),
+        ),
+        consumer_settings(),
+    )
+
+    artifacts = db_session.scalars(
+        select(Artifact)
+        .where(Artifact.compile_job_id == job.id)
+        .order_by(Artifact.kind)
+    ).all()
+    assert applied is True
+    assert [artifact.kind for artifact in artifacts] == ["bom_manifest", "glb"]
+    assert artifacts[0].content_type == "application/json"
+    assert json.loads(artifacts[0].content) == manifest
 
 
 def test_apply_compile_result_records_failure(db_session, seeded_tenant):

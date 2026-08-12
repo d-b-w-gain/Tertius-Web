@@ -15,6 +15,7 @@ import type {
   VerificationStatus,
 } from './contracts'
 import { SITE_BASIS_CHANGED_EVENT } from '../site/SiteWorkbench'
+import { StructuralWindBasisPanel } from './StructuralWindBasisPanel'
 
 type StructuralWorkbenchProps = {
   isActive?: boolean
@@ -455,6 +456,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     })
   }, [activeCombination, analysis, diagramMode, momentComponent])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
+  const windActionBases = analysis?.wind_action_bases || capture?.wind_action_bases || []
   const selectVerificationStage = (stageId: string) => {
     if (!analysis) return
     const stage = analysis.verification_stages?.find((candidate) => candidate.id === stageId)
@@ -629,6 +631,8 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             : 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
+
+      <StructuralWindBasisPanel bases={windActionBases} />
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">

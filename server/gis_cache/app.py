@@ -14,9 +14,16 @@ from titiler.core.errors import DEFAULT_STATUS_CODES, add_exception_handlers
 from titiler.core.factory import TilerFactory
 
 from .gnaf import GnafIndex
+from .cadastre import NswPropertyBoundaryProvider, SiteBoundaryUnavailable
+from .buildings import BuildingDataUnavailable, OpenBuildingProvider
 from .models import (
+    BuildingEvidence,
+    CardinalTerrainProfileEvidence,
     EvidenceManifest,
+    DirectionalWindMultiplierEvidence,
     GeocodeCandidate,
+    LocalDirectionalWindEvidence,
+    SiteBoundaryEvidence,
     SourceMetadata,
     TerrainSiteRequest,
 )
@@ -28,19 +35,46 @@ from .store import (
     UploadTooLargeError,
 )
 from .terrain import TerrainFetcher
+from .terrain_profiles import TerrainProfileSampler
+from .local_wind_analysis import LocalWindAnalyzer
+from .wind_multipliers import GaWindMultiplierProvider, WindMultiplierUnavailable
 
 
-def create_app(settings: GisCacheSettings | None = None) -> FastAPI:
+def create_app(
+    settings: GisCacheSettings | None = None,
+    wind_multiplier_provider: GaWindMultiplierProvider | None = None,
+    site_boundary_provider: NswPropertyBoundaryProvider | None = None,
+    building_provider: OpenBuildingProvider | None = None,
+) -> FastAPI:
     resolved_settings = settings or GisCacheSettings.from_env()
     store = EvidenceStore(resolved_settings)
     gnaf = GnafIndex(resolved_settings.root)
     terrain = TerrainFetcher(resolved_settings, store)
+    wind_multipliers = wind_multiplier_provider or GaWindMultiplierProvider(
+        resolved_settings
+    )
+    site_boundaries = site_boundary_provider or NswPropertyBoundaryProvider(
+        resolved_settings
+    )
+    buildings = building_provider or OpenBuildingProvider(resolved_settings)
+    terrain_profiles = TerrainProfileSampler(store)
+    local_wind = LocalWindAnalyzer(
+        resolved_settings.root,
+        terrain_profiles,
+        buildings,
+        wind_multipliers,
+        terrain,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         store.initialize()
         gnaf.initialize()
         terrain.initialize()
+        wind_multipliers.initialize()
+        site_boundaries.initialize()
+        buildings.initialize()
+        local_wind.initialize()
         yield
 
     application = FastAPI(
@@ -52,6 +86,9 @@ def create_app(settings: GisCacheSettings | None = None) -> FastAPI:
     )
     application.state.evidence_store = store
     application.state.gnaf_index = gnaf
+    application.state.wind_multiplier_provider = wind_multipliers
+    application.state.site_boundary_provider = site_boundaries
+    application.state.building_provider = buildings
 
     @application.get("/health/live", include_in_schema=False)
     def live() -> dict[str, str]:
@@ -91,6 +128,114 @@ def create_app(settings: GisCacheSettings | None = None) -> FastAPI:
             )
         except EvidenceValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @application.get(
+        "/v1/wind-multipliers/site",
+        response_model=DirectionalWindMultiplierEvidence,
+    )
+    async def fetch_site_wind_multipliers(
+        latitude: Annotated[float, Query(ge=-44.5, le=-9.0)],
+        longitude: Annotated[float, Query(ge=112.0, le=154.0)],
+    ) -> DirectionalWindMultiplierEvidence:
+        try:
+            return await run_in_threadpool(
+                wind_multipliers.fetch, latitude, longitude
+            )
+        except WindMultiplierUnavailable as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.get(
+        "/v1/cadastre/site",
+        response_model=SiteBoundaryEvidence,
+    )
+    async def fetch_site_boundary(
+        latitude: Annotated[float, Query(ge=-37.6, le=-28.0)],
+        longitude: Annotated[float, Query(ge=140.9, le=154.0)],
+    ) -> SiteBoundaryEvidence:
+        try:
+            return await run_in_threadpool(
+                site_boundaries.fetch, latitude, longitude
+            )
+        except SiteBoundaryUnavailable as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.get(
+        "/v1/buildings/site",
+        response_model=BuildingEvidence,
+    )
+    async def fetch_site_buildings(
+        latitude: Annotated[float, Query(ge=-44.5, le=-9.0)],
+        longitude: Annotated[float, Query(ge=112.0, le=154.0)],
+        radius_m: Annotated[float, Query(ge=50, le=5_000)] = 220.0,
+    ) -> BuildingEvidence:
+        try:
+            return await run_in_threadpool(
+                buildings.fetch, latitude, longitude, radius_m
+            )
+        except BuildingDataUnavailable as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @application.get(
+        "/v1/evidence/{evidence_id}/terrain-profiles/cardinal",
+        response_model=CardinalTerrainProfileEvidence,
+    )
+    async def fetch_cardinal_terrain_profiles(
+        evidence_id: str,
+        latitude: Annotated[float, Query(ge=-44.5, le=-9.0)],
+        longitude: Annotated[float, Query(ge=112.0, le=154.0)],
+        distance_m: Annotated[float, Query(ge=100, le=5_000)] = 500.0,
+        sample_interval_m: Annotated[float, Query(ge=2, le=100)] = 10.0,
+    ) -> CardinalTerrainProfileEvidence:
+        try:
+            return await run_in_threadpool(
+                terrain_profiles.sample,
+                evidence_id,
+                latitude,
+                longitude,
+                distance_m,
+                sample_interval_m,
+            )
+        except EvidenceNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except (EvidenceValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @application.get(
+        "/v1/evidence/{evidence_id}/local-wind",
+        response_model=LocalDirectionalWindEvidence,
+    )
+    async def analyze_local_wind(
+        evidence_id: str,
+        latitude: Annotated[float, Query(ge=-44.5, le=-9.0)],
+        longitude: Annotated[float, Query(ge=112.0, le=154.0)],
+        placement_latitude: Annotated[float, Query(ge=-44.5, le=-9.0)],
+        placement_longitude: Annotated[float, Query(ge=112.0, le=154.0)],
+        reference_height_m: Annotated[float, Query(gt=0, le=200)],
+        footprint_length_m: Annotated[float, Query(gt=0, le=2_000)],
+        footprint_width_m: Annotated[float, Query(gt=0, le=2_000)],
+        front_bearing_degrees: Annotated[float, Query(ge=0, lt=360)],
+        wind_region: Annotated[str, Query(min_length=2, max_length=3)],
+    ) -> LocalDirectionalWindEvidence:
+        try:
+            return await run_in_threadpool(
+                local_wind.analyze,
+                evidence_id,
+                latitude,
+                longitude,
+                placement_latitude,
+                placement_longitude,
+                reference_height_m,
+                footprint_length_m,
+                footprint_width_m,
+                front_bearing_degrees,
+                wind_region,
+            )
+        except EvidenceNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="evidence not found") from exc
+        except (EvidenceValidationError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (BuildingDataUnavailable, WindMultiplierUnavailable) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @application.post("/v1/evidence", response_model=EvidenceManifest, status_code=201)
     async def ingest_evidence(

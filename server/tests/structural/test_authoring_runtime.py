@@ -14,6 +14,100 @@ from core.structural.authoring_runtime import (
 )
 
 
+def test_member_geometry_move_copy_and_mirror_keep_cad_and_axis_linked():
+    geometry = StructuralMemberGeometry(
+        shape=bd.Box(1000, 50, 100),
+        label="Linked Cee",
+        part_number="C10012",
+        start=(0.0, 0.0, 0.0),
+        end=(1.0, 0.0, 0.0),
+        rotation_deg=30.0,
+    )
+
+    moved = geometry.moved(
+        bd.Location((1000.0, 2000.0, 3000.0), (0.0, 0.0, 90.0))
+    )
+    copied = moved.copied()
+    mirrored = moved.mirrored(bd.Plane.YZ)
+
+    assert moved.start == pytest.approx((1.0, 2.0, 3.0))
+    assert moved.end == pytest.approx((1.0, 3.0, 3.0))
+    assert moved.shape.center().to_tuple() == pytest.approx((1000.0, 2000.0, 3000.0))
+    assert moved.rotation_deg == 30.0
+
+    assert copied.shape is not moved.shape
+    assert copied.start == moved.start
+    assert copied.end == moved.end
+    assert copied.rotation_deg == moved.rotation_deg
+
+    assert mirrored.start == pytest.approx((-1.0, 2.0, 3.0))
+    assert mirrored.end == pytest.approx((-1.0, 3.0, 3.0))
+    assert mirrored.shape.center().to_tuple() == pytest.approx(
+        (-1000.0, 2000.0, 3000.0)
+    )
+    assert mirrored.rotation_deg == -30.0
+
+
+def test_member_geometry_registration_uses_the_final_linked_placement():
+    model = StructuralModel(title="Placed member")
+    material = model.material(
+        id="steel",
+        label="Steel",
+        elastic_modulus_kN_m2=200_000_000.0,
+        shear_modulus_kN_m2=80_000_000.0,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+    )
+    section = model.section(
+        id="cee",
+        label="Cee",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+    )
+    placed = StructuralMemberGeometry(
+        shape=bd.Box(1000, 50, 100),
+        label="Placed Cee",
+        part_number="C10012",
+        start=(0.0, 0.0, 0.0),
+        end=(1.0, 0.0, 0.0),
+    ).moved(bd.Location((500.0, 750.0, 1000.0), (0.0, 0.0, 90.0)))
+    member = model.member_from_geometry(
+        placed,
+        component_id="placed-cee",
+        member_id="placed-cee-axis",
+        section=section,
+        material=material,
+        assumption="The linked builder owns final placement.",
+    )
+    ground = model.ground(
+        bd.Box(100, 100, 100).moved(bd.Location((500.0, 750.0, 1000.0))),
+        id="placed-cee-ground",
+        label="Placed Cee ground",
+    )
+    model.connect(
+        ground,
+        member,
+        id="placed-cee-base",
+        label="Placed Cee base",
+        transfers=("force", "shear", "moment"),
+    )
+    model.member_distributed_load(
+        member,
+        id="placed-cee-dead-load",
+        label="Placed Cee test load",
+        case="dead",
+        start_force_kN_m=(0.0, 0.0, -0.01),
+        provenance="Unit-test load for the linked-placement contract.",
+    )
+    model.assembly([member, ground], label="placed-cee-assembly")
+
+    authored = model.manifest()["analysis"]["members"][0]
+    assert authored["start"] == {"x": 0.5, "y": 0.75, "z": 1.0}
+    assert authored["end"] == {"x": 0.5, "y": 1.75, "z": 1.0}
+
+
 def test_joint_geometry_owns_rendered_engagement_and_rigid_zone_contract():
     model = StructuralModel(title="Geometry-linked moment joint")
     material = model.material(
@@ -619,6 +713,19 @@ def test_structural_model_links_literal_site_dict_without_storing_derived_truth(
     assert model._wind_action_bases[0]["table_version"] == "compile-placeholder-v1"
     assert "replaced by the Structural API" in model._wind_action_bases[0]["provenance"]
 
+    left_basis = model.site_wind_basis(
+        {
+            "schema_version": "1.0",
+            "project_basis": {"importance_level": "2"},
+            "location": {"address": "14 Porter St"},
+            "wind": {"basis_id": "project-site-wind"},
+        },
+        face="left",
+    )
+    assert left_basis.id == "project-site-wind-left"
+    assert model._wind_action_bases[1]["building_face"] == "left"
+    assert model._wind_action_bases[1]["structural_action_direction"] == "+X"
+
 
 def test_structural_model_rejects_raw_unregistered_assembly_shapes():
     model = StructuralModel(title="Fail closed")
@@ -1087,6 +1194,66 @@ def test_catalogue_section_registers_normalized_solver_data_and_provenance():
     assert section["catalog"]["axis_mapping"]["local_z_inertia"] == "Ix_mm4"
     assert section["catalog"]["properties"]["Zxe_mm3"] == 12300
     assert len(section["catalog"]["record_sha256"]) == 64
+
+
+def test_catalogue_section_can_be_reused_but_rejects_changed_evidence():
+    model = StructuralModel(title="Repeated catalogue members")
+    record = {
+        "schema_version": "1.0",
+        "catalog": {
+            "id": "lysaght-zc-v2",
+            "version": "2.0",
+            "section_key": "C10012 (100x1.2)",
+            "source": "Lysaght guide",
+        },
+        "label": "C100x1.2 (Lysaght)",
+        "solver": {
+            "area_m2": 265e-6,
+            "iy_m4": 100000e-12,
+            "iz_m4": 450000e-12,
+            "torsion_j_m4": 200e-12,
+            "mass_kg_m": 2.08,
+        },
+        "material": {
+            "label": "G500 steel",
+            "elastic_modulus_kN_m2": 200_000_000,
+            "shear_modulus_kN_m2": 80_000_000,
+            "poisson_ratio": 0.3,
+            "density_kg_m3": 7850,
+        },
+        "axis_mapping": {
+            "local_y_inertia": "Iy_mm4",
+            "local_z_inertia": "Ix_mm4",
+        },
+        "properties": {"A_mm2": 265, "Ix_mm4": 450000},
+    }
+
+    first = model.ensure_section_from_catalog(
+        id="section-c10012",
+        material_id="material-g500",
+        record=record,
+    )
+    second = model.ensure_section_from_catalog(
+        id="section-c10012",
+        material_id="material-g500",
+        record=record,
+    )
+
+    assert second.section is first.section
+    assert second.material is first.material
+    assert len(model._sections) == 1
+    assert len(model._materials) == 1
+
+    changed = {
+        **record,
+        "solver": {**record["solver"], "area_m2": 266e-6},
+    }
+    with pytest.raises(StructuralAuthoringError, match="section ID.*conflicts"):
+        model.ensure_section_from_catalog(
+            id="section-c10012",
+            material_id="material-g500",
+            record=changed,
+        )
 
 
 def test_catalogue_member_self_weight_and_service_combination_are_authored():

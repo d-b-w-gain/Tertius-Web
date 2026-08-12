@@ -102,6 +102,26 @@ MEMBER_PART = "TEST-IMPORTED"
     assert requirement["resolution_trace"]["part_number"]["source_file"] == "products.py"
 
 
+def test_imported_tuple_key_lookup_is_unresolved_instead_of_crashing_analysis():
+    source = analyze_design_sources({
+        "design.py": "from model import assembly\n",
+        "model.py": """
+def attach_component(component, *, part_number="CONNECTION-A", quantity=1, unit="each"):
+    return component
+
+portal_connectors = {}
+portal_key = "front"
+assembly = attach_component(portal_connectors[(portal_key, "bases")])
+""",
+    })
+
+    assert source["source_files"] == ["design.py", "model.py"]
+    call = next(item for item in source["calls"] if item["function"] == "attach_component")
+    assert call["parameters"]["component"]["resolved"] is None
+    assert call["parameters"]["component"]["resolution"] == "unresolved_expression"
+    assert call["standard_inputs"]["part_number"]["resolved"] == "CONNECTION-A"
+
+
 def test_function_default_part_number_is_used_when_argument_is_omitted():
     requirement = first_requirement({
         "design.py": """

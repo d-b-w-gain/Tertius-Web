@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from copy import deepcopy
 import json
+import logging
 import struct
 from threading import RLock
 from typing import Any
@@ -18,9 +19,12 @@ from sqlalchemy.orm import Session, load_only
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
+from core.gltf_geometry import model_site_dimensions
 from core.models import Artifact, Project, UserWorkspaceState
 from core.procurement_analysis import analyze_design_sources, analyze_gltf_tree, build_procurement_analysis
 from core.repositories import ProjectRepository
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Extus STL File Server")
 
@@ -33,6 +37,7 @@ app.add_middleware(
 )
 
 PROCUREMENT_ANALYSIS_CACHE_LIMIT = 32
+MODEL_GEOMETRY_CACHE_LIMIT = 16
 ProcurementAnalysisCacheKey = tuple[
     str,
     str,
@@ -42,6 +47,8 @@ ProcurementAnalysisCacheKey = tuple[
 ]
 _procurement_analysis_cache: OrderedDict[ProcurementAnalysisCacheKey, dict] = OrderedDict()
 _procurement_analysis_cache_lock = RLock()
+_model_geometry_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_model_geometry_cache_lock = RLock()
 
 
 def _artifact_cache_token(artifact: Artifact | None) -> str | None:
@@ -88,6 +95,35 @@ def _set_cached_procurement_analysis(cache_key: ProcurementAnalysisCacheKey, res
         _procurement_analysis_cache.move_to_end(cache_key)
         while len(_procurement_analysis_cache) > PROCUREMENT_ANALYSIS_CACHE_LIMIT:
             _procurement_analysis_cache.popitem(last=False)
+
+
+def _cached_model_geometry(artifact: Artifact, db: Session, ctx: AuthContext) -> dict[str, Any] | None:
+    cache_key = _artifact_cache_token(artifact)
+    if cache_key is None or artifact.kind not in {"gltf", "glb"}:
+        return None
+    with _model_geometry_cache_lock:
+        cached = _model_geometry_cache.get(cache_key)
+        if cached is not None:
+            _model_geometry_cache.move_to_end(cache_key)
+            return deepcopy(cached)
+
+    loaded = get_model_artifact_by_id(db, ctx, artifact.id)
+    if loaded is None or loaded.content is None:
+        return None
+    try:
+        dimensions = model_site_dimensions(loaded.kind, loaded.content)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, struct.error):
+        logger.exception("Could not read active candidate model bounds")
+        return None
+    if dimensions is None:
+        return None
+    dimensions = {**dimensions, "model_artifact_id": str(artifact.id)}
+    with _model_geometry_cache_lock:
+        _model_geometry_cache[cache_key] = deepcopy(dimensions)
+        _model_geometry_cache.move_to_end(cache_key)
+        while len(_model_geometry_cache) > MODEL_GEOMETRY_CACHE_LIMIT:
+            _model_geometry_cache.popitem(last=False)
+    return dimensions
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -343,7 +379,14 @@ def get_status(ctx: AuthContext = Depends(get_auth_context), db: Session = Depen
     artifact = get_latest_model_artifact(db, ctx, include_content=False)
     if artifact is None:
         return JSONResponse(status_code=404, content={"error": "File not found"})
-    return {"mtime": artifact.created_at.timestamp()}
+    response: dict[str, Any] = {
+        "mtime": artifact.created_at.timestamp(),
+        "model_artifact_id": str(artifact.id),
+    }
+    dimensions = _cached_model_geometry(artifact, db, ctx)
+    if dimensions is not None:
+        response["site_dimensions"] = dimensions
+    return response
 
 @app.get("/model")
 def get_model(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -446,6 +489,28 @@ def get_procurement_analysis(ctx: AuthContext = Depends(get_auth_context), db: S
 
     try:
         source_analysis = analyze_design_sources(files)
+    except Exception:
+        logger.exception("Procurement source analysis failed; continuing with visual evidence")
+        source_analysis = {
+            "entrypoint": "design.py",
+            "source_files": [],
+            "calls": [],
+            "diagnostic_calls": [],
+            "constants": [],
+            "function_instance_counts": {},
+            "diagnostics": [
+                {
+                    "code": "source_analysis_failed",
+                    "severity": "warning",
+                    "message": (
+                        "Static source analysis failed. Procurement continued with "
+                        "the compiled visual component tree."
+                    ),
+                }
+            ],
+        }
+
+    try:
         analysis = build_procurement_analysis(
             source_analysis,
             tree_analysis,

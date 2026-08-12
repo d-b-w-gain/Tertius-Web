@@ -13,11 +13,16 @@ _scopes: list[dict[str, Any]] = []
 _components: list[dict[str, Any]] = []
 _requirements: list[dict[str, Any]] = []
 _diagnostics: list[dict[str, Any]] = []
+_visual_bom_attachments: list[dict[str, Any]] = []
 _scope_stack: list[str] = []
 
 STANDARD_BOM_FIELDS = {
     "part_number",
     "product_key",
+    "manufacturer",
+    "supplier",
+    "supplier_part_number",
+    "stock_number",
     "quantity",
     "unit",
     "dimensions",
@@ -27,6 +32,8 @@ STANDARD_BOM_FIELDS = {
     "finish",
     "grade",
     "standard",
+    "drawing_number",
+    "source_library",
     "bom",
 }
 
@@ -47,6 +54,12 @@ DIMENSION_FIELD_ALIASES = {
     "angle_deg": "angle_deg",
     "roof_pitch": "roof_pitch_deg",
     "roof_pitch_deg": "roof_pitch_deg",
+    "cut_length_mm": "cut_length_mm",
+    "ordered_length_mm": "ordered_length_mm",
+    "stock_length_mm": "stock_length_mm",
+    "cut_width_mm": "cut_width_mm",
+    "ordered_width_mm": "ordered_width_mm",
+    "stock_width_mm": "stock_width_mm",
 }
 
 
@@ -102,14 +115,20 @@ def _jsonish(value: Any) -> Any:
 def _metadata_targets(component: Any) -> list[Any]:
     if component is None:
         return []
+    if isinstance(component, dict):
+        targets: list[Any] = []
+        for item in component.values():
+            targets.extend(_metadata_targets(item))
+        return targets
     if isinstance(component, (list, tuple, set)):
         targets: list[Any] = []
         for item in component:
             targets.extend(_metadata_targets(item))
         return targets
-    part = getattr(component, "part", None)
-    if part is not None:
-        return [part]
+    for attribute in ("shape", "part"):
+        target = getattr(component, attribute, None)
+        if target is not None and target is not component:
+            return _metadata_targets(target)
     return [component]
 
 
@@ -160,7 +179,14 @@ def bom_item(function=None, **decorator_metadata: Any):
             except Exception:
                 metadata = {"quantity": 1, "unit": "each", "bom": True}
             metadata.update({key: _jsonish(value) for key, value in decorator_metadata.items() if value is not None})
-            if not _set_visual_bom_metadata(result, metadata):
+            if _set_visual_bom_metadata(result, metadata):
+                _visual_bom_attachments.append({
+                    "function": func.__name__,
+                    "part_number": metadata.get("part_number"),
+                    "product_key": metadata.get("product_key"),
+                    **_source_location(),
+                })
+            else:
                 _diagnostic(
                     "bom_item_metadata_not_attached",
                     "warning",
@@ -251,11 +277,17 @@ def _set_visual_label(target: Any, visual_label: str) -> bool:
 
 
 def _visual_targets(component: Any) -> list[Any]:
+    if isinstance(component, dict):
+        targets: list[Any] = []
+        for item in component.values():
+            targets.extend(_visual_targets(item))
+        return targets
     if isinstance(component, (list, tuple, set)):
         return list(component)
-    part = getattr(component, "part", None)
-    if part is not None:
-        return [part]
+    for attribute in ("shape", "part"):
+        target = getattr(component, attribute, None)
+        if target is not None and target is not component:
+            return _visual_targets(target)
     return [component]
 
 
@@ -366,11 +398,18 @@ def bom_component(
 
 def get_manifest(source_snapshot_hash: str = "", visual_path_map: dict[str, Any] | None = None) -> dict[str, Any]:
     diagnostics = list(_diagnostics)
-    if not _components:
+    if not _components and not _visual_bom_attachments:
         diagnostics.append({
             "code": "no_bom_metadata",
             "severity": "error",
             "message": "No tertius_bom components were declared. Procurement will not invent BoM rows from geometry names.",
+        })
+    elif not _components:
+        diagnostics.append({
+            "code": "visual_bom_metadata_attached",
+            "severity": "info",
+            "message": "Decorated visual items carry Procurement metadata; the exported visual tree remains quantity authority.",
+            "attachment_count": len(_visual_bom_attachments),
         })
 
     return {
@@ -379,6 +418,7 @@ def get_manifest(source_snapshot_hash: str = "", visual_path_map: dict[str, Any]
         "scopes": list(_scopes),
         "components": list(_components),
         "requirements": list(_requirements),
+        "visual_bom_attachments": list(_visual_bom_attachments),
         "visual_path_map": visual_path_map or {},
         "diagnostics": diagnostics,
     }

@@ -22,6 +22,36 @@ class StructuralAuthoringError(ValueError):
     """Raised when structural CAD authoring would create an ambiguous manifest."""
 
 
+def _point_moved_by_location(
+    point: tuple[float, float, float],
+    location: bd.Location,
+) -> tuple[float, float, float]:
+    """Apply a Build123D millimetre transform to a metre-based analysis point."""
+
+    vertex = bd.Vertex(*(float(value) * 1000.0 for value in point)).moved(location)
+    transformed = vertex.center()
+    return (
+        transformed.X / 1000.0,
+        transformed.Y / 1000.0,
+        transformed.Z / 1000.0,
+    )
+
+
+def _point_mirrored_about_plane(
+    point: tuple[float, float, float],
+    plane: bd.Plane,
+) -> tuple[float, float, float]:
+    """Mirror a metre-based analysis point using the same plane as its CAD."""
+
+    vertex = bd.Vertex(*(float(value) * 1000.0 for value in point)).mirror(plane)
+    transformed = vertex.center()
+    return (
+        transformed.X / 1000.0,
+        transformed.Y / 1000.0,
+        transformed.Z / 1000.0,
+    )
+
+
 @dataclass(frozen=True)
 class StructuralPart:
     """A registered Build123D shape and its structural identity."""
@@ -53,27 +83,51 @@ class StructuralMemberGeometry:
     end: tuple[float, float, float]
     rotation_deg: float = 0.0
 
+    def moved(self, location: bd.Location) -> "StructuralMemberGeometry":
+        """Rigidly move rendered CAD and its metre-based solver axis together."""
+
+        if not isinstance(location, bd.Location):
+            raise TypeError("StructuralMemberGeometry.moved requires bd.Location")
+        return StructuralMemberGeometry(
+            shape=self.shape.moved(location),
+            label=self.label,
+            part_number=self.part_number,
+            start=_point_moved_by_location(self.start, location),
+            end=_point_moved_by_location(self.end, location),
+            # A rigid transform preserves section roll relative to the member axis.
+            rotation_deg=self.rotation_deg,
+        )
+
+    def copied(self) -> "StructuralMemberGeometry":
+        """Return an independent CAD copy with the same analytical placement."""
+
+        return self.moved(bd.Location())
+
+    def mirrored(self, plane: bd.Plane) -> "StructuralMemberGeometry":
+        """Mirror rendered CAD and its solver axis as one linked value."""
+
+        if not isinstance(plane, bd.Plane):
+            raise TypeError("StructuralMemberGeometry.mirrored requires bd.Plane")
+        return StructuralMemberGeometry(
+            shape=self.shape.mirror(plane),
+            label=self.label,
+            part_number=self.part_number,
+            start=_point_mirrored_about_plane(self.start, plane),
+            end=_point_mirrored_about_plane(self.end, plane),
+            # Reflection changes handedness, so the local section roll changes sign.
+            rotation_deg=-self.rotation_deg,
+        )
+
     def translated(self, offset: Sequence[float]) -> "StructuralMemberGeometry":
         delta = tuple(float(value) for value in offset)
         if len(delta) != 3:
             raise ValueError("StructuralMemberGeometry translation requires x, y, z")
-
-        def moved(point: tuple[float, float, float]):
-            return tuple(point[index] + delta[index] for index in range(3))
-
-        return StructuralMemberGeometry(
-            shape=self.shape.moved(
-                bd.Pos(
-                    X=delta[0] * 1000.0,
-                    Y=delta[1] * 1000.0,
-                    Z=delta[2] * 1000.0,
-                )
-            ),
-            label=self.label,
-            part_number=self.part_number,
-            start=moved(self.start),
-            end=moved(self.end),
-            rotation_deg=self.rotation_deg,
+        return self.moved(
+            bd.Pos(
+                X=delta[0] * 1000.0,
+                Y=delta[1] * 1000.0,
+                Z=delta[2] * 1000.0,
+            )
         )
 
 
@@ -106,6 +160,16 @@ class StructuralConnectorGeometry:
     def moved(self, location: bd.Location) -> "StructuralConnectorGeometry":
         return StructuralConnectorGeometry(
             shape=self.shape.moved(location),
+            label=self.label,
+            part_number=self.part_number,
+        )
+
+    def copied(self) -> "StructuralConnectorGeometry":
+        return self.moved(bd.Location())
+
+    def mirrored(self, plane: bd.Plane) -> "StructuralConnectorGeometry":
+        return StructuralConnectorGeometry(
+            shape=self.shape.mirror(plane),
             label=self.label,
             part_number=self.part_number,
         )
@@ -662,6 +726,15 @@ class StructuralModel:
         q_z_kPa: float,
         verifier_hash: str,
         provenance: str,
+        building_face: Literal["front", "right", "back", "left"] | None = None,
+        face_bearing_degrees: float | None = None,
+        structural_action_direction: Literal["+X", "-X", "+Y", "-Y"] | None = None,
+        governing_cardinal_direction: (
+            Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"] | None
+        ) = None,
+        contributing_cardinal_directions: Sequence[
+            Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        ] = (),
     ) -> StructuralWindActionBasisSpec:
         """Register an immutable, externally derived site-wind snapshot.
 
@@ -756,6 +829,15 @@ class StructuralModel:
             **multiplier_values,
             "site_wind_speed_m_s": site_speed,
             "q_z_kPa": pressure,
+            "building_face": building_face,
+            "face_bearing_degrees": (
+                None if face_bearing_degrees is None else float(face_bearing_degrees)
+            ),
+            "structural_action_direction": structural_action_direction,
+            "governing_cardinal_direction": governing_cardinal_direction,
+            "contributing_cardinal_directions": list(
+                contributing_cardinal_directions
+            ),
             "verifier_hash": _required_text(
                 "wind verifier hash",
                 verifier_hash,
@@ -1101,6 +1183,8 @@ class StructuralModel:
     def site_wind_basis(
         self,
         site_dict: Mapping[str, Any],
+        *,
+        face: Literal["front", "right", "back", "left"] | None = None,
     ) -> StructuralWindActionBasisSpec:
         """Link a project ``tertius_site.py`` dictionary to wind loads.
 
@@ -1155,10 +1239,20 @@ class StructuralModel:
 
         placeholder_speed = 40.0
         placeholder_pressure = 0.5 * 1.2 * placeholder_speed**2 / 1000.0
+        face_action_directions = {
+            "front": "+Y",
+            "right": "-X",
+            "back": "-Y",
+            "left": "+X",
+        }
+        base_basis_id = _required_text(
+            "site wind basis ID",
+            wind.get("basis_id", "project-site-wind"),
+        )
         return self.wind_action_basis(
             id=_required_text(
                 "site wind basis ID",
-                wind.get("basis_id", "project-site-wind"),
+                f"{base_basis_id}-{face}" if face is not None else base_basis_id,
             ),
             site_address=_required_text(
                 "site address",
@@ -1192,6 +1286,10 @@ class StructuralModel:
             topographic_multiplier=1.0,
             site_wind_speed_m_s=placeholder_speed,
             q_z_kPa=placeholder_pressure,
+            building_face=face,
+            structural_action_direction=(
+                None if face is None else face_action_directions[face]
+            ),
             verifier_hash="compile-placeholder",
             provenance=(
                 "Compile-time placeholder linked to tertius_site.py; replaced "
@@ -2158,6 +2256,61 @@ class StructuralModel:
             ),
             catalog=catalog_reference,
         )
+        return StructuralCatalogSectionSpec(section=section, material=material)
+
+    def ensure_section_from_catalog(
+        self,
+        *,
+        id: str,
+        material_id: str,
+        record: Mapping[str, Any],
+    ) -> StructuralCatalogSectionSpec:
+        """Register a catalogue section once, then safely reuse exact matches.
+
+        Product builders can call this for every placed member. Reusing an ID is
+        accepted only when the complete normalized material/section records are
+        identical; an ID collision with changed catalogue evidence fails loudly.
+        """
+
+        candidate = StructuralModel(title="Catalogue registration candidate")
+        candidate.section_from_catalog(
+            id=id,
+            material_id=material_id,
+            record=record,
+        )
+        expected_material = candidate._materials[0]
+        expected_section = candidate._sections[0]
+
+        existing_material = next(
+            (item for item in self._materials if item["id"] == material_id),
+            None,
+        )
+        if existing_material is None:
+            material = StructuralMaterialSpec(id=material_id)
+            self._material_handles[material_id] = material
+            self._materials.append(dict(expected_material))
+        elif existing_material != expected_material:
+            raise StructuralAuthoringError(
+                f"material ID {material_id!r} conflicts with its catalogue record"
+            )
+        else:
+            material = self._material_handles[material_id]
+
+        existing_section = next(
+            (item for item in self._sections if item["id"] == id),
+            None,
+        )
+        if existing_section is None:
+            section = StructuralSectionSpec(id=id)
+            self._section_handles[id] = section
+            self._sections.append(dict(expected_section))
+        elif existing_section != expected_section:
+            raise StructuralAuthoringError(
+                f"section ID {id!r} conflicts with its catalogue record"
+            )
+        else:
+            section = self._section_handles[id]
+
         return StructuralCatalogSectionSpec(section=section, material=material)
 
     def member_axis(
