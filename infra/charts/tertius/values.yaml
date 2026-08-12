@@ -134,7 +134,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api
-    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-api"}
+    tag: master-173-1-83dd1fd # {"$imagepromoter": "tertius-api"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -162,7 +162,7 @@ gisCache:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-gis-cache
-    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-gis-cache"}
+    tag: master-173-1-83dd1fd # {"$imagepromoter": "tertius-gis-cache"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -233,7 +233,7 @@ piAgent:
   enabled: false
   image:
     repository: ghcr.io/d-b-w-gain/tertius-pi-agent
-    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-pi-agent"}
+    tag: master-173-1-83dd1fd # {"$imagepromoter": "tertius-pi-agent"}
     pullPolicy: IfNotPresent
   auth:
     existingClaim: ""
@@ -282,7 +282,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui
-    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-ui"}
+    tag: master-173-1-83dd1fd # {"$imagepromoter": "tertius-ui"}
     pullPolicy: IfNotPresent
   port: 80
   service:
