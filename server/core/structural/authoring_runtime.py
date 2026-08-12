@@ -22,6 +22,13 @@ class StructuralAuthoringError(ValueError):
     """Raised when structural CAD authoring would create an ambiguous manifest."""
 
 
+def _canonical_metres_from_millimetres(value: float) -> float:
+    """Remove kernel-level transform noise at the CAD/analysis boundary."""
+
+    metres = round(float(value) / 1000.0, 12)
+    return 0.0 if metres == 0.0 else metres
+
+
 def _point_moved_by_location(
     point: tuple[float, float, float],
     location: bd.Location,
@@ -31,9 +38,9 @@ def _point_moved_by_location(
     vertex = bd.Vertex(*(float(value) * 1000.0 for value in point)).moved(location)
     transformed = vertex.center()
     return (
-        transformed.X / 1000.0,
-        transformed.Y / 1000.0,
-        transformed.Z / 1000.0,
+        _canonical_metres_from_millimetres(transformed.X),
+        _canonical_metres_from_millimetres(transformed.Y),
+        _canonical_metres_from_millimetres(transformed.Z),
     )
 
 
@@ -46,9 +53,9 @@ def _point_mirrored_about_plane(
     vertex = bd.Vertex(*(float(value) * 1000.0 for value in point)).mirror(plane)
     transformed = vertex.center()
     return (
-        transformed.X / 1000.0,
-        transformed.Y / 1000.0,
-        transformed.Z / 1000.0,
+        _canonical_metres_from_millimetres(transformed.X),
+        _canonical_metres_from_millimetres(transformed.Y),
+        _canonical_metres_from_millimetres(transformed.Z),
     )
 
 
