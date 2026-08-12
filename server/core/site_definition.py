@@ -5,7 +5,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 from pprint import pformat
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -19,6 +19,8 @@ from core.structural.wind_standard_tables import site_table_evidence
 
 
 SITE_DEFINITION_FILENAME = "tertius_site.py"
+BuildingFace = Literal["front", "right", "back", "left"]
+BUILDING_FACES: tuple[BuildingFace, ...] = ("front", "right", "back", "left")
 
 
 class SiteDefinitionError(ValueError):
@@ -88,9 +90,9 @@ class SiteStructurePlacement(SiteContract):
     footprint_length_m: float = Field(default=12.0, gt=0)
     footprint_width_m: float = Field(default=6.0, gt=0)
     front_bearing_degrees: float = Field(default=0.0, ge=0, lt=360)
-    front_definition: Literal[
-        "long_wall_normal", "gable_ridge_normal", "manual"
-    ] = "long_wall_normal"
+    front_definition: Literal["long_wall_normal", "gable_ridge_normal", "manual"] = (
+        "long_wall_normal"
+    )
     orientation_status: Literal["suggested", "verified"] = "suggested"
     # The address point and the structure centre are different facts.  These
     # optional coordinates let a site plan place the candidate within its
@@ -139,9 +141,7 @@ class SiteWindMultiplierEvidenceReference(SiteContract):
     site_latitude: float
     site_longitude: float
     terrain_reference_height_m: float = Field(gt=0)
-    method_status: Literal[
-        "indicative_hazard_evidence", "automated_local_analysis"
-    ] = (
+    method_status: Literal["indicative_hazard_evidence", "automated_local_analysis"] = (
         "indicative_hazard_evidence"
     )
     terrain_evidence_id: str | None = None
@@ -161,9 +161,7 @@ class SiteWindMultiplierEvidenceReference(SiteContract):
         if not self.adopted_components:
             raise ValueError("multiplier evidence must identify adopted components")
         if self.review_status == "verified" and not self.review_reason.strip():
-            raise ValueError(
-                "verified multiplier evidence requires a review reason"
-            )
+            raise ValueError("verified multiplier evidence requires a review reason")
         return self
 
 
@@ -360,14 +358,10 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
     multiplier_evidence_stale = bool(
         site.wind.multiplier_evidence is not None
         and (
-            abs(
-                site.wind.multiplier_evidence.site_latitude
-                - site.location.latitude
-            )
+            abs(site.wind.multiplier_evidence.site_latitude - site.location.latitude)
             > 1e-6
             or abs(
-                site.wind.multiplier_evidence.site_longitude
-                - site.location.longitude
+                site.wind.multiplier_evidence.site_longitude - site.location.longitude
             )
             > 1e-6
             or (
@@ -405,8 +399,7 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
             or (
                 site.wind.multiplier_evidence.method_status
                 == "automated_local_analysis"
-                and
-                site.wind.multiplier_evidence.terrain_reference_height_m
+                and site.wind.multiplier_evidence.terrain_reference_height_m
                 != site.wind.reference_height_m
             )
             or (
@@ -436,21 +429,27 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
             return authored.model_dump(mode="json")
         return {key: fallback for _, _, key in cardinal_bearings}
 
-    direction_multipliers = directional_values(
-        authored_multipliers,
-        site.wind.direction_multiplier,
+    direction_multipliers = cast(
+        dict[str, float],
+        directional_values(authored_multipliers, site.wind.direction_multiplier),
     )
     terrain_height_multipliers = directional_values(
         site.wind.cardinal_terrain_height_multipliers,
         None,
     )
-    shielding_multipliers = directional_values(
-        site.wind.cardinal_shielding_multipliers,
-        site.wind.shielding_multiplier,
+    shielding_multipliers = cast(
+        dict[str, float],
+        directional_values(
+            site.wind.cardinal_shielding_multipliers,
+            site.wind.shielding_multiplier,
+        ),
     )
-    topographic_multipliers = directional_values(
-        site.wind.cardinal_topographic_multipliers,
-        site.wind.topographic_multiplier,
+    topographic_multipliers = cast(
+        dict[str, float],
+        directional_values(
+            site.wind.cardinal_topographic_multipliers,
+            site.wind.topographic_multiplier,
+        ),
     )
     directional_modes = {
         "direction": (
@@ -505,7 +504,12 @@ def calculate_site_definition(site: SiteDefinition) -> dict[str, Any]:
         return abs((first - second + 180.0) % 360.0 - 180.0)
 
     building_face_wind_speeds: list[dict[str, Any]] = []
-    for face, offset in (("front", 0.0), ("right", 90.0), ("back", 180.0), ("left", 270.0)):
+    for face, offset in (
+        ("front", 0.0),
+        ("right", 90.0),
+        ("back", 180.0),
+        ("left", 270.0),
+    ):
         bearing = (site.structure.front_bearing_degrees + offset) % 360.0
         contributing = [
             sector
@@ -590,7 +594,7 @@ def site_wind_basis(
     site: SiteDefinition,
     *,
     basis_id: str | None = None,
-    face: Literal["front", "right", "back", "left"] | None = None,
+    face: BuildingFace | None = None,
 ) -> dict[str, Any]:
     calculation = calculate_site_definition(site)
     face_record = None
@@ -603,8 +607,7 @@ def site_wind_basis(
         governing_sector = next(
             value
             for value in calculation["cardinal_wind_speeds"]
-            if value["direction"]
-            == face_record["governing_cardinal_direction"]
+            if value["direction"] == face_record["governing_cardinal_direction"]
         )
         calculation = {
             **calculation,
@@ -615,9 +618,7 @@ def site_wind_basis(
                 annual_probability_uls=site.wind.annual_probability_uls,
                 reference_height_m=site.wind.reference_height_m,
                 direction_multiplier=governing_sector["direction_multiplier"],
-                terrain_height_multiplier=governing_sector[
-                    "terrain_height_multiplier"
-                ],
+                terrain_height_multiplier=governing_sector["terrain_height_multiplier"],
                 shielding_multiplier=governing_sector["shielding_multiplier"],
                 topographic_multiplier=governing_sector["topographic_multiplier"],
                 climate_change_multiplier=site.wind.climate_change_multiplier,
@@ -631,11 +632,7 @@ def site_wind_basis(
     }
     return {
         "id": basis_id
-        or (
-            f"{site.wind.basis_id}-{face}"
-            if face is not None
-            else site.wind.basis_id
-        ),
+        or (f"{site.wind.basis_id}-{face}" if face is not None else site.wind.basis_id),
         "site_address": site.location.address,
         "latitude": site.location.latitude,
         "longitude": site.location.longitude,
@@ -710,12 +707,12 @@ def apply_site_definition(
         "wind-minus-y": "back",
     }
 
-    def load_face(load: Mapping[str, Any]) -> str | None:
+    def load_face(load: Mapping[str, Any]) -> BuildingFace | None:
         case_id = str(load.get("case_id") or "")
         normalized_case_id = (
             case_id.removeprefix("case-") if case_id.startswith("case-") else case_id
         )
-        return directional_case_faces.get(normalized_case_id)
+        return cast(BuildingFace | None, directional_case_faces.get(normalized_case_id))
 
     authored_face_ids = {
         str(basis.get("building_face")): str(basis.get("id"))
@@ -728,32 +725,29 @@ def apply_site_definition(
     )
     directional_overlay = len(authored_face_ids) == 4 or has_directional_loads
 
-    if len(existing_bases) == 1 and target_basis_id not in {
-        str(existing.get("id")) for existing in existing_bases
-    } and not directional_overlay:
+    if (
+        len(existing_bases) == 1
+        and target_basis_id
+        not in {str(existing.get("id")) for existing in existing_bases}
+        and not directional_overlay
+    ):
         # Compatibility for projects compiled before the standard basis id was
         # introduced. The next CAD compile will adopt project-site-wind.
         target_basis_id = str(existing_bases[0].get("id") or target_basis_id)
     if directional_overlay:
         face_basis_ids = {
             face: authored_face_ids.get(face, f"{target_basis_id}-{face}")
-            for face in ("front", "right", "back", "left")
+            for face in BUILDING_FACES
         }
         value["wind_action_bases"] = [
             site_wind_basis(site, basis_id=face_basis_ids[face], face=face)
-            for face in ("front", "right", "back", "left")
+            for face in BUILDING_FACES
         ]
-        bases_by_id = {
-            basis["id"]: basis for basis in value["wind_action_bases"]
-        }
+        bases_by_id = {basis["id"]: basis for basis in value["wind_action_bases"]}
     else:
-        value["wind_action_bases"] = [
-            site_wind_basis(site, basis_id=target_basis_id)
-        ]
+        value["wind_action_bases"] = [site_wind_basis(site, basis_id=target_basis_id)]
         face_basis_ids = {}
-        bases_by_id = {
-            target_basis_id: value["wind_action_bases"][0]
-        }
+        bases_by_id = {target_basis_id: value["wind_action_bases"][0]}
 
     for load in value.get("loads") or []:
         if load.get("case") != "wind":

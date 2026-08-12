@@ -1526,6 +1526,7 @@ def _draw_terrain_profile(
     distance_min = min(distances)
     distance_max = max(distances)
     distance_span = max(distance_max - distance_min, 1.0)
+    crest_offset: float | None
     crest_offset_value = (assessment or {}).get("topographic_crest_offset_m")
     if crest_offset_value is not None:
         crest_offset = float(crest_offset_value)
@@ -1627,17 +1628,16 @@ def _draw_terrain_profile(
         lu_value = (assessment or {}).get("topographic_lu_m")
         if lu_value is not None:
             half_distance = crest_offset + float(lu_value)
+            crest_elevation_value = (assessment or {}).get(
+                "topographic_crest_elevation_m"
+            )
+            base_elevation_value = (assessment or {}).get(
+                "topographic_base_elevation_m"
+            )
             half_elevation = (
-                (
-                    float((assessment or {}).get("topographic_crest_elevation_m"))
-                    + float((assessment or {}).get("topographic_base_elevation_m"))
-                )
-                / 2.0
-                if (
-                    (assessment or {}).get("topographic_crest_elevation_m") is not None
-                    and (assessment or {}).get("topographic_base_elevation_m")
-                    is not None
-                )
+                (float(crest_elevation_value) + float(base_elevation_value)) / 2.0
+                if crest_elevation_value is not None
+                and base_elevation_value is not None
                 else None
             )
             if (

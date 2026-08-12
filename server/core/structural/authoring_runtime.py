@@ -835,9 +835,7 @@ class StructuralModel:
             ),
             "structural_action_direction": structural_action_direction,
             "governing_cardinal_direction": governing_cardinal_direction,
-            "contributing_cardinal_directions": list(
-                contributing_cardinal_directions
-            ),
+            "contributing_cardinal_directions": list(contributing_cardinal_directions),
             "verifier_hash": _required_text(
                 "wind verifier hash",
                 verifier_hash,
@@ -1239,7 +1237,10 @@ class StructuralModel:
 
         placeholder_speed = 40.0
         placeholder_pressure = 0.5 * 1.2 * placeholder_speed**2 / 1000.0
-        face_action_directions = {
+        face_action_directions: dict[
+            Literal["front", "right", "back", "left"],
+            Literal["+X", "-X", "+Y", "-Y"],
+        ] = {
             "front": "+Y",
             "right": "-X",
             "back": "-Y",
