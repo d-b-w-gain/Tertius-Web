@@ -93,10 +93,11 @@ def llm_models(ctx: AuthContext = Depends(get_auth_context)):
         "default_model_id": settings.pi_agent_model,
         "models": [
             {
-                "id": settings.pi_agent_model,
-                "model": settings.pi_agent_model,
-                "label": settings.pi_agent_model_label,
+                "id": model.id,
+                "model": model.id,
+                "label": model.label,
                 "enabled": settings.pi_agent_enabled,
             }
+            for model in settings.pi_agent_models
         ],
     }

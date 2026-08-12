@@ -89,7 +89,13 @@ app:
     llmUserDailyTokenQuota: "3200000"
     piAgentProvider: openai-codex
     piAgentModel: gpt-5.6-sol
-    piAgentModelLabel: GPT-5.6 Sol
+    piAgentModels:
+      - id: gpt-5.6-sol
+        label: GPT-5.6 Sol
+      - id: gpt-5.6-luna
+        label: GPT-5.6 Luna
+      - id: gpt-5.6-terra
+        label: GPT-5.6 Terra
     piAgentThinking: medium
     piAgentTimeoutSeconds: 480
     piAgentMaxTurns: 24
@@ -128,7 +134,7 @@ api:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-api
-    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-api"}
+    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-api"}
     pullPolicy: IfNotPresent
   port: 8000
   service:
@@ -227,7 +233,7 @@ piAgent:
   enabled: false
   image:
     repository: ghcr.io/d-b-w-gain/tertius-pi-agent
-    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-pi-agent"}
+    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-pi-agent"}
     pullPolicy: IfNotPresent
   auth:
     existingClaim: ""
@@ -276,7 +282,7 @@ ui:
   replicaCount: 1
   image:
     repository: ghcr.io/d-b-w-gain/tertius-ui
-    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-ui"}
+    tag: master-172-1-71c8bcf # {"$imagepromoter": "tertius-ui"}
     pullPolicy: IfNotPresent
   port: 80
   service:

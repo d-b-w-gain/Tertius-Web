@@ -45,13 +45,14 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.compileRequestMaxBytes` | `COMPILE_REQUEST_MAX_BYTES` | API, compile worker | Max compile command size. |
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
 | `app.config.llmFileEditMaxContextFiles` | `LLM_FILE_EDIT_MAX_CONTEXT_FILES` | API | File-edit context file cap. |
-| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | Maximum file-edit context character ceiling; Generate Design selects a per-request tier up to this value. Very High is 2,000,000 characters (roughly 500,000 tokens using the service's 4-bytes-per-token estimate). |
+| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | Operational file-edit context safety ceiling. Generate Design applies a fixed 300,000-character source budget beneath this ceiling; end users cannot configure it. |
 | `app.config.llmUserRateLimitPerMinute` | `LLM_USER_RATE_LIMIT_PER_MINUTE` | API | Per-user LLM request rate. |
 | `app.config.llmTenantRateLimitPerMinute` | `LLM_TENANT_RATE_LIMIT_PER_MINUTE` | API | Per-tenant LLM request rate. |
 | `app.config.llmTenantDailyTokenQuota` | `LLM_TENANT_DAILY_TOKEN_QUOTA` | API | Tenant daily token fallback quota. |
 | `app.config.llmUserDailyTokenQuota` | `LLM_USER_DAILY_TOKEN_QUOTA` | API | User daily token fallback quota. |
 | `app.config.piAgentProvider` | `PI_AGENT_PROVIDER` | API, Pi worker | Pi provider; fixed to `openai-codex`. |
-| `app.config.piAgentModel` | `PI_AGENT_MODEL` | API, Pi worker | Subscription model id. |
+| `app.config.piAgentModel` | `PI_AGENT_MODEL` | API, Pi worker | Default subscription model id; `gpt-5.6-sol` by default. |
+| `app.config.piAgentModels` | `PI_AGENT_MODELS_JSON` | API, Pi worker | Ordered non-secret Generate Design model catalog. The API persists the selected catalog id with each job, and the worker validates that selection against the same ConfigMap value. |
 | `app.config.piAgentThinking` | `PI_AGENT_THINKING` | Pi worker | Pi reasoning level. |
 | `app.config.billingStreamName` | `BILLING_STREAM_NAME` | API | Billing stream. |
 | `app.config.billingLlmUsageSubject` | `BILLING_LLM_USAGE_SUBJECT` | API | LLM billing subject. |

@@ -70,7 +70,7 @@ data:
   PI_AGENT_ENABLED: {{ .Values.piAgent.enabled | quote }}
   PI_AGENT_PROVIDER: {{ .Values.app.config.piAgentProvider | quote }}
   PI_AGENT_MODEL: {{ .Values.app.config.piAgentModel | quote }}
-  PI_AGENT_MODEL_LABEL: {{ .Values.app.config.piAgentModelLabel | quote }}
+  PI_AGENT_MODELS_JSON: {{ .Values.app.config.piAgentModels | toJson | quote }}
   PI_AGENT_THINKING: {{ .Values.app.config.piAgentThinking | quote }}
   PI_AGENT_TIMEOUT_SECONDS: {{ .Values.app.config.piAgentTimeoutSeconds | quote }}
   PI_AGENT_MAX_TURNS: {{ .Values.app.config.piAgentMaxTurns | quote }}
