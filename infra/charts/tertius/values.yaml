@@ -157,6 +157,78 @@ api:
     liveness:
       initialDelaySeconds: 30
       periodSeconds: 20
+gisCache:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/d-b-w-gain/tertius-gis-cache
+    tag: master-169-1-f293f94 # {"$imagepromoter": "tertius-gis-cache"}
+    pullPolicy: IfNotPresent
+  port: 8000
+  service:
+    type: ClusterIP
+    port: 8000
+  maxUploadBytes: 536870912
+  maxRasterPixels: 250000000
+  gnafStates: "NSW"
+  terrainDefaultRadiusM: 2000
+  terrainMaxRadiusM: 10000
+  gaTerrainSourceUrl: "https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif"
+  gaWindMultipliers:
+    enabled: true
+    baseUrl: "https://thredds.nci.org.au/thredds"
+    timeoutSeconds: 30
+    workers: 8
+  nswTerrain:
+    enabled: true
+    elevationIndexUrl: "https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0/query"
+    demDownloadBaseUrl: "https://portal.spatial.nsw.gov.au/download/dem"
+    maxArchiveBytes: 419430400
+  nswCadastre:
+    propertyFeatureUrl: "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Land_Parcel_Property_Theme/FeatureServer/12/query"
+    timeoutSeconds: 30
+  buildings:
+    overtureEnabled: true
+    overtureTimeoutSeconds: 90
+    microsoftEnabled: true
+    microsoftIndexUrl: "https://bfppub.blob.core.windows.net/$web/2026-07-24/dataset-links.csv"
+    timeoutSeconds: 90
+    elvisHeights:
+      enabled: true
+      downloadablesUrl: "https://api.elevation.fsdf.org.au/elevation/downloadables"
+      radiusM: 120
+      timeoutSeconds: 180
+      maxTileBytes: 268435456
+      maxSiteBytes: 536870912
+      awsRegion: "ap-southeast-2"
+      identityPoolId: "ap-southeast-2:56462c13-533a-4f84-9a68-631dcd3345ad"
+  tmpSizeLimit: 4Gi
+  storage:
+    enabled: true
+    existingClaim: ""
+    size: 100Gi
+    storageClassName: ""
+    retain: true
+    emptyDirSizeLimit: 1Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+      ephemeral-storage: 4Gi
+  probes:
+    startup:
+      failureThreshold: 60
+      periodSeconds: 5
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      initialDelaySeconds: 30
+      periodSeconds: 20
 piAgent:
   enabled: false
   image:

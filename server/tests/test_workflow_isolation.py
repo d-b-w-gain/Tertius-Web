@@ -511,6 +511,57 @@ left = make_member("VISUAL-A")
     assert requirement["visual_instance_count"] == 1
 
 
+def test_extus_procurement_analysis_keeps_visual_bom_when_source_analysis_fails(
+    authenticated_extus_client,
+    db_session,
+    seeded_tenant,
+    monkeypatch,
+):
+    model_content = make_test_glb({
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [
+            {
+                "name": "Rendered Plate",
+                "children": [1],
+                "extras": {
+                    "tertiusBom": {
+                        "part_number": "VISUAL-PLATE",
+                        "quantity": 1,
+                        "unit": "each",
+                    }
+                },
+            },
+            {"name": "mesh_1", "mesh": 0},
+        ],
+        "meshes": [{"primitives": []}],
+    })
+    add_compile_job_with_artifacts(
+        db_session,
+        seeded_tenant,
+        manifest=None,
+        model_content=model_content,
+    )
+    db_session.commit()
+
+    def fail_source_analysis(_files):
+        raise TypeError("simulated unsupported source expression")
+
+    monkeypatch.setattr(extus_server, "analyze_design_sources", fail_source_analysis)
+
+    response = authenticated_extus_client.get("/procurement_analysis")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["manifest"]["analysis_mode"] == "visual_verified"
+    assert [item["part_number"] for item in payload["manifest"]["requirements"]] == ["VISUAL-PLATE"]
+    assert any(
+        diagnostic["code"] == "source_analysis_failed"
+        for diagnostic in payload["manifest"]["diagnostics"]
+    )
+
+
 def test_extus_model_returns_404_when_active_artifact_content_is_missing(
     authenticated_extus_client,
     db_session,

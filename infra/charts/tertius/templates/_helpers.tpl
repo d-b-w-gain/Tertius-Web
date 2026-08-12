@@ -44,6 +44,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-ui" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "tertius.gisCacheName" -}}
+{{- printf "%s-gis-cache" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "tertius.gisCacheClaimName" -}}
+{{- if .Values.gisCache.storage.existingClaim -}}
+{{- .Values.gisCache.storage.existingClaim -}}
+{{- else -}}
+{{- include "tertius.gisCacheName" . -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "tertius.otelCollectorName" -}}
 {{- printf "%s-otel-collector" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

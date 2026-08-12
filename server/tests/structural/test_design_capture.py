@@ -210,7 +210,7 @@ site_wind = structure.wind_action_basis(
     region_approximate=True,
     region_status="suggested",
     standard="AS/NZS 1170.2:2021",
-    table_version="AS1170.2-2021-starter-v1",
+    table_version="AS1170.2-2021-starter-v2",
     table_status="starter",
     importance_level="2",
     annual_recurrence_interval_years=500,
@@ -224,7 +224,7 @@ site_wind = structure.wind_action_basis(
     topographic_multiplier=1.0,
     site_wind_speed_m_s=33.75,
     q_z_kPa=0.683438,
-    verifier_hash="6fd0fef70f0f",
+    verifier_hash="77ee232fa355",
     provenance="FBD site-wind calculation test fixture.",
 )""",
     ).replace(

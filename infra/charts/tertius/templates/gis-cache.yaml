@@ -1,0 +1,191 @@
+{{- if .Values.gisCache.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tertius.gisCacheName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+spec:
+  replicas: {{ .Values.gisCache.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gis-cache
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "tertius.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gis-cache
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gis-cache
+          image: "{{ .Values.gisCache.image.repository }}:{{ .Values.gisCache.image.tag }}"
+          imagePullPolicy: {{ .Values.gisCache.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+          ports:
+            - name: http
+              containerPort: {{ .Values.gisCache.port }}
+          env:
+            - name: GIS_CACHE_ROOT
+              value: /var/lib/tertius-gis
+            - name: GIS_MAX_UPLOAD_BYTES
+              value: {{ printf "%d" (.Values.gisCache.maxUploadBytes | int64) | quote }}
+            - name: GIS_MAX_RASTER_PIXELS
+              value: {{ printf "%d" (.Values.gisCache.maxRasterPixels | int64) | quote }}
+            - name: GIS_GNAF_STATES
+              value: {{ .Values.gisCache.gnafStates | quote }}
+            - name: GIS_TERRAIN_DEFAULT_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.terrainDefaultRadiusM | int64) | quote }}
+            - name: GIS_TERRAIN_MAX_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.terrainMaxRadiusM | int64) | quote }}
+            - name: GIS_GA_TERRAIN_SOURCE_URL
+              value: {{ .Values.gisCache.gaTerrainSourceUrl | quote }}
+            - name: GIS_GA_WIND_MULTIPLIERS_ENABLED
+              value: {{ .Values.gisCache.gaWindMultipliers.enabled | quote }}
+            - name: GIS_GA_WIND_MULTIPLIERS_BASE_URL
+              value: {{ .Values.gisCache.gaWindMultipliers.baseUrl | quote }}
+            - name: GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.gaWindMultipliers.timeoutSeconds | quote }}
+            - name: GIS_GA_WIND_MULTIPLIER_WORKERS
+              value: {{ .Values.gisCache.gaWindMultipliers.workers | quote }}
+            - name: GIS_NSW_TERRAIN_ENABLED
+              value: {{ .Values.gisCache.nswTerrain.enabled | quote }}
+            - name: GIS_NSW_ELEVATION_INDEX_URL
+              value: {{ .Values.gisCache.nswTerrain.elevationIndexUrl | quote }}
+            - name: GIS_NSW_DEM_DOWNLOAD_BASE_URL
+              value: {{ .Values.gisCache.nswTerrain.demDownloadBaseUrl | quote }}
+            - name: GIS_NSW_MAX_ARCHIVE_BYTES
+              value: {{ printf "%d" (.Values.gisCache.nswTerrain.maxArchiveBytes | int64) | quote }}
+            - name: GIS_NSW_PROPERTY_FEATURE_URL
+              value: {{ .Values.gisCache.nswCadastre.propertyFeatureUrl | quote }}
+            - name: GIS_NSW_PROPERTY_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.nswCadastre.timeoutSeconds | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_ENABLED
+              value: {{ .Values.gisCache.buildings.microsoftEnabled | quote }}
+            - name: GIS_OVERTURE_BUILDINGS_ENABLED
+              value: {{ .Values.gisCache.buildings.overtureEnabled | quote }}
+            - name: GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.overtureTimeoutSeconds | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_INDEX_URL
+              value: {{ .Values.gisCache.buildings.microsoftIndexUrl | quote }}
+            - name: GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.timeoutSeconds | quote }}
+            - name: GIS_ELVIS_BUILDING_HEIGHTS_ENABLED
+              value: {{ .Values.gisCache.buildings.elvisHeights.enabled | quote }}
+            - name: GIS_ELVIS_DOWNLOADABLES_URL
+              value: {{ .Values.gisCache.buildings.elvisHeights.downloadablesUrl | quote }}
+            - name: GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.radiusM | int64) | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS
+              value: {{ .Values.gisCache.buildings.elvisHeights.timeoutSeconds | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_MAX_BYTES
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.maxTileBytes | int64) | quote }}
+            - name: GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES
+              value: {{ printf "%d" (.Values.gisCache.buildings.elvisHeights.maxSiteBytes | int64) | quote }}
+            - name: GIS_ELVIS_AWS_REGION
+              value: {{ .Values.gisCache.buildings.elvisHeights.awsRegion | quote }}
+            - name: GIS_ELVIS_IDENTITY_POOL_ID
+              value: {{ .Values.gisCache.buildings.elvisHeights.identityPoolId | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: tertius-gis-cache
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "tertius.configName" . }}
+                  key: OTEL_EXPORTER_OTLP_ENDPOINT
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            failureThreshold: {{ .Values.gisCache.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.gisCache.probes.startup.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.gisCache.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.gisCache.probes.readiness.periodSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: {{ .Values.gisCache.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.gisCache.probes.liveness.periodSeconds }}
+          resources:
+            {{- toYaml .Values.gisCache.resources | nindent 12 }}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/tertius-gis
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: cache
+          {{- if .Values.gisCache.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "tertius.gisCacheClaimName" . }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.gisCache.storage.emptyDirSizeLimit }}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.gisCache.tmpSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tertius.gisCacheName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+spec:
+  type: {{ .Values.gisCache.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.gisCache.service.port }}
+      targetPort: http
+  selector:
+    {{- include "tertius.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+{{- if and .Values.gisCache.storage.enabled (not .Values.gisCache.storage.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tertius.gisCacheClaimName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+  {{- if .Values.gisCache.storage.retain }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.gisCache.storage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.gisCache.storage.size }}
+{{- end }}
+{{- end }}

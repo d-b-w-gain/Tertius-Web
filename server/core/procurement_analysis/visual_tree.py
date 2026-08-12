@@ -386,6 +386,11 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
         name = _node_name(node)
         if not _is_group(node) or not name or not _is_generated_or_default(name):
             return False
+        if any(
+            _tertius_bom_metadata(child) is not None
+            for child in _children(node)
+        ):
+            return False
         if any(_is_group(child) and _has_mesh_descendant(child) for child in _bom_enabled_children(node)):
             return False
         return bool(_mesh_descendants(node))
@@ -425,6 +430,8 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
     def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         name = _node_name(node)
         if _bom_disabled(node):
+            for child in _children(node):
+                visit(child, [*ancestors, node])
             return
         bom_metadata = _tertius_bom_metadata(node)
         if _is_mesh(node):
@@ -635,11 +642,13 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 "path": path_for(ancestors, node),
             })
 
-        for child in _bom_enabled_children(node):
+        for child in _children(node):
             visit(child, [*ancestors, node])
 
     def collect_mesh_fallbacks(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
         if _bom_disabled(node):
+            for child in _children(node):
+                collect_mesh_fallbacks(child, [*ancestors, node])
             return
         if _is_mesh(node):
             path = path_for(ancestors, node)
@@ -654,7 +663,7 @@ def analyze_gltf_tree(gltf: dict[str, Any]) -> dict[str, Any]:
                 source_call_ids=source_call_ids_for(node),
             )
             return
-        for child in _bom_enabled_children(node):
+        for child in _children(node):
             collect_mesh_fallbacks(child, [*ancestors, node])
 
     for root in roots:

@@ -131,14 +131,22 @@ def _is_project_frame(frame) -> bool:
 def _shape_targets(value: Any) -> list[Any]:
     if value is None:
         return []
+    if isinstance(value, dict):
+        targets: list[Any] = []
+        for item in value.values():
+            targets.extend(_shape_targets(item))
+        return targets
     if isinstance(value, (list, tuple, set)):
         targets: list[Any] = []
         for item in value:
             targets.extend(_shape_targets(item))
         return targets
-    part = getattr(value, "part", None)
-    if isinstance(part, bd.Shape):
-        return [part]
+    for attribute in ("shape", "part"):
+        target = getattr(value, attribute, None)
+        if target is not None and target is not value:
+            targets = _shape_targets(target)
+            if targets:
+                return targets
     if isinstance(value, bd.Shape):
         return [value]
     return []
@@ -188,14 +196,39 @@ def _append_source_ids_from(source: Any, target: Any) -> None:
         _set_source_ids(target_shape, ids)
 
 
-def _copy_provenance(source: Any, result: Any) -> Any:
+def _bom_metadata(value: Any) -> dict[str, Any] | None:
+    metadata = getattr(value, "tertius_bom", None)
+    return dict(metadata) if isinstance(metadata, dict) else None
+
+
+def _set_bom_metadata(value: Any, metadata: dict[str, Any] | None) -> None:
+    if not isinstance(value, bd.Shape) or metadata is None:
+        return
+    try:
+        setattr(value, "tertius_bom", dict(metadata))
+    except Exception:
+        pass
+
+
+def _copy_visual_contract(source: Any, result: Any) -> Any:
     if not isinstance(source, bd.Shape) or not isinstance(result, bd.Shape):
         return result
     _set_source_ids(result, _source_ids(source))
+    _set_bom_metadata(result, _bom_metadata(source))
     source_children = [child for child in (getattr(source, "children", ()) or ()) if isinstance(child, bd.Shape)]
     result_children = [child for child in (getattr(result, "children", ()) or ()) if isinstance(child, bd.Shape)]
     for source_child, result_child in zip(source_children, result_children):
-        _copy_provenance(source_child, result_child)
+        _copy_visual_contract(source_child, result_child)
+    return result
+
+
+def _copy_visual_contracts(source: Any, result: Any) -> Any:
+    source_targets = _shape_targets(source)
+    result_targets = _shape_targets(result)
+    if len(source_targets) == 1 and len(result_targets) == 1:
+        return _copy_visual_contract(source_targets[0], result_targets[0])
+    for source_target, result_target in zip(source_targets, result_targets):
+        _copy_visual_contract(source_target, result_target)
     return result
 
 
@@ -208,7 +241,7 @@ def _patch_shape_method(name: str) -> None:
         def patched(self, *args, __original=original, **kwargs):
             result = __original(self, *args, **kwargs)
             try:
-                _copy_provenance(self, result)
+                _copy_visual_contract(self, result)
             except Exception:
                 pass
             return result
@@ -227,7 +260,7 @@ def _patch_shape_binary_operator(name: str) -> None:
         def patched(self, other, __original=original):
             result = __original(self, other)
             try:
-                _copy_provenance(self, result)
+                _copy_visual_contract(self, result)
                 _append_source_ids_from(other, result)
             except Exception:
                 pass
@@ -236,6 +269,24 @@ def _patch_shape_binary_operator(name: str) -> None:
         setattr(patched, "_tertius_provenance_patch", True)
         setattr(cls, name, patched)
         _patched_methods.append((cls, name, original))
+
+
+def _patch_shape_function(name: str) -> None:
+    original = getattr(bd, name, None)
+    if original is None or getattr(original, "_tertius_provenance_patch", False):
+        return
+
+    def patched(objects=None, *args, **kwargs):
+        result = original(objects, *args, **kwargs)
+        try:
+            _copy_visual_contracts(objects, result)
+        except Exception:
+            pass
+        return result
+
+    setattr(patched, "_tertius_provenance_patch", True)
+    setattr(bd, name, patched)
+    _patched_functions.append((bd, name, original))
 
 
 def _patch_add() -> None:
@@ -251,6 +302,14 @@ def _patch_add() -> None:
             if context_part is not None:
                 for item in objects:
                     _append_source_ids_from(item, context_part)
+                metadata = [
+                    item_metadata
+                    for item in objects
+                    for target in _shape_targets(item)
+                    if (item_metadata := _bom_metadata(target)) is not None
+                ]
+                if metadata and all(item == metadata[0] for item in metadata[1:]):
+                    _set_bom_metadata(context_part, metadata[0])
         except Exception:
             pass
         return result
@@ -453,10 +512,11 @@ def install(project_dir: str | Path) -> None:
     global _project_dir, _project_dir_prefix, _previous_profile
     _project_dir = Path(project_dir).resolve()
     _project_dir_prefix = str(_project_dir).replace("\\", "/").rstrip("/") + "/"
-    for name in ("moved", "located"):
+    for name in ("moved", "located", "cut"):
         _patch_shape_method(name)
     for name in ("__add__", "__sub__", "__and__"):
         _patch_shape_binary_operator(name)
+    _patch_shape_function("mirror")
     _patch_add()
     _previous_profile = sys.getprofile()
     sys.setprofile(_profile)

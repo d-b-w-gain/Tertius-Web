@@ -171,6 +171,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
             )
         output_bytes = result.output_path.read_bytes()
         structural_manifest_json = None
+        bom_manifest_json = None
         manifest_path = getattr(result, "structural_manifest_path", None)
         if manifest_path is not None:
             try:
@@ -203,6 +204,34 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
                     ),
                     retryable=False,
                 )
+        bom_manifest_path = getattr(result, "bom_manifest_path", None)
+        if bom_manifest_path is not None:
+            try:
+                bom_manifest = json.loads(
+                    bom_manifest_path.read_text(encoding="utf-8")
+                )
+                if not isinstance(bom_manifest, dict):
+                    raise ValueError("manifest root must be a JSON object")
+                bom_manifest["source_snapshot_hash"] = runtime_files_hash(files)
+                bom_manifest_json = json.dumps(
+                    bom_manifest,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                return _failed_result(
+                    command,
+                    started_at,
+                    error=f"Invalid compiled BoM manifest: {exc}",
+                    error_code="invalid_bom_manifest",
+                    user_message=(
+                        "Compile produced invalid Procurement metadata. "
+                        "Fix the BOM declarations in the design or component library."
+                    ),
+                    retryable=False,
+                )
 
     is_compressed = False
     payload_bytes = output_bytes
@@ -223,6 +252,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
         artifact_byte_size=len(output_bytes),  # original uncompressed size
         artifact_content_type=None,
         structural_manifest_json=structural_manifest_json,
+        bom_manifest_json=bom_manifest_json,
         is_compressed=is_compressed,
         worker_started_at=started_at,
         worker_finished_at=now_utc(),

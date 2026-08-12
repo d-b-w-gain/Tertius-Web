@@ -142,6 +142,7 @@ def test_structural_site_picker_exposes_region_conflict_and_qz_derivation():
     assert payload["selected_region"] == "C"
     assert payload["suggested_region"] == "A2"
     assert payload["region_conflict"] is True
-    assert payload["q_z_kPa"] == pytest.approx(1.62084)
+    assert payload["terrain_height_multiplier"] == pytest.approx(0.83)
+    assert payload["q_z_kPa"] == pytest.approx(1.985061)
     assert overlay_response.status_code == 200
     assert overlay_response.json()["type"] == "FeatureCollection"

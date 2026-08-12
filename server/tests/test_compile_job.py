@@ -169,6 +169,59 @@ def test_compile_job_attaches_hashed_compiled_structural_manifest(
     assert compiled.declaration["title"] == "Catalogue fixture"
 
 
+def test_compile_job_attaches_hashed_bom_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    from core.compile_runtime import runtime_files_hash
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    output_path = tmp_path / "output.glb"
+    output_path.write_bytes(b"glb")
+    manifest_path = tmp_path / "tertius-bom-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "source_snapshot_hash": "",
+                "scopes": [],
+                "components": [],
+                "requirements": [],
+                "diagnostics": [{"code": "fixture", "severity": "info"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox",
+        lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            structural_manifest_path=None,
+            bom_manifest_path=manifest_path,
+            stdout="",
+            stderr="",
+            error=None,
+        ),
+    )
+    source_files = [
+        CompileSourceFile(filename="design.py", content="shape = 'queued'\n"),
+        CompileSourceFile(filename="parts.py", content="PART = 'fixture'\n"),
+    ]
+    msg = FakeMsg(command_payload(export_format="glb", files=source_files))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
+
+    result = publisher.published[0][1]
+    manifest = json.loads(result.bom_manifest_json)
+    assert manifest["source_snapshot_hash"] == runtime_files_hash(
+        {file.filename: file.content for file in source_files}
+    )
+    assert manifest["diagnostics"] == [{"code": "fixture", "severity": "info"}]
+
+
 def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
     from workflows.intus.compile_job import handle_compile_request_message
 

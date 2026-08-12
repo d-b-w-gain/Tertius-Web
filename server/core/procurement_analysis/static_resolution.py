@@ -170,7 +170,8 @@ class StaticValueResolver:
                     return None
                 values.append(resolved.value)
                 dependencies.extend(resolved.dependencies)
-            return StaticResolution(value=values, resolution="static_container", dependencies=tuple(dependencies))
+            container = tuple(values) if isinstance(node, ast.Tuple) else values
+            return StaticResolution(value=container, resolution="static_container", dependencies=tuple(dependencies))
         if isinstance(node, ast.Dict):
             result: dict[Any, Any] = {}
             dict_dependencies: list[str] = []
@@ -182,7 +183,10 @@ class StaticValueResolver:
                     value = self.resolve(value_node, known, filename=filename, call_stack=call_stack)
                 except ValueError:
                     return None
-                result[key.value] = value.value
+                try:
+                    result[key.value] = value.value
+                except TypeError:
+                    return None
                 dict_dependencies.extend(key.dependencies)
                 dict_dependencies.extend(value.dependencies)
             return StaticResolution(value=result, resolution="static_container", dependencies=tuple(dict_dependencies))

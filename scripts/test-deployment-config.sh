@@ -1276,8 +1276,8 @@ if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q
   exit 1
 fi
 
-if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.ui' "${ROOT_DIR}/.github/workflows/images.yml"; then
-  echo ".github/workflows/images.yml must build both Dockerfile.api and Dockerfile.ui." >&2
+if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.ui' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.gis' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml must build the API, UI, and GIS cache Dockerfiles." >&2
   exit 1
 fi
 
@@ -1293,6 +1293,11 @@ fi
 
 if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
   echo ".github/workflows/images.yml does not push the expected UI image tags." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-gis-cache:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-gis-cache:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not push the expected GIS cache image tags." >&2
   exit 1
 fi
 
@@ -1382,7 +1387,7 @@ cp -p "${CHART_DIR}/values.yaml" "$promotion_values"
 chmod 6755 "$promotion_values"
 promotion_mode_before="$(stat -c '%a' "$promotion_values")"
 sed -E \
-  '/"\$imagepromoter": "tertius-(api|pi-agent|ui)"/s/(tag:[[:space:]]*)[^[:space:]]+/\1master-999-1-abcdef0/' \
+  '/"\$imagepromoter": "tertius-(api|gis-cache|pi-agent|ui)"/s/(tag:[[:space:]]*)[^[:space:]]+/\1master-999-1-abcdef0/' \
   "${CHART_DIR}/values.yaml" >"$promotion_expected"
 if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
   --values "$promotion_values" \
@@ -1392,7 +1397,7 @@ if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
 fi
 
 if ! cmp -s "$promotion_expected" "$promotion_values"; then
-  echo "scripts/promote_images.py must preserve all bytes outside the three marked tag scalars." >&2
+  echo "scripts/promote_images.py must preserve all bytes outside the four marked tag scalars." >&2
   exit 1
 fi
 

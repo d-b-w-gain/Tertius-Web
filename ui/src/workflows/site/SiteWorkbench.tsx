@@ -1,16 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 
 import { apiFetch } from '../../api/client'
 import { useAuth } from '../../auth/AuthProvider'
 import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
-import { WindRegionMap } from '../structural/WindRegionMap'
+import { GisEvidencePanel } from './GisEvidencePanel'
+import { DirectionalMultiplierEditor } from './DirectionalMultiplierEditor'
+import { SiteExplorer } from './SiteExplorer'
+import { StandardTableEvidencePanel } from './StandardTableEvidencePanel'
+import { StructureWindRose } from './StructureWindRose'
+import { WindMultiplierEvidencePanel } from './WindMultiplierEvidencePanel'
 import type {
+  CandidateModelSiteDimensions,
+  GisGeocodeCandidate,
+  GisBuildingEvidence,
+  GisEvidenceManifest,
+  GisDirectionalWindMultiplierEvidence,
+  GisSiteBoundaryEvidence,
   SiteCalculation,
   SiteDefinition,
   SiteWorkbenchResponse,
+  WindStandardEvidence,
 } from './contracts'
 
 
@@ -61,6 +73,28 @@ function Field({ label, hint, children }: {
   )
 }
 
+function FeatureDrawer({ title, detail, children, defaultOpen = false }: {
+  title: string
+  detail?: string
+  children: ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="group rounded border border-slate-800 bg-slate-900/35">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 hover:bg-slate-800/50">
+        <span>
+          <span className="text-sm font-semibold text-slate-200">{title}</span>
+          {detail && <span className="ml-2 text-[10px] text-slate-500">{detail}</span>}
+        </span>
+        <span className="text-xs text-cyan-400 transition-transform group-open:rotate-90">›</span>
+      </summary>
+      <div className="border-t border-slate-800 p-3">{children}</div>
+    </details>
+  )
+}
+
 function errorDetail(payload: unknown, fallback: string) {
   if (payload && typeof payload === 'object' && 'detail' in payload) {
     const detail = payload.detail
@@ -81,6 +115,7 @@ type SiteWorkbenchProps = {
 export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const serverUrl = resolveWorkflowServerUrl('site', import.meta.env?.VITE_API_URL)
+  const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
   const [projectName, setProjectName] = useState('')
   const [exists, setExists] = useState(false)
   const [draft, setDraft] = useState<SiteDefinition | null>(null)
@@ -90,8 +125,49 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   const [error, setError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
   const [isDirty, setIsDirty] = useState(false)
+  const [geocodeCandidates, setGeocodeCandidates] = useState<GisGeocodeCandidate[]>([])
+  const [terrainEvidence, setTerrainEvidence] = useState<GisEvidenceManifest | null>(null)
+  const [siteBoundary, setSiteBoundary] = useState<GisSiteBoundaryEvidence | null>(null)
+  const [buildingEvidence, setBuildingEvidence] = useState<GisBuildingEvidence | null>(null)
+  const [directionalEvidence, setDirectionalEvidence] = useState<GisDirectionalWindMultiplierEvidence | null>(null)
+  const [candidateDimensions, setCandidateDimensions] = useState<CandidateModelSiteDimensions | null>(null)
+  const [standardEvidence, setStandardEvidence] = useState<WindStandardEvidence | null>(null)
+  const [isReportBusy, setIsReportBusy] = useState(false)
+  const [inspectorWidth, setInspectorWidth] = useState(430)
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
   const requestId = useRef(0)
+  const terrainFetchKey = useRef('')
+  const boundaryFetchKey = useRef('')
+  const buildingFetchKey = useRef('')
+  const candidateDimensionsKey = useRef('')
+  const hasLoaded = useRef(false)
   const standardsSection = useRef<HTMLElement>(null)
+  const siteLatitude = draft?.location.latitude
+  const siteLongitude = draft?.location.longitude
+  const terrainReference = draft?.terrain_evidence
+  const buildingLatitude = draft?.structure.placement_latitude ?? siteLatitude
+  const buildingLongitude = draft?.structure.placement_longitude ?? siteLongitude
+  const buildingRadius = draft
+    ? Math.max(50, 20 * draft.wind.reference_height_m)
+    : undefined
+
+  const beginInspectorResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (inspectorCollapsed) return
+    event.preventDefault()
+    const move = (pointerEvent: PointerEvent) => {
+      setInspectorWidth(Math.min(720, Math.max(320, window.innerWidth - pointerEvent.clientX)))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }, [inspectorCollapsed])
 
   const load = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
@@ -109,10 +185,12 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       }
       if (currentRequest !== requestId.current) return
       const next = payload as SiteWorkbenchResponse
+      hasLoaded.current = true
       setProjectName(next.project_name)
       setExists(next.exists)
       setDraft(next.site_dict)
       setCalculation(next.calculation)
+      setStandardEvidence(next.calculation.standard_table_evidence ?? null)
       setSource(next.source)
       setIsDirty(false)
       setStatus(
@@ -129,14 +207,212 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   }, [authMode, getAccessToken, isActive, serverUrl])
 
   useEffect(() => {
-    void load()
-    const handleProjectChange = () => void load()
+    if (!isActive || authMode !== 'authenticated') return
+    const latitude = siteLatitude
+    const longitude = siteLongitude
+    if (typeof latitude !== 'number' || typeof longitude !== 'number'
+      || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return
+    const key = `${latitude.toFixed(6)},${longitude.toFixed(6)}`
+    if (terrainFetchKey.current === key) return
+
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      terrainFetchKey.current = key
+      const acquire = async () => {
+        const reference = terrainReference
+        const matchesSavedReference = Boolean(
+          reference
+          && Math.abs(reference.site_latitude - latitude) <= 1e-6
+          && Math.abs(reference.site_longitude - longitude) <= 1e-6,
+        )
+        if (reference && matchesSavedReference) {
+          const restored = await apiFetch(
+            `${serverUrl}/gis/evidence/${reference.evidence_id}`,
+            getAccessToken,
+          )
+          if (restored.ok) {
+            return {
+              manifest: await restored.json() as GisEvidenceManifest,
+              restored: true,
+            }
+          }
+        }
+        const query = new URLSearchParams({
+          latitude: String(latitude),
+          longitude: String(longitude),
+          radius_m: '2000',
+        })
+        const response = await apiFetch(`${serverUrl}/gis/terrain/site?${query}`, getAccessToken, {
+          method: 'POST',
+        })
+        const payload = await response.json().catch(() => null) as
+          | GisEvidenceManifest
+          | { detail?: string }
+          | null
+        if (!response.ok) {
+          throw new Error(errorDetail(payload, `Terrain acquisition returned ${response.status}`))
+        }
+        return { manifest: payload as GisEvidenceManifest, restored: false }
+      }
+      setStatus(terrainReference
+        ? 'Restoring the adopted terrain evidence from the GIS cache...'
+        : 'Loading the best cached terrain for this site...')
+      void acquire().then(({ manifest, restored }) => {
+        if (cancelled) return
+        setTerrainEvidence(manifest)
+        if (!restored) {
+          const reference = {
+            evidence_id: manifest.evidence_id,
+            site_latitude: latitude,
+            site_longitude: longitude,
+            radius_m: 2000,
+          }
+          setDraft((current) => current ? { ...current, terrain_evidence: reference } : current)
+          void apiFetch(`${serverUrl}/active/terrain-evidence`, getAccessToken, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reference),
+          }).catch(() => undefined)
+        }
+        setStatus(
+          restored
+            ? `${manifest.source.provider} terrain restored from the adopted cache record; no terrain was downloaded.`
+            : `${manifest.source.provider} terrain loaded once and attached to this site; future reloads reuse this evidence ID.`,
+        )
+      }).catch((terrainError) => {
+        if (cancelled) return
+        terrainFetchKey.current = ''
+        setError(terrainError instanceof Error ? terrainError.message : 'Terrain acquisition failed')
+      })
+    }, 600)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    authMode,
+    getAccessToken,
+    isActive,
+    serverUrl,
+    siteLatitude,
+    siteLongitude,
+    terrainReference,
+  ])
+
+  useEffect(() => {
+    if (!isActive || authMode !== 'authenticated'
+      || typeof buildingLatitude !== 'number'
+      || typeof buildingLongitude !== 'number'
+      || typeof buildingRadius !== 'number') return
+    const key = `${buildingLatitude.toFixed(6)},${buildingLongitude.toFixed(6)},${buildingRadius.toFixed(1)}`
+    if (buildingFetchKey.current === key) return
+    buildingFetchKey.current = key
+    const query = new URLSearchParams({
+      latitude: String(buildingLatitude),
+      longitude: String(buildingLongitude),
+      radius_m: String(buildingRadius),
+    })
+    let cancelled = false
+    void apiFetch(`${serverUrl}/gis/buildings/site?${query}`, getAccessToken)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null) as GisBuildingEvidence | { detail?: string } | null
+        if (!response.ok) throw new Error(errorDetail(payload, `Building evidence returned ${response.status}`))
+        return payload as GisBuildingEvidence
+      })
+      .then((evidence) => { if (!cancelled) setBuildingEvidence(evidence) })
+      .catch(() => {
+        if (cancelled) return
+        buildingFetchKey.current = ''
+        setBuildingEvidence(null)
+    })
+    return () => { cancelled = true }
+  }, [
+    authMode,
+    buildingLatitude,
+    buildingLongitude,
+    buildingRadius,
+    getAccessToken,
+    isActive,
+    serverUrl,
+  ])
+
+  useEffect(() => {
+    if (!isActive || authMode !== 'authenticated') return
+    const latitude = siteLatitude
+    const longitude = siteLongitude
+    if (typeof latitude !== 'number' || typeof longitude !== 'number'
+      || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return
+    const key = `${latitude.toFixed(6)},${longitude.toFixed(6)}`
+    if (boundaryFetchKey.current === key) return
+    boundaryFetchKey.current = key
+    const query = new URLSearchParams({
+      latitude: String(latitude),
+      longitude: String(longitude),
+    })
+    let cancelled = false
+    void apiFetch(`${serverUrl}/gis/cadastre/site?${query}`, getAccessToken)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null) as
+          | GisSiteBoundaryEvidence
+          | { detail?: string }
+          | null
+        if (!response.ok) {
+          throw new Error(errorDetail(payload, `Property boundary returned ${response.status}`))
+        }
+        if (
+          !payload
+          || !('schema_version' in payload)
+          || payload.schema_version !== 'tertius.gis.site-boundary.v1'
+          || !('feature' in payload)
+        ) {
+          throw new Error('Property boundary returned an unexpected response')
+        }
+        return payload as GisSiteBoundaryEvidence
+      })
+      .then((boundary) => {
+        if (!cancelled) setSiteBoundary(boundary)
+      })
+      .catch(() => {
+        if (cancelled) return
+        boundaryFetchKey.current = ''
+        setSiteBoundary(null)
+      })
+    return () => { cancelled = true }
+  }, [
+    authMode,
+    getAccessToken,
+    isActive,
+    serverUrl,
+    siteLatitude,
+    siteLongitude,
+  ])
+
+  useEffect(() => {
+    if (authMode !== 'authenticated') {
+      hasLoaded.current = false
+    } else if (isActive && !hasLoaded.current) {
+      void load()
+    }
+    const handleProjectChange = () => {
+      hasLoaded.current = false
+      terrainFetchKey.current = ''
+      boundaryFetchKey.current = ''
+      buildingFetchKey.current = ''
+      candidateDimensionsKey.current = ''
+      setTerrainEvidence(null)
+      setSiteBoundary(null)
+      setBuildingEvidence(null)
+      setDirectionalEvidence(null)
+      setCandidateDimensions(null)
+      if (isActive) void load()
+    }
     window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleProjectChange)
     return () => {
       window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, handleProjectChange)
       requestId.current += 1
     }
-  }, [load])
+  }, [authMode, isActive, load])
 
   const edit = useCallback((next: SiteDefinition) => {
     setDraft(next)
@@ -144,6 +420,43 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     setCalculation(null)
     setStatus('Unsaved site inputs.')
   }, [])
+
+  const applyCandidateModelDimensions = useCallback((dimensions: CandidateModelSiteDimensions) => {
+    setCandidateDimensions((current) => (
+      current?.model_artifact_id === dimensions.model_artifact_id ? current : dimensions
+    ))
+    if (!draft || candidateDimensionsKey.current === dimensions.model_artifact_id) return
+    candidateDimensionsKey.current = dimensions.model_artifact_id
+    const differs = (
+      Math.abs(draft.structure.footprint_length_m - dimensions.footprint_length_m) > 1e-3
+      || Math.abs(draft.structure.footprint_width_m - dimensions.footprint_width_m) > 1e-3
+      || Math.abs(draft.wind.reference_height_m - dimensions.reference_height_m) > 1e-3
+    )
+    if (!differs) return
+    edit({
+      ...draft,
+      structure: {
+        ...draft.structure,
+        footprint_length_m: dimensions.footprint_length_m,
+        footprint_width_m: dimensions.footprint_width_m,
+      },
+      wind: {
+        ...draft.wind,
+        reference_height_m: dimensions.reference_height_m,
+        cardinal_terrain_height_multipliers: null,
+        cardinal_shielding_multipliers: null,
+        cardinal_topographic_multipliers: null,
+        multiplier_evidence: null,
+      },
+    })
+    buildingFetchKey.current = ''
+    setDirectionalEvidence(null)
+    setStatus(
+      `Synced the active candidate model: ${dimensions.footprint_length_m.toFixed(2)} × `
+      + `${dimensions.footprint_width_m.toFixed(2)} m, wind reference height `
+      + `${dimensions.reference_height_m.toFixed(2)} m. Rebuilding directional evidence.`,
+    )
+  }, [draft, edit])
 
   const updateProjectBasis = <K extends keyof SiteDefinition['project_basis']>(
     key: K,
@@ -181,6 +494,11 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   ) => {
     if (!draft) return
     edit({ ...draft, wind: { ...draft.wind, [key]: value } })
+  }
+
+  const updateStructure = (structure: SiteDefinition['structure']) => {
+    if (!draft) return
+    edit({ ...draft, structure })
   }
 
   const updateActionEnvelope = <
@@ -222,6 +540,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       }
       const next = payload as SiteCalculation
       setCalculation(next)
+      setStandardEvidence(next.standard_table_evidence ?? null)
       setStatus(`Derived qz = ${next.q_z_kPa.toFixed(6)} kPa. Not saved yet.`)
       return next
     } catch (calculationError) {
@@ -231,6 +550,12 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       setIsBusy(false)
     }
   }, [draft, getAccessToken, serverUrl])
+
+  useEffect(() => {
+    if (!isActive || !isDirty || !draft) return
+    const timer = window.setTimeout(() => void calculate(), 500)
+    return () => window.clearTimeout(timer)
+  }, [calculate, draft, isActive, isDirty])
 
   const save = useCallback(async () => {
     if (!draft) return
@@ -254,6 +579,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       setExists(true)
       setDraft(next.site_dict)
       setCalculation(next.calculation)
+      setStandardEvidence(next.calculation.standard_table_evidence ?? null)
       setSource(next.source)
       setIsDirty(false)
       setStatus(
@@ -273,11 +599,121 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     }
   }, [draft, getAccessToken, serverUrl])
 
-  const pickCoordinates = useCallback(async (latitude: number, longitude: number) => {
+  const downloadSiteReport = useCallback(async () => {
+    if (!draft) return
+    setIsReportBusy(true)
+    setError(null)
+    setStatus('Building the site wind evidence report...')
+    try {
+      const response = await apiFetch(`${serverUrl}/report/site-wind.pdf`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      })
+      if (!response.ok) throw new Error(`Site report returned ${response.status}`)
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'tertius-site-wind-basis.pdf'
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setStatus(
+        'Downloaded the PDF evidence report with cached building heights, satellite '
+        + 'placement and parcel, terrain heat map, four primary x-z plots from eight sampled directions, calculation ledger '
+        + 'and supplied 2021 standard extracts.',
+      )
+    } catch (reportError) {
+      setError(reportError instanceof Error ? reportError.message : 'Could not download site report')
+    } finally {
+      setIsReportBusy(false)
+    }
+  }, [draft, getAccessToken, serverUrl])
+
+  const applyStandardTableValues = useCallback((evidence: WindStandardEvidence) => {
+    if (!draft || evidence.region !== draft.wind.region) return
+    edit({
+      ...draft,
+      wind: {
+        ...draft.wind,
+        cardinal_direction_multipliers: evidence.direction_multipliers,
+        climate_change_multiplier: evidence.climate_change_multiplier,
+        table_status: 'starter',
+      },
+    })
+    setStatus(
+      `Applied Table 3.2(A) Md and Table 3.3 Mc for ${evidence.region}; `
+      + 'licensed-standard verification is still required.',
+    )
+  }, [draft, edit])
+
+  const applyMultiplierEvidence = useCallback((
+    components: Array<'M_z_cat' | 'M_s' | 'M_t'>,
+    evidence: GisDirectionalWindMultiplierEvidence,
+  ) => {
+    if (!draft) return
+    setDirectionalEvidence(evidence)
+    const currentEvidence = draft.wind.multiplier_evidence
+    if (
+      currentEvidence?.evidence_id === evidence.evidence_id
+      && components.length === currentEvidence.adopted_components.length
+      && components.every((component) => currentEvidence.adopted_components.includes(component))
+    ) return
+    const componentField = {
+      M_z_cat: 'cardinal_terrain_height_multipliers',
+      M_s: 'cardinal_shielding_multipliers',
+      M_t: 'cardinal_topographic_multipliers',
+    } as const
+    const componentValues = {
+      M_z_cat: evidence.terrain_height_multipliers,
+      M_s: evidence.shielding_multipliers,
+      M_t: evidence.topographic_multipliers,
+    }
+    const nextWind = { ...draft.wind }
+    for (const component of components) {
+      nextWind[componentField[component]] = componentValues[component]
+    }
+    edit({
+      ...draft,
+      wind: {
+        ...nextWind,
+        multiplier_evidence: {
+          evidence_id: evidence.evidence_id,
+          provider: evidence.provider,
+          dataset: evidence.dataset,
+          dataset_version: evidence.dataset_version,
+          source_uri: evidence.source_uri,
+          site_latitude: evidence.latitude,
+          site_longitude: evidence.longitude,
+          terrain_reference_height_m: evidence.terrain_reference_height_m,
+          method_status: evidence.method_status,
+          terrain_evidence_id: evidence.terrain_evidence_id ?? null,
+          placement_latitude: evidence.placement_latitude ?? null,
+          placement_longitude: evidence.placement_longitude ?? null,
+          footprint_length_m: evidence.footprint_length_m ?? null,
+          footprint_width_m: evidence.footprint_width_m ?? null,
+          front_bearing_degrees: evidence.front_bearing_degrees ?? null,
+          adopted_components: components,
+          review_status: 'suggested',
+          review_reason: 'Automatically applied as best-available preliminary evidence; licensed-standard verification remains a separate certification step.',
+        },
+      },
+    })
+    setStatus(`Automatically applied pinned GIS values for ${components.join(', ')} to the working calculation.`)
+  }, [draft, edit])
+
+  const pickAddressCoordinates = useCallback(async (latitude: number, longitude: number, address?: string) => {
     if (!draft) return
     const coordinateDraft = {
       ...draft,
-      location: { ...draft.location, latitude, longitude },
+      location: { ...draft.location, latitude, longitude, address: address || draft.location.address },
+      structure: draft.structure.placement_latitude == null
+        ? {
+          ...draft.structure,
+          placement_latitude: latitude,
+          placement_longitude: longitude,
+        }
+        : draft.structure,
     }
     edit(coordinateDraft)
     setStatus('Looking up the wind-region overlay…')
@@ -319,32 +755,89 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     }
   }, [draft, edit, getAccessToken, serverUrl])
 
+  const pickStructureCoordinates = useCallback(async (latitude: number, longitude: number) => {
+    if (!draft) return
+    const wasDirty = isDirty
+    const next = {
+      ...draft,
+      structure: {
+        ...draft.structure,
+        placement_latitude: latitude,
+        placement_longitude: longitude,
+      },
+    }
+    setDirectionalEvidence(null)
+    setDraft(next)
+    setStatus('Saving shed placement without changing the address or GIS evidence…')
+    try {
+      const response = await apiFetch(`${serverUrl}/active/placement`, getAccessToken, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude, longitude }),
+      })
+      const payload = await response.json().catch(() => null) as
+        | SiteWorkbenchResponse
+        | { detail?: string }
+        | null
+      if (!response.ok) {
+        throw new Error(errorDetail(payload, `Placement save returned ${response.status}`))
+      }
+      if (!wasDirty) {
+        const saved = payload as SiteWorkbenchResponse
+        setCalculation(saved.calculation)
+        setStandardEvidence(saved.calculation.standard_table_evidence ?? null)
+        setSource(saved.source)
+        setExists(true)
+      }
+      setStatus('Shed placement saved; address, terrain and multiplier evidence were retained.')
+    } catch (placementError) {
+      setIsDirty(true)
+      setCalculation(null)
+      setError(placementError instanceof Error ? placementError.message : 'Could not save shed placement')
+    }
+  }, [draft, getAccessToken, isDirty, serverUrl])
+
   const geocode = useCallback(async () => {
     if (!draft?.location.address.trim()) return
     setIsBusy(true)
     setError(null)
+    setGeocodeCandidates([])
     setStatus('Finding the site address…')
     try {
-      const response = await fetch(
-        'https://nominatim.openstreetmap.org/search'
-          + `?format=json&limit=1&q=${encodeURIComponent(draft.location.address)}`,
-        { headers: { Accept: 'application/json' } },
+      const query = new URLSearchParams({ query: draft.location.address, limit: '5' })
+      const response = await apiFetch(
+        `${serverUrl}/gis/geocode?${query}`,
+        getAccessToken,
       )
       if (!response.ok) throw new Error(`Address search returned ${response.status}`)
-      const payload = await response.json()
-      if (!Array.isArray(payload) || !payload[0]) throw new Error('Address was not found')
-      await pickCoordinates(Number(payload[0].lat), Number(payload[0].lon))
+      const payload = await response.json() as GisGeocodeCandidate[]
+      if (!Array.isArray(payload) || !payload[0]) {
+        throw new Error('No G-NAF address point was found; check the street number, suburb and postcode')
+      }
+      if (payload.length === 1) {
+        await pickAddressCoordinates(payload[0].latitude, payload[0].longitude, payload[0].address)
+        setStatus(`G-NAF address point selected: ${payload[0].address}`)
+      } else {
+        setGeocodeCandidates(payload)
+        setStatus('Select the matching G-NAF address point.')
+      }
     } catch (geocodeError) {
       setError(geocodeError instanceof Error ? geocodeError.message : 'Address search failed')
     } finally {
       setIsBusy(false)
     }
-  }, [draft, pickCoordinates])
+  }, [draft, getAccessToken, pickAddressCoordinates, serverUrl])
 
   const missing = useMemo(() => {
     if (!draft) return []
     const values: { id: string, label: string }[] = []
     if (!draft.location.address.trim()) values.push({ id: 'site-address', label: 'enter the site address' })
+    if (draft.structure.orientation_status !== 'verified') {
+      values.push({ id: 'structure-orientation', label: 'verify the structure bearing against site north' })
+    }
+    if (draft.wind.cardinal_direction_multipliers === null) {
+      values.push({ id: 'cardinal-multipliers', label: 'enter the eight cardinal direction multipliers' })
+    }
     if (draft.wind.region_status !== 'verified') values.push({ id: 'wind-region', label: 'verify the wind region' })
     if (draft.wind.table_status !== 'verified') values.push({ id: 'wind-table', label: 'verify the wind tables' })
     if (!draft.project_basis.standards.confirmed) {
@@ -377,6 +870,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       reason: 'Level 2 is the normal working basis unless the structure meets the low-hazard Level 1 criteria or the higher-consequence Level 3/4 criteria.',
     }
   }, [draft])
+
+  const workingBasisReady = calculation?.working_basis_ready ?? calculation?.site_ready ?? false
+  const certificationReady = calculation?.certification_ready ?? calculation?.site_ready ?? false
 
   if (authMode !== 'authenticated') {
     return (
@@ -414,6 +910,15 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => void downloadSiteReport()}
+              disabled={isBusy || isReportBusy}
+              title="Includes satellite placement, cached terrain, calculations and supplied 2021 standard extracts"
+              className="rounded border border-cyan-500/60 bg-cyan-950/30 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-950/60 disabled:opacity-50"
+            >
+              {isReportBusy ? 'Building PDF...' : 'Download PDF evidence report'}
+            </button>
+            <button
+              type="button"
               onClick={() => void calculate()}
               disabled={isBusy}
               className="rounded border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-semibold hover:border-cyan-500 disabled:opacity-50"
@@ -437,8 +942,30 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
         )}
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto xl:grid-cols-[minmax(34rem,1.2fr)_minmax(30rem,1fr)]">
-        <main className="space-y-4 border-r border-slate-800 p-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto xl:flex-row xl:overflow-hidden">
+        <main className="min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <SiteExplorer
+            serverUrl={serverUrl}
+            extusServerUrl={extusServerUrl}
+            getAccessToken={getAccessToken}
+            latitude={draft.structure.placement_latitude ?? draft.location.latitude}
+            longitude={draft.structure.placement_longitude ?? draft.location.longitude}
+            footprintLengthM={draft.structure.footprint_length_m}
+            footprintWidthM={draft.structure.footprint_width_m}
+            frontBearingDegrees={draft.structure.front_bearing_degrees}
+            referenceHeightM={draft.wind.reference_height_m}
+            cardinalMultipliers={draft.wind.cardinal_direction_multipliers}
+            terrainEvidenceId={terrainEvidence?.evidence_id || null}
+            terrainEvidenceBounds={terrainEvidence?.asset?.crs === 'EPSG:4326'
+              ? terrainEvidence.asset.bounds
+              : null}
+            siteBoundary={siteBoundary}
+            buildingEvidence={buildingEvidence}
+            directionalEvidence={directionalEvidence}
+            onCandidateDimensions={applyCandidateModelDimensions}
+            onPick={pickStructureCoordinates}
+          />
+          <FeatureDrawer title="Project design basis" detail="use, classification and importance">
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <div className="mb-3">
               <h2 className="font-semibold text-slate-100">Project design basis</h2>
@@ -495,18 +1022,11 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               )}
             </div>
           </section>
+          </FeatureDrawer>
 
+          <FeatureDrawer title="Location & regional wind" detail={draft.location.address || 'address and design inputs'} defaultOpen>
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <h2 className="font-semibold text-slate-100">Location &amp; regional wind basis</h2>
-            <div className="mt-3">
-              <WindRegionMap
-                serverUrl={serverUrl}
-                getAccessToken={getAccessToken}
-                latitude={draft.location.latitude}
-                longitude={draft.location.longitude}
-                onPick={(latitude, longitude) => void pickCoordinates(latitude, longitude)}
-              />
-            </div>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               <div className="md:col-span-2">
                 <Field label="Site address">
@@ -519,6 +1039,21 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                       Find
                     </button>
                   </div>
+                  {geocodeCandidates.length > 0 && (
+                    <div className="mt-2 space-y-1 rounded border border-cyan-500/30 bg-cyan-950/20 p-2">
+                      {geocodeCandidates.map((candidate) => (
+                        <button key={candidate.address_pid} type="button"
+                          className="block w-full rounded border border-slate-700 px-2 py-1.5 text-left text-xs hover:border-cyan-400"
+                          onClick={() => {
+                            setGeocodeCandidates([])
+                            void pickAddressCoordinates(candidate.latitude, candidate.longitude, candidate.address)
+                          }}>
+                          <span className="text-slate-200">{candidate.address}</span>
+                          <span className="ml-2 font-mono text-[10px] text-cyan-400">G-NAF address point</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </Field>
               </div>
               <Field label="Latitude">
@@ -541,7 +1076,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   {['1', '2', '2.5', '3', '4'].map((category) => <option key={category}>{category}</option>)}
                 </select>
               </Field>
-              <Field label="Reference height z (m)" hint="A design input until geometry supplies it automatically.">
+              <Field label="Reference height z (m)" hint={candidateDimensions
+                ? `Active model: ${candidateDimensions.reference_height_basis}; overall height ${candidateDimensions.overall_height_m.toFixed(2)} m.`
+                : 'Uses the active candidate geometry when available; otherwise remains an authored input.'}>
                 <input type="number" min="0.1" step="0.1" className={inputClass} value={draft.wind.reference_height_m}
                   onChange={(event) => updateWind('reference_height_m', numberValue(event.target.value))} />
               </Field>
@@ -563,7 +1100,52 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </label>
             </div>
           </section>
+          </FeatureDrawer>
 
+          <FeatureDrawer title="Terrain evidence" detail={terrainEvidence ? 'cached site tile ready' : 'fetch or upload'}>
+          <GisEvidencePanel
+            serverUrl={serverUrl}
+            getAccessToken={getAccessToken}
+            latitude={draft.location.latitude}
+            longitude={draft.location.longitude}
+            initialEvidence={terrainEvidence}
+            onEvidenceChange={setTerrainEvidence}
+          />
+          </FeatureDrawer>
+
+          <div id="multiplier-evidence">
+          <FeatureDrawer title="Directional GIS multiplier evidence" detail="pinned local GIS · 8 directions" defaultOpen>
+          <WindMultiplierEvidencePanel
+            serverUrl={serverUrl}
+            getAccessToken={getAccessToken}
+            latitude={draft.location.latitude}
+            longitude={draft.location.longitude}
+            referenceHeightM={draft.wind.reference_height_m}
+            terrainEvidenceId={terrainEvidence?.evidence_id ?? null}
+            structure={draft.structure}
+            windRegion={draft.wind.region}
+            adoptedEvidence={draft.wind.multiplier_evidence ?? null}
+            onEvidence={applyMultiplierEvidence}
+          />
+          </FeatureDrawer>
+          </div>
+
+          <div id="cardinal-multipliers">
+          <FeatureDrawer title="Structure orientation & cardinal wind" detail={`${draft.structure.front_bearing_degrees.toFixed(0)}° true`}>
+          <StructureWindRose
+            structure={draft.structure}
+            multipliers={draft.wind.cardinal_direction_multipliers}
+            fallbackMultiplier={draft.wind.direction_multiplier}
+            calculation={calculation}
+            onStructureChange={updateStructure}
+            onMultipliersChange={(cardinalDirectionMultipliers) => updateWind(
+              'cardinal_direction_multipliers', cardinalDirectionMultipliers,
+            )}
+          />
+          </FeatureDrawer>
+          </div>
+
+          <FeatureDrawer title="Exposure multipliers" detail="Mc · Md · Ms · Mt">
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <h2 className="font-semibold text-slate-100">Exposure multipliers</h2>
             <p className="mt-1 text-xs text-slate-500">
@@ -579,8 +1161,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                     event.target.value.trim() ? numberValue(event.target.value) : null,
                   )} />
               </Field>
-              <Field label="Direction Md">
+              <Field label="Fallback direction Md" hint="Used for every direction until cardinal inputs are enabled.">
                 <input type="number" min="0.01" step="0.01" className={inputClass} value={draft.wind.direction_multiplier}
+                  disabled={draft.wind.cardinal_direction_multipliers !== null}
                   onChange={(event) => updateWind('direction_multiplier', numberValue(event.target.value))} />
               </Field>
               <Field label="Shielding Ms">
@@ -592,8 +1175,46 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   onChange={(event) => updateWind('topographic_multiplier', numberValue(event.target.value))} />
               </Field>
             </div>
+            <div className="mt-4 space-y-3">
+              <DirectionalMultiplierEditor
+                label="Terrain / height by direction"
+                symbol="Mz,cat,β"
+                values={draft.wind.cardinal_terrain_height_multipliers ?? null}
+                fallback={calculation?.terrain_height_multiplier ?? 1}
+                fallbackLabel={`Category ${draft.wind.terrain_category} table lookup at ${draft.wind.reference_height_m.toFixed(2)} m is used in every direction.`}
+                onChange={(values) => updateWind('cardinal_terrain_height_multipliers', values)}
+              />
+              <DirectionalMultiplierEditor
+                label="Shielding by direction"
+                symbol="Ms,β"
+                values={draft.wind.cardinal_shielding_multipliers ?? null}
+                fallback={draft.wind.shielding_multiplier}
+                fallbackLabel="The single conservative shielding value is used in every direction."
+                onChange={(values) => updateWind('cardinal_shielding_multipliers', values)}
+              />
+              <DirectionalMultiplierEditor
+                label="Topography by direction"
+                symbol="Mt,β"
+                values={draft.wind.cardinal_topographic_multipliers ?? null}
+                fallback={draft.wind.topographic_multiplier}
+                fallbackLabel="The single conservative topographic value is used in every direction."
+                onChange={(values) => updateWind('cardinal_topographic_multipliers', values)}
+              />
+            </div>
           </section>
+          </FeatureDrawer>
 
+          <FeatureDrawer title="Standard table evidence" detail="Md · Mc · report tables">
+          <StandardTableEvidencePanel
+            serverUrl={serverUrl}
+            getAccessToken={getAccessToken}
+            site={draft}
+            evidence={standardEvidence}
+            onApply={applyStandardTableValues}
+          />
+          </FeatureDrawer>
+
+          <FeatureDrawer title="Working wind action envelope" detail={draft.wind.action_envelope.enclosure.replace('_', ' ')}>
           <section className="rounded border border-cyan-500/40 bg-cyan-950/10 p-4">
             <h2 className="font-semibold text-slate-100">Working wind action envelope</h2>
             <p className="mt-1 text-xs leading-5 text-slate-400">
@@ -666,7 +1287,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </b>.
             </div>
           </section>
+          </FeatureDrawer>
 
+          <FeatureDrawer title="Action standards" detail={draft.project_basis.standards.confirmed ? 'confirmed' : 'confirmation required'}>
           <section id="action-standards" ref={standardsSection}
             className={`rounded border bg-slate-900/50 p-4 ${
               draft.project_basis.standards.confirmed ? 'border-slate-800' : 'border-amber-500/70'
@@ -721,14 +1344,41 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </label>
             </div>
           </section>
+          </FeatureDrawer>
         </main>
 
-        <aside className="space-y-4 p-4">
-          <section className={`rounded border p-4 ${calculation?.site_ready ? 'border-emerald-500/50 bg-emerald-950/20' : 'border-amber-500/50 bg-amber-950/20'}`}>
+        <div role="separator" aria-label="Resize derived-results panel" aria-orientation="vertical"
+          onPointerDown={beginInspectorResize}
+          className="group relative hidden w-2 flex-none cursor-col-resize items-center justify-center border-x border-slate-800 bg-slate-950 hover:bg-cyan-950 xl:flex">
+          <span className="pointer-events-none text-[10px] text-slate-600 group-hover:text-cyan-300">↔</span>
+          <button type="button" aria-label={inspectorCollapsed ? 'Show derived-results panel' : 'Hide derived-results panel'}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => setInspectorCollapsed((value) => !value)}
+            className="absolute top-3 z-10 rounded border border-slate-700 bg-slate-900 px-1 py-2 text-[10px] text-cyan-300 hover:border-cyan-400">
+            {inspectorCollapsed ? '‹' : '›'}
+          </button>
+        </div>
+
+        <aside
+          style={{ '--inspector-width': `${inspectorCollapsed ? 0 : inspectorWidth}px` } as CSSProperties}
+          className={`w-full flex-none space-y-4 overflow-hidden border-t border-slate-800 transition-[width] xl:w-[var(--inspector-width)] xl:border-t-0 ${inspectorCollapsed ? 'p-0' : 'overflow-y-auto p-4'}`}>
+          <section className={`rounded border p-4 ${
+            certificationReady
+              ? 'border-emerald-500/50 bg-emerald-950/20'
+              : workingBasisReady
+                ? 'border-cyan-500/50 bg-cyan-950/20'
+                : 'border-amber-500/50 bg-amber-950/20'
+          }`}>
             <div className="flex items-center justify-between gap-3">
               <h2 className="font-semibold text-slate-100">Derived action basis</h2>
-              <span className={`rounded px-2 py-1 text-[10px] font-bold uppercase ${calculation?.site_ready ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
-                {calculation?.site_ready ? 'ready' : 'inputs incomplete'}
+              <span className={`rounded px-2 py-1 text-[10px] font-bold uppercase ${
+                certificationReady
+                  ? 'bg-emerald-500/20 text-emerald-300'
+                  : workingBasisReady
+                    ? 'bg-cyan-500/20 text-cyan-200'
+                    : 'bg-amber-500/20 text-amber-300'
+              }`}>
+                {certificationReady ? 'certification ready' : workingBasisReady ? 'preliminary basis active' : 'site data incomplete'}
               </span>
             </div>
             {calculation ? (
@@ -738,6 +1388,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                   ['Terrain multiplier', calculation.terrain_height_multiplier.toFixed(3)],
                   ['Site speed Vsit', `${calculation.site_wind_speed_m_s.toFixed(3)} m/s`],
                   ['Dynamic pressure qz', `${calculation.q_z_kPa.toFixed(6)} kPa`],
+                  ['Calculation dataset', calculation.table_version],
+                  ['Governing cardinal', calculation.governing_cardinal_direction],
+                  ['Front bearing', `${calculation.structure.front_bearing_degrees.toFixed(0)}° true`],
                   ['ULS return period', `${calculation.annual_recurrence_interval_years} years`],
                   ['Envelope', calculation.action_envelope.enclosure.replace('_', ' ')],
                   ['Case selection', calculation.action_envelope.coefficient_selection_policy.replaceAll('_', ' ')],
@@ -754,7 +1407,10 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             )}
             {missing.length > 0 && (
               <div className="mt-3 rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
-                <div className="font-bold">Incomplete fields</div>
+                <div className="font-bold">Checks before certification</div>
+                <p className="mt-1 text-amber-100/70">
+                  These do not stop the automatic working calculation or its GIS benefits.
+                </p>
                 <ul className="mt-2 space-y-1">
                   {missing.map((item) => (
                     <li key={item.id}>

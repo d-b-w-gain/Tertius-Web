@@ -3,9 +3,16 @@ import L from 'leaflet'
 import markerIconUrl from 'leaflet/dist/images/marker-icon.png'
 import markerIconRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png'
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png'
+
+import type {
+  GisBuildingEvidence,
+  GisDirectionalWindMultiplierEvidence,
+  GisSiteBoundaryEvidence,
+} from '../site/contracts'
 import 'leaflet/dist/leaflet.css'
 
 import { apiFetch } from '../../api/client'
+import type { SiteBaseMapMode } from '../site/SiteExplorer'
 
 
 const REGION_FILL: Record<string, string> = {
@@ -32,7 +39,68 @@ type Props = {
   getAccessToken: () => Promise<string>
   latitude: number | null
   longitude: number | null
+  footprintLengthM?: number
+  footprintWidthM?: number
+  frontBearingDegrees?: number
+  cardinalMultipliers?: Record<string, number> | null
+  overlayMode?: 'wind' | 'terrain' | 'none'
+  terrainEvidenceId?: string | null
+  siteBoundary?: GisSiteBoundaryEvidence | null
+  buildingEvidence?: GisBuildingEvidence | null
+  directionalEvidence?: GisDirectionalWindMultiplierEvidence | null
+  baseMapMode?: SiteBaseMapMode
+  className?: string
   onPick: (latitude: number, longitude: number) => void
+}
+
+const CARDINAL_BEARINGS = [
+  ['N', 0], ['NE', 45], ['E', 90], ['SE', 135],
+  ['S', 180], ['SW', 225], ['W', 270], ['NW', 315],
+] as const
+
+function destination(
+  latitude: number,
+  longitude: number,
+  bearingDegrees: number,
+  distanceM: number,
+): [number, number] {
+  const radians = bearingDegrees * Math.PI / 180
+  return [
+    latitude + Math.cos(radians) * distanceM / 111_320,
+    longitude + Math.sin(radians) * distanceM
+      / Math.max(1, 111_320 * Math.cos(latitude * Math.PI / 180)),
+  ]
+}
+
+export function structureFootprintCoordinates(
+  latitude: number,
+  longitude: number,
+  footprintLengthM: number,
+  footprintWidthM: number,
+  frontBearingDegrees: number,
+) {
+  const radians = frontBearingDegrees * Math.PI / 180
+  const metresPerLatitudeDegree = 111_320
+  const metresPerLongitudeDegree = Math.max(
+    1,
+    metresPerLatitudeDegree * Math.cos(latitude * Math.PI / 180),
+  )
+  const point = (forward: number, right: number): [number, number] => {
+    const north = Math.cos(radians) * forward - Math.sin(radians) * right
+    const east = Math.sin(radians) * forward + Math.cos(radians) * right
+    return [
+      latitude + north / metresPerLatitudeDegree,
+      longitude + east / metresPerLongitudeDegree,
+    ]
+  }
+  const halfLength = footprintLengthM / 2
+  const halfWidth = footprintWidthM / 2
+  return [
+    point(halfWidth, -halfLength),
+    point(halfWidth, halfLength),
+    point(-halfWidth, halfLength),
+    point(-halfWidth, -halfLength),
+  ]
 }
 
 export function WindRegionMap({
@@ -40,12 +108,29 @@ export function WindRegionMap({
   getAccessToken,
   latitude,
   longitude,
+  footprintLengthM = 12,
+  footprintWidthM = 6,
+  frontBearingDegrees = 0,
+  cardinalMultipliers = null,
+  overlayMode = 'wind',
+  terrainEvidenceId = null,
+  siteBoundary = null,
+  buildingEvidence = null,
+  directionalEvidence = null,
+  baseMapMode = 'street',
+  className = 'h-64',
   onPick,
 }: Props) {
   const divRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<any>(null)
   const markerRef = useRef<any>(null)
   const overlayRef = useRef<any>(null)
+  const placementLayerRef = useRef<any>(null)
+  const cardinalLayerRef = useRef<any>(null)
+  const terrainLayerRef = useRef<any>(null)
+  const boundaryLayerRef = useRef<any>(null)
+  const buildingLayerRef = useRef<any>(null)
+  const baseLayerRef = useRef<any>(null)
   const onPickRef = useRef(onPick)
   const [status, setStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [message, setMessage] = useState('')
@@ -61,12 +146,11 @@ export function WindRegionMap({
       zoom: 4,
       scrollWheelZoom: true,
     })
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: (
-        '&copy; OpenStreetMap contributors · '
-        + 'Wind regions &copy; Geoscience Australia (CC-BY 4.0)'
-      ),
-      maxZoom: 18,
+    L.control.scale({
+      position: 'bottomleft',
+      metric: true,
+      imperial: false,
+      maxWidth: 120,
     }).addTo(map)
     map.on('click', (event: L.LeafletMouseEvent) => {
       onPickRef.current(event.latlng.lat, event.latlng.lng)
@@ -78,17 +162,60 @@ export function WindRegionMap({
       mapRef.current = null
       markerRef.current = null
       overlayRef.current = null
+      placementLayerRef.current = null
+      cardinalLayerRef.current = null
+      terrainLayerRef.current = null
+      boundaryLayerRef.current = null
+      buildingLayerRef.current = null
+      baseLayerRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    baseLayerRef.current?.remove()
+    baseLayerRef.current = null
+    if (!map || status !== 'ready' || baseMapMode === 'none') return
+    const satellite = baseMapMode === 'satellite'
+    const nswImagery = baseMapMode === 'nsw'
+    const layer = L.tileLayer(
+      nswImagery
+        ? 'https://portal.spatial.nsw.gov.au/aid/tile/rest/services/NSWWebImagery/MapServer/tile/{z}/{y}/{x}'
+        : satellite
+        ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+        : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        attribution: nswImagery
+          ? 'Imagery &copy; NSW Spatial Services'
+          : satellite
+          ? 'Imagery &copy; Esri and contributors'
+          : '&copy; OpenStreetMap contributors',
+        maxZoom: nswImagery ? 23 : satellite ? 19 : 18,
+      },
+    ).addTo(map)
+    layer.bringToBack()
+    baseLayerRef.current = layer
+    return () => {
+      baseLayerRef.current?.remove()
+      baseLayerRef.current = null
+    }
+  }, [baseMapMode, status])
 
   useEffect(() => {
     if (status !== 'ready') return
     const map = mapRef.current
     if (!map) return
 
+    if (overlayMode !== 'wind') {
+      overlayRef.current?.remove()
+      overlayRef.current = null
+      return
+    }
+
     const apply = (geojson: any) => {
       overlayRef.current?.remove()
       overlayRef.current = L.geoJSON(geojson, {
+        attribution: 'Wind regions &copy; Geoscience Australia (CC-BY 4.0)',
         style: (feature: any) => {
           const colour = REGION_FILL[feature?.properties?.region] ?? '#94a3b8'
           return {
@@ -136,7 +263,131 @@ export function WindRegionMap({
     return () => {
       cancelled = true
     }
-  }, [getAccessToken, serverUrl, status])
+  }, [getAccessToken, overlayMode, serverUrl, status])
+
+  useEffect(() => {
+    const map = mapRef.current
+    terrainLayerRef.current?.remove()
+    terrainLayerRef.current = null
+    if (!map || overlayMode !== 'terrain' || !terrainEvidenceId) return
+    const terrainLayer = L.gridLayer({
+      maxZoom: 22,
+      opacity: 0.72,
+      attribution: 'Terrain © Geoscience Australia',
+    }) as any
+    terrainLayer.createTile = (coords: { z: number, x: number, y: number }, done: (error: Error | null, tile: HTMLImageElement) => void) => {
+      const tile = document.createElement('img')
+      tile.alt = ''
+      const url = `${serverUrl}/gis/evidence/${terrainEvidenceId}/relief/${coords.z}/${coords.x}/${coords.y}.png`
+      void apiFetch(url, getAccessToken)
+        .then((response) => {
+          if (!response.ok) throw new Error(`Terrain tile returned ${response.status}`)
+          return response.blob()
+        })
+        .then((blob) => {
+          const objectUrl = URL.createObjectURL(blob)
+          tile.onload = () => {
+            URL.revokeObjectURL(objectUrl)
+            done(null, tile)
+          }
+          tile.onerror = () => {
+            URL.revokeObjectURL(objectUrl)
+            done(new Error('Terrain tile could not be rendered'), tile)
+          }
+          tile.src = objectUrl
+        })
+        .catch((error) => done(error instanceof Error ? error : new Error('Terrain tile failed'), tile))
+      return tile
+    }
+    terrainLayerRef.current = terrainLayer.addTo(map)
+    return () => {
+      terrainLayerRef.current?.remove()
+      terrainLayerRef.current = null
+    }
+  }, [getAccessToken, overlayMode, serverUrl, status, terrainEvidenceId])
+
+  useEffect(() => {
+    const map = mapRef.current
+    boundaryLayerRef.current?.remove()
+    boundaryLayerRef.current = null
+    if (!map || !siteBoundary) return
+    const layer = L.geoJSON({
+      type: 'FeatureCollection',
+      features: [siteBoundary.feature],
+    } as any, {
+      style: {
+        color: '#fbbf24',
+        fillColor: '#f59e0b',
+        fillOpacity: 0.08,
+        opacity: 0.95,
+        weight: 2,
+        dashArray: '8 6',
+      },
+    }).bindTooltip(
+      `Property boundary · ${siteBoundary.feature.properties.address || 'NSW Spatial Services'}`,
+      { sticky: true },
+    ).addTo(map)
+    boundaryLayerRef.current = layer
+    return () => {
+      boundaryLayerRef.current?.remove()
+      boundaryLayerRef.current = null
+    }
+  }, [siteBoundary, status])
+
+  useEffect(() => {
+    const map = mapRef.current
+    buildingLayerRef.current?.remove()
+    buildingLayerRef.current = null
+    if (!map || !buildingEvidence) return
+    const includedIds = new Set(
+      Object.values(directionalEvidence?.directions ?? {})
+        .flatMap((direction) => direction.shielding_building_ids),
+    )
+    const collection = {
+      type: 'FeatureCollection',
+      features: buildingEvidence.features.map((feature) => ({
+        type: 'Feature',
+        properties: {
+          ...feature,
+          included: includedIds.has(feature.source_id),
+        },
+        geometry: feature.geometry,
+      })),
+    }
+    const layer = L.geoJSON(collection as any, {
+      style: (feature: any) => {
+        const included = Boolean(feature?.properties?.included)
+        const outlineSource = String(feature?.properties?.outline_source ?? '')
+        const contextColour = outlineSource === 'OpenStreetMap'
+          ? '#22d3ee'
+          : outlineSource === 'Microsoft ML Buildings'
+            ? '#facc15'
+            : '#a78bfa'
+        return {
+          color: included ? '#34d399' : contextColour,
+          fillColor: included ? '#059669' : contextColour,
+          fillOpacity: included ? 0.28 : 0.08,
+          opacity: included ? 0.95 : 0.55,
+          weight: included ? 2 : 1,
+        }
+      },
+      onEachFeature: (feature: any, featureLayer: any) => {
+        const properties = feature?.properties ?? {}
+        const state = properties.included ? 'included for shielding' : 'context only'
+        const height = properties.height_m == null ? 'height unavailable' : `${Number(properties.height_m).toFixed(1)} m high`
+        const source = properties.outline_source || 'unknown outline source'
+        const heightSource = properties.height_source
+          ? `height: ${properties.height_source}`
+          : 'height source unavailable'
+        featureLayer.bindTooltip(`${source} · ${state} · ${height} · ${heightSource}`, { sticky: true })
+      },
+    }).addTo(map)
+    buildingLayerRef.current = layer
+    return () => {
+      buildingLayerRef.current?.remove()
+      buildingLayerRef.current = null
+    }
+  }, [buildingEvidence, directionalEvidence, status])
 
   useEffect(() => {
     const map = mapRef.current
@@ -160,13 +411,84 @@ export function WindRegionMap({
       })
       markerRef.current = L.marker([latitude, longitude], { icon }).addTo(map)
     }
-    map.setView([latitude, longitude], Math.max(map.getZoom(), 11), {
+    // A shed-scale footprint is only inspectable at parcel-level zoom.
+    map.setView([latitude, longitude], Math.max(map.getZoom(), 18), {
       animate: true,
     })
   }, [latitude, longitude, status])
 
+  useEffect(() => {
+    const map = mapRef.current
+    placementLayerRef.current?.remove()
+    placementLayerRef.current = null
+    if (!map || latitude == null || longitude == null) return
+    if (footprintLengthM <= 0 || footprintWidthM <= 0) return
+
+    const corners = structureFootprintCoordinates(
+      latitude,
+      longitude,
+      footprintLengthM,
+      footprintWidthM,
+      frontBearingDegrees,
+    )
+    const [frontLeft, frontRight] = corners
+    if (!frontLeft || !frontRight) return
+    const frontMidpoint: [number, number] = [
+      (frontLeft[0] + frontRight[0]) / 2,
+      (frontLeft[1] + frontRight[1]) / 2,
+    ]
+    const group = L.layerGroup()
+    L.polygon(corners, {
+      color: '#5eead4',
+      fillColor: '#0f766e',
+      fillOpacity: 0.55,
+      weight: 2,
+    }).bindTooltip(
+      `Structure footprint · front ${Math.round(frontBearingDegrees)}° true`,
+      { sticky: true },
+    ).addTo(group)
+    L.polyline([[latitude, longitude], frontMidpoint], {
+      color: '#fbbf24',
+      weight: 4,
+    }).addTo(group)
+    group.addTo(map)
+    placementLayerRef.current = group
+  }, [
+    footprintLengthM,
+    footprintWidthM,
+    frontBearingDegrees,
+    latitude,
+    longitude,
+    status,
+  ])
+
+  useEffect(() => {
+    const map = mapRef.current
+    cardinalLayerRef.current?.remove()
+    cardinalLayerRef.current = null
+    if (!map || latitude == null || longitude == null) return
+    const radius = Math.max(45, footprintLengthM * 4)
+    const group = L.layerGroup()
+    CARDINAL_BEARINGS.forEach(([direction, bearing]) => {
+      const multiplier = cardinalMultipliers?.[direction.toLowerCase()] ?? 1
+      const points: [number, number][] = [[latitude, longitude]]
+      for (let offset = -22.5; offset <= 22.5; offset += 5.625) {
+        points.push(destination(latitude, longitude, bearing + offset, radius))
+      }
+      L.polygon(points, {
+        color: multiplier >= 1 ? '#fb7185' : '#38bdf8',
+        fillColor: multiplier >= 1 ? '#be123c' : '#0369a1',
+        fillOpacity: 0.12,
+        opacity: 0.45,
+        weight: 1,
+      }).bindTooltip(`${direction} · Md ${multiplier.toFixed(2)}`).addTo(group)
+    })
+    group.addTo(map)
+    cardinalLayerRef.current = group
+  }, [cardinalMultipliers, footprintLengthM, latitude, longitude, status])
+
   return (
-    <div className="relative h-64 w-full overflow-hidden rounded border border-slate-700 bg-slate-900">
+    <div className={`relative w-full overflow-hidden rounded border border-slate-700 bg-slate-900 ${className}`}>
       <div ref={divRef} className="h-full w-full" />
       {status === 'loading' && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80 text-xs text-slate-400">
@@ -180,7 +502,7 @@ export function WindRegionMap({
       )}
       {status === 'ready' && (
         <div className="pointer-events-none absolute bottom-2 left-2 rounded bg-slate-950/80 px-2 py-1 text-[9px] text-slate-300">
-          Click to choose site coordinates
+          Click to position the structure
         </div>
       )}
     </div>

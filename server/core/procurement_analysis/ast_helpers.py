@@ -46,7 +46,8 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
             except ValueError:
                 values.append(None)
                 resolutions.append("static_numeric")
-        return values, "static_numeric" if any(resolution == "static_numeric" for resolution in resolutions) else "literal_assignment"
+        container = tuple(values) if isinstance(node, ast.Tuple) else values
+        return container, "static_numeric" if any(resolution == "static_numeric" for resolution in resolutions) else "literal_assignment"
     if isinstance(node, ast.Name) and node.id in known:
         value = known[node.id]
         if isinstance(value, ConstantValue):
@@ -70,8 +71,12 @@ def _static_value_with_resolution(node: ast.AST, known: dict[str, Any]) -> tuple
                 return value[index], "static_numeric"
             except IndexError as exc:
                 raise ValueError("not a static value") from exc
-        if isinstance(value, dict) and index in value:
-            return value[index], "static_lookup"
+        if isinstance(value, dict):
+            try:
+                if index in value:
+                    return value[index], "static_lookup"
+            except TypeError as exc:
+                raise ValueError("dictionary subscript is not hashable") from exc
     if isinstance(node, ast.Dict):
         result: dict[Any, Any] = {}
         for key_node, value_node in zip(node.keys, node.values, strict=True):

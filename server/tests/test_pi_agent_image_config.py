@@ -66,6 +66,21 @@ def test_image_workflow_builds_explicit_api_and_pi_agent_targets() -> None:
     assert "ghcr.io/d-b-w-gain/tertius-pi-agent:sha-${{ steps.vars.outputs.short_sha }}" in workflow
 
 
+def test_gis_cache_image_is_built_and_tracked_by_ci_promotion() -> None:
+    workflow = read(".github/workflows/images.yml")
+    values = read("infra/charts/tertius/values.yaml")
+    promoter = read("scripts/promote_images.py")
+    ci_images = read("ci/k3s-images.txt")
+
+    assert "file: Dockerfile.gis" in workflow
+    assert "ghcr.io/d-b-w-gain/tertius-gis-cache:${{ steps.vars.outputs.image_tag }}" in workflow
+    assert "ghcr.io/d-b-w-gain/tertius-gis-cache:sha-${{ steps.vars.outputs.short_sha }}" in workflow
+    assert "repository: ghcr.io/d-b-w-gain/tertius-gis-cache" in values
+    assert '# {"$imagepromoter": "tertius-gis-cache"}' in values
+    assert '"tertius-gis-cache"' in promoter
+    assert "tertius-gis-cache:local" in ci_images
+
+
 def test_pi_agent_image_is_tracked_by_ci_promotion() -> None:
     values = read("infra/charts/tertius/values.yaml")
     promoter = read("scripts/promote_images.py")

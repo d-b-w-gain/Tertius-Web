@@ -89,6 +89,14 @@ contains "$ROOT_DIR/scripts/harness-compose.sh" 'pi-agent-auth' "Compose harness
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'finally:' "Pi worker must clean its temporary workspace on every outcome"
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'shutil\.rmtree\(root\)' "Pi worker must remove each temporary workspace"
 contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-pi-agent:local' "k3s CI image list must preload the Pi agent image"
+contains "$ROOT_DIR/docker-compose.yml" 'gis-cache:' "Compose dev must define the GIS cache"
+contains "$ROOT_DIR/docker-compose.yml" 'GIS_CACHE_URL:[[:space:]]*http://gis-cache:8000' "Compose API must use the internal GIS cache service"
+contains "$ROOT_DIR/server/.env.example" '^GIS_CACHE_URL=' "API env example must document the GIS cache endpoint"
+contains "$ROOT_DIR/server/core/config.py" 'gis_cache_url:' "API settings must expose the GIS cache endpoint"
+contains "$ROOT_DIR/Dockerfile.gis" 'USER 1000:1000' "GIS cache image must run as non-root"
+contains "$CHART_DIR/templates/gis-cache.yaml" 'readOnlyRootFilesystem:[[:space:]]*true' "Helm GIS cache must use a read-only root filesystem"
+contains "$CHART_DIR/templates/gis-cache-networkpolicy.yaml" 'app.kubernetes.io/component: api' "Helm GIS cache ingress must be API-only"
+contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-gis-cache:local' "k3s CI image list must preload the GIS cache image"
 contains "$CHART_DIR/values.yaml" 'tracesBackend:' "Helm values must define tracesBackend"
 contains "$CHART_DIR/templates/otel-collector.yaml" 'otlphttp/victoriatraces' "Helm collector must define VictoriaTraces exporter"
 contains "$ROOT_DIR/infra/otel/otel-collector-local.yaml" 'otlphttp/victoriatraces' "Local collector must define VictoriaTraces exporter"
@@ -169,7 +177,41 @@ def validate(config):
     assert not (forbidden & set(env))
     api_env = services["backend"]["environment"]
     assert api_env["PI_AGENT_RESULT_CONSUMER"] == "pi-agent-result-api"
+    assert api_env["GIS_CACHE_URL"] == "http://gis-cache:8000"
     assert not (forbidden & set(api_env))
+    gis = services["gis-cache"]
+    assert gis["user"] == "1000:1000"
+    assert gis["read_only"] is True and gis["init"] is True
+    assert gis["cap_drop"] == ["ALL"]
+    assert gis["pids_limit"] == 128
+    assert gis["security_opt"] == ["no-new-privileges:true"]
+    assert gis["environment"]["GIS_CACHE_ROOT"] == "/var/lib/tertius-gis"
+    assert gis["environment"]["GIS_GNAF_STATES"] == "NSW"
+    assert gis["environment"]["GIS_TERRAIN_DEFAULT_RADIUS_M"] == "2000"
+    assert gis["environment"]["GIS_NSW_TERRAIN_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_BASE_URL"] == "https://thredds.nci.org.au/thredds"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_WORKERS"] == "8"
+    assert gis["environment"]["GIS_NSW_ELEVATION_INDEX_URL"].endswith("/Elevation_Index_Public/FeatureServer/0/query")
+    assert gis["environment"]["GIS_NSW_DEM_DOWNLOAD_BASE_URL"] == "https://portal.spatial.nsw.gov.au/download/dem"
+    assert gis["environment"]["GIS_NSW_PROPERTY_FEATURE_URL"].endswith("/NSW_Land_Parcel_Property_Theme/FeatureServer/12/query")
+    assert gis["environment"]["GIS_NSW_PROPERTY_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_INDEX_URL"].endswith("/2026-07-24/dataset-links.csv")
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHTS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_ELVIS_DOWNLOADABLES_URL"] == "https://api.elevation.fsdf.org.au/elevation/downloadables"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M"] == "120"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS"] == "180"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_MAX_BYTES"] == "268435456"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES"] == "536870912"
+    assert gis["environment"]["GIS_ELVIS_AWS_REGION"] == "ap-southeast-2"
+    assert gis["environment"]["GIS_ELVIS_IDENTITY_POOL_ID"] == "ap-southeast-2:56462c13-533a-4f84-9a68-631dcd3345ad"
+    assert len(gis["volumes"]) == 1
+    assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
     assert json.loads(api_env["PI_AGENT_MODELS_JSON"]) == expected_catalog
     assert json.loads(env["PI_AGENT_MODELS_JSON"]) == expected_catalog
     assert api_env["PI_AGENT_MODELS_JSON"] == env["PI_AGENT_MODELS_JSON"]
@@ -284,6 +326,12 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'tertius\.billing\.usage\.llm\.tokens' "${file} must include billing subject"
   contains "$file" 'tertius-api' "${file} must include API service name"
   contains "$file" 'tertius-ui' "${file} must include UI service name"
+  contains "$file" 'tertius-gis-cache|gis-cache' "${file} must include GIS cache service name"
+  contains "$file" 'GIS_CACHE_URL' "${file} must include the internal GIS cache URL"
+  contains "$file" 'GIS_NSW_PROPERTY_FEATURE_URL' "${file} must include the NSW property boundary service contract"
+  contains "$file" 'GIS_MICROSOFT_BUILDINGS_INDEX_URL' "${file} must include the reusable open building-data contract"
+  contains "$file" 'GIS_OVERTURE_BUILDINGS_ENABLED' "${file} must include the reconciled building-data contract"
+  contains "$file" 'GIS_ELVIS_BUILDING_HEIGHTS_ENABLED' "${file} must include the classified point-cloud height contract"
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"
@@ -312,6 +360,7 @@ not_contains "$TMP_DIR/compose-parity.yaml" '5173:5173|published: "5173"|target:
 not_contains "$TMP_DIR/compose-parity.yaml" 'node:20|npm install|npm run dev|CHOKIDAR_USEPOLLING|source: .*/ui|source: .*/server' "Compose parity must not retain dev image, commands, HMR env, or API/UI bind mounts"
 contains "$TMP_DIR/compose-parity.yaml" '18080|published: "18080"' "Compose parity must expose default UI port 18080"
 contains "$TMP_DIR/compose-parity.yaml" '18000|published: "18000"' "Compose parity must expose default API port 18000"
+contains "$TMP_DIR/compose-parity.yaml" '18004|published: "18004"' "Compose parity must expose default GIS cache port 18004"
 
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18080' "Harness docs must document UI port 18080"
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18000' "Harness docs must document API port 18000"

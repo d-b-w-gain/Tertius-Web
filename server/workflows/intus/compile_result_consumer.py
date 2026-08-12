@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gzip
+import json
 import logging
 from datetime import timedelta
 from time import perf_counter
@@ -145,6 +146,41 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
             db.commit()
             return True
 
+    bom_manifest_bytes = None
+    if result.bom_manifest_json is not None:
+        try:
+            bom_manifest = json.loads(result.bom_manifest_json)
+            if not isinstance(bom_manifest, dict):
+                raise ValueError("manifest root must be a JSON object")
+            bom_manifest_bytes = json.dumps(
+                bom_manifest,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            repo.finish_job(
+                job,
+                "failed",
+                error=f"Invalid compiled BoM manifest: {exc}",
+                error_code="invalid_bom_manifest",
+                user_message=(
+                    "Compile produced invalid Procurement metadata. "
+                    "Fix the BOM declarations in the design or component library."
+                ),
+                retryable=False,
+            )
+            _record_usage_if_applicable(
+                db,
+                result,
+                job,
+                settings,
+                artifact_byte_size=len(artifact_bytes),
+            )
+            db.commit()
+            return True
+
     artifact = repo.record_artifact(
         job.project_id,
         job.id,
@@ -160,6 +196,14 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
             structural_manifest_bytes,
             content_type="application/json",
         )
+    if bom_manifest_bytes is not None:
+        repo.record_artifact(
+            job.project_id,
+            job.id,
+            "bom_manifest",
+            bom_manifest_bytes,
+            content_type="application/json",
+        )
     repo.finish_job(job, "succeeded")
     _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
     pruned = repo.prunable_artifacts(job.project_id, job.export_format, max(1, settings.artifact_retention_limit))
@@ -170,6 +214,12 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         max(1, settings.artifact_retention_limit),
     )
     repo.delete_artifacts(structural_pruned)
+    bom_manifest_pruned = repo.prunable_artifacts(
+        job.project_id,
+        "bom_manifest",
+        max(1, settings.artifact_retention_limit),
+    )
+    repo.delete_artifacts(bom_manifest_pruned)
     db.commit()
     return artifact.id is not None
 

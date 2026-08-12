@@ -10,6 +10,7 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 API_IMAGE="${API_IMAGE:-}"
 UI_IMAGE="${UI_IMAGE:-}"
 PI_AGENT_IMAGE="${PI_AGENT_IMAGE:-}"
+GIS_CACHE_IMAGE="${GIS_CACHE_IMAGE:-}"
 ENABLE_TUNNEL="${ENABLE_TUNNEL:-false}"
 TUNNEL_TOKEN_SECRET_NAME="${TUNNEL_TOKEN_SECRET_NAME:-}"
 TUNNEL_HOSTNAME="${TUNNEL_HOSTNAME:-}"
@@ -60,6 +61,7 @@ Environment:
   API_IMAGE                     Default: tertius-api:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   UI_IMAGE                      Default: tertius-ui:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   PI_AGENT_IMAGE                Default: tertius-pi-agent:local (auto-suffixed with :local-<timestamp> for fresh rollout)
+  GIS_CACHE_IMAGE               Default: tertius-gis-cache:local (auto-suffixed with :local-<timestamp> for fresh rollout)
   ENABLE_TUNNEL                 Default: false
   TUNNEL_TOKEN_SECRET_NAME      Required when ENABLE_TUNNEL=true
   TUNNEL_HOSTNAME               Optional external hostname to smoke test when tunnel is enabled.
@@ -239,6 +241,7 @@ apply_image_defaults() {
   api_from_default=0
   ui_from_default=0
   pi_agent_from_default=0
+  gis_cache_from_default=0
 
   if [ -z "$API_IMAGE" ]; then
     API_IMAGE=$(values_image_for api tertius-api:local)
@@ -252,6 +255,10 @@ apply_image_defaults() {
     PI_AGENT_IMAGE=$(values_image_for piAgent tertius-pi-agent:local)
     pi_agent_from_default=1
   fi
+  if [ -z "$GIS_CACHE_IMAGE" ]; then
+    GIS_CACHE_IMAGE=$(values_image_for gisCache tertius-gis-cache:local)
+    gis_cache_from_default=1
+  fi
   [ -n "$VALKEY_CHECK_IMAGE" ] || VALKEY_CHECK_IMAGE=$(values_image_for valkey valkey/valkey:9.0.0)
 
   if [ "$api_from_default" -eq 1 ]; then
@@ -262,6 +269,9 @@ apply_image_defaults() {
   fi
   if [ "$pi_agent_from_default" -eq 1 ]; then
     PI_AGENT_IMAGE=$(refresh_local_image_tag "$PI_AGENT_IMAGE")
+  fi
+  if [ "$gis_cache_from_default" -eq 1 ]; then
+    GIS_CACHE_IMAGE=$(refresh_local_image_tag "$GIS_CACHE_IMAGE")
   fi
 }
 
@@ -393,6 +403,10 @@ require_chart_files() {
   }
   [ -f "${ROOT_DIR}/Dockerfile.ui" ] || {
     echo "Missing UI image Dockerfile: ${ROOT_DIR}/Dockerfile.ui" >&2
+    exit 1
+  }
+  [ -f "${ROOT_DIR}/Dockerfile.gis" ] || {
+    echo "Missing GIS cache image Dockerfile: ${ROOT_DIR}/Dockerfile.gis" >&2
     exit 1
   }
 }
@@ -544,6 +558,7 @@ build_images() {
   build_image tertius-api "${ROOT_DIR}/Dockerfile.api" "$API_IMAGE"
   build_image tertius-ui "${ROOT_DIR}/Dockerfile.ui" "$UI_IMAGE" --build-arg VITE_API_URL=/api --build-arg VITE_OTEL_ENABLED=true --build-arg VITE_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=/otel/v1/traces
   build_image tertius-pi-agent "${ROOT_DIR}/Dockerfile.api" "$PI_AGENT_IMAGE" --target pi-agent
+  build_image tertius-gis-cache "${ROOT_DIR}/Dockerfile.gis" "$GIS_CACHE_IMAGE" --target gis-cache
 }
 
 build_and_load_images() {
@@ -555,6 +570,9 @@ build_and_load_images() {
 
   build_image tertius-pi-agent "${ROOT_DIR}/Dockerfile.api" "$PI_AGENT_IMAGE" --target pi-agent
   load_image "$PI_AGENT_IMAGE"
+
+  build_image tertius-gis-cache "${ROOT_DIR}/Dockerfile.gis" "$GIS_CACHE_IMAGE" --target gis-cache
+  load_image "$GIS_CACHE_IMAGE"
 }
 
 k3s_ctr() {
@@ -645,6 +663,7 @@ load_images() {
   load_image "$API_IMAGE"
   load_image "$UI_IMAGE"
   load_image "$PI_AGENT_IMAGE"
+  load_image "$GIS_CACHE_IMAGE"
 }
 
 helm_set_args() {
@@ -654,6 +673,8 @@ helm_set_args() {
   ui_tag=$(image_tag "$UI_IMAGE")
   pi_agent_repo=$(image_repo "$PI_AGENT_IMAGE")
   pi_agent_tag=$(image_tag "$PI_AGENT_IMAGE")
+  gis_cache_repo=$(image_repo "$GIS_CACHE_IMAGE")
+  gis_cache_tag=$(image_tag "$GIS_CACHE_IMAGE")
 
   HELM_EXTRA_ARGS="
 --set-string api.image.repository=${api_repo}
@@ -662,6 +683,8 @@ helm_set_args() {
 --set-string ui.image.tag=${ui_tag}
 --set-string piAgent.image.repository=${pi_agent_repo}
 --set-string piAgent.image.tag=${pi_agent_tag}
+--set-string gisCache.image.repository=${gis_cache_repo}
+--set-string gisCache.image.tag=${gis_cache_tag}
 --set piAgent.enabled=${PI_AGENT_ENABLED}
 --set keda.enabled=${KEDA_ENABLED}
 --set app.secret.create=false

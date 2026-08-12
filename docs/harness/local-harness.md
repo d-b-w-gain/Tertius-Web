@@ -19,7 +19,7 @@ Use Compose dev when you need fast feedback with bind-mounted backend and UI
 source:
 
 ```bash
-docker compose up -d postgres keycloak nats otel-collector victoriametrics
+docker compose up -d postgres keycloak nats otel-collector victoriametrics gis-cache
 docker compose up backend compile-job-runner pi-agent-worker frontend
 ```
 
@@ -49,6 +49,7 @@ Default URLs:
 
 - UI: `http://localhost:5173`
 - API: `http://localhost:8000`
+- GIS cache diagnostics: `http://localhost:18004/health/ready`
 - Metrics query endpoint: `http://localhost:8428`
 - Traces query endpoint: `http://localhost:10428`
 - OTLP HTTP endpoint: `http://localhost:4318`

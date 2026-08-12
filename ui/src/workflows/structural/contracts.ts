@@ -60,6 +60,11 @@ export type StructuralWindActionBasis = {
     | 'worst_available_credible'
     | 'verified_only'
     | null
+  building_face?: 'front' | 'right' | 'back' | 'left' | null
+  face_bearing_degrees?: number | null
+  structural_action_direction?: '+X' | '-X' | '+Y' | '-Y' | null
+  governing_cardinal_direction?: 'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW' | null
+  contributing_cardinal_directions?: Array<'N' | 'NE' | 'E' | 'SE' | 'S' | 'SW' | 'W' | 'NW'>
   verifier_hash: string
   provenance: string
 }

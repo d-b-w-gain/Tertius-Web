@@ -60,10 +60,70 @@ services:
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
       KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      GIS_CACHE_URL: http://gis-cache:8000
     depends_on:
       - postgres
       - nats
       - otel-collector
+      - gis-cache
+
+  gis-cache:
+    build:
+      context: .
+      dockerfile: Dockerfile.gis
+      target: gis-cache
+    ports:
+      - "18004:8000"
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    environment:
+      GIS_CACHE_ROOT: /var/lib/tertius-gis
+      GIS_MAX_UPLOAD_BYTES: ${GIS_MAX_UPLOAD_BYTES:-536870912}
+      GIS_MAX_RASTER_PIXELS: ${GIS_MAX_RASTER_PIXELS:-250000000}
+      GIS_GNAF_STATES: ${GIS_GNAF_STATES:-NSW}
+      GIS_TERRAIN_DEFAULT_RADIUS_M: ${GIS_TERRAIN_DEFAULT_RADIUS_M:-2000}
+      GIS_TERRAIN_MAX_RADIUS_M: ${GIS_TERRAIN_MAX_RADIUS_M:-10000}
+      GIS_GA_TERRAIN_SOURCE_URL: ${GIS_GA_TERRAIN_SOURCE_URL:-https://dea-public-data.s3-ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif}
+      GIS_GA_WIND_MULTIPLIERS_ENABLED: ${GIS_GA_WIND_MULTIPLIERS_ENABLED:-true}
+      GIS_GA_WIND_MULTIPLIERS_BASE_URL: ${GIS_GA_WIND_MULTIPLIERS_BASE_URL:-https://thredds.nci.org.au/thredds}
+      GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS: ${GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS:-30}
+      GIS_GA_WIND_MULTIPLIER_WORKERS: ${GIS_GA_WIND_MULTIPLIER_WORKERS:-8}
+      GIS_NSW_TERRAIN_ENABLED: ${GIS_NSW_TERRAIN_ENABLED:-true}
+      GIS_NSW_ELEVATION_INDEX_URL: ${GIS_NSW_ELEVATION_INDEX_URL:-https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0/query}
+      GIS_NSW_DEM_DOWNLOAD_BASE_URL: ${GIS_NSW_DEM_DOWNLOAD_BASE_URL:-https://portal.spatial.nsw.gov.au/download/dem}
+      GIS_NSW_MAX_ARCHIVE_BYTES: ${GIS_NSW_MAX_ARCHIVE_BYTES:-419430400}
+      GIS_NSW_PROPERTY_FEATURE_URL: ${GIS_NSW_PROPERTY_FEATURE_URL:-https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Land_Parcel_Property_Theme/FeatureServer/12/query}
+      GIS_NSW_PROPERTY_TIMEOUT_SECONDS: ${GIS_NSW_PROPERTY_TIMEOUT_SECONDS:-30}
+      GIS_MICROSOFT_BUILDINGS_ENABLED: ${GIS_MICROSOFT_BUILDINGS_ENABLED:-true}
+      GIS_OVERTURE_BUILDINGS_ENABLED: ${GIS_OVERTURE_BUILDINGS_ENABLED:-true}
+      GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS: ${GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS:-90}
+      GIS_MICROSOFT_BUILDINGS_INDEX_URL: ${GIS_MICROSOFT_BUILDINGS_INDEX_URL:-https://bfppub.blob.core.windows.net/$$web/2026-07-24/dataset-links.csv}
+      GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS: ${GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS:-90}
+      GIS_ELVIS_BUILDING_HEIGHTS_ENABLED: ${GIS_ELVIS_BUILDING_HEIGHTS_ENABLED:-true}
+      GIS_ELVIS_DOWNLOADABLES_URL: ${GIS_ELVIS_DOWNLOADABLES_URL:-https://api.elevation.fsdf.org.au/elevation/downloadables}
+      GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M: ${GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M:-120}
+      GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS: ${GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS:-180}
+      GIS_ELVIS_POINT_CLOUD_MAX_BYTES: ${GIS_ELVIS_POINT_CLOUD_MAX_BYTES:-268435456}
+      GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES: ${GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES:-536870912}
+      GIS_ELVIS_AWS_REGION: ${GIS_ELVIS_AWS_REGION:-ap-southeast-2}
+      GIS_ELVIS_IDENTITY_POOL_ID: ${GIS_ELVIS_IDENTITY_POOL_ID:-ap-southeast-2:56462c13-533a-4f84-9a68-631dcd3345ad}
+    volumes:
+      - tertius-gis-cache:/var/lib/tertius-gis
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=0700,uid=1000,gid=1000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
 
   compile-job-runner:
     build: .
@@ -249,6 +309,7 @@ volumes:
   tertius-victoriametrics:
   tertius-victoriatraces:
   pi-agent-auth:
+  tertius-gis-cache:
 
 networks:
   pi-agent-egress:
