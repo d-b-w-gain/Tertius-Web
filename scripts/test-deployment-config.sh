@@ -1597,3 +1597,18 @@ if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/
   echo "HelmRelease tertius must reconcile chart content by Git revision so CI image promotion commits are deployed." >&2
   exit 1
 fi
+
+if ! python3 - "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+helm_release = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+enabled = helm_release.get("spec", {}).get("values", {}).get("gisCache", {}).get("enabled")
+raise SystemExit(0 if enabled is True else 1)
+PY
+then
+  echo "Production HelmRelease must explicitly enable the GIS cache after image promotion." >&2
+  exit 1
+fi
