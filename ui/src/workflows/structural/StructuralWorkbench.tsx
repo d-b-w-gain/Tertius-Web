@@ -539,11 +539,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 HANDLE-AUTHORED
               </span>
             )}
+            {capture?.analysis_configuration_revision && (
+              <span
+                className="rounded border border-violet-500/50 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-violet-300"
+                title={capture.analysis_configuration_digest || undefined}
+              >
+                CONFIG R{capture.analysis_configuration_revision}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             {analysis
               ? 'Active-project geometry with PyNite member demand and signed diagrams'
-              : 'Active-project geometry with statically parsed structural connectivity'}
+              : 'Active-project compiled mechanical topology; analysis context required'}
           </p>
         </div>
         {analysis && (
@@ -1874,7 +1882,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {crossSectionStage?.summary ||
-                    'Select a versioned Australian capacity pack in design.py.'}
+                    'Select a versioned Australian capacity pack in Structural workbench configuration.'}
                   {' '}This colour is Stage 6 cross-section resistance only. Member buckling,
                   restraint, bracing, connections, bases, and the final order decision remain
                   separate verification stages.
@@ -1894,7 +1902,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {memberStabilityStage?.summary ||
-                    'Author restraint-defined segments in design.py.'}
+                    'Author restraint-defined segments in Structural workbench configuration.'}
                   {' '}Green/red member colours only represent Stage 7 when the
                   governing compression-flange/twist restraint and distortional
                   buckling resistance are verified.

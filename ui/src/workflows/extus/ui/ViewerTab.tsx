@@ -3,6 +3,7 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
@@ -122,6 +123,25 @@ type GltfParserJson = {
   scenes?: unknown;
   scene?: unknown;
 };
+
+export type ModelArtifactFormat = 'gltf' | 'stl';
+
+export function detectModelArtifactFormat(contentType: string | null, buffer: ArrayBuffer): ModelArtifactFormat {
+  const normalizedContentType = (contentType || '').toLowerCase();
+  if (normalizedContentType.includes('stl')) return 'stl';
+  if (normalizedContentType.includes('gltf') || normalizedContentType.includes('json')) return 'gltf';
+
+  const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 256));
+  if (bytes.length >= 4
+    && bytes[0] === 0x67
+    && bytes[1] === 0x6c
+    && bytes[2] === 0x54
+    && bytes[3] === 0x46) {
+    return 'gltf';
+  }
+  const textPrefix = new TextDecoder().decode(bytes).trimStart();
+  return textPrefix.startsWith('{') ? 'gltf' : 'stl';
+}
 
 function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
   const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
@@ -813,7 +833,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       workflow: 'extus',
       render_quality: renderQuality,
     });
-    const loader = new GLTFLoader();
+    const gltfLoader = new GLTFLoader();
+    const stlLoader = new STLLoader();
 
     const finishLoad = () => {
       if (isCurrentRequest()) {
@@ -839,30 +860,19 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
     
-    apiFetch(modelUrl, getAccessToken)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
-        }
-        return res.arrayBuffer();
-      })
-      .then(buffer => {
-        if (!isCurrentRequest()) return;
-        loader.parse(buffer, '', (gltf) => {
-          if (!isCurrentRequest()) return;
-      
-          const model = gltf.scene;
-          annotateGltfNodeIds(model, (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json);
-      
+    const acceptModel = (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+      if (!isCurrentRequest()) return;
+      if (gltfJson) annotateGltfNodeIds(model, gltfJson);
+
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
       const center = new THREE.Vector3();
       box.getCenter(center);
       model.position.sub(center);
-      
-      // Fix orientation (GLTF is Y-up, our grid was Z-up)
-      model.rotation.x = Math.PI / 2;
-      
+
+      // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up.
+      if (gltfJson) model.rotation.x = Math.PI / 2;
+
       // Update camera
       if (cameraRef.current) {
          const camera = cameraRef.current;
@@ -870,14 +880,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          const fov = camera.fov * (Math.PI / 180);
          let distance = Math.abs(sphere.radius / Math.sin(fov / 2));
          distance *= 1.5; // Padding
-         
+
          const currentDir = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0,0,0)).normalize();
          if (currentDir.lengthSq() === 0) currentDir.set(1, 1, 1).normalize();
-         
+
          camera.position.copy(currentDir.multiplyScalar(distance));
          camera.lookAt(0, 0, 0);
          camera.updateProjectionMatrix();
-         
+
          // Update helpers
          const size = Math.max(500, Math.ceil(sphere.radius * 4));
          const grid = sceneRef.current!.getObjectByName("GridHelper");
@@ -891,7 +901,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            axes.scale.set(scale, scale, scale);
          }
       }
-      
+
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR, // Steel blueish
@@ -899,7 +909,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         roughness: 0.4,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
-      
+
       const highlightMaterial = sharedMaterial.clone();
       highlightMaterial.emissive.setHex(0x3b82f6);
       highlightMaterial.emissiveIntensity = 0.5;
@@ -909,13 +919,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       model.userData.sharedMat = sharedMaterial;
       model.userData.highlightMat = highlightMaterial;
-      
+
       const isHigh = renderQuality === 'high';
-      
+
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
       const sourceMeshes: THREE.Mesh[] = [];
-      
+
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
@@ -928,21 +938,21 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            if (!hasSourceMaterialTransparency(mesh.material)) {
              sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            }
-           
+
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
            mesh.receiveShadow = false;
            mesh.material = (mesh.userData.viewerMaterials as ViewerMeshMaterials).highlight;
         }
       });
-      
+
       if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
           const CHUNK_SIZE = 1000;
           const chunks: THREE.BufferGeometry[] = [];
           const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
-          
+
           for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
              const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE), { useAuthoredColors: hasAuthoredColors });
              if (batch) {
@@ -951,10 +961,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                else batch.mesh.material.dispose();
              }
           }
-          
+
           const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
           chunks.forEach(g => g.dispose()); // Free intermediate chunks
-          
+
           if (finalMergedGeom) {
              const batchedMaterial = hasAuthoredColors
                ? new THREE.MeshStandardMaterial({
@@ -976,17 +986,40 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           console.error("BufferGeometryUtils.mergeGeometries chunking failed:", e);
         }
       }
-      
+
       clearCurrentModel();
-      
+
       sceneRef.current!.add(model);
       meshRef.current = model;
       loadedModelUrlRef.current = modelUrl;
-      
+
       // Unpack the hierarchy
       setSceneGraph(model);
       setSelectedNodeId(null);
       finishLoad();
+    };
+
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return Promise.all([res.arrayBuffer(), Promise.resolve(res.headers.get('content-type'))]);
+      })
+      .then(([buffer, contentType]) => {
+        if (!isCurrentRequest()) return;
+        if (detectModelArtifactFormat(contentType, buffer) === 'stl') {
+          const geometry = stlLoader.parse(buffer);
+          geometry.computeVertexNormals();
+          const model = new THREE.Group();
+          model.name = 'STL Model';
+          model.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })));
+          acceptModel(model);
+          return;
+        }
+        gltfLoader.parse(buffer, '', (gltf) => {
+          const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
+          acceptModel(gltf.scene, gltfJson || {});
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });

@@ -839,6 +839,12 @@ class ProjectStructuralCapture(StructuralContract):
     schema_version: Literal["0.1"] = "0.1"
     project_name: str
     design_hash: str
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
     title: str
     authoring_mode: Literal["legacy", "generated"]
     design_basis: StructuralDesignBasis | None = None
@@ -1259,6 +1265,8 @@ class SnapshotSource(StructuralContract):
     label: str
     design_id: str | None = None
     design_hash: str | None = None
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = None
 
 
 class StructuralSnapshot(StructuralContract):

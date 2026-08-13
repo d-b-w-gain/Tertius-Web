@@ -175,6 +175,8 @@ export type ProjectStructuralCapture = {
   schema_version: '0.1'
   project_name: string
   design_hash: string
+  analysis_configuration_revision?: number | null
+  analysis_configuration_digest?: string | null
   title: string
   authoring_mode: 'legacy' | 'generated'
   design_basis: StructuralDesignBasis | null
@@ -305,6 +307,8 @@ export type StructuralSnapshot = {
     label: string
     design_id: string | null
     design_hash: string | null
+    analysis_configuration_revision?: number | null
+    analysis_configuration_digest?: string | null
   }
   design_basis: StructuralDesignBasis | null
   wind_action_bases: StructuralWindActionBasis[]

@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  detectModelArtifactFormat,
   ModelViewerCanvas,
   ViewerTab,
   structuralCheckColor,
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getAccessToken: vi.fn(),
   rendererSetSize: vi.fn(),
   gltfParse: vi.fn(),
+  stlParse: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({ apiFetch: mocks.apiFetch }))
@@ -31,6 +33,11 @@ vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
 vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
     parse = mocks.gltfParse
+  },
+}))
+vi.mock('three/examples/jsm/loaders/STLLoader.js', () => ({
+  STLLoader: class {
+    parse = mocks.stlParse
   },
 }))
 vi.mock('three/examples/jsm/utils/BufferGeometryUtils.js', () => ({
@@ -129,9 +136,27 @@ function binaryResponse(ok = true, status = ok ? 200 : 404) {
   return {
     ok,
     status,
+    headers: { get: vi.fn().mockReturnValue('model/gltf-binary') },
     arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
   }
 }
+
+function encodedBuffer(value: string): ArrayBuffer {
+  return new TextEncoder().encode(value).buffer as ArrayBuffer
+}
+
+describe('model artifact format detection', () => {
+  it('uses the response content type for STL and glTF artifacts', () => {
+    expect(detectModelArtifactFormat('model/stl', new ArrayBuffer(0))).toBe('stl')
+    expect(detectModelArtifactFormat('model/gltf-binary', new ArrayBuffer(0))).toBe('gltf')
+  })
+
+  it('sniffs legacy octet-stream responses without assuming glTF', () => {
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('solid exported\nendsolid exported'))).toBe('stl')
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('  {"asset":{"version":"2.0"}}'))).toBe('gltf')
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('glTF'))).toBe('gltf')
+  })
+})
 
 describe('ViewerTab active state', () => {
   const originalRequestAnimationFrame = window.requestAnimationFrame

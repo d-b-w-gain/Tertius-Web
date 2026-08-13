@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -7,22 +6,50 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from core.compile_artifacts import compile_bundle_digest, encode_compile_artifact
 from core.compile_messages import CompileResultPayload
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 from core.models import now_utc
-from core.structural.contracts import CompiledStructuralManifest
 
 
 def result_payload(job, seeded_tenant, **overrides):
+    export_format = str(overrides.get("export_format", job.export_format))
+    compiled_digest = "d" * 64
+    documents = {
+        "compiled_design": {
+            "schema_version": "1.0",
+            "compiled_design_digest": compiled_digest,
+        },
+        "procurement": {
+            "schema_version": "tertius.procurement.v1",
+            "compiled_design_digest": compiled_digest,
+        },
+        "structural": {
+            "schema_version": "tertius.structural.v1",
+            "compiled_design_digest": compiled_digest,
+        },
+        "drawing": {
+            "schema_version": "tertius.drawing.v1",
+            "compiled_design_digest": compiled_digest,
+        },
+        "bounds": {
+            "schema_version": "tertius.bounds.v1",
+            "compiled_design_digest": compiled_digest,
+        },
+    }
+    artifacts = [encode_compile_artifact(export_format, b"solid result")]
+    artifacts.extend(
+        encode_compile_artifact(kind, json.dumps(document).encode("utf-8"))
+        for kind, document in documents.items()
+    )
     payload = {
         "job_id": job.id,
         "tenant_id": seeded_tenant.tenant_id,
         "project_id": seeded_tenant.project_id,
-        "export_format": job.export_format,
+        "export_format": export_format,
         "status": "succeeded",
-        "artifact_content_base64": base64.b64encode(b"solid result").decode("ascii"),
-        "artifact_byte_size": len(b"solid result"),
-        "artifact_content_type": "model/stl",
+        "artifacts": artifacts,
+        "bundle_digest": compile_bundle_digest(artifacts),
         "worker_started_at": datetime(2026, 6, 14, tzinfo=timezone.utc),
         "worker_finished_at": datetime(2026, 6, 14, tzinfo=timezone.utc),
     }
@@ -47,7 +74,7 @@ def consumer_settings():
     )
 
 
-def test_apply_compile_result_routes_bom_manifest_to_sidecar_without_database(
+def test_apply_compile_result_records_complete_bundle_without_database(
     monkeypatch,
 ):
     import workflows.intus.compile_result_consumer as consumer
@@ -91,7 +118,7 @@ def test_apply_compile_result_routes_bom_manifest_to_sidecar_without_database(
         def finish_job(self, target, status, **kwargs):
             target.status = status
 
-        def prunable_artifacts(self, *args, **kwargs):
+        def prunable_artifact_bundles(self, *args, **kwargs):
             return []
 
         def delete_artifacts(self, artifacts):
@@ -107,25 +134,9 @@ def test_apply_compile_result_routes_bom_manifest_to_sidecar_without_database(
     repository = FakeRepository()
     monkeypatch.setattr(consumer, "CompileRepository", lambda *args: repository)
     monkeypatch.setattr(consumer, "_record_usage_if_applicable", lambda *args, **kwargs: None)
-    manifest = {
-        "version": 1,
-        "source_snapshot_hash": "a" * 64,
-        "scopes": [],
-        "components": [],
-        "requirements": [],
-        "diagnostics": [],
-    }
-    result = CompileResultPayload(
-        job_id=job_id,
-        tenant_id=tenant_id,
-        project_id=project_id,
-        export_format="glb",
-        status="succeeded",
-        artifact_content_base64=base64.b64encode(b"glb").decode("ascii"),
-        artifact_byte_size=3,
-        bom_manifest_json=json.dumps(manifest),
-        worker_started_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
-        worker_finished_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
+    result = result_payload(
+        job,
+        SimpleNamespace(tenant_id=tenant_id, project_id=project_id),
     )
 
     applied = consumer.apply_compile_result(
@@ -135,9 +146,95 @@ def test_apply_compile_result_routes_bom_manifest_to_sidecar_without_database(
     )
 
     assert applied is True
-    assert [artifact["kind"] for artifact in recorded] == ["glb", "bom_manifest"]
-    assert json.loads(recorded[1]["content"]) == manifest
-    assert recorded[1]["content_type"] == "application/json"
+    assert {artifact["kind"] for artifact in recorded} == {
+        "glb",
+        "compiled_design",
+        "procurement",
+        "structural",
+        "drawing",
+        "bounds",
+    }
+    assert all(artifact["compile_job_id"] == job_id for artifact in recorded)
+
+
+def test_apply_compile_result_records_compiled_design_sidecar_without_database(
+    monkeypatch,
+):
+    import workflows.intus.compile_result_consumer as consumer
+
+    job_id = uuid4()
+    tenant_id = uuid4()
+    project_id = uuid4()
+    job = SimpleNamespace(
+        id=job_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        status="running",
+        export_format="glb",
+        claimed_at=None,
+    )
+    recorded: list[dict] = []
+
+    class FakeRepository:
+        def get_job_for_result(self, result):
+            return job
+
+        def record_artifact(
+            self,
+            project_id,
+            compile_job_id,
+            kind,
+            content,
+            content_type=None,
+        ):
+            recorded.append(
+                {
+                    "kind": kind,
+                    "content": content,
+                    "content_type": content_type,
+                }
+            )
+            return SimpleNamespace(id=uuid4())
+
+        def finish_job(self, target, status, **kwargs):
+            target.status = status
+
+        def prunable_artifact_bundles(self, *args, **kwargs):
+            return []
+
+        def delete_artifacts(self, artifacts):
+            assert artifacts == []
+
+    class FakeDatabase:
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+    repository = FakeRepository()
+    monkeypatch.setattr(consumer, "CompileRepository", lambda *args: repository)
+    monkeypatch.setattr(
+        consumer,
+        "_record_usage_if_applicable",
+        lambda *args, **kwargs: None,
+    )
+    result = result_payload(
+        job,
+        SimpleNamespace(tenant_id=tenant_id, project_id=project_id),
+    )
+
+    applied = consumer.apply_compile_result(
+        FakeDatabase(),
+        result,
+        SimpleNamespace(artifact_retention_limit=10),
+    )
+
+    assert applied is True
+    assert len(recorded) == 6
+    compiled = next(item for item in recorded if item["kind"] == "compiled_design")
+    assert json.loads(compiled["content"])["compiled_design_digest"] == "d" * 64
+    assert compiled["content_type"] == "application/json"
 
 
 def test_apply_compile_result_records_artifact_and_marks_success(db_session, seeded_tenant):
@@ -155,7 +252,12 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
 
     applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
 
-    artifact = db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id))
+    artifact = db_session.scalar(
+        select(Artifact).where(
+            Artifact.compile_job_id == job.id,
+            Artifact.kind == "stl",
+        )
+    )
     persisted = db_session.get(CompileJob, job.id)
     assert applied is True
     assert persisted.status == "succeeded"
@@ -163,7 +265,7 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
     assert artifact.content_type == "model/stl"
 
 
-def test_apply_compile_result_records_structural_manifest_sidecar(
+def test_apply_compile_result_records_structural_projection(
     db_session,
     seeded_tenant,
 ):
@@ -178,25 +280,9 @@ def test_apply_compile_result_records_structural_manifest_sidecar(
     )
     db_session.add(job)
     db_session.commit()
-    compiled = CompiledStructuralManifest(
-        source_hash="a" * 64,
-        design_hash="b" * 64,
-        declaration={
-            "title": "Catalogue fixture",
-            "components": [],
-            "connections": [],
-            "loads": [],
-        },
-    )
-
     applied = apply_compile_result(
         db_session,
-        result_payload(
-            job,
-            seeded_tenant,
-            export_format="glb",
-            structural_manifest_json=compiled.model_dump_json(),
-        ),
+        result_payload(job, seeded_tenant, export_format="glb"),
         consumer_settings(),
     )
 
@@ -206,46 +292,37 @@ def test_apply_compile_result_records_structural_manifest_sidecar(
         .order_by(Artifact.kind)
     ).all()
     assert applied is True
-    assert [artifact.kind for artifact in artifacts] == ["glb", "structural"]
-    assert artifacts[1].content_type == "application/json"
-    persisted = CompiledStructuralManifest.model_validate_json(
-        artifacts[1].content
-    )
-    assert persisted.declaration["title"] == "Catalogue fixture"
-
-
-def test_apply_compile_result_records_bom_manifest_sidecar(
-    db_session,
-    seeded_tenant,
-):
-    from workflows.intus.compile_result_consumer import apply_compile_result
-
-    job = CompileJob(
-        tenant_id=seeded_tenant.tenant_id,
-        project_id=seeded_tenant.project_id,
-        requested_by=seeded_tenant.user_id,
-        status="running",
-        export_format="glb",
-    )
-    db_session.add(job)
-    db_session.commit()
-    manifest = {
-        "version": 1,
-        "source_snapshot_hash": "a" * 64,
-        "scopes": [],
-        "components": [],
-        "requirements": [],
-        "diagnostics": [{"code": "fixture", "severity": "info"}],
+    assert {artifact.kind for artifact in artifacts} == {
+        "glb",
+        "compiled_design",
+        "procurement",
+        "structural",
+        "drawing",
+        "bounds",
     }
+    structural = next(artifact for artifact in artifacts if artifact.kind == "structural")
+    assert structural.content_type == "application/json"
+    assert json.loads(structural.content)["schema_version"] == "tertius.structural.v1"
 
+
+def test_apply_compile_result_records_procurement_projection(
+    db_session,
+    seeded_tenant,
+):
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="glb",
+    )
+    db_session.add(job)
+    db_session.commit()
     applied = apply_compile_result(
         db_session,
-        result_payload(
-            job,
-            seeded_tenant,
-            export_format="glb",
-            bom_manifest_json=json.dumps(manifest),
-        ),
+        result_payload(job, seeded_tenant, export_format="glb"),
         consumer_settings(),
     )
 
@@ -255,9 +332,13 @@ def test_apply_compile_result_records_bom_manifest_sidecar(
         .order_by(Artifact.kind)
     ).all()
     assert applied is True
-    assert [artifact.kind for artifact in artifacts] == ["bom_manifest", "glb"]
-    assert artifacts[0].content_type == "application/json"
-    assert json.loads(artifacts[0].content) == manifest
+    procurement = next(
+        artifact for artifact in artifacts if artifact.kind == "procurement"
+    )
+    assert procurement.content_type == "application/json"
+    assert json.loads(procurement.content)["schema_version"] == (
+        "tertius.procurement.v1"
+    )
 
 
 def test_apply_compile_result_records_failure(db_session, seeded_tenant):
@@ -277,9 +358,8 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
         job,
         seeded_tenant,
         status="failed",
-        artifact_content_base64=None,
-        artifact_byte_size=None,
-        artifact_content_type=None,
+        artifacts=[],
+        bundle_digest=None,
         error_code="timeout",
         user_message="Compile timed out after 10 minutes. Try again.",
         error="timed out",
@@ -351,14 +431,14 @@ def test_apply_compile_result_marks_malformed_success_failed(db_session, seeded_
     db_session.add(job)
     db_session.commit()
 
-    payload = result_payload(job, seeded_tenant, artifact_content_base64=None, artifact_byte_size=12)
+    payload = result_payload(job, seeded_tenant, artifacts=[], bundle_digest=None)
 
     applied = apply_compile_result(db_session, payload, consumer_settings())
 
     persisted = db_session.get(CompileJob, job.id)
     assert applied is True
     assert persisted.status == "failed"
-    assert persisted.error_code == "invalid_result"
+    assert persisted.error_code == "invalid_artifact_bundle"
     assert persisted.retryable is True
 
 
@@ -683,9 +763,8 @@ def test_apply_compile_result_creates_usage_record_on_failure(db_session, seeded
         job,
         seeded_tenant,
         status="failed",
-        artifact_content_base64=None,
-        artifact_byte_size=None,
-        artifact_content_type=None,
+        artifacts=[],
+        bundle_digest=None,
         error_code="timeout",
         error="timed out",
     )

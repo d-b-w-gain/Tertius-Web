@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import gzip
-import json
 import logging
 from datetime import timedelta
 from time import perf_counter
@@ -17,6 +14,7 @@ from core.compile_messages import (
     CompileSourceFile,
     assert_message_size,
 )
+from core.compile_artifacts import validate_compile_bundle
 from core.config import get_settings
 from core.db import SessionLocal
 from core.models import CompileJob, CompileJobFile, now_utc
@@ -31,7 +29,6 @@ from core.nats_client import (
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
-from core.structural.contracts import CompiledStructuralManifest
 
 
 logger = logging.getLogger(__name__)
@@ -88,140 +85,52 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         return True
 
     try:
-        artifact_bytes = _decode_artifact(result)
+        artifact_contents = validate_compile_bundle(
+            result.artifacts,
+            export_format=result.export_format,
+            expected_bundle_digest=result.bundle_digest,
+        )
     except ValueError as exc:
         repo.finish_job(
             job,
             "failed",
             error=str(exc),
-            error_code="invalid_result",
-            user_message="Compile result could not be verified. Try again.",
+            error_code="invalid_artifact_bundle",
+            user_message="Compile result bundle could not be verified. Try again.",
             retryable=True,
         )
         _record_usage_if_applicable(db, result, job, settings)
         db.commit()
         return True
-    max_decompressed_bytes = 256 * 1024 * 1024  # 256MB limit for database/cache storage
-    if len(artifact_bytes) > max_decompressed_bytes:
-        repo.finish_job(
-            job,
-            "failed",
-            error=f"Compile artifact is {len(artifact_bytes)} bytes, above {max_decompressed_bytes} byte limit",
-            error_code="artifact_too_large",
-            user_message="Compile succeeded but the decompressed artifact is too large to return.",
-            retryable=False,
-        )
-        _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
-        db.commit()
-        return True
 
-    structural_manifest_bytes = None
-    if result.structural_manifest_json is not None:
-        try:
-            structural_manifest = CompiledStructuralManifest.model_validate_json(
-                result.structural_manifest_json
+    artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}
+    recorded = []
+    for kind, content in artifact_contents.items():
+        recorded.append(
+            repo.record_artifact(
+                job.project_id,
+                job.id,
+                kind,
+                content,
+                content_type=artifacts_by_kind[kind].content_type,
             )
-            structural_manifest_bytes = structural_manifest.model_dump_json().encode(
-                "utf-8"
-            )
-        except ValueError as exc:
-            repo.finish_job(
-                job,
-                "failed",
-                error=f"Invalid compiled structural manifest: {exc}",
-                error_code="invalid_structural_manifest",
-                user_message=(
-                    "Compile produced invalid structural metadata. "
-                    "Fix the structural catalogue or design declaration."
-                ),
-                retryable=False,
-            )
-            _record_usage_if_applicable(
-                db,
-                result,
-                job,
-                settings,
-                artifact_byte_size=len(artifact_bytes),
-            )
-            db.commit()
-            return True
-
-    bom_manifest_bytes = None
-    if result.bom_manifest_json is not None:
-        try:
-            bom_manifest = json.loads(result.bom_manifest_json)
-            if not isinstance(bom_manifest, dict):
-                raise ValueError("manifest root must be a JSON object")
-            bom_manifest_bytes = json.dumps(
-                bom_manifest,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            ).encode("utf-8")
-        except (TypeError, ValueError) as exc:
-            repo.finish_job(
-                job,
-                "failed",
-                error=f"Invalid compiled BoM manifest: {exc}",
-                error_code="invalid_bom_manifest",
-                user_message=(
-                    "Compile produced invalid Procurement metadata. "
-                    "Fix the BOM declarations in the design or component library."
-                ),
-                retryable=False,
-            )
-            _record_usage_if_applicable(
-                db,
-                result,
-                job,
-                settings,
-                artifact_byte_size=len(artifact_bytes),
-            )
-            db.commit()
-            return True
-
-    artifact = repo.record_artifact(
-        job.project_id,
-        job.id,
-        job.export_format,
-        artifact_bytes,
-        content_type=result.artifact_content_type,
-    )
-    if structural_manifest_bytes is not None:
-        repo.record_artifact(
-            job.project_id,
-            job.id,
-            "structural",
-            structural_manifest_bytes,
-            content_type="application/json",
-        )
-    if bom_manifest_bytes is not None:
-        repo.record_artifact(
-            job.project_id,
-            job.id,
-            "bom_manifest",
-            bom_manifest_bytes,
-            content_type="application/json",
         )
     repo.finish_job(job, "succeeded")
-    _record_usage_if_applicable(db, result, job, settings, artifact_byte_size=len(artifact_bytes))
-    pruned = repo.prunable_artifacts(job.project_id, job.export_format, max(1, settings.artifact_retention_limit))
+    model_byte_size = len(artifact_contents[result.export_format])
+    _record_usage_if_applicable(
+        db,
+        result,
+        job,
+        settings,
+        artifact_byte_size=model_byte_size,
+    )
+    pruned = repo.prunable_artifact_bundles(
+        job.project_id,
+        max(1, settings.artifact_retention_limit),
+    )
     repo.delete_artifacts(pruned)
-    structural_pruned = repo.prunable_artifacts(
-        job.project_id,
-        "structural",
-        max(1, settings.artifact_retention_limit),
-    )
-    repo.delete_artifacts(structural_pruned)
-    bom_manifest_pruned = repo.prunable_artifacts(
-        job.project_id,
-        "bom_manifest",
-        max(1, settings.artifact_retention_limit),
-    )
-    repo.delete_artifacts(bom_manifest_pruned)
     db.commit()
-    return artifact.id is not None
+    return all(artifact.id is not None for artifact in recorded)
 
 
 async def handle_compile_result_message(msg, db, settings) -> None:
@@ -423,16 +332,3 @@ async def run_result_consumer(stop_event: asyncio.Event | None = None) -> None:
         finally:
             if nc is not None:
                 await nc.close()
-
-
-def _decode_artifact(result: CompileResultPayload) -> bytes:
-    if not result.artifact_content_base64:
-        raise ValueError("succeeded compile result did not include artifact content")
-    artifact_bytes = base64.b64decode(result.artifact_content_base64.encode("ascii"), validate=True)
-
-    if result.is_compressed:
-        artifact_bytes = gzip.decompress(artifact_bytes)
-
-    if result.artifact_byte_size is not None and result.artifact_byte_size != len(artifact_bytes):
-        raise ValueError("compile result artifact byte size did not match decoded content")
-    return artifact_bytes

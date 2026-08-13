@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from math import dist
+from collections.abc import Mapping
+
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -8,18 +12,30 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_runtime import runtime_files_hash, structural_runtime_files_hash
 from core.db import get_db
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
 from core.structural.contracts import (
-    CompiledStructuralManifest,
+    AnalyticalMemberDeclaration,
+    CapabilityState,
+    DesignAnalysisDefinition,
+    DesignComponent,
+    DesignConnection,
+    LoadCase,
+    LoadCombination,
+    MemberDistributedLoad,
+    MemberPointLoad,
     ProjectStructuralCapture,
+    Restraints,
+    SectionProperties,
+    StructuralMaterial,
     StructuralSnapshot,
+    Vector3,
 )
-from core.structural.design_capture import (
-    StructuralDeclarationError,
-    capture_project_structural_declaration,
-    parse_project_structural_capture,
+from core.structural.project_configuration import (
+    StructuralConfigurationRevisionResponse,
+    StructuralProjectConfiguration,
+    fixed_restraints,
+    pinned_restraints,
 )
 from core.structural.project_analysis import (
     StructuralAnalysisError,
@@ -33,14 +49,11 @@ from core.structural.site_wind import (
     lookup_wind_region,
     wind_region_geojson,
 )
-from core.models import Artifact, Project, UserWorkspaceState
-from core.repositories import ProjectRepository
-from core.site_definition import (
-    SITE_DEFINITION_FILENAME,
-    SiteDefinitionError,
-    apply_site_definition,
-    parse_site_definition,
-    validate_design_site_usage,
+from core.models import (
+    Artifact,
+    Project,
+    StructuralConfigurationRevision,
+    UserWorkspaceState,
 )
 from core.workbench_access import require_structural_workbench
 
@@ -82,7 +95,7 @@ def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
     )
 
 
-def get_latest_structural_manifest_artifact(
+def get_latest_structural_projection_artifact(
     db: Session,
     ctx: AuthContext,
     project: Project,
@@ -99,6 +112,437 @@ def get_latest_structural_manifest_artifact(
     )
 
 
+def get_latest_structural_configuration(
+    db: Session,
+    ctx: AuthContext,
+    project: Project,
+) -> StructuralConfigurationRevision | None:
+    return db.scalar(
+        select(StructuralConfigurationRevision)
+        .where(
+            StructuralConfigurationRevision.tenant_id == ctx.tenant_id,
+            StructuralConfigurationRevision.project_id == project.id,
+        )
+        .order_by(StructuralConfigurationRevision.revision.desc())
+        .limit(1)
+    )
+
+
+def _capture_from_structural_projection(
+    projection: dict,
+    *,
+    project_name: str,
+    configuration: StructuralProjectConfiguration | None = None,
+    configuration_revision: int | None = None,
+    configuration_digest: str | None = None,
+) -> ProjectStructuralCapture:
+    if projection.get("schema_version") != "tertius.structural.v1":
+        raise ValueError("unsupported structural projection schema")
+    design_digest = str(projection.get("compiled_design_digest") or "")
+    if len(design_digest) != 64:
+        raise ValueError("structural projection is missing its compiled-design digest")
+
+    components = [
+        DesignComponent(
+            id=str(component["component_id"]),
+            label=str(component.get("mark") or component["component_id"]),
+            kind=component["kind"],
+            visual_node_id=str(component["component_id"]),
+            grounded=component["kind"] == "ground",
+            part_number=(
+                str(component["part_number"])
+                if component.get("part_number")
+                else None
+            ),
+        )
+        for component in projection.get("components", [])
+        if isinstance(component, dict)
+        and component.get("component_id")
+        and component.get("kind")
+    ]
+    component_ids = {component.id for component in components}
+    connections = []
+    for joint in projection.get("joints", []):
+        if not isinstance(joint, dict):
+            continue
+        connected_ids = [
+            str(port["component_id"])
+            for port in joint.get("ports", [])
+            if isinstance(port, dict) and port.get("component_id") in component_ids
+        ]
+        if len(connected_ids) < 2:
+            continue
+        connections.append(
+            DesignConnection(
+                id=str(joint["connection_id"]),
+                label=str(joint["connection_id"]),
+                from_component_id=connected_ids[0],
+                to_component_id=connected_ids[1],
+                connector_component_ids=[
+                    str(component_id)
+                    for component_id in joint.get("connector_component_ids", [])
+                    if component_id in component_ids
+                ],
+                transfers=joint.get("transfers") or [],
+            )
+        )
+
+    diagnostics = [
+        str(diagnostic.get("message"))
+        for diagnostic in projection.get("diagnostics", [])
+        if isinstance(diagnostic, dict) and diagnostic.get("message")
+    ]
+    readiness = projection.get("readiness") or {}
+    analysis = None
+    if configuration is not None and readiness.get("model_complete"):
+        analysis, analysis_warnings = _analysis_from_projection(
+            projection,
+            components=components,
+            configuration=configuration,
+        )
+        diagnostics.extend(analysis_warnings)
+    capabilities = [
+        CapabilityState(
+            id="mechanical-topology",
+            label="Mechanical structural topology",
+            status="online" if readiness.get("model_complete") else "blocked",
+            detail=(
+                "Members and joints were projected from physical components."
+                if readiness.get("model_complete")
+                else "Resolve the structural component and connection diagnostics."
+            ),
+        ),
+        CapabilityState(
+            id="project-analysis-context",
+            label="Project analysis context",
+            status="online" if analysis is not None else "blocked",
+            detail=(
+                f"Structural configuration revision {configuration_revision} is active."
+                if analysis is not None
+                else "Site, loads, standards, combinations, and approval policy must be "
+                "configured in the Structural workbench before analysis."
+            ),
+        ),
+    ]
+    return ProjectStructuralCapture(
+        project_name=project_name,
+        design_hash=design_digest,
+        analysis_configuration_revision=configuration_revision,
+        analysis_configuration_digest=configuration_digest,
+        title=project_name,
+        authoring_mode="generated",
+        design_basis=configuration.design_basis if configuration else None,
+        components=components,
+        connections=connections,
+        loads=[],
+        load_paths=[],
+        analysis=analysis,
+        capabilities=capabilities,
+        warnings=diagnostics,
+    )
+
+
+def _vector(values: object, *, label: str) -> Vector3:
+    if not isinstance(values, (list, tuple)) or len(values) != 3:
+        raise ValueError(f"{label} requires three coordinates")
+    return Vector3(x=float(values[0]), y=float(values[1]), z=float(values[2]))
+
+
+def _member_length(member: dict) -> float:
+    start = member.get("start_m")
+    end = member.get("end_m")
+    if not isinstance(start, list) or not isinstance(end, list):
+        raise ValueError(f"analytical member {member.get('id')!r} has no endpoints")
+    return float(dist(start, end))
+
+
+def _endpoint_restraints(
+    projection: dict,
+    *,
+    component_id: str,
+    endpoint: str,
+    component_kinds: Mapping[str, str],
+) -> tuple[Restraints, list[str]]:
+    warnings: list[str] = []
+    for joint in projection.get("joints", []):
+        if not isinstance(joint, dict):
+            continue
+        ports = [port for port in joint.get("ports", []) if isinstance(port, dict)]
+        if not any(
+            str(port.get("component_id")) == component_id
+            and str(port.get("port")) == endpoint
+            for port in ports
+        ):
+            continue
+        grounded = any(
+            component_kinds.get(str(port.get("component_id"))) == "ground"
+            for port in ports
+            if str(port.get("component_id")) != component_id
+        )
+        if not grounded:
+            continue
+        model = str(joint.get("analysis_model") or "")
+        status = str(joint.get("stiffness_status") or "unverified")
+        basis = str(joint.get("stiffness_basis") or "")
+        if status != "verified":
+            warnings.append(
+                f"Connection {joint.get('connection_id')} uses its {model or 'declared'} "
+                f"analysis model as a draft assumption ({status}): {basis}"
+            )
+        if model in {"rigid", "rigid_zone"}:
+            return fixed_restraints(), warnings
+        if model == "pinned":
+            return pinned_restraints(), warnings
+        raise ValueError(
+            f"ground connection {joint.get('connection_id')!r} uses unsupported "
+            f"analysis model {model!r}"
+        )
+    return Restraints(), warnings
+
+
+def _analysis_from_projection(
+    projection: dict,
+    *,
+    components: list[DesignComponent],
+    configuration: StructuralProjectConfiguration,
+) -> tuple[DesignAnalysisDefinition, list[str]]:
+    product_facets = {
+        str(facet.get("product_key")): facet
+        for facet in projection.get("product_facets", [])
+        if isinstance(facet, dict) and facet.get("product_key")
+    }
+    component_kinds = {component.id: component.kind for component in components}
+    members_by_component = {
+        str(member.get("component_id")): member
+        for member in projection.get("analytical_members", [])
+        if isinstance(member, dict) and member.get("component_id")
+    }
+    if not members_by_component:
+        raise ValueError("structural projection has no analytical members")
+
+    materials: dict[str, StructuralMaterial] = {}
+    sections: dict[str, SectionProperties] = {}
+    declarations: list[AnalyticalMemberDeclaration] = []
+    criteria_by_component = {
+        criterion.component_id: criterion for criterion in configuration.member_criteria
+    }
+    warnings: list[str] = []
+    has_ground_restraint = False
+
+    for component_id, projected_member in members_by_component.items():
+        product_key = str(projected_member.get("product_key") or "")
+        facet = product_facets.get(product_key)
+        if facet is None:
+            raise ValueError(
+                f"analytical member {projected_member.get('id')!r} references missing product facet"
+            )
+        section_data = facet.get("section") or projected_member.get("section") or {}
+        material_data = facet.get("material") or projected_member.get("material") or {}
+        section_id = f"section:{product_key}"
+        material_id = f"material:{product_key}"
+        sections.setdefault(
+            section_id,
+            SectionProperties(
+                id=section_id,
+                label=str(facet.get("label") or product_key),
+                area_m2=float(section_data["area_m2"]),
+                iy_m4=float(section_data["iy_m4"]),
+                iz_m4=float(section_data["iz_m4"]),
+                torsion_j_m4=float(section_data["torsion_j_m4"]),
+                mass_kg_m=(
+                    float(section_data["mass_kg_m"])
+                    if section_data.get("mass_kg_m") is not None
+                    else None
+                ),
+            ),
+        )
+        materials.setdefault(
+            material_id,
+            StructuralMaterial(
+                id=material_id,
+                label=str(material_data.get("label") or product_key),
+                elastic_modulus_kN_m2=float(material_data["elastic_modulus_pa"])
+                / 1000.0,
+                shear_modulus_kN_m2=float(material_data["shear_modulus_pa"])
+                / 1000.0,
+                poisson_ratio=float(material_data["poisson_ratio"]),
+                density_kg_m3=float(material_data["density_kg_m3"]),
+            ),
+        )
+        start_restraints, start_warnings = _endpoint_restraints(
+            projection,
+            component_id=component_id,
+            endpoint="start",
+            component_kinds=component_kinds,
+        )
+        end_restraints, end_warnings = _endpoint_restraints(
+            projection,
+            component_id=component_id,
+            endpoint="end",
+            component_kinds=component_kinds,
+        )
+        warnings.extend((*start_warnings, *end_warnings))
+        has_ground_restraint = has_ground_restraint or any(
+            (
+                start_restraints.dx,
+                start_restraints.dy,
+                start_restraints.dz,
+                end_restraints.dx,
+                end_restraints.dy,
+                end_restraints.dz,
+            )
+        )
+        criterion = criteria_by_component.get(component_id)
+        declarations.append(
+            AnalyticalMemberDeclaration(
+                id=str(projected_member["id"]),
+                label=next(
+                    (
+                        component.label
+                        for component in components
+                        if component.id == component_id
+                    ),
+                    component_id,
+                ),
+                component_id=component_id,
+                start=_vector(projected_member.get("start_m"), label="member start"),
+                end=_vector(projected_member.get("end_m"), label="member end"),
+                start_restraints=start_restraints,
+                end_restraints=end_restraints,
+                section_id=section_id,
+                material_id=material_id,
+                rotation_deg=float(projected_member.get("rotation_deg") or 0),
+                deflection_limit_ratio=(
+                    criterion.deflection_limit_ratio if criterion else None
+                ),
+                deflection_limit_mm=(
+                    criterion.deflection_limit_mm if criterion else None
+                ),
+                deflection_limit_basis=(
+                    criterion.deflection_limit_basis if criterion else None
+                ),
+                assumption=(
+                    "Axis, section, material, and physical restraints are projected "
+                    "from the compiled mechanical graph."
+                ),
+            )
+        )
+
+    if not has_ground_restraint:
+        raise ValueError(
+            "compiled mechanical topology has no member endpoint connected to ground"
+        )
+
+    point_loads: list[MemberPointLoad] = []
+    distributed_loads: list[MemberDistributedLoad] = []
+    for point_config in configuration.member_loads:
+        point_member = members_by_component.get(point_config.component_id)
+        if point_member is None:
+            raise ValueError(
+                f"configured load {point_config.id!r} references missing component "
+                f"{point_config.component_id!r}"
+            )
+        length = _member_length(point_member)
+        if point_config.distance_m > length:
+            raise ValueError(
+                f"configured load {point_config.id!r} lies beyond member length {length:g}m"
+            )
+        point_loads.append(
+            MemberPointLoad(
+                id=point_config.id,
+                label=point_config.label,
+                member_id=str(point_member["id"]),
+                case_id=point_config.case_id,
+                distance_m=point_config.distance_m,
+                force=point_config.force,
+                moment=point_config.moment,
+                source_load_id=None,
+                provenance=point_config.provenance,
+            )
+        )
+    for distributed_config in configuration.member_distributed_loads:
+        distributed_member = members_by_component.get(distributed_config.component_id)
+        if distributed_member is None:
+            raise ValueError(
+                f"configured load {distributed_config.id!r} references missing component "
+                f"{distributed_config.component_id!r}"
+            )
+        length = _member_length(distributed_member)
+        end_distance = distributed_config.end_distance_m or length
+        if end_distance > length or distributed_config.start_distance_m >= end_distance:
+            raise ValueError(
+                f"configured load {distributed_config.id!r} has invalid member stations"
+            )
+        distributed_loads.append(
+            MemberDistributedLoad(
+                id=distributed_config.id,
+                label=distributed_config.label,
+                member_id=str(distributed_member["id"]),
+                case_id=distributed_config.case_id,
+                start_distance_m=distributed_config.start_distance_m,
+                end_distance_m=end_distance,
+                start_force_kN_m=distributed_config.start_force_kN_m,
+                end_force_kN_m=(
+                    distributed_config.end_force_kN_m
+                    or distributed_config.start_force_kN_m
+                ),
+                source_kind="authored",
+                source_load_id=None,
+                provenance=distributed_config.provenance,
+            )
+        )
+
+    if configuration.include_self_weight:
+        dead_cases = [case for case in configuration.load_cases if case.category == "dead"]
+        if not dead_cases:
+            raise ValueError("self-weight requires a dead load case")
+        dead_case = dead_cases[0]
+        for declaration in declarations:
+            section = sections[declaration.section_id]
+            if section.mass_kg_m is None:
+                raise ValueError(
+                    f"member {declaration.id!r} has no mass per metre for self-weight"
+                )
+            load = -section.mass_kg_m * 9.80665 / 1000.0
+            length = dist(
+                declaration.start.model_dump().values(),
+                declaration.end.model_dump().values(),
+            )
+            distributed_loads.append(
+                MemberDistributedLoad(
+                    id=f"self-weight:{declaration.id}",
+                    label=f"{declaration.label} self-weight",
+                    member_id=declaration.id,
+                    case_id=dead_case.id,
+                    start_distance_m=0,
+                    end_distance_m=length,
+                    start_force_kN_m=Vector3(x=0, y=0, z=load),
+                    end_force_kN_m=Vector3(x=0, y=0, z=load),
+                    source_kind="self_weight",
+                    source_load_id=None,
+                    provenance=(
+                        "Derived from the product section mass and standard gravity."
+                    ),
+                )
+            )
+
+    return (
+        DesignAnalysisDefinition(
+            materials=list(materials.values()),
+            sections=list(sections.values()),
+            members=declarations,
+            load_cases=[LoadCase.model_validate(case) for case in configuration.load_cases],
+            member_loads=point_loads,
+            member_distributed_loads=distributed_loads,
+            load_combinations=[
+                LoadCombination.model_validate(combination)
+                for combination in configuration.load_combinations
+            ],
+        ),
+        warnings,
+    )
+
+
 @app.get("/active/capture", response_model=ProjectStructuralCapture)
 def get_active_capture(
     ctx: AuthContext = Depends(get_auth_context),
@@ -107,70 +551,105 @@ def get_active_capture(
     project = get_active_project(db, ctx)
     if project is None:
         raise HTTPException(status_code=404, detail="No active project")
-    files = ProjectRepository(db, ctx.tenant_id).files_for_runtime(project.name)
-    design_source = files.get("design.py") if files else None
-    if design_source is None:
-        raise HTTPException(status_code=404, detail="Active project has no design.py")
-    assert files is not None
-    site = None
-    site_source = files.get(SITE_DEFINITION_FILENAME)
-    if site_source is not None:
-        try:
-            site = parse_site_definition(site_source)
-            validate_design_site_usage(design_source)
-        except SiteDefinitionError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    artifact = get_latest_structural_manifest_artifact(db, ctx, project)
-    if artifact is not None and artifact.content is not None:
-        try:
-            compiled = CompiledStructuralManifest.model_validate_json(artifact.content)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Compiled structural manifest is invalid: {exc}",
-            ) from exc
-        source_is_current = (
-            compiled.structural_source_hash == structural_runtime_files_hash(files)
-            if compiled.structural_source_hash is not None
-            else compiled.source_hash == runtime_files_hash(files)
+    artifact = get_latest_structural_projection_artifact(db, ctx, project)
+    if artifact is None or artifact.content is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Compile the active project to create its structural projection.",
         )
-        if not source_is_current:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Structural metadata is stale. Compile the active project "
-                    "to resolve its current design.py imports."
-                ),
-            )
-        try:
-            declaration = (
-                apply_site_definition(compiled.declaration, site)
-                if site is not None
-                else compiled.declaration
-            )
-            return capture_project_structural_declaration(
-                declaration,
-                project_name=project.name,
-                design_hash=compiled.design_hash,
-                capture_detail=(
-                    "Structural manifest resolved from the compiled design.py "
-                    "source closure and validated catalogue imports."
-                ),
-            )
-        except (StructuralDeclarationError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        capture = parse_project_structural_capture(
-            design_source,
+        projection = json.loads(artifact.content)
+        if not isinstance(projection, dict):
+            raise ValueError("structural projection root must be an object")
+        stored_configuration = get_latest_structural_configuration(db, ctx, project)
+        configuration = (
+            StructuralProjectConfiguration.model_validate(
+                stored_configuration.content
+            )
+            if stored_configuration is not None
+            else None
+        )
+        return _capture_from_structural_projection(
+            projection,
             project_name=project.name,
+            configuration=configuration,
+            configuration_revision=(
+                stored_configuration.revision
+                if stored_configuration is not None
+                else None
+            ),
+            configuration_digest=(
+                stored_configuration.digest
+                if stored_configuration is not None
+                else None
+            ),
         )
-        if site is None:
-            return capture
-        return ProjectStructuralCapture.model_validate(
-            apply_site_definition(capture.model_dump(mode="python"), site)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Compiled structural projection is invalid: {exc}",
+        ) from exc
+
+
+@app.get(
+    "/active/configuration",
+    response_model=StructuralConfigurationRevisionResponse,
+)
+def get_active_configuration(
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> StructuralConfigurationRevisionResponse:
+    project = get_active_project(db, ctx)
+    if project is None:
+        raise HTTPException(status_code=404, detail="No active project")
+    stored = get_latest_structural_configuration(db, ctx, project)
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The active project has no Structural workbench configuration.",
         )
-    except (StructuralDeclarationError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StructuralConfigurationRevisionResponse(
+        revision=stored.revision,
+        digest=stored.digest,
+        configuration=StructuralProjectConfiguration.model_validate(stored.content),
+    )
+
+
+@app.put(
+    "/active/configuration",
+    response_model=StructuralConfigurationRevisionResponse,
+)
+def put_active_configuration(
+    configuration: StructuralProjectConfiguration,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> StructuralConfigurationRevisionResponse:
+    project = get_active_project(db, ctx)
+    if project is None:
+        raise HTTPException(status_code=404, detail="No active project")
+    latest = get_latest_structural_configuration(db, ctx, project)
+    digest = configuration.configuration_digest
+    if latest is not None and latest.digest == digest:
+        return StructuralConfigurationRevisionResponse(
+            revision=latest.revision,
+            digest=latest.digest,
+            configuration=configuration,
+        )
+    stored = StructuralConfigurationRevision(
+        tenant_id=ctx.tenant_id,
+        project_id=project.id,
+        revision=(latest.revision + 1 if latest is not None else 1),
+        digest=digest,
+        content=configuration.model_dump(mode="json"),
+        created_by=ctx.user_id,
+    )
+    db.add(stored)
+    db.commit()
+    return StructuralConfigurationRevisionResponse(
+        revision=stored.revision,
+        digest=stored.digest,
+        configuration=configuration,
+    )
 
 
 @app.get("/active/analysis", response_model=StructuralSnapshot)

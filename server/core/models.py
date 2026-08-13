@@ -113,6 +113,45 @@ class ProjectFile(Base):
     project: Mapped[Project] = relationship(back_populates="files")
 
 
+class StructuralConfigurationRevision(Base):
+    __tablename__ = "structural_configuration_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "revision",
+            name="uq_structural_configuration_project_revision",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+
 class SourceSnapshot(Base):
     __tablename__ = "source_snapshots"
     __table_args__ = (
@@ -298,13 +337,19 @@ class Artifact(Base):
             ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
             name="fk_artifacts_compile_job_project_tenant",
         ),
+        UniqueConstraint(
+            "tenant_id",
+            "compile_job_id",
+            "kind",
+            name="uq_artifacts_tenant_compile_kind",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     compile_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     byte_size: Mapped[Optional[int]] = mapped_column()

@@ -1611,7 +1611,7 @@ def _governing_working_combination(
     analysis,
     combinations: list[LoadCombination],
 ) -> LoadCombination:
-    """Select the worst credible service combination already authored by design.py."""
+    """Select the worst credible service combination in Structural workbench state."""
 
     excluded_words = ("demo", "deliberate", "illustrative")
     candidates = [
@@ -1785,7 +1785,7 @@ def _p399_evidence(
             *(f"{role}: {reference}" for role, reference in basis.standards.items()),
         ]
         if basis is not None
-        else ["No design basis declared in design.py."]
+        else ["No design basis declared in Structural workbench state."]
     )
     member_ids = [member.id for member in members]
     node_ids = [node.id for node in nodes]
@@ -1822,7 +1822,7 @@ def _p399_evidence(
                     symbol=f"site,{wind_basis.id}",
                     label="Site",
                     value=wind_basis.site_address,
-                    source="design.py StructuralModel.wind_action_basis",
+                    source="Structural workbench wind action basis",
                 ),
                 CalculationInput(
                     symbol=f"region,{wind_basis.id}",
@@ -1837,21 +1837,21 @@ def _p399_evidence(
                     symbol=f"TC,{wind_basis.id}",
                     label="Terrain category",
                     value=wind_basis.terrain_category,
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"R,{wind_basis.id}",
                     label="Annual recurrence interval",
                     value=wind_basis.annual_recurrence_interval_years,
                     unit="years",
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"z,{wind_basis.id}",
                     label="Reference height",
                     value=wind_basis.reference_height_m,
                     unit="m",
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"enclosure,{wind_basis.id}",
@@ -2060,7 +2060,7 @@ def _p399_evidence(
         ),
         *(
             [
-                "Wind loads are not linked to a design.py wind action basis: "
+                "Wind loads are not linked to a Structural workbench wind action basis: "
                 + ", ".join(unlinked_wind_loads)
             ]
             if unlinked_wind_loads
@@ -2492,7 +2492,7 @@ def _p399_evidence(
             *(
                 [
                     "The declared analytical base model does not match the actual "
-                    "design.py member-end restraints."
+                    "compiled physical connection topology."
                 ]
                 if not stability_base_model_matches
                 else []
@@ -2626,7 +2626,10 @@ def _p399_evidence(
             title="Geometry and analytical scheme",
             status=basis_status,
             p399_reference="SCI P399 Sections 3 and 6.1",
-            purpose="Prove which design.py geometry became nodes, members, and supports.",
+            purpose=(
+                "Prove which compiled mechanical components became nodes, members, "
+                "and supports."
+            ),
             assumptions=list(
                 dict.fromkeys(member.assumption for member in analysis.members)
             ),
@@ -2635,7 +2638,7 @@ def _p399_evidence(
                     symbol="n_member",
                     label="Analytical members",
                     value=len(members),
-                    source="design.py StructuralModel.member_axis declarations",
+                    source="Compiled-design structural projection",
                 ),
                 CalculationInput(
                     symbol="n_node",
@@ -2649,7 +2652,7 @@ def _p399_evidence(
                     value=sum(
                         any(node.restraints.model_dump().values()) for node in nodes
                     ),
-                    source="design.py authored end restraints",
+                    source="Physical connection topology",
                 ),
             ],
             equations=geometry_equations,
@@ -2703,7 +2706,7 @@ def _p399_evidence(
                     symbol="limit_state",
                     label="Limit state",
                     value=combination.limit_state,
-                    source="design.py load_combination declaration",
+                    source="Structural workbench configuration",
                 )
             ],
             equations=combination_equations,
@@ -2723,7 +2726,7 @@ def _p399_evidence(
                     symbol="method",
                     label="Declared analysis method",
                     value=basis.analysis_method if basis else "not declared",
-                    source="design.py design_basis",
+                    source="Structural workbench configuration",
                 ),
                 CalculationInput(
                     symbol="r_tol",
@@ -2774,7 +2777,7 @@ def _p399_evidence(
                         symbol="method",
                         label="Second-order method",
                         value=stability_definition.method,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="combinations",
@@ -2786,7 +2789,7 @@ def _p399_evidence(
                             )
                             or stability_definition.stability_combination_id
                         ),
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="imperfection_cases",
@@ -2810,14 +2813,14 @@ def _p399_evidence(
                         symbol="analysis_basis_status",
                         label="Analytical basis status",
                         value=stability_definition.analysis_basis_status,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="analysis_base_match",
                         label="Base model matches member restraints",
                         value=stability_base_model_matches,
                         source=(
-                            "Direct comparison with design.py start restraints on "
+                            "Direct comparison with projected physical start restraints on "
                             "the declared eaves/column members"
                         ),
                     ),
@@ -2840,13 +2843,13 @@ def _p399_evidence(
                             for direction in stability_definition.direction_cases
                         )
                         or "not authored",
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="η_warning",
                         label="Amplification warning ratio",
                         value=stability_definition.amplification_warning_ratio,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                 ]
             ),
@@ -2961,13 +2964,13 @@ def _p399_evidence(
                         symbol="capacity_pack",
                         label="Versioned capacity pack",
                         value=cross_section_definition.pack_id,
-                        source="design.py StructuralModel.cross_section_verification",
+                        source="Structural workbench capacity-pack configuration",
                     ),
                     CalculationInput(
                         symbol="ULS_envelope",
                         label="Checked ULS combinations",
                         value=", ".join(cross_section_definition.combination_ids),
-                        source="design.py StructuralModel.cross_section_verification",
+                        source="Structural workbench capacity-pack configuration",
                     ),
                 ]
             ),
@@ -3010,7 +3013,7 @@ def _p399_evidence(
                         label="Versioned member-capacity pack",
                         value=member_stability_definition.pack_id,
                         source=(
-                            "design.py StructuralModel.member_stability_verification"
+                            "Structural workbench member-stability configuration"
                         ),
                     ),
                     CalculationInput(
@@ -3018,7 +3021,7 @@ def _p399_evidence(
                         label="Checked ULS combinations",
                         value=", ".join(member_stability_definition.combination_ids),
                         source=(
-                            "design.py StructuralModel.member_stability_verification"
+                            "Structural workbench member-stability configuration"
                         ),
                     ),
                 ]
@@ -4542,6 +4545,10 @@ def solve_project_structural(
             label=capture.project_name,
             design_id=capture.project_name,
             design_hash=capture.design_hash,
+            analysis_configuration_revision=(
+                capture.analysis_configuration_revision
+            ),
+            analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,
         wind_action_bases=capture.wind_action_bases,
@@ -4698,8 +4705,8 @@ def solve_project_structural(
             ),
             *dict.fromkeys(member.assumption for member in analysis.members),
             (
-                "Non-steel permanent actions are included only where design.py "
-                "authors a traceable distributed or point load."
+                "Non-steel permanent actions are included only where Structural "
+                "workbench state authors a traceable distributed or point load."
             ),
             (
                 "Stage 6 uses catalogue effective properties and a versioned "

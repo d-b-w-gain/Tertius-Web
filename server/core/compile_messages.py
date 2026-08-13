@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CompileSourceFile(BaseModel):
@@ -25,22 +25,27 @@ class CompileCommand(BaseModel):
     originating_llm_edit_job_id: UUID | None = None
 
 
+class CompileArtifactPayload(BaseModel):
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    content_type: str = Field(min_length=1, max_length=100)
+    content_base64: str = Field(min_length=1)
+    byte_size: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    is_compressed: bool = False
+
+
 class CompileResultPayload(BaseModel):
     job_id: UUID
     tenant_id: UUID
     project_id: UUID
     export_format: str
     status: Literal["succeeded", "failed"]
-    artifact_content_base64: str | None = None
-    artifact_byte_size: int | None = None
-    artifact_content_type: str | None = None
-    structural_manifest_json: str | None = None
-    bom_manifest_json: str | None = None
+    artifacts: list[CompileArtifactPayload] = Field(default_factory=list, max_length=8)
+    bundle_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     error_code: str | None = None
     user_message: str | None = None
     error: str | None = None
     retryable: bool = False
-    is_compressed: bool = False
     worker_started_at: datetime
     worker_finished_at: datetime
 
