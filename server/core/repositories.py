@@ -554,6 +554,7 @@ class ProjectAssetRepository:
         return self.db.scalar(stmt)
 
     def allocate_revision(self, project_id: UUID, *, import_job_id: UUID | None = None) -> int:
+        lock: Project | ProjectImportJob | None
         if import_job_id is None:
             lock = self.db.scalar(
                 select(Project)
