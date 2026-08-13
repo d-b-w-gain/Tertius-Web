@@ -227,13 +227,14 @@ Production deployment is GitOps-driven:
 3. The promotion workflow opens/updates the `image-promotion` PR and waits for chart checks.
 4. The promotion PR merges only if `master` and the checked head remain unchanged.
 5. Flux observes the chart/tag commit and reconciles the `tertius` HelmRelease.
-6. The externally managed `tertius-production-values` Secret supplies production storage class/size, enable flag, provider allowlist, quotas, and credential Secret names.
+6. The checked-in HelmRelease enables the promoted GIS workload. The externally managed `tertius-production-values` Secret supplies production storage class/size, provider allowlist, quotas, and credential Secret names.
 
 Use a two-step enablement to avoid Flux requesting an image before its immutable tag exists:
 
 - land chart/image-pipeline support with `gisCache.enabled=false`;
 - allow image build and atomic promotion to complete;
-- update the production values Secret with provider/storage configuration and `gisCache.enabled=true`;
+- update the production values Secret with provider/storage configuration;
+- set `gisCache.enabled=true` in the checked-in production HelmRelease so enablement is revisioned and cannot be omitted from later production installs;
 - reconcile/observe the HelmRelease and keep the feature in compare-only mode.
 
 Before enabling, ops must verify:

@@ -12,6 +12,12 @@ spec:
     - kind: Secret
       name: tertius-production-values
       valuesKey: values.yaml
+  values:
+    # The GIS image is promoted atomically with the other Tertius images. Keep
+    # production enablement in Git so a missing external override cannot leave
+    # the Site workbench deployed without its cache service.
+    gisCache:
+      enabled: true
   chart:
     spec:
       chart: ./infra/charts/tertius
