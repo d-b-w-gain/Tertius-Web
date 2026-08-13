@@ -107,8 +107,8 @@ class Store:
 class Publisher:
     def __init__(self, failures: int = 0, events: list[str] | None = None):
         self.failures = failures
-        self.messages = []
-        self.calls = []
+        self.messages: list[object] = []
+        self.calls: list[tuple[object, object, dict[str, object]]] = []
         self.events = events if events is not None else []
 
     async def publish_json(self, _subject, message, **_kwargs):

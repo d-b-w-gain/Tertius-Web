@@ -64,6 +64,8 @@ def success_result(
         summary=public_manifest_summary(output.manifest),
         duration_ms=10,
     )
+    assert result.brep is not None
+    assert result.manifest is not None
     return result, {result.brep: output.brep_bytes, result.manifest: manifest_bytes}
 
 
