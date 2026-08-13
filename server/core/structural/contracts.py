@@ -112,6 +112,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
     component_id: str
     start: Vector3
     end: Vector3
+    start_node_key: str | None = None
+    end_node_key: str | None = None
     start_restraints: Restraints = Field(default_factory=Restraints)
     end_restraints: Restraints = Field(default_factory=Restraints)
     section_id: str

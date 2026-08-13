@@ -443,13 +443,13 @@ example away from its old override-capable local factory.
 **Files:** `tertius/connections.py`, `server/core/structural/topology.py`,
 Lysaght bracket/fastener builders, tests.
 
-- [ ] Define typed member ports with position, frame, supported connection
+- [x] Define typed member ports with position, frame, supported connection
   families, and engagement region.
-- [ ] Refactor bracket and fastener factories into physical connection
+- [x] Refactor bracket and fastener factories into physical connection
   definitions with procurement and structural facets.
-- [ ] Generate solver nodes, releases, rigid zones, or springs from the selected
+- [x] Generate solver nodes and releases from the selected
   connection definition.
-- [ ] Reject incompatible ports, unexplained endpoint offsets, missing physical
+- [x] Reject incompatible ports, unexplained endpoint offsets, missing physical
   connectors, and unused connector geometry.
 - [x] Ensure coincident/touching shapes remain structurally unconnected unless a
   connection object joins them.
@@ -482,9 +482,9 @@ Structural UI, tests.
   actions, load cases/combinations, serviceability, and approval rules.
 - [x] Include the selected configuration revision/digest in the compile or
   analysis revision without exposing it as a Python project import.
-- [ ] Port reusable solver/check orchestration out of the worked-example helper
+- [x] Port reusable solver/check orchestration out of the worked-example helper
   into Tertius structural services.
-- [ ] Keep catalogue engineering properties in product definitions and project
+- [x] Keep catalogue engineering properties in product definitions and project
   analysis inputs in workbench state.
 - [x] Block structural approval when required context/evidence is missing.
 - [ ] Trace every result and utilization back to component, connection,
@@ -499,6 +499,16 @@ derives its member, support nodes, loads, reactions, and demand diagrams from
 the compiled graph. The demo base stiffness and capacity remain deliberately
 unverified, so regulatory approval and procurement release stay blocked until
 verified connection and capacity packs are added.
+
+Completed physical-topology slice: member ports now carry an explicit local
+frame, supported connection families, and engagement length. A project-owned
+bolted knee builder creates its gusset and bolts once for render, procurement,
+drawing, and the physical connection graph. The solver receives stable node
+keys from that graph: rigid connections share nodes, pinned connections create
+rotational end releases, and unconnected coincident endpoints stay separate.
+Port reuse, incompatible families, unexplained gaps, reused connectors, and
+unused connector geometry are rejected before analysis. Rigid-zone offsets,
+semi-rigid springs, and verified resistance remain later verification work.
 
 ### Task 7: Add atomic multi-artifact compile bundles
 

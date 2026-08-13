@@ -4,6 +4,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from math import dist
 from typing import Any
 
 import build123d as bd
@@ -43,6 +44,8 @@ class CompileSession:
         self._components_by_token: dict[str, ComponentRegistration] = {}
         self._connections: list[ConnectionRegistration] = []
         self._marks: set[str] = set()
+        self._connected_ports: set[tuple[str, str]] = set()
+        self._used_connector_tokens: set[str] = set()
         self._finalized = False
 
     @property
@@ -119,7 +122,9 @@ class CompileSession:
                 name=port_name,
                 point_mm=placement.point_mm,
                 direction=placement.direction,
+                x_direction=placement.x_direction,
                 compatible_families=tuple(declared_families),
+                engagement_length_mm=placement.engagement_length_mm,
             )
         missing = sorted(expected_port_names - set(component_ports))
         if missing:
@@ -169,9 +174,23 @@ class CompileSession:
                     f"port {component.instance_id}.{port.name} is incompatible with "
                     f"connection family {definition.family!r}"
                 )
+            port_key = (port.component_token, port.name)
+            if port_key in self._connected_ports:
+                raise TertiusRuntimeError(
+                    f"port {component.instance_id}.{port.name} already belongs to a "
+                    "physical connection"
+                )
             normalized_ports.append(port)
         if len({port.component_token for port in normalized_ports}) < 2:
             raise TertiusRuntimeError("a physical connection must join different components")
+        origin = normalized_ports[0].point_mm
+        largest_offset = max(dist(origin, port.point_mm) for port in normalized_ports[1:])
+        if largest_offset > definition.maximum_port_offset_mm + 1e-9:
+            raise TertiusRuntimeError(
+                f"physical connection ports are {largest_offset:g} mm apart; "
+                f"{definition.key!r} permits at most "
+                f"{definition.maximum_port_offset_mm:g} mm"
+            )
 
         connector_tokens: list[str] = []
         for connector in connector_components:
@@ -182,6 +201,11 @@ class CompileSession:
             if connector_registration is None or connector_registration.shape is not connector:
                 raise TertiusRuntimeError(
                     "connection connector geometry must be a managed component from this session"
+                )
+            if connector_registration.token in self._used_connector_tokens:
+                raise TertiusRuntimeError(
+                    f"connection component {connector_registration.instance_id!r} is already "
+                    "used by another physical connection"
                 )
             structural = connector_registration.product.structural
             if structural is not None and structural.kind != "connector":
@@ -207,6 +231,10 @@ class CompileSession:
             mark=normalized_mark,
         )
         self._connections.append(connection_registration)
+        self._connected_ports.update(
+            (port.component_token, port.name) for port in normalized_ports
+        )
+        self._used_connector_tokens.update(connector_tokens)
         setattr(shape, "tertius_connection_token", token)
         setattr(shape, "tertius_connection_id", connection_id)
         setattr(shape, "tertius_connection_definition_digest", definition.definition_digest)

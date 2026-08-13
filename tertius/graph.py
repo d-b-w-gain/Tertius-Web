@@ -130,7 +130,9 @@ def build_compiled_design_graph(session: CompileSession, model: bd.Shape) -> dic
                         "name": port.name,
                         "point_mm": list(port.point_mm),
                         "direction": list(port.direction),
+                        "x_direction": list(port.x_direction),
                         "compatible_families": list(port.compatible_families),
+                        "engagement_length_mm": port.engagement_length_mm,
                     }
                     for _, port in sorted(component.ports.items())
                 ],

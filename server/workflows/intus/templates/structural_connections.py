@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from math import sqrt
+from math import dist, sqrt
 
 import build123d as bd
 
@@ -19,25 +19,66 @@ from tertius import (
 )
 
 
+def _vector3(values) -> tuple[float, float, float]:
+    return (float(values[0]), float(values[1]), float(values[2]))
+
+
 def _connection_plane(port) -> bd.Plane:
-    z_direction = tuple(float(value) for value in port.direction)
+    z_direction = _vector3(port.direction)
     z_length = sqrt(sum(value * value for value in z_direction))
-    z_direction = tuple(value / z_length for value in z_direction)
-    reference = (1.0, 0.0, 0.0)
-    if abs(sum(z_direction[index] * reference[index] for index in range(3))) > 0.95:
-        reference = (0.0, 1.0, 0.0)
-    projection = sum(
-        z_direction[index] * reference[index] for index in range(3)
+    z_direction = (
+        z_direction[0] / z_length,
+        z_direction[1] / z_length,
+        z_direction[2] / z_length,
     )
-    x_direction = tuple(
-        reference[index] - projection * z_direction[index] for index in range(3)
-    )
-    x_length = sqrt(sum(value * value for value in x_direction))
-    x_direction = tuple(value / x_length for value in x_direction)
+    x_direction = _vector3(port.x_direction)
     return bd.Plane(
         origin=bd.Vector(*port.point_mm),
         x_dir=bd.Vector(*x_direction),
         z_dir=bd.Vector(*z_direction),
+    )
+
+
+def _unit(values: tuple[float, float, float]) -> tuple[float, float, float]:
+    length = sqrt(sum(value * value for value in values))
+    if length <= 1e-9:
+        raise ValueError("connection frame requires a non-zero direction")
+    return (values[0] / length, values[1] / length, values[2] / length)
+
+
+def _cross(
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    )
+
+
+def _joint_plane(first_port, second_port) -> bd.Plane:
+    offset = dist(first_port.point_mm, second_port.point_mm)
+    if offset > 1.0:
+        raise ValueError(
+            f"member connection ports are {offset:g} mm apart; add explicit offset "
+            "geometry or move the member endpoints"
+        )
+    first_axis = _unit(_vector3(first_port.direction))
+    second_axis = _unit(_vector3(second_port.direction))
+    normal_raw = _cross(first_axis, second_axis)
+    if sqrt(sum(value * value for value in normal_raw)) <= 1e-6:
+        normal_raw = _vector3(first_port.x_direction)
+    normal = _unit(normal_raw)
+    point = (
+        (first_port.point_mm[0] + second_port.point_mm[0]) / 2.0,
+        (first_port.point_mm[1] + second_port.point_mm[1]) / 2.0,
+        (first_port.point_mm[2] + second_port.point_mm[2]) / 2.0,
+    )
+    return bd.Plane(
+        origin=bd.Vector(*point),
+        x_dir=bd.Vector(*first_axis),
+        z_dir=bd.Vector(*normal),
     )
 
 
@@ -149,6 +190,8 @@ def bolted_fixed_base(
                 port.point_mm,
                 tuple(-value for value in port.direction),
                 (connection_family,),
+                x_direction=port.x_direction,
+                engagement_length_mm=20.0,
             )
         },
     )
@@ -212,4 +255,147 @@ def bolted_fixed_base(
     )
 
 
-__all__ = ["bolted_fixed_base"]
+@lru_cache(maxsize=1)
+def _knee_bracket_product() -> ProductDefinition:
+    return ProductDefinition(
+        key="project-fabricated:knee-gusset-180x180x6",
+        label="Fabricated knee gusset 180×180×6",
+        geometry={
+            "shape": "gusset_plate",
+            "width_mm": 180,
+            "height_mm": 180,
+            "thickness_mm": 6,
+        },
+        procurement=ProcurementFacet(
+            part_number="FAB-KG-180X180X6",
+            manufacturer="Project fabricated",
+            material="G450 steel",
+            ordering={
+                "basis": "fabricated_each",
+                "width_mm": 180,
+                "height_mm": 180,
+                "thickness_mm": 6,
+            },
+        ),
+        structural=StructuralFacet(
+            kind="connector",
+            evidence_status="unverified",
+            evidence_basis=(
+                "Gusset geometry and procurement identity are authoritative; "
+                "connection resistance and stiffness require project verification."
+            ),
+        ),
+        drawing=DrawingFacet(
+            name="Fabricated knee gusset",
+            attributes={"width_mm": 180, "height_mm": 180, "thickness_mm": 6},
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def _knee_bolt_product() -> ProductDefinition:
+    return ProductDefinition(
+        key="project-fastener:m12x30-knee-bolt-demo",
+        label="M12×30 knee bolt demonstration item",
+        geometry={"shape": "cylinder", "diameter_mm": 12, "length_mm": 30},
+        procurement=ProcurementFacet(
+            part_number="M12X30-BOLT-DEMO",
+            manufacturer="Project nominated",
+            material="Steel",
+            ordering={"basis": "each", "diameter_mm": 12, "length_mm": 30},
+        ),
+        structural=StructuralFacet(
+            kind="connector",
+            evidence_status="unverified",
+            evidence_basis=(
+                "Bolt geometry and quantity are authoritative for the draft BoM; "
+                "bolt group resistance is not verified."
+            ),
+        ),
+        drawing=DrawingFacet(
+            name="M12×30 knee bolt demonstration item",
+            attributes={"diameter_mm": 12, "length_mm": 30},
+        ),
+    )
+
+
+def bolted_rigid_knee(
+    first_member: bd.Shape,
+    second_member: bd.Shape,
+    *,
+    first_port_name: str,
+    second_port_name: str,
+    connection_family: str,
+    mark: str,
+) -> bd.Shape:
+    """Join two member ports through one rendered and procured draft knee."""
+
+    first_port = first_member.ports[first_port_name]
+    second_port = second_member.ports[second_port_name]
+    plane = _joint_plane(first_port, second_port)
+
+    plate_shape = bd.Box(
+        180,
+        180,
+        6,
+        align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.CENTER),
+    ).moved(plane.location)
+    plate_shape.label = f"{mark}-PLATE · FAB-KG-180X180X6"
+    plate = managed_component(
+        plate_shape,
+        product=_knee_bracket_product(),
+        mark=f"{mark}-PLATE",
+        role="knee gusset",
+    )
+
+    bolts: list[bd.Shape] = []
+    for index, (x_offset, y_offset) in enumerate(
+        ((-55, 0), (55, 0), (0, -55), (0, 55)),
+        start=1,
+    ):
+        bolt_shape = (
+            bd.Cylinder(
+                6,
+                30,
+                align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.CENTER),
+            )
+            .moved(bd.Pos(X=x_offset, Y=y_offset))
+            .moved(plane.location)
+        )
+        bolt_shape.label = f"{mark}-B{index} · M12X30-BOLT-DEMO"
+        bolts.append(
+            managed_component(
+                bolt_shape,
+                product=_knee_bolt_product(),
+                mark=f"{mark}-B{index}",
+                role="knee bolt",
+            )
+        )
+
+    assembly = bd.Compound(  # type: ignore[call-overload]
+        children=[plate, *bolts],
+        label=f"{mark} · bolted member knee",
+    )
+    definition = ConnectionDefinition(
+        key="project-demo-bolted-rigid-knee",
+        label="Bolted member knee (draft analysis model)",
+        family=connection_family,
+        transfers=("force", "shear", "moment"),
+        analysis_model="rigid",
+        stiffness_status="unverified",
+        stiffness_basis=(
+            "Rigid for draft elastic analysis only; gusset, bolts, local member "
+            "effects, stiffness, and resistance require verification."
+        ),
+        maximum_port_offset_mm=1.0,
+    )
+    return physical_connection(
+        assembly,
+        definition=definition,
+        ports=(first_port, second_port),
+        connector_components=(plate, *bolts),
+        mark=mark,
+    )
+
+
+__all__ = ["bolted_fixed_base", "bolted_rigid_knee"]

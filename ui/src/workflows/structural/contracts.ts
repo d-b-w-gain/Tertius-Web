@@ -194,6 +194,8 @@ export type ProjectStructuralCapture = {
       component_id: string
       start: Vector3
       end: Vector3
+      start_node_key?: string | null
+      end_node_key?: string | null
       start_restraints: StructuralNode['restraints']
       end_restraints: StructuralNode['restraints']
       section_id: string

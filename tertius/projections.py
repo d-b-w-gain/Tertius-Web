@@ -188,6 +188,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             "analysis_model": definition.get("analysis_model"),
             "stiffness_status": definition.get("stiffness_status"),
             "stiffness_basis": definition.get("stiffness_basis"),
+            "maximum_port_offset_mm": definition.get("maximum_port_offset_mm"),
         }
         joints.append(joint)
         for port in connected_ports:

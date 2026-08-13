@@ -37,7 +37,7 @@ def default_structural_configuration() -> dict[str, object]:
 
     return {
         "schema_version": "1.0",
-        "title": "Lysaght Cee cantilever draft analysis",
+        "title": "Lysaght Cee knee-frame draft analysis",
         "design_basis": {
             "framework_id": "SCI-P399",
             "framework_label": "SCI P399 verification process",
@@ -76,7 +76,7 @@ def default_structural_configuration() -> dict[str, object]:
                 "case_id": "live",
                 "start_distance_m": 0.0,
                 "end_distance_m": None,
-                "start_force_kN_m": {"x": 0.0, "y": -0.25, "z": 0.0},
+                "start_force_kN_m": {"x": 0.0, "y": 0.0, "z": -0.2},
                 "end_force_kN_m": None,
                 "provenance": (
                     "Draft workbench demonstration action; replace with project "

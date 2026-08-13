@@ -256,48 +256,93 @@ def _member_length(member: dict) -> float:
     return float(dist(start, end))
 
 
-def _endpoint_restraints(
+def _endpoint_joint_index(
     projection: dict,
+) -> dict[tuple[str, str], dict]:
+    index: dict[tuple[str, str], dict] = {}
+    for joint in projection.get("joints", []):
+        if not isinstance(joint, dict):
+            continue
+        for port in joint.get("ports", []):
+            if not isinstance(port, dict):
+                continue
+            component_id = str(port.get("component_id") or "")
+            port_name = str(port.get("port") or "")
+            if not component_id or not port_name:
+                continue
+            key = (component_id, port_name)
+            if key in index:
+                raise ValueError(
+                    f"component port {component_id}.{port_name} belongs to more than "
+                    "one physical connection"
+                )
+            index[key] = joint
+    return index
+
+
+def _endpoint_connection_effects(
     *,
     component_id: str,
     endpoint: str,
     component_kinds: Mapping[str, str],
-) -> tuple[Restraints, list[str]]:
+    endpoint_joints: Mapping[tuple[str, str], dict],
+) -> tuple[Restraints, Restraints, list[str], str]:
     warnings: list[str] = []
-    for joint in projection.get("joints", []):
-        if not isinstance(joint, dict):
-            continue
-        ports = [port for port in joint.get("ports", []) if isinstance(port, dict)]
-        if not any(
-            str(port.get("component_id")) == component_id
-            and str(port.get("port")) == endpoint
-            for port in ports
-        ):
-            continue
-        grounded = any(
-            component_kinds.get(str(port.get("component_id"))) == "ground"
-            for port in ports
-            if str(port.get("component_id")) != component_id
+    joint = endpoint_joints.get((component_id, endpoint))
+    if joint is None:
+        return Restraints(), Restraints(), warnings, f"endpoint:{component_id}:{endpoint}"
+
+    connection_id = str(joint.get("connection_id") or joint.get("id") or "")
+    ports = [port for port in joint.get("ports", []) if isinstance(port, dict)]
+    other_component_ids = {
+        str(port.get("component_id"))
+        for port in ports
+        if str(port.get("component_id")) != component_id
+    }
+    other_kinds = {
+        component_kinds[other_id]
+        for other_id in other_component_ids
+        if other_id in component_kinds
+    }
+    model = str(joint.get("analysis_model") or "")
+    status = str(joint.get("stiffness_status") or "unverified")
+    basis = str(joint.get("stiffness_basis") or "")
+    if status != "verified":
+        warnings.append(
+            f"Connection {connection_id} uses its {model or 'declared'} analysis "
+            f"model as a draft assumption ({status}): {basis}"
         )
-        if not grounded:
-            continue
-        model = str(joint.get("analysis_model") or "")
-        status = str(joint.get("stiffness_status") or "unverified")
-        basis = str(joint.get("stiffness_basis") or "")
-        if status != "verified":
-            warnings.append(
-                f"Connection {joint.get('connection_id')} uses its {model or 'declared'} "
-                f"analysis model as a draft assumption ({status}): {basis}"
-            )
+    node_key = f"joint:{connection_id}"
+
+    if "ground" in other_kinds:
         if model in {"rigid", "rigid_zone"}:
-            return fixed_restraints(), warnings
+            return fixed_restraints(), Restraints(), warnings, node_key
         if model == "pinned":
-            return pinned_restraints(), warnings
+            return pinned_restraints(), Restraints(), warnings, node_key
         raise ValueError(
             f"ground connection {joint.get('connection_id')!r} uses unsupported "
             f"analysis model {model!r}"
         )
-    return Restraints(), warnings
+
+    if "member" in other_kinds:
+        if model in {"rigid", "rigid_zone"}:
+            return Restraints(), Restraints(), warnings, node_key
+        if model == "pinned":
+            if "moment" in set(joint.get("transfers") or []):
+                raise ValueError(
+                    f"pinned connection {connection_id!r} cannot declare moment transfer"
+                )
+            releases = Restraints(rx=True, ry=True, rz=True)
+            return Restraints(), releases, warnings, node_key
+        raise ValueError(
+            f"member connection {connection_id!r} uses unsupported analysis model "
+            f"{model!r}"
+        )
+
+    raise ValueError(
+        f"connection {connection_id!r} does not join {component_id}.{endpoint} to "
+        "a structural member or ground reference"
+    )
 
 
 def _analysis_from_projection(
@@ -312,6 +357,7 @@ def _analysis_from_projection(
         if isinstance(facet, dict) and facet.get("product_key")
     }
     component_kinds = {component.id: component.kind for component in components}
+    endpoint_joints = _endpoint_joint_index(projection)
     members_by_component = {
         str(member.get("component_id")): member
         for member in projection.get("analytical_members", [])
@@ -369,17 +415,27 @@ def _analysis_from_projection(
                 density_kg_m3=float(material_data["density_kg_m3"]),
             ),
         )
-        start_restraints, start_warnings = _endpoint_restraints(
-            projection,
+        (
+            start_restraints,
+            start_releases,
+            start_warnings,
+            start_node_key,
+        ) = _endpoint_connection_effects(
             component_id=component_id,
             endpoint="start",
             component_kinds=component_kinds,
+            endpoint_joints=endpoint_joints,
         )
-        end_restraints, end_warnings = _endpoint_restraints(
-            projection,
+        (
+            end_restraints,
+            end_releases,
+            end_warnings,
+            end_node_key,
+        ) = _endpoint_connection_effects(
             component_id=component_id,
             endpoint="end",
             component_kinds=component_kinds,
+            endpoint_joints=endpoint_joints,
         )
         warnings.extend((*start_warnings, *end_warnings))
         has_ground_restraint = has_ground_restraint or any(
@@ -407,8 +463,12 @@ def _analysis_from_projection(
                 component_id=component_id,
                 start=_vector(projected_member.get("start_m"), label="member start"),
                 end=_vector(projected_member.get("end_m"), label="member end"),
+                start_node_key=start_node_key,
+                end_node_key=end_node_key,
                 start_restraints=start_restraints,
                 end_restraints=end_restraints,
+                start_releases=start_releases,
+                end_releases=end_releases,
                 section_id=section_id,
                 material_id=material_id,
                 rotation_deg=float(projected_member.get("rotation_deg") or 0),
@@ -539,7 +599,7 @@ def _analysis_from_projection(
                 for combination in configuration.load_combinations
             ],
         ),
-        warnings,
+        list(dict.fromkeys(warnings)),
     )
 
 

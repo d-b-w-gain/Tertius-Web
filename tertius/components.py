@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import isfinite, sqrt
 from typing import Any, Iterable, Mapping
 
 from ._build123d_compat import install_build123d_compatibility
@@ -21,23 +21,62 @@ def _vector3(label: str, value: Iterable[float]) -> tuple[float, float, float]:
     return values
 
 
+def _unit_vector3(
+    label: str,
+    value: Iterable[float],
+) -> tuple[float, float, float]:
+    values = _vector3(label, value)
+    length = sqrt(sum(item * item for item in values))
+    if length == 0.0:
+        raise ValueError(f"{label} must not be zero")
+    return (
+        values[0] / length,
+        values[1] / length,
+        values[2] / length,
+    )
+
+
+def _default_x_direction(
+    direction: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    reference = (1.0, 0.0, 0.0) if abs(direction[0]) < 0.9 else (0.0, 1.0, 0.0)
+    projection = sum(direction[index] * reference[index] for index in range(3))
+    return _unit_vector3(
+        "port x direction",
+        tuple(
+            reference[index] - projection * direction[index] for index in range(3)
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class PortPlacement:
     point_mm: tuple[float, float, float]
     direction: tuple[float, float, float]
+    x_direction: tuple[float, float, float]
     compatible_families: tuple[str, ...] = ()
+    engagement_length_mm: float = 0.0
 
     def __init__(
         self,
         point_mm: Iterable[float],
         direction: Iterable[float],
         compatible_families: Iterable[str] = (),
+        *,
+        x_direction: Iterable[float] | None = None,
+        engagement_length_mm: float = 0.0,
     ) -> None:
         object.__setattr__(self, "point_mm", _vector3("port point", point_mm))
-        direction_values = _vector3("port direction", direction)
-        if sum(value * value for value in direction_values) == 0.0:
-            raise ValueError("port direction must not be zero")
+        direction_values = _unit_vector3("port direction", direction)
         object.__setattr__(self, "direction", direction_values)
+        x_values = (
+            _default_x_direction(direction_values)
+            if x_direction is None
+            else _unit_vector3("port x direction", x_direction)
+        )
+        if abs(sum(direction_values[index] * x_values[index] for index in range(3))) > 1e-6:
+            raise ValueError("port x direction must be perpendicular to port direction")
+        object.__setattr__(self, "x_direction", x_values)
         object.__setattr__(
             self,
             "compatible_families",
@@ -45,6 +84,10 @@ class PortPlacement:
                 required_text("connection family", item) for item in compatible_families
             ),
         )
+        engagement = float(engagement_length_mm)
+        if not isfinite(engagement) or engagement < 0.0:
+            raise ValueError("port engagement length must be finite and non-negative")
+        object.__setattr__(self, "engagement_length_mm", engagement)
 
 
 @dataclass(frozen=True)
@@ -53,7 +96,9 @@ class ComponentPort:
     name: str
     point_mm: tuple[float, float, float]
     direction: tuple[float, float, float]
+    x_direction: tuple[float, float, float]
     compatible_families: tuple[str, ...]
+    engagement_length_mm: float
 
 
 class PortSet:

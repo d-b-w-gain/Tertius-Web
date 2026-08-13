@@ -3475,6 +3475,21 @@ def solve_project_structural(
         raise StructuralAnalysisError("Active design has no analytical member loads")
 
     from Pynite import FEModel3D
+    from Pynite.PhysMember import PhysMember
+
+    class ExplicitTopologyPhysMember(PhysMember):
+        """Prevent PyNite from inferring joints from unrelated spatial nodes."""
+
+        def descritize(self) -> None:
+            all_nodes = self.model.nodes
+            self.model.nodes = {
+                self.i_node.name: self.i_node,
+                self.j_node.name: self.j_node,
+            }
+            try:
+                super().descritize()
+            finally:
+                self.model.nodes = all_nodes
 
     combinations = _combination_list(analysis)
     active_combination = _select_combination(combinations, combination_id)
@@ -3520,20 +3535,35 @@ def solve_project_structural(
             J=section.torsion_j_m4,
         )
 
-    nodes_by_coordinate: dict[tuple[float, float, float], dict[str, Any]] = {}
+    nodes_by_topology: dict[tuple[object, ...], dict[str, Any]] = {}
     member_node_ids: dict[str, tuple[str, str]] = {}
     for declaration in analysis.members:
         component = components[declaration.component_id]
         member_nodes: list[str] = []
-        for position, restraints in (
-            (declaration.start, declaration.start_restraints),
-            (declaration.end, declaration.end_restraints),
+        for endpoint, position, node_key, restraints in (
+            (
+                "start",
+                declaration.start,
+                declaration.start_node_key,
+                declaration.start_restraints,
+            ),
+            (
+                "end",
+                declaration.end,
+                declaration.end_node_key,
+                declaration.end_restraints,
+            ),
         ):
-            key = _coordinate_key(position)
-            node = nodes_by_coordinate.get(key)
+            coordinate = _coordinate_key(position)
+            key: tuple[object, ...] = (
+                ("explicit", node_key)
+                if node_key is not None
+                else ("coordinate", *coordinate)
+            )
+            node = nodes_by_topology.get(key)
             if node is None:
                 node = {
-                    "id": f"node-{len(nodes_by_coordinate) + 1}",
+                    "id": f"node-{len(nodes_by_topology) + 1}",
                     "position": position,
                     "restraints": {
                         "dx": False,
@@ -3546,13 +3576,18 @@ def solve_project_structural(
                     "visual_node_id": component.visual_node_id,
                     "labels": [],
                 }
-                nodes_by_coordinate[key] = node
+                nodes_by_topology[key] = node
+            elif _coordinate_key(node["position"]) != coordinate:
+                raise StructuralAnalysisError(
+                    f"analytical node key {node_key!r} joins different coordinates; "
+                    f"check the physical connection at {declaration.id}.{endpoint}"
+                )
             _merge_restraints(node["restraints"], restraints)
             node["labels"].append(declaration.label)
             member_nodes.append(node["id"])
         member_node_ids[declaration.id] = (member_nodes[0], member_nodes[1])
 
-    for node in nodes_by_coordinate.values():
+    for node in nodes_by_topology.values():
         position = node["position"]
         model.add_node(node["id"], position.x, position.y, position.z)
         restraints = node["restraints"]
@@ -3568,16 +3603,18 @@ def solve_project_structural(
 
     for declaration in analysis.members:
         start_node_id, end_node_id = member_node_ids[declaration.id]
-        model.add_member(
+        model.members[declaration.id] = ExplicitTopologyPhysMember(
+            model,
             declaration.id,
-            start_node_id,
-            end_node_id,
+            model.nodes[start_node_id],
+            model.nodes[end_node_id],
             declaration.material_id,
             declaration.section_id,
             rotation=declaration.rotation_deg,
             tension_only=declaration.tension_only,
             comp_only=declaration.compression_only,
         )
+        model.solution = None
         start_releases = declaration.start_releases
         end_releases = declaration.end_releases
         if any(
@@ -3922,7 +3959,7 @@ def solve_project_structural(
             restraints=node["restraints"],
             visual_node_id=node["visual_node_id"],
         )
-        for node in nodes_by_coordinate.values()
+        for node in nodes_by_topology.values()
     ]
     structural_members: list[StructuralMember] = []
     member_results: list[MemberResult] = []
@@ -4320,7 +4357,7 @@ def solve_project_structural(
     reaction_values: list[NodeReaction] = []
     reaction_force_sum = [0.0, 0.0, 0.0]
     reaction_moment_sum = [0.0, 0.0, 0.0]
-    for node in nodes_by_coordinate.values():
+    for node in nodes_by_topology.values():
         restraints = node["restraints"]
         if not any(restraints.values()):
             continue

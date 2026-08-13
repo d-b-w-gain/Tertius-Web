@@ -404,8 +404,16 @@ def _placed_member(
                 start,
                 tuple(-coordinate for coordinate in axis),
                 (CONNECTION_FAMILY,),
+                x_direction=x_direction,
+                engagement_length_mm=75.0,
             ),
-            "end": PortPlacement(end, axis, (CONNECTION_FAMILY,)),
+            "end": PortPlacement(
+                end,
+                axis,
+                (CONNECTION_FAMILY,),
+                x_direction=x_direction,
+                engagement_length_mm=75.0,
+            ),
         },
     )
 

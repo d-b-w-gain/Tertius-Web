@@ -152,6 +152,13 @@ def test_component_and_physical_connection_build_one_linked_graph() -> None:
 
     assert graph["schema_version"] == "1.0"
     assert [component["id"] for component in graph["components"]] == ["C1", "R1", "KB1"]
+    column_end = next(
+        port
+        for port in graph["components"][0]["ports"]
+        if port["name"] == "end"
+    )
+    assert column_end["x_direction"] == [1.0, 0.0, 0.0]
+    assert column_end["engagement_length_mm"] == 0.0
     assert graph["connections"][0]["ports"] == [
         {"component_id": "C1", "port": "end"},
         {"component_id": "R1", "port": "start"},
@@ -308,6 +315,103 @@ def test_connection_rejects_incompatible_ports() -> None:
                 ports=(first.ports.end, second.ports.start),
                 connector_components=(connector,),
             )
+
+
+def test_connection_rejects_unexplained_member_endpoint_gap() -> None:
+    with compile_session():
+        first = managed_member(
+            product=member_product(),
+            mark="M1",
+            start=(0, 0, 0),
+            end=(0, 0, 100),
+        )
+        second = managed_member(
+            product=member_product(),
+            mark="M2",
+            start=(0, 0, 110),
+            end=(0, 0, 210),
+        )
+        connector = managed_component(
+            bd.Box(1, 1, 1),
+            product=connector_product(),
+            mark="K1",
+        )
+        with pytest.raises(TertiusRuntimeError, match="10 mm apart"):
+            physical_connection(
+                bd.Compound(children=[connector]),
+                definition=ConnectionDefinition(
+                    key="bolted",
+                    label="Bolted",
+                    family="test-bolted",
+                    transfers=("force", "shear", "moment"),
+                    analysis_model="rigid",
+                    maximum_port_offset_mm=1.0,
+                ),
+                ports=(first.ports.end, second.ports.start),
+                connector_components=(connector,),
+            )
+
+
+def test_component_port_can_belong_to_only_one_physical_connection() -> None:
+    with compile_session():
+        first = managed_member(
+            product=member_product(),
+            mark="M1",
+            start=(0, 0, 0),
+            end=(0, 0, 100),
+        )
+        second = managed_member(
+            product=member_product(),
+            mark="M2",
+            start=(0, 0, 100),
+            end=(0, 0, 200),
+        )
+        third = managed_member(
+            product=member_product(),
+            mark="M3",
+            start=(0, 0, 100),
+            end=(100, 0, 100),
+        )
+        first_connector = managed_component(
+            bd.Box(1, 1, 1),
+            product=connector_product("TEST-KB01"),
+            mark="K1",
+        )
+        second_connector = managed_component(
+            bd.Box(1, 1, 1),
+            product=connector_product("TEST-KB02"),
+            mark="K2",
+        )
+        definition = ConnectionDefinition(
+            key="bolted",
+            label="Bolted",
+            family="test-bolted",
+            transfers=("force", "shear", "moment"),
+            analysis_model="rigid",
+        )
+        physical_connection(
+            bd.Compound(children=[first_connector]),
+            definition=definition,
+            ports=(first.ports.end, second.ports.start),
+            connector_components=(first_connector,),
+        )
+        with pytest.raises(TertiusRuntimeError, match="already belongs"):
+            physical_connection(
+                bd.Compound(children=[second_connector]),
+                definition=definition,
+                ports=(first.ports.end, third.ports.start),
+                connector_components=(second_connector,),
+            )
+
+
+def test_port_frame_rejects_parallel_x_direction() -> None:
+    with pytest.raises(ValueError, match="perpendicular"):
+        PortPlacement(
+            (0, 0, 0),
+            (0, 0, 1),
+            x_direction=(0, 0, 2),
+            engagement_length_mm=20,
+        )
 
 
 def test_runner_requires_model_and_rejects_removed_manifest_exports(tmp_path: Path) -> None:

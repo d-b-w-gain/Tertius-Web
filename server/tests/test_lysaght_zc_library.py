@@ -78,6 +78,8 @@ def test_cee_member_call_registers_geometry_and_every_workbench_facet() -> None:
     assert member.ports.start.point_mm == (10.0, 20.0, 30.0)
     assert member.ports.end.point_mm == (10.0, 20.0, 1030.0)
     assert member.ports.start.compatible_families == (CONNECTION_FAMILY,)
+    assert member.ports.start.x_direction == (1.0, 0.0, 0.0)
+    assert member.ports.start.engagement_length_mm == 75.0
     assert graph["components"] == [
         {
             "id": "C1",
@@ -96,13 +98,17 @@ def test_cee_member_call_registers_geometry_and_every_workbench_facet() -> None:
                     "name": "end",
                     "point_mm": [10.0, 20.0, 1030.0],
                     "direction": [0.0, 0.0, 1.0],
+                    "x_direction": [1.0, 0.0, 0.0],
                     "compatible_families": [CONNECTION_FAMILY],
+                    "engagement_length_mm": 75.0,
                 },
                 {
                     "name": "start",
                     "point_mm": [10.0, 20.0, 30.0],
                     "direction": [-0.0, -0.0, -1.0],
+                    "x_direction": [1.0, 0.0, 0.0],
                     "compatible_families": [CONNECTION_FAMILY],
+                    "engagement_length_mm": 75.0,
                 },
             ],
             "visual": {"label": "C1 · C10019 · L=1000mm"},

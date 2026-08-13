@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Iterable, Literal, Sequence
 
 import build123d as bd
@@ -23,6 +24,7 @@ class ConnectionDefinition:
     analysis_model: AnalysisModel
     stiffness_status: StiffnessStatus = "unverified"
     stiffness_basis: str = "Connection stiffness has not been verified."
+    maximum_port_offset_mm: float = 1.0
 
     def __init__(
         self,
@@ -34,6 +36,7 @@ class ConnectionDefinition:
         analysis_model: AnalysisModel,
         stiffness_status: StiffnessStatus = "unverified",
         stiffness_basis: str = "Connection stiffness has not been verified.",
+        maximum_port_offset_mm: float = 1.0,
     ) -> None:
         object.__setattr__(self, "key", required_text("connection key", key))
         object.__setattr__(self, "label", required_text("connection label", label))
@@ -54,6 +57,10 @@ class ConnectionDefinition:
             "stiffness_basis",
             required_text("connection stiffness basis", stiffness_basis),
         )
+        maximum_offset = float(maximum_port_offset_mm)
+        if not isfinite(maximum_offset) or maximum_offset < 0.0:
+            raise ValueError("maximum port offset must be finite and non-negative")
+        object.__setattr__(self, "maximum_port_offset_mm", maximum_offset)
 
     @property
     def definition_digest(self) -> str:
@@ -68,6 +75,7 @@ class ConnectionDefinition:
             "analysis_model": self.analysis_model,
             "stiffness_status": self.stiffness_status,
             "stiffness_basis": self.stiffness_basis,
+            "maximum_port_offset_mm": self.maximum_port_offset_mm,
         }
         if include_digest:
             payload["definition_digest"] = self.definition_digest
