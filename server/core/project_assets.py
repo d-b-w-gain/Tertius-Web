@@ -24,6 +24,7 @@ MAX_3MF_COORDINATE_MM = 1_000_000.0
 MAX_3MF_MANIFEST_BYTES = 256 * 1024
 MAX_3MF_DERIVED_BREP_BYTES = 512 * 1024 * 1024
 IMPORT_3MF_CONVERSION_VERSION = "tertius-3mf-brep-v1-build123d-0.8.0"
+Import3mfConversionVersion = Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
 THREE_MF_MEDIA_TYPE = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
 SOURCE_3MF_MEDIA_TYPE = THREE_MF_MEDIA_TYPE
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
@@ -104,7 +105,7 @@ class Import3mfPart(StrictAssetModel):
 
 class Import3mfManifest(StrictAssetModel):
     schema_version: Literal[1]
-    conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
+    conversion_version: Import3mfConversionVersion
     source_sha256: Sha256Digest
     brep_sha256: Sha256Digest
     brep_byte_size: int = Field(strict=True, ge=1, le=MAX_3MF_DERIVED_BREP_BYTES)
@@ -159,7 +160,7 @@ class Import3mfPartSummary(StrictAssetModel):
 
 
 class Import3mfManifestSummary(StrictAssetModel):
-    conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
+    conversion_version: Import3mfConversionVersion
     source_unit: Import3mfUnit
     scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
     object_count: int = Field(strict=True, ge=1, le=MAX_3MF_OBJECTS)
@@ -184,7 +185,7 @@ class Import3mfManifestSummary(StrictAssetModel):
 class Import3mfAssetContextSummary(StrictAssetModel):
     """Manifest subset safe to use when building external-provider context."""
 
-    conversion_version: Literal[IMPORT_3MF_CONVERSION_VERSION]
+    conversion_version: Import3mfConversionVersion
     source_unit: Import3mfUnit
     scale_to_mm: float = Field(strict=True, gt=0, allow_inf_nan=False)
     parts: tuple[Import3mfPartSummary, ...] = Field(min_length=1, max_length=MAX_3MF_OBJECTS)
