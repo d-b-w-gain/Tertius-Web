@@ -1612,3 +1612,5 @@ then
   echo "Production HelmRelease must explicitly enable the GIS cache after image promotion." >&2
   exit 1
 fi
+
+"${ROOT_DIR}/scripts/test-k3s-harness-lifecycle.sh"
