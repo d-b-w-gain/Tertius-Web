@@ -197,6 +197,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     () => new Map(capture?.components.map((component) => [component.id, component]) || []),
     [capture],
   )
+  const connectionChecksById = useMemo(
+    () => new Map(
+      (analysis?.connection_checks ?? []).map((check) => [check.connection_id, check]),
+    ),
+    [analysis],
+  )
   const firstLoad = capture?.loads[0]
   const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
   const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
@@ -495,6 +501,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       wind_action_bases: analysis.wind_action_bases,
       active_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
+      connection_checks: analysis.connection_checks ?? [],
       member_restraint_traces: analysis.member_restraint_traces ?? [],
       member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
       verification_stages: analysis.verification_stages ?? [],
@@ -999,6 +1006,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   {capture.connections.map((connection) => {
                     const from = componentsById.get(connection.from_component_id)
                     const to = componentsById.get(connection.to_component_id)
+                    const check = connectionChecksById.get(connection.id)
                     return (
                       <button
                         key={connection.id}
@@ -1006,7 +1014,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         onClick={() => setSelectedVisualNodeId(to?.visual_node_id || '')}
                         className="w-full rounded border border-slate-800 bg-slate-900/70 p-3 text-left hover:border-slate-600"
                       >
-                        <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                          {check && (
+                            <span className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase ${
+                              verificationStyle[check.status]
+                            }`}>
+                              {check.status.replace('_', ' ')}
+                            </span>
+                          )}
+                        </div>
                         <div className="mt-1 text-[10px] text-cyan-300">
                           {from?.label || connection.from_component_id} → {to?.label || connection.to_component_id}
                         </div>
@@ -1015,6 +1032,30 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (id) => componentsById.get(id)?.label || id,
                           ).join(', ') || 'direct declaration'} · {connection.transfers.join(', ')}
                         </div>
+                        {check && (
+                          <div className="mt-2 border-t border-slate-800 pt-2">
+                            <div className="grid grid-cols-3 gap-2 font-mono text-[9px] text-slate-300">
+                              <span>N* {number(check.axial_demand_kN, 3)} kN</span>
+                              <span>V* {number(check.shear_demand_kN, 3)} kN</span>
+                              <span>M* {number(check.moment_demand_kNm, 3)} kN·m</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-slate-500">
+                              <span>{check.pack_id} v{check.pack_version}</span>
+                              <span className={
+                                check.identity_status === 'pass'
+                                  ? 'text-emerald-400'
+                                  : 'text-red-400'
+                              }>
+                                Identity {check.identity_status}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
+                              {check.evidence_status === 'verified'
+                                ? `Governing utilisation ${number(check.governing_utilisation ?? 0, 3)}.`
+                                : 'Resistance unavailable—demand is visible but this joint cannot pass.'}
+                            </p>
+                          </div>
+                        )}
                       </button>
                     )
                   })}

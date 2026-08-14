@@ -8,6 +8,7 @@ import pytest
 
 from tertius import (
     ConnectionDefinition,
+    ConnectionResistanceDefinition,
     DrawingFacet,
     PortPlacement,
     ProcurementFacet,
@@ -103,6 +104,13 @@ def test_catalogue_product_is_deeply_immutable_and_digest_changes_with_identity(
     c150 = member_product("TEST-C150")
     assert c100.definition_digest != c150.definition_digest
     assert c100.catalogue_row_digest != c150.catalogue_row_digest
+    payload = c100.payload()
+    assert payload["catalogue"]["row"] == {
+        "part_number": "TEST-C100",
+        "depth_mm": 100.0,
+        "thickness_mm": 1.9,
+        "area_mm2": 409.0,
+    }
 
 
 def test_managed_component_requires_runner_owned_session() -> None:
@@ -412,6 +420,61 @@ def test_port_frame_rejects_parallel_x_direction() -> None:
             x_direction=(0, 0, 2),
             engagement_length_mm=20,
         )
+
+
+def test_verified_connection_resistance_requires_hashed_complete_capacities() -> None:
+    with pytest.raises(ValueError, match="hashed source"):
+        ConnectionResistanceDefinition(
+            pack_id="test-pack",
+            version="1",
+            status="verified",
+            basis="Test evidence.",
+            connector_part_numbers=("TEST-KB01",),
+            source="Test source",
+            design_axial_capacity_kN=10,
+            design_shear_capacity_kN=10,
+            design_moment_capacity_kNm=1,
+        )
+
+    resistance = ConnectionResistanceDefinition(
+        pack_id="test-pack",
+        version="1",
+        status="verified",
+        basis="Test evidence.",
+        connector_part_numbers=("TEST-KB01",),
+        source="Test source",
+        source_sha256="a" * 64,
+        design_axial_capacity_kN=10,
+        design_shear_capacity_kN=10,
+        design_moment_capacity_kNm=1,
+    )
+    with pytest.raises(ValueError, match="missing capacities for moment"):
+        ConnectionDefinition(
+            key="test-knee",
+            label="Test knee",
+            family="test-bolted",
+            transfers=("force", "shear", "moment"),
+            analysis_model="rigid",
+            resistance=ConnectionResistanceDefinition(
+                pack_id="incomplete-pack",
+                version="1",
+                status="verified",
+                basis="Incomplete test evidence.",
+                connector_part_numbers=("TEST-KB01",),
+                source="Test source",
+                source_sha256="b" * 64,
+                design_axial_capacity_kN=10,
+                design_shear_capacity_kN=10,
+            ),
+        )
+    assert ConnectionDefinition(
+        key="test-knee",
+        label="Test knee",
+        family="test-bolted",
+        transfers=("force", "shear", "moment"),
+        analysis_model="rigid",
+        resistance=resistance,
+    ).payload()["resistance"]["pack_id"] == "test-pack"
 
 
 def test_runner_requires_model_and_rejects_removed_manifest_exports(tmp_path: Path) -> None:

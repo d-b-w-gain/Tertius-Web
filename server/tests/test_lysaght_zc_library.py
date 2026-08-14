@@ -122,6 +122,14 @@ def test_cee_member_call_registers_geometry_and_every_workbench_facet() -> None:
     assert structural["start_m"] == [0.01, 0.02, 0.03]
     assert structural["end_m"] == [0.01, 0.02, 1.03]
     assert structural["section"]["mass_kg_m"] == 3.29
+    assert structural["section_x_direction"] == [1.0, 0.0, 0.0]
+    assert structural["profile_rotation_deg"] == 0.0
+    assert structural["product_definition_digest"] == lysaght_zc_product(
+        "C10019"
+    ).definition_digest
+    assert projections["structural"]["product_facets"][0]["catalogue"]["row"][
+        "key"
+    ] == "C10019 (100x1.9)"
     assert projections["drawing"]["items"][0]["name"] == "C100x1.9 (Lysaght)"
     assert {
         projection["compiled_design_digest"] for projection in projections.values()
@@ -143,6 +151,8 @@ def test_endpoints_control_length_and_placement_for_horizontal_zed() -> None:
 
     assert member.ports.start.direction == (-1.0, -0.0, -0.0)
     assert member.ports.end.direction == (1.0, 0.0, 0.0)
+    assert member.ports.start.x_direction == pytest.approx((0.0, 0.0, 1.0))
+    assert member.ports.end.x_direction == pytest.approx((0.0, 0.0, 1.0))
     assert graph["components"][0]["fabrication"]["cut_length_mm"] == 2000.0
     assert graph["components"][0]["product_key"] == "lysaght-zc-v2:Z10019"
 

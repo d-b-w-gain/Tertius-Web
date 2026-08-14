@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from math import dist
+from math import atan2, degrees, dist, sqrt
 from collections.abc import Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -17,6 +17,7 @@ from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapsh
 from core.structural.contracts import (
     AnalyticalMemberDeclaration,
     CapabilityState,
+    CrossSectionVerificationDefinition,
     DesignAnalysisDefinition,
     DesignComponent,
     DesignConnection,
@@ -24,8 +25,11 @@ from core.structural.contracts import (
     LoadCombination,
     MemberDistributedLoad,
     MemberPointLoad,
+    MemberStabilitySegmentDefinition,
+    MemberStabilityVerificationDefinition,
     ProjectStructuralCapture,
     Restraints,
+    SectionCatalogReference,
     SectionProperties,
     StructuralMaterial,
     StructuralSnapshot,
@@ -184,6 +188,7 @@ def _capture_from_structural_projection(
                     if component_id in component_ids
                 ],
                 transfers=joint.get("transfers") or [],
+                resistance=joint.get("resistance"),
             )
         )
 
@@ -254,6 +259,56 @@ def _member_length(member: dict) -> float:
     if not isinstance(start, list) or not isinstance(end, list):
         raise ValueError(f"analytical member {member.get('id')!r} has no endpoints")
     return float(dist(start, end))
+
+
+def _cross3(
+    first: tuple[float, float, float],
+    second: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        first[1] * second[2] - first[2] * second[1],
+        first[2] * second[0] - first[0] * second[2],
+        first[0] * second[1] - first[1] * second[0],
+    )
+
+
+def _unit3(values: tuple[float, float, float]) -> tuple[float, float, float]:
+    length = sqrt(sum(value * value for value in values))
+    if length <= 1e-12:
+        raise ValueError("member frame requires a non-zero direction")
+    return (values[0] / length, values[1] / length, values[2] / length)
+
+
+def _pynite_section_rotation(
+    start: Vector3,
+    end: Vector3,
+    section_x_direction: object,
+) -> float:
+    """Rotate PyNite local z onto the rendered profile's local x/major axis."""
+
+    desired_raw = _vector(section_x_direction, label="section x direction")
+    desired_z = _unit3((desired_raw.x, desired_raw.y, desired_raw.z))
+    delta = (end.x - start.x, end.y - start.y, end.z - start.z)
+    axis = _unit3(delta)
+    tolerance = 1e-9
+    if abs(delta[0]) <= tolerance and abs(delta[2]) <= tolerance:
+        default_z = (0.0, 0.0, 1.0)
+    elif abs(delta[1]) <= tolerance:
+        default_z = _unit3(_cross3(axis, (0.0, 1.0, 0.0)))
+    else:
+        projection = (delta[0], 0.0, delta[2])
+        default_z = _unit3(
+            _cross3(projection, axis)
+            if delta[1] > 0
+            else _cross3(axis, projection)
+        )
+    sine = sum(
+        axis[index] * _cross3(default_z, desired_z)[index]
+        for index in range(3)
+    )
+    cosine = sum(default_z[index] * desired_z[index] for index in range(3))
+    rotation = degrees(atan2(sine, cosine))
+    return 0.0 if abs(rotation) <= 1e-9 else rotation
 
 
 def _endpoint_joint_index(
@@ -384,6 +439,9 @@ def _analysis_from_projection(
             )
         section_data = facet.get("section") or projected_member.get("section") or {}
         material_data = facet.get("material") or projected_member.get("material") or {}
+        catalogue_data = facet.get("catalogue") or {}
+        catalogue_row = catalogue_data.get("row") or {}
+        structural_properties = facet.get("properties") or {}
         section_id = f"section:{product_key}"
         material_id = f"material:{product_key}"
         sections.setdefault(
@@ -398,6 +456,51 @@ def _analysis_from_projection(
                 mass_kg_m=(
                     float(section_data["mass_kg_m"])
                     if section_data.get("mass_kg_m") is not None
+                    else None
+                ),
+                bending_reference_kNm=(
+                    float(section_data["effective_section_modulus_m3"])
+                    * float(material_data["yield_strength_pa"])
+                    / 1000.0
+                    if section_data.get("effective_section_modulus_m3") is not None
+                    and material_data.get("yield_strength_pa") is not None
+                    else None
+                ),
+                bending_reference_axis=(
+                    "local_z"
+                    if section_data.get("effective_section_modulus_m3") is not None
+                    and material_data.get("yield_strength_pa") is not None
+                    else None
+                ),
+                bending_reference_basis=(
+                    "Catalogue Zxe × fy major-axis yield reference; the selected "
+                    "capacity pack applies its own design factor and interactions."
+                    if section_data.get("effective_section_modulus_m3") is not None
+                    and material_data.get("yield_strength_pa") is not None
+                    else None
+                ),
+                catalog=(
+                    SectionCatalogReference(
+                        catalog_id=str(catalogue_data["id"]),
+                        catalog_version=str(catalogue_data["revision"]),
+                        section_key=str(catalogue_row["key"]),
+                        source=str(
+                            catalogue_row.get("source")
+                            or structural_properties.get("catalogue_source")
+                        ),
+                        record_sha256=str(catalogue_data["row_digest"]),
+                        axis_mapping={
+                            str(key): str(value)
+                            for key, value in (
+                                structural_properties.get("axis_mapping") or {}
+                            ).items()
+                        },
+                        properties=dict(catalogue_row),
+                    )
+                    if catalogue_data.get("id")
+                    and catalogue_data.get("revision")
+                    and catalogue_data.get("row_digest")
+                    and catalogue_row.get("key")
                     else None
                 ),
             ),
@@ -449,6 +552,14 @@ def _analysis_from_projection(
             )
         )
         criterion = criteria_by_component.get(component_id)
+        start_vector = _vector(
+            projected_member.get("start_m"),
+            label="member start",
+        )
+        end_vector = _vector(
+            projected_member.get("end_m"),
+            label="member end",
+        )
         declarations.append(
             AnalyticalMemberDeclaration(
                 id=str(projected_member["id"]),
@@ -461,8 +572,8 @@ def _analysis_from_projection(
                     component_id,
                 ),
                 component_id=component_id,
-                start=_vector(projected_member.get("start_m"), label="member start"),
-                end=_vector(projected_member.get("end_m"), label="member end"),
+                start=start_vector,
+                end=end_vector,
                 start_node_key=start_node_key,
                 end_node_key=end_node_key,
                 start_restraints=start_restraints,
@@ -471,7 +582,11 @@ def _analysis_from_projection(
                 end_releases=end_releases,
                 section_id=section_id,
                 material_id=material_id,
-                rotation_deg=float(projected_member.get("rotation_deg") or 0),
+                rotation_deg=_pynite_section_rotation(
+                    start_vector,
+                    end_vector,
+                    projected_member.get("section_x_direction"),
+                ),
                 deflection_limit_ratio=(
                     criterion.deflection_limit_ratio if criterion else None
                 ),
@@ -483,7 +598,8 @@ def _analysis_from_projection(
                 ),
                 assumption=(
                     "Axis, section, material, and physical restraints are projected "
-                    "from the compiled mechanical graph."
+                    "from the compiled mechanical graph. PyNite local z is rotated "
+                    "onto the rendered profile x/major axis."
                 ),
             )
         )
@@ -586,6 +702,83 @@ def _analysis_from_projection(
                 )
             )
 
+    declaration_by_component = {
+        declaration.component_id: declaration for declaration in declarations
+    }
+    cross_section_verification = None
+    if configuration.cross_section_verification is not None:
+        configured_cross_section = configuration.cross_section_verification
+        selected_member_ids: list[str] = []
+        for component_id in configured_cross_section.component_ids:
+            selected_declaration = declaration_by_component.get(component_id)
+            if selected_declaration is None:
+                raise ValueError(
+                    "cross-section verification references missing component "
+                    f"{component_id!r}"
+                )
+            selected_member_ids.append(selected_declaration.id)
+        cross_section_verification = CrossSectionVerificationDefinition(
+            pack_id=configured_cross_section.pack_id,
+            combination_ids=configured_cross_section.combination_ids,
+            member_ids=selected_member_ids,
+            off_axis_tolerance=configured_cross_section.off_axis_tolerance,
+        )
+
+    member_stability_verification = None
+    if configuration.member_stability_verification is not None:
+        configured_member_stability = configuration.member_stability_verification
+        segments: list[MemberStabilitySegmentDefinition] = []
+        for configured_segment in configured_member_stability.segments:
+            segment_declaration = declaration_by_component.get(
+                configured_segment.component_id
+            )
+            if segment_declaration is None:
+                raise ValueError(
+                    "member-stability verification references missing component "
+                    f"{configured_segment.component_id!r}"
+                )
+            member_length = dist(
+                segment_declaration.start.model_dump().values(),
+                segment_declaration.end.model_dump().values(),
+            )
+            end_distance = configured_segment.end_distance_m or member_length
+            if end_distance > member_length + 1e-9:
+                raise ValueError(
+                    f"member-stability segment {configured_segment.id!r} extends "
+                    f"beyond {configured_segment.component_id!r}"
+                )
+            segments.append(
+                MemberStabilitySegmentDefinition(
+                    id=configured_segment.id,
+                    member_id=segment_declaration.id,
+                    start_distance_m=configured_segment.start_distance_m,
+                    end_distance_m=end_distance,
+                    minor_axis_effective_length_factor=(
+                        configured_segment.minor_axis_effective_length_factor
+                    ),
+                    torsional_effective_length_factor=(
+                        configured_segment.torsional_effective_length_factor
+                    ),
+                    lateral_bending_restraint=(
+                        configured_segment.lateral_bending_restraint
+                    ),
+                    restraint_status=configured_segment.restraint_status,
+                    restraint_basis=configured_segment.restraint_basis,
+                    distortional_buckling_status=(
+                        configured_segment.distortional_buckling_status
+                    ),
+                    distortional_buckling_basis=(
+                        configured_segment.distortional_buckling_basis
+                    ),
+                )
+            )
+        member_stability_verification = MemberStabilityVerificationDefinition(
+            pack_id=configured_member_stability.pack_id,
+            combination_ids=configured_member_stability.combination_ids,
+            segments=segments,
+            off_axis_tolerance=configured_member_stability.off_axis_tolerance,
+        )
+
     return (
         DesignAnalysisDefinition(
             materials=list(materials.values()),
@@ -598,6 +791,8 @@ def _analysis_from_projection(
                 LoadCombination.model_validate(combination)
                 for combination in configuration.load_combinations
             ],
+            cross_section_verification=cross_section_verification,
+            member_stability_verification=member_stability_verification,
         ),
         list(dict.fromkeys(warnings)),
     )

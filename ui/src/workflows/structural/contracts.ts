@@ -145,6 +145,19 @@ export type DesignConnection = {
       bolt_line_distances_m: number[]
     }>
   } | null
+  resistance?: {
+    pack_id: string
+    version: string
+    status: 'unverified' | 'candidate' | 'verified'
+    basis: string
+    connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    assumptions: string[]
+  } | null
 }
 
 export type DesignSurfaceLoad = {
@@ -396,6 +409,34 @@ export type StructuralSnapshot = {
     utilisation: number | null
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
+  }>
+  connection_checks?: Array<{
+    connection_id: string
+    label: string
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    evidence_status: 'unverified' | 'candidate' | 'verified'
+    pack_id: string
+    pack_version: string
+    identity_status: 'pass' | 'fail'
+    identity_mismatches: string[]
+    governing_combination_id: string | null
+    governing_member_id: string | null
+    axial_demand_kN: number
+    shear_demand_kN: number
+    moment_demand_kNm: number
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    axial_utilisation: number | null
+    shear_utilisation: number | null
+    moment_utilisation: number | null
+    governing_utilisation: number | null
+    expected_connector_part_numbers: string[]
+    rendered_connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    basis: string
+    assumptions: string[]
   }>
   tension_member_checks?: Array<{
     member_id: string

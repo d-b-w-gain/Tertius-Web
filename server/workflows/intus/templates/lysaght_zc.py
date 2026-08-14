@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 import json
-from math import isfinite, sqrt
+from math import cos, isfinite, radians, sin, sqrt
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -375,6 +375,20 @@ def _placed_member(
     rotation = float(rotation_deg)
     if not isfinite(rotation):
         raise ValueError("rotation_deg must be finite")
+    rotation_radians = radians(rotation)
+    frame_y_direction = (
+        axis[1] * x_direction[2] - axis[2] * x_direction[1],
+        axis[2] * x_direction[0] - axis[0] * x_direction[2],
+        axis[0] * x_direction[1] - axis[1] * x_direction[0],
+    )
+    rotated_x_direction = (
+        x_direction[0] * cos(rotation_radians)
+        + frame_y_direction[0] * sin(rotation_radians),
+        x_direction[1] * cos(rotation_radians)
+        + frame_y_direction[1] * sin(rotation_radians),
+        x_direction[2] * cos(rotation_radians)
+        + frame_y_direction[2] * sin(rotation_radians),
+    )
 
     shape = _local_profile(product, cut_length)
     if rotation:
@@ -404,14 +418,14 @@ def _placed_member(
                 start,
                 tuple(-coordinate for coordinate in axis),
                 (CONNECTION_FAMILY,),
-                x_direction=x_direction,
+                x_direction=rotated_x_direction,
                 engagement_length_mm=75.0,
             ),
             "end": PortPlacement(
                 end,
                 axis,
                 (CONNECTION_FAMILY,),
-                x_direction=x_direction,
+                x_direction=rotated_x_direction,
                 engagement_length_mm=75.0,
             ),
         },

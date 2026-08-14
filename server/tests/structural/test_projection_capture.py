@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from core.project_templates import (
@@ -98,6 +100,8 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     assert members["C1"].end_node_key == "joint:KNEE1"
     assert members["P1"].start_node_key == "joint:KNEE1"
     assert members["P1"].end_node_key == "endpoint:P1:end"
+    assert members["C1"].rotation_deg == pytest.approx(-90.0)
+    assert members["P1"].rotation_deg == pytest.approx(-90.0)
     assert [connection.id for connection in capture.connections] == ["BASE1", "KNEE1"]
     assert len(snapshot.nodes) == 3
     assert len(snapshot.member_diagrams) == 2
@@ -113,6 +117,44 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     assert snapshot.equilibrium.status == "pass"
     assert snapshot.source.analysis_configuration_revision == 1
     assert any("Connection KNEE1" in warning for warning in capture.warnings)
+
+    sections = {section.label: section for section in snapshot.sections}
+    assert sections["C200x2.4 (Lysaght)"].catalog is not None
+    assert sections["C100x1.9 (Lysaght)"].catalog is not None
+    assert all(
+        section.catalog is not None and section.catalog.properties["validated"] is True
+        for section in sections.values()
+    )
+    assert {check.status for check in snapshot.cross_section_checks} == {"pass"}
+    assert all(
+        check.governing_utilisation is not None
+        and check.governing_utilisation < 1.0
+        and check.section_record_sha256
+        for check in snapshot.cross_section_checks
+    )
+    assert {check.status for check in snapshot.member_stability_checks} == {
+        "unsupported"
+    }
+    assert all(
+        check.distortional_buckling_status == "unverified"
+        for check in snapshot.member_stability_checks
+    )
+    connection_checks = {
+        check.connection_id: check for check in snapshot.connection_checks
+    }
+    assert set(connection_checks) == {"BASE1", "KNEE1"}
+    assert all(
+        check.status == "unsupported"
+        and check.identity_status == "pass"
+        and check.evidence_status == "unverified"
+        and check.moment_demand_kNm > 0
+        for check in connection_checks.values()
+    )
+    stages = {stage.id: stage.status for stage in snapshot.verification_stages}
+    assert stages["cross_section"] == "pass"
+    assert stages["member_stability"] == "unsupported"
+    assert stages["connections"] == "unsupported"
+    assert stages["decision"] == "blocked"
 
     procurement = execution.projections["procurement"]
     requirement_parts = {
@@ -163,6 +205,41 @@ def test_pinned_physical_joint_maps_to_member_end_releases() -> None:
         "Connection PIN1 uses its pinned analysis model as a draft assumption "
         "(unverified): Draft pin assumption."
     ]
+
+
+def test_connection_resistance_fails_closed_when_rendered_part_identity_drifts(
+    tmp_path,
+) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    projection = deepcopy(execution.projections["structural"])
+    changed = next(
+        component
+        for component in projection["components"]
+        if component["component_id"] == "KNEE1-B4"
+    )
+    changed["part_number"] = "WRONG-BOLT"
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+    capture = _capture_from_structural_projection(
+        projection,
+        project_name="identity-drift",
+        configuration=configuration,
+        configuration_revision=1,
+        configuration_digest=configuration.configuration_digest,
+    )
+
+    snapshot = solve_project_structural(capture)
+    check = next(
+        item for item in snapshot.connection_checks if item.connection_id == "KNEE1"
+    )
+
+    assert check.status == "unsupported"
+    assert check.identity_status == "fail"
+    assert "WRONG-BOLT" in check.rendered_connector_part_numbers
+    assert check.identity_mismatches
 
 
 def test_explicit_topology_keeps_touching_unconnected_endpoints_separate() -> None:

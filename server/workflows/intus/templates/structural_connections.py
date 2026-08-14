@@ -9,6 +9,7 @@ import build123d as bd
 
 from tertius import (
     ConnectionDefinition,
+    ConnectionResistanceDefinition,
     DrawingFacet,
     PortPlacement,
     ProcurementFacet,
@@ -245,6 +246,29 @@ def bolted_fixed_base(
             "Fixed for draft elastic analysis only; plate, anchors, concrete, "
             "stiffness, and resistance require verification."
         ),
+        resistance=ConnectionResistanceDefinition(
+            pack_id="project-demo-fixed-base-v1",
+            version="0.1",
+            status="unverified",
+            basis=(
+                "The rendered base plate and four anchors have exact procurement "
+                "identity, but no verified plate bending, weld/member attachment, "
+                "anchor steel/concrete, breakout, pull-out, pry-out, edge-distance, "
+                "or foundation resistance source is connected."
+            ),
+            connector_part_numbers=(
+                "FAB-BP-150X150X10",
+                "M12X100-ANCHOR-DEMO",
+                "M12X100-ANCHOR-DEMO",
+                "M12X100-ANCHOR-DEMO",
+                "M12X100-ANCHOR-DEMO",
+            ),
+            source="Project-owned structural_connections.py demonstration detail",
+            assumptions=(
+                "The fixed analytical restraint is a draft boundary assumption only.",
+                "Concrete geometry, grade, reinforcement, edge distance, and embedment are absent.",
+            ),
+        ),
     )
     return physical_connection(
         assembly,
@@ -388,6 +412,29 @@ def bolted_rigid_knee(
             "effects, stiffness, and resistance require verification."
         ),
         maximum_port_offset_mm=1.0,
+        resistance=ConnectionResistanceDefinition(
+            pack_id="project-demo-knee-v1",
+            version="0.1",
+            status="unverified",
+            basis=(
+                "The rendered gusset and four bolts have exact procurement identity, "
+                "but no verified bolt grade, hole geometry, slip/bearing mode, member "
+                "local bearing/tear-out, block shear, gusset yielding/buckling, or weld "
+                "resistance source is connected."
+            ),
+            connector_part_numbers=(
+                "FAB-KG-180X180X6",
+                "M12X30-BOLT-DEMO",
+                "M12X30-BOLT-DEMO",
+                "M12X30-BOLT-DEMO",
+                "M12X30-BOLT-DEMO",
+            ),
+            source="Project-owned structural_connections.py demonstration detail",
+            assumptions=(
+                "The rigid analytical joint is a draft stiffness assumption only.",
+                "The demonstration cylinders do not establish bolt specification or capacity.",
+            ),
+        ),
     )
     return physical_connection(
         assembly,

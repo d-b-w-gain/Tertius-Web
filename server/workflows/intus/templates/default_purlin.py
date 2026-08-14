@@ -12,6 +12,7 @@ column = cee_member(
     end_mm=(0, 0, 1200),
     mark="C1",
     role="column",
+    rotation_deg=90,
 )
 purlin = cee_member(
     "C10019",

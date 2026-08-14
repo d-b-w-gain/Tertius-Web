@@ -55,6 +55,48 @@ class ConfiguredMemberCriteria(StructuralContract):
         return self
 
 
+class ConfiguredCrossSectionVerification(StructuralContract):
+    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    combination_ids: list[str] = Field(min_length=1)
+    component_ids: list[str] = Field(default_factory=list)
+    off_axis_tolerance: float = Field(default=1e-6, ge=0)
+
+
+class ConfiguredMemberStabilitySegment(StructuralContract):
+    id: str
+    component_id: str
+    start_distance_m: float = Field(default=0, ge=0)
+    end_distance_m: float | None = Field(default=None, gt=0)
+    minor_axis_effective_length_factor: float = Field(default=1.0, gt=0)
+    torsional_effective_length_factor: float = Field(default=1.0, gt=0)
+    lateral_bending_restraint: Literal[
+        "unverified",
+        "continuous_compression_flange",
+    ] = "unverified"
+    restraint_status: Literal["assumed", "verified"] = "assumed"
+    restraint_basis: str
+    distortional_buckling_status: Literal["unverified", "verified"] = "unverified"
+    distortional_buckling_basis: str
+
+    @model_validator(mode="after")
+    def validate_restraint_evidence(self) -> ConfiguredMemberStabilitySegment:
+        if (
+            self.lateral_bending_restraint == "continuous_compression_flange"
+            and self.restraint_status != "verified"
+        ):
+            raise ValueError(
+                "continuous compression-flange restraint requires verified evidence"
+            )
+        return self
+
+
+class ConfiguredMemberStabilityVerification(StructuralContract):
+    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    combination_ids: list[str] = Field(min_length=1)
+    segments: list[ConfiguredMemberStabilitySegment] = Field(min_length=1)
+    off_axis_tolerance: float = Field(default=1e-6, ge=0)
+
+
 class StructuralProjectConfiguration(StructuralContract):
     """Revisioned project analysis inputs owned by the Structural workbench."""
 
@@ -69,6 +111,8 @@ class StructuralProjectConfiguration(StructuralContract):
         default_factory=list
     )
     member_criteria: list[ConfiguredMemberCriteria] = Field(default_factory=list)
+    cross_section_verification: ConfiguredCrossSectionVerification | None = None
+    member_stability_verification: ConfiguredMemberStabilityVerification | None = None
     approval_policy: Literal["draft_analysis", "verified_only"] = "verified_only"
 
     @model_validator(mode="after")
@@ -98,6 +142,28 @@ class StructuralProjectConfiguration(StructuralContract):
                 raise ValueError(
                     f"member load {distributed_load.id!r} references missing case "
                     f"{distributed_load.case_id!r}"
+                )
+        combinations_by_id = {
+            combination.id: combination for combination in self.load_combinations
+        }
+        verification_combination_ids: list[str] = []
+        if self.cross_section_verification is not None:
+            verification_combination_ids.extend(
+                self.cross_section_verification.combination_ids
+            )
+        if self.member_stability_verification is not None:
+            verification_combination_ids.extend(
+                self.member_stability_verification.combination_ids
+            )
+        for combination_id in verification_combination_ids:
+            verification_combination = combinations_by_id.get(combination_id)
+            if verification_combination is None:
+                raise ValueError(
+                    f"verification references missing combination {combination_id!r}"
+                )
+            if verification_combination.limit_state != "ultimate":
+                raise ValueError(
+                    f"verification combination {combination_id!r} must be ultimate"
                 )
         if not self.member_loads and not self.member_distributed_loads:
             if not self.include_self_weight:

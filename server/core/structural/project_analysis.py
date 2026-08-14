@@ -16,6 +16,7 @@ from .contracts import (
     CalculationInput,
     CalculationSheet,
     CapabilityState,
+    ConnectionCheck,
     DesignComponent,
     DesignConnection,
     EquilibriumDiagnostic,
@@ -59,6 +60,153 @@ NODE_COORDINATE_DIGITS = 9
 
 class StructuralAnalysisError(ValueError):
     """Raised when the active design cannot be represented by the MVP solver."""
+
+
+def _connection_checks(
+    model,
+    analysis,
+    connections: Sequence[DesignConnection],
+    components: dict[str, DesignComponent],
+) -> list[ConnectionCheck]:
+    """Envelope physical-joint end actions without inventing resistance evidence."""
+
+    ultimate_combinations = [
+        combination
+        for combination in analysis.load_combinations
+        if combination.limit_state == "ultimate"
+    ]
+    checks: list[ConnectionCheck] = []
+    for connection in connections:
+        evidence = connection.resistance
+        if evidence is None:
+            continue
+        expected_parts = sorted(evidence.connector_part_numbers)
+        rendered_parts = sorted(
+            components[component_id].part_number or f"<missing:{component_id}>"
+            for component_id in connection.connector_component_ids
+        )
+        identity_mismatches = (
+            []
+            if rendered_parts == expected_parts
+            else [
+                "connector part-number multiset expected "
+                f"{expected_parts!r}, rendered {rendered_parts!r}"
+            ]
+        )
+        axial_demand = 0.0
+        shear_demand = 0.0
+        moment_demand = 0.0
+        governing_combination_id: str | None = None
+        governing_member_id: str | None = None
+        governing_moment = -1.0
+        connection_node_key = f"joint:{connection.id}"
+        for declaration in analysis.members:
+            member_length = _length(declaration.start, declaration.end)
+            endpoint_distances = [
+                distance
+                for node_key, distance in (
+                    (declaration.start_node_key, 0.0),
+                    (declaration.end_node_key, member_length),
+                )
+                if node_key == connection_node_key
+            ]
+            if not endpoint_distances:
+                continue
+            member = model.members[declaration.id]
+            for combination in ultimate_combinations:
+                for distance_m in endpoint_distances:
+                    endpoint_axial = abs(member.axial(distance_m, combination.id))
+                    endpoint_shear = sqrt(
+                        member.shear("Fy", distance_m, combination.id) ** 2
+                        + member.shear("Fz", distance_m, combination.id) ** 2
+                    )
+                    endpoint_moment = sqrt(
+                        member.moment("My", distance_m, combination.id) ** 2
+                        + member.moment("Mz", distance_m, combination.id) ** 2
+                    )
+                    axial_demand = max(axial_demand, endpoint_axial)
+                    shear_demand = max(shear_demand, endpoint_shear)
+                    moment_demand = max(moment_demand, endpoint_moment)
+                    if endpoint_moment > governing_moment:
+                        governing_moment = endpoint_moment
+                        governing_combination_id = combination.id
+                        governing_member_id = declaration.id
+
+        axial_utilisation = (
+            axial_demand / evidence.design_axial_capacity_kN
+            if evidence.design_axial_capacity_kN is not None
+            else None
+        )
+        shear_utilisation = (
+            shear_demand / evidence.design_shear_capacity_kN
+            if evidence.design_shear_capacity_kN is not None
+            else None
+        )
+        moment_utilisation = (
+            moment_demand / evidence.design_moment_capacity_kNm
+            if evidence.design_moment_capacity_kNm is not None
+            else None
+        )
+        relevant_utilisations = [
+            utilisation
+            for transfer, utilisation in (
+                ("force", axial_utilisation),
+                ("shear", shear_utilisation),
+                ("moment", moment_utilisation),
+            )
+            if transfer in connection.transfers and utilisation is not None
+        ]
+        governing_utilisation = (
+            max(relevant_utilisations) if relevant_utilisations else None
+        )
+        if not ultimate_combinations:
+            status: Literal["pass", "fail", "not_checked", "unsupported"] = (
+                "not_checked"
+            )
+        elif evidence.status != "verified" or identity_mismatches:
+            status = "unsupported"
+        else:
+            status = (
+                "pass"
+                if governing_utilisation is not None and governing_utilisation <= 1.0
+                else "fail"
+            )
+        assumptions = list(evidence.assumptions)
+        if evidence.status != "verified":
+            assumptions.append(
+                "Demand is calculated, but resistance is not verified and cannot pass."
+            )
+        checks.append(
+            ConnectionCheck(
+                connection_id=connection.id,
+                label=connection.label,
+                status=status,
+                evidence_status=evidence.status,
+                pack_id=evidence.pack_id,
+                pack_version=evidence.version,
+                identity_status="fail" if identity_mismatches else "pass",
+                identity_mismatches=identity_mismatches,
+                governing_combination_id=governing_combination_id,
+                governing_member_id=governing_member_id,
+                axial_demand_kN=axial_demand,
+                shear_demand_kN=shear_demand,
+                moment_demand_kNm=moment_demand,
+                design_axial_capacity_kN=evidence.design_axial_capacity_kN,
+                design_shear_capacity_kN=evidence.design_shear_capacity_kN,
+                design_moment_capacity_kNm=evidence.design_moment_capacity_kNm,
+                axial_utilisation=axial_utilisation,
+                shear_utilisation=shear_utilisation,
+                moment_utilisation=moment_utilisation,
+                governing_utilisation=governing_utilisation,
+                expected_connector_part_numbers=expected_parts,
+                rendered_connector_part_numbers=rendered_parts,
+                source=evidence.source,
+                source_sha256=evidence.source_sha256,
+                basis=evidence.basis,
+                assumptions=assumptions,
+            )
+        )
+    return checks
 
 
 def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
@@ -1761,6 +1909,7 @@ def _p399_evidence(
     members: list[StructuralMember],
     member_results: list[MemberResult],
     member_checks: list[MemberCheck],
+    connection_checks: list[ConnectionCheck],
     tension_member_checks: list[TensionMemberCheck],
     cross_section_checks: list[MemberCrossSectionCheck],
     member_stability_checks: list[MemberStabilityCheck],
@@ -2195,8 +2344,6 @@ def _p399_evidence(
     ]
     if cross_section_definition is None:
         cross_section_status = "not_checked"
-    elif stability_status != "pass":
-        cross_section_status = "blocked"
     elif not cross_section_checks:
         cross_section_status = "not_checked"
     elif any(check.status == "fail" for check in cross_section_checks):
@@ -2328,8 +2475,6 @@ def _p399_evidence(
     ]
     if member_stability_definition is None:
         member_stability_status = "not_checked"
-    elif cross_section_status != "pass":
-        member_stability_status = "blocked"
     elif not member_stability_checks:
         member_stability_status = "not_checked"
     elif any(check.status == "fail" for check in member_stability_checks):
@@ -2360,6 +2505,20 @@ def _p399_evidence(
         bracing_status = "unsupported"
     else:
         bracing_status = "warning"
+
+    connection_status: Literal[
+        "pass", "fail", "not_checked", "unsupported"
+    ]
+    if not connection_checks:
+        connection_status = "not_checked"
+    elif any(check.status == "fail" for check in connection_checks):
+        connection_status = "fail"
+    elif any(check.status == "unsupported" for check in connection_checks):
+        connection_status = "unsupported"
+    elif all(check.status == "pass" for check in connection_checks):
+        connection_status = "pass"
+    else:
+        connection_status = "not_checked"
 
     member_stability_equations = [
         equation
@@ -3171,11 +3330,11 @@ def _p399_evidence(
             id="sheet-p399-connections",
             stage_id="connections",
             title="Connections and bases",
-            status="blocked",
+            status=connection_status,
             p399_reference="SCI P399 Section 11",
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
-                "Rendered screws, bolts, bracket, anchors, and concrete are physical evidence only.",
+                "Rendered screws, bolts, bracket, anchors, and concrete establish identity and geometry, not resistance by themselves.",
                 *(
                     [
                         "Finite connection zones terminate the flexible member axes at the outer rendered bolt lines; the remaining centreline arms are deliberately idealised as rigid.",
@@ -3183,6 +3342,11 @@ def _p399_evidence(
                     ]
                     if joint_connections
                     else ["Connection stiffness and resistance are not yet calculated."]
+                ),
+                *(
+                    assumption
+                    for check in connection_checks
+                    for assumption in check.assumptions
                 ),
             ],
             inputs=[
@@ -3194,6 +3358,18 @@ def _p399_evidence(
                 )
                 for connection in joint_connections
                 if connection.joint_model is not None
+            ]
+            + [
+                CalculationInput(
+                    symbol=f"identity,{check.connection_id}",
+                    label=f"{check.label} rendered connector identity",
+                    value=check.identity_status,
+                    source=(
+                        f"expected={check.expected_connector_part_numbers!r}; "
+                        f"rendered={check.rendered_connector_part_numbers!r}"
+                    ),
+                )
+                for check in connection_checks
             ],
             equations=[
                 CalculationEquation(
@@ -3213,6 +3389,45 @@ def _p399_evidence(
                 for connection in joint_connections
                 if connection.joint_model is not None
                 for engagement in connection.joint_model.member_engagements
+            ]
+            + [
+                CalculationEquation(
+                    label=f"{check.label} {action} utilisation",
+                    expression=f"u_{symbol} = {demand_symbol}*/{capacity_symbol}",
+                    substitution=f"{demand:g} / {capacity:g}",
+                    result=utilisation,
+                )
+                for check in connection_checks
+                for action, symbol, demand_symbol, capacity_symbol, demand, capacity, utilisation in (
+                    (
+                        "axial",
+                        "N",
+                        "N",
+                        "phi N_c",
+                        check.axial_demand_kN,
+                        check.design_axial_capacity_kN,
+                        check.axial_utilisation,
+                    ),
+                    (
+                        "shear",
+                        "V",
+                        "V",
+                        "phi V_c",
+                        check.shear_demand_kN,
+                        check.design_shear_capacity_kN,
+                        check.shear_utilisation,
+                    ),
+                    (
+                        "moment",
+                        "M",
+                        "M",
+                        "phi M_c",
+                        check.moment_demand_kNm,
+                        check.design_moment_capacity_kNm,
+                        check.moment_utilisation,
+                    ),
+                )
+                if capacity is not None and utilisation is not None
             ],
             outputs=[
                 CalculationInput(
@@ -3228,8 +3443,43 @@ def _p399_evidence(
                 for connection in joint_connections
                 if connection.joint_model is not None
                 for engagement in connection.joint_model.member_engagements
+            ]
+            + [
+                CalculationInput(
+                    symbol=f"demand,{check.connection_id}",
+                    label=f"{check.label} ULS end-action envelope",
+                    value=check.status,
+                    source=(
+                        f"{check.governing_combination_id or 'no ULS'}; "
+                        f"N={check.axial_demand_kN:g} kN; "
+                        f"V={check.shear_demand_kN:g} kN; "
+                        f"M={check.moment_demand_kNm:g} kN.m; "
+                        f"resistance pack={check.pack_id} v{check.pack_version} "
+                        f"({check.evidence_status})"
+                    ),
+                )
+                for check in connection_checks
             ],
-            references=basis_references,
+            references=list(
+                dict.fromkeys(
+                    [
+                        *basis_references,
+                        *(
+                            reference
+                            for check in connection_checks
+                            for reference in (
+                                check.source,
+                                (
+                                    f"SHA-256 {check.source_sha256}"
+                                    if check.source_sha256 is not None
+                                    else None
+                                ),
+                            )
+                            if reference is not None
+                        ),
+                    ]
+                )
+            ),
             related_node_ids=[
                 node.id for node in nodes if any(node.restraints.model_dump().values())
             ],
@@ -3419,12 +3669,15 @@ def _p399_evidence(
             order=9,
             label="Connections/bases",
             p399_reference="§11",
-            status="blocked",
+            status=connection_status,
             summary=(
-                f"{len(joint_connections)} geometry-linked finite joint model(s); "
-                "resistance and validated stiffness checks remain blocked."
-                if joint_connections
-                else "Rendered detail exists; resistance and stiffness checks do not."
+                f"{len(connection_checks)} physical connection demand/resistance "
+                f"check(s): {sum(check.status == 'pass' for check in connection_checks)} "
+                f"pass, {sum(check.status == 'fail' for check in connection_checks)} "
+                f"fail, {sum(check.status == 'unsupported' for check in connection_checks)} "
+                "without verified resistance."
+                if connection_checks
+                else "Rendered detail exists; no resistance evidence pack is connected."
             ),
             sheet_ids=["sheet-p399-connections"],
             blocking_stage_ids=["analysis"],
@@ -3966,6 +4219,12 @@ def solve_project_structural(
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
     tension_member_checks = _tension_member_checks(model, analysis)
+    connection_checks = _connection_checks(
+        model,
+        analysis,
+        capture.connections,
+        components,
+    )
     cross_section_checks = _cross_section_checks(
         model,
         analysis,
@@ -4534,6 +4793,7 @@ def solve_project_structural(
         members=structural_members,
         member_results=member_results,
         member_checks=member_checks,
+        connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
@@ -4602,6 +4862,7 @@ def solve_project_structural(
         member_results=member_results,
         member_diagrams=member_diagrams,
         member_checks=member_checks,
+        connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,

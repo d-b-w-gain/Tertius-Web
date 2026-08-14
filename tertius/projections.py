@@ -161,11 +161,12 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                 ],
                 "start_m": [float(value) / 1000.0 for value in start["point_mm"]],
                 "end_m": [float(value) / 1000.0 for value in end["point_mm"]],
+                "section_x_direction": list(start["x_direction"]),
                 "section": structural.get("section") or {},
                 "material": structural.get("material") or {},
                 "evidence_status": structural.get("evidence_status"),
                 "evidence_basis": structural.get("evidence_basis"),
-                "rotation_deg": float(
+                "profile_rotation_deg": float(
                     (component.get("fabrication") or {}).get("rotation_deg") or 0.0
                 ),
             }
@@ -189,6 +190,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             "stiffness_status": definition.get("stiffness_status"),
             "stiffness_basis": definition.get("stiffness_basis"),
             "maximum_port_offset_mm": definition.get("maximum_port_offset_mm"),
+            "resistance": definition.get("resistance"),
         }
         joints.append(joint)
         for port in connected_ports:

@@ -1,5 +1,9 @@
 from .components import ComponentPort, PortPlacement, PortSet, managed_component
-from .connections import ConnectionDefinition, physical_connection
+from .connections import (
+    ConnectionDefinition,
+    ConnectionResistanceDefinition,
+    physical_connection,
+)
 from .products import (
     DrawingFacet,
     ProcurementFacet,
@@ -13,6 +17,7 @@ __all__ = [
     "CompileSession",
     "ComponentPort",
     "ConnectionDefinition",
+    "ConnectionResistanceDefinition",
     "DrawingFacet",
     "PortPlacement",
     "PortSet",

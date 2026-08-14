@@ -510,6 +510,21 @@ Port reuse, incompatible families, unexplained gaps, reused connectors, and
 unused connector geometry are rejected before analysis. Rigid-zone offsets,
 semi-rigid springs, and verified resistance remain later verification work.
 
+Completed engineering-evidence slice: each managed member now carries the
+exact immutable catalogue row and digest into the structural capture. Tertius
+aligns the PyNite local frame with the rendered section frame, runs the pinned
+AS/NZS 4600 section-resistance pack for the configured ULS combination, and
+traces section demand, capacity, utilisation, pack version, product digest,
+graph digest, and configuration digest in the calculation evidence. Member
+stability is evaluated separately and remains unsupported where distortional
+buckling or restraint resistance is unverified. Physical knee and base
+connections now declare versioned resistance-evidence slots and exact expected
+connector identities; the workbench reports their ULS axial, shear, and moment
+demands while refusing a pass when published bracket, bolt, anchor, or base
+capacity evidence is absent. This gives fit, procurement identity, structural
+demand, and evidence status one shared graph without inventing capacity for
+the demo connection parts.
+
 ### Task 7: Add atomic multi-artifact compile bundles
 
 **Files:** compile messages, worker, result consumer, artifact models/migration,

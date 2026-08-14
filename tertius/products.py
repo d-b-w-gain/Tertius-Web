@@ -183,6 +183,7 @@ class ProductDefinition:
                     "id": self.catalogue_id,
                     "revision": self.catalogue_revision,
                     "row_digest": self.catalogue_row_digest,
+                    "row": thaw_json(self.catalogue_row),
                 }
                 if self.catalogue_id is not None
                 else None
