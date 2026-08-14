@@ -282,13 +282,13 @@ rtk bash scripts/test-deployment-config.sh
 rtk bash scripts/check-runtime-parity.sh
 ```
 
-- [ ] **Step 2: Install and verify the user timer**
+- [x] **Step 2: Install and verify the user timer**
 
 Install with the canonical checkout path and `/home/johnson/.kube/config`, then
 verify the timer is enabled and list its next activation without exposing
 credentials.
 
-- [ ] **Step 3: Clean the two authorized targets**
+- [x] **Step 3: Clean the two authorized targets**
 
 Run full cleanup for exactly:
 
@@ -299,18 +299,24 @@ tertius/tertius-3mf-task15
 
 Do not target `tertius/tertius`.
 
-- [ ] **Step 4: Verify live absence and production health**
+- [x] **Step 4: Verify live absence and production health**
 
 Assert both Helm releases, exact app Secrets, lifecycle markers, CNPG clusters,
 PVCs, labelled workloads, ScaledJobs, and Jobs are absent. Assert Flux
 `HelmRelease/tertius` remains Ready and its API/UI workloads remain Available.
 
-- [ ] **Step 5: Mark plan checkboxes and commit verification evidence**
+- [x] **Step 5: Mark plan checkboxes and commit verification evidence**
 
 ```bash
 rtk git add docs/superpowers/plans/2026-08-14-k3s-harness-lifecycle-cleanup.md
 rtk git commit -m "docs: record k3s lifecycle cleanup verification"
 ```
+
+Verified 2026-08-14: the user timer is enabled and active on its 15-minute
+schedule; both authorized legacy Helm releases, lifecycle markers, exact
+external Secrets, data resources, and release-scoped objects are absent.
+Flux `HelmRelease/tertius` remains Ready, and `tertius-api` plus `tertius-ui`
+each have all requested replicas Available.
 
 ## Plan self-review
 
