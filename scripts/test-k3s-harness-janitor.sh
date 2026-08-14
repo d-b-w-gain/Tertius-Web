@@ -29,6 +29,8 @@ if [[ " $* " == *" get configmaps "* ]]; then
  {"metadata":{"name":"wrong-name","namespace":"dev","uid":"uid-malformed","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"malformed"},"annotations":{"tertius.io/lease-id":"not-a-uuid","tertius.io/release-name":"malformed","tertius.io/expires-at":"broken","tertius.io/cleanup-policy":"delete"}}},
  {"metadata":{"name":"tertius-harness-lifecycle","namespace":"tertius","uid":"uid-tertius","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"tertius"},"annotations":{"tertius.io/lease-id":"44444444-4444-4444-8444-444444444444","tertius.io/release-name":"tertius","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}},
  {"metadata":{"name":"flux-harness-lifecycle","namespace":"dev","uid":"uid-flux","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"flux"},"annotations":{"tertius.io/lease-id":"55555555-5555-4555-8555-555555555555","tertius.io/release-name":"flux","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}},
+ {"metadata":{"name":"dev-cross-harness-lifecycle","namespace":"dev","uid":"uid-flux-cross","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"dev-cross"},"annotations":{"tertius.io/lease-id":"88888888-8888-4888-8888-888888888888","tertius.io/release-name":"dev-cross","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}},
+ {"metadata":{"name":"retry-cleaning-harness-lifecycle","namespace":"dev","uid":"uid-cleaning","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"retry-cleaning"},"annotations":{"tertius.io/lease-id":"99999999-9999-4999-8999-999999999999","tertius.io/release-name":"retry-cleaning","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"cleaning"}}},
  {"metadata":{"name":"cleanup-fails-harness-lifecycle","namespace":"dev","uid":"uid-cleanup-fails","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"cleanup-fails"},"annotations":{"tertius.io/lease-id":"66666666-6666-4666-8666-666666666666","tertius.io/release-name":"cleanup-fails","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}},
  {"metadata":{"name":"later-harness-lifecycle","namespace":"dev","uid":"uid-later","resourceVersion":"1","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"later"},"annotations":{"tertius.io/lease-id":"77777777-7777-4777-8777-777777777777","tertius.io/release-name":"later","tertius.io/expires-at":"2020-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}}
 ]}
@@ -38,7 +40,7 @@ elif [[ " $* " == *" get helmreleases.helm.toolkit.fluxcd.io "* ]]; then
     printf '{broken\n'
     exit 0
   fi
-  printf '{"items":[{"metadata":{"name":"different","namespace":"flux-system"},"spec":{"targetNamespace":"dev","releaseName":"flux"}}]}\n'
+  printf '{"items":[{"metadata":{"name":"different","namespace":"flux-system"},"spec":{"targetNamespace":"dev","releaseName":"flux"}},{"metadata":{"name":"cross","namespace":"flux-system"},"spec":{"targetNamespace":"dev"}}]}\n'
 fi
 EOF
 
@@ -71,7 +73,9 @@ assert_log 'cleanup down namespace=dev release=expired uid=uid-expired rv=1 leas
   "exactly expired marker must be cleaned only under its observed marker identity"
 assert_log 'cleanup down namespace=dev release=cleanup-fails' "cleanup failures must be attempted"
 assert_log 'cleanup down namespace=dev release=later' "janitor must continue after a cleanup failure"
-assert_not_log 'release=future|release=retained|release=tertius|release=flux|release=malformed' \
+assert_log 'cleanup down namespace=dev release=retry-cleaning uid=uid-cleaning' \
+  "janitor must retry expired markers already atomically claimed for cleaning"
+assert_not_log 'release=future|release=retained|release=tertius|release=flux|release=dev-cross|release=malformed' \
   "future, retained, protected, Flux, and malformed markers must not be cleaned"
 
 for malformed_case in MOCK_MALFORMED_MARKERS MOCK_MALFORMED_FLUX; do

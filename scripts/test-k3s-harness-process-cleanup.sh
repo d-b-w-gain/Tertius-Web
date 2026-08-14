@@ -290,4 +290,18 @@ PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
     cleanup_local
   ' bash "$ROOT_DIR/scripts/test-k3s-deployment.sh"
 
+# Owned forwards must be stopped before checking whether their ports are bindable.
+: >"$COMMAND_LOG"
+HARNESS_K3S_LIB_ONLY=true bash -c '
+  . "$1"
+  TEST_ORDER_LOG=$2
+  stop_port_forwards() { printf "stop\n" >>"$TEST_ORDER_LOG"; }
+  preflight_ports() { printf "preflight\n" >>"$TEST_ORDER_LOG"; }
+  prepare_port_forward_session
+' bash "$ROOT_DIR/scripts/harness-k3s.sh" "$COMMAND_LOG"
+[ "$(sed -n '1p' "$COMMAND_LOG")" = stop ] || \
+  fail "owned port-forwards must stop before bindability preflight"
+[ "$(sed -n '2p' "$COMMAND_LOG")" = preflight ] || \
+  fail "bindability preflight must run immediately after owned forwards stop"
+
 echo "k3s harness process cleanup tests passed"

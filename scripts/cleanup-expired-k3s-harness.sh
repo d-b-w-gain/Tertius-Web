@@ -34,6 +34,27 @@ if ! jq -e 'type == "object" and (.items | type == "array")' <<<"$markers_json" 
   exit 1
 fi
 
+flux_effective_release_name() {
+  local target_namespace=$1 source_namespace=$2 source_name=$3 explicit_name=$4 base_name digest
+  if [ -n "$explicit_name" ]; then printf '%s\n' "$explicit_name"; return; fi
+  if [ "$target_namespace" = "$source_namespace" ]; then base_name=$source_name; else base_name="${target_namespace}-${source_name}"; fi
+  if [ "${#base_name}" -le 53 ]; then printf '%s\n' "$base_name"; return; fi
+  digest=$(printf '%s' "$base_name" | sha256sum) || return 1
+  printf '%.40s-%.12s\n' "$base_name" "$digest"
+}
+
+flux_manages_release() {
+  local wanted_namespace=$1 wanted_release=$2 records target source_namespace source_name explicit_name effective
+  records=$(jq -r '.items[]? |
+    [(.spec.targetNamespace // .metadata.namespace),.metadata.namespace,.metadata.name,(.spec.releaseName // "")] | @tsv' <<<"$flux_json") || return 2
+  while IFS=$'\t' read -r target source_namespace source_name explicit_name; do
+    [ -n "$target" ] || continue
+    effective=$(flux_effective_release_name "$target" "$source_namespace" "$source_name" "$explicit_name") || return 2
+    [ "$target" != "$wanted_namespace" ] || [ "$effective" != "$wanted_release" ] || return 0
+  done <<<"$records"
+  return 1
+}
+
 failures=0
 mapfile -t marker_records < <(jq -c '.items[]' <<<"$markers_json")
 for marker_record in "${marker_records[@]}"; do
@@ -76,7 +97,7 @@ for marker_record in "${marker_records[@]}"; do
     echo "Retained lifecycle tombstone ${namespace}/${name}; skipping."
     continue
   fi
-  if [ "$policy" != delete ]; then
+  if [ "$policy" != delete ] && [ "$policy" != cleaning ]; then
     echo "Unsupported cleanup policy on ${namespace}/${name}; skipping." >&2
     failures=$((failures + 1))
     continue
@@ -86,11 +107,7 @@ for marker_record in "${marker_records[@]}"; do
     failures=$((failures + 1))
     continue
   fi
-  if jq -e --arg namespace "$namespace" --arg release "$release" '
-      any(.items[]?;
-        ((.spec.targetNamespace // .metadata.namespace) == $namespace) and
-        ((.spec.releaseName // .metadata.name) == $release))
-    ' <<<"$flux_json" >/dev/null; then
+  if flux_manages_release "$namespace" "$release"; then
     echo "Flux-managed marker ${namespace}/${name}; skipping." >&2
     failures=$((failures + 1))
     continue

@@ -96,20 +96,36 @@ wait_for_ports_free() {
   return 1
 }
 
+prepare_port_forward_session() {
+  stop_port_forwards
+  preflight_ports
+}
+
+flux_effective_release_name() {
+  local target_namespace source_namespace source_name explicit_name base_name digest
+  target_namespace=$1
+  source_namespace=$2
+  source_name=$3
+  explicit_name=$4
+  if [ -n "$explicit_name" ]; then printf '%s\n' "$explicit_name"; return; fi
+  if [ "$target_namespace" = "$source_namespace" ]; then base_name=$source_name; else base_name="${target_namespace}-${source_name}"; fi
+  if [ "${#base_name}" -le 53 ]; then printf '%s\n' "$base_name"; return; fi
+  digest=$(printf '%s' "$base_name" | sha256sum) || return 1
+  printf '%.40s-%.12s\n' "$base_name" "$digest"
+}
+
 matching_flux_release() {
+  local flux_json flux_records target source_namespace source_name explicit_name effective
   flux_json=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null) || return 2
-  if printf '%s' "$flux_json" | jq -e --arg namespace "$NAMESPACE" --arg release "$RELEASE_NAME" '
-    any(.items[]?;
-      ((.spec.targetNamespace // .metadata.namespace) == $namespace) and
-      ((.spec.releaseName // .metadata.name) == $release)
-    )
-  ' >/dev/null; then
-    return 0
-  else
-    jq_status=$?
-  fi
-  [ "$jq_status" -eq 1 ] && return 1
-  return 2
+  printf '%s' "$flux_json" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null || return 2
+  flux_records=$(printf '%s' "$flux_json" | jq -r '.items[]? |
+    [(.spec.targetNamespace // .metadata.namespace),.metadata.namespace,.metadata.name,(.spec.releaseName // "")] | @tsv') || return 2
+  while IFS=$'\t' read -r target source_namespace source_name explicit_name; do
+    [ -n "$target" ] || continue
+    effective=$(flux_effective_release_name "$target" "$source_namespace" "$source_name" "$explicit_name") || return 2
+    [ "$target" != "$NAMESPACE" ] || [ "$effective" != "$RELEASE_NAME" ] || return 0
+  done <<<"$flux_records"
+  return 1
 }
 
 require_not_flux_managed() {
@@ -168,9 +184,33 @@ adopt_release() {
     echo "Refusing adoption: Helm release ${NAMESPACE}/${RELEASE_NAME} does not exist." >&2
     exit 1
   fi
-  existing_marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" -o name 2>/dev/null || true)
+  if ! existing_marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" \
+    --ignore-not-found=true -o name 2>/dev/null); then
+    echo "Unable to inspect lifecycle marker for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
   if [ -n "$existing_marker" ]; then
     echo "Refusing adoption: lifecycle marker ${NAMESPACE}/${RELEASE_NAME}-harness-lifecycle already exists." >&2
+    exit 1
+  fi
+  app_secret_name=${APP_SECRET_NAME:-${RELEASE_NAME}-app}
+  if ! existing_secret=$(kubectl get secret "$app_secret_name" -n "$NAMESPACE" \
+    --ignore-not-found=true -o name 2>/dev/null); then
+    echo "Unable to inspect external Secret ${NAMESPACE}/${app_secret_name}; refusing adoption." >&2
+    exit 1
+  fi
+  if [ -z "$existing_secret" ]; then
+    echo "External Secret ${NAMESPACE}/${app_secret_name} does not exist; refusing adoption." >&2
+    exit 1
+  fi
+  if ! clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+    echo "Unable to inventory CNPG clusters for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! pvcs=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+    echo "Unable to inventory PVCs for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
     exit 1
   fi
   printf 'Type %s to adopt this existing release: ' "$target" >&2
@@ -189,10 +229,7 @@ adopt_release() {
     exit 1
   fi
   expires_at=$(date -u -d "+${ttl_seconds} seconds" '+%Y-%m-%dT%H:%M:%SZ')
-  app_secret_name=${APP_SECRET_NAME:-${RELEASE_NAME}-app}
   kubectl annotate secret "$app_secret_name" -n "$NAMESPACE" "tertius.io/lease-id=${lease_id}" --overwrite
-  clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-  pvcs=$(kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
   [ -z "$clusters" ] || kubectl annotate -n "$NAMESPACE" $clusters "tertius.io/lease-id=${lease_id}" --overwrite
   [ -z "$pvcs" ] || kubectl annotate -n "$NAMESPACE" $pvcs "tertius.io/lease-id=${lease_id}" --overwrite
   kubectl apply -f - <<EOF
@@ -520,7 +557,7 @@ case "${1:-}" in
     fi
     ;;
   ports)
-    preflight_ports
+    prepare_port_forward_session
     start_port_forwards
     ;;
   smoke)

@@ -89,7 +89,8 @@ Cleanup order is:
    `ALLOW_FLUX_MANAGED_RELEASE`.
 3. List all Flux `HelmRelease` objects and refuse any whose effective
    `spec.targetNamespace` and `spec.releaseName` match the target, regardless of
-   the HelmRelease object's own name or namespace.
+   the HelmRelease object's own name or namespace. Omitted release names use
+   Flux's namespace/name composition and 53-character SHA-256 shortening rule.
 4. Require a lifecycle marker whose release, namespace, and lease UUID match
    the exact external Secret and release data resources. Legacy releases can
    only enter this contract through `harness-k3s.sh adopt`, which requires the
@@ -100,14 +101,20 @@ Cleanup order is:
 6. Stop/delete harness probe Pods.
 7. Add `helm.sh/resource-policy=keep` only to resources selected for explicit
    retention.
-8. Uninstall the Helm release.
-9. Delete non-retained CNPG clusters and PVCs only when both exact instance and
+8. Atomically claim the lifecycle marker using UID, resourceVersion, lease,
+   expiry, and policy preconditions; persist captured descendant identities and
+   set policy `cleaning`. Marker renewal uses the same compare-and-swap rule and
+   refuses `cleaning`, so it cannot race teardown.
+9. Uninstall the Helm release.
+10. Delete non-retained CNPG clusters and PVCs only when both exact instance and
    lease UUID match.
-10. Delete the exact external app Secret only when its lease UUID matches.
-11. Delete the lifecycle ConfigMap only when no retained data remains. With
+11. Delete the exact external app Secret only when its lease UUID matches.
+    Named data, Secret, probe, and marker deletes use UID/resourceVersion
+    preconditions.
+12. Delete the lifecycle ConfigMap only when no retained data remains. With
    `--retain-data` or `--retain-auth`, preserve it as a tombstone containing the
    retained object names and UIDs and set `cleanup-policy: retain`.
-12. Wait for Helm metadata, Deployments, StatefulSets, DaemonSets, Pods,
+13. Wait for Helm metadata, Deployments, StatefulSets, DaemonSets, Pods,
    Services, Jobs, ConfigMaps, Secrets, ServiceAccounts, Roles, RoleBindings,
    NetworkPolicies, KEDA objects, CNPG/Keycloak CRs, PVCs, and captured
    operator-generated children to disappear. Fail if any non-retained object
@@ -138,9 +145,10 @@ or explicit cleanup.
 
 It then invokes the repository cleanup implementation with the exact namespace,
 release, marker UID, resourceVersion, lease UUID, expiry, and janitor decision
-time. Cleanup re-reads and compares that complete snapshot immediately before
-its first mutation, preventing a renewed or recreated release from being
-deleted. Retention tombstones are reported and skipped. Malformed or
+time. Cleanup atomically claims that complete snapshot immediately before its
+first mutation, preventing a renewed or recreated release from being deleted.
+An expired `cleaning` marker is retried after interrupted cleanup. Retention
+tombstones are reported and skipped. Malformed or
 protected markers are reported and skipped. Cleanup failure makes the janitor
 exit nonzero.
 
