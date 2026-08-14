@@ -22,7 +22,7 @@ PORT_FORWARD_ATTEMPTS="${PORT_FORWARD_ATTEMPTS:-10}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data|adopt> [options]
+Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data|adopt|adopt-secret> [options]
 
 Cleanup options: --retain-data, --retain-auth. delete-data is a compatibility alias for full cleanup.
 EOF
@@ -162,6 +162,28 @@ new_lease_id() {
   fi
 }
 
+lease_secret_from_json() {
+  secret_json=$1
+  lease_id=$2
+  secret_name=$(printf '%s' "$secret_json" | jq -er '.metadata.name') || return 1
+  secret_uid=$(printf '%s' "$secret_json" | jq -er '.metadata.uid') || return 1
+  secret_rv=$(printf '%s' "$secret_json" | jq -er '.metadata.resourceVersion') || return 1
+  if printf '%s' "$secret_json" | jq -e '.metadata.annotations | type == "object"' >/dev/null; then
+    secret_patch=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" --arg lease "$lease_id" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$rv},
+      {op:"add",path:"/metadata/annotations/tertius.io~1lease-id",value:$lease}
+    ]') || return 1
+  else
+    secret_patch=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" --arg lease "$lease_id" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$rv},
+      {op:"add",path:"/metadata/annotations",value:{"tertius.io/lease-id":$lease}}
+    ]') || return 1
+  fi
+  kubectl patch secret "$secret_name" -n "$NAMESPACE" --type=json -p "$secret_patch" >/dev/null
+}
+
 adopt_release() {
   target=${1:-}
   command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
@@ -195,7 +217,7 @@ adopt_release() {
   fi
   app_secret_name=${APP_SECRET_NAME:-${RELEASE_NAME}-app}
   if ! existing_secret=$(kubectl get secret "$app_secret_name" -n "$NAMESPACE" \
-    --ignore-not-found=true -o name 2>/dev/null); then
+    --ignore-not-found=true -o json 2>/dev/null); then
     echo "Unable to inspect external Secret ${NAMESPACE}/${app_secret_name}; refusing adoption." >&2
     exit 1
   fi
@@ -211,6 +233,23 @@ adopt_release() {
   if ! pvcs=$(kubectl get pvc -n "$NAMESPACE" \
     -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
     echo "Unable to inventory PVCs for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! external_secrets=$(kubectl get secret -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory release-labelled Secrets for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! adoption_secrets=$(
+    { printf '%s\n' "$existing_secret"; printf '%s\n' "$external_secrets"; } |
+      jq -s '{items: ([.[] | if has("items") then .items[] else . end] | unique_by(.metadata.uid))}'
+  ) || ! printf '%s' "$adoption_secrets" | jq -e '
+    all(.items[]?;
+      (.metadata.name | type == "string" and length > 0) and
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0))
+  ' >/dev/null; then
+    echo "Release Secret identities are incomplete; refusing adoption." >&2
     exit 1
   fi
   printf 'Type %s to adopt this existing release: ' "$target" >&2
@@ -229,7 +268,13 @@ adopt_release() {
     exit 1
   fi
   expires_at=$(date -u -d "+${ttl_seconds} seconds" '+%Y-%m-%dT%H:%M:%SZ')
-  kubectl annotate secret "$app_secret_name" -n "$NAMESPACE" "tertius.io/lease-id=${lease_id}" --overwrite
+  while IFS= read -r adoption_secret; do
+    [ -n "$adoption_secret" ] || continue
+    lease_secret_from_json "$adoption_secret" "$lease_id" || {
+      echo "A release Secret changed during adoption; refusing to create the lifecycle marker." >&2
+      exit 1
+    }
+  done < <(printf '%s' "$adoption_secrets" | jq -c '.items[]?')
   [ -z "$clusters" ] || kubectl annotate -n "$NAMESPACE" $clusters "tertius.io/lease-id=${lease_id}" --overwrite
   [ -z "$pvcs" ] || kubectl annotate -n "$NAMESPACE" $pvcs "tertius.io/lease-id=${lease_id}" --overwrite
   kubectl apply -f - <<EOF
@@ -249,6 +294,63 @@ metadata:
     tertius.io/expires-at: ${expires_at}
     tertius.io/cleanup-policy: delete
 EOF
+}
+
+adopt_external_secret() {
+  target=${1:-}
+  secret_name=${2:-}
+  case "$target" in
+    */*) ;;
+    *) echo "Usage: $(basename "$0") adopt-secret <namespace>/<release> <secret>" >&2; exit 2 ;;
+  esac
+  NAMESPACE=${target%%/*}
+  RELEASE_NAME=${target#*/}
+  if [ -z "$NAMESPACE" ] || [ -z "$RELEASE_NAME" ] || [ "$target" != "${NAMESPACE}/${RELEASE_NAME}" ] ||
+     [ -z "$secret_name" ]; then
+    echo "Usage: $(basename "$0") adopt-secret <namespace>/<release> <secret>" >&2
+    exit 2
+  fi
+  if [ "$RELEASE_NAME" = tertius ]; then
+    echo "Refusing to attach a Secret to protected release ${NAMESPACE}/tertius." >&2
+    exit 1
+  fi
+  require_not_flux_managed false
+  marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" -o json 2>/dev/null) || {
+    echo "A lifecycle marker is required before attaching an external Secret." >&2
+    exit 1
+  }
+  lease_id=$(printf '%s' "$marker" | jq -er --arg release "$RELEASE_NAME" '
+    select(.metadata.labels["tertius.io/harness-managed"] == "true") |
+    select(.metadata.labels["app.kubernetes.io/instance"] == $release) |
+    select(.metadata.annotations["tertius.io/release-name"] == $release) |
+    .metadata.annotations["tertius.io/lease-id"] |
+    select(type == "string" and length > 0)
+  ') || { echo "Lifecycle marker is invalid; refusing Secret adoption." >&2; exit 1; }
+  secret=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o json 2>/dev/null) || {
+    echo "Secret ${NAMESPACE}/${secret_name} does not exist." >&2
+    exit 1
+  }
+  if ! printf '%s' "$secret" | jq -e --arg release "$RELEASE_NAME" --arg expected "$lease_id" '
+    .metadata.labels["app.kubernetes.io/instance"] == $release and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and length > 0) and
+    ((.metadata.annotations["tertius.io/lease-id"] // "") as $lease | $lease == "" or $lease == $expected)
+  ' >/dev/null; then
+    echo "Secret ${NAMESPACE}/${secret_name} is not safely attributable to ${RELEASE_NAME}." >&2
+    exit 1
+  fi
+  secret_uid=$(printf '%s' "$secret" | jq -er '.metadata.uid')
+  secret_rv=$(printf '%s' "$secret" | jq -er '.metadata.resourceVersion')
+  printf 'Type %s/%s to attach this Secret to the cleanup lease: ' "$target" "$secret_name" >&2
+  read -r confirmation
+  if [ "$confirmation" != "${target}/${secret_name}" ]; then
+    echo "Secret adoption confirmation did not match ${target}/${secret_name}." >&2
+    exit 1
+  fi
+  lease_secret_from_json "$secret" "$lease_id" || {
+    echo "Secret changed before its cleanup lease could be attached; no cleanup was performed." >&2
+    exit 1
+  }
 }
 
 status() {
@@ -629,6 +731,10 @@ case "${1:-}" in
   adopt)
     shift
     adopt_release "${1:-}"
+    ;;
+  adopt-secret)
+    shift
+    adopt_external_secret "${1:-}" "${2:-}"
     ;;
   --help|-h)
     usage

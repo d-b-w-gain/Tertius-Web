@@ -95,7 +95,9 @@ Cleanup order is:
    the exact external Secret and release data resources. Legacy releases can
    only enter this contract through `harness-k3s.sh adopt`, which requires the
    exact text `<namespace>/<release>`, refuses production/Flux, and annotates
-   the existing resources with a newly generated lease UUID.
+   the existing resources and release-labelled external Secrets with a newly
+   generated lease UUID. Later external Secrets require the explicit
+   `adopt-secret <namespace>/<release> <secret>` command and a guarded patch.
 5. Capture Helm status/history, scoped metadata, recent events, bounded pod
    descriptions, and bounded logs before failure-triggered teardown.
 6. Stop/delete harness probe Pods.
@@ -108,7 +110,8 @@ Cleanup order is:
 9. Uninstall the Helm release.
 10. Delete non-retained CNPG clusters and PVCs only when both exact instance and
    lease UUID match.
-11. Delete the exact external app Secret only when its lease UUID matches.
+11. Delete the exact external app Secret and release-labelled Secrets only
+    when their lease UUID matches.
     Named data, Secret, probe, and marker deletes use UID/resourceVersion
     preconditions.
 12. Delete the lifecycle ConfigMap only when no retained data remains. With

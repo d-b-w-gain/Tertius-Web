@@ -98,7 +98,7 @@ scripts/harness-k3s.sh down --retain-data
 scripts/harness-k3s.sh down --retain-auth
 ```
 
-`down` is full cleanup: it removes the Helm release, external app Secret,
+`down` is full cleanup: it removes the Helm release, leased release-labelled Secrets,
 CNPG clusters, PVCs, and lifecycle marker, then verifies scoped resources are
 absent. `delete-data` remains an alias for full cleanup. Persistence is always
 explicit: `--retain-data` keeps CNPG clusters and all release PVCs, while
@@ -119,7 +119,17 @@ scripts/harness-k3s.sh adopt <namespace>/<release>
 ```
 
 The command verifies that exact Helm release and requires typing the exact
-target before it adds lifecycle ownership. See the
+target before it adds lifecycle ownership, including all existing
+release-labelled Secrets. If a new external Secret is added after adoption,
+attach it explicitly before cleanup:
+
+```bash
+scripts/harness-k3s.sh adopt-secret <namespace>/<release> <secret-name>
+```
+
+This requires the exact release label, the existing lifecycle marker, and a
+typed confirmation, then uses UID/resourceVersion preconditions to attach the
+lease. See the
 [lifecycle cleanup design](../superpowers/specs/2026-08-14-k3s-harness-lifecycle-cleanup-design.md)
 for the ownership and failure matrix.
 

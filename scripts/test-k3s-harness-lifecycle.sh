@@ -106,6 +106,7 @@ if [ "${1:-}" = get ]; then
   case "${MOCK_INVENTORY_READ_FAILURE:-}" in
     marker) [[ "$joined" != *" configmap "*"${RELEASE_NAME}-harness-lifecycle"* ]] || exit 1 ;;
     secret) [[ "$joined" != *" secret "*"${APP_SECRET_NAME}"* ]] || exit 1 ;;
+    secret-list) [[ "$joined" != *" secret -n "*" -l app.kubernetes.io/instance=${RELEASE_NAME}"* ]] || exit 1 ;;
     cluster) [[ "$joined" != *"clusters.postgresql.cnpg.io"* ]] || exit 1 ;;
     pvc) [[ "$joined" != *" pvc "* && "$joined" != *" persistentvolumeclaims "* ]] || exit 1 ;;
     keycloak) [[ "$joined" != *"keycloaks.k8s.keycloak.org"* ]] || exit 1 ;;
@@ -168,6 +169,64 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" secret "*"${APP_SECRET_NAME}"* ]]; t
   else
     printf '%s\n' "$APP_SECRET_NAME"
   fi
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" secret "*"${RELEASE_NAME}-llm"* ]]; then
+  [ -f "$STATE_DIR/external-secret" ] || exit 0
+  if [ "$output" = json ]; then
+    annotations=''
+    [ "${MOCK_EXTERNAL_SECRET_NO_ANNOTATIONS:-false}" = true ] || annotations=',"annotations":{"tertius.io/lease-id":"'"${MOCK_EXTERNAL_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}"'"}'
+    printf '{"metadata":{"name":"%s-llm","namespace":"%s","uid":"external-secret-uid","resourceVersion":"external-secret-rv","labels":{"app.kubernetes.io/instance":"%s"}%s}}\n' "$RELEASE_NAME" "$NAMESPACE" "$RELEASE_NAME" "$annotations"
+  else
+    printf '%s-llm\n' "$RELEASE_NAME"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" secret -n "*" -l app.kubernetes.io/instance=${RELEASE_NAME}"* ]]; then
+  if [ "$output" = json ]; then
+    printf '{"items":['
+    if [ -f "$STATE_DIR/external-secret" ]; then
+      annotations=''
+      [ "${MOCK_EXTERNAL_SECRET_NO_ANNOTATIONS:-false}" = true ] || annotations=',"annotations":{"tertius.io/lease-id":"'"${MOCK_EXTERNAL_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}"'"}'
+      printf '{"metadata":{"name":"%s-llm","namespace":"%s","uid":"external-secret-uid","resourceVersion":"external-secret-rv","labels":{"app.kubernetes.io/instance":"%s"}%s}}' "$RELEASE_NAME" "$NAMESPACE" "$RELEASE_NAME" "$annotations"
+    fi
+    printf ']}\n'
+  elif [ -f "$STATE_DIR/external-secret" ]; then
+    printf 'secret/%s-llm\n' "$RELEASE_NAME"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = patch ] && [[ "$joined" == *" secret "*"${RELEASE_NAME}-llm"* ]]; then
+  [ "${MOCK_MUTATION_FAILURE:-}" != secret-patch ] || exit 17
+  patch_json=""
+  while [ "$#" -gt 0 ]; do
+    [ "$1" != -p ] || { patch_json=$2; break; }
+    shift
+  done
+  printf '%s' "$patch_json" | jq -e '
+    any(.[]; .op == "test" and .path == "/metadata/uid" and .value == "external-secret-uid") and
+    any(.[]; .op == "test" and .path == "/metadata/resourceVersion" and .value == "external-secret-rv") and
+    any(.[]; .op == "add" and
+      (.path == "/metadata/annotations/tertius.io~1lease-id" or
+       (.path == "/metadata/annotations" and .value["tertius.io/lease-id"] != null)))
+  ' >/dev/null || exit 16
+  exit 0
+fi
+
+if [ "${1:-}" = patch ] && [[ "$joined" == *" secret "* ]]; then
+  [ "${MOCK_MUTATION_FAILURE:-}" != secret-patch ] || exit 17
+  patch_json=""
+  while [ "$#" -gt 0 ]; do
+    [ "$1" != -p ] || { patch_json=$2; break; }
+    shift
+  done
+  printf '%s' "$patch_json" | jq -e '
+    any(.[]; .op == "test" and .path == "/metadata/uid") and
+    any(.[]; .op == "test" and .path == "/metadata/resourceVersion")
+  ' >/dev/null || exit 16
   exit 0
 fi
 
@@ -316,6 +375,7 @@ fi
 if [ "${1:-}" = delete ] && [ "${2:-}" = --raw ]; then
   if [ "${MOCK_MUTATION_FAILURE:-}" = raw-delete-absent ]; then
     case "${3:-}" in
+      */secrets/*-llm) rm -f "$STATE_DIR/external-secret" ;;
       */secrets/*) rm -f "$STATE_DIR/secret" ;;
       */clusters/*) rm -f "$STATE_DIR/cluster" ;;
       */persistentvolumeclaims/*data) rm -f "$STATE_DIR/data-pvc" ;;
@@ -329,6 +389,7 @@ if [ "${1:-}" = delete ] && [ "${2:-}" = --raw ]; then
   printf '%s\n' "$delete_options" >>"${COMMAND_LOG}.stdin"
   printf '%s' "$delete_options" | jq -e '.preconditions.uid != null and .preconditions.resourceVersion != null' >/dev/null || exit 12
   case "${3:-}" in
+    */secrets/*-llm) rm -f "$STATE_DIR/external-secret" ;;
     */secrets/*) rm -f "$STATE_DIR/secret" ;;
     */clusters/*) rm -f "$STATE_DIR/cluster" ;;
     */persistentvolumeclaims/*data) rm -f "$STATE_DIR/data-pvc" ;;
@@ -580,7 +641,7 @@ fi
 assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
   "data lease mismatch must not mutate the target"
 
-for failed_inventory in marker secret cluster pvc keycloak descendants; do
+for failed_inventory in marker secret secret-list cluster pvc keycloak descendants; do
   reset_state
   : >"$COMMAND_LOG"
   if MOCK_INVENTORY_READ_FAILURE="$failed_inventory" run_deploy_cleanup; then
@@ -738,7 +799,7 @@ assert_log 'kubectl get configmap test-release-harness-lifecycle -n test-ns' \
 assert_not_log 'kubectl (delete|annotate|patch|apply)' \
   "existing-marker adoption refusal must not mutate Kubernetes"
 
-for failed_adoption_inventory in marker secret cluster pvc; do
+for failed_adoption_inventory in marker secret secret-list cluster pvc; do
   reset_legacy_state
   : >"$COMMAND_LOG"
   if printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
@@ -752,12 +813,15 @@ for failed_adoption_inventory in marker secret cluster pvc; do
 done
 
 reset_legacy_state
+touch "$STATE_DIR/external-secret"
 : >"${COMMAND_LOG}.stdin"
 printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
   NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
   "$ROOT_DIR/scripts/harness-k3s.sh" adopt test-ns/test-release
-assert_log 'kubectl (annotate|patch).*test-release-app.*tertius\.io/lease-id=' \
+assert_log 'kubectl patch secret test-release-app .*tertius.io~1lease-id' \
   "legacy adoption must apply lease ownership to the external Secret"
+assert_log 'kubectl patch secret test-release-llm .*tertius.io~1lease-id' \
+  "legacy adoption must lease every release-labelled external Secret"
 assert_log 'kubectl (apply|create).*harness-lifecycle|kubectl apply' \
   "legacy adoption must create the lifecycle marker"
 grep -Eq 'tertius\.io/lease-id:[[:space:]]*[^[:space:]]+' "${COMMAND_LOG}.stdin" || \
@@ -776,6 +840,53 @@ lease_values=$(
 )
 [ "$(printf '%s\n' "$lease_values" | grep -c .)" -eq 1 ] || \
   fail "adoption must assign one identical lease UUID to marker, Secret, CNPG Cluster, and PVCs"
+
+reset_legacy_state
+touch "$STATE_DIR/external-secret"
+: >"$COMMAND_LOG"
+if printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  MOCK_MUTATION_FAILURE=secret-patch \
+  "$ROOT_DIR/scripts/harness-k3s.sh" adopt test-ns/test-release; then
+  fail "legacy adoption must refuse a Secret replacement race"
+fi
+assert_not_log 'kubectl (apply|create)' \
+  "a failed UID/resourceVersion Secret patch must not create the lifecycle marker"
+
+reset_state
+touch "$STATE_DIR/external-secret"
+: >"$COMMAND_LOG"
+printf '%s\n' 'test-ns/test-release/test-release-llm' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  "$ROOT_DIR/scripts/harness-k3s.sh" adopt-secret test-ns/test-release test-release-llm
+assert_log 'kubectl patch secret test-release-llm -n test-ns --type=json' \
+  "explicit Secret adoption must use a UID and resourceVersion guarded patch"
+
+reset_state
+touch "$STATE_DIR/external-secret"
+: >"$COMMAND_LOG"
+printf '%s\n' 'test-ns/test-release/test-release-llm' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  MOCK_EXTERNAL_SECRET_NO_ANNOTATIONS=true \
+  "$ROOT_DIR/scripts/harness-k3s.sh" adopt-secret test-ns/test-release test-release-llm
+assert_log 'kubectl patch secret test-release-llm .*metadata/annotations.*tertius.io/lease-id' \
+  "Secret adoption must create the annotations map when it is absent"
+
+reset_state
+touch "$STATE_DIR/external-secret"
+: >"$COMMAND_LOG"
+run_deploy_cleanup
+assert_log 'kubectl delete --raw /api/v1/namespaces/test-ns/secrets/test-release-llm -f -' \
+  "cleanup must precondition-delete release-labelled Secrets bound to its lease"
+
+reset_state
+touch "$STATE_DIR/external-secret"
+: >"$COMMAND_LOG"
+if MOCK_EXTERNAL_SECRET_LEASE_ID=22222222-2222-4222-8222-222222222222 run_deploy_cleanup; then
+  fail "cleanup must refuse a release-labelled Secret bound to another lease"
+fi
+assert_not_log 'helm uninstall' \
+  "a mismatched external Secret lease must stop cleanup before Helm mutation"
 
 reset_state
 run_deploy_cleanup

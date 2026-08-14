@@ -1861,9 +1861,22 @@ cleanup_release() {
     echo "Unable to read external Secret metadata ${NAMESPACE}/${APP_SECRET_NAME}; refusing cleanup." >&2
     return 1
   fi
+  if ! labelled_secrets_json=$(kubectl get secret -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory release-labelled Secrets for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+    return 1
+  fi
+  [ -n "$labelled_secrets_json" ] || labelled_secrets_json='{"items":[]}'
+  if ! secrets_json=$(
+    { [ -z "$secret_json" ] || printf '%s\n' "$secret_json"; printf '%s\n' "$labelled_secrets_json"; } |
+      jq -s '{items: ([.[] | if has("items") then .items[] else . end] | unique_by(.metadata.uid))}'
+  ); then
+    echo "Unable to combine external Secret ownership inventory; refusing cleanup." >&2
+    return 1
+  fi
   if ! printf '%s' "$clusters_json" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null ||
      ! printf '%s' "$pvcs_json" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null ||
-     { [ -n "$secret_json" ] && ! printf '%s' "$secret_json" | jq -e 'type == "object" and (.metadata | type == "object")' >/dev/null; }; then
+     ! printf '%s' "$secrets_json" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null; then
     echo "Malformed ownership inventory for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
     return 1
   fi
@@ -1893,8 +1906,14 @@ cleanup_release() {
     echo "Refusing cleanup: lifecycle marker lease changed after janitor inventory." >&2
     return 1
   fi
-  if [ -n "$secret_json" ] && [ "$(printf '%s' "$secret_json" | jq -r '.metadata.annotations["tertius.io/lease-id"] // ""')" != "$lease_id" ]; then
-    echo "Refusing cleanup: external Secret ${NAMESPACE}/${APP_SECRET_NAME} has a different lifecycle lease." >&2
+  if ! printf '%s' "$secrets_json" | jq -e --arg lease "$lease_id" '
+    all(.items[]?;
+      .metadata.annotations["tertius.io/lease-id"] == $lease and
+      (.metadata.name | type == "string" and length > 0) and
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0))
+  ' >/dev/null; then
+    echo "Refusing cleanup: one or more release Secrets are not bound to this lifecycle lease." >&2
     return 1
   fi
   if ! mismatched_data=$(
@@ -1906,13 +1925,6 @@ cleanup_release() {
   fi
   if [ "$mismatched_data" -ne 0 ]; then
     echo "Refusing cleanup: one or more release data resources have a different lifecycle lease." >&2
-    return 1
-  fi
-  if [ -n "$secret_json" ] && ! printf '%s' "$secret_json" | jq -e '
-    (.metadata.uid | type == "string" and length > 0) and
-    (.metadata.resourceVersion | type == "string" and length > 0)
-  ' >/dev/null; then
-    echo "External Secret identity is incomplete; refusing cleanup." >&2
     return 1
   fi
   if ! { printf '%s' "$clusters_json"; printf '\n'; printf '%s' "$pvcs_json"; } | jq -se '
@@ -1996,11 +2008,10 @@ cleanup_release() {
     resource_is_retained "$resource" $retained || \
       delete_with_preconditions "/api/v1/namespaces/${NAMESPACE}/persistentvolumeclaims/${name}" "$uid" "$rv" pvc "$name" || return 1
   done < <(printf '%s' "$pvcs_json" | jq -r '.items[]? | [.metadata.name,.metadata.uid,.metadata.resourceVersion] | @tsv')
-  if [ -n "$secret_json" ]; then
-    secret_uid=$(printf '%s' "$secret_json" | jq -er '.metadata.uid') || return 1
-    secret_rv=$(printf '%s' "$secret_json" | jq -er '.metadata.resourceVersion') || return 1
-    delete_with_preconditions "/api/v1/namespaces/${NAMESPACE}/secrets/${APP_SECRET_NAME}" "$secret_uid" "$secret_rv" secret "$APP_SECRET_NAME" || return 1
-  fi
+  while IFS=$'\t' read -r secret_name secret_uid secret_rv; do
+    [ -n "$secret_name" ] || continue
+    delete_with_preconditions "/api/v1/namespaces/${NAMESPACE}/secrets/${secret_name}" "$secret_uid" "$secret_rv" secret "$secret_name" || return 1
+  done < <(printf '%s' "$secrets_json" | jq -r '.items[]? | [.metadata.name,.metadata.uid,.metadata.resourceVersion] | @tsv')
 
   if [ -n "$retained" ]; then
     finalize_retention_marker "$retained_objects" || return 1
