@@ -93,10 +93,22 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" helmrelease"* || "$joined" == *" hel
   exit 0
 fi
 
+if [ "${1:-}" = get ]; then
+  case "${MOCK_INVENTORY_READ_FAILURE:-}" in
+    marker) [[ "$joined" != *" configmap "*"${RELEASE_NAME}-harness-lifecycle"* ]] || exit 1 ;;
+    secret) [[ "$joined" != *" secret "*"${APP_SECRET_NAME}"* ]] || exit 1 ;;
+    cluster) [[ "$joined" != *"clusters.postgresql.cnpg.io"* ]] || exit 1 ;;
+    pvc) [[ "$joined" != *" pvc "* && "$joined" != *" persistentvolumeclaims "* ]] || exit 1 ;;
+    keycloak) [[ "$joined" != *"keycloaks.k8s.keycloak.org"* ]] || exit 1 ;;
+    descendants) [[ "$joined" != *"deployment,statefulset,daemonset,replicaset,controllerrevision,pod,service,endpoints,endpointslice,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,keycloakrealmimports.k8s.keycloak.org,pvc"* ]] || exit 1 ;;
+    absence) [ -f "$STATE_DIR/helm" ] || { [[ "$joined" != *" app.kubernetes.io/instance="* ]] || exit 1; } ;;
+  esac
+fi
+
 if [ "${1:-}" = get ] && [[ "$joined" == *" configmap "*"${RELEASE_NAME}-harness-lifecycle"* ]]; then
   [ -f "$STATE_DIR/marker" ] || exit 0
   if [ "$output" = json ]; then
-    printf '{"metadata":{"name":"%s-harness-lifecycle","namespace":"%s","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s","tertius.io/release-name":"%s","tertius.io/expires-at":"2099-01-01T00:00:00Z","tertius.io/cleanup-policy":"delete"}}}\n' "$RELEASE_NAME" "$NAMESPACE" "$RELEASE_NAME" "${MOCK_MARKER_LEASE_ID:-lease-1}" "$RELEASE_NAME"
+    printf '{"metadata":{"name":"%s-harness-lifecycle","namespace":"%s","uid":"marker-uid","resourceVersion":"marker-rv","labels":{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s","tertius.io/release-name":"%s","tertius.io/app-secret-name":"%s","tertius.io/expires-at":"%s","tertius.io/cleanup-policy":"%s"}}}\n' "$RELEASE_NAME" "$NAMESPACE" "$RELEASE_NAME" "${MOCK_MARKER_LEASE_ID:-11111111-1111-4111-8111-111111111111}" "$RELEASE_NAME" "$APP_SECRET_NAME" "${MOCK_MARKER_EXPIRES_AT:-2099-01-01T00:00:00Z}" "${MOCK_MARKER_POLICY:-delete}"
   else
     printf '%s-harness-lifecycle\n' "$RELEASE_NAME"
   fi
@@ -106,7 +118,7 @@ fi
 if [ "${1:-}" = get ] && [[ "$joined" == *" secret "*"${APP_SECRET_NAME}"* ]]; then
   [ -f "$STATE_DIR/secret" ] || exit 0
   if [ "$output" = json ]; then
-    printf '{"metadata":{"name":"%s","namespace":"%s","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$APP_SECRET_NAME" "$NAMESPACE" "${MOCK_SECRET_LEASE_ID:-lease-1}"
+    printf '{"metadata":{"name":"%s","namespace":"%s","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$APP_SECRET_NAME" "$NAMESPACE" "${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
   else
     printf '%s\n' "$APP_SECRET_NAME"
   fi
@@ -116,7 +128,7 @@ fi
 if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* ]]; then
   if [ "$output" = json ]; then
     if [ -f "$STATE_DIR/cluster" ]; then
-      printf '{"items":[{"metadata":{"name":"%s-postgres","uid":"cluster-uid","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}]}\n' "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-lease-1}"
+      printf '{"items":[{"apiVersion":"postgresql.cnpg.io/v1","kind":"Cluster","metadata":{"name":"%s-postgres","uid":"cluster-uid","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}]}\n' "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
     else
       printf '{"items":[]}\n'
     fi
@@ -126,16 +138,29 @@ if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* ]]; the
   exit 0
 fi
 
+if [ "${1:-}" = get ] && [[ "$joined" == *"keycloaks.k8s.keycloak.org"* ]]; then
+  if [ "$output" = json ]; then
+    if [ -f "$STATE_DIR/keycloak-root" ]; then
+      printf '{"items":[{"apiVersion":"k8s.keycloak.org/v2alpha1","kind":"Keycloak","metadata":{"name":"%s-keycloak","uid":"keycloak-uid","labels":{"app.kubernetes.io/instance":"%s"}}}]}\n' "$RELEASE_NAME" "$RELEASE_NAME"
+    else
+      printf '{"items":[]}\n'
+    fi
+  elif [ -f "$STATE_DIR/keycloak-root" ]; then
+    printf 'keycloak.k8s.keycloak.org/%s-keycloak\n' "$RELEASE_NAME"
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistentvolumeclaims "* ]]; then
   if [ "$output" = json ]; then
     printf '{"items":['
     separator=""
     if [ -f "$STATE_DIR/data-pvc" ]; then
-      printf '%s{"metadata":{"name":"%s-data","uid":"data-uid","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-lease-1}"
+      printf '%s{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s-data","uid":"data-uid","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       separator=,
     fi
     if [ -f "$STATE_DIR/auth-pvc" ]; then
-      printf '%s{"metadata":{"name":"%s-pi-agent-auth","uid":"auth-uid","labels":{"app.kubernetes.io/instance":"%s","app.kubernetes.io/component":"pi-agent-auth"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-lease-1}"
+      printf '%s{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s-pi-agent-auth","uid":"auth-uid","labels":{"app.kubernetes.io/instance":"%s","app.kubernetes.io/component":"pi-agent-auth"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
     fi
     printf ']}\n'
   else
@@ -145,7 +170,7 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistent
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *" deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,pvc "* ]] && [ "$output" = json ]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *" deployment,statefulset,daemonset,replicaset,controllerrevision,pod,service,endpoints,endpointslice,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,keycloakrealmimports.k8s.keycloak.org,pvc "* ]] && [ "$output" = json ]; then
   printf '{"items":['
   separator=""
   if [ -f "$STATE_DIR/operator-child" ]; then
@@ -153,7 +178,13 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" deployment,statefulset,daemonset,pod
     separator=,
   fi
   if [ -f "$STATE_DIR/operator-grandchild" ]; then
-    printf '%s{"apiVersion":"v1","kind":"Service","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid","ownerReferences":[{"uid":"operator-child-uid"}]}}' "$separator" "$RELEASE_NAME"
+    printf '%s{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid","ownerReferences":[{"uid":"operator-child-uid"}]}}' "$separator" "$RELEASE_NAME"
+    separator=,
+    printf '%s{"apiVersion":"v1","kind":"Pod","metadata":{"name":"%s-operator-pod","uid":"operator-pod-uid","ownerReferences":[{"uid":"operator-grandchild-uid"}]}}' "$separator" "$RELEASE_NAME"
+  fi
+  if [ -f "$STATE_DIR/realm-import" ]; then
+    printf '%s{"apiVersion":"k8s.keycloak.org/v2alpha1","kind":"KeycloakRealmImport","metadata":{"name":"%s-realm","uid":"realm-import-uid","ownerReferences":[{"uid":"keycloak-uid"}]}}' "$separator" "$RELEASE_NAME"
+    separator=,
   fi
   printf ']}\n'
   exit 0
@@ -169,13 +200,25 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" deployment "*"${RELEASE_NAME}-operat
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *" service "*"${RELEASE_NAME}-operator-grandchild"* ]]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *" replicaset "*"${RELEASE_NAME}-operator-grandchild"* ]]; then
   [ -f "$STATE_DIR/operator-grandchild" ] || exit 0
   if [ "$output" = json ]; then
-    printf '{"apiVersion":"v1","kind":"Service","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid"}}\n' "$RELEASE_NAME"
+    printf '{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid"}}\n' "$RELEASE_NAME"
   else
-    printf 'service/%s-operator-grandchild\n' "$RELEASE_NAME"
+    printf 'replicaset/%s-operator-grandchild\n' "$RELEASE_NAME"
   fi
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" pod "*"${RELEASE_NAME}-operator-pod"* ]]; then
+  [ -f "$STATE_DIR/operator-grandchild" ] || exit 0
+  [ "$output" != json ] || printf '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"%s-operator-pod","uid":"operator-pod-uid"}}\n' "$RELEASE_NAME"
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" keycloakrealmimport "*"${RELEASE_NAME}-realm"* ]]; then
+  [ -f "$STATE_DIR/realm-import" ] || exit 0
+  [ "$output" != json ] || printf '{"apiVersion":"k8s.keycloak.org/v2alpha1","kind":"KeycloakRealmImport","metadata":{"name":"%s-realm","uid":"realm-import-uid"}}\n' "$RELEASE_NAME"
   exit 0
 fi
 
@@ -218,10 +261,11 @@ run_deploy_cleanup() {
   NAMESPACE="${NAMESPACE:-test-ns}" RELEASE_NAME="${RELEASE_NAME:-test-release}" \
   APP_SECRET_NAME="${APP_SECRET_NAME:-test-release-app}" \
   MOCK_FLUX_MANAGED="${MOCK_FLUX_MANAGED:-false}" \
-  MOCK_MARKER_LEASE_ID="${MOCK_MARKER_LEASE_ID:-lease-1}" \
-  MOCK_SECRET_LEASE_ID="${MOCK_SECRET_LEASE_ID:-lease-1}" \
-  MOCK_DATA_LEASE_ID="${MOCK_DATA_LEASE_ID:-lease-1}" \
+  MOCK_MARKER_LEASE_ID="${MOCK_MARKER_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
+  MOCK_SECRET_LEASE_ID="${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
+  MOCK_DATA_LEASE_ID="${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
   MOCK_REMAINING_RESOURCE="${MOCK_REMAINING_RESOURCE:-false}" \
+  HARNESS_CLEANUP_POLL_ATTEMPTS=1 \
   "$ROOT_DIR/scripts/test-k3s-deployment.sh" --cleanup "$@"
 }
 
@@ -244,9 +288,9 @@ assert_log 'helm (status|list)' \
 assert_log 'kubectl get .*app\.kubernetes\.io/instance=test-release' \
   "default cleanup must verify scoped Kubernetes resource absence"
 for required_kind in \
-  deployment statefulset daemonset pod service job configmap secret \
+  deployment statefulset daemonset replicaset controllerrevision pod service endpoints endpointslice job configmap secret \
   serviceaccount role rolebinding networkpolicy scaledjob scaledobject \
-  clusters.postgresql.cnpg.io keycloaks.k8s.keycloak.org pvc; do
+  clusters.postgresql.cnpg.io keycloaks.k8s.keycloak.org keycloakrealmimports.k8s.keycloak.org pvc; do
   assert_log "kubectl get ([^[:space:]]*,)*${required_kind}(,|[[:space:]])" \
     "absence verification must inspect ${required_kind} resources"
 done
@@ -308,7 +352,7 @@ assert_not_log 'kubectl (delete|annotate|patch|apply)' \
 
 reset_state
 : >"$COMMAND_LOG"
-if MOCK_SECRET_LEASE_ID=other-lease run_deploy_cleanup; then
+if MOCK_SECRET_LEASE_ID=99999999-9999-4999-8999-999999999999 run_deploy_cleanup; then
   fail "lease identity mismatch must be refused"
 fi
 assert_not_log 'helm uninstall' "lease mismatch must not mutate Helm"
@@ -317,11 +361,71 @@ assert_not_log 'kubectl (delete|annotate|patch|apply)' \
 
 reset_state
 : >"$COMMAND_LOG"
-if MOCK_DATA_LEASE_ID=other-lease run_deploy_cleanup; then
+if MOCK_DATA_LEASE_ID=99999999-9999-4999-8999-999999999999 run_deploy_cleanup; then
   fail "data lease identity mismatch must be refused"
 fi
 assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
   "data lease mismatch must not mutate the target"
+
+for failed_inventory in marker secret cluster pvc keycloak descendants; do
+  reset_state
+  : >"$COMMAND_LOG"
+  if MOCK_INVENTORY_READ_FAILURE="$failed_inventory" run_deploy_cleanup; then
+    fail "cleanup must fail closed when ${failed_inventory} ownership inventory cannot be read"
+  fi
+  assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
+    "${failed_inventory} inventory failure must occur before any mutation"
+done
+
+
+reset_state
+: >"$COMMAND_LOG"
+if MOCK_INVENTORY_READ_FAILURE=absence run_deploy_cleanup; then
+  fail "cleanup must fail closed when an absence-gate API read fails"
+fi
+assert_log 'helm uninstall test-release' \
+  "absence-gate read failure must be detected after teardown starts"
+assert_not_log 'kubectl delete configmap test-release-harness-lifecycle' \
+  "absence-gate API failure must preserve the lifecycle marker for retry"
+
+reset_state
+: >"$COMMAND_LOG"
+if EXPECTED_HARNESS_LEASE_ID=99999999-9999-4999-8999-999999999999 run_deploy_cleanup; then
+  fail "cleanup must refuse when the marker lease changed after janitor inventory"
+fi
+assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
+  "janitor expected-lease mismatch must occur before any mutation"
+
+for invalid_marker_case in uuid expiry policy; do
+  reset_state
+  : >"$COMMAND_LOG"
+  case "$invalid_marker_case" in
+    uuid) MOCK_MARKER_LEASE_ID=not-a-uuid run_deploy_cleanup 2>/dev/null && marker_accepted=true || marker_accepted=false ;;
+    expiry) MOCK_MARKER_EXPIRES_AT=not-a-time run_deploy_cleanup 2>/dev/null && marker_accepted=true || marker_accepted=false ;;
+    policy) MOCK_MARKER_POLICY=unknown run_deploy_cleanup 2>/dev/null && marker_accepted=true || marker_accepted=false ;;
+  esac
+  if [ "$marker_accepted" = true ]; then
+    fail "cleanup must refuse a marker with invalid ${invalid_marker_case}"
+  fi
+  assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
+    "invalid marker ${invalid_marker_case} must be refused before mutation"
+done
+
+reset_state
+: >"$COMMAND_LOG"
+MOCK_MARKER_EXPIRES_AT=2020-01-01T00:00:00Z \
+EXPECTED_HARNESS_MARKER_UID=marker-uid \
+EXPECTED_HARNESS_MARKER_RESOURCE_VERSION=marker-rv \
+EXPECTED_HARNESS_LEASE_ID=11111111-1111-4111-8111-111111111111 \
+EXPECTED_HARNESS_EXPIRES_AT=2020-01-01T00:00:00Z \
+EXPECTED_HARNESS_NOW_EPOCH=1893456000 \
+  run_deploy_cleanup
+
+reset_state
+: >"$COMMAND_LOG"
+APP_SECRET_NAME=custom-app-secret run_deploy_cleanup
+assert_log 'kubectl delete secret custom-app-secret -n test-ns --ignore-not-found=true' \
+  "cleanup must delete the exact app Secret recorded by the lifecycle marker"
 
 reset_legacy_state
 if printf '%s\n' 'wrong/target' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
@@ -416,6 +520,8 @@ assert_log 'helm uninstall test-release -n test-ns --ignore-not-found' \
   "remaining-resource failure must occur after Helm uninstall"
 assert_log 'kubectl get .*app\.kubernetes\.io/instance=test-release' \
   "remaining-resource failure must be produced by the absence gate"
+assert_not_log 'kubectl delete configmap test-release-harness-lifecycle' \
+  "cleanup failure must preserve the lifecycle marker for a safe retry"
 
 reset_state
 touch "$STATE_DIR/operator-child" "$STATE_DIR/operator-grandchild"
@@ -423,10 +529,21 @@ touch "$STATE_DIR/operator-child" "$STATE_DIR/operator-grandchild"
 if run_deploy_cleanup; then
   fail "cleanup must fail when an unlabeled operator descendant with the captured UID remains"
 fi
-assert_log 'kubectl get deployment test-release-operator-child -n test-ns -o json' \
+assert_log 'kubectl get deployment test-release-operator-child -n test-ns .* -o json' \
   "cleanup must verify the captured operator child by exact name and UID"
-assert_log 'kubectl get service test-release-operator-grandchild -n test-ns -o json' \
+assert_log 'kubectl get replicaset test-release-operator-grandchild -n test-ns .* -o json' \
   "cleanup must recursively verify captured operator grandchildren"
+assert_log 'kubectl get pod test-release-operator-pod -n test-ns .* -o json' \
+  "cleanup must recursively verify captured operator pods"
+
+reset_state
+touch "$STATE_DIR/keycloak-root" "$STATE_DIR/realm-import"
+: >"$COMMAND_LOG"
+if run_deploy_cleanup; then
+  fail "cleanup must fail when a captured KeycloakRealmImport remains"
+fi
+assert_log 'kubectl get keycloakrealmimport test-release-realm -n test-ns .* -o json' \
+  "cleanup must verify captured KeycloakRealmImport UIDs"
 
 reset_state
 touch "$STATE_DIR/operator-child" "$STATE_DIR/operator-grandchild"
@@ -436,5 +553,7 @@ assert_log 'retained-objects=.*test-release-operator-child.*operator-child-uid' 
   "retained data tombstone must record the retained operator child"
 assert_log 'retained-objects=.*test-release-operator-grandchild.*operator-grandchild-uid' \
   "retained data tombstone must record recursive retained descendants"
+assert_log 'retained-objects=.*test-release-operator-pod.*operator-pod-uid' \
+  "retained data tombstone must record recursive retained pods"
 
 echo "k3s harness lifecycle contract tests passed"

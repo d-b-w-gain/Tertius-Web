@@ -164,6 +164,8 @@ List only `tertius.io/harness-managed=true` ConfigMaps, validate every metadata
 field and lease UUID, parse RFC 3339 timestamps, skip retention tombstones,
 refuse production/Flux, and invoke exact full cleanup. Continue across
 candidates and return nonzero if any malformed marker or cleanup failure occurs.
+Pass the observed marker UID, resourceVersion, lease UUID, expiry, and decision
+time so cleanup can reject renewal or replacement races before mutation.
 
 - [ ] **Step 4: Implement timer install/uninstall**
 

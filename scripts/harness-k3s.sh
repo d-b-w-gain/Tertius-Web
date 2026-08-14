@@ -15,8 +15,10 @@ TRACES_LOCAL_PORT="${TRACES_LOCAL_PORT:-10428}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
 PORT_FORWARD_ADDRESS="${PORT_FORWARD_ADDRESS:-127.0.0.1}"
-STATUS_FILE="${ROOT_DIR}/.tmp/harness/k3s.env"
-PID_FILE="${ROOT_DIR}/.tmp/harness/k3s-port-forwards.env"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-${ROOT_DIR}/.tmp/harness}"
+STATUS_FILE="${HARNESS_STATE_DIR}/k3s.env"
+PID_FILE=""
+PORT_FORWARD_ATTEMPTS="${PORT_FORWARD_ATTEMPTS:-10}"
 
 usage() {
   cat <<EOF
@@ -206,6 +208,7 @@ metadata:
   annotations:
     tertius.io/lease-id: ${lease_id}
     tertius.io/release-name: ${RELEASE_NAME}
+    tertius.io/app-secret-name: ${app_secret_name}
     tertius.io/expires-at: ${expires_at}
     tertius.io/cleanup-policy: delete
 EOF
@@ -255,13 +258,74 @@ keycloak_service() {
   printf '%s\n' "$svc"
 }
 
+configure_pid_file() {
+  context=$(kubectl config current-context 2>/dev/null) || {
+    echo "Unable to resolve current Kubernetes context for port-forward ownership." >&2
+    return 1
+  }
+  safe_context=$(printf '%s' "$context" | tr -c '[:alnum:]._-' '_')
+  safe_namespace=$(printf '%s' "$NAMESPACE" | tr -c '[:alnum:]._-' '_')
+  safe_release=$(printf '%s' "$RELEASE_NAME" | tr -c '[:alnum:]._-' '_')
+  PID_FILE="${HARNESS_STATE_DIR}/port-forwards/${safe_context}__${safe_namespace}__${safe_release}.env"
+}
+
+process_start_token() {
+  awk '{print $22}' "/proc/$1/stat" 2>/dev/null
+}
+
+process_exact_command() {
+  tr '\0' ' ' 2>/dev/null <"/proc/$1/cmdline" | sed 's/[[:space:]]*$//'
+}
+
+record_port_forward_identity() {
+  pid=$1
+  start_token=$2
+  exact_command=$3
+  mkdir -p "$(dirname "$PID_FILE")"
+  state_tmp=$(mktemp "${PID_FILE}.XXXXXX")
+  [ ! -f "$PID_FILE" ] || cp "$PID_FILE" "$state_tmp"
+  printf '%s\t%s\t%s\n' "$pid" "$start_token" "$exact_command" >>"$state_tmp"
+  mv "$state_tmp" "$PID_FILE"
+}
+
+terminate_if_owned() {
+  pid=$1
+  expected_start=$2
+  expected_command=$3
+  live_start=$(process_start_token "$pid" || true)
+  live_command=$(process_exact_command "$pid" || true)
+  if [ -n "$live_start" ] && [ "$live_start" = "$expected_start" ] && [ "$live_command" = "$expected_command" ]; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+port_forward_exit() {
+  status=$1
+  trap - EXIT INT TERM
+  stop_port_forwards
+  exit "$status"
+}
+
+begin_port_forward_session() {
+  configure_pid_file
+  stop_port_forwards
+  mkdir -p "$(dirname "$PID_FILE")"
+  state_tmp=$(mktemp "${PID_FILE}.XXXXXX")
+  : >"$state_tmp"
+  mv "$state_tmp" "$PID_FILE"
+  trap 'port_forward_exit $?' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
 start_one_port_forward() {
-  name=$1
-  svc=$2
-  local_port=$3
-  remote_port=$4
-  result_var=${5:-}
-  log_file="${ROOT_DIR}/.tmp/harness/${name}.log"
+  result_var=$1
+  name=$2
+  svc=$3
+  local_port=$4
+  remote_port=$5
+  log_file="${HARNESS_STATE_DIR}/${name}.log"
 
   if [ "$local_port" = "0" ]; then
     port_spec=":${remote_port}"
@@ -271,9 +335,34 @@ start_one_port_forward() {
 
   nohup kubectl port-forward --address "$PORT_FORWARD_ADDRESS" -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 < /dev/null &
   pid=$!
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  start_token=""
+  exact_command=""
+  for _ in $(seq 1 100); do
+    start_token=$(process_start_token "$pid" || true)
+    exact_command=$(process_exact_command "$pid" || true)
+    case " $exact_command " in
+      *" port-forward "*" svc/${svc} "*)
+        [ -z "$start_token" ] || break
+        ;;
+    esac
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.01
+  done
+  case " $exact_command " in
+    *" port-forward "*" svc/${svc} "*) identity_ready=true ;;
+    *) identity_ready=false ;;
+  esac
+  if [ -z "$start_token" ] || [ "$identity_ready" != "true" ]; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+    echo "Unable to record ${name} port-forward process identity." >&2
+    exit 1
+  fi
+  record_port_forward_identity "$pid" "$start_token" "$exact_command"
+  for _ in $(seq 1 "$PORT_FORWARD_ATTEMPTS"); do
     if grep -q 'Forwarding from' "$log_file"; then
-      printf '%s_PID=%s\n' "$name" "$pid" >>"$PID_FILE"
       if [ "$local_port" = "0" ]; then
         selected_port=$(awk '
           /^Forwarding from [^:]+:[0-9][0-9]* -> / {
@@ -286,7 +375,7 @@ start_one_port_forward() {
       else
         selected_port="$local_port"
       fi
-      [ -n "$result_var" ] && printf -v "$result_var" '%s' "$selected_port"
+      printf -v "$result_var" '%s' "$selected_port"
       return
     fi
     if ! kill -0 "$pid" >/dev/null 2>&1; then
@@ -295,6 +384,7 @@ start_one_port_forward() {
     fi
     sleep 1
   done
+  terminate_if_owned "$pid" "$start_token" "$exact_command"
   cat "$log_file" >&2
   echo "Timed out waiting for ${name} port-forward." >&2
   exit 1
@@ -317,8 +407,7 @@ write_status_file() {
 }
 
 start_port_forwards() {
-  mkdir -p "${ROOT_DIR}/.tmp/harness"
-  : >"$PID_FILE"
+  begin_port_forward_session
   ui_svc=$(first_service_by_component ui)
   api_svc=$(first_service_by_component api)
   metrics_svc=$(first_service_by_component metrics-backend)
@@ -329,16 +418,16 @@ start_port_forwards() {
   [ -n "$traces_svc" ] || traces_svc="${RELEASE_NAME}-victoriatraces"
   keycloak_svc=$(keycloak_service)
 
-  start_one_port_forward UI "$ui_svc" "$UI_LOCAL_PORT" "$(service_port "$ui_svc" http)" UI_LOCAL_PORT
-  start_one_port_forward API "$api_svc" "$API_LOCAL_PORT" "$(service_port "$api_svc" http)" API_LOCAL_PORT
+  start_one_port_forward UI_LOCAL_PORT UI "$ui_svc" "$UI_LOCAL_PORT" "$(service_port "$ui_svc" http)"
+  start_one_port_forward API_LOCAL_PORT API "$api_svc" "$API_LOCAL_PORT" "$(service_port "$api_svc" http)"
   if kubectl get svc "$metrics_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward METRICS "$metrics_svc" "$METRICS_LOCAL_PORT" "$(service_port "$metrics_svc" http)" METRICS_LOCAL_PORT
+    start_one_port_forward METRICS_LOCAL_PORT METRICS "$metrics_svc" "$METRICS_LOCAL_PORT" "$(service_port "$metrics_svc" http)"
   fi
   if kubectl get svc "$traces_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward TRACES "$traces_svc" "$TRACES_LOCAL_PORT" "$(service_port "$traces_svc" http)" TRACES_LOCAL_PORT
+    start_one_port_forward TRACES_LOCAL_PORT TRACES "$traces_svc" "$TRACES_LOCAL_PORT" "$(service_port "$traces_svc" http)"
   fi
   if [ -n "$keycloak_svc" ] && kubectl get svc "$keycloak_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward KEYCLOAK "$keycloak_svc" "$KEYCLOAK_LOCAL_PORT" "$(service_port "$keycloak_svc" http)" KEYCLOAK_LOCAL_PORT
+    start_one_port_forward KEYCLOAK_LOCAL_PORT KEYCLOAK "$keycloak_svc" "$KEYCLOAK_LOCAL_PORT" "$(service_port "$keycloak_svc" http)"
   fi
   write_status_file
   echo "UI URL: http://127.0.0.1:${UI_LOCAL_PORT}"
@@ -352,10 +441,11 @@ start_port_forwards() {
 }
 
 stop_port_forwards() {
+  [ -n "$PID_FILE" ] || configure_pid_file || return 1
   [ -f "$PID_FILE" ] || return 0
-  while IFS='=' read -r _ pid; do
+  while IFS=$'\t' read -r pid start_token exact_command; do
     [ -n "${pid:-}" ] || continue
-    kill "$pid" >/dev/null 2>&1 || true
+    terminate_if_owned "$pid" "$start_token" "$exact_command"
   done <"$PID_FILE"
   rm -f "$PID_FILE"
 }
@@ -409,6 +499,10 @@ require_pi_agent_worker() {
   echo "Redeploy the verified release with KEDA_ENABLED=true PI_AGENT_ENABLED=true before running full live-flow." >&2
   exit 1
 }
+
+if [ "${HARNESS_K3S_LIB_ONLY:-false}" = "true" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 case "${1:-}" in
   up)

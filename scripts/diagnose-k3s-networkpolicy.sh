@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-/etc/rancher/k3s/k3s.yaml}"
 K3S_SERVICE="${K3S_SERVICE:-k3s}"
-NAMESPACE="${NAMESPACE:-tertius-netpol-diagnose-$(date +%H%M%S)}"
-KEEP_NAMESPACE="${KEEP_NAMESPACE:-false}"
+NAMESPACE="${DIAGNOSTIC_NAMESPACE:-${NAMESPACE:-tertius-netpol-diagnose-$(date +%H%M%S)}}"
+KEEP_NAMESPACE="${DIAGNOSTIC_KEEP_NAMESPACE:-${KEEP_NAMESPACE:-false}}"
+DIAGNOSTIC_NAMESPACE="$NAMESPACE"
+DIAGNOSTIC_KEEP_NAMESPACE="$KEEP_NAMESPACE"
+DIAGNOSTIC_NAMESPACE_OWNER_ID=""
+DIAGNOSTIC_NAMESPACE_CREATED=false
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run this script as root, for example: sudo $0" >&2
@@ -18,6 +22,55 @@ fi
 
 run_kubectl() {
   KUBECONFIG="$KUBECONFIG_PATH" kubectl "$@"
+}
+
+new_diagnostic_owner_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    sed -n '1p' /proc/sys/kernel/random/uuid
+  fi
+}
+
+cleanup_owned_diagnostic_namespace() {
+  status=$1
+  trap - EXIT INT TERM
+  if [ "$DIAGNOSTIC_NAMESPACE_CREATED" = true ] && [ "$DIAGNOSTIC_KEEP_NAMESPACE" != true ]; then
+    current_owner=$(run_kubectl get namespace "$DIAGNOSTIC_NAMESPACE" \
+      -o 'jsonpath={.metadata.annotations.tertius\.io/diagnostic-owner-id}' 2>/dev/null || true)
+    if [ "$current_owner" = "$DIAGNOSTIC_NAMESPACE_OWNER_ID" ]; then
+      run_kubectl delete namespace "$DIAGNOSTIC_NAMESPACE" --ignore-not-found=true --wait=true --timeout=90s || true
+    fi
+  fi
+  exit "$status"
+}
+
+claim_diagnostic_namespace() {
+  if ! existing_namespace=$(run_kubectl get namespace "$DIAGNOSTIC_NAMESPACE" --ignore-not-found=true -o name); then
+    echo "Unable to determine whether diagnostic namespace ${DIAGNOSTIC_NAMESPACE} already exists." >&2
+    return 1
+  fi
+  if [ -n "$existing_namespace" ]; then
+    echo "Refusing pre-existing diagnostic namespace ${DIAGNOSTIC_NAMESPACE}." >&2
+    return 1
+  fi
+  DIAGNOSTIC_NAMESPACE_OWNER_ID=$(new_diagnostic_owner_id)
+  DIAGNOSTIC_NAMESPACE_CREATED=true
+  trap 'cleanup_owned_diagnostic_namespace $?' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  run_kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${DIAGNOSTIC_NAMESPACE}
+  annotations:
+    tertius.io/diagnostic-owner-id: ${DIAGNOSTIC_NAMESPACE_OWNER_ID}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+EOF
 }
 
 section() {
@@ -120,6 +173,10 @@ ${runtime_class_line}
 EOF
 }
 
+if [ "${TEST_DIAGNOSE_K3S_LIB_ONLY:-false}" = true ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 section "k3s service"
 systemctl show "$K3S_SERVICE" -p ExecStart -p Environment || true
 
@@ -154,17 +211,8 @@ if command -v nft >/dev/null 2>&1; then
 fi
 
 section "apply deny-all egress smoke"
-run_kubectl delete namespace "$NAMESPACE" --ignore-not-found=true --wait=true --timeout=90s
+claim_diagnostic_namespace
 run_kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ${NAMESPACE}
-  labels:
-    pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/warn: restricted
----
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -205,9 +253,6 @@ echo "Expected secure result: each job logs EGRESS_BLOCKED and exits successfull
 echo "If runc logs EGRESS_ALLOWED, NetworkPolicy egress is not being enforced for ordinary pods on this node."
 echo "If runc is blocked but gVisor is allowed, investigate runtime/CNI integration before using gVisor for compile isolation."
 
-if [ "$KEEP_NAMESPACE" != "true" ]; then
-  section "cleanup"
-  run_kubectl delete namespace "$NAMESPACE" --ignore-not-found=true --wait=true --timeout=90s
-else
+if [ "$KEEP_NAMESPACE" = "true" ]; then
   echo "Keeping namespace ${NAMESPACE} because KEEP_NAMESPACE=true."
 fi

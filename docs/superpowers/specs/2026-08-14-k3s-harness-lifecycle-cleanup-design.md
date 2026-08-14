@@ -57,6 +57,7 @@ metadata:
   annotations:
     tertius.io/lease-id: <UUID>
     tertius.io/release-name: <release>
+    tertius.io/app-secret-name: <exact external Secret name>
     tertius.io/expires-at: <RFC3339 UTC timestamp>
     tertius.io/cleanup-policy: delete
 ```
@@ -135,8 +136,11 @@ or explicit cleanup.
 - no matching Flux `HelmRelease` exists;
 - the timestamp parses as RFC 3339.
 
-It then invokes the repository cleanup implementation with the exact namespace
-and release. Retention tombstones are reported and skipped. Malformed or
+It then invokes the repository cleanup implementation with the exact namespace,
+release, marker UID, resourceVersion, lease UUID, expiry, and janitor decision
+time. Cleanup re-reads and compares that complete snapshot immediately before
+its first mutation, preventing a renewed or recreated release from being
+deleted. Retention tombstones are reported and skipped. Malformed or
 protected markers are reported and skipped. Cleanup failure makes the janitor
 exit nonzero.
 

@@ -394,18 +394,38 @@ require_safe_destructive_target() {
 }
 
 marker_json() {
-  kubectl get configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" -o json 2>/dev/null || true
+  kubectl get configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" --ignore-not-found=true -o json 2>/dev/null
+}
+
+valid_uuid() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+}
+
+valid_rfc3339_utc() {
+  value=$1
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  normalized=$(date -u -d "$value" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || return 1
+  [ "$normalized" = "$value" ]
 }
 
 marker_is_valid() {
   json=$1
   [ -n "$json" ] || return 1
-  printf '%s' "$json" | jq -e --arg release "$RELEASE_NAME" '
+  printf '%s' "$json" | jq -e --arg namespace "$NAMESPACE" --arg release "$RELEASE_NAME" --arg secret "$APP_SECRET_NAME" '
+    .metadata.namespace == $namespace and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and length > 0) and
     .metadata.labels["tertius.io/harness-managed"] == "true" and
     .metadata.labels["app.kubernetes.io/instance"] == $release and
     .metadata.annotations["tertius.io/release-name"] == $release and
+    .metadata.annotations["tertius.io/app-secret-name"] == $secret and
+    ((.metadata.annotations["tertius.io/cleanup-policy"] == "delete") or
+      (.metadata.annotations["tertius.io/cleanup-policy"] == "retain")) and
     (.metadata.annotations["tertius.io/lease-id"] | type == "string" and length > 0)
-  ' >/dev/null
+  ' >/dev/null || return 1
+  lease=$(printf '%s' "$json" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+  expires=$(printf '%s' "$json" | jq -r '.metadata.annotations["tertius.io/expires-at"] // ""')
+  valid_uuid "$lease" && valid_rfc3339_utc "$expires"
 }
 
 create_lifecycle_marker() {
@@ -443,6 +463,7 @@ metadata:
   annotations:
     tertius.io/lease-id: ${LIFECYCLE_LEASE_ID}
     tertius.io/release-name: ${RELEASE_NAME}
+    tertius.io/app-secret-name: ${APP_SECRET_NAME}
     tertius.io/expires-at: ${expires_at}
     tertius.io/cleanup-policy: delete
 EOF
@@ -1069,9 +1090,10 @@ service_port() {
 }
 
 start_port_forward() {
-  svc=$1
-  local_port=$2
-  remote_port=$3
+  result_var=$1
+  svc=$2
+  local_port=$3
+  remote_port=$4
   log_file=$(mktemp "${TMPDIR:-/tmp}/tertius-port-forward.XXXXXX")
   TEMP_FILES="${TEMP_FILES} ${log_file}"
   if [ "$local_port" = "0" ]; then
@@ -1086,17 +1108,18 @@ start_port_forward() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if grep -q 'Forwarding from' "$log_file"; then
       if [ "$local_port" = "0" ]; then
-        awk '
+        selected_port=$(awk '
           /^Forwarding from [^:]+:[0-9][0-9]* -> / {
             sub(/^Forwarding from [^:]+:/, "")
             sub(/ -> .*$/, "")
             print
             exit
           }
-        ' "$log_file"
+        ' "$log_file")
       else
-        printf '%s\n' "$local_port"
+        selected_port="$local_port"
       fi
+      printf -v "$result_var" '%s' "$selected_port"
       return
     fi
     if ! kill -0 "$pid" >/dev/null 2>&1; then
@@ -1316,7 +1339,7 @@ keycloak_token() {
     exit 1
   }
   remote_port=$(service_port "$svc")
-  KEYCLOAK_LOCAL_PORT=$(start_port_forward "$svc" "$KEYCLOAK_LOCAL_PORT" "$remote_port")
+  start_port_forward KEYCLOAK_LOCAL_PORT "$svc" "$KEYCLOAK_LOCAL_PORT" "$remote_port"
 
   token_file=$(mktemp "${TMPDIR:-/tmp}/tertius-token.XXXXXX")
   TEMP_FILES="${TEMP_FILES} ${token_file}"
@@ -1458,8 +1481,8 @@ smoke_test_http() {
   ui_remote_port=$(service_port "$ui_svc")
   api_remote_port=$(service_port "$api_svc")
 
-  UI_LOCAL_PORT=$(start_port_forward "$ui_svc" "$UI_LOCAL_PORT" "$ui_remote_port")
-  API_LOCAL_PORT=$(start_port_forward "$api_svc" "$API_LOCAL_PORT" "$api_remote_port")
+  start_port_forward UI_LOCAL_PORT "$ui_svc" "$UI_LOCAL_PORT" "$ui_remote_port"
+  start_port_forward API_LOCAL_PORT "$api_svc" "$API_LOCAL_PORT" "$api_remote_port"
 
   "${ROOT_DIR}/scripts/smoke-http.sh" "http://127.0.0.1:${UI_LOCAL_PORT}" "http://127.0.0.1:${API_LOCAL_PORT}"
   write_harness_status
@@ -1545,22 +1568,74 @@ operator_descendants_json() {
   '
 }
 
+validate_expected_marker_snapshot() {
+  expected_fields="${EXPECTED_HARNESS_MARKER_UID:-}${EXPECTED_HARNESS_MARKER_RESOURCE_VERSION:-}${EXPECTED_HARNESS_LEASE_ID:-}${EXPECTED_HARNESS_EXPIRES_AT:-}${EXPECTED_HARNESS_NOW_EPOCH:-}"
+  [ -n "$expected_fields" ] || return 0
+  for value in \
+    "${EXPECTED_HARNESS_MARKER_UID:-}" \
+    "${EXPECTED_HARNESS_MARKER_RESOURCE_VERSION:-}" \
+    "${EXPECTED_HARNESS_LEASE_ID:-}" \
+    "${EXPECTED_HARNESS_EXPIRES_AT:-}" \
+    "${EXPECTED_HARNESS_NOW_EPOCH:-}"; do
+    [ -n "$value" ] || { echo "Incomplete expected lifecycle marker snapshot; refusing cleanup." >&2; return 1; }
+  done
+  case "$EXPECTED_HARNESS_NOW_EPOCH" in
+    *[!0-9]*) echo "Invalid EXPECTED_HARNESS_NOW_EPOCH; refusing cleanup." >&2; return 1 ;;
+  esac
+  if ! fresh_marker=$(marker_json); then
+    echo "Unable to re-read lifecycle marker before mutation; refusing cleanup." >&2
+    return 1
+  fi
+  marker_is_valid "$fresh_marker" || { echo "Lifecycle marker became invalid before mutation; refusing cleanup." >&2; return 1; }
+  fresh_uid=$(printf '%s' "$fresh_marker" | jq -r '.metadata.uid')
+  fresh_rv=$(printf '%s' "$fresh_marker" | jq -r '.metadata.resourceVersion')
+  fresh_lease=$(printf '%s' "$fresh_marker" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+  fresh_expires=$(printf '%s' "$fresh_marker" | jq -r '.metadata.annotations["tertius.io/expires-at"]')
+  if [ "$fresh_uid" != "$EXPECTED_HARNESS_MARKER_UID" ] ||
+     [ "$fresh_rv" != "$EXPECTED_HARNESS_MARKER_RESOURCE_VERSION" ] ||
+     [ "$fresh_lease" != "$EXPECTED_HARNESS_LEASE_ID" ] ||
+     [ "$fresh_expires" != "$EXPECTED_HARNESS_EXPIRES_AT" ]; then
+    echo "Lifecycle marker changed after janitor inventory; refusing cleanup." >&2
+    return 1
+  fi
+  expires_epoch=$(date -u -d "$fresh_expires" +%s 2>/dev/null) || return 1
+  if [ "$expires_epoch" -gt "$EXPECTED_HARNESS_NOW_EPOCH" ]; then
+    echo "Lifecycle marker is no longer expired at the janitor decision time; refusing cleanup." >&2
+    return 1
+  fi
+}
+
 cleanup_release() {
   need kubectl
   need helm
   need jq
   require_safe_destructive_target
 
-  lifecycle_json=$(marker_json)
-  clusters_json=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
-    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || printf '{"items":[]}')
-  pvcs_json=$(kubectl get pvc -n "$NAMESPACE" \
-    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || printf '{"items":[]}')
-  secret_json=$(kubectl get secret "$APP_SECRET_NAME" -n "$NAMESPACE" -o json 2>/dev/null || true)
+  if ! lifecycle_json=$(marker_json); then
+    echo "Unable to read lifecycle marker ${NAMESPACE}/${LIFECYCLE_MARKER}; refusing cleanup." >&2
+    return 1
+  fi
+  if ! clusters_json=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory CNPG clusters for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+    return 1
+  fi
+  if ! pvcs_json=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory PVCs for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+    return 1
+  fi
+  if ! secret_json=$(kubectl get secret "$APP_SECRET_NAME" -n "$NAMESPACE" --ignore-not-found=true -o json 2>/dev/null); then
+    echo "Unable to read external Secret metadata ${NAMESPACE}/${APP_SECRET_NAME}; refusing cleanup." >&2
+    return 1
+  fi
 
   if [ -z "$lifecycle_json" ]; then
-    scoped=$(kubectl get deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,clusters.postgresql.cnpg.io,keycloaks.k8s.keycloak.org,pvc \
-      -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+    if ! scoped=$(kubectl get deployment,statefulset,daemonset,replicaset,controllerrevision,pod,service,endpoints,endpointslice,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,clusters.postgresql.cnpg.io,keycloaks.k8s.keycloak.org,keycloakrealmimports.k8s.keycloak.org,pvc \
+      -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+      echo "Unable to inventory scoped resources for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+      return 1
+    fi
     if ! helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1 && \
        [ -z "$secret_json" ] && [ "$(printf '%s' "$clusters_json" | jq '.items | length')" -eq 0 ] && \
        [ "$(printf '%s' "$pvcs_json" | jq '.items | length')" -eq 0 ] && [ -z "$scoped" ]; then
@@ -1576,6 +1651,10 @@ cleanup_release() {
     return 1
   fi
   lease_id=$(printf '%s' "$lifecycle_json" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+  if [ -n "${EXPECTED_HARNESS_LEASE_ID:-}" ] && [ "$lease_id" != "$EXPECTED_HARNESS_LEASE_ID" ]; then
+    echo "Refusing cleanup: lifecycle marker lease changed after janitor inventory." >&2
+    return 1
+  fi
   if [ -n "$secret_json" ] && [ "$(printf '%s' "$secret_json" | jq -r '.metadata.annotations["tertius.io/lease-id"] // ""')" != "$lease_id" ]; then
     echo "Refusing cleanup: external Secret ${NAMESPACE}/${APP_SECRET_NAME} has a different lifecycle lease." >&2
     return 1
@@ -1589,11 +1668,17 @@ cleanup_release() {
     return 1
   fi
 
-  keycloaks_json=$(kubectl get keycloaks.k8s.keycloak.org -n "$NAMESPACE" \
-    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || true)
+  if ! keycloaks_json=$(kubectl get keycloaks.k8s.keycloak.org -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory Keycloak resources for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+    return 1
+  fi
   [ -n "$keycloaks_json" ] || keycloaks_json='{"items":[]}'
-  namespace_objects_json=$(kubectl get deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,pvc \
-    -n "$NAMESPACE" -o json 2>/dev/null || true)
+  if ! namespace_objects_json=$(kubectl get deployment,statefulset,daemonset,replicaset,controllerrevision,pod,service,endpoints,endpointslice,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,keycloakrealmimports.k8s.keycloak.org,pvc \
+    -n "$NAMESPACE" -o json 2>/dev/null); then
+    echo "Unable to inventory operator descendants for ${NAMESPACE}/${RELEASE_NAME}; refusing cleanup." >&2
+    return 1
+  fi
   [ -n "$namespace_objects_json" ] || namespace_objects_json='{"items":[]}'
   cluster_root_uids=$(printf '%s' "$clusters_json" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]')
   keycloak_root_uids=$(printf '%s' "$keycloaks_json" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]')
@@ -1627,6 +1712,7 @@ cleanup_release() {
     retained_objects=$(printf '%s' "$pvcs_json" | jq -r '[.items[] | select(.metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth") | "PersistentVolumeClaim/" + .metadata.name + "@" + (.metadata.uid // "unknown")] | join(",")')
   fi
 
+  validate_expected_marker_snapshot
   delete_test_pods
   for resource in $keep_resources; do
     run kubectl annotate -n "$NAMESPACE" "$resource" helm.sh/resource-policy=keep --overwrite
@@ -1644,8 +1730,6 @@ cleanup_release() {
   if [ -n "$retained" ]; then
     run kubectl annotate configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" \
       tertius.io/cleanup-policy=retain "tertius.io/retained-objects=${retained_objects}" --overwrite
-  else
-    run kubectl delete configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" --ignore-not-found=true
   fi
 
   if helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
@@ -1658,44 +1742,65 @@ cleanup_release() {
     return 1
   fi
 
-  remaining=""
-  for kind in deployment statefulset daemonset pod service job configmap secret \
-    serviceaccount role rolebinding networkpolicy scaledjob scaledobject \
-    clusters.postgresql.cnpg.io keycloaks.k8s.keycloak.org pvc; do
-    found=$(kubectl get "$kind" -n "$NAMESPACE" \
-      -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-    [ -z "$found" ] || remaining="${remaining}${found}
-"
-  done
+  poll_attempts=${HARNESS_CLEANUP_POLL_ATTEMPTS:-30}
+  case "$poll_attempts" in ""|*[!0-9]*|0) echo "HARNESS_CLEANUP_POLL_ATTEMPTS must be a positive integer." >&2; return 1 ;; esac
   nonretained=""
-  for resource in $remaining; do
-    # shellcheck disable=SC2086
-    if resource_is_retained "$resource" $retained; then
-      continue
-    fi
-    if [ -n "$retained" ] && [ "$resource" = "configmap/${LIFECYCLE_MARKER}" ]; then
-      continue
-    fi
-    nonretained="${nonretained}${resource}
+  for attempt in $(seq 1 "$poll_attempts"); do
+    remaining=""
+    for kind in deployment statefulset daemonset replicaset controllerrevision pod service endpoints endpointslice job configmap secret \
+      serviceaccount role rolebinding networkpolicy scaledjob scaledobject \
+      clusters.postgresql.cnpg.io keycloaks.k8s.keycloak.org keycloakrealmimports.k8s.keycloak.org pvc; do
+      if ! found=$(kubectl get "$kind" -n "$NAMESPACE" \
+        -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+        echo "Unable to verify ${kind} absence for ${NAMESPACE}/${RELEASE_NAME}." >&2
+        return 1
+      fi
+      [ -z "$found" ] || remaining="${remaining}${found}
 "
+    done
+    nonretained=""
+    for resource in $remaining; do
+      # shellcheck disable=SC2086
+      if resource_is_retained "$resource" $retained; then
+        continue
+      fi
+      if [ "$resource" = "configmap/${LIFECYCLE_MARKER}" ]; then
+        continue
+      fi
+      nonretained="${nonretained}${resource}
+"
+    done
+    while IFS=$'\t' read -r kind name uid; do
+      [ -n "$kind" ] || continue
+      if printf '%s' "$retained_operator_uids" | jq -e --arg uid "$uid" 'index($uid)' >/dev/null; then
+        continue
+      fi
+      if ! live_json=$(kubectl get "$kind" "$name" -n "$NAMESPACE" --ignore-not-found=true -o json 2>/dev/null); then
+        echo "Unable to verify captured ${kind}/${name} UID absence." >&2
+        return 1
+      fi
+      [ -n "$live_json" ] || continue
+      live_uid=$(printf '%s' "$live_json" | jq -r '.metadata.uid // ""')
+      if [ "$live_uid" = "$uid" ]; then
+        nonretained="${nonretained}${kind}/${name} uid=${uid}
+"
+      fi
+    done < <(printf '%s' "$operator_descendants" | jq -r '.[] | [.kind, .name, .uid] | @tsv')
+    [ -n "$nonretained" ] || break
+    [ "$attempt" -eq "$poll_attempts" ] || sleep 1
   done
-  while IFS=$'\t' read -r kind name uid; do
-    [ -n "$kind" ] || continue
-    if printf '%s' "$retained_operator_uids" | jq -e --arg uid "$uid" 'index($uid)' >/dev/null; then
-      continue
-    fi
-    live_json=$(kubectl get "$kind" "$name" -n "$NAMESPACE" -o json 2>/dev/null || true)
-    [ -n "$live_json" ] || continue
-    live_uid=$(printf '%s' "$live_json" | jq -r '.metadata.uid // ""')
-    if [ "$live_uid" = "$uid" ]; then
-      nonretained="${nonretained}${kind}/${name} uid=${uid}
-"
-    fi
-  done < <(printf '%s' "$operator_descendants" | jq -r '.[] | [.kind, .name, .uid] | @tsv')
   if [ -n "$nonretained" ]; then
     echo "Cleanup left non-retained resources for ${NAMESPACE}/${RELEASE_NAME}:" >&2
     printf '%b' "$nonretained" >&2
     return 1
+  fi
+  if [ -z "$retained" ]; then
+    run kubectl delete configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" --ignore-not-found=true
+    if ! remaining_marker=$(marker_json); then
+      echo "Unable to verify lifecycle marker absence." >&2
+      return 1
+    fi
+    [ -z "$remaining_marker" ] || { echo "Lifecycle marker remains after cleanup." >&2; return 1; }
   fi
 }
 
