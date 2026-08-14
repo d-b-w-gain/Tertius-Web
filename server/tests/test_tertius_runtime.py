@@ -84,7 +84,9 @@ def managed_member(
     extra_ports: dict[str, PortPlacement] | None = None,
 ) -> bd.Shape:
     length = sum((end[index] - start[index]) ** 2 for index in range(3)) ** 0.5
-    shape = bd.Box(10, 10, length, align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.MIN))
+    shape = bd.Box(
+        10, 10, length, align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.MIN)
+    )
     shape = shape.moved(bd.Pos(X=start[0], Y=start[1], Z=start[2]))
     shape.label = mark
     return managed_component(
@@ -100,7 +102,9 @@ def managed_member(
     )
 
 
-def test_catalogue_product_is_deeply_immutable_and_digest_changes_with_identity() -> None:
+def test_catalogue_product_is_deeply_immutable_and_digest_changes_with_identity() -> (
+    None
+):
     c100 = member_product("TEST-C100")
     with pytest.raises(TypeError):
         c100.geometry["depth_mm"] = 150.0  # type: ignore[index]
@@ -188,7 +192,10 @@ def test_component_and_physical_connection_build_one_linked_graph() -> None:
             mark="KB1",
         )
         bracket.label = "KB1 bracket"
-        connection_shape = bd.Compound(children=[bracket], label="C1-R1 knee")
+        connection_shape = bd.Compound(  # type: ignore[call-overload]
+            children=[bracket],
+            label="C1-R1 knee",
+        )
         connection = physical_connection(
             connection_shape,
             definition=ConnectionDefinition(
@@ -204,16 +211,17 @@ def test_component_and_physical_connection_build_one_linked_graph() -> None:
             connector_components=(bracket,),
             mark="K1",
         )
-        model = bd.Compound(children=[column, rafter, connection], label="test-frame")
+        model = bd.Compound(  # type: ignore[call-overload]
+            children=[column, rafter, connection],
+            label="test-frame",
+        )
         graph = session.finalize(model)
         projections = all_workbench_projections(graph, model=model)
 
     assert graph["schema_version"] == "1.0"
     assert [component["id"] for component in graph["components"]] == ["C1", "R1", "KB1"]
     column_end = next(
-        port
-        for port in graph["components"][0]["ports"]
-        if port["name"] == "end"
+        port for port in graph["components"][0]["ports"] if port["name"] == "end"
     )
     assert column_end["x_direction"] == [1.0, 0.0, 0.0]
     assert column_end["engagement_length_mm"] == 0.0
@@ -267,7 +275,7 @@ def test_connected_fabricated_port_splits_the_analytical_member() -> None:
             mark="MID-BRACKET",
         )
         connection = physical_connection(
-            bd.Compound(children=[bracket]),
+            bd.Compound(children=[bracket]),  # type: ignore[call-overload]
             definition=ConnectionDefinition(
                 key="test-mid",
                 label="Test intermediate connection",
@@ -281,7 +289,9 @@ def test_connected_fabricated_port_splits_the_analytical_member() -> None:
             connector_components=(bracket,),
             mark="MID",
         )
-        model = bd.Compound(children=[host, branch, connection])
+        model = bd.Compound(  # type: ignore[call-overload]
+            children=[host, branch, connection]
+        )
         graph = session.finalize(model)
         structural = all_workbench_projections(graph, model=model)["structural"]
 
@@ -315,20 +325,22 @@ def test_product_change_propagates_to_every_workbench_projection() -> None:
                 start=(0, 0, 0),
                 end=(0, 0, 1000),
             )
-            model = bd.Compound(children=[member])
+            model = bd.Compound(children=[member])  # type: ignore[call-overload]
             graph = session.finalize(model)
             projection_sets.append(all_workbench_projections(graph, model=model))
 
     first, second = projection_sets
     assert first["procurement"]["requirements"][0]["part_number"] == "TEST-C100"
     assert second["procurement"]["requirements"][0]["part_number"] == "TEST-C150"
-    assert first["structural"]["components"][0]["product_key"] != second[
-        "structural"
-    ]["components"][0]["product_key"]
+    assert (
+        first["structural"]["components"][0]["product_key"]
+        != second["structural"]["components"][0]["product_key"]
+    )
     for projection_name in ("procurement", "structural", "drawing", "bounds"):
-        assert first[projection_name]["projection_digest"] != second[projection_name][
-            "projection_digest"
-        ]
+        assert (
+            first[projection_name]["projection_digest"]
+            != second[projection_name]["projection_digest"]
+        )
 
 
 def test_touching_members_do_not_implicitly_connect() -> None:
@@ -345,7 +357,9 @@ def test_touching_members_do_not_implicitly_connect() -> None:
             start=(0, 0, 1000),
             end=(0, 0, 2000),
         )
-        graph = session.finalize(bd.Compound(children=[column, rafter]))
+        graph = session.finalize(
+            bd.Compound(children=[column, rafter])  # type: ignore[call-overload]
+        )
 
     assert graph["readiness"]["structural_model_complete"] is False
     assert [item["component_id"] for item in graph["diagnostics"]] == ["C1", "R1"]
@@ -363,7 +377,9 @@ def test_unmanaged_geometry_renders_but_blocks_workbench_completeness() -> None:
     assert graph["readiness"]["structural_model_complete"] is False
 
 
-def test_unmanaged_nonstructural_geometry_does_not_invalidate_managed_structure() -> None:
+def test_unmanaged_nonstructural_geometry_does_not_invalidate_managed_structure() -> (
+    None
+):
     with compile_session() as session:
         column = managed_member(
             product=member_product(),
@@ -391,7 +407,7 @@ def test_unmanaged_nonstructural_geometry_does_not_invalidate_managed_structure(
             mark="B1",
         )
         connection = physical_connection(
-            bd.Compound(children=[connector]),
+            bd.Compound(children=[connector]),  # type: ignore[call-overload]
             definition=ConnectionDefinition(
                 key="test-base",
                 label="Test base",
@@ -406,7 +422,9 @@ def test_unmanaged_nonstructural_geometry_does_not_invalidate_managed_structure(
         )
         raw_furniture = bd.Box(20, 20, 20).moved(bd.Pos(X=100))
         graph = session.finalize(
-            bd.Compound(children=[column, ground, connection, raw_furniture])
+            bd.Compound(  # type: ignore[call-overload]
+                children=[column, ground, connection, raw_furniture]
+            )
         )
 
     assert graph["readiness"]["structural_model_complete"] is True
@@ -438,7 +456,11 @@ def test_registered_component_cannot_be_reused_twice_in_model() -> None:
         duplicate = bd.Box(1, 1, 1).moved(bd.Pos(X=100))
         duplicate.tertius_component_token = member.tertius_component_token
         with pytest.raises(TertiusRuntimeError, match="more than once"):
-            session.finalize(bd.Compound(children=[member, duplicate]))
+            session.finalize(
+                bd.Compound(  # type: ignore[call-overload]
+                    children=[member, duplicate]
+                )
+            )
 
 
 def test_connection_rejects_incompatible_ports() -> None:
@@ -473,7 +495,7 @@ def test_connection_rejects_incompatible_ports() -> None:
         )
         with pytest.raises(TertiusRuntimeError, match="incompatible"):
             physical_connection(
-                bd.Compound(children=[connector]),
+                bd.Compound(children=[connector]),  # type: ignore[call-overload]
                 definition=ConnectionDefinition(
                     key="bolted",
                     label="Bolted",
@@ -507,7 +529,7 @@ def test_connection_rejects_unexplained_member_endpoint_gap() -> None:
         )
         with pytest.raises(TertiusRuntimeError, match="10 mm apart"):
             physical_connection(
-                bd.Compound(children=[connector]),
+                bd.Compound(children=[connector]),  # type: ignore[call-overload]
                 definition=ConnectionDefinition(
                     key="bolted",
                     label="Bolted",
@@ -559,14 +581,14 @@ def test_component_port_can_belong_to_only_one_physical_connection() -> None:
             analysis_model="rigid",
         )
         physical_connection(
-            bd.Compound(children=[first_connector]),
+            bd.Compound(children=[first_connector]),  # type: ignore[call-overload]
             definition=definition,
             ports=(first.ports.end, second.ports.start),
             connector_components=(first_connector,),
         )
         with pytest.raises(TertiusRuntimeError, match="already belongs"):
             physical_connection(
-                bd.Compound(children=[second_connector]),
+                bd.Compound(children=[second_connector]),  # type: ignore[call-overload]
                 definition=definition,
                 ports=(first.ports.end, third.ports.start),
                 connector_components=(second_connector,),
@@ -628,17 +650,22 @@ def test_verified_connection_resistance_requires_hashed_complete_capacities() ->
                 design_shear_capacity_kN=10,
             ),
         )
-    assert ConnectionDefinition(
+    payload = ConnectionDefinition(
         key="test-knee",
         label="Test knee",
         family="test-bolted",
         transfers=("force", "shear", "moment"),
         analysis_model="rigid",
         resistance=resistance,
-    ).payload()["resistance"]["pack_id"] == "test-pack"
+    ).payload()
+    resistance_payload = payload["resistance"]
+    assert isinstance(resistance_payload, dict)
+    assert resistance_payload["pack_id"] == "test-pack"
 
 
-def test_runner_requires_model_and_rejects_removed_manifest_exports(tmp_path: Path) -> None:
+def test_runner_requires_model_and_rejects_removed_manifest_exports(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "design.py").write_text("part = bd.Box(1, 1, 1)\n", encoding="utf-8")
     with pytest.raises(TertiusRuntimeError, match="must assign.*model"):
         execute_design(tmp_path)

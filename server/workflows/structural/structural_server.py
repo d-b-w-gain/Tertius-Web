@@ -155,9 +155,7 @@ def _capture_from_structural_projection(
             visual_node_id=str(component["component_id"]),
             grounded=component["kind"] == "ground",
             part_number=(
-                str(component["part_number"])
-                if component.get("part_number")
-                else None
+                str(component["part_number"]) if component.get("part_number") else None
             ),
         )
         for component in projection.get("components", [])
@@ -299,14 +297,9 @@ def _pynite_section_rotation(
     else:
         projection = (delta[0], 0.0, delta[2])
         default_z = _unit3(
-            _cross3(projection, axis)
-            if delta[1] > 0
-            else _cross3(axis, projection)
+            _cross3(projection, axis) if delta[1] > 0 else _cross3(axis, projection)
         )
-    sine = sum(
-        axis[index] * _cross3(default_z, desired_z)[index]
-        for index in range(3)
-    )
+    sine = sum(axis[index] * _cross3(default_z, desired_z)[index] for index in range(3))
     cosine = sum(default_z[index] * desired_z[index] for index in range(3))
     rotation = degrees(atan2(sine, cosine))
     return 0.0 if abs(rotation) <= 1e-9 else rotation
@@ -579,8 +572,7 @@ def _analysis_from_projection(
                 label=str(material_data.get("label") or product_key),
                 elastic_modulus_kN_m2=float(material_data["elastic_modulus_pa"])
                 / 1000.0,
-                shear_modulus_kN_m2=float(material_data["shear_modulus_pa"])
-                / 1000.0,
+                shear_modulus_kN_m2=float(material_data["shear_modulus_pa"]) / 1000.0,
                 poisson_ratio=float(material_data["poisson_ratio"]),
                 density_kg_m3=float(material_data["density_kg_m3"]),
             ),
@@ -691,15 +683,18 @@ def _analysis_from_projection(
     point_loads: list[MemberPointLoad] = []
     distributed_loads: list[MemberDistributedLoad] = []
     for point_config in configuration.member_loads:
-        component_members = members_by_component.get(point_config.component_id)
-        if not component_members:
+        point_component_members = members_by_component.get(
+            point_config.component_id,
+            [],
+        )
+        if not point_component_members:
             raise ValueError(
                 f"configured load {point_config.id!r} references missing component "
                 f"{point_config.component_id!r}"
             )
         physical_length = max(
             float(member.get("physical_end_distance_m") or _member_length(member))
-            for member in component_members
+            for member in point_component_members
         )
         if point_config.distance_m > physical_length + 1e-9:
             raise ValueError(
@@ -709,7 +704,7 @@ def _analysis_from_projection(
         point_member = next(
             (
                 member
-                for member in component_members
+                for member in point_component_members
                 if float(member.get("physical_start_distance_m") or 0.0) - 1e-9
                 <= point_config.distance_m
                 <= float(
@@ -717,7 +712,7 @@ def _analysis_from_projection(
                 )
                 + 1e-9
             ),
-            component_members[-1],
+            point_component_members[-1],
         )
         local_distance = point_config.distance_m - float(
             point_member.get("physical_start_distance_m") or 0.0
@@ -736,15 +731,18 @@ def _analysis_from_projection(
             )
         )
     for distributed_config in configuration.member_distributed_loads:
-        component_members = members_by_component.get(distributed_config.component_id)
-        if not component_members:
+        distributed_component_members = members_by_component.get(
+            distributed_config.component_id,
+            [],
+        )
+        if not distributed_component_members:
             raise ValueError(
                 f"configured load {distributed_config.id!r} references missing component "
                 f"{distributed_config.component_id!r}"
             )
         physical_length = max(
             float(member.get("physical_end_distance_m") or _member_length(member))
-            for member in component_members
+            for member in distributed_component_members
         )
         end_distance = distributed_config.end_distance_m or physical_length
         if (
@@ -757,7 +755,7 @@ def _analysis_from_projection(
         start_force = distributed_config.start_force_kN_m
         end_force = distributed_config.end_force_kN_m or start_force
         loaded_segments: list[tuple[dict, float, float]] = []
-        for member in component_members:
+        for member in distributed_component_members:
             member_start = float(member.get("physical_start_distance_m") or 0.0)
             member_end = float(
                 member.get("physical_end_distance_m") or _member_length(member)
@@ -768,9 +766,8 @@ def _analysis_from_projection(
                 loaded_segments.append((member, overlap_start, overlap_end))
 
         def interpolated_force(station: float) -> Vector3:
-            fraction = (
-                (station - distributed_config.start_distance_m)
-                / (end_distance - distributed_config.start_distance_m)
+            fraction = (station - distributed_config.start_distance_m) / (
+                end_distance - distributed_config.start_distance_m
             )
             return Vector3(
                 x=start_force.x + fraction * (end_force.x - start_force.x),
@@ -806,7 +803,9 @@ def _analysis_from_projection(
             )
 
     if configuration.include_self_weight:
-        dead_cases = [case for case in configuration.load_cases if case.category == "dead"]
+        dead_cases = [
+            case for case in configuration.load_cases if case.category == "dead"
+        ]
         if not dead_cases:
             raise ValueError("self-weight requires a dead load case")
         dead_case = dead_cases[0]
@@ -839,7 +838,9 @@ def _analysis_from_projection(
                 )
             )
 
-    declarations_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(list)
+    declarations_by_component: dict[str, list[AnalyticalMemberDeclaration]] = (
+        defaultdict(list)
+    )
     for declaration in declarations:
         declarations_by_component[declaration.component_id].append(declaration)
     projected_by_id = {str(member["id"]): member for member in projected_members}
@@ -878,25 +879,27 @@ def _analysis_from_projection(
                     declaration.start.model_dump().values(),
                     declaration.end.model_dump().values(),
                 )
-                segments.append(MemberStabilitySegmentDefinition(
-                    id=f"{declaration.id}:full-length",
-                    member_id=declaration.id,
-                    start_distance_m=0.0,
-                    end_distance_m=member_length,
-                    minor_axis_effective_length_factor=1.0,
-                    torsional_effective_length_factor=1.0,
-                    lateral_bending_restraint="unverified",
-                    restraint_status="assumed",
-                    restraint_basis=(
-                        "Automatically selected from the compiled analytical segment; "
-                        "no cladding, bridging, or connection restraint is credited."
-                    ),
-                    distortional_buckling_status="unverified",
-                    distortional_buckling_basis=(
-                        "No configuration-specific distortional-buckling evidence "
-                        "has been attached to this compiled segment."
-                    ),
-                ))
+                segments.append(
+                    MemberStabilitySegmentDefinition(
+                        id=f"{declaration.id}:full-length",
+                        member_id=declaration.id,
+                        start_distance_m=0.0,
+                        end_distance_m=member_length,
+                        minor_axis_effective_length_factor=1.0,
+                        torsional_effective_length_factor=1.0,
+                        lateral_bending_restraint="unverified",
+                        restraint_status="assumed",
+                        restraint_basis=(
+                            "Automatically selected from the compiled analytical segment; "
+                            "no cladding, bridging, or connection restraint is credited."
+                        ),
+                        distortional_buckling_status="unverified",
+                        distortional_buckling_basis=(
+                            "No configuration-specific distortional-buckling evidence "
+                            "has been attached to this compiled segment."
+                        ),
+                    )
+                )
         for configured_segment in configured_segments:
             component_declarations = declarations_by_component.get(
                 configured_segment.component_id,
@@ -944,33 +947,35 @@ def _analysis_from_projection(
                 overlap_start,
                 overlap_end,
             ) in enumerate(overlapping_declarations, start=1):
-                segments.append(MemberStabilitySegmentDefinition(
-                    id=(
-                        configured_segment.id
-                        if len(overlapping_declarations) == 1
-                        else f"{configured_segment.id}:segment:{segment_index:02d}"
-                    ),
-                    member_id=segment_declaration.id,
-                    start_distance_m=overlap_start - member_start,
-                    end_distance_m=overlap_end - member_start,
-                    minor_axis_effective_length_factor=(
-                        configured_segment.minor_axis_effective_length_factor
-                    ),
-                    torsional_effective_length_factor=(
-                        configured_segment.torsional_effective_length_factor
-                    ),
-                    lateral_bending_restraint=(
-                        configured_segment.lateral_bending_restraint
-                    ),
-                    restraint_status=configured_segment.restraint_status,
-                    restraint_basis=configured_segment.restraint_basis,
-                    distortional_buckling_status=(
-                        configured_segment.distortional_buckling_status
-                    ),
-                    distortional_buckling_basis=(
-                        configured_segment.distortional_buckling_basis
-                    ),
-                ))
+                segments.append(
+                    MemberStabilitySegmentDefinition(
+                        id=(
+                            configured_segment.id
+                            if len(overlapping_declarations) == 1
+                            else f"{configured_segment.id}:segment:{segment_index:02d}"
+                        ),
+                        member_id=segment_declaration.id,
+                        start_distance_m=overlap_start - member_start,
+                        end_distance_m=overlap_end - member_start,
+                        minor_axis_effective_length_factor=(
+                            configured_segment.minor_axis_effective_length_factor
+                        ),
+                        torsional_effective_length_factor=(
+                            configured_segment.torsional_effective_length_factor
+                        ),
+                        lateral_bending_restraint=(
+                            configured_segment.lateral_bending_restraint
+                        ),
+                        restraint_status=configured_segment.restraint_status,
+                        restraint_basis=configured_segment.restraint_basis,
+                        distortional_buckling_status=(
+                            configured_segment.distortional_buckling_status
+                        ),
+                        distortional_buckling_basis=(
+                            configured_segment.distortional_buckling_basis
+                        ),
+                    )
+                )
         member_stability_verification = MemberStabilityVerificationDefinition(
             pack_id=configured_member_stability.pack_id,
             combination_ids=configured_member_stability.combination_ids,
@@ -983,7 +988,9 @@ def _analysis_from_projection(
             materials=list(materials.values()),
             sections=list(sections.values()),
             members=declarations,
-            load_cases=[LoadCase.model_validate(case) for case in configuration.load_cases],
+            load_cases=[
+                LoadCase.model_validate(case) for case in configuration.load_cases
+            ],
             member_loads=point_loads,
             member_distributed_loads=distributed_loads,
             load_combinations=[
@@ -1017,9 +1024,7 @@ def get_active_capture(
             raise ValueError("structural projection root must be an object")
         stored_configuration = get_latest_structural_configuration(db, ctx, project)
         configuration = (
-            StructuralProjectConfiguration.model_validate(
-                stored_configuration.content
-            )
+            StructuralProjectConfiguration.model_validate(stored_configuration.content)
             if stored_configuration is not None
             else None
         )
