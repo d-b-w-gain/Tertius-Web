@@ -63,8 +63,12 @@ metadata:
 
 `HARNESS_TTL_SECONDS` defaults to `21600` and must be an integer from `900` to
 `86400`. The deploy script applies the same lease UUID annotation to the
-external app Secret, release PVCs, and CNPG Cluster resources. Destructive
-cleanup requires those lease identities to match. `HARNESS_RETAIN_ON_FAILURE=true`
+external app Secret, chart PVCs, and CNPG Cluster resources through rendered
+chart values, so partial Helm creation carries the identity from its first API
+write. Operator-generated children are captured through their owner UIDs.
+`up` refuses an existing Helm release without a valid marker; the operator must
+adopt it explicitly. Destructive cleanup requires lease identities to match.
+`HARNESS_RETAIN_ON_FAILURE=true`
 changes only failure/signal behavior; it does not disable expiry.
 
 ### 3.2 Cleanup contract

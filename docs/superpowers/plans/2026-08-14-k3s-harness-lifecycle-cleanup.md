@@ -59,6 +59,9 @@ rtk git commit -m "test: define k3s harness lifecycle cleanup"
 - Modify: `scripts/test-k3s-deployment.sh`
 - Modify: `scripts/harness-k3s.sh`
 - Modify: `scripts/test-k3s-harness-lifecycle.sh`
+- Modify: `infra/charts/tertius/values.yaml`
+- Modify: `infra/charts/tertius/templates/_helpers.tpl`
+- Modify: data-bearing templates under `infra/charts/tertius/templates/`
 
 - [ ] **Step 1: Implement exact flags and validated lifecycle state**
 
@@ -77,6 +80,10 @@ metadata:
     tertius.io/expires-at: ${expires_at}
     tertius.io/cleanup-policy: delete
 ```
+
+Pass the lease ID through a dedicated chart value and render it on CNPG Cluster
+CRs and every chart-created PVC from their first API write. Refuse `up` when a
+Helm release already exists without a valid marker.
 
 - [ ] **Step 2: Implement full cleanup and absence verification**
 
