@@ -90,13 +90,14 @@ done
 
 : >"$COMMAND_LOG"
 TEST_HOME="${TMP_DIR}/home"
+TEST_CONFIG_HOME="${TEST_HOME}/.config"
 SPECIAL_KUBECONFIG="${TMP_DIR}/kube & 100% config"
 mkdir -p "$TEST_HOME"
-PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" \
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_CONFIG_HOME" \
   REPOSITORY_ROOT="$ROOT_DIR" KUBECONFIG="$SPECIAL_KUBECONFIG" \
   "$ROOT_DIR/scripts/install-k3s-harness-cleanup-timer.sh" install
-SERVICE="${TEST_HOME}/.config/systemd/user/tertius-k3s-harness-cleanup.service"
-TIMER="${TEST_HOME}/.config/systemd/user/tertius-k3s-harness-cleanup.timer"
+SERVICE="${TEST_CONFIG_HOME}/systemd/user/tertius-k3s-harness-cleanup.service"
+TIMER="${TEST_CONFIG_HOME}/systemd/user/tertius-k3s-harness-cleanup.timer"
 [ -f "$SERVICE" ] || fail "installer must write the user service"
 [ -f "$TIMER" ] || fail "installer must write the user timer"
 grep -Fx 'OnBootSec=5m' "$TIMER" >/dev/null || fail "timer must delay five minutes after boot"
@@ -109,7 +110,7 @@ grep -F "Environment=\"KUBECONFIG=${TMP_DIR}/kube & 100%% config\"" "$SERVICE" >
 assert_log 'systemctl --user daemon-reload' "installer must reload user units"
 assert_log 'systemctl --user enable --now tertius-k3s-harness-cleanup.timer' "installer must enable timer"
 
-PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" \
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_CONFIG_HOME" \
   "$ROOT_DIR/scripts/install-k3s-harness-cleanup-timer.sh" uninstall
 [ ! -e "$SERVICE" ] || fail "uninstall must remove service"
 [ ! -e "$TIMER" ] || fail "uninstall must remove timer"
@@ -117,15 +118,15 @@ assert_log 'systemctl --user disable --now tertius-k3s-harness-cleanup.timer' "u
 
 # Repeated uninstall is idempotent and does not ask systemd to disable a missing unit.
 : >"$COMMAND_LOG"
-PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" \
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_CONFIG_HOME" \
   "$ROOT_DIR/scripts/install-k3s-harness-cleanup-timer.sh" uninstall
 assert_not_log ' disable ' "repeated uninstall must not disable a missing timer"
 
 # A disable failure must not prevent removal of inspectable unit files.
-PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" \
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_CONFIG_HOME" \
   REPOSITORY_ROOT="$ROOT_DIR" KUBECONFIG="$SPECIAL_KUBECONFIG" \
   "$ROOT_DIR/scripts/install-k3s-harness-cleanup-timer.sh" install
-if PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" \
+if PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_CONFIG_HOME" \
   MOCK_SYSTEMCTL_DISABLE_FAILURE=true \
   "$ROOT_DIR/scripts/install-k3s-harness-cleanup-timer.sh" uninstall; then
   fail "disable failure must be reported"
