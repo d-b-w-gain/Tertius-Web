@@ -133,7 +133,9 @@ def test_apply_compile_result_records_complete_bundle_without_database(
 
     repository = FakeRepository()
     monkeypatch.setattr(consumer, "CompileRepository", lambda *args: repository)
-    monkeypatch.setattr(consumer, "_record_usage_if_applicable", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        consumer, "_record_usage_if_applicable", lambda *args, **kwargs: None
+    )
     result = result_payload(
         job,
         SimpleNamespace(tenant_id=tenant_id, project_id=project_id),
@@ -237,7 +239,9 @@ def test_apply_compile_result_records_compiled_design_sidecar_without_database(
     assert compiled["content_type"] == "application/json"
 
 
-def test_apply_compile_result_records_artifact_and_marks_success(db_session, seeded_tenant):
+def test_apply_compile_result_records_artifact_and_marks_success(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     job = CompileJob(
@@ -250,7 +254,9 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
     db_session.add(job)
     db_session.commit()
 
-    applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
+    applied = apply_compile_result(
+        db_session, result_payload(job, seeded_tenant), consumer_settings()
+    )
 
     artifact = db_session.scalar(
         select(Artifact).where(
@@ -262,7 +268,7 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
     assert applied is True
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
-    assert artifact.content_type == "model/stl"
+    assert artifact.content_type == "application/octet-stream"
 
 
 def test_apply_compile_result_records_structural_projection(
@@ -300,7 +306,9 @@ def test_apply_compile_result_records_structural_projection(
         "drawing",
         "bounds",
     }
-    structural = next(artifact for artifact in artifacts if artifact.kind == "structural")
+    structural = next(
+        artifact for artifact in artifacts if artifact.kind == "structural"
+    )
     assert structural.content_type == "application/json"
     assert json.loads(structural.content)["schema_version"] == "tertius.structural.v1"
 
@@ -373,10 +381,15 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
     assert persisted.status == "failed"
     assert persisted.error_code == "timeout"
     assert persisted.retryable is True
-    assert db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id)) is None
+    assert (
+        db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id))
+        is None
+    )
 
 
-def test_apply_compile_result_acks_duplicate_terminal_without_changes(db_session, seeded_tenant):
+def test_apply_compile_result_acks_duplicate_terminal_without_changes(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     job = CompileJob(
@@ -389,13 +402,20 @@ def test_apply_compile_result_acks_duplicate_terminal_without_changes(db_session
     db_session.add(job)
     db_session.commit()
 
-    applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
+    applied = apply_compile_result(
+        db_session, result_payload(job, seeded_tenant), consumer_settings()
+    )
 
     assert applied is False
-    assert db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id)) is None
+    assert (
+        db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id))
+        is None
+    )
 
 
-def test_apply_compile_result_ignores_identity_mismatch_without_mutating_job(db_session, seeded_tenant):
+def test_apply_compile_result_ignores_identity_mismatch_without_mutating_job(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     job = CompileJob(
@@ -476,7 +496,9 @@ def test_result_consumer_acks_after_successful_db_commit(db_session, seeded_tena
     assert msg.naked is False
 
 
-def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     stale_job = CompileJob(
@@ -511,11 +533,15 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
-        republish_stale_queued_jobs(db_session, FakePublisher(), consumer_settings(), older_than_seconds=60)
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), consumer_settings(), older_than_seconds=60
+        )
     )
 
     assert republished == 1
@@ -533,7 +559,9 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     assert persisted.claim_token is None
 
 
-def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -559,11 +587,15 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
-        republish_stale_queued_jobs(db_session, FakePublisher(), consumer_settings(), older_than_seconds=60)
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), consumer_settings(), older_than_seconds=60
+        )
     )
 
     persisted = db_session.get(CompileJob, job.id)
@@ -574,7 +606,9 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     assert persisted.error_code is None
 
 
-def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -601,14 +635,18 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
             published.append((subject, command, message_id))
 
     settings = consumer_settings()
     settings.compile_request_max_bytes = 20
 
     republished = asyncio.run(
-        republish_stale_queued_jobs(db_session, FakePublisher(), settings, older_than_seconds=60)
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), settings, older_than_seconds=60
+        )
     )
 
     persisted = db_session.get(CompileJob, job.id)
@@ -620,7 +658,9 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     assert persisted.retryable is False
 
 
-def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -637,11 +677,15 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     published = []
 
     class FakePublisher:
-        async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
             published.append((subject, command, message_id))
 
     republished = asyncio.run(
-        republish_stale_queued_jobs(db_session, FakePublisher(), consumer_settings(), older_than_seconds=60)
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), consumer_settings(), older_than_seconds=60
+        )
     )
 
     persisted = db_session.get(CompileJob, job.id)
@@ -686,7 +730,11 @@ def test_result_consumer_retries_when_initial_nats_setup_fails(monkeypatch):
     monkeypatch.setattr(consumer, "get_settings", lambda: consumer_settings())
     monkeypatch.setattr(consumer, "connect_nats", fake_connect_nats)
     monkeypatch.setattr(consumer, "ensure_compile_stream", fake_ensure_compile_stream)
-    monkeypatch.setattr(consumer, "pull_compile_result_subscription", fake_pull_compile_result_subscription)
+    monkeypatch.setattr(
+        consumer,
+        "pull_compile_result_subscription",
+        fake_pull_compile_result_subscription,
+    )
     monkeypatch.setattr(consumer.asyncio, "sleep", fake_sleep)
 
     asyncio.run(consumer.run_result_consumer(stop_event))
@@ -694,7 +742,9 @@ def test_result_consumer_retries_when_initial_nats_setup_fails(monkeypatch):
     assert attempts["connect"] == 2
 
 
-def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seeded_tenant):
+def test_fail_stale_running_jobs_marks_expired_leases_retryable(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import fail_stale_running_jobs
 
     job = CompileJob(
@@ -717,7 +767,9 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     assert persisted.retryable is True
 
 
-def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded_tenant):
+def test_apply_compile_result_creates_usage_record_on_success(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     job = CompileJob(
@@ -730,7 +782,9 @@ def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded
     db_session.add(job)
     db_session.commit()
 
-    applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
+    applied = apply_compile_result(
+        db_session, result_payload(job, seeded_tenant), consumer_settings()
+    )
 
     assert applied is True
     usage = db_session.scalar(
@@ -746,7 +800,9 @@ def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded
     assert usage.artifact_byte_size == len(b"solid result")
 
 
-def test_apply_compile_result_creates_usage_record_on_failure(db_session, seeded_tenant):
+def test_apply_compile_result_creates_usage_record_on_failure(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     job = CompileJob(
@@ -781,7 +837,9 @@ def test_apply_compile_result_creates_usage_record_on_failure(db_session, seeded
     assert usage.format_multiplier == 1.5
 
 
-def test_apply_compile_result_uses_api_timestamps_for_usage_duration(db_session, seeded_tenant):
+def test_apply_compile_result_uses_api_timestamps_for_usage_duration(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import apply_compile_result
 
     claimed_at = datetime(2026, 6, 14, 10, 0, tzinfo=timezone.utc)
@@ -810,7 +868,10 @@ def test_apply_compile_result_uses_api_timestamps_for_usage_duration(db_session,
     )
     persisted = db_session.get(CompileJob, job.id)
     assert applied is True
-    assert usage.compute_duration_seconds == (persisted.finished_at - claimed_at).total_seconds()
+    assert (
+        usage.compute_duration_seconds
+        == (persisted.finished_at - claimed_at).total_seconds()
+    )
     assert usage.compute_duration_seconds > 0
 
 

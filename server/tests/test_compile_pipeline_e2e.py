@@ -19,7 +19,11 @@ from testcontainers.core.container import DockerContainer
 
 from sqlalchemy import select as _select
 
-from core.compile_messages import CompileCommand, CompileResultPayload, CompileSourceFile
+from core.compile_messages import (
+    CompileCommand,
+    CompileResultPayload,
+    CompileSourceFile,
+)
 from core.config import Settings
 from core.models import Artifact, CompileJob, CompileJobFile, now_utc
 from core.nats_client import (
@@ -38,6 +42,7 @@ from workflows.intus import compile_result_consumer as consumer_module
 # ---------------------------------------------------------------------------
 # NATS testcontainer fixture (session-scoped)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def nats_url() -> Generator[str, None, None]:
@@ -65,7 +70,7 @@ def nats_url() -> Generator[str, None, None]:
         try:
             with socket.create_connection((host, port), timeout=1):
                 break
-        except (ConnectionRefusedError, OSError):
+        except ConnectionRefusedError, OSError:
             time.sleep(0.5)
     else:
         container.stop()
@@ -81,6 +86,7 @@ def nats_url() -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def compile_settings(nats_url: str) -> Settings:
     """Settings pointing at the test NATS container with fast ack/timeout."""
@@ -167,6 +173,7 @@ def fake_sandbox_failure(project_dir, export_format, quality=None, timeout_secon
 # Shared async fixture helpers
 # ---------------------------------------------------------------------------
 
+
 async def _setup_nats(settings: Settings):
     """Connect to NATS and ensure the compile stream + consumers exist."""
     nc = await connect_nats(settings.nats_url)
@@ -174,7 +181,12 @@ async def _setup_nats(settings: Settings):
     return nc, js
 
 
-def _create_job_and_snapshot(db_session, seeded_tenant, repo, content="import build123d as bd\nmodel = bd.Box(10,10,10)\n"):
+def _create_job_and_snapshot(
+    db_session,
+    seeded_tenant,
+    repo,
+    content="import build123d as bd\nmodel = bd.Box(10,10,10)\n",
+):
     """Create a CompileJob + CompileJobFile, mark dispatched, return job."""
     job = repo.start_job(seeded_tenant.project_id, seeded_tenant.user_id, "stl")
     db_session.flush()
@@ -195,6 +207,7 @@ def _create_job_and_snapshot(db_session, seeded_tenant, repo, content="import bu
 # ---------------------------------------------------------------------------
 # E2E: happy-path pipeline
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_full_pipeline_publishes_command_worker_processes_and_consumer_persists_artifact(
@@ -225,7 +238,9 @@ async def test_full_pipeline_publishes_command_worker_processes_and_consumer_per
         publisher = NatsPublisher(js)
 
         # Worker processes the message
-        monkeypatch.setattr(compile_job_module, "run_compile_sandbox", fake_sandbox_success)
+        monkeypatch.setattr(
+            compile_job_module, "run_compile_sandbox", fake_sandbox_success
+        )
 
         sub = await pull_compile_subscription(js, settings)
         messages = await sub.fetch(batch=1, timeout=5)
@@ -241,14 +256,18 @@ async def test_full_pipeline_publishes_command_worker_processes_and_consumer_per
             assert [(file.filename, file.content) for file in command.files] == [
                 ("design.py", "import build123d as bd\nmodel = bd.Box(10,10,10)\n")
             ]
-            await compile_job_module.handle_compile_request_message(msg, publisher, settings)
+            await compile_job_module.handle_compile_request_message(
+                msg, publisher, settings
+            )
 
         # Result consumer persists to DB
         result_sub = await pull_compile_result_subscription(js, settings)
         result_messages = await result_sub.fetch(batch=1, timeout=5)
         assert len(result_messages) == 1
         for msg in result_messages:
-            await consumer_module.handle_compile_result_message(msg, db_session, settings)
+            await consumer_module.handle_compile_result_message(
+                msg, db_session, settings
+            )
 
         # Verify artifact persisted
         db_session.expire_all()
@@ -256,9 +275,12 @@ async def test_full_pipeline_publishes_command_worker_processes_and_consumer_per
             _select(Artifact).where(
                 Artifact.tenant_id == seeded_tenant.tenant_id,
                 Artifact.compile_job_id == job.id,
+                Artifact.kind == "stl",
             )
         )
-        assert artifact is not None, "Artifact should be persisted after successful compile"
+        assert artifact is not None, (
+            "Artifact should be persisted after successful compile"
+        )
         assert artifact.kind == "stl"
         assert artifact.byte_size == len(b"fake stl content")
         assert artifact.content == b"fake stl content"
@@ -274,6 +296,7 @@ async def test_full_pipeline_publishes_command_worker_processes_and_consumer_per
 # Worker failure path: failure result is published and consumed
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_worker_publishes_failure_result_when_sandbox_fails(
     nats_url, db_session, seeded_tenant, monkeypatch
@@ -285,7 +308,9 @@ async def test_worker_publishes_failure_result_when_sandbox_fails(
 
     try:
         repo = CompileRepository(db_session, seeded_tenant.tenant_id)
-        job = _create_job_and_snapshot(db_session, seeded_tenant, repo, content="bad code")
+        job = _create_job_and_snapshot(
+            db_session, seeded_tenant, repo, content="bad code"
+        )
 
         command = CompileCommand(
             job_id=job.id,
@@ -306,17 +331,23 @@ async def test_worker_publishes_failure_result_when_sandbox_fails(
         )
 
         # Worker processes: sandbox fails -> publishes failure result -> acks
-        monkeypatch.setattr(compile_job_module, "run_compile_sandbox", fake_sandbox_failure)
+        monkeypatch.setattr(
+            compile_job_module, "run_compile_sandbox", fake_sandbox_failure
+        )
         sub = await pull_compile_subscription(js, settings)
         messages = await sub.fetch(batch=1, timeout=5)
         for msg in messages:
-            await compile_job_module.handle_compile_request_message(msg, publisher, settings)
+            await compile_job_module.handle_compile_request_message(
+                msg, publisher, settings
+            )
 
         # Result consumer picks up the failure result and persists to DB
         result_sub = await pull_compile_result_subscription(js, settings)
         result_messages = await result_sub.fetch(batch=1, timeout=5)
         for msg in result_messages:
-            await consumer_module.handle_compile_result_message(msg, db_session, settings)
+            await consumer_module.handle_compile_result_message(
+                msg, db_session, settings
+            )
 
         # Verify job is marked failed with the correct error
         db_session.expire_all()
@@ -332,6 +363,7 @@ async def test_worker_publishes_failure_result_when_sandbox_fails(
 # ---------------------------------------------------------------------------
 # Invalid message -> term (no redelivery)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_worker_terms_invalid_json_message(nats_url):
@@ -364,6 +396,7 @@ async def test_worker_terms_invalid_json_message(nats_url):
 # Result consumer idempotency: duplicate success result
 # ---------------------------------------------------------------------------
 
+
 def test_result_consumer_skips_duplicate_terminal_job(db_session, seeded_tenant):
     """Sending a result for an already-succeeded job should be a no-op.
 
@@ -394,7 +427,9 @@ def test_result_consumer_skips_duplicate_terminal_job(db_session, seeded_tenant)
     # already-terminal jobs so the caller (handle_compile_result_message)
     # can decide to ack without mutating anything.
     returned = consumer_module.apply_compile_result(db_session, result, settings)
-    assert not returned, "apply_compile_result should return False for already-terminal job"
+    assert not returned, (
+        "apply_compile_result should return False for already-terminal job"
+    )
 
     # Verify no duplicate artifact was created
     db_session.expire_all()
