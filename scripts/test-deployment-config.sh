@@ -1598,6 +1598,29 @@ if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/
   exit 1
 fi
 
+if ! rg -U -q 'name: Cleanup k3s chart test\n[[:space:]]+if: \$\{\{ always\(\) \}\}' "$CHART_WORKFLOW"; then
+  echo ".github/workflows/chart-tests.yml must run k3s cleanup as a distinct always() step." >&2
+  exit 1
+fi
+cleanup_step="$(sed -n '/- name: Cleanup k3s chart test/,/- name: Report chart test duration/p' "$CHART_WORKFLOW")"
+if [ -z "$cleanup_step" ] || ! rg -q 'test-k3s-deployment\.sh --cleanup' <<<"$cleanup_step" || rg -q '\|\|[[:space:]]+true' <<<"$cleanup_step"; then
+  echo ".github/workflows/chart-tests.yml cleanup must run full teardown and propagate failure." >&2
+  exit 1
+fi
+for lifecycle_path in \
+  scripts/cleanup-expired-k3s-harness.sh \
+  scripts/install-k3s-harness-cleanup-timer.sh \
+  scripts/diagnose-k3s-networkpolicy.sh \
+  scripts/install-gvisor-k3s.sh \
+  scripts/test-k3s-harness-lifecycle.sh \
+  scripts/test-k3s-harness-janitor.sh \
+  scripts/test-k3s-harness-process-cleanup.sh; do
+  if [ "$(rg -F -c -- "- '${lifecycle_path}'" "$CHART_WORKFLOW")" -lt 2 ]; then
+    echo ".github/workflows/chart-tests.yml must include ${lifecycle_path} in pull and push path filters." >&2
+    exit 1
+  fi
+done
+
 if ! python3 - "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml" <<'PY'
 from pathlib import Path
 import sys
@@ -1614,3 +1637,5 @@ then
 fi
 
 "${ROOT_DIR}/scripts/test-k3s-harness-lifecycle.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-janitor.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-process-cleanup.sh"
