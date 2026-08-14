@@ -55,14 +55,17 @@ metadata:
     app.kubernetes.io/instance: <release>
     tertius.io/harness-managed: "true"
   annotations:
+    tertius.io/lease-id: <UUID>
     tertius.io/release-name: <release>
     tertius.io/expires-at: <RFC3339 UTC timestamp>
     tertius.io/cleanup-policy: delete
 ```
 
 `HARNESS_TTL_SECONDS` defaults to `21600` and must be an integer from `900` to
-`86400`. `HARNESS_RETAIN_ON_FAILURE=true` changes only failure/signal behavior;
-it does not disable expiry.
+`86400`. The deploy script applies the same lease UUID annotation to the
+external app Secret, release PVCs, and CNPG Cluster resources. Destructive
+cleanup requires those lease identities to match. `HARNESS_RETAIN_ON_FAILURE=true`
+changes only failure/signal behavior; it does not disable expiry.
 
 ### 3.2 Cleanup contract
 
@@ -77,15 +80,33 @@ Explicit retention flags are:
 Cleanup order is:
 
 1. Validate the namespace and release as DNS labels.
-2. Refuse `RELEASE_NAME=tertius` unless the existing explicit Flux override is
-   set, and always refuse a matching Flux `HelmRelease` without that override.
-3. Stop/delete harness probe Pods.
-4. Add `helm.sh/resource-policy=keep` only to resources selected for explicit
+2. Unconditionally refuse `RELEASE_NAME=tertius`. Destructive paths never honor
+   `ALLOW_FLUX_MANAGED_RELEASE`.
+3. List all Flux `HelmRelease` objects and refuse any whose effective
+   `spec.targetNamespace` and `spec.releaseName` match the target, regardless of
+   the HelmRelease object's own name or namespace.
+4. Require a lifecycle marker whose release, namespace, and lease UUID match
+   the exact external Secret and release data resources. Legacy releases can
+   only enter this contract through `harness-k3s.sh adopt`, which requires the
+   exact text `<namespace>/<release>`, refuses production/Flux, and annotates
+   the existing resources with a newly generated lease UUID.
+5. Capture Helm status/history, scoped metadata, recent events, bounded pod
+   descriptions, and bounded logs before failure-triggered teardown.
+6. Stop/delete harness probe Pods.
+7. Add `helm.sh/resource-policy=keep` only to resources selected for explicit
    retention.
-5. Uninstall the Helm release.
-6. Delete non-retained CNPG clusters and PVCs by exact instance label.
-7. Delete the exact external app Secret and lifecycle ConfigMap.
-8. Wait for scoped resources to disappear and fail if any remain.
+8. Uninstall the Helm release.
+9. Delete non-retained CNPG clusters and PVCs only when both exact instance and
+   lease UUID match.
+10. Delete the exact external app Secret only when its lease UUID matches.
+11. Delete the lifecycle ConfigMap only when no retained data remains. With
+   `--retain-data` or `--retain-auth`, preserve it as a tombstone containing the
+   retained object names and UIDs and set `cleanup-policy: retain`.
+12. Wait for Helm metadata, Deployments, StatefulSets, DaemonSets, Pods,
+   Services, Jobs, ConfigMaps, Secrets, ServiceAccounts, Roles, RoleBindings,
+   NetworkPolicies, KEDA objects, CNPG/Keycloak CRs, PVCs, and captured
+   operator-generated children to disappear. Fail if any non-retained object
+   remains.
 
 The shared `tertius` namespace is never deleted. Namespace deletion is unsafe
 while production and multiple development releases share it.
@@ -111,20 +132,42 @@ or explicit cleanup.
 - the timestamp parses as RFC 3339.
 
 It then invokes the repository cleanup implementation with the exact namespace
-and release. Malformed or protected markers are reported and skipped. Cleanup
-failure makes the janitor exit nonzero.
+and release. Retention tombstones are reported and skipped. Malformed or
+protected markers are reported and skipped. Cleanup failure makes the janitor
+exit nonzero.
 
 `scripts/install-k3s-harness-cleanup-timer.sh` installs a user service and timer
 under `~/.config/systemd/user`, pins the repository path and kubeconfig selected
 at install time, runs every 15 minutes, and can uninstall the units. Installation
 is explicit; repository checkout alone does not mutate the host.
 
+### 3.5 Diagnostic namespace ownership
+
+NetworkPolicy and gVisor smoke scripts require their target namespace to be
+absent before they start. They create it with a fresh ownership UUID annotation
+and delete it only when the live namespace still contains that exact UUID.
+They never replace or delete a pre-existing namespace. EXIT, INT, and TERM traps
+run the same identity check; explicit keep mode leaves the owned namespace.
+
+### 3.6 Port-forward process ownership
+
+Port-forward state is stored per kube context, namespace, and release rather
+than in one global PID file. Each entry records PID, Linux process start token,
+and exact command. State is written atomically before readiness polling. Stop
+logic signals a process only when all recorded identity fields still match;
+stale or recycled PIDs are removed from state without being signalled. A trap is
+active before the first process starts, so partial startup cleans earlier
+children. `ports` stops verified existing forwards for the same target before
+checking local port bindability.
+
 ## 4. Error handling matrix
 
 | Failure | Detection | Required response | Exit result |
 |---|---|---|---|
 | Flux-managed target | Matching `HelmRelease` | Refuse without mutation | Nonzero |
-| Production target | Release is exactly `tertius` | Refuse unless existing explicit override is set | Nonzero |
+| Production target | Release is exactly `tertius` | Always refuse destructive action | Nonzero |
+| Missing/mismatched ownership | Marker, Secret, or data lease UUID differs | Refuse deletion and report exact mismatch | Nonzero |
+| Legacy release | No lifecycle marker | Require exact `adopt` confirmation before annotation | Nonzero until adopted |
 | Invalid TTL | Outside 900-86400 or non-integer | Reject before marker creation | Nonzero |
 | Deploy or smoke failure | `ERR` after marker creation | Full cleanup unless explicit retain-on-failure | Original failure after cleanup |
 | Interrupt/termination | `INT` or `TERM` | Full cleanup, local cleanup, conventional 130/143 exit | Nonzero |
@@ -137,6 +180,7 @@ is explicit; repository checkout alone does not mutate the host.
 | Do not | Do instead | Reason |
 |---|---|---|
 | Delete resources by a broad `tertius-*` name glob | Require a validated lifecycle marker and exact instance label | Prevents production or cross-release deletion. |
+| Use `ALLOW_FLUX_MANAGED_RELEASE` for teardown | Make destructive Flux protection unconditional | A deploy override must never become delete authority. |
 | Treat an expiry annotation as self-executing | Run the audited janitor on a timer | Kubernetes has no generic expiry controller. |
 | Delete the shared `tertius` namespace | Delete only exact release-scoped objects | Production shares the namespace. |
 | Retain all data by default | Require `--retain-data` or `--retain-auth` | Default retention caused the accumulation. |
@@ -162,6 +206,10 @@ is explicit; repository checkout alone does not mutate the host.
 | U-010 | Diagnostic traps | Failure and signal | Owned namespace deletion attempted unless keep flag set. |
 | U-011 | Timer installer | Temporary HOME/systemctl mock | Correct units are installed, enabled, and removable. |
 | U-012 | CI workflow | Workflow source | Cleanup is a distinct `if: always()` step without ignored failure. |
+| U-013 | Lease mismatch | Marker UUID differs from Secret or PVC | Cleanup refuses before Helm uninstall. |
+| U-014 | Legacy adoption | Exact confirmation plus non-Flux release | Marker and resource lease annotations are added; wrong confirmation refuses. |
+| U-015 | PID identity | Recycled PID with different start token/command | Stop logic does not signal the unrelated process. |
+| U-016 | Diagnostic ownership | Pre-existing or UUID-mismatched namespace | Script refuses deletion; owned namespace is deleted on exit. |
 
 ### Integration tests
 

@@ -30,8 +30,9 @@ assert_log 'kubectl delete configmap disposable-harness-lifecycle -n tertius --i
 assert_absence_check
 ```
 
-Add separate cases for `--retain-data`, `--retain-auth`, Flux refusal,
-idempotency, and remaining-resource failure.
+Add separate cases for `--retain-data`, `--retain-auth`, unconditional Flux and
+production refusal, lease UUID mismatch, exact legacy adoption, idempotency,
+and remaining-resource failure.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -71,6 +72,7 @@ metadata:
     tertius.io/harness-managed: "true"
     app.kubernetes.io/instance: ${RELEASE_NAME}
   annotations:
+    tertius.io/lease-id: ${lease_id}
     tertius.io/release-name: ${RELEASE_NAME}
     tertius.io/expires-at: ${expires_at}
     tertius.io/cleanup-policy: delete
@@ -78,24 +80,33 @@ metadata:
 
 - [ ] **Step 2: Implement full cleanup and absence verification**
 
-Full cleanup must uninstall Helm; delete exact non-retained Clusters, PVCs,
-`${APP_SECRET_NAME}`, and lifecycle marker; wait for operator descendants; and
-fail if Helm metadata or exact release-labelled objects remain.
+Full cleanup must require matching lease UUIDs; unconditionally refuse
+production and any Flux target found by effective target namespace/release;
+uninstall Helm; delete exact non-retained Clusters, PVCs, `${APP_SECRET_NAME}`,
+and lifecycle marker; wait for every kind enumerated by the spec plus captured
+operator descendants; and fail if anything non-retained remains. Retention
+preserves a tombstone marker containing retained names and UIDs.
 
-- [ ] **Step 3: Add guarded failure/signal cleanup**
+- [ ] **Step 3: Implement explicit legacy adoption**
 
-After marker creation, `ERR`, `INT`, and `TERM` call full cleanup once unless
-`HARNESS_RETAIN_ON_FAILURE=true`. Preserve the original exit code and keep the
-existing local-file/process cleanup.
+Add `harness-k3s.sh adopt <namespace>/<release>`. Require the exact confirmation
+text, refuse production/Flux, create a lease UUID, and annotate the external
+Secret plus existing release data. There is no generic force-delete mode.
 
-- [ ] **Step 4: Make wrapper cleanup default-complete**
+- [ ] **Step 4: Add guarded failure/signal cleanup**
+
+After marker creation, `ERR`, `INT`, and `TERM` capture Helm/scoped diagnostics,
+then call full cleanup once unless `HARNESS_RETAIN_ON_FAILURE=true`. Preserve
+the original exit code and keep the existing local-file/process cleanup.
+
+- [ ] **Step 5: Make wrapper cleanup default-complete**
 
 `harness-k3s.sh down` performs full cleanup. Accept `--retain-data` and
 `--retain-auth`; keep `delete-data` as a compatibility alias. Source the saved
 status for cleanup only when explicit namespace/release environment overrides
 are absent, then re-run the Flux guard against the resolved target.
 
-- [ ] **Step 5: Run GREEN tests**
+- [ ] **Step 6: Run GREEN tests**
 
 Run:
 
@@ -106,7 +117,7 @@ rtk bash scripts/test-k3s-wffc-wait.sh
 
 Expected: all cases pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 rtk git add scripts/test-k3s-deployment.sh scripts/harness-k3s.sh scripts/test-k3s-harness-lifecycle.sh
@@ -143,9 +154,9 @@ Expected: FAIL because both scripts are missing.
 - [ ] **Step 3: Implement fail-closed janitor**
 
 List only `tertius.io/harness-managed=true` ConfigMaps, validate every metadata
-field, parse RFC 3339 timestamps, refuse production/Flux, and invoke exact full
-cleanup. Continue across candidates and return nonzero if any malformed marker
-or cleanup failure occurs.
+field and lease UUID, parse RFC 3339 timestamps, skip retention tombstones,
+refuse production/Flux, and invoke exact full cleanup. Continue across
+candidates and return nonzero if any malformed marker or cleanup failure occurs.
 
 - [ ] **Step 4: Implement timer install/uninstall**
 
@@ -173,9 +184,11 @@ rtk git commit -m "feat: add scheduled k3s harness janitor"
 - [ ] **Step 1: Write failing subprocess tests**
 
 Mock `kubectl`, force failure after namespace creation, and assert one namespace
-delete on EXIT/INT/TERM and none with the keep flag. Mock port-forward startup
-to assert PID recording before readiness, child termination on timeout, and
-cleanup of earlier children after partial startup.
+delete on EXIT/INT/TERM only when its ownership UUID matches; pre-existing and
+mismatched namespaces must never be deleted. Mock port-forward startup to assert
+per-target atomic PID/start-token/command recording before readiness, no signal
+to a recycled PID, child termination on timeout, and cleanup of earlier children
+after partial startup.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -185,15 +198,16 @@ Expected: FAIL on current tail-only diagnostic cleanup and subshell PID loss.
 
 - [ ] **Step 3: Implement diagnostic ownership traps**
 
-Install cleanup immediately after each script takes ownership of its smoke
-namespace. Disable the trap during cleanup, preserve the original exit status,
-and honor the explicit keep flag.
+Refuse a pre-existing namespace. After creating a UUID-labelled namespace,
+install cleanup immediately. Disable the trap during cleanup, re-check UUID,
+preserve the original exit status, and honor the explicit keep flag.
 
 - [ ] **Step 4: Implement parent-owned port-forward tracking**
 
-Replace command-substitution callers with an output-variable argument. Record
-PID before readiness polling, terminate/reap on failure, and install the wrapper
-trap before starting the first forward.
+Replace command-substitution callers with an output-variable argument. Store
+state per context/namespace/release, record PID plus `/proc` start token and
+exact command atomically before readiness polling, verify identity before kill,
+terminate/reap on failure, and install the wrapper trap before the first start.
 
 - [ ] **Step 5: Run GREEN tests and commit**
 
