@@ -2,6 +2,10 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NAMESPACE_EXPLICIT=false
+RELEASE_NAME_EXPLICIT=false
+[ "${NAMESPACE+x}" = x ] && NAMESPACE_EXPLICIT=true
+[ "${RELEASE_NAME+x}" = x ] && RELEASE_NAME_EXPLICIT=true
 NAMESPACE="${NAMESPACE:-tertius}"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
@@ -16,7 +20,9 @@ PID_FILE="${ROOT_DIR}/.tmp/harness/k3s-port-forwards.env"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data>
+Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data|adopt> [options]
+
+Cleanup options: --retain-data, --retain-auth. delete-data is a compatibility alias for full cleanup.
 EOF
 }
 
@@ -88,15 +94,121 @@ wait_for_ports_free() {
   return 1
 }
 
+matching_flux_release() {
+  flux_json=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null) || return 2
+  if printf '%s' "$flux_json" | jq -e --arg namespace "$NAMESPACE" --arg release "$RELEASE_NAME" '
+    any(.items[]?;
+      ((.spec.targetNamespace // .metadata.namespace) == $namespace) and
+      ((.spec.releaseName // .metadata.name) == $release)
+    )
+  ' >/dev/null; then
+    return 0
+  else
+    jq_status=$?
+  fi
+  [ "$jq_status" -eq 1 ] && return 1
+  return 2
+}
+
 require_not_flux_managed() {
-  if [ "${ALLOW_FLUX_MANAGED_RELEASE:-false}" = "true" ]; then
+  allow_override=${1:-false}
+  if [ "$allow_override" = true ] && [ "${ALLOW_FLUX_MANAGED_RELEASE:-false}" = "true" ]; then
     return
   fi
-  if command -v kubectl >/dev/null 2>&1 && kubectl get helmrelease "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-    echo "Refusing to operate on Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
-    echo "Set ALLOW_FLUX_MANAGED_RELEASE=true only when intentional." >&2
+  if command -v kubectl >/dev/null 2>&1; then
+    if matching_flux_release; then
+      echo "Refusing to operate on Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
+      exit 1
+    else
+      flux_status=$?
+      if [ "$allow_override" = false ] && [ "$flux_status" -eq 2 ]; then
+        echo "Unable to inspect Flux HelmRelease ownership; refusing ${NAMESPACE}/${RELEASE_NAME}." >&2
+        exit 1
+      fi
+    fi
+  fi
+}
+
+resolve_saved_cleanup_target() {
+  if [ "$NAMESPACE_EXPLICIT" = false ] && [ "$RELEASE_NAME_EXPLICIT" = false ] && [ -f "$STATUS_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$STATUS_FILE"
+  fi
+}
+
+new_lease_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    sed -n '1p' /proc/sys/kernel/random/uuid
+  fi
+}
+
+adopt_release() {
+  target=${1:-}
+  command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
+  case "$target" in
+    */*) ;;
+    *) echo "Usage: $(basename "$0") adopt <namespace>/<release>" >&2; exit 2 ;;
+  esac
+  NAMESPACE=${target%%/*}
+  RELEASE_NAME=${target#*/}
+  if [ -z "$NAMESPACE" ] || [ -z "$RELEASE_NAME" ] || [ "$target" != "${NAMESPACE}/${RELEASE_NAME}" ]; then
+    echo "Adoption target must be exactly <namespace>/<release>." >&2
+    exit 2
+  fi
+  if [ "$RELEASE_NAME" = tertius ]; then
+    echo "Refusing to adopt protected release ${NAMESPACE}/tertius." >&2
     exit 1
   fi
+  require_not_flux_managed false
+  if ! helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "Refusing adoption: Helm release ${NAMESPACE}/${RELEASE_NAME} does not exist." >&2
+    exit 1
+  fi
+  existing_marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" -o name 2>/dev/null || true)
+  if [ -n "$existing_marker" ]; then
+    echo "Refusing adoption: lifecycle marker ${NAMESPACE}/${RELEASE_NAME}-harness-lifecycle already exists." >&2
+    exit 1
+  fi
+  printf 'Type %s to adopt this existing release: ' "$target" >&2
+  read -r confirmation
+  if [ "$confirmation" != "$target" ]; then
+    echo "Adoption confirmation did not match ${target}." >&2
+    exit 1
+  fi
+  lease_id=$(new_lease_id)
+  ttl_seconds=${HARNESS_TTL_SECONDS:-21600}
+  case "$ttl_seconds" in
+    ""|*[!0-9]*) echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2; exit 1 ;;
+  esac
+  if [ "$ttl_seconds" -lt 900 ] || [ "$ttl_seconds" -gt 86400 ]; then
+    echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2
+    exit 1
+  fi
+  expires_at=$(date -u -d "+${ttl_seconds} seconds" '+%Y-%m-%dT%H:%M:%SZ')
+  app_secret_name=${APP_SECRET_NAME:-${RELEASE_NAME}-app}
+  kubectl annotate secret "$app_secret_name" -n "$NAMESPACE" "tertius.io/lease-id=${lease_id}" --overwrite
+  clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+  pvcs=$(kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+  [ -z "$clusters" ] || kubectl annotate -n "$NAMESPACE" $clusters "tertius.io/lease-id=${lease_id}" --overwrite
+  [ -z "$pvcs" ] || kubectl annotate -n "$NAMESPACE" $pvcs "tertius.io/lease-id=${lease_id}" --overwrite
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${RELEASE_NAME}-harness-lifecycle
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/managed-by: tertius-harness
+    app.kubernetes.io/instance: ${RELEASE_NAME}
+    tertius.io/harness-managed: "true"
+  annotations:
+    tertius.io/lease-id: ${lease_id}
+    tertius.io/release-name: ${RELEASE_NAME}
+    tertius.io/expires-at: ${expires_at}
+    tertius.io/cleanup-policy: delete
+EOF
 }
 
 status() {
@@ -193,6 +305,7 @@ write_status_file() {
   {
     printf 'NAMESPACE=%q\n' "$NAMESPACE"
     printf 'RELEASE_NAME=%q\n' "$RELEASE_NAME"
+    printf 'APP_SECRET_NAME=%q\n' "${APP_SECRET_NAME:-${RELEASE_NAME}-app}"
     printf 'UI_BASE_URL=%q\n' "http://127.0.0.1:${UI_LOCAL_PORT}"
     printf 'API_BASE_URL=%q\n' "http://127.0.0.1:${API_LOCAL_PORT}"
     printf 'METRICS_BASE_URL=%q\n' "http://127.0.0.1:${METRICS_LOCAL_PORT}"
@@ -301,7 +414,7 @@ case "${1:-}" in
   up)
     stop_port_forwards
     preflight_ports
-    require_not_flux_managed
+    require_not_flux_managed true
     UI_LOCAL_PORT="$UI_LOCAL_PORT" API_LOCAL_PORT="$API_LOCAL_PORT" NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" \
       "${ROOT_DIR}/scripts/test-k3s-deployment.sh"
     stop_port_forwards
@@ -359,19 +472,32 @@ case "${1:-}" in
     stop_port_forwards
     ;;
   down)
-    require_not_flux_managed
+    shift
+    cleanup_args=(--cleanup)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --retain-data|--retain-auth) cleanup_args+=("$1") ;;
+        --delete-data) ;;
+        *) echo "Unknown down option: $1" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    resolve_saved_cleanup_target
+    require_not_flux_managed false
     stop_port_forwards
-    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup
+    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}" \
+      "${ROOT_DIR}/scripts/test-k3s-deployment.sh" "${cleanup_args[@]}"
     ;;
   delete-data)
-    require_not_flux_managed
-    if [ "${HARNESS_ASSUME_YES:-false}" != "true" ]; then
-      printf 'Delete release data for %s/%s? Type yes to continue: ' "$NAMESPACE" "$RELEASE_NAME"
-      read -r answer
-      [ "$answer" = "yes" ] || exit 1
-    fi
+    resolve_saved_cleanup_target
+    require_not_flux_managed false
     stop_port_forwards
-    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup --delete-data
+    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}" \
+      "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup
+    ;;
+  adopt)
+    shift
+    adopt_release "${1:-}"
     ;;
   --help|-h)
     usage

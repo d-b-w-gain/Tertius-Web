@@ -1,5 +1,7 @@
 nameOverride: ""
 fullnameOverride: ""
+harnessLifecycle:
+  leaseId: ""
 imagePullSecrets: []
 serviceAccount:
   create: false

@@ -145,6 +145,40 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistent
   exit 0
 fi
 
+if [ "${1:-}" = get ] && [[ "$joined" == *" deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,pvc "* ]] && [ "$output" = json ]; then
+  printf '{"items":['
+  separator=""
+  if [ -f "$STATE_DIR/operator-child" ]; then
+    printf '%s{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"operator-child-uid","ownerReferences":[{"uid":"cluster-uid"}]}}' "$separator" "$RELEASE_NAME"
+    separator=,
+  fi
+  if [ -f "$STATE_DIR/operator-grandchild" ]; then
+    printf '%s{"apiVersion":"v1","kind":"Service","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid","ownerReferences":[{"uid":"operator-child-uid"}]}}' "$separator" "$RELEASE_NAME"
+  fi
+  printf ']}\n'
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" deployment "*"${RELEASE_NAME}-operator-child"* ]]; then
+  [ -f "$STATE_DIR/operator-child" ] || exit 0
+  if [ "$output" = json ]; then
+    printf '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"operator-child-uid"}}\n' "$RELEASE_NAME"
+  else
+    printf 'deployment/%s-operator-child\n' "$RELEASE_NAME"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = get ] && [[ "$joined" == *" service "*"${RELEASE_NAME}-operator-grandchild"* ]]; then
+  [ -f "$STATE_DIR/operator-grandchild" ] || exit 0
+  if [ "$output" = json ]; then
+    printf '{"apiVersion":"v1","kind":"Service","metadata":{"name":"%s-operator-grandchild","uid":"operator-grandchild-uid"}}\n' "$RELEASE_NAME"
+  else
+    printf 'service/%s-operator-grandchild\n' "$RELEASE_NAME"
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" = get ] && [[ "$joined" == *" -l app.kubernetes.io/instance="* ]]; then
   resource_arg=${2:-}
   case ",${resource_arg}," in
@@ -319,6 +353,31 @@ assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
   "Flux adoption refusal must not mutate the cluster"
 
 reset_legacy_state
+rm -f "$STATE_DIR/helm"
+: >"$COMMAND_LOG"
+if printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  "$ROOT_DIR/scripts/harness-k3s.sh" adopt test-ns/test-release; then
+  fail "legacy adoption must refuse when the exact Helm release is absent"
+fi
+assert_log 'helm status test-release -n test-ns' \
+  "legacy adoption must prove the exact Helm release exists"
+assert_not_log 'kubectl (delete|annotate|patch|apply)' \
+  "absent-release adoption refusal must not mutate Kubernetes"
+
+reset_state
+: >"$COMMAND_LOG"
+if printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  "$ROOT_DIR/scripts/harness-k3s.sh" adopt test-ns/test-release; then
+  fail "legacy adoption must refuse when a lifecycle marker already exists"
+fi
+assert_log 'kubectl get configmap test-release-harness-lifecycle -n test-ns' \
+  "legacy adoption must check for an existing lifecycle marker"
+assert_not_log 'kubectl (delete|annotate|patch|apply)' \
+  "existing-marker adoption refusal must not mutate Kubernetes"
+
+reset_legacy_state
 : >"${COMMAND_LOG}.stdin"
 printf '%s\n' 'test-ns/test-release' | PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
   NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
@@ -357,5 +416,25 @@ assert_log 'helm uninstall test-release -n test-ns --ignore-not-found' \
   "remaining-resource failure must occur after Helm uninstall"
 assert_log 'kubectl get .*app\.kubernetes\.io/instance=test-release' \
   "remaining-resource failure must be produced by the absence gate"
+
+reset_state
+touch "$STATE_DIR/operator-child" "$STATE_DIR/operator-grandchild"
+: >"$COMMAND_LOG"
+if run_deploy_cleanup; then
+  fail "cleanup must fail when an unlabeled operator descendant with the captured UID remains"
+fi
+assert_log 'kubectl get deployment test-release-operator-child -n test-ns -o json' \
+  "cleanup must verify the captured operator child by exact name and UID"
+assert_log 'kubectl get service test-release-operator-grandchild -n test-ns -o json' \
+  "cleanup must recursively verify captured operator grandchildren"
+
+reset_state
+touch "$STATE_DIR/operator-child" "$STATE_DIR/operator-grandchild"
+: >"$COMMAND_LOG"
+run_deploy_cleanup --retain-data
+assert_log 'retained-objects=.*test-release-operator-child.*operator-child-uid' \
+  "retained data tombstone must record the retained operator child"
+assert_log 'retained-objects=.*test-release-operator-grandchild.*operator-grandchild-uid' \
+  "retained data tombstone must record recursive retained descendants"
 
 echo "k3s harness lifecycle contract tests passed"

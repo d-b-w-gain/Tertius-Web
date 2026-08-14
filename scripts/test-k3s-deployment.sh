@@ -40,17 +40,24 @@ TIMEOUT="${TIMEOUT:-10m}"
 DOCKER="${DOCKER:-}"
 K3S_CONTAINER="${K3S_CONTAINER:-}"
 BUILD_TAG="${BUILD_TAG:-$(date +%Y%m%d%H%M%S)}"
+HARNESS_TTL_SECONDS="${HARNESS_TTL_SECONDS:-21600}"
+HARNESS_RETAIN_ON_FAILURE="${HARNESS_RETAIN_ON_FAILURE:-false}"
 
 CLEANUP=false
-DELETE_DATA=false
+RETAIN_DATA=false
+RETAIN_AUTH=false
 PORT_FORWARD_PIDS=""
 TEMP_FILES=""
 PI_AUTH_CLAIM=""
 PI_AUTH_RENDERED_STORAGE_CLASS=""
+LIFECYCLE_MARKER="${RELEASE_NAME}-harness-lifecycle"
+LIFECYCLE_LEASE_ID=""
+LIFECYCLE_CREATED=false
+AUTOMATIC_CLEANUP_STARTED=false
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--cleanup] [--delete-data] [--help]
+Usage: $(basename "$0") [--cleanup] [--retain-data] [--retain-auth] [--delete-data] [--help]
 
 Runs the Tertius Helm chart end-to-end against the current k3s context.
 
@@ -93,8 +100,10 @@ Environment:
   K3S_CONTAINER                 Optional k3s Podman/Docker container name for image imports.
 
 Cleanup:
-  --cleanup       Uninstall the Helm release and remove test pods.
-  --delete-data   With --cleanup, also delete CloudNativePG clusters and PVCs for this release.
+  --cleanup       Fully remove the exact harness release and its leased data.
+  --retain-data   With --cleanup, retain leased CNPG clusters and release PVCs.
+  --retain-auth   With --cleanup, retain only the leased Pi agent auth PVC.
+  --delete-data   Compatibility alias for full --cleanup behavior.
 EOF
 }
 
@@ -103,8 +112,14 @@ while [ "$#" -gt 0 ]; do
     --cleanup)
       CLEANUP=true
       ;;
+    --retain-data)
+      RETAIN_DATA=true
+      ;;
+    --retain-auth)
+      RETAIN_AUTH=true
+      ;;
     --delete-data)
-      DELETE_DATA=true
+      CLEANUP=true
       ;;
     --help|-h)
       usage
@@ -317,6 +332,123 @@ truthy() {
   esac
 }
 
+validate_target() {
+  case "$NAMESPACE" in
+    ""|*[!a-z0-9.-]*|.*|*.) echo "Invalid Kubernetes namespace: ${NAMESPACE}" >&2; return 1 ;;
+  esac
+  case "$RELEASE_NAME" in
+    ""|*[!a-z0-9-]*|-*|*-) echo "Invalid Helm release name: ${RELEASE_NAME}" >&2; return 1 ;;
+  esac
+}
+
+validate_ttl() {
+  case "$HARNESS_TTL_SECONDS" in
+    ""|*[!0-9]*) echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2; return 1 ;;
+  esac
+  if [ "$HARNESS_TTL_SECONDS" -lt 900 ] || [ "$HARNESS_TTL_SECONDS" -gt 86400 ]; then
+    echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2
+    return 1
+  fi
+}
+
+new_lease_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    sed -n '1p' /proc/sys/kernel/random/uuid
+  fi
+}
+
+matching_flux_release() {
+  flux_json=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null) || {
+    echo "Unable to inspect Flux HelmRelease ownership; refusing ${NAMESPACE}/${RELEASE_NAME}." >&2
+    return 2
+  }
+  if printf '%s' "$flux_json" | jq -e --arg namespace "$NAMESPACE" --arg release "$RELEASE_NAME" '
+    any(.items[]?;
+      ((.spec.targetNamespace // .metadata.namespace) == $namespace) and
+      ((.spec.releaseName // .metadata.name) == $release)
+    )
+  ' >/dev/null; then
+    return 0
+  else
+    jq_status=$?
+  fi
+  [ "$jq_status" -eq 1 ] && return 1
+  return 2
+}
+
+require_safe_destructive_target() {
+  validate_target
+  if [ "$RELEASE_NAME" = "tertius" ]; then
+    echo "Refusing destructive cleanup of protected release ${NAMESPACE}/tertius." >&2
+    return 1
+  fi
+  if matching_flux_release; then
+    echo "Refusing destructive cleanup of Flux-managed release ${NAMESPACE}/${RELEASE_NAME}." >&2
+    return 1
+  else
+    flux_status=$?
+    [ "$flux_status" -ne 2 ] || return 1
+  fi
+}
+
+marker_json() {
+  kubectl get configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" -o json 2>/dev/null || true
+}
+
+marker_is_valid() {
+  json=$1
+  [ -n "$json" ] || return 1
+  printf '%s' "$json" | jq -e --arg release "$RELEASE_NAME" '
+    .metadata.labels["tertius.io/harness-managed"] == "true" and
+    .metadata.labels["app.kubernetes.io/instance"] == $release and
+    .metadata.annotations["tertius.io/release-name"] == $release and
+    (.metadata.annotations["tertius.io/lease-id"] | type == "string" and length > 0)
+  ' >/dev/null
+}
+
+create_lifecycle_marker() {
+  validate_ttl
+  existing_marker=$(marker_json)
+  if helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    if ! marker_is_valid "$existing_marker"; then
+      echo "Refusing existing Helm release ${NAMESPACE}/${RELEASE_NAME} without a valid harness lifecycle marker; adopt it explicitly." >&2
+      return 1
+    fi
+    LIFECYCLE_LEASE_ID=$(printf '%s' "$existing_marker" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+  else
+    if [ -n "$existing_marker" ] && ! marker_is_valid "$existing_marker"; then
+      echo "Refusing invalid lifecycle marker ${NAMESPACE}/${LIFECYCLE_MARKER}." >&2
+      return 1
+    fi
+    if [ -n "$existing_marker" ]; then
+      LIFECYCLE_LEASE_ID=$(printf '%s' "$existing_marker" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+    else
+      LIFECYCLE_LEASE_ID=$(new_lease_id)
+    fi
+  fi
+  expires_at=$(date -u -d "+${HARNESS_TTL_SECONDS} seconds" '+%Y-%m-%dT%H:%M:%SZ')
+  quote_cmd kubectl apply -f - >&2
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${LIFECYCLE_MARKER}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/managed-by: tertius-harness
+    app.kubernetes.io/instance: ${RELEASE_NAME}
+    tertius.io/harness-managed: "true"
+  annotations:
+    tertius.io/lease-id: ${LIFECYCLE_LEASE_ID}
+    tertius.io/release-name: ${RELEASE_NAME}
+    tertius.io/expires-at: ${expires_at}
+    tertius.io/cleanup-policy: delete
+EOF
+  LIFECYCLE_CREATED=true
+}
+
 image_repo() {
   image_without_digest=${1%%@*}
   last_part=${image_without_digest##*/}
@@ -379,13 +511,32 @@ failure_context() {
 on_error() {
   status=$?
   line=$1
-  cleanup_local
+  trap - ERR INT TERM
   echo "Command failed at line ${line} with exit status ${status}." >&2
   failure_context >&2
+  if truthy "$LIFECYCLE_CREATED" && ! truthy "$HARNESS_RETAIN_ON_FAILURE" && ! truthy "$AUTOMATIC_CLEANUP_STARTED"; then
+    AUTOMATIC_CLEANUP_STARTED=true
+    cleanup_release >&2 || echo "Automatic harness cleanup failed; original exit status remains ${status}." >&2
+  fi
+  cleanup_local
+  exit "$status"
+}
+
+on_signal() {
+  status=$1
+  trap - ERR INT TERM
+  failure_context >&2
+  if truthy "$LIFECYCLE_CREATED" && ! truthy "$HARNESS_RETAIN_ON_FAILURE" && ! truthy "$AUTOMATIC_CLEANUP_STARTED"; then
+    AUTOMATIC_CLEANUP_STARTED=true
+    cleanup_release >&2 || echo "Automatic harness cleanup failed; original signal status remains ${status}." >&2
+  fi
+  cleanup_local
   exit "$status"
 }
 
 trap 'on_error $LINENO' ERR
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 trap cleanup_local EXIT
 
 require_chart_files() {
@@ -691,6 +842,9 @@ helm_set_args() {
 --set-string app.secretName=${APP_SECRET_NAME}
 --set-string postgres.appUserSecretName=${RELEASE_NAME}-app-db
 --set-string keycloak.database.appUserSecretName=${RELEASE_NAME}-keycloak-db
+--set-string harnessLifecycle.leaseId=${LIFECYCLE_LEASE_ID}
+--set-string valkey.dataStorage.annotations.tertius\\.io/lease-id=${LIFECYCLE_LEASE_ID}
+--set-string nats.config.jetstream.fileStore.pvc.merge.metadata.annotations.tertius\\.io/lease-id=${LIFECYCLE_LEASE_ID}
 "
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
@@ -720,6 +874,8 @@ ensure_app_secret() {
     --from-literal=AUTH_SESSION_SECRET="$APP_AUTH_SESSION_SECRET" \
     --dry-run=client \
     -o yaml | kubectl apply -f -
+  run kubectl annotate secret "$APP_SECRET_NAME" -n "$NAMESPACE" \
+    "tertius.io/lease-id=${LIFECYCLE_LEASE_ID}" --overwrite
 }
 
 pi_auth_manifest_fields() {
@@ -1317,6 +1473,7 @@ write_harness_status() {
   {
     printf 'NAMESPACE=%q\n' "$NAMESPACE"
     printf 'RELEASE_NAME=%q\n' "$RELEASE_NAME"
+    printf 'APP_SECRET_NAME=%q\n' "$APP_SECRET_NAME"
     printf 'UI_BASE_URL=%q\n' "http://127.0.0.1:${UI_LOCAL_PORT}"
     printf 'API_BASE_URL=%q\n' "http://127.0.0.1:${API_LOCAL_PORT}"
     if [ "${KEYCLOAK_LOCAL_PORT:-0}" != "0" ]; then
@@ -1356,26 +1513,189 @@ delete_test_pods() {
   [ -z "$pods" ] || run kubectl delete -n "$NAMESPACE" $pods --ignore-not-found=true
 }
 
+resource_is_retained() {
+  wanted=$1
+  shift
+  for candidate in "$@"; do
+    [ "$candidate" != "$wanted" ] || return 0
+  done
+  return 1
+}
+
+operator_descendants_json() {
+  roots_json=$1
+  objects_json=$2
+  jq -n --argjson roots "$roots_json" --argjson objects "$objects_json" '
+    def children($uids):
+      [$objects.items[]? |
+        select(any(.metadata.ownerReferences[]?; .uid as $owner | ($uids | index($owner))))];
+    def expand($uids):
+      children($uids) as $children |
+      (($uids + [$children[].metadata.uid]) | unique) as $expanded |
+      if ($expanded | length) == ($uids | length) then $expanded else expand($expanded) end;
+    expand($roots) as $owned_uids |
+    [$objects.items[]? |
+      select(.metadata.uid as $uid | ($owned_uids | index($uid))) |
+      select(.metadata.uid as $uid | ($roots | index($uid) | not)) |
+      {
+        kind: (.kind | ascii_downcase),
+        name: .metadata.name,
+        uid: .metadata.uid
+      }]
+  '
+}
+
 cleanup_release() {
   need kubectl
   need helm
+  need jq
+  require_safe_destructive_target
 
-  delete_test_pods
+  lifecycle_json=$(marker_json)
+  clusters_json=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || printf '{"items":[]}')
+  pvcs_json=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || printf '{"items":[]}')
+  secret_json=$(kubectl get secret "$APP_SECRET_NAME" -n "$NAMESPACE" -o json 2>/dev/null || true)
 
-  if ! truthy "$DELETE_DATA"; then
-    clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-    pvcs=$(kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-    [ -z "$clusters" ] || run kubectl annotate -n "$NAMESPACE" $clusters helm.sh/resource-policy=keep --overwrite
-    [ -z "$pvcs" ] || run kubectl annotate -n "$NAMESPACE" $pvcs helm.sh/resource-policy=keep --overwrite
+  if [ -z "$lifecycle_json" ]; then
+    scoped=$(kubectl get deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,clusters.postgresql.cnpg.io,keycloaks.k8s.keycloak.org,pvc \
+      -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+    if ! helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1 && \
+       [ -z "$secret_json" ] && [ "$(printf '%s' "$clusters_json" | jq '.items | length')" -eq 0 ] && \
+       [ "$(printf '%s' "$pvcs_json" | jq '.items | length')" -eq 0 ] && [ -z "$scoped" ]; then
+      helm list -n "$NAMESPACE" -o json >/dev/null
+      return 0
+    fi
+    echo "Refusing cleanup of ${NAMESPACE}/${RELEASE_NAME}: lifecycle marker is absent; use harness-k3s.sh adopt first." >&2
+    return 1
   fi
 
+  if ! marker_is_valid "$lifecycle_json"; then
+    echo "Refusing cleanup of ${NAMESPACE}/${RELEASE_NAME}: lifecycle marker is invalid." >&2
+    return 1
+  fi
+  lease_id=$(printf '%s' "$lifecycle_json" | jq -r '.metadata.annotations["tertius.io/lease-id"]')
+  if [ -n "$secret_json" ] && [ "$(printf '%s' "$secret_json" | jq -r '.metadata.annotations["tertius.io/lease-id"] // ""')" != "$lease_id" ]; then
+    echo "Refusing cleanup: external Secret ${NAMESPACE}/${APP_SECRET_NAME} has a different lifecycle lease." >&2
+    return 1
+  fi
+  mismatched_data=$(
+    { printf '%s' "$clusters_json"; printf '\n'; printf '%s' "$pvcs_json"; } |
+      jq -sr --arg lease "$lease_id" '[.[].items[]? | select(.metadata.annotations["tertius.io/lease-id"] != $lease)] | length'
+  )
+  if [ "$mismatched_data" -ne 0 ]; then
+    echo "Refusing cleanup: one or more release data resources have a different lifecycle lease." >&2
+    return 1
+  fi
+
+  keycloaks_json=$(kubectl get keycloaks.k8s.keycloak.org -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null || true)
+  [ -n "$keycloaks_json" ] || keycloaks_json='{"items":[]}'
+  namespace_objects_json=$(kubectl get deployment,statefulset,daemonset,pod,service,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,pvc \
+    -n "$NAMESPACE" -o json 2>/dev/null || true)
+  [ -n "$namespace_objects_json" ] || namespace_objects_json='{"items":[]}'
+  cluster_root_uids=$(printf '%s' "$clusters_json" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]')
+  keycloak_root_uids=$(printf '%s' "$keycloaks_json" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]')
+  cluster_descendants=$(operator_descendants_json "$cluster_root_uids" "$namespace_objects_json")
+  keycloak_descendants=$(operator_descendants_json "$keycloak_root_uids" "$namespace_objects_json")
+  operator_descendants=$(jq -n --argjson clusters "$cluster_descendants" --argjson keycloaks "$keycloak_descendants" \
+    '($clusters + $keycloaks) | unique_by(.uid)')
+  retained_operator_uids='[]'
+
+  clusters=$(printf '%s' "$clusters_json" | jq -r '.items[] | "cluster.postgresql.cnpg.io/" + .metadata.name')
+  pvcs=$(printf '%s' "$pvcs_json" | jq -r '.items[] | "persistentvolumeclaim/" + .metadata.name')
+  retained=""
+  keep_resources=""
+  retained_objects=""
+  if truthy "$RETAIN_DATA"; then
+    retained_descendants=$(printf '%s' "$cluster_descendants" | jq -r '.[] | .kind + "/" + .name')
+    retained="${clusters} ${pvcs} ${retained_descendants}"
+    keep_resources="${clusters} ${pvcs}"
+    retained_operator_uids=$(printf '%s' "$cluster_descendants" | jq '[.[].uid]')
+    retained_objects=$(
+      jq -nr --argjson clusters "$clusters_json" --argjson pvcs "$pvcs_json" --argjson descendants "$cluster_descendants" '
+        ([$clusters.items[]?, $pvcs.items[]?] |
+          map((.kind // "resource") + "/" + .metadata.name + "@" + (.metadata.uid // "unknown"))) +
+        ($descendants | map(.kind + "/" + .name + "@" + .uid)) |
+        join(",")
+      '
+    )
+  elif truthy "$RETAIN_AUTH"; then
+    retained=$(printf '%s' "$pvcs_json" | jq -r '.items[] | select(.metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth") | "persistentvolumeclaim/" + .metadata.name')
+    keep_resources="$retained"
+    retained_objects=$(printf '%s' "$pvcs_json" | jq -r '[.items[] | select(.metadata.labels["app.kubernetes.io/component"] == "pi-agent-auth") | "PersistentVolumeClaim/" + .metadata.name + "@" + (.metadata.uid // "unknown")] | join(",")')
+  fi
+
+  delete_test_pods
+  for resource in $keep_resources; do
+    run kubectl annotate -n "$NAMESPACE" "$resource" helm.sh/resource-policy=keep --overwrite
+  done
   run helm uninstall "$RELEASE_NAME" -n "$NAMESPACE" --ignore-not-found
 
-  if truthy "$DELETE_DATA"; then
-    clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-    pvcs=$(kubectl get pvc -n "$NAMESPACE" -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
-    [ -z "$clusters" ] || run kubectl delete -n "$NAMESPACE" $clusters --ignore-not-found=true
-    [ -z "$pvcs" ] || run kubectl delete -n "$NAMESPACE" $pvcs --ignore-not-found=true
+  for resource in $clusters $pvcs; do
+    # shellcheck disable=SC2086
+    if ! resource_is_retained "$resource" $retained; then
+      run kubectl delete -n "$NAMESPACE" "$resource" --ignore-not-found=true
+    fi
+  done
+  run kubectl delete secret "$APP_SECRET_NAME" -n "$NAMESPACE" --ignore-not-found=true
+
+  if [ -n "$retained" ]; then
+    run kubectl annotate configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" \
+      tertius.io/cleanup-policy=retain "tertius.io/retained-objects=${retained_objects}" --overwrite
+  else
+    run kubectl delete configmap "$LIFECYCLE_MARKER" -n "$NAMESPACE" --ignore-not-found=true
+  fi
+
+  if helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "Helm release ${NAMESPACE}/${RELEASE_NAME} remains after cleanup." >&2
+    return 1
+  fi
+  listed=$(helm list -n "$NAMESPACE" -o json)
+  if printf '%s' "$listed" | jq -e --arg release "$RELEASE_NAME" 'any(.[]?; .name == $release)' >/dev/null; then
+    echo "Helm release ${NAMESPACE}/${RELEASE_NAME} remains in Helm list output." >&2
+    return 1
+  fi
+
+  remaining=""
+  for kind in deployment statefulset daemonset pod service job configmap secret \
+    serviceaccount role rolebinding networkpolicy scaledjob scaledobject \
+    clusters.postgresql.cnpg.io keycloaks.k8s.keycloak.org pvc; do
+    found=$(kubectl get "$kind" -n "$NAMESPACE" \
+      -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null || true)
+    [ -z "$found" ] || remaining="${remaining}${found}
+"
+  done
+  nonretained=""
+  for resource in $remaining; do
+    # shellcheck disable=SC2086
+    if resource_is_retained "$resource" $retained; then
+      continue
+    fi
+    if [ -n "$retained" ] && [ "$resource" = "configmap/${LIFECYCLE_MARKER}" ]; then
+      continue
+    fi
+    nonretained="${nonretained}${resource}
+"
+  done
+  while IFS=$'\t' read -r kind name uid; do
+    [ -n "$kind" ] || continue
+    if printf '%s' "$retained_operator_uids" | jq -e --arg uid "$uid" 'index($uid)' >/dev/null; then
+      continue
+    fi
+    live_json=$(kubectl get "$kind" "$name" -n "$NAMESPACE" -o json 2>/dev/null || true)
+    [ -n "$live_json" ] || continue
+    live_uid=$(printf '%s' "$live_json" | jq -r '.metadata.uid // ""')
+    if [ "$live_uid" = "$uid" ]; then
+      nonretained="${nonretained}${kind}/${name} uid=${uid}
+"
+    fi
+  done < <(printf '%s' "$operator_descendants" | jq -r '.[] | [.kind, .name, .uid] | @tsv')
+  if [ -n "$nonretained" ]; then
+    echo "Cleanup left non-retained resources for ${NAMESPACE}/${RELEASE_NAME}:" >&2
+    printf '%b' "$nonretained" >&2
+    return 1
   fi
 }
 
@@ -1390,6 +1710,7 @@ main() {
   fi
 
   check_preflight
+  create_lifecycle_marker
   if truthy "$CLEAN_LOCAL_IMAGES_AFTER_LOAD"; then
     build_and_load_images
   else
