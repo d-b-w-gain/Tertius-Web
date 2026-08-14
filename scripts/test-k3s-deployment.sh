@@ -373,8 +373,15 @@ flux_effective_release_name() {
 }
 
 matching_flux_release() {
-  local flux_json flux_records target source_namespace source_name explicit_name effective
+  local flux_json flux_resources flux_records target source_namespace source_name explicit_name effective
   flux_json=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null) || {
+    flux_resources=$(kubectl api-resources --api-group=helm.toolkit.fluxcd.io -o name 2>/dev/null) || {
+      echo "Unable to inspect Flux API discovery; refusing ${NAMESPACE}/${RELEASE_NAME}." >&2
+      return 2
+    }
+    if ! printf '%s\n' "$flux_resources" | grep -Fxq 'helmreleases.helm.toolkit.fluxcd.io'; then
+      return 1
+    fi
     echo "Unable to inspect Flux HelmRelease ownership; refusing ${NAMESPACE}/${RELEASE_NAME}." >&2
     return 2
   }

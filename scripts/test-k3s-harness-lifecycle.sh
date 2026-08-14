@@ -89,7 +89,9 @@ elif [[ "$joined" == *" -o name "* ]] || [[ "$joined" == *" -o name" ]]; then
 fi
 
 if [ "${1:-}" = get ] && [[ "$joined" == *" helmrelease"* || "$joined" == *" helmreleases"* ]]; then
-  if [ "${MOCK_FLUX_LONG_DEFAULT:-false}" = true ]; then
+  if [ "${MOCK_FLUX_CRD_ABSENT:-false}" = true ] || [ "${MOCK_FLUX_GET_FAILURE:-false}" = true ]; then
+    exit 1
+  elif [ "${MOCK_FLUX_LONG_DEFAULT:-false}" = true ]; then
     printf '{"items":[{"metadata":{"name":"extremely-long-release-source-name","namespace":"flux-system"},"spec":{"targetNamespace":"very-long-target-namespace"}}]}\n'
   elif [ "${MOCK_FLUX_CROSS_DEFAULT:-false}" = true ]; then
     flux_name=${RELEASE_NAME#"${NAMESPACE}-"}
@@ -99,6 +101,12 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" helmrelease"* || "$joined" == *" hel
   else
     printf '{"items":[]}\n'
   fi
+  exit 0
+fi
+
+if [ "${1:-}" = api-resources ] && [[ "$joined" == *" --api-group=helm.toolkit.fluxcd.io "* ]]; then
+  [ "${MOCK_FLUX_DISCOVERY_FAILURE:-false}" != true ] || exit 1
+  [ "${MOCK_FLUX_CRD_ABSENT:-false}" = true ] || printf 'helmreleases.helm.toolkit.fluxcd.io\n'
   exit 0
 fi
 
@@ -430,6 +438,9 @@ run_deploy_cleanup() {
   MOCK_FLUX_MANAGED="${MOCK_FLUX_MANAGED:-false}" \
   MOCK_FLUX_CROSS_DEFAULT="${MOCK_FLUX_CROSS_DEFAULT:-false}" \
   MOCK_FLUX_LONG_DEFAULT="${MOCK_FLUX_LONG_DEFAULT:-false}" \
+  MOCK_FLUX_CRD_ABSENT="${MOCK_FLUX_CRD_ABSENT:-false}" \
+  MOCK_FLUX_GET_FAILURE="${MOCK_FLUX_GET_FAILURE:-false}" \
+  MOCK_FLUX_DISCOVERY_FAILURE="${MOCK_FLUX_DISCOVERY_FAILURE:-false}" \
   MOCK_MUTATION_FAILURE="${MOCK_MUTATION_FAILURE:-}" \
   MOCK_MARKER_LEASE_ID="${MOCK_MARKER_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
   MOCK_SECRET_LEASE_ID="${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
@@ -604,6 +615,28 @@ fi
 assert_not_log 'helm uninstall' "Flux refusal must not mutate Helm"
 assert_not_log 'kubectl (delete|annotate|patch|apply)' \
   "Flux refusal must not mutate Kubernetes"
+
+reset_state
+: >"$COMMAND_LOG"
+MOCK_FLUX_CRD_ABSENT=true run_deploy_cleanup
+assert_log 'helm uninstall test-release -n test-ns --ignore-not-found' \
+  "cleanup must proceed when discovery proves the Flux API is not installed"
+
+reset_state
+: >"$COMMAND_LOG"
+if MOCK_FLUX_GET_FAILURE=true run_deploy_cleanup; then
+  fail "Flux inventory failure with an installed API must be refused"
+fi
+assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
+  "Flux inventory failure must fail closed before mutation"
+
+reset_state
+: >"$COMMAND_LOG"
+if MOCK_FLUX_GET_FAILURE=true MOCK_FLUX_DISCOVERY_FAILURE=true run_deploy_cleanup; then
+  fail "Flux API discovery failure must be refused"
+fi
+assert_not_log 'helm uninstall|kubectl (delete|annotate|patch|apply)' \
+  "Flux API discovery failure must fail closed before mutation"
 
 reset_legacy_state
 : >"$COMMAND_LOG"
