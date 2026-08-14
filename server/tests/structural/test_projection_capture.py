@@ -196,7 +196,7 @@ def test_pinned_physical_joint_maps_to_member_end_releases() -> None:
         "dx": False,
         "dy": False,
         "dz": False,
-        "rx": True,
+        "rx": False,
         "ry": True,
         "rz": True,
     }

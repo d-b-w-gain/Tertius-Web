@@ -569,9 +569,9 @@ tests referencing removed contracts.
 
 - [ ] Rewrite the worked example so `design.py` contains only mechanical
   composition and `model`.
-- [ ] Replace every direct `lysaght_zc_purlin()`, separate structural geometry,
+- [x] Replace every direct `lysaght_zc_purlin()`, separate structural geometry,
   and separate catalogue-selection sequence with the canonical factory.
-- [ ] Replace portal, purlin/girt, stud/track, and bracket/bolt connections with
+- [x] Replace portal, purlin/girt, stud/track, and bracket/bolt connections with
   typed physical port connections.
 - [ ] Delete the external project structural manifest helper after reusable
   engine behavior has moved into Tertius.
@@ -581,6 +581,13 @@ tests referencing removed contracts.
   to describe compiled projections.
 - [ ] Invalidate/regenerate old artifacts; do not migrate them through a legacy
   reader.
+
+The external `3x5shed` design now exercises the complete structural skeleton:
+95 installed Cee members, 147 physical joints, 171 derived analytical segments,
+and no unconnected structural component. Portal, roof, wall, gable, opening, and
+floor topology is compiled from final CAD placements and fabricated connection
+workpoints. Raw nonstructural furnishings and finishes remain visible and keep
+procurement release blocked until their legacy BoM decorators are migrated.
 
 ### Task 10: Validate the real workflow and release gates
 

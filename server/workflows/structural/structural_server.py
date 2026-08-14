@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from math import atan2, degrees, dist, sqrt
-from collections.abc import Mapping
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
@@ -341,63 +342,109 @@ def _endpoint_connection_effects(
     endpoint: str,
     component_kinds: Mapping[str, str],
     endpoint_joints: Mapping[tuple[str, str], dict],
+    port_names: Sequence[str] | None = None,
+    projected_node_key: str | None = None,
 ) -> tuple[Restraints, Restraints, list[str], str]:
     warnings: list[str] = []
-    joint = endpoint_joints.get((component_id, endpoint))
-    if joint is None:
-        return Restraints(), Restraints(), warnings, f"endpoint:{component_id}:{endpoint}"
-
-    connection_id = str(joint.get("connection_id") or joint.get("id") or "")
-    ports = [port for port in joint.get("ports", []) if isinstance(port, dict)]
-    other_component_ids = {
-        str(port.get("component_id"))
-        for port in ports
-        if str(port.get("component_id")) != component_id
-    }
-    other_kinds = {
-        component_kinds[other_id]
-        for other_id in other_component_ids
-        if other_id in component_kinds
-    }
-    model = str(joint.get("analysis_model") or "")
-    status = str(joint.get("stiffness_status") or "unverified")
-    basis = str(joint.get("stiffness_basis") or "")
-    if status != "verified":
-        warnings.append(
-            f"Connection {connection_id} uses its {model or 'declared'} analysis "
-            f"model as a draft assumption ({status}): {basis}"
-        )
-    node_key = f"joint:{connection_id}"
-
-    if "ground" in other_kinds:
-        if model in {"rigid", "rigid_zone"}:
-            return fixed_restraints(), Restraints(), warnings, node_key
-        if model == "pinned":
-            return pinned_restraints(), Restraints(), warnings, node_key
-        raise ValueError(
-            f"ground connection {joint.get('connection_id')!r} uses unsupported "
-            f"analysis model {model!r}"
-        )
-
-    if "member" in other_kinds:
-        if model in {"rigid", "rigid_zone"}:
-            return Restraints(), Restraints(), warnings, node_key
-        if model == "pinned":
-            if "moment" in set(joint.get("transfers") or []):
-                raise ValueError(
-                    f"pinned connection {connection_id!r} cannot declare moment transfer"
-                )
-            releases = Restraints(rx=True, ry=True, rz=True)
-            return Restraints(), releases, warnings, node_key
-        raise ValueError(
-            f"member connection {connection_id!r} uses unsupported analysis model "
-            f"{model!r}"
-        )
-
-    raise ValueError(
-        f"connection {connection_id!r} does not join {component_id}.{endpoint} to "
-        "a structural member or ground reference"
+    selected_port_names = tuple(port_names or (endpoint,))
+    joints: list[dict] = []
+    seen_joint_ids: set[str] = set()
+    for port_name in selected_port_names:
+        joint = endpoint_joints.get((component_id, port_name))
+        if joint is None:
+            continue
+        joint_id = str(joint.get("connection_id") or joint.get("id") or "")
+        if joint_id not in seen_joint_ids:
+            joints.append(joint)
+            seen_joint_ids.add(joint_id)
+    node_key = projected_node_key or (
+        f"joint:{'+'.join(sorted(seen_joint_ids))}"
+        if joints
+        else f"endpoint:{component_id}:{endpoint}"
     )
+    restraints = Restraints()
+    releases = Restraints()
+
+    def merged(left: Restraints, right: Restraints) -> Restraints:
+        return Restraints(
+            **{
+                field: bool(getattr(left, field) or getattr(right, field))
+                for field in ("dx", "dy", "dz", "rx", "ry", "rz")
+            }
+        )
+
+    for joint in joints:
+        connection_id = str(joint.get("connection_id") or joint.get("id") or "")
+        ports = [port for port in joint.get("ports", []) if isinstance(port, dict)]
+        other_component_ids = {
+            str(port.get("component_id"))
+            for port in ports
+            if str(port.get("component_id")) != component_id
+        }
+        other_kinds = {
+            component_kinds[other_id]
+            for other_id in other_component_ids
+            if other_id in component_kinds
+        }
+        model = str(joint.get("analysis_model") or "")
+        status = str(joint.get("stiffness_status") or "unverified")
+        basis = str(joint.get("stiffness_basis") or "")
+        if status != "verified":
+            warnings.append(
+                f"Connection {connection_id} uses its {model or 'declared'} analysis "
+                f"model as a draft assumption ({status}): {basis}"
+            )
+
+        if "ground" in other_kinds:
+            if model in {"rigid", "rigid_zone"}:
+                restraints = merged(restraints, fixed_restraints())
+                continue
+            if model == "pinned":
+                restraints = merged(restraints, pinned_restraints())
+                continue
+            raise ValueError(
+                f"ground connection {connection_id!r} uses unsupported analysis model "
+                f"{model!r}"
+            )
+
+        if "member" in other_kinds:
+            if model in {"rigid", "rigid_zone"}:
+                continue
+            if model == "pinned":
+                if "moment" in set(joint.get("transfers") or []):
+                    raise ValueError(
+                        f"pinned connection {connection_id!r} cannot declare moment transfer"
+                    )
+                # A connection at a fabricated/intermediate port does not hinge the
+                # continuous host member. The connected member's primary end is
+                # released instead.
+                joint_component_port_names = {
+                    str(port.get("port") or "")
+                    for port in ports
+                    if str(port.get("component_id") or "") == component_id
+                }
+                if joint_component_port_names.intersection({"start", "end"}):
+                    releases = merged(
+                        releases,
+                        # Release the two bending rotations. Retaining the
+                        # member-axis torsional DOF avoids the singular
+                        # free-twist mode produced by a member pinned at both
+                        # ends; explicit torsional connection stiffness can
+                        # replace this draft idealisation when evidence exists.
+                        Restraints(ry=True, rz=True),
+                    )
+                continue
+            raise ValueError(
+                f"member connection {connection_id!r} uses unsupported analysis model "
+                f"{model!r}"
+            )
+
+        raise ValueError(
+            f"connection {connection_id!r} does not join {component_id}.{endpoint} "
+            "to a structural member or ground reference"
+        )
+
+    return restraints, releases, warnings, node_key
 
 
 def _analysis_from_projection(
@@ -413,24 +460,44 @@ def _analysis_from_projection(
     }
     component_kinds = {component.id: component.kind for component in components}
     endpoint_joints = _endpoint_joint_index(projection)
-    members_by_component = {
-        str(member.get("component_id")): member
+    projected_members = [
+        member
         for member in projection.get("analytical_members", [])
         if isinstance(member, dict) and member.get("component_id")
-    }
-    if not members_by_component:
+    ]
+    members_by_component: dict[str, list[dict]] = defaultdict(list)
+    for projected_member in projected_members:
+        members_by_component[str(projected_member["component_id"])].append(
+            projected_member
+        )
+    for component_members in members_by_component.values():
+        component_members.sort(
+            key=lambda member: float(member.get("physical_start_distance_m") or 0.0)
+        )
+    if not projected_members:
         raise ValueError("structural projection has no analytical members")
 
     materials: dict[str, StructuralMaterial] = {}
     sections: dict[str, SectionProperties] = {}
     declarations: list[AnalyticalMemberDeclaration] = []
     criteria_by_component = {
-        criterion.component_id: criterion for criterion in configuration.member_criteria
+        criterion.component_id: criterion
+        for criterion in configuration.member_criteria
+        if criterion.component_id is not None
     }
+    default_criterion = next(
+        (
+            criterion
+            for criterion in configuration.member_criteria
+            if criterion.component_id is None
+        ),
+        None,
+    )
     warnings: list[str] = []
     has_ground_restraint = False
 
-    for component_id, projected_member in members_by_component.items():
+    for projected_member in projected_members:
+        component_id = str(projected_member["component_id"])
         product_key = str(projected_member.get("product_key") or "")
         facet = product_facets.get(product_key)
         if facet is None:
@@ -528,6 +595,8 @@ def _analysis_from_projection(
             endpoint="start",
             component_kinds=component_kinds,
             endpoint_joints=endpoint_joints,
+            port_names=projected_member.get("start_port_names"),
+            projected_node_key=projected_member.get("start_node_key"),
         )
         (
             end_restraints,
@@ -539,6 +608,8 @@ def _analysis_from_projection(
             endpoint="end",
             component_kinds=component_kinds,
             endpoint_joints=endpoint_joints,
+            port_names=projected_member.get("end_port_names"),
+            projected_node_key=projected_member.get("end_node_key"),
         )
         warnings.extend((*start_warnings, *end_warnings))
         has_ground_restraint = has_ground_restraint or any(
@@ -551,7 +622,7 @@ def _analysis_from_projection(
                 end_restraints.dz,
             )
         )
-        criterion = criteria_by_component.get(component_id)
+        criterion = criteria_by_component.get(component_id, default_criterion)
         start_vector = _vector(
             projected_member.get("start_m"),
             label="member start",
@@ -563,13 +634,21 @@ def _analysis_from_projection(
         declarations.append(
             AnalyticalMemberDeclaration(
                 id=str(projected_member["id"]),
-                label=next(
-                    (
-                        component.label
-                        for component in components
-                        if component.id == component_id
-                    ),
-                    component_id,
+                label=(
+                    next(
+                        (
+                            component.label
+                            for component in components
+                            if component.id == component_id
+                        ),
+                        component_id,
+                    )
+                    + (
+                        f" segment {projected_member['segment_index']}/"
+                        f"{projected_member['segment_count']}"
+                        if int(projected_member.get("segment_count") or 1) > 1
+                        else ""
+                    )
                 ),
                 component_id=component_id,
                 start=start_vector,
@@ -612,24 +691,44 @@ def _analysis_from_projection(
     point_loads: list[MemberPointLoad] = []
     distributed_loads: list[MemberDistributedLoad] = []
     for point_config in configuration.member_loads:
-        point_member = members_by_component.get(point_config.component_id)
-        if point_member is None:
+        component_members = members_by_component.get(point_config.component_id)
+        if not component_members:
             raise ValueError(
                 f"configured load {point_config.id!r} references missing component "
                 f"{point_config.component_id!r}"
             )
-        length = _member_length(point_member)
-        if point_config.distance_m > length:
+        physical_length = max(
+            float(member.get("physical_end_distance_m") or _member_length(member))
+            for member in component_members
+        )
+        if point_config.distance_m > physical_length + 1e-9:
             raise ValueError(
-                f"configured load {point_config.id!r} lies beyond member length {length:g}m"
+                f"configured load {point_config.id!r} lies beyond member length "
+                f"{physical_length:g}m"
             )
+        point_member = next(
+            (
+                member
+                for member in component_members
+                if float(member.get("physical_start_distance_m") or 0.0) - 1e-9
+                <= point_config.distance_m
+                <= float(
+                    member.get("physical_end_distance_m") or _member_length(member)
+                )
+                + 1e-9
+            ),
+            component_members[-1],
+        )
+        local_distance = point_config.distance_m - float(
+            point_member.get("physical_start_distance_m") or 0.0
+        )
         point_loads.append(
             MemberPointLoad(
                 id=point_config.id,
                 label=point_config.label,
                 member_id=str(point_member["id"]),
                 case_id=point_config.case_id,
-                distance_m=point_config.distance_m,
+                distance_m=max(0.0, local_distance),
                 force=point_config.force,
                 moment=point_config.moment,
                 source_load_id=None,
@@ -637,36 +736,74 @@ def _analysis_from_projection(
             )
         )
     for distributed_config in configuration.member_distributed_loads:
-        distributed_member = members_by_component.get(distributed_config.component_id)
-        if distributed_member is None:
+        component_members = members_by_component.get(distributed_config.component_id)
+        if not component_members:
             raise ValueError(
                 f"configured load {distributed_config.id!r} references missing component "
                 f"{distributed_config.component_id!r}"
             )
-        length = _member_length(distributed_member)
-        end_distance = distributed_config.end_distance_m or length
-        if end_distance > length or distributed_config.start_distance_m >= end_distance:
+        physical_length = max(
+            float(member.get("physical_end_distance_m") or _member_length(member))
+            for member in component_members
+        )
+        end_distance = distributed_config.end_distance_m or physical_length
+        if (
+            end_distance > physical_length + 1e-9
+            or distributed_config.start_distance_m >= end_distance
+        ):
             raise ValueError(
                 f"configured load {distributed_config.id!r} has invalid member stations"
             )
-        distributed_loads.append(
-            MemberDistributedLoad(
-                id=distributed_config.id,
-                label=distributed_config.label,
-                member_id=str(distributed_member["id"]),
-                case_id=distributed_config.case_id,
-                start_distance_m=distributed_config.start_distance_m,
-                end_distance_m=end_distance,
-                start_force_kN_m=distributed_config.start_force_kN_m,
-                end_force_kN_m=(
-                    distributed_config.end_force_kN_m
-                    or distributed_config.start_force_kN_m
-                ),
-                source_kind="authored",
-                source_load_id=None,
-                provenance=distributed_config.provenance,
+        start_force = distributed_config.start_force_kN_m
+        end_force = distributed_config.end_force_kN_m or start_force
+        loaded_segments: list[tuple[dict, float, float]] = []
+        for member in component_members:
+            member_start = float(member.get("physical_start_distance_m") or 0.0)
+            member_end = float(
+                member.get("physical_end_distance_m") or _member_length(member)
             )
-        )
+            overlap_start = max(distributed_config.start_distance_m, member_start)
+            overlap_end = min(end_distance, member_end)
+            if overlap_end > overlap_start + 1e-9:
+                loaded_segments.append((member, overlap_start, overlap_end))
+
+        def interpolated_force(station: float) -> Vector3:
+            fraction = (
+                (station - distributed_config.start_distance_m)
+                / (end_distance - distributed_config.start_distance_m)
+            )
+            return Vector3(
+                x=start_force.x + fraction * (end_force.x - start_force.x),
+                y=start_force.y + fraction * (end_force.y - start_force.y),
+                z=start_force.z + fraction * (end_force.z - start_force.z),
+            )
+
+        for load_index, (distributed_member, overlap_start, overlap_end) in enumerate(
+            loaded_segments,
+            start=1,
+        ):
+            member_start = float(
+                distributed_member.get("physical_start_distance_m") or 0.0
+            )
+            distributed_loads.append(
+                MemberDistributedLoad(
+                    id=(
+                        distributed_config.id
+                        if len(loaded_segments) == 1
+                        else f"{distributed_config.id}:segment:{load_index:02d}"
+                    ),
+                    label=distributed_config.label,
+                    member_id=str(distributed_member["id"]),
+                    case_id=distributed_config.case_id,
+                    start_distance_m=overlap_start - member_start,
+                    end_distance_m=overlap_end - member_start,
+                    start_force_kN_m=interpolated_force(overlap_start),
+                    end_force_kN_m=interpolated_force(overlap_end),
+                    source_kind="authored",
+                    source_load_id=None,
+                    provenance=distributed_config.provenance,
+                )
+            )
 
     if configuration.include_self_weight:
         dead_cases = [case for case in configuration.load_cases if case.category == "dead"]
@@ -702,21 +839,27 @@ def _analysis_from_projection(
                 )
             )
 
-    declaration_by_component = {
-        declaration.component_id: declaration for declaration in declarations
-    }
+    declarations_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(list)
+    for declaration in declarations:
+        declarations_by_component[declaration.component_id].append(declaration)
+    projected_by_id = {str(member["id"]): member for member in projected_members}
     cross_section_verification = None
     if configuration.cross_section_verification is not None:
         configured_cross_section = configuration.cross_section_verification
         selected_member_ids: list[str] = []
-        for component_id in configured_cross_section.component_ids:
-            selected_declaration = declaration_by_component.get(component_id)
-            if selected_declaration is None:
+        selected_component_ids = configured_cross_section.component_ids
+        if not selected_component_ids:
+            selected_member_ids = [declaration.id for declaration in declarations]
+        for component_id in selected_component_ids:
+            selected_declarations = declarations_by_component.get(component_id)
+            if not selected_declarations:
                 raise ValueError(
                     "cross-section verification references missing component "
                     f"{component_id!r}"
                 )
-            selected_member_ids.append(selected_declaration.id)
+            selected_member_ids.extend(
+                declaration.id for declaration in selected_declarations
+            )
         cross_section_verification = CrossSectionVerificationDefinition(
             pack_id=configured_cross_section.pack_id,
             combination_ids=configured_cross_section.combination_ids,
@@ -728,31 +871,88 @@ def _analysis_from_projection(
     if configuration.member_stability_verification is not None:
         configured_member_stability = configuration.member_stability_verification
         segments: list[MemberStabilitySegmentDefinition] = []
-        for configured_segment in configured_member_stability.segments:
-            segment_declaration = declaration_by_component.get(
-                configured_segment.component_id
+        configured_segments = list(configured_member_stability.segments)
+        if not configured_segments:
+            for declaration in declarations:
+                member_length = dist(
+                    declaration.start.model_dump().values(),
+                    declaration.end.model_dump().values(),
+                )
+                segments.append(MemberStabilitySegmentDefinition(
+                    id=f"{declaration.id}:full-length",
+                    member_id=declaration.id,
+                    start_distance_m=0.0,
+                    end_distance_m=member_length,
+                    minor_axis_effective_length_factor=1.0,
+                    torsional_effective_length_factor=1.0,
+                    lateral_bending_restraint="unverified",
+                    restraint_status="assumed",
+                    restraint_basis=(
+                        "Automatically selected from the compiled analytical segment; "
+                        "no cladding, bridging, or connection restraint is credited."
+                    ),
+                    distortional_buckling_status="unverified",
+                    distortional_buckling_basis=(
+                        "No configuration-specific distortional-buckling evidence "
+                        "has been attached to this compiled segment."
+                    ),
+                ))
+        for configured_segment in configured_segments:
+            component_declarations = declarations_by_component.get(
+                configured_segment.component_id,
+                [],
             )
-            if segment_declaration is None:
+            if not component_declarations:
                 raise ValueError(
                     "member-stability verification references missing component "
                     f"{configured_segment.component_id!r}"
                 )
-            member_length = dist(
-                segment_declaration.start.model_dump().values(),
-                segment_declaration.end.model_dump().values(),
+            physical_length = max(
+                float(
+                    projected_by_id[declaration.id].get("physical_end_distance_m")
+                    or _member_length(projected_by_id[declaration.id])
+                )
+                for declaration in component_declarations
             )
-            end_distance = configured_segment.end_distance_m or member_length
-            if end_distance > member_length + 1e-9:
+            end_distance = configured_segment.end_distance_m or physical_length
+            if end_distance > physical_length + 1e-9:
                 raise ValueError(
                     f"member-stability segment {configured_segment.id!r} extends "
                     f"beyond {configured_segment.component_id!r}"
                 )
-            segments.append(
-                MemberStabilitySegmentDefinition(
-                    id=configured_segment.id,
+            overlapping_declarations: list[
+                tuple[AnalyticalMemberDeclaration, float, float, float]
+            ] = []
+            for declaration in component_declarations:
+                projected_member = projected_by_id[declaration.id]
+                member_start = float(
+                    projected_member.get("physical_start_distance_m") or 0.0
+                )
+                member_end = float(
+                    projected_member.get("physical_end_distance_m")
+                    or (member_start + _member_length(projected_member))
+                )
+                overlap_start = max(configured_segment.start_distance_m, member_start)
+                overlap_end = min(end_distance, member_end)
+                if overlap_end > overlap_start + 1e-9:
+                    overlapping_declarations.append(
+                        (declaration, member_start, overlap_start, overlap_end)
+                    )
+            for segment_index, (
+                segment_declaration,
+                member_start,
+                overlap_start,
+                overlap_end,
+            ) in enumerate(overlapping_declarations, start=1):
+                segments.append(MemberStabilitySegmentDefinition(
+                    id=(
+                        configured_segment.id
+                        if len(overlapping_declarations) == 1
+                        else f"{configured_segment.id}:segment:{segment_index:02d}"
+                    ),
                     member_id=segment_declaration.id,
-                    start_distance_m=configured_segment.start_distance_m,
-                    end_distance_m=end_distance,
+                    start_distance_m=overlap_start - member_start,
+                    end_distance_m=overlap_end - member_start,
                     minor_axis_effective_length_factor=(
                         configured_segment.minor_axis_effective_length_factor
                     ),
@@ -770,8 +970,7 @@ def _analysis_from_projection(
                     distortional_buckling_basis=(
                         configured_segment.distortional_buckling_basis
                     ),
-                )
-            )
+                ))
         member_stability_verification = MemberStabilityVerificationDefinition(
             pack_id=configured_member_stability.pack_id,
             combination_ids=configured_member_stability.combination_ids,

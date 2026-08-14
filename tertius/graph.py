@@ -101,12 +101,14 @@ def build_compiled_design_graph(session: CompileSession, model: bd.Shape) -> dic
     diagnostics: list[dict[str, Any]] = []
     procurement_complete = True
     structural_complete = True
+    has_structural_components = False
     for component in session.components:
         product = component.product
         if product.classification == "orderable" and product.procurement is None:
             procurement_complete = False
         structural = product.structural
         if structural is not None and structural.kind in {"member", "surface", "support"}:
+            has_structural_components = True
             if component.token not in connected_component_tokens:
                 structural_complete = False
                 diagnostics.append(
@@ -140,6 +142,9 @@ def build_compiled_design_graph(session: CompileSession, model: bd.Shape) -> dic
             }
         )
 
+    if not has_structural_components:
+        structural_complete = False
+
     connections: list[dict[str, Any]] = []
     for connection in session.connections:
         connections.append(
@@ -171,12 +176,12 @@ def build_compiled_design_graph(session: CompileSession, model: bd.Shape) -> dic
                 "count": len(unmanaged),
                 "message": (
                     "Raw Build123D geometry can render but is not authoritative for "
-                    "procurement, structural analysis, or drawings."
+                    "procurement or drawings. Structural analysis includes only "
+                    "explicitly managed structural components."
                 ),
             }
         )
         procurement_complete = False
-        structural_complete = False
 
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

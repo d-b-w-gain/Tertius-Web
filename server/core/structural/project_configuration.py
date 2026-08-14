@@ -40,7 +40,7 @@ class ConfiguredMemberDistributedLoad(StructuralContract):
 
 
 class ConfiguredMemberCriteria(StructuralContract):
-    component_id: str
+    component_id: str | None = None
     deflection_limit_ratio: float | None = Field(default=None, gt=0)
     deflection_limit_mm: float | None = Field(default=None, gt=0)
     deflection_limit_basis: str | None = None
@@ -93,7 +93,7 @@ class ConfiguredMemberStabilitySegment(StructuralContract):
 class ConfiguredMemberStabilityVerification(StructuralContract):
     pack_id: Literal["as_nzs_4600_2018_ewm_member"]
     combination_ids: list[str] = Field(min_length=1)
-    segments: list[ConfiguredMemberStabilitySegment] = Field(min_length=1)
+    segments: list[ConfiguredMemberStabilitySegment] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
 
@@ -124,6 +124,8 @@ class StructuralProjectConfiguration(StructuralContract):
         if len(combination_ids) != len(set(combination_ids)):
             raise ValueError("load combinations contain duplicate IDs")
         case_id_set = set(case_ids)
+        if sum(criterion.component_id is None for criterion in self.member_criteria) > 1:
+            raise ValueError("member criteria can contain at most one all-members default")
         for combination in self.load_combinations:
             missing = set(combination.factors) - case_id_set
             if missing:

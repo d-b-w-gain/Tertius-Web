@@ -49,7 +49,11 @@ def member_product(part_number: str = "TEST-C100") -> ProductDefinition:
             evidence_basis="Test catalogue fixture.",
         ),
         drawing=DrawingFacet(name=part_number, attributes={"section": "Cee"}),
-        port_families={"start": ["test-bolted"], "end": ["test-bolted"]},
+        port_families={
+            "start": ["test-bolted"],
+            "end": ["test-bolted"],
+            "*": ["test-bolted"],
+        },
     )
 
 
@@ -77,6 +81,7 @@ def managed_member(
     mark: str,
     start: tuple[float, float, float],
     end: tuple[float, float, float],
+    extra_ports: dict[str, PortPlacement] | None = None,
 ) -> bd.Shape:
     length = sum((end[index] - start[index]) ** 2 for index in range(3)) ** 0.5
     shape = bd.Box(10, 10, length, align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.MIN))
@@ -90,6 +95,7 @@ def managed_member(
         ports={
             "start": PortPlacement(start, (0, 0, -1)),
             "end": PortPlacement(end, (0, 0, 1)),
+            **(extra_ports or {}),
         },
     )
 
@@ -116,6 +122,50 @@ def test_catalogue_product_is_deeply_immutable_and_digest_changes_with_identity(
 def test_managed_component_requires_runner_owned_session() -> None:
     with pytest.raises(TertiusRuntimeError, match="active Tertius compile session"):
         managed_component(bd.Box(1, 1, 1), product=member_product())
+
+
+def test_product_wildcard_accepts_fabricated_instance_ports() -> None:
+    product = ProductDefinition(
+        key="test.fabricated-member",
+        label="Fabricated member",
+        geometry={"kind": "member"},
+        procurement=ProcurementFacet(part_number="TEST-FAB", unit="each"),
+        structural=StructuralFacet(
+            kind="member",
+            section={
+                "area_m2": 0.001,
+                "iy_m4": 1e-6,
+                "iz_m4": 1e-6,
+                "torsion_j_m4": 1e-8,
+            },
+            material={
+                "elastic_modulus_pa": 200e9,
+                "shear_modulus_pa": 77e9,
+                "poisson_ratio": 0.3,
+                "density_kg_m3": 7850,
+            },
+        ),
+        port_families={
+            "start": ("test.connection",),
+            "end": ("test.connection",),
+            "*": ("test.connection",),
+        },
+    )
+
+    with compile_session() as session:
+        component = managed_component(
+            bd.Box(10, 10, 100),
+            product=product,
+            ports={
+                "start": PortPlacement((0, 0, 0), (0, 0, -1)),
+                "end": PortPlacement((0, 0, 100), (0, 0, 1)),
+                "fabricated:knee": PortPlacement((0, 0, 50), (1, 0, 0)),
+            },
+        )
+        assert component.ports["fabricated:knee"].compatible_families == (
+            "test.connection",
+        )
+        session.finalize(component)
 
 
 def test_component_and_physical_connection_build_one_linked_graph() -> None:
@@ -194,6 +244,67 @@ def test_component_and_physical_connection_build_one_linked_graph() -> None:
     assert [item["mark"] for item in drawing["items"]] == ["C1", "R1", "KB1"]
 
 
+def test_connected_fabricated_port_splits_the_analytical_member() -> None:
+    with compile_session() as session:
+        host = managed_member(
+            product=member_product(),
+            mark="HOST",
+            start=(0, 0, 0),
+            end=(0, 0, 1000),
+            extra_ports={
+                "fabricated:mid": PortPlacement((0, 0, 500), (1, 0, 0)),
+            },
+        )
+        branch = managed_member(
+            product=member_product(),
+            mark="BRANCH",
+            start=(0, 0, 500),
+            end=(500, 0, 500),
+        )
+        bracket = managed_component(
+            bd.Box(20, 20, 20).moved(bd.Pos(Z=490)),
+            product=connector_product(),
+            mark="MID-BRACKET",
+        )
+        connection = physical_connection(
+            bd.Compound(children=[bracket]),
+            definition=ConnectionDefinition(
+                key="test-mid",
+                label="Test intermediate connection",
+                family="test-bolted",
+                transfers=("force", "shear"),
+                analysis_model="pinned",
+                stiffness_status="candidate",
+                stiffness_basis="Test intermediate connection.",
+            ),
+            ports=(host.ports["fabricated:mid"], branch.ports.start),
+            connector_components=(bracket,),
+            mark="MID",
+        )
+        model = bd.Compound(children=[host, branch, connection])
+        graph = session.finalize(model)
+        structural = all_workbench_projections(graph, model=model)["structural"]
+
+    host_segments = [
+        member
+        for member in structural["analytical_members"]
+        if member["component_id"] == "HOST"
+    ]
+    assert [member["id"] for member in host_segments] == [
+        "member:HOST:segment:01",
+        "member:HOST:segment:02",
+    ]
+    assert host_segments[0]["end_m"] == [0.0, 0.0, 0.5]
+    assert host_segments[0]["end_node_key"] == "joint:MID"
+    assert host_segments[1]["start_node_key"] == "joint:MID"
+    branch_member = next(
+        member
+        for member in structural["analytical_members"]
+        if member["component_id"] == "BRANCH"
+    )
+    assert branch_member["start_node_key"] == "joint:MID"
+
+
 def test_product_change_propagates_to_every_workbench_projection() -> None:
     projection_sets: list[dict[str, dict]] = []
     for part_number in ("TEST-C100", "TEST-C150"):
@@ -250,6 +361,56 @@ def test_unmanaged_geometry_renders_but_blocks_workbench_completeness() -> None:
     assert graph["readiness"]["mechanical_graph_valid"] is True
     assert graph["readiness"]["procurement_complete"] is False
     assert graph["readiness"]["structural_model_complete"] is False
+
+
+def test_unmanaged_nonstructural_geometry_does_not_invalidate_managed_structure() -> None:
+    with compile_session() as session:
+        column = managed_member(
+            product=member_product(),
+            mark="C1",
+            start=(0, 0, 0),
+            end=(0, 0, 1000),
+        )
+        ground_product = ProductDefinition(
+            key="test:ground",
+            label="Test ground",
+            classification="reference",
+            geometry={"kind": "ground"},
+            structural=StructuralFacet(kind="ground"),
+            port_families={"base": ["test-bolted"]},
+        )
+        ground = managed_component(
+            bd.Box(10, 10, 10),
+            product=ground_product,
+            mark="G1",
+            ports={"base": PortPlacement((0, 0, 0), (0, 0, 1))},
+        )
+        connector = managed_component(
+            bd.Box(5, 5, 5),
+            product=connector_product(),
+            mark="B1",
+        )
+        connection = physical_connection(
+            bd.Compound(children=[connector]),
+            definition=ConnectionDefinition(
+                key="test-base",
+                label="Test base",
+                family="test-bolted",
+                transfers=("force", "shear"),
+                analysis_model="pinned",
+                stiffness_status="candidate",
+                stiffness_basis="Test fixture.",
+            ),
+            ports=(column.ports.start, ground.ports.base),
+            connector_components=(connector,),
+        )
+        raw_furniture = bd.Box(20, 20, 20).moved(bd.Pos(X=100))
+        graph = session.finalize(
+            bd.Compound(children=[column, ground, connection, raw_furniture])
+        )
+
+    assert graph["readiness"]["structural_model_complete"] is True
+    assert graph["readiness"]["procurement_complete"] is False
 
 
 def test_registered_component_must_appear_once_in_model() -> None:

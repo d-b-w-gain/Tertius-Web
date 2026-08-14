@@ -101,8 +101,14 @@ class CompileSession:
         token = f"component-token-{len(self._components) + 1:06d}"
         instance_id = normalized_mark or f"component-{len(self._components) + 1:06d}"
         component_ports: dict[str, ComponentPort] = {}
-        expected_port_names = set(product.port_families)
-        unexpected = sorted(set(ports) - expected_port_names)
+        declared_port_names = set(product.port_families)
+        accepts_fabricated_ports = "*" in declared_port_names
+        expected_port_names = declared_port_names - {"*"}
+        unexpected = (
+            []
+            if accepts_fabricated_ports
+            else sorted(set(ports) - expected_port_names)
+        )
         if unexpected:
             raise TertiusRuntimeError(
                 f"product {product.key!r} does not define ports {unexpected}"

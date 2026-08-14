@@ -168,7 +168,10 @@ class ProductDefinition:
         return canonical_digest(self.payload(include_digest=False))
 
     def port_family_names(self, port_name: str) -> tuple[str, ...]:
-        raw = self.port_families.get(port_name, ())
+        raw = self.port_families.get(
+            port_name,
+            self.port_families.get("*", ()),
+        )
         if isinstance(raw, str):
             return (raw,)
         return tuple(str(item) for item in raw)
