@@ -1681,7 +1681,9 @@ resource_is_retained() {
 operator_descendants_json() {
   roots_json=$1
   objects_json=$2
-  jq -n --argjson roots "$roots_json" --argjson objects "$objects_json" '
+  { printf '%s\n' "$roots_json"; printf '%s\n' "$objects_json"; } | jq -s '
+    .[0] as $roots |
+    .[1] as $objects |
     def children($uids):
       [$objects.items[]? |
         select(any(.metadata.ownerReferences[]?; .uid as $owner | ($uids | index($owner))))];
