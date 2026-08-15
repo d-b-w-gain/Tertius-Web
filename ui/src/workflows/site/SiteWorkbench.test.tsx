@@ -161,14 +161,25 @@ const response: SiteWorkbenchResponse = {
   },
 }
 
+function savedResponse(init?: RequestInit): SiteWorkbenchResponse {
+  return {
+    ...response,
+    exists: true,
+    site_dict: init?.body
+      ? JSON.parse(String(init.body)) as SiteWorkbenchResponse['site_dict']
+      : response.site_dict,
+  }
+}
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  window.localStorage.clear()
 })
 
 describe('SiteWorkbench', () => {
   it('replaces starter dimensions with the active candidate model bounds', async () => {
-    mocks.apiFetch.mockImplementation(async (url: string) => {
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => {
       if (url.endsWith('/api/extus/status')) {
         return new Response(JSON.stringify({
           mtime: 1234,
@@ -186,8 +197,8 @@ describe('SiteWorkbench', () => {
           },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
-      if (url.endsWith('/calculate')) {
-        return new Response(JSON.stringify(response.calculation), {
+      if (url.endsWith('/active') && init?.method === 'PUT') {
+        return new Response(JSON.stringify(savedResponse(init)), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
@@ -213,10 +224,14 @@ describe('SiteWorkbench', () => {
     })).toHaveValue(2.72)
 
     await waitFor(() => expect(
-      mocks.apiFetch.mock.calls.some(([url]) => String(url).endsWith('/calculate')),
+      mocks.apiFetch.mock.calls.some(([url, _token, init]) => (
+        String(url).endsWith('/active') && init?.method === 'PUT'
+      )),
     ).toBe(true))
-    const calculateCall = mocks.apiFetch.mock.calls.find(([url]) => String(url).endsWith('/calculate'))
-    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    const saveCall = mocks.apiFetch.mock.calls.find(([url, _token, init]) => (
+      String(url).endsWith('/active') && init?.method === 'PUT'
+    ))
+    const submitted = JSON.parse(String(saveCall?.[2]?.body))
     expect(submitted.structure).toMatchObject({
       footprint_length_m: 5.2,
       footprint_width_m: 3.1,
@@ -251,8 +266,9 @@ describe('SiteWorkbench', () => {
     })).toBeInTheDocument()
     expect(screen.getByText('NCC working recommendation: Importance Level 2')).toBeInTheDocument()
     expect(screen.getByText('Site Explorer')).toBeInTheDocument()
-    expect(screen.getByRole('separator', { name: 'Resize derived-results panel' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Hide derived-results panel' })).toBeInTheDocument()
+    expect(screen.queryByRole('separator', { name: 'Resize derived-results panel' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recalculate' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save tertius_site.py' })).not.toBeInTheDocument()
     expect(screen.getByText('Structure orientation & directional wind')).toBeInTheDocument()
     expect(screen.getByText('Front bearing 20° true')).toBeInTheDocument()
     expect(screen.getByText('Governing SW · qz 0.683 kPa')).toBeInTheDocument()
@@ -265,14 +281,13 @@ describe('SiteWorkbench', () => {
     })).toBeInTheDocument()
   })
 
-  it('creates tertius_site.py and emits a structural refresh without compiling CAD', async () => {
+  it('autosaves tertius_site.py and emits a structural refresh without compiling CAD', async () => {
     mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => (
       new Response(JSON.stringify(url.endsWith('/gis/health') ? {
         status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
-      } : {
-        ...response,
-        exists: init?.method === 'PUT',
-      }), {
+      } : url.endsWith('/active') && init?.method === 'PUT'
+        ? savedResponse(init)
+        : response), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -283,7 +298,9 @@ describe('SiteWorkbench', () => {
       render(<SiteWorkbench isActive />)
 
       expect(await screen.findByText('Wind map')).toBeInTheDocument()
-      fireEvent.click(screen.getByRole('button', { name: 'Create tertius_site.py' }))
+      fireEvent.change(screen.getByRole('spinbutton', { name: 'Design life (years)' }), {
+        target: { value: '51' },
+      })
 
       await waitFor(() => expect(changed).toHaveBeenCalledTimes(1))
     } finally {
@@ -300,12 +317,64 @@ describe('SiteWorkbench', () => {
     ).toBe(false)
   })
 
+  it('persists all certification checks together in the full site definition', async () => {
+    const unverifiedResponse: SiteWorkbenchResponse = {
+      ...response,
+      exists: true,
+      site_dict: {
+        ...response.site_dict,
+        project_basis: {
+          ...response.site_dict.project_basis,
+          standards: { ...response.site_dict.project_basis.standards, confirmed: false },
+        },
+        structure: { ...response.site_dict.structure, orientation_status: 'suggested' },
+        wind: {
+          ...response.site_dict.wind,
+          region_status: 'suggested',
+          table_status: 'starter',
+        },
+      },
+      calculation: { ...response.calculation, site_ready: false },
+    }
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => (
+      new Response(JSON.stringify(url.endsWith('/gis/health') ? {
+        status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+      } : url.endsWith('/active') && init?.method === 'PUT'
+        ? savedResponse(init)
+        : unverifiedResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ))
+
+    render(<SiteWorkbench isActive />)
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Region checked/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Wind tables checked/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Structure bearing checked/i }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Missing: confirm these editions/i }))
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some(([url, _token, init]) => (
+        String(url).endsWith('/active') && init?.method === 'PUT'
+      )),
+    ).toBe(true))
+    const saveCall = mocks.apiFetch.mock.calls.find(([url, _token, init]) => (
+      String(url).endsWith('/active') && init?.method === 'PUT'
+    ))
+    const submitted = JSON.parse(String(saveCall?.[2]?.body))
+    expect(submitted.project_basis.standards.confirmed).toBe(true)
+    expect(submitted.structure.orientation_status).toBe('verified')
+    expect(submitted.wind.region_status).toBe('verified')
+    expect(submitted.wind.table_status).toBe('verified')
+  })
+
   it('authors a true-north bearing and expands the fallback Md into eight cardinal inputs', async () => {
-    mocks.apiFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => new Response(JSON.stringify(
       url.endsWith('/gis/health')
         ? { status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000 }
-        : url.endsWith('/calculate')
-          ? response.calculation
+        : url.endsWith('/active') && init?.method === 'PUT'
+          ? savedResponse(init)
           : {
             ...response,
             site_dict: {
@@ -333,13 +402,16 @@ describe('SiteWorkbench', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Front bearing degrees true' }), {
       target: { value: '135' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Recalculate' }))
 
     await waitFor(() => expect(
-      mocks.apiFetch.mock.calls.some((call) => call[2]?.method === 'POST'),
+      mocks.apiFetch.mock.calls.some((call) => (
+        String(call[0]).endsWith('/active') && call[2]?.method === 'PUT'
+      )),
     ).toBe(true))
-    const calculateCall = mocks.apiFetch.mock.calls.find((call) => call[2]?.method === 'POST')
-    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    const saveCall = mocks.apiFetch.mock.calls.find((call) => (
+      String(call[0]).endsWith('/active') && call[2]?.method === 'PUT'
+    ))
+    const submitted = JSON.parse(String(saveCall?.[2]?.body))
     expect(submitted.structure.front_bearing_degrees).toBe(135)
     expect(submitted.wind.cardinal_direction_multipliers).toEqual({
       n: 1, ne: 1, e: 1, se: 1, s: 1, sw: 1, w: 1, nw: 1,
@@ -347,11 +419,11 @@ describe('SiteWorkbench', () => {
   })
 
   it('applies digitised regional Md and Mc values without marking the tables verified', async () => {
-    mocks.apiFetch.mockImplementation(async (url: string) => (
-      new Response(JSON.stringify(url.endsWith('/calculate')
-        ? response.calculation
-        : url.endsWith('/gis/health')
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => (
+      new Response(JSON.stringify(url.endsWith('/gis/health')
           ? { status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000 }
+          : url.endsWith('/active') && init?.method === 'PUT'
+            ? savedResponse(init)
           : response), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -365,13 +437,16 @@ describe('SiteWorkbench', () => {
     })
     fireEvent.click(apply)
     expect(screen.getByText(/licensed-standard verification is still required/i)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Recalculate' }))
 
     await waitFor(() => expect(
-      mocks.apiFetch.mock.calls.some((call) => String(call[0]).endsWith('/calculate')),
+      mocks.apiFetch.mock.calls.some((call) => (
+        String(call[0]).endsWith('/active') && call[2]?.method === 'PUT'
+      )),
     ).toBe(true))
-    const calculateCall = mocks.apiFetch.mock.calls.find((call) => String(call[0]).endsWith('/calculate'))
-    const submitted = JSON.parse(String(calculateCall?.[2]?.body))
+    const saveCall = mocks.apiFetch.mock.calls.find((call) => (
+      String(call[0]).endsWith('/active') && call[2]?.method === 'PUT'
+    ))
+    const submitted = JSON.parse(String(saveCall?.[2]?.body))
     expect(submitted.wind.cardinal_direction_multipliers).toEqual({
       n: 0.85, ne: 0.75, e: 0.85, se: 0.95,
       s: 0.95, sw: 0.95, w: 1, nw: 0.95,

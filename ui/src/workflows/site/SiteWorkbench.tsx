@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 import { apiFetch } from '../../api/client'
 import { useAuth } from '../../auth/AuthProvider'
@@ -73,26 +73,8 @@ function Field({ label, hint, children }: {
   )
 }
 
-function FeatureDrawer({ title, detail, children, defaultOpen = false }: {
-  title: string
-  detail?: string
-  children: ReactNode
-  defaultOpen?: boolean
-}) {
-  const [open, setOpen] = useState(defaultOpen)
-  return (
-    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)}
-      className="group rounded border border-slate-800 bg-slate-900/35">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 hover:bg-slate-800/50">
-        <span>
-          <span className="text-sm font-semibold text-slate-200">{title}</span>
-          {detail && <span className="ml-2 text-[10px] text-slate-500">{detail}</span>}
-        </span>
-        <span className="text-xs text-cyan-400 transition-transform group-open:rotate-90">›</span>
-      </summary>
-      <div className="border-t border-slate-800 p-3">{children}</div>
-    </details>
-  )
+function FeatureSection({ children }: { children: ReactNode }) {
+  return <div>{children}</div>
 }
 
 function errorDetail(payload: unknown, fallback: string) {
@@ -124,6 +106,8 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isBusy, setIsBusy] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [isDirty, setIsDirty] = useState(false)
   const [geocodeCandidates, setGeocodeCandidates] = useState<GisGeocodeCandidate[]>([])
   const [terrainEvidence, setTerrainEvidence] = useState<GisEvidenceManifest | null>(null)
@@ -133,14 +117,18 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   const [candidateDimensions, setCandidateDimensions] = useState<CandidateModelSiteDimensions | null>(null)
   const [standardEvidence, setStandardEvidence] = useState<WindStandardEvidence | null>(null)
   const [isReportBusy, setIsReportBusy] = useState(false)
-  const [inspectorWidth, setInspectorWidth] = useState(430)
-  const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
   const requestId = useRef(0)
   const terrainFetchKey = useRef('')
   const boundaryFetchKey = useRef('')
   const buildingFetchKey = useRef('')
   const candidateDimensionsKey = useRef('')
   const hasLoaded = useRef(false)
+  const draftRef = useRef<SiteDefinition | null>(null)
+  const editVersion = useRef(0)
+  const savedVersion = useRef(0)
+  const saveInFlight = useRef(false)
+  const saveQueued = useRef(false)
+  const saveLatestRef = useRef<() => Promise<void>>(async () => undefined)
   const standardsSection = useRef<HTMLElement>(null)
   const siteLatitude = draft?.location.latitude
   const siteLongitude = draft?.location.longitude
@@ -151,23 +139,15 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     ? Math.max(50, 20 * draft.wind.reference_height_m)
     : undefined
 
-  const beginInspectorResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (inspectorCollapsed) return
-    event.preventDefault()
-    const move = (pointerEvent: PointerEvent) => {
-      setInspectorWidth(Math.min(720, Math.max(320, window.innerWidth - pointerEvent.clientX)))
-    }
-    const stop = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', stop)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', stop)
-  }, [inspectorCollapsed])
+  const edit = useCallback((next: SiteDefinition) => {
+    draftRef.current = next
+    editVersion.current += 1
+    setDraft(next)
+    setIsDirty(true)
+    setSaveError(null)
+    setCalculation(null)
+    setStatus('Site changes waiting to autosave…')
+  }, [])
 
   const load = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
@@ -188,6 +168,11 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       hasLoaded.current = true
       setProjectName(next.project_name)
       setExists(next.exists)
+      draftRef.current = next.site_dict
+      editVersion.current = 0
+      savedVersion.current = 0
+      saveQueued.current = false
+      setSaveError(null)
       setDraft(next.site_dict)
       setCalculation(next.calculation)
       setStandardEvidence(next.calculation.standard_table_evidence ?? null)
@@ -267,12 +252,8 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             site_longitude: longitude,
             radius_m: 2000,
           }
-          setDraft((current) => current ? { ...current, terrain_evidence: reference } : current)
-          void apiFetch(`${serverUrl}/active/terrain-evidence`, getAccessToken, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(reference),
-          }).catch(() => undefined)
+          const currentDraft = draftRef.current
+          if (currentDraft) edit({ ...currentDraft, terrain_evidence: reference })
         }
         setStatus(
           restored
@@ -298,6 +279,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     siteLatitude,
     siteLongitude,
     terrainReference,
+    edit,
   ])
 
   useEffect(() => {
@@ -414,13 +396,6 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     }
   }, [authMode, isActive, load])
 
-  const edit = useCallback((next: SiteDefinition) => {
-    setDraft(next)
-    setIsDirty(true)
-    setCalculation(null)
-    setStatus('Unsaved site inputs.')
-  }, [])
-
   const applyCandidateModelDimensions = useCallback((dimensions: CandidateModelSiteDimensions) => {
     setCandidateDimensions((current) => (
       current?.model_artifact_id === dimensions.model_artifact_id ? current : dimensions
@@ -520,53 +495,27 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     })
   }
 
-  const calculate = useCallback(async () => {
-    if (!draft) return null
-    setIsBusy(true)
-    setError(null)
-    setStatus('Calculating derived wind basis…')
-    try {
-      const response = await apiFetch(`${serverUrl}/calculate`, getAccessToken, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
-      })
-      const payload = await response.json().catch(() => null) as
-        | SiteCalculation
-        | { detail?: string }
-        | null
-      if (!response.ok) {
-        throw new Error(errorDetail(payload, `Site calculation returned ${response.status}`))
-      }
-      const next = payload as SiteCalculation
-      setCalculation(next)
-      setStandardEvidence(next.standard_table_evidence ?? null)
-      setStatus(`Derived qz = ${next.q_z_kPa.toFixed(6)} kPa. Not saved yet.`)
-      return next
-    } catch (calculationError) {
-      setError(calculationError instanceof Error ? calculationError.message : 'Site calculation failed')
-      return null
-    } finally {
-      setIsBusy(false)
+  const saveLatest = useCallback(async () => {
+    if (saveInFlight.current) {
+      saveQueued.current = true
+      return
     }
-  }, [draft, getAccessToken, serverUrl])
+    const candidate = draftRef.current
+    const version = editVersion.current
+    const activeRequest = requestId.current
+    if (!candidate || version <= savedVersion.current) return
 
-  useEffect(() => {
-    if (!isActive || !isDirty || !draft) return
-    const timer = window.setTimeout(() => void calculate(), 500)
-    return () => window.clearTimeout(timer)
-  }, [calculate, draft, isActive, isDirty])
-
-  const save = useCallback(async () => {
-    if (!draft) return
-    setIsBusy(true)
-    setError(null)
-    setStatus('Saving canonical tertius_site.py…')
+    saveInFlight.current = true
+    saveQueued.current = false
+    setIsSaving(true)
+    setSaveError(null)
+    setStatus('Autosaving site inputs and recalculating the wind basis…')
+    let succeeded = false
     try {
       const response = await apiFetch(`${serverUrl}/active`, getAccessToken, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(draft),
+        body: JSON.stringify(candidate),
       })
       const payload = await response.json().catch(() => null) as
         | SiteWorkbenchResponse
@@ -575,17 +524,24 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       if (!response.ok) {
         throw new Error(errorDetail(payload, `Site save returned ${response.status}`))
       }
+      if (activeRequest !== requestId.current) return
       const next = payload as SiteWorkbenchResponse
+      succeeded = true
+      setError(null)
+      savedVersion.current = Math.max(savedVersion.current, version)
       setExists(true)
-      setDraft(next.site_dict)
-      setCalculation(next.calculation)
-      setStandardEvidence(next.calculation.standard_table_evidence ?? null)
       setSource(next.source)
-      setIsDirty(false)
-      setStatus(
-        `Saved ${next.filename} revision ${next.calculation.revision}; `
-        + 'structural Actions will recompute without a CAD rebuild.',
-      )
+      if (editVersion.current === version) {
+        draftRef.current = next.site_dict
+        setDraft(next.site_dict)
+        setCalculation(next.calculation)
+        setStandardEvidence(next.calculation.standard_table_evidence ?? null)
+        setIsDirty(false)
+        setStatus(`All site changes saved · revision ${next.calculation.revision}.`)
+      } else {
+        saveQueued.current = true
+        setStatus('A newer site change is waiting to autosave…')
+      }
       window.dispatchEvent(new CustomEvent(SITE_BASIS_CHANGED_EVENT, {
         detail: {
           projectName: next.project_name,
@@ -593,11 +549,37 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
         },
       }))
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Could not save site definition')
+      if (activeRequest !== requestId.current) return
+      const message = saveError instanceof Error ? saveError.message : 'Could not save site definition'
+      setSaveError(message)
+      setError(`${message}. Your changes are still present; use Retry save.`)
     } finally {
-      setIsBusy(false)
+      saveInFlight.current = false
+      if (activeRequest !== requestId.current) {
+        setIsSaving(false)
+      } else {
+        const shouldContinue = succeeded && (
+          saveQueued.current || editVersion.current > savedVersion.current
+        )
+        saveQueued.current = false
+        if (shouldContinue) {
+          window.setTimeout(() => void saveLatestRef.current(), 0)
+        } else {
+          setIsSaving(false)
+        }
+      }
     }
-  }, [draft, getAccessToken, serverUrl])
+  }, [getAccessToken, serverUrl])
+
+  useEffect(() => {
+    saveLatestRef.current = saveLatest
+  }, [saveLatest])
+
+  useEffect(() => {
+    if (!isActive || !isDirty || !draft) return
+    const timer = window.setTimeout(() => void saveLatest(), 500)
+    return () => window.clearTimeout(timer)
+  }, [draft, isActive, isDirty, saveLatest])
 
   const downloadSiteReport = useCallback(async () => {
     if (!draft) return
@@ -755,47 +737,21 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     }
   }, [draft, edit, getAccessToken, serverUrl])
 
-  const pickStructureCoordinates = useCallback(async (latitude: number, longitude: number) => {
-    if (!draft) return
-    const wasDirty = isDirty
+  const pickStructureCoordinates = useCallback((latitude: number, longitude: number) => {
+    const currentDraft = draftRef.current
+    if (!currentDraft) return
     const next = {
-      ...draft,
+      ...currentDraft,
       structure: {
-        ...draft.structure,
+        ...currentDraft.structure,
         placement_latitude: latitude,
         placement_longitude: longitude,
       },
     }
     setDirectionalEvidence(null)
-    setDraft(next)
-    setStatus('Saving shed placement without changing the address or GIS evidence…')
-    try {
-      const response = await apiFetch(`${serverUrl}/active/placement`, getAccessToken, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ latitude, longitude }),
-      })
-      const payload = await response.json().catch(() => null) as
-        | SiteWorkbenchResponse
-        | { detail?: string }
-        | null
-      if (!response.ok) {
-        throw new Error(errorDetail(payload, `Placement save returned ${response.status}`))
-      }
-      if (!wasDirty) {
-        const saved = payload as SiteWorkbenchResponse
-        setCalculation(saved.calculation)
-        setStandardEvidence(saved.calculation.standard_table_evidence ?? null)
-        setSource(saved.source)
-        setExists(true)
-      }
-      setStatus('Shed placement saved; address, terrain and multiplier evidence were retained.')
-    } catch (placementError) {
-      setIsDirty(true)
-      setCalculation(null)
-      setError(placementError instanceof Error ? placementError.message : 'Could not save shed placement')
-    }
-  }, [draft, getAccessToken, isDirty, serverUrl])
+    edit(next)
+    setStatus('Shed placement changed; autosave will retain the full site definition.')
+  }, [edit])
 
   const geocode = useCallback(async () => {
     if (!draft?.location.address.trim()) return
@@ -908,6 +864,35 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <div
+              aria-live="polite"
+              className={`rounded border px-3 py-2 text-xs font-semibold ${
+                saveError
+                  ? 'border-red-500/60 bg-red-950/30 text-red-200'
+                  : isSaving || isDirty
+                    ? 'border-amber-500/50 bg-amber-950/20 text-amber-200'
+                    : 'border-emerald-500/40 bg-emerald-950/20 text-emerald-200'
+              }`}
+            >
+              {saveError
+                ? 'Autosave needs attention'
+                : isSaving
+                  ? 'Saving changes…'
+                  : isDirty
+                    ? 'Autosave pending…'
+                    : exists
+                      ? 'All changes saved'
+                      : 'Edit a setting to create the Site file'}
+            </div>
+            {saveError && (
+              <button
+                type="button"
+                onClick={() => void saveLatest()}
+                className="rounded border border-red-500/60 bg-red-950/30 px-3 py-2 text-xs font-bold text-red-100 hover:bg-red-950/60"
+              >
+                Retry save
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void downloadSiteReport()}
@@ -916,22 +901,6 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               className="rounded border border-cyan-500/60 bg-cyan-950/30 px-3 py-2 text-xs font-bold text-cyan-100 hover:bg-cyan-950/60 disabled:opacity-50"
             >
               {isReportBusy ? 'Building PDF...' : 'Download PDF evidence report'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void calculate()}
-              disabled={isBusy}
-              className="rounded border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-semibold hover:border-cyan-500 disabled:opacity-50"
-            >
-              Recalculate
-            </button>
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={isBusy || (!isDirty && exists)}
-              className="rounded bg-cyan-600 px-3 py-2 text-xs font-bold text-white hover:bg-cyan-500 disabled:opacity-50"
-            >
-              {exists ? 'Save tertius_site.py' : 'Create tertius_site.py'}
             </button>
           </div>
         </div>
@@ -945,6 +914,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto xl:flex-row xl:overflow-hidden">
         <main className="min-w-0 flex-1 space-y-3 overflow-y-auto p-4">
           <SiteExplorer
+            projectName={projectName}
             serverUrl={serverUrl}
             extusServerUrl={extusServerUrl}
             getAccessToken={getAccessToken}
@@ -955,7 +925,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             frontBearingDegrees={draft.structure.front_bearing_degrees}
             referenceHeightM={draft.wind.reference_height_m}
             cardinalMultipliers={draft.wind.cardinal_direction_multipliers}
-            terrainEvidenceId={terrainEvidence?.evidence_id || null}
+            terrainEvidenceId={terrainEvidence?.evidence_id || draft.terrain_evidence?.evidence_id || null}
             terrainEvidenceBounds={terrainEvidence?.asset?.crs === 'EPSG:4326'
               ? terrainEvidence.asset.bounds
               : null}
@@ -965,7 +935,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             onCandidateDimensions={applyCandidateModelDimensions}
             onPick={pickStructureCoordinates}
           />
-          <FeatureDrawer title="Project design basis" detail="use, classification and importance">
+          <FeatureSection>
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <div className="mb-3">
               <h2 className="font-semibold text-slate-100">Project design basis</h2>
@@ -1022,9 +992,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               )}
             </div>
           </section>
-          </FeatureDrawer>
+          </FeatureSection>
 
-          <FeatureDrawer title="Location & regional wind" detail={draft.location.address || 'address and design inputs'} defaultOpen>
+          <FeatureSection>
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <h2 className="font-semibold text-slate-100">Location &amp; regional wind basis</h2>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -1100,9 +1070,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </label>
             </div>
           </section>
-          </FeatureDrawer>
+          </FeatureSection>
 
-          <FeatureDrawer title="Terrain evidence" detail={terrainEvidence ? 'cached site tile ready' : 'fetch or upload'}>
+          <FeatureSection>
           <GisEvidencePanel
             serverUrl={serverUrl}
             getAccessToken={getAccessToken}
@@ -1111,10 +1081,10 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             initialEvidence={terrainEvidence}
             onEvidenceChange={setTerrainEvidence}
           />
-          </FeatureDrawer>
+          </FeatureSection>
 
           <div id="multiplier-evidence">
-          <FeatureDrawer title="Directional GIS multiplier evidence" detail="pinned local GIS · 8 directions" defaultOpen>
+          <FeatureSection>
           <WindMultiplierEvidencePanel
             serverUrl={serverUrl}
             getAccessToken={getAccessToken}
@@ -1127,11 +1097,11 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             adoptedEvidence={draft.wind.multiplier_evidence ?? null}
             onEvidence={applyMultiplierEvidence}
           />
-          </FeatureDrawer>
+          </FeatureSection>
           </div>
 
           <div id="cardinal-multipliers">
-          <FeatureDrawer title="Structure orientation & cardinal wind" detail={`${draft.structure.front_bearing_degrees.toFixed(0)}° true`}>
+          <FeatureSection>
           <StructureWindRose
             structure={draft.structure}
             multipliers={draft.wind.cardinal_direction_multipliers}
@@ -1142,10 +1112,10 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               'cardinal_direction_multipliers', cardinalDirectionMultipliers,
             )}
           />
-          </FeatureDrawer>
+          </FeatureSection>
           </div>
 
-          <FeatureDrawer title="Exposure multipliers" detail="Mc · Md · Ms · Mt">
+          <FeatureSection>
           <section className="rounded border border-slate-800 bg-slate-900/50 p-4">
             <h2 className="font-semibold text-slate-100">Exposure multipliers</h2>
             <p className="mt-1 text-xs text-slate-500">
@@ -1202,9 +1172,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               />
             </div>
           </section>
-          </FeatureDrawer>
+          </FeatureSection>
 
-          <FeatureDrawer title="Standard table evidence" detail="Md · Mc · report tables">
+          <FeatureSection>
           <StandardTableEvidencePanel
             serverUrl={serverUrl}
             getAccessToken={getAccessToken}
@@ -1212,9 +1182,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
             evidence={standardEvidence}
             onApply={applyStandardTableValues}
           />
-          </FeatureDrawer>
+          </FeatureSection>
 
-          <FeatureDrawer title="Working wind action envelope" detail={draft.wind.action_envelope.enclosure.replace('_', ' ')}>
+          <FeatureSection>
           <section className="rounded border border-cyan-500/40 bg-cyan-950/10 p-4">
             <h2 className="font-semibold text-slate-100">Working wind action envelope</h2>
             <p className="mt-1 text-xs leading-5 text-slate-400">
@@ -1287,9 +1257,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </b>.
             </div>
           </section>
-          </FeatureDrawer>
+          </FeatureSection>
 
-          <FeatureDrawer title="Action standards" detail={draft.project_basis.standards.confirmed ? 'confirmed' : 'confirmation required'}>
+          <FeatureSection>
           <section id="action-standards" ref={standardsSection}
             className={`rounded border bg-slate-900/50 p-4 ${
               draft.project_basis.standards.confirmed ? 'border-slate-800' : 'border-amber-500/70'
@@ -1344,24 +1314,10 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </label>
             </div>
           </section>
-          </FeatureDrawer>
+          </FeatureSection>
         </main>
 
-        <div role="separator" aria-label="Resize derived-results panel" aria-orientation="vertical"
-          onPointerDown={beginInspectorResize}
-          className="group relative hidden w-2 flex-none cursor-col-resize items-center justify-center border-x border-slate-800 bg-slate-950 hover:bg-cyan-950 xl:flex">
-          <span className="pointer-events-none text-[10px] text-slate-600 group-hover:text-cyan-300">↔</span>
-          <button type="button" aria-label={inspectorCollapsed ? 'Show derived-results panel' : 'Hide derived-results panel'}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={() => setInspectorCollapsed((value) => !value)}
-            className="absolute top-3 z-10 rounded border border-slate-700 bg-slate-900 px-1 py-2 text-[10px] text-cyan-300 hover:border-cyan-400">
-            {inspectorCollapsed ? '‹' : '›'}
-          </button>
-        </div>
-
-        <aside
-          style={{ '--inspector-width': `${inspectorCollapsed ? 0 : inspectorWidth}px` } as CSSProperties}
-          className={`w-full flex-none space-y-4 overflow-hidden border-t border-slate-800 transition-[width] xl:w-[var(--inspector-width)] xl:border-t-0 ${inspectorCollapsed ? 'p-0' : 'overflow-y-auto p-4'}`}>
+        <aside className="w-full flex-none space-y-4 overflow-y-auto border-t border-slate-800 p-4 xl:w-[430px] xl:border-l xl:border-t-0">
           <section className={`rounded border p-4 ${
             certificationReady
               ? 'border-emerald-500/50 bg-emerald-950/20'
@@ -1403,7 +1359,9 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                 ))}
               </div>
             ) : (
-              <p className="mt-3 text-xs text-slate-400">Recalculate to preview the derived wind basis.</p>
+              <p className="mt-3 text-xs text-slate-400">
+                Complete the site inputs above; the derived wind basis updates automatically after each saved change.
+              </p>
             )}
             {missing.length > 0 && (
               <div className="mt-3 rounded border border-amber-500/30 bg-amber-950/30 p-3 text-xs text-amber-200">
@@ -1414,13 +1372,17 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
                 <ul className="mt-2 space-y-1">
                   {missing.map((item) => (
                     <li key={item.id}>
-                      <button type="button" className="text-left underline decoration-amber-400/50 hover:text-white"
+                      <button type="button" className="min-h-9 w-full rounded border border-amber-500/30 px-2 py-1.5 text-left underline decoration-amber-400/50 hover:border-amber-300 hover:text-white"
                         onClick={() => {
-                          if (item.id === 'action-standards') {
-                            standardsSection.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                          } else {
-                            document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                          }
+                          const target = item.id === 'action-standards'
+                            ? standardsSection.current
+                            : document.getElementById(item.id)
+                          const drawer = target?.closest('details')
+                          if (drawer) drawer.open = true
+                          window.requestAnimationFrame(() => target?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'center',
+                          }))
                         }}>
                         {item.label}
                       </button>
