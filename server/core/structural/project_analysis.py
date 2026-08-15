@@ -1804,7 +1804,10 @@ def _governing_working_combination(
                     maximum_ratio,
                     moment / section.bending_reference_kNm,
                 )
-            member_length_mm = _length(declaration.start, declaration.end) * 1000.0
+            member_length_mm = (
+                declaration.serviceability_span_m
+                or _length(declaration.start, declaration.end)
+            ) * 1000.0
             displacement_limit = declaration.deflection_limit_mm
             if (
                 displacement_limit is None
@@ -2190,14 +2193,43 @@ def _p399_evidence(
         for load in wind_surface_loads
         if load.coefficient_status == "working_conservative"
     ]
-    wind_actions_ready = not wind_surface_loads or (
-        bool(capture.wind_action_bases)
+    blocked_wind_load_paths = [
+        path.load_id
+        for path in capture.load_paths
+        if path.status == "blocked"
+        and any(load.id == path.load_id for load in wind_surface_loads)
+    ]
+    wind_required = bool(
+        capture.wind_action_bases
+        or any("wind" in role.lower() for role in (basis.standards if basis else {}))
+    )
+    missing_required_wind_actions = wind_required and not wind_surface_loads
+    wind_actions_ready = (not wind_required and not wind_surface_loads) or (
+        bool(wind_surface_loads)
+        and bool(capture.wind_action_bases)
         and not unlinked_wind_loads
         and not unverified_wind_bases
         and not assumed_wind_coefficients
+        and not blocked_wind_load_paths
     )
     action_basis_ready = action_basis_ready and wind_actions_ready
     action_assumptions = [
+        *(
+            [
+                "Wind actions do not have a complete compiled connection path to "
+                "ground: " + ", ".join(blocked_wind_load_paths)
+            ]
+            if blocked_wind_load_paths
+            else []
+        ),
+        *(
+            [
+                "The Site/Structural design basis requires wind actions, but no "
+                "wind action was generated from the compiled mechanical geometry."
+            ]
+            if missing_required_wind_actions
+            else []
+        ),
         *(
             ["The project action standard references still require confirmation."]
             if not action_standard_references
@@ -2252,7 +2284,10 @@ def _p399_evidence(
     ]
     actions_status: Literal["pass", "warning", "blocked"] = (
         "blocked"
-        if not action_equations or basis is None
+        if not action_equations
+        or basis is None
+        or missing_required_wind_actions
+        or blocked_wind_load_paths
         else "pass"
         if action_basis_ready
         else "warning"
@@ -2506,9 +2541,7 @@ def _p399_evidence(
     else:
         bracing_status = "warning"
 
-    connection_status: Literal[
-        "pass", "fail", "not_checked", "unsupported"
-    ]
+    connection_status: Literal["pass", "fail", "not_checked", "unsupported"]
     if not connection_checks:
         connection_status = "not_checked"
     elif any(check.status == "fail" for check in connection_checks):
@@ -3171,17 +3204,13 @@ def _p399_evidence(
                         symbol="member_capacity_pack",
                         label="Versioned member-capacity pack",
                         value=member_stability_definition.pack_id,
-                        source=(
-                            "Structural workbench member-stability configuration"
-                        ),
+                        source=("Structural workbench member-stability configuration"),
                     ),
                     CalculationInput(
                         symbol="member_ULS_envelope",
                         label="Checked ULS combinations",
                         value=", ".join(member_stability_definition.combination_ids),
-                        source=(
-                            "Structural workbench member-stability configuration"
-                        ),
+                        source=("Structural workbench member-stability configuration"),
                     ),
                 ]
             ),
@@ -4252,6 +4281,7 @@ def solve_project_structural(
             [],
         ).append(stability_check)
     serviceability_checks: list[ServiceabilityCheck] = []
+    serviceability_groups: dict[str, dict[str, Any]] = {}
     sections_by_id = {section.id: section for section in analysis.sections}
 
     for declaration in analysis.members:
@@ -4571,47 +4601,75 @@ def solve_project_structural(
                     )
                 )
 
+        serviceability_span_m = declaration.serviceability_span_m or member_length
         limit_candidates: list[float] = []
         if declaration.deflection_limit_ratio is not None:
             limit_candidates.append(
-                member_length * 1000.0 / declaration.deflection_limit_ratio
+                serviceability_span_m * 1000.0 / declaration.deflection_limit_ratio
             )
         if declaration.deflection_limit_mm is not None:
             limit_candidates.append(declaration.deflection_limit_mm)
         limit_mm = min(limit_candidates) if limit_candidates else None
-        if active_combination.limit_state != "serviceability" or limit_mm is None:
-            serviceability_checks.append(
-                ServiceabilityCheck(
-                    member_id=declaration.id,
-                    label=f"{declaration.label} deflection",
-                    combination_id=active_combination.id,
-                    displacement_mm=max_displacement,
-                    limit_mm=limit_mm,
-                    utilisation=None,
-                    status="not_checked",
-                    basis=(
-                        "Deflection checks require a serviceability combination "
-                        "and an authored project criterion."
-                        if declaration.deflection_limit_basis is None
-                        else declaration.deflection_limit_basis
-                    ),
-                )
+        group_id = declaration.serviceability_group_id or declaration.id
+        group = serviceability_groups.setdefault(
+            group_id,
+            {
+                "physical_member_id": declaration.serviceability_group_id,
+                "label": declaration.serviceability_group_label or declaration.label,
+                "span_m": serviceability_span_m,
+                "member_ids": [],
+                "governing_member_id": declaration.id,
+                "displacement_mm": max_displacement,
+                "limits_mm": [],
+                "bases": [],
+            },
+        )
+        group["member_ids"].append(declaration.id)
+        group["span_m"] = max(float(group["span_m"]), serviceability_span_m)
+        if max_displacement > float(group["displacement_mm"]):
+            group["displacement_mm"] = max_displacement
+            group["governing_member_id"] = declaration.id
+        if limit_mm is not None:
+            group["limits_mm"].append(limit_mm)
+        if declaration.deflection_limit_basis:
+            group["bases"].append(declaration.deflection_limit_basis)
+
+    for group in serviceability_groups.values():
+        group_limits = [float(value) for value in group["limits_mm"]]
+        limit_mm = min(group_limits) if group_limits else None
+        bases = list(dict.fromkeys(str(value) for value in group["bases"]))
+        basis = "; ".join(bases)
+        displacement_mm = float(group["displacement_mm"])
+        checked = (
+            active_combination.limit_state == "serviceability" and limit_mm is not None
+        )
+        utilisation = displacement_mm / limit_mm if checked and limit_mm else None
+        serviceability_checks.append(
+            ServiceabilityCheck(
+                member_id=str(group["governing_member_id"]),
+                physical_member_id=group["physical_member_id"],
+                analytical_member_ids=list(group["member_ids"]),
+                span_m=float(group["span_m"]),
+                label=f"{group['label']} deflection",
+                combination_id=active_combination.id,
+                displacement_mm=displacement_mm,
+                limit_mm=limit_mm,
+                utilisation=utilisation,
+                status=(
+                    "not_checked"
+                    if not checked
+                    else "pass"
+                    if utilisation is not None and utilisation <= 1.0
+                    else "fail"
+                ),
+                basis=(
+                    basis
+                    if basis
+                    else "Deflection checks require a serviceability combination "
+                    "and an authored project criterion."
+                ),
             )
-        else:
-            utilisation = max_displacement / limit_mm
-            serviceability_checks.append(
-                ServiceabilityCheck(
-                    member_id=declaration.id,
-                    label=f"{declaration.label} deflection",
-                    combination_id=active_combination.id,
-                    displacement_mm=max_displacement,
-                    limit_mm=limit_mm,
-                    utilisation=utilisation,
-                    status="pass" if utilisation <= 1.0 else "fail",
-                    basis=declaration.deflection_limit_basis
-                    or "Authored project deflection criterion.",
-                )
-            )
+        )
 
     reaction_values: list[NodeReaction] = []
     reaction_force_sum = [0.0, 0.0, 0.0]
@@ -4842,9 +4900,7 @@ def solve_project_structural(
             label=capture.project_name,
             design_id=capture.project_name,
             design_hash=capture.design_hash,
-            analysis_configuration_revision=(
-                capture.analysis_configuration_revision
-            ),
+            analysis_configuration_revision=(capture.analysis_configuration_revision),
             analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,

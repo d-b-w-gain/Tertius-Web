@@ -478,7 +478,7 @@ drawing projection, renderer metadata adapter, tests.
 **Files:** workbench configuration models/repository/API, structural engine,
 Structural UI, tests.
 
-- [ ] Add revisioned structural configuration for site, standards, importance,
+- [x] Add revisioned structural configuration for site, standards, importance,
   actions, load cases/combinations, serviceability, and approval rules.
 - [x] Include the selected configuration revision/digest in the compile or
   analysis revision without exposing it as a Python project import.
@@ -524,6 +524,21 @@ demands while refusing a pass when published bracket, bolt, anchor, or base
 capacity evidence is absent. This gives fit, procurement identity, structural
 demand, and evidence status one shared graph without inventing capacity for
 the demo connection parts.
+
+Completed Site/action integrity slice: the active Structural capture now reads
+the saved `tertius_site.py` at analysis time, so Site pressure and standards can
+change without recompiling Build123D geometry. A revisioned transverse
+portal-frame strip action model selects compiled mechanical roles, reconciles
+the Site footprint with frame spacing, derives +X/-X wind cases and SLS/ULS
+combinations, distributes traceable line actions to every analytical segment,
+and traces each action through physical connections to ground. Missing Site
+data, incomplete roles, footprint mismatch, missing wind receivers, or a broken
+load path blocks the Actions stage instead of allowing self-weight alone to
+pass. The worked coefficients remain an explicit provisional Structural input;
+AS/NZS 1170.2 surface-zone verification is still required for final approval.
+Serviceability criteria are now evaluated once per physical member using its
+full compiled span, while retaining the governing analytical segment for UI
+selection and evidence tracing.
 
 ### Task 7: Add atomic multi-artifact compile bundles
 

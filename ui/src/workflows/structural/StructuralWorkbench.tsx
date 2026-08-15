@@ -270,7 +270,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     (stage) => stage.id === 'member_stability',
   )
   const selectedServiceability = analysis?.serviceability_checks.find(
-    (check) => check.member_id === selectedMember?.id,
+    (check) => (
+      check.member_id === selectedMember?.id
+      || check.analytical_member_ids?.includes(selectedMember?.id || '')
+    ),
   )
   const activeCombination = analysis?.load_combinations.find(
     (combination) => combination.id === selectedCombinationId,
@@ -395,7 +398,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           (candidate) => candidate.member_id === diagram.member_id,
         )
         : analysis.serviceability_checks.find(
-          (candidate) => candidate.member_id === diagram.member_id,
+          (candidate) => (
+            candidate.member_id === diagram.member_id
+            || candidate.analytical_member_ids?.includes(diagram.member_id)
+          ),
         )
       const restraintSegments = (analysis.member_restraint_traces ?? [])
         .filter((trace) => (
@@ -1287,7 +1293,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (candidate) => candidate.member_id === member.id,
                           ))
                         : analysis.serviceability_checks.find(
-                          (candidate) => candidate.member_id === member.id,
+                          (candidate) => (
+                            candidate.member_id === member.id
+                            || candidate.analytical_member_ids?.includes(member.id)
+                          ),
                         )
                       return (
                         <button

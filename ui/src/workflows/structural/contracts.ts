@@ -121,6 +121,7 @@ export type DesignComponent = {
   visual_node_id: string
   grounded: boolean
   part_number: string | null
+  role?: string | null
 }
 
 export type DesignConnection = {
@@ -581,6 +582,9 @@ export type StructuralSnapshot = {
   }>
   serviceability_checks: Array<{
     member_id: string
+    physical_member_id?: string | null
+    analytical_member_ids?: string[]
+    span_m?: number | null
     label: string
     combination_id: string
     displacement_mm: number

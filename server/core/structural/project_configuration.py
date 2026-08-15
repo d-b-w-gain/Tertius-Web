@@ -39,6 +39,26 @@ class ConfiguredMemberDistributedLoad(StructuralContract):
     provenance: str
 
 
+class ConfiguredPortalFrameWindActions(StructuralContract):
+    """Working transverse-wind action model derived from mechanical member roles.
+
+    The geometry remains owned by ``design.py``.  This revisioned Structural
+    input says which mechanical roles receive the Site workbench wind basis and
+    records the pressure coefficients used to derive solver line actions.
+    """
+
+    model_id: Literal["transverse_portal_frame_strip_v1"] = (
+        "transverse_portal_frame_strip_v1"
+    )
+    column_role: str = "portal column"
+    rafter_role: str = "portal rafter"
+    windward_wall_coefficient: float = Field(default=0.8, gt=0)
+    leeward_wall_coefficient: float = Field(default=-0.5, lt=0)
+    roof_suction_coefficient: float = Field(default=-0.9, lt=0)
+    coefficient_status: Literal["assumed"] = "assumed"
+    coefficient_basis: str = Field(min_length=1)
+
+
 class ConfiguredMemberCriteria(StructuralContract):
     component_id: str | None = None
     deflection_limit_ratio: float | None = Field(default=None, gt=0)
@@ -110,6 +130,7 @@ class StructuralProjectConfiguration(StructuralContract):
     member_distributed_loads: list[ConfiguredMemberDistributedLoad] = Field(
         default_factory=list
     )
+    portal_frame_wind_actions: ConfiguredPortalFrameWindActions | None = None
     member_criteria: list[ConfiguredMemberCriteria] = Field(default_factory=list)
     cross_section_verification: ConfiguredCrossSectionVerification | None = None
     member_stability_verification: ConfiguredMemberStabilityVerification | None = None
@@ -124,8 +145,13 @@ class StructuralProjectConfiguration(StructuralContract):
         if len(combination_ids) != len(set(combination_ids)):
             raise ValueError("load combinations contain duplicate IDs")
         case_id_set = set(case_ids)
-        if sum(criterion.component_id is None for criterion in self.member_criteria) > 1:
-            raise ValueError("member criteria can contain at most one all-members default")
+        if (
+            sum(criterion.component_id is None for criterion in self.member_criteria)
+            > 1
+        ):
+            raise ValueError(
+                "member criteria can contain at most one all-members default"
+            )
         for combination in self.load_combinations:
             missing = set(combination.factors) - case_id_set
             if missing:
@@ -169,7 +195,9 @@ class StructuralProjectConfiguration(StructuralContract):
                 )
         if not self.member_loads and not self.member_distributed_loads:
             if not self.include_self_weight:
-                raise ValueError("structural configuration requires at least one action")
+                raise ValueError(
+                    "structural configuration requires at least one action"
+                )
         return self
 
     @property

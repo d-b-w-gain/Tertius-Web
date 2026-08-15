@@ -136,6 +136,9 @@ class AnalyticalMemberDeclaration(StructuralContract):
     deflection_limit_ratio: float | None = None
     deflection_limit_mm: float | None = None
     deflection_limit_basis: str | None = None
+    serviceability_group_id: str | None = None
+    serviceability_group_label: str | None = None
+    serviceability_span_m: float | None = Field(default=None, gt=0)
     assumption: str
 
     @model_validator(mode="after")
@@ -631,6 +634,9 @@ class MemberRestraintCandidateCheck(StructuralContract):
 
 class ServiceabilityCheck(StructuralContract):
     member_id: str
+    physical_member_id: str | None = None
+    analytical_member_ids: list[str] = Field(default_factory=list)
+    span_m: float | None = Field(default=None, gt=0)
     label: str
     combination_id: str
     displacement_mm: float
@@ -743,6 +749,7 @@ class DesignComponent(StructuralContract):
     visual_node_id: str
     grounded: bool = False
     part_number: str | None = None
+    role: str | None = None
 
 
 class ConnectionMemberEngagement(StructuralContract):
@@ -1479,6 +1486,12 @@ class StructuralSnapshot(StructuralContract):
                 service_check.member_id,
                 member_ids,
             )
+            for analytical_member_id in service_check.analytical_member_ids:
+                _require_reference(
+                    "serviceability check analytical member",
+                    analytical_member_id,
+                    member_ids,
+                )
         return self
 
 

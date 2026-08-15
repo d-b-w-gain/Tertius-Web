@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import dist
 
 import pytest
 
@@ -8,13 +9,15 @@ from core.project_templates import (
     default_project_files,
     default_structural_configuration,
 )
+from core.site_definition import default_site_definition
 from core.structural.project_analysis import solve_project_structural
 from core.structural.project_configuration import StructuralProjectConfiguration
-from core.structural.contracts import ProjectStructuralCapture
+from core.structural.contracts import DesignComponent, ProjectStructuralCapture
 from tertius.runner import execute_design
 from workflows.structural.structural_server import (
     _capture_from_structural_projection,
     _endpoint_connection_effects,
+    _portal_frame_wind_actions,
 )
 
 
@@ -111,9 +114,14 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
         "member:P1",
     }
     assert max(result.max_moment_kNm for result in snapshot.member_results) > 0
-    assert next(
-        check for check in snapshot.serviceability_checks if check.member_id == "member:P1"
-    ).status == "pass"
+    assert (
+        next(
+            check
+            for check in snapshot.serviceability_checks
+            if check.member_id == "member:P1"
+        ).status
+        == "pass"
+    )
     assert snapshot.equilibrium.status == "pass"
     assert snapshot.source.analysis_configuration_revision == 1
     assert any("Connection KNEE1" in warning for warning in capture.warnings)
@@ -158,8 +166,7 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
 
     procurement = execution.projections["procurement"]
     requirement_parts = {
-        requirement["part_number"]
-        for requirement in procurement["requirements"]
+        requirement["part_number"] for requirement in procurement["requirements"]
     }
     assert {
         "C20024",
@@ -169,6 +176,227 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
         "FAB-KG-180X180X6",
         "M12X30-BOLT-DEMO",
     }.issubset(requirement_parts)
+
+
+def test_site_basis_without_wind_receivers_blocks_actions_stage(tmp_path) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+
+    capture = _capture_from_structural_projection(
+        execution.projections["structural"],
+        project_name="default-purlin",
+        configuration=configuration,
+        site=default_site_definition(),
+    )
+    snapshot = solve_project_structural(capture)
+
+    actions = next(
+        stage for stage in snapshot.verification_stages if stage.id == "actions"
+    )
+    assert capture.wind_action_bases
+    assert capture.loads == []
+    assert actions.status == "blocked"
+    assert (
+        "no wind action"
+        in next(
+            sheet
+            for sheet in snapshot.calculation_sheets
+            if sheet.stage_id == "actions"
+        )
+        .assumptions[0]
+        .lower()
+    )
+
+
+def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> None:
+    site = default_site_definition().model_copy(deep=True)
+    site.structure.footprint_length_m = 5.0
+    site.structure.footprint_width_m = 3.0
+    configuration_data = default_structural_configuration()
+    configuration_data["portal_frame_wind_actions"] = {
+        "coefficient_basis": (
+            "Worked transverse portal-frame envelope pending AS/NZS 1170.2 "
+            "surface-zone verification."
+        )
+    }
+    configuration = StructuralProjectConfiguration.model_validate(configuration_data)
+    components: list[DesignComponent] = []
+    analytical_members: list[dict] = []
+    for frame_index, y in enumerate((0.0, 5.0), start=1):
+        member_specs = (
+            (f"F{frame_index}CL", "portal column", (-1.5, y, 0), (-1.5, y, 2.4)),
+            (f"F{frame_index}CR", "portal column", (1.5, y, 0), (1.5, y, 2.4)),
+            (f"F{frame_index}RL", "portal rafter", (-1.5, y, 2.4), (0, y, 3.0)),
+            (f"F{frame_index}RR", "portal rafter", (1.5, y, 2.4), (0, y, 3.0)),
+        )
+        for component_id, role, start, end in member_specs:
+            components.append(
+                DesignComponent(
+                    id=component_id,
+                    label=component_id,
+                    kind="member",
+                    visual_node_id=component_id,
+                    role=role,
+                )
+            )
+            analytical_members.append(
+                {
+                    "id": f"member:{component_id}",
+                    "component_id": component_id,
+                    "start_m": list(start),
+                    "end_m": list(end),
+                    "physical_start_distance_m": 0.0,
+                    "physical_end_distance_m": dist(start, end),
+                }
+            )
+
+    (
+        effective_configuration,
+        wind_bases,
+        surface_loads,
+        line_loads,
+        surface_sources,
+        warnings,
+    ) = _portal_frame_wind_actions(
+        {"analytical_members": analytical_members},
+        components=components,
+        configuration=configuration,
+        site=site,
+    )
+
+    assert warnings == []
+    assert len(wind_bases) == 4
+    assert len(surface_loads) == 16
+    assert len(line_loads) == 16
+    assert len(surface_sources) == 16
+    assert {load.case_id for load in line_loads} == {
+        "wind-plus-x",
+        "wind-minus-x",
+    }
+    assert {load.coefficient_status for load in surface_loads} == {
+        "working_conservative"
+    }
+    assert {
+        combination.id for combination in effective_configuration.load_combinations
+    }.issuperset({"SLS-G+WX+", "SLS-G+WX-", "ULS-1.2G+WX+", "ULS-1.2G+WX-"})
+    assert effective_configuration.cross_section_verification is not None
+    assert set(
+        effective_configuration.cross_section_verification.combination_ids
+    ).issuperset({"ULS-1.2G+WX+", "ULS-1.2G+WX-"})
+
+
+def test_split_analytical_segments_share_one_physical_serviceability_check(
+    tmp_path,
+) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+    original = _capture_from_structural_projection(
+        execution.projections["structural"],
+        project_name="split-purlin",
+        configuration=configuration,
+    ).model_dump(mode="python")
+    analysis = original["analysis"]
+    assert analysis is not None
+    purlin = next(
+        member for member in analysis["members"] if member["component_id"] == "P1"
+    )
+    purlin_length = dist(purlin["start"].values(), purlin["end"].values())
+    midpoint = {
+        axis: (purlin["start"][axis] + purlin["end"][axis]) / 2.0
+        for axis in ("x", "y", "z")
+    }
+    first = deepcopy(purlin)
+    second = deepcopy(purlin)
+    first["id"] = "member:P1:segment:01"
+    first["end"] = midpoint
+    first["end_node_key"] = "physical:P1:split"
+    second["id"] = "member:P1:segment:02"
+    second["start"] = midpoint
+    second["start_node_key"] = "physical:P1:split"
+    analysis["members"] = [
+        member for member in analysis["members"] if member["component_id"] != "P1"
+    ] + [first, second]
+    rewritten_line_loads = []
+    for load in analysis["member_distributed_loads"]:
+        if load["member_id"] != purlin["id"]:
+            rewritten_line_loads.append(load)
+            continue
+        for index, member_id in enumerate(
+            (first["id"], second["id"]),
+            start=1,
+        ):
+            segment_load = deepcopy(load)
+            segment_load["id"] = f"{load['id']}:segment:{index:02d}"
+            segment_load["member_id"] = member_id
+            segment_load["start_distance_m"] = 0.0
+            segment_load["end_distance_m"] = purlin_length / 2.0
+            rewritten_line_loads.append(segment_load)
+    analysis["member_distributed_loads"] = rewritten_line_loads
+    analysis["cross_section_verification"] = None
+    analysis["member_stability_verification"] = None
+
+    snapshot = solve_project_structural(
+        ProjectStructuralCapture.model_validate(original)
+    )
+    purlin_checks = [
+        check
+        for check in snapshot.serviceability_checks
+        if check.physical_member_id == "P1"
+    ]
+
+    assert len(purlin_checks) == 1
+    assert purlin_checks[0].span_m == pytest.approx(purlin_length)
+    assert purlin_checks[0].limit_mm == pytest.approx(purlin_length * 1000 / 250)
+    assert purlin_checks[0].analytical_member_ids == [first["id"], second["id"]]
+
+
+def test_physical_load_stations_are_mapped_onto_trimmed_solver_axis(tmp_path) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    projection = deepcopy(execution.projections["structural"])
+    projected_purlin = next(
+        member
+        for member in projection["analytical_members"]
+        if member["component_id"] == "P1"
+    )
+    analytical_length = dist(projected_purlin["start_m"], projected_purlin["end_m"])
+    projected_purlin["physical_end_distance_m"] = analytical_length + 0.025
+    configuration_data = default_structural_configuration()
+    configuration_data["member_distributed_loads"] = [
+        {
+            "id": "trimmed-axis-load",
+            "label": "Full physical purlin action",
+            "component_id": "P1",
+            "case_id": "dead",
+            "start_distance_m": 0.0,
+            "end_distance_m": analytical_length + 0.025,
+            "start_force_kN_m": {"x": 0, "y": 0, "z": -0.1},
+            "provenance": "Physical station mapping regression.",
+        }
+    ]
+    configuration = StructuralProjectConfiguration.model_validate(configuration_data)
+
+    capture = _capture_from_structural_projection(
+        projection,
+        project_name="trimmed-axis",
+        configuration=configuration,
+    )
+    mapped = next(
+        load
+        for load in capture.analysis.member_distributed_loads
+        if load.id == "trimmed-axis-load"
+    )
+
+    assert mapped.end_distance_m == pytest.approx(analytical_length)
 
 
 def test_pinned_physical_joint_maps_to_member_end_releases() -> None:
@@ -329,9 +557,7 @@ def test_explicit_topology_keeps_touching_unconnected_endpoints_separate() -> No
                         "assumption": "Explicit topology test.",
                     },
                 ],
-                "load_cases": [
-                    {"id": "live", "label": "Live", "category": "live"}
-                ],
+                "load_cases": [{"id": "live", "label": "Live", "category": "live"}],
                 "member_loads": [
                     {
                         "id": "load",

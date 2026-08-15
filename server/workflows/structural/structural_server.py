@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from math import atan2, degrees, dist, sqrt
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -22,6 +22,8 @@ from core.structural.contracts import (
     DesignAnalysisDefinition,
     DesignComponent,
     DesignConnection,
+    DesignLoadPath,
+    DesignSurfaceLoad,
     LoadCase,
     LoadCombination,
     MemberDistributedLoad,
@@ -34,13 +36,22 @@ from core.structural.contracts import (
     SectionProperties,
     StructuralMaterial,
     StructuralSnapshot,
+    StructuralWindActionBasis,
     Vector3,
 )
 from core.structural.project_configuration import (
+    ConfiguredMemberDistributedLoad,
     StructuralConfigurationRevisionResponse,
     StructuralProjectConfiguration,
     fixed_restraints,
     pinned_restraints,
+)
+from core.repositories import ProjectRepository
+from core.site_definition import (
+    SITE_DEFINITION_FILENAME,
+    SiteDefinition,
+    apply_site_definition,
+    parse_site_definition,
 )
 from core.structural.project_analysis import (
     StructuralAnalysisError,
@@ -140,6 +151,7 @@ def _capture_from_structural_projection(
     configuration: StructuralProjectConfiguration | None = None,
     configuration_revision: int | None = None,
     configuration_digest: str | None = None,
+    site: SiteDefinition | None = None,
 ) -> ProjectStructuralCapture:
     if projection.get("schema_version") != "tertius.structural.v1":
         raise ValueError("unsupported structural projection schema")
@@ -157,6 +169,7 @@ def _capture_from_structural_projection(
             part_number=(
                 str(component["part_number"]) if component.get("part_number") else None
             ),
+            role=(str(component["role"]) if component.get("role") else None),
         )
         for component in projection.get("components", [])
         if isinstance(component, dict)
@@ -198,13 +211,55 @@ def _capture_from_structural_projection(
     ]
     readiness = projection.get("readiness") or {}
     analysis = None
+    wind_action_bases: list[StructuralWindActionBasis] = []
+    surface_loads: list[DesignSurfaceLoad] = []
+    effective_configuration = configuration
+    derived_distributed_loads: list[ConfiguredMemberDistributedLoad] = []
+    surface_sources: dict[str, str] = {}
+    if configuration is not None:
+        (
+            effective_configuration,
+            wind_action_bases,
+            surface_loads,
+            derived_distributed_loads,
+            surface_sources,
+            wind_warnings,
+        ) = _portal_frame_wind_actions(
+            projection,
+            components=components,
+            configuration=configuration,
+            site=site,
+        )
+        diagnostics.extend(wind_warnings)
+        if site is not None and configuration.portal_frame_wind_actions is None:
+            overlaid = apply_site_definition(
+                {
+                    "design_basis": configuration.design_basis.model_dump(
+                        mode="python"
+                    ),
+                    "wind_action_bases": [],
+                    "loads": [],
+                },
+                site,
+            )
+            effective_configuration = configuration.model_copy(deep=True)
+            effective_configuration.design_basis = type(
+                configuration.design_basis
+            ).model_validate(overlaid["design_basis"])
+            wind_action_bases = [
+                StructuralWindActionBasis.model_validate(value)
+                for value in overlaid["wind_action_bases"]
+            ]
     if configuration is not None and readiness.get("model_complete"):
         analysis, analysis_warnings = _analysis_from_projection(
             projection,
             components=components,
-            configuration=configuration,
+            configuration=effective_configuration or configuration,
+            derived_distributed_loads=derived_distributed_loads,
+            surface_sources=surface_sources,
         )
         diagnostics.extend(analysis_warnings)
+    load_paths = _trace_generated_load_paths(components, connections, surface_loads)
     capabilities = [
         CapabilityState(
             id="mechanical-topology",
@@ -214,6 +269,22 @@ def _capture_from_structural_projection(
                 "Members and joints were projected from physical components."
                 if readiness.get("model_complete")
                 else "Resolve the structural component and connection diagnostics."
+            ),
+        ),
+        CapabilityState(
+            id="derived-action-load-paths",
+            label="Derived action load paths",
+            status=(
+                "online"
+                if load_paths and all(path.status == "complete" for path in load_paths)
+                else "blocked"
+            ),
+            detail=(
+                f"{len(load_paths)} derived wind actions reach a grounded component."
+                if load_paths and all(path.status == "complete" for path in load_paths)
+                else "Wind actions have no complete path to ground."
+                if surface_loads
+                else "No derived wind actions are active."
             ),
         ),
         CapabilityState(
@@ -235,11 +306,16 @@ def _capture_from_structural_projection(
         analysis_configuration_digest=configuration_digest,
         title=project_name,
         authoring_mode="generated",
-        design_basis=configuration.design_basis if configuration else None,
+        design_basis=(
+            effective_configuration.design_basis
+            if effective_configuration is not None
+            else None
+        ),
+        wind_action_bases=wind_action_bases,
         components=components,
         connections=connections,
-        loads=[],
-        load_paths=[],
+        loads=surface_loads,
+        load_paths=load_paths,
         analysis=analysis,
         capabilities=capabilities,
         warnings=diagnostics,
@@ -258,6 +334,427 @@ def _member_length(member: dict) -> float:
     if not isinstance(start, list) or not isinstance(end, list):
         raise ValueError(f"analytical member {member.get('id')!r} has no endpoints")
     return float(dist(start, end))
+
+
+def _trace_generated_load_paths(
+    components: Sequence[DesignComponent],
+    connections: Sequence[DesignConnection],
+    loads: Sequence[DesignSurfaceLoad],
+) -> list[DesignLoadPath]:
+    components_by_id = {component.id: component for component in components}
+    adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for connection in connections:
+        adjacency[connection.from_component_id].append(
+            (connection.to_component_id, connection.id)
+        )
+        adjacency[connection.to_component_id].append(
+            (connection.from_component_id, connection.id)
+        )
+    paths: list[DesignLoadPath] = []
+    for load in loads:
+        queue: deque[tuple[str, list[str], list[str]]] = deque(
+            [(load.component_id, [load.component_id], [])]
+        )
+        visited = {load.component_id}
+        complete: DesignLoadPath | None = None
+        while queue:
+            component_id, component_path, connection_path = queue.popleft()
+            component = components_by_id[component_id]
+            if component.grounded:
+                complete = DesignLoadPath(
+                    load_id=load.id,
+                    status="complete",
+                    component_ids=component_path,
+                    connection_ids=connection_path,
+                    grounded_component_id=component_id,
+                    detail=f"Derived action reaches {component.label}.",
+                )
+                break
+            for next_id, connection_id in adjacency.get(component_id, []):
+                if next_id in visited:
+                    continue
+                visited.add(next_id)
+                queue.append(
+                    (
+                        next_id,
+                        [*component_path, next_id],
+                        [*connection_path, connection_id],
+                    )
+                )
+        paths.append(
+            complete
+            or DesignLoadPath(
+                load_id=load.id,
+                status="blocked",
+                component_ids=[load.component_id],
+                connection_ids=[],
+                detail="No compiled physical connection path reaches ground.",
+            )
+        )
+    return paths
+
+
+def _portal_frame_wind_actions(
+    projection: dict,
+    *,
+    components: list[DesignComponent],
+    configuration: StructuralProjectConfiguration,
+    site: SiteDefinition | None,
+) -> tuple[
+    StructuralProjectConfiguration,
+    list[StructuralWindActionBasis],
+    list[DesignSurfaceLoad],
+    list[ConfiguredMemberDistributedLoad],
+    dict[str, str],
+    list[str],
+]:
+    """Derive a transverse portal-frame strip model from roles and Site data."""
+
+    configured = configuration.portal_frame_wind_actions
+    if configured is None:
+        return configuration, [], [], [], {}, []
+
+    analysis_configuration = configuration.model_copy(deep=True)
+    if site is None:
+        analysis_configuration.design_basis.standards["wind_actions"] = (
+            "Site workbench wind basis missing — unconfirmed for this project"
+        )
+        return (
+            analysis_configuration,
+            [],
+            [],
+            [],
+            {},
+            [
+                f"{SITE_DEFINITION_FILENAME} is required by the configured portal-frame "
+                "wind action model. Wind actions were not generated."
+            ],
+        )
+
+    projected_members = [
+        member
+        for member in projection.get("analytical_members", [])
+        if isinstance(member, dict) and member.get("component_id")
+    ]
+    members_by_component: dict[str, list[dict]] = defaultdict(list)
+    for member in projected_members:
+        members_by_component[str(member["component_id"])].append(member)
+    for members in members_by_component.values():
+        members.sort(
+            key=lambda member: float(member.get("physical_start_distance_m") or 0.0)
+        )
+
+    role_by_component = {
+        component.id: (component.role or "").strip().lower() for component in components
+    }
+    column_ids = {
+        component_id
+        for component_id, role in role_by_component.items()
+        if role == configured.column_role.strip().lower()
+    }
+    rafter_ids = {
+        component_id
+        for component_id, role in role_by_component.items()
+        if role == configured.rafter_role.strip().lower()
+    }
+
+    def physical_endpoints(component_id: str) -> tuple[Vector3, Vector3]:
+        members = members_by_component.get(component_id, [])
+        if not members:
+            raise ValueError(
+                f"portal wind role component {component_id!r} has no analytical axis"
+            )
+        return (
+            _vector(members[0].get("start_m"), label="physical member start"),
+            _vector(members[-1].get("end_m"), label="physical member end"),
+        )
+
+    frame_components: dict[float, dict[str, list[str]]] = defaultdict(
+        lambda: {"columns": [], "rafters": []}
+    )
+    for component_id, key in (
+        *((component_id, "columns") for component_id in column_ids),
+        *((component_id, "rafters") for component_id in rafter_ids),
+    ):
+        start, end = physical_endpoints(component_id)
+        frame_y = round((start.y + end.y) / 2.0, 6)
+        if abs(start.y - end.y) > 1e-5:
+            return (
+                analysis_configuration,
+                [],
+                [],
+                [],
+                {},
+                [
+                    "Portal-frame wind actions were not generated because role "
+                    f"component {component_id!r} is not in a constant-Y transverse plane."
+                ],
+            )
+        frame_components[frame_y][key].append(component_id)
+
+    invalid_frames = {
+        frame_y: values
+        for frame_y, values in frame_components.items()
+        if len(values["columns"]) != 2 or len(values["rafters"]) != 2
+    }
+    if not frame_components or invalid_frames:
+        analysis_configuration.design_basis.standards["wind_actions"] = (
+            f"{site.project_basis.standards.wind} — portal frame roles incomplete"
+        )
+        return (
+            analysis_configuration,
+            [],
+            [],
+            [],
+            {},
+            [
+                "Portal-frame wind actions require exactly two portal columns and "
+                "two portal rafters in every transverse frame; no partial wind model "
+                "was generated."
+            ],
+        )
+
+    frame_positions = sorted(frame_components)
+    if len(frame_positions) == 1:
+        tributary_widths = {frame_positions[0]: site.structure.footprint_length_m}
+    else:
+        geometry_length = frame_positions[-1] - frame_positions[0]
+        site_length = site.structure.footprint_length_m
+        if abs(geometry_length - site_length) > max(0.1, site_length * 0.1):
+            analysis_configuration.design_basis.standards["wind_actions"] = (
+                f"{site.project_basis.standards.wind} — geometry/site footprint mismatch"
+            )
+            return (
+                analysis_configuration,
+                [],
+                [],
+                [],
+                {},
+                [
+                    "Portal-frame wind actions were not generated because the compiled "
+                    f"frame length ({geometry_length:.3f} m) does not match the Site "
+                    f"footprint length ({site_length:.3f} m)."
+                ],
+            )
+        tributary_widths = {
+            frame_y: (
+                (frame_positions[1] - frame_positions[0]) / 2.0
+                if index == 0
+                else (frame_positions[-1] - frame_positions[-2]) / 2.0
+                if index == len(frame_positions) - 1
+                else (frame_positions[index + 1] - frame_positions[index - 1]) / 2.0
+            )
+            for index, frame_y in enumerate(frame_positions)
+        }
+        end_strip_adjustment = (site_length - geometry_length) / 2.0
+        tributary_widths[frame_positions[0]] += end_strip_adjustment
+        tributary_widths[frame_positions[-1]] += end_strip_adjustment
+        if any(width <= 0 for width in tributary_widths.values()):
+            raise ValueError(
+                "Site footprint produces a non-positive portal-frame tributary width"
+            )
+
+    dead_case = next(
+        (case for case in analysis_configuration.load_cases if case.category == "dead"),
+        None,
+    )
+    if dead_case is None:
+        raise ValueError("portal-frame wind actions require a permanent action case")
+    generated_cases = (
+        LoadCase(id="wind-plus-x", label="Transverse wind +X", category="wind"),
+        LoadCase(id="wind-minus-x", label="Transverse wind -X", category="wind"),
+    )
+    existing_cases = {case.id: case for case in analysis_configuration.load_cases}
+    for generated_case in generated_cases:
+        existing = existing_cases.get(generated_case.id)
+        if existing is not None and existing.category != "wind":
+            raise ValueError(
+                f"generated wind case {generated_case.id!r} conflicts with a "
+                f"configured {existing.category!r} case"
+            )
+        if existing is None:
+            analysis_configuration.load_cases.append(generated_case)
+
+    generated_combinations = (
+        LoadCombination(
+            id="SLS-G+WX+",
+            label="Permanent plus transverse wind +X",
+            limit_state="serviceability",
+            factors={dead_case.id: 1.0, "wind-plus-x": 1.0},
+        ),
+        LoadCombination(
+            id="SLS-G+WX-",
+            label="Permanent plus transverse wind -X",
+            limit_state="serviceability",
+            factors={dead_case.id: 1.0, "wind-minus-x": 1.0},
+        ),
+        LoadCombination(
+            id="ULS-1.2G+WX+",
+            label="ULS permanent plus transverse wind +X",
+            limit_state="ultimate",
+            factors={dead_case.id: 1.2, "wind-plus-x": 1.0},
+        ),
+        LoadCombination(
+            id="ULS-1.2G+WX-",
+            label="ULS permanent plus transverse wind -X",
+            limit_state="ultimate",
+            factors={dead_case.id: 1.2, "wind-minus-x": 1.0},
+        ),
+    )
+    combination_ids = {
+        combination.id for combination in analysis_configuration.load_combinations
+    }
+    for generated_combination in generated_combinations:
+        if generated_combination.id not in combination_ids:
+            analysis_configuration.load_combinations.append(generated_combination)
+    uls_wind_ids = ["ULS-1.2G+WX+", "ULS-1.2G+WX-"]
+    for verification in (
+        analysis_configuration.cross_section_verification,
+        analysis_configuration.member_stability_verification,
+    ):
+        if verification is not None:
+            verification.combination_ids = list(
+                dict.fromkeys([*verification.combination_ids, *uls_wind_ids])
+            )
+
+    raw_loads: list[dict[str, object]] = []
+    load_geometry: dict[str, tuple[str, float, Vector3]] = {}
+    for frame_y in frame_positions:
+        tributary_width = tributary_widths[frame_y]
+        frame = frame_components[frame_y]
+        columns = sorted(
+            frame["columns"],
+            key=lambda component_id: sum(
+                value.x for value in physical_endpoints(component_id)
+            ),
+        )
+        rafters = sorted(
+            frame["rafters"],
+            key=lambda component_id: sum(
+                value.x for value in physical_endpoints(component_id)
+            ),
+        )
+        for case_id, wind_sign in (("wind-plus-x", 1.0), ("wind-minus-x", -1.0)):
+            for column_index, component_id in enumerate(columns):
+                is_windward = (wind_sign > 0 and column_index == 0) or (
+                    wind_sign < 0 and column_index == 1
+                )
+                coefficient = (
+                    configured.windward_wall_coefficient
+                    if is_windward
+                    else configured.leeward_wall_coefficient
+                )
+                start, end = physical_endpoints(component_id)
+                member_length = dist(
+                    start.model_dump().values(), end.model_dump().values()
+                )
+                load_id = f"site:{case_id}:{component_id}:wall"
+                direction = Vector3(x=wind_sign, y=0, z=0)
+                raw_loads.append(
+                    {
+                        "id": load_id,
+                        "label": f"{case_id} wall action on {component_id}",
+                        "case": "wind",
+                        "case_id": case_id,
+                        "component_id": component_id,
+                        "pressure_kPa": abs(coefficient),
+                        "area_m2": member_length * tributary_width,
+                        "direction": direction.model_dump(),
+                        "provenance": configured.coefficient_basis,
+                        "net_pressure_coefficient": coefficient,
+                        "coefficient_status": configured.coefficient_status,
+                    }
+                )
+                load_geometry[load_id] = (component_id, tributary_width, direction)
+            for component_id in rafters:
+                start, end = physical_endpoints(component_id)
+                member_length = dist(
+                    start.model_dump().values(), end.model_dump().values()
+                )
+                delta_x = end.x - start.x
+                delta_z = end.z - start.z
+                slope_length = sqrt(delta_x**2 + delta_z**2)
+                outward = Vector3(
+                    x=(
+                        -abs(delta_z) / slope_length
+                        if (start.x + end.x) < 0
+                        else abs(delta_z) / slope_length
+                    ),
+                    y=0,
+                    z=abs(delta_x) / slope_length,
+                )
+                load_id = f"site:{case_id}:{component_id}:roof"
+                raw_loads.append(
+                    {
+                        "id": load_id,
+                        "label": f"{case_id} roof suction on {component_id}",
+                        "case": "wind",
+                        "case_id": case_id,
+                        "component_id": component_id,
+                        "pressure_kPa": abs(configured.roof_suction_coefficient),
+                        "area_m2": member_length * tributary_width,
+                        "direction": outward.model_dump(),
+                        "provenance": configured.coefficient_basis,
+                        "net_pressure_coefficient": configured.roof_suction_coefficient,
+                        "coefficient_status": configured.coefficient_status,
+                    }
+                )
+                load_geometry[load_id] = (component_id, tributary_width, outward)
+
+    overlaid = apply_site_definition(
+        {
+            "design_basis": analysis_configuration.design_basis.model_dump(
+                mode="python"
+            ),
+            "wind_action_bases": [],
+            "loads": raw_loads,
+        },
+        site,
+    )
+    analysis_configuration.design_basis = type(
+        configuration.design_basis
+    ).model_validate(overlaid["design_basis"])
+    wind_bases = [
+        StructuralWindActionBasis.model_validate(value)
+        for value in overlaid["wind_action_bases"]
+    ]
+    surface_loads = [
+        DesignSurfaceLoad.model_validate(value) for value in overlaid["loads"]
+    ]
+    surface_sources: dict[str, str] = {}
+    distributed_configs: list[ConfiguredMemberDistributedLoad] = []
+    for surface_load in surface_loads:
+        component_id, tributary_width, direction = load_geometry[surface_load.id]
+        force = Vector3(
+            x=surface_load.pressure_kPa * tributary_width * direction.x,
+            y=surface_load.pressure_kPa * tributary_width * direction.y,
+            z=surface_load.pressure_kPa * tributary_width * direction.z,
+        )
+        distributed_id = f"distribution:{surface_load.id}"
+        surface_sources[distributed_id] = surface_load.id
+        distributed_configs.append(
+            ConfiguredMemberDistributedLoad(
+                id=distributed_id,
+                label=f"{surface_load.label} line action",
+                component_id=component_id,
+                case_id=str(surface_load.case_id),
+                start_force_kN_m=force,
+                end_force_kN_m=force,
+                provenance=(
+                    surface_load.provenance
+                    + "; tributary width derived from the Site footprint and "
+                    "compiled portal-frame spacing."
+                ),
+            )
+        )
+    return (
+        analysis_configuration,
+        wind_bases,
+        surface_loads,
+        distributed_configs,
+        surface_sources,
+        [],
+    )
 
 
 def _cross3(
@@ -445,6 +942,8 @@ def _analysis_from_projection(
     *,
     components: list[DesignComponent],
     configuration: StructuralProjectConfiguration,
+    derived_distributed_loads: Sequence[ConfiguredMemberDistributedLoad] = (),
+    surface_sources: Mapping[str, str] | None = None,
 ) -> tuple[DesignAnalysisDefinition, list[str]]:
     product_facets = {
         str(facet.get("product_key")): facet
@@ -488,6 +987,18 @@ def _analysis_from_projection(
     )
     warnings: list[str] = []
     has_ground_restraint = False
+    component_labels = {component.id: component.label for component in components}
+    component_spans = {
+        component_id: max(
+            float(member.get("physical_end_distance_m") or _member_length(member))
+            for member in component_members
+        )
+        - min(
+            float(member.get("physical_start_distance_m") or 0.0)
+            for member in component_members
+        )
+        for component_id, component_members in members_by_component.items()
+    }
 
     for projected_member in projected_members:
         component_id = str(projected_member["component_id"])
@@ -667,6 +1178,11 @@ def _analysis_from_projection(
                 deflection_limit_basis=(
                     criterion.deflection_limit_basis if criterion else None
                 ),
+                serviceability_group_id=component_id,
+                serviceability_group_label=component_labels.get(
+                    component_id, component_id
+                ),
+                serviceability_span_m=component_spans[component_id],
                 assumption=(
                     "Axis, section, material, and physical restraints are projected "
                     "from the compiled mechanical graph. PyNite local z is rotated "
@@ -714,8 +1230,16 @@ def _analysis_from_projection(
             ),
             point_component_members[-1],
         )
-        local_distance = point_config.distance_m - float(
-            point_member.get("physical_start_distance_m") or 0.0
+        point_member_start = float(point_member.get("physical_start_distance_m") or 0.0)
+        point_member_end = float(
+            point_member.get("physical_end_distance_m")
+            or (point_member_start + _member_length(point_member))
+        )
+        station_span = point_member_end - point_member_start
+        local_distance = (
+            (point_config.distance_m - point_member_start)
+            / station_span
+            * _member_length(point_member)
         )
         point_loads.append(
             MemberPointLoad(
@@ -730,7 +1254,11 @@ def _analysis_from_projection(
                 provenance=point_config.provenance,
             )
         )
-    for distributed_config in configuration.member_distributed_loads:
+    surface_sources = surface_sources or {}
+    for distributed_config in (
+        *configuration.member_distributed_loads,
+        *derived_distributed_loads,
+    ):
         distributed_component_members = members_by_component.get(
             distributed_config.component_id,
             [],
@@ -782,6 +1310,16 @@ def _analysis_from_projection(
             member_start = float(
                 distributed_member.get("physical_start_distance_m") or 0.0
             )
+            member_end = float(
+                distributed_member.get("physical_end_distance_m")
+                or (member_start + _member_length(distributed_member))
+            )
+            analytical_length = _member_length(distributed_member)
+            station_span = member_end - member_start
+
+            def solver_distance(station: float) -> float:
+                return (station - member_start) / station_span * analytical_length
+
             distributed_loads.append(
                 MemberDistributedLoad(
                     id=(
@@ -792,12 +1330,16 @@ def _analysis_from_projection(
                     label=distributed_config.label,
                     member_id=str(distributed_member["id"]),
                     case_id=distributed_config.case_id,
-                    start_distance_m=overlap_start - member_start,
-                    end_distance_m=overlap_end - member_start,
+                    start_distance_m=solver_distance(overlap_start),
+                    end_distance_m=solver_distance(overlap_end),
                     start_force_kN_m=interpolated_force(overlap_start),
                     end_force_kN_m=interpolated_force(overlap_end),
-                    source_kind="authored",
-                    source_load_id=None,
+                    source_kind=(
+                        "surface"
+                        if distributed_config.id in surface_sources
+                        else "authored"
+                    ),
+                    source_load_id=surface_sources.get(distributed_config.id),
                     provenance=distributed_config.provenance,
                 )
             )
@@ -1028,6 +1570,14 @@ def get_active_capture(
             if stored_configuration is not None
             else None
         )
+        site = None
+        if configuration is not None:
+            site_source = ProjectRepository(db, ctx.tenant_id).get_code(
+                project.name,
+                SITE_DEFINITION_FILENAME,
+            )
+            if site_source is not None:
+                site = parse_site_definition(site_source)
         return _capture_from_structural_projection(
             projection,
             project_name=project.name,
@@ -1042,6 +1592,7 @@ def get_active_capture(
                 if stored_configuration is not None
                 else None
             ),
+            site=site,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(
