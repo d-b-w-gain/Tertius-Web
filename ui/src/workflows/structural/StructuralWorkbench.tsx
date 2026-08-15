@@ -1517,7 +1517,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         </div>
                       </dl>
                       <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
-                        Candidate resistance is shown for comparison only; the exact Airco strap and C100 screw connection remain unverified.
+                        Candidate resistance is shown for comparison only; the selected strap product and rendered end-fastener connection remain unverified.
                       </p>
                     </div>
                   )}
