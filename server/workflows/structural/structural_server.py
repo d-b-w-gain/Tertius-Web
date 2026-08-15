@@ -1145,6 +1145,55 @@ def _analysis_from_projection(
                 end_releases=end_releases,
                 section_id=section_id,
                 material_id=material_id,
+                tension_only=bool(
+                    structural_properties.get(
+                        "tension_only",
+                        projected_member.get("tension_only"),
+                    )
+                ),
+                compression_only=bool(
+                    structural_properties.get(
+                        "compression_only",
+                        projected_member.get("compression_only"),
+                    )
+                ),
+                tension_capacity_status=(
+                    structural_properties.get(
+                        "tension_capacity_status",
+                        projected_member.get("tension_capacity_status"),
+                    )
+                    or "not_checked"
+                ),
+                tension_capacity_kN=(
+                    float(structural_properties["tension_capacity_kN"])
+                    if structural_properties.get("tension_capacity_kN") is not None
+                    else float(projected_member["tension_capacity_kN"])
+                    if projected_member.get("tension_capacity_kN") is not None
+                    else None
+                ),
+                tension_capacity_basis=structural_properties.get(
+                    "tension_capacity_basis",
+                    projected_member.get("tension_capacity_basis"),
+                ),
+                end_fastener_count=(
+                    int(structural_properties["end_fastener_count"])
+                    if structural_properties.get("end_fastener_count") is not None
+                    else int(projected_member["end_fastener_count"])
+                    if projected_member.get("end_fastener_count") is not None
+                    else None
+                ),
+                end_connection_capacity_kN=(
+                    float(structural_properties["end_connection_capacity_kN"])
+                    if structural_properties.get("end_connection_capacity_kN")
+                    is not None
+                    else float(projected_member["end_connection_capacity_kN"])
+                    if projected_member.get("end_connection_capacity_kN") is not None
+                    else None
+                ),
+                end_connection_basis=structural_properties.get(
+                    "end_connection_basis",
+                    projected_member.get("end_connection_basis"),
+                ),
                 rotation_deg=_pynite_section_rotation(
                     start_vector,
                     end_vector,
@@ -1375,7 +1424,11 @@ def _analysis_from_projection(
         selected_member_ids: list[str] = []
         selected_component_ids = configured_cross_section.component_ids
         if not selected_component_ids:
-            selected_member_ids = [declaration.id for declaration in declarations]
+            selected_member_ids = [
+                declaration.id
+                for declaration in declarations
+                if not declaration.tension_only and not declaration.compression_only
+            ]
         for component_id in selected_component_ids:
             selected_declarations = declarations_by_component.get(component_id)
             if not selected_declarations:
@@ -1400,6 +1453,8 @@ def _analysis_from_projection(
         configured_segments = list(configured_member_stability.segments)
         if not configured_segments:
             for declaration in declarations:
+                if declaration.tension_only or declaration.compression_only:
+                    continue
                 member_length = dist(
                     declaration.start.model_dump().values(),
                     declaration.end.model_dump().values(),

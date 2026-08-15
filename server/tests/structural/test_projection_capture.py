@@ -418,6 +418,61 @@ def test_physical_load_stations_are_mapped_onto_trimmed_solver_axis(tmp_path) ->
     assert mapped.end_distance_m == pytest.approx(analytical_length)
 
 
+def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    projection = deepcopy(execution.projections["structural"])
+    projected_purlin = next(
+        member
+        for member in projection["analytical_members"]
+        if member["component_id"] == "P1"
+    )
+    product_key = projected_purlin["product_key"]
+    structural_facet = next(
+        facet
+        for facet in projection["product_facets"]
+        if facet["product_key"] == product_key
+    )
+    structural_facet["properties"].update(
+        {
+            "tension_only": True,
+            "tension_capacity_status": "candidate",
+            "tension_capacity_kN": 12.5,
+            "tension_capacity_basis": "Candidate product tension evidence.",
+            "end_fastener_count": 2,
+            "end_connection_capacity_kN": 8.0,
+            "end_connection_basis": "Candidate product connection evidence.",
+        }
+    )
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+
+    capture = _capture_from_structural_projection(
+        projection,
+        project_name="tension-member",
+        configuration=configuration,
+    )
+
+    assert capture.analysis is not None
+    declaration = next(
+        member for member in capture.analysis.members if member.component_id == "P1"
+    )
+    assert declaration.tension_only is True
+    assert declaration.tension_capacity_status == "candidate"
+    assert declaration.tension_capacity_kN == pytest.approx(12.5)
+    assert declaration.end_fastener_count == 2
+    assert declaration.end_connection_capacity_kN == pytest.approx(8.0)
+    assert capture.analysis.cross_section_verification is not None
+    assert declaration.id not in capture.analysis.cross_section_verification.member_ids
+    assert capture.analysis.member_stability_verification is not None
+    assert all(
+        segment.member_id != declaration.id
+        for segment in capture.analysis.member_stability_verification.segments
+    )
+
+
 def test_pinned_physical_joint_maps_to_member_end_releases() -> None:
     restraints, releases, warnings, node_key = _endpoint_connection_effects(
         component_id="C1",

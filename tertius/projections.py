@@ -278,6 +278,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             start=1,
         ):
             base_member_id = f"member:{component['id']}"
+            structural_properties = structural.get("properties") or {}
             analytical_members.append({
                 "id": (
                     base_member_id
@@ -307,6 +308,29 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                 "material": structural.get("material") or {},
                 "evidence_status": structural.get("evidence_status"),
                 "evidence_basis": structural.get("evidence_basis"),
+                "tension_only": bool(structural_properties.get("tension_only")),
+                "compression_only": bool(
+                    structural_properties.get("compression_only")
+                ),
+                "tension_capacity_status": structural_properties.get(
+                    "tension_capacity_status",
+                    "not_checked",
+                ),
+                "tension_capacity_kN": structural_properties.get(
+                    "tension_capacity_kN"
+                ),
+                "tension_capacity_basis": structural_properties.get(
+                    "tension_capacity_basis"
+                ),
+                "end_fastener_count": structural_properties.get(
+                    "end_fastener_count"
+                ),
+                "end_connection_capacity_kN": structural_properties.get(
+                    "end_connection_capacity_kN"
+                ),
+                "end_connection_basis": structural_properties.get(
+                    "end_connection_basis"
+                ),
                 "profile_rotation_deg": float(
                     (component.get("fabrication") or {}).get("rotation_deg") or 0.0
                 ),

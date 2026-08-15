@@ -678,6 +678,57 @@ def test_runner_requires_model_and_rejects_removed_manifest_exports(
         execute_design(tmp_path)
 
 
+def test_structural_projection_carries_product_authored_tension_member_behavior(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "design.py").write_text(
+        """import build123d as bd
+from tertius import PortPlacement, ProcurementFacet, ProductDefinition, StructuralFacet, managed_component
+
+product = ProductDefinition(
+    key="test:strap",
+    label="Test strap",
+    geometry={"profile": "flat_strip"},
+    procurement=ProcurementFacet(part_number="TEST-STRAP"),
+    structural=StructuralFacet(
+        kind="member",
+        material={"label": "steel"},
+        section={"area_m2": 3e-5},
+        properties={
+            "tension_only": True,
+            "tension_capacity_status": "candidate",
+            "end_fastener_count": 2,
+            "tension_capacity_basis": "Candidate strap evidence.",
+            "end_connection_basis": "Candidate end connection.",
+        },
+    ),
+    port_families={"start": ["bolted"], "end": ["bolted"]},
+)
+model = managed_component(
+    bd.Box(30, 1, 1000),
+    product=product,
+    mark="BR1",
+    role="cross brace strap",
+    ports={
+        "start": PortPlacement((0, 0, 0), (0, 0, -1)),
+        "end": PortPlacement((0, 0, 1000), (0, 0, 1)),
+    },
+)
+""",
+        encoding="utf-8",
+    )
+
+    execution = execute_design(tmp_path)
+    member = execution.projections["structural"]["analytical_members"][0]
+
+    assert member["tension_only"] is True
+    assert member["compression_only"] is False
+    assert member["tension_capacity_status"] == "candidate"
+    assert member["end_fastener_count"] == 2
+    assert member["tension_capacity_basis"] == "Candidate strap evidence."
+    assert member["end_connection_basis"] == "Candidate end connection."
+
+
 def test_runner_uses_only_model_and_ignores_other_global_shapes(tmp_path: Path) -> None:
     (tmp_path / "design.py").write_text(
         "helper = bd.Box(50, 50, 50)\nmodel = bd.Box(1, 2, 3)\n",
