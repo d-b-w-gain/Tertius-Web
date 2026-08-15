@@ -234,6 +234,7 @@ export type ProjectStructuralCapture = {
     }>
     load_cases: StructuralSnapshot['load_cases']
     load_combinations: LoadCombination[]
+    action_standard_pack?: ActionStandardPackEvidence | null
     member_loads: MemberPointLoad[]
     member_distributed_loads: MemberDistributedLoad[]
   } | null
@@ -272,6 +273,15 @@ export type LoadCombination = {
   label: string
   limit_state: 'serviceability' | 'ultimate'
   factors: Record<string, number>
+}
+
+export type ActionStandardPackEvidence = {
+  pack_id: string
+  pack_version: string
+  standard_reference: string
+  status: 'working'
+  combination_ids: string[]
+  basis: string
 }
 
 export type MemberDiagramStation = {
@@ -372,6 +382,7 @@ export type StructuralSnapshot = {
     category: 'dead' | 'live' | 'wind' | 'imperfection' | 'fixture'
   }>
   load_combinations: LoadCombination[]
+  action_standard_pack?: ActionStandardPackEvidence | null
   loads: Array<{
     id: string
     label: string

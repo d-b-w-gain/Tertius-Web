@@ -9,6 +9,7 @@ from core.project_templates import (
     default_project_files,
     default_structural_configuration,
 )
+from core.structural.action_standard_packs import resolve_action_standard_pack
 from core.site_definition import default_site_definition
 from core.structural.project_analysis import solve_project_structural
 from core.structural.project_configuration import StructuralProjectConfiguration
@@ -90,6 +91,19 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     assert capture.analysis_configuration_revision == 1
     assert capture.analysis_configuration_digest == configuration.configuration_digest
     assert capture.analysis is not None
+    ultimate_ids = [
+        combination.id
+        for combination in capture.analysis.load_combinations
+        if combination.limit_state == "ultimate"
+    ]
+    assert capture.analysis.action_standard_pack is not None
+    assert capture.analysis.action_standard_pack.combination_ids == [
+        combination.id for combination in capture.analysis.load_combinations
+    ]
+    assert capture.analysis.cross_section_verification is not None
+    assert capture.analysis.cross_section_verification.combination_ids == ultimate_ids
+    assert capture.analysis.member_stability_verification is not None
+    assert capture.analysis.member_stability_verification.combination_ids == ultimate_ids
     members = {member.component_id: member for member in capture.analysis.members}
     assert members["C1"].start_restraints.model_dump() == {
         "dx": True,
@@ -280,13 +294,17 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     assert {load.coefficient_status for load in surface_loads} == {
         "working_conservative"
     }
-    assert {
-        combination.id for combination in effective_configuration.load_combinations
-    }.issuperset({"SLS-G+WX+", "SLS-G+WX-", "ULS-1.2G+WX+", "ULS-1.2G+WX-"})
-    assert effective_configuration.cross_section_verification is not None
-    assert set(
-        effective_configuration.cross_section_verification.combination_ids
-    ).issuperset({"ULS-1.2G+WX+", "ULS-1.2G+WX-"})
+    assert {case.role for case in effective_configuration.action_cases}.issuperset(
+        {"wind_positive_x", "wind_negative_x"}
+    )
+    assert "load_combinations" not in type(effective_configuration).model_fields
+    resolved = resolve_action_standard_pack(
+        effective_configuration.action_standard_pack_id,
+        effective_configuration.action_cases,
+    )
+    assert {combination.id for combination in resolved.load_combinations}.issuperset(
+        {"SLS-G+WX+", "SLS-G+WX-", "ULS-1.2G+WX+", "ULS-1.2G+WX-"}
+    )
 
 
 def test_split_analytical_segments_share_one_physical_serviceability_check(
@@ -390,6 +408,7 @@ def test_physical_load_stations_are_mapped_onto_trimmed_solver_axis(tmp_path) ->
         project_name="trimmed-axis",
         configuration=configuration,
     )
+    assert capture.analysis is not None
     mapped = next(
         load
         for load in capture.analysis.member_distributed_loads

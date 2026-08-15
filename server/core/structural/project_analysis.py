@@ -4911,6 +4911,7 @@ def solve_project_structural(
         materials=analysis.materials,
         load_cases=analysis.load_cases,
         load_combinations=combinations,
+        action_standard_pack=analysis.action_standard_pack,
         loads=[],
         member_loads=analysis.member_loads,
         member_distributed_loads=analysis.member_distributed_loads,

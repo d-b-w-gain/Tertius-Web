@@ -225,6 +225,15 @@ class LoadCombination(StructuralContract):
     factors: dict[str, float]
 
 
+class ActionStandardPackEvidence(StructuralContract):
+    pack_id: str
+    pack_version: str
+    standard_reference: str
+    status: Literal["working"]
+    combination_ids: list[str]
+    basis: str
+
+
 class StabilityDirectionDefinition(StructuralContract):
     id: str
     stability_combination_id: str
@@ -891,6 +900,7 @@ class DesignAnalysisDefinition(StructuralContract):
     member_loads: list[MemberPointLoad]
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    action_standard_pack: ActionStandardPackEvidence | None = None
     stability: StabilityDefinition | None = None
     cross_section_verification: CrossSectionVerificationDefinition | None = None
     member_stability_verification: MemberStabilityVerificationDefinition | None = None
@@ -1345,6 +1355,7 @@ class StructuralSnapshot(StructuralContract):
     materials: list[StructuralMaterial]
     load_cases: list[LoadCase]
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    action_standard_pack: ActionStandardPackEvidence | None = None
     loads: list[NodalLoad]
     member_loads: list[MemberPointLoad] = Field(default_factory=list)
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)

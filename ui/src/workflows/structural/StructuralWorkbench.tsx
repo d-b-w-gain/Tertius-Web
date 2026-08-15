@@ -560,6 +560,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 CONFIG R{capture.analysis_configuration_revision}
               </span>
             )}
+            {analysis?.action_standard_pack && (
+              <span
+                className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-amber-300"
+                title={`${analysis.action_standard_pack.standard_reference} — ${analysis.action_standard_pack.basis}`}
+              >
+                ACTIONS PACK {analysis.action_standard_pack.pack_version}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             {analysis

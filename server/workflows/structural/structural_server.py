@@ -15,6 +15,10 @@ from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
+from core.structural.action_standard_packs import (
+    StructuralActionCase,
+    resolve_action_standard_pack,
+)
 from core.structural.contracts import (
     AnalyticalMemberDeclaration,
     CapabilityState,
@@ -24,8 +28,6 @@ from core.structural.contracts import (
     DesignConnection,
     DesignLoadPath,
     DesignSurfaceLoad,
-    LoadCase,
-    LoadCombination,
     MemberDistributedLoad,
     MemberPointLoad,
     MemberStabilitySegmentDefinition,
@@ -555,67 +557,37 @@ def _portal_frame_wind_actions(
             )
 
     dead_case = next(
-        (case for case in analysis_configuration.load_cases if case.category == "dead"),
+        (
+            case
+            for case in analysis_configuration.action_cases
+            if case.role == "permanent"
+        ),
         None,
     )
     if dead_case is None:
         raise ValueError("portal-frame wind actions require a permanent action case")
     generated_cases = (
-        LoadCase(id="wind-plus-x", label="Transverse wind +X", category="wind"),
-        LoadCase(id="wind-minus-x", label="Transverse wind -X", category="wind"),
+        StructuralActionCase(
+            id="wind-plus-x",
+            label="Transverse wind +X",
+            role="wind_positive_x",
+        ),
+        StructuralActionCase(
+            id="wind-minus-x",
+            label="Transverse wind -X",
+            role="wind_negative_x",
+        ),
     )
-    existing_cases = {case.id: case for case in analysis_configuration.load_cases}
+    existing_cases = {case.id: case for case in analysis_configuration.action_cases}
     for generated_case in generated_cases:
         existing = existing_cases.get(generated_case.id)
-        if existing is not None and existing.category != "wind":
+        if existing is not None and existing.role != generated_case.role:
             raise ValueError(
                 f"generated wind case {generated_case.id!r} conflicts with a "
-                f"configured {existing.category!r} case"
+                f"configured {existing.role!r} action"
             )
         if existing is None:
-            analysis_configuration.load_cases.append(generated_case)
-
-    generated_combinations = (
-        LoadCombination(
-            id="SLS-G+WX+",
-            label="Permanent plus transverse wind +X",
-            limit_state="serviceability",
-            factors={dead_case.id: 1.0, "wind-plus-x": 1.0},
-        ),
-        LoadCombination(
-            id="SLS-G+WX-",
-            label="Permanent plus transverse wind -X",
-            limit_state="serviceability",
-            factors={dead_case.id: 1.0, "wind-minus-x": 1.0},
-        ),
-        LoadCombination(
-            id="ULS-1.2G+WX+",
-            label="ULS permanent plus transverse wind +X",
-            limit_state="ultimate",
-            factors={dead_case.id: 1.2, "wind-plus-x": 1.0},
-        ),
-        LoadCombination(
-            id="ULS-1.2G+WX-",
-            label="ULS permanent plus transverse wind -X",
-            limit_state="ultimate",
-            factors={dead_case.id: 1.2, "wind-minus-x": 1.0},
-        ),
-    )
-    combination_ids = {
-        combination.id for combination in analysis_configuration.load_combinations
-    }
-    for generated_combination in generated_combinations:
-        if generated_combination.id not in combination_ids:
-            analysis_configuration.load_combinations.append(generated_combination)
-    uls_wind_ids = ["ULS-1.2G+WX+", "ULS-1.2G+WX-"]
-    for verification in (
-        analysis_configuration.cross_section_verification,
-        analysis_configuration.member_stability_verification,
-    ):
-        if verification is not None:
-            verification.combination_ids = list(
-                dict.fromkeys([*verification.combination_ids, *uls_wind_ids])
-            )
+            analysis_configuration.action_cases.append(generated_case)
 
     raw_loads: list[dict[str, object]] = []
     load_geometry: dict[str, tuple[str, float, Vector3]] = {}
@@ -945,6 +917,15 @@ def _analysis_from_projection(
     derived_distributed_loads: Sequence[ConfiguredMemberDistributedLoad] = (),
     surface_sources: Mapping[str, str] | None = None,
 ) -> tuple[DesignAnalysisDefinition, list[str]]:
+    resolved_action_pack = resolve_action_standard_pack(
+        configuration.action_standard_pack_id,
+        configuration.action_cases,
+    )
+    ultimate_combination_ids = [
+        combination.id
+        for combination in resolved_action_pack.load_combinations
+        if combination.limit_state == "ultimate"
+    ]
     product_facets = {
         str(facet.get("product_key")): facet
         for facet in projection.get("product_facets", [])
@@ -1346,7 +1327,9 @@ def _analysis_from_projection(
 
     if configuration.include_self_weight:
         dead_cases = [
-            case for case in configuration.load_cases if case.category == "dead"
+            case
+            for case in resolved_action_pack.load_cases
+            if case.category == "dead"
         ]
         if not dead_cases:
             raise ValueError("self-weight requires a dead load case")
@@ -1405,7 +1388,7 @@ def _analysis_from_projection(
             )
         cross_section_verification = CrossSectionVerificationDefinition(
             pack_id=configured_cross_section.pack_id,
-            combination_ids=configured_cross_section.combination_ids,
+            combination_ids=ultimate_combination_ids,
             member_ids=selected_member_ids,
             off_axis_tolerance=configured_cross_section.off_axis_tolerance,
         )
@@ -1520,7 +1503,7 @@ def _analysis_from_projection(
                 )
         member_stability_verification = MemberStabilityVerificationDefinition(
             pack_id=configured_member_stability.pack_id,
-            combination_ids=configured_member_stability.combination_ids,
+            combination_ids=ultimate_combination_ids,
             segments=segments,
             off_axis_tolerance=configured_member_stability.off_axis_tolerance,
         )
@@ -1530,15 +1513,11 @@ def _analysis_from_projection(
             materials=list(materials.values()),
             sections=list(sections.values()),
             members=declarations,
-            load_cases=[
-                LoadCase.model_validate(case) for case in configuration.load_cases
-            ],
+            load_cases=resolved_action_pack.load_cases,
             member_loads=point_loads,
             member_distributed_loads=distributed_loads,
-            load_combinations=[
-                LoadCombination.model_validate(combination)
-                for combination in configuration.load_combinations
-            ],
+            load_combinations=resolved_action_pack.load_combinations,
+            action_standard_pack=resolved_action_pack.evidence,
             cross_section_verification=cross_section_verification,
             member_stability_verification=member_stability_verification,
         ),

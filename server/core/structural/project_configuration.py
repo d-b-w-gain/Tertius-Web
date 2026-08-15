@@ -6,9 +6,12 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from core.structural.action_standard_packs import (
+    ActionStandardPackId,
+    StructuralActionCase,
+    resolve_action_standard_pack,
+)
 from core.structural.contracts import (
-    LoadCase,
-    LoadCombination,
     Restraints,
     StructuralContract,
     StructuralDesignBasis,
@@ -77,7 +80,6 @@ class ConfiguredMemberCriteria(StructuralContract):
 
 class ConfiguredCrossSectionVerification(StructuralContract):
     pack_id: Literal["as_nzs_4600_2018_ewm"]
-    combination_ids: list[str] = Field(min_length=1)
     component_ids: list[str] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
@@ -112,7 +114,6 @@ class ConfiguredMemberStabilitySegment(StructuralContract):
 
 class ConfiguredMemberStabilityVerification(StructuralContract):
     pack_id: Literal["as_nzs_4600_2018_ewm_member"]
-    combination_ids: list[str] = Field(min_length=1)
     segments: list[ConfiguredMemberStabilitySegment] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
@@ -120,11 +121,11 @@ class ConfiguredMemberStabilityVerification(StructuralContract):
 class StructuralProjectConfiguration(StructuralContract):
     """Revisioned project analysis inputs owned by the Structural workbench."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     title: str
     design_basis: StructuralDesignBasis
-    load_cases: list[LoadCase]
-    load_combinations: list[LoadCombination]
+    action_standard_pack_id: ActionStandardPackId
+    action_cases: list[StructuralActionCase]
     include_self_weight: bool = True
     member_loads: list[ConfiguredMemberPointLoad] = Field(default_factory=list)
     member_distributed_loads: list[ConfiguredMemberDistributedLoad] = Field(
@@ -138,12 +139,12 @@ class StructuralProjectConfiguration(StructuralContract):
 
     @model_validator(mode="after")
     def validate_references(self) -> StructuralProjectConfiguration:
-        case_ids = [case.id for case in self.load_cases]
+        case_ids = [case.id for case in self.action_cases]
         if len(case_ids) != len(set(case_ids)):
-            raise ValueError("load cases contain duplicate IDs")
-        combination_ids = [combination.id for combination in self.load_combinations]
-        if len(combination_ids) != len(set(combination_ids)):
-            raise ValueError("load combinations contain duplicate IDs")
+            raise ValueError("action cases contain duplicate IDs")
+        action_roles = [case.role for case in self.action_cases]
+        if len(action_roles) != len(set(action_roles)):
+            raise ValueError("action cases contain duplicate semantic roles")
         case_id_set = set(case_ids)
         if (
             sum(criterion.component_id is None for criterion in self.member_criteria)
@@ -152,13 +153,6 @@ class StructuralProjectConfiguration(StructuralContract):
             raise ValueError(
                 "member criteria can contain at most one all-members default"
             )
-        for combination in self.load_combinations:
-            missing = set(combination.factors) - case_id_set
-            if missing:
-                raise ValueError(
-                    f"load combination {combination.id!r} references missing cases "
-                    f"{sorted(missing)}"
-                )
         for point_load in self.member_loads:
             if point_load.case_id not in case_id_set:
                 raise ValueError(
@@ -171,28 +165,12 @@ class StructuralProjectConfiguration(StructuralContract):
                     f"member load {distributed_load.id!r} references missing case "
                     f"{distributed_load.case_id!r}"
                 )
-        combinations_by_id = {
-            combination.id: combination for combination in self.load_combinations
-        }
-        verification_combination_ids: list[str] = []
-        if self.cross_section_verification is not None:
-            verification_combination_ids.extend(
-                self.cross_section_verification.combination_ids
-            )
-        if self.member_stability_verification is not None:
-            verification_combination_ids.extend(
-                self.member_stability_verification.combination_ids
-            )
-        for combination_id in verification_combination_ids:
-            verification_combination = combinations_by_id.get(combination_id)
-            if verification_combination is None:
-                raise ValueError(
-                    f"verification references missing combination {combination_id!r}"
-                )
-            if verification_combination.limit_state != "ultimate":
-                raise ValueError(
-                    f"verification combination {combination_id!r} must be ultimate"
-                )
+        if self.include_self_weight and "permanent" not in action_roles:
+            raise ValueError("self-weight requires a permanent action case")
+        resolve_action_standard_pack(
+            self.action_standard_pack_id,
+            self.action_cases,
+        )
         if not self.member_loads and not self.member_distributed_loads:
             if not self.include_self_weight:
                 raise ValueError(

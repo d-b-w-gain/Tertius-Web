@@ -479,7 +479,8 @@ drawing projection, renderer metadata adapter, tests.
 Structural UI, tests.
 
 - [x] Add revisioned structural configuration for site, standards, importance,
-  actions, load cases/combinations, serviceability, and approval rules.
+  semantic action cases, action-standard pack selection, serviceability, and
+  approval rules.
 - [x] Include the selected configuration revision/digest in the compile or
   analysis revision without exposing it as a Python project import.
 - [x] Port reusable solver/check orchestration out of the worked-example helper
@@ -491,7 +492,7 @@ Structural UI, tests.
   product, graph, and configuration digests.
 
 Completed vertical slice: new projects now carry a revisioned Structural
-workbench configuration for actions, load cases/combinations, self-weight,
+workbench configuration for semantic actions, a standards-pack selection, self-weight,
 serviceability criteria, and approval policy. The default project-owned
 `structural_connections.py` import creates a rendered/procured fixed-base
 assembly and explicit physical connection; the structural projection adapter
@@ -539,6 +540,15 @@ AS/NZS 1170.2 surface-zone verification is still required for final approval.
 Serviceability criteria are now evaluated once per physical member using its
 full compiled span, while retaining the governing analytical segment for UI
 selection and evidence tracing.
+
+Completed action-standard ownership slice: Structural configuration schema 2.0
+contains semantic action identities but no combination formulae. Directional
+Site adapters may add semantic wind cases, but cannot create SLS/ULS factors or
+choose a subset for capacity checks. The selected versioned Tertius action pack
+generates the complete effective envelope and automatically sends every ULS
+combination to cross-section and member-stability verification. Schema 1.0 is
+rejected at runtime; a one-time migration creates new v2 revisions while
+discarding project-authored formulae and per-check combination selections.
 
 ### Task 7: Add atomic multi-artifact compile bundles
 
