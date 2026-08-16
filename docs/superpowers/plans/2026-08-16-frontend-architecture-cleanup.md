@@ -43,11 +43,11 @@
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.tsx`
 - Modify: `ui/src/workflows/generate/GenerateDesignWindow.test.tsx`
 
-- [ ] Add failing unit tests for ordering editable files, terminal-status classification, compile-repair prompt construction, and progress snapshot merging through exported feature-local helpers.
-- [ ] Move those pure helpers and their types to `model/conversation.ts`; preserve exact output strings and ordering.
-- [ ] Extract `ProgressActivity` and conversation message/prompt rendering into prop-driven UI components with no API calls.
-- [ ] Keep polling timers, request IDs, project synchronization, and submission orchestration in `GenerateDesignWindow`.
-- [ ] Run focused Generate tests, lint, typecheck, full tests, and build.
+- [x] Add failing unit tests for ordering editable files, terminal-status classification, compile-repair prompt construction, and progress snapshot merging through exported feature-local helpers.
+- [x] Move those pure helpers and their types to `model/conversation.ts`; preserve exact output strings and ordering.
+- [x] Extract `ProgressActivity` and conversation message/prompt rendering into prop-driven UI components with no API calls.
+- [x] Keep polling timers, request IDs, project synchronization, and submission orchestration in `GenerateDesignWindow`.
+- [x] Run focused Generate tests, lint, typecheck, full tests, and build.
 - [ ] Commit, review, push, and open draft PR 2 against PR 1's branch.
 
 ### Task 3: Artus PR
