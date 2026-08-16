@@ -100,6 +100,8 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
         "COMPILE_TIMEOUT_SECONDS",
         "COMPILE_REQUEST_MAX_BYTES",
         "COMPILE_RESULT_MAX_BYTES",
+        "COMPILE_SIDECAR_TTL_SECONDS",
+        "COMPILE_SIDECAR_MAX_BYTES",
     ):
         monkeypatch.delenv(env_var, raising=False)
 
@@ -117,6 +119,8 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
     assert settings.compile_timeout_seconds == 600
     assert settings.compile_request_max_bytes == 8 * 1024 * 1024
     assert settings.compile_result_max_bytes == 90 * 1024 * 1024
+    assert settings.compile_sidecar_ttl_seconds == 24 * 60 * 60
+    assert settings.compile_sidecar_max_bytes == 8 * 1024 * 1024 * 1024
 
 
 def test_settings_allows_compile_nats_overrides(monkeypatch):
@@ -131,6 +135,8 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     monkeypatch.setenv("COMPILE_TIMEOUT_SECONDS", "840")
     monkeypatch.setenv("COMPILE_REQUEST_MAX_BYTES", "1048576")
     monkeypatch.setenv("COMPILE_RESULT_MAX_BYTES", "2097152")
+    monkeypatch.setenv("COMPILE_SIDECAR_TTL_SECONDS", "7200")
+    monkeypatch.setenv("COMPILE_SIDECAR_MAX_BYTES", "17179869184")
 
     settings = Settings()
 
@@ -145,6 +151,17 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     assert settings.compile_timeout_seconds == 840
     assert settings.compile_request_max_bytes == 1048576
     assert settings.compile_result_max_bytes == 2097152
+    assert settings.compile_sidecar_ttl_seconds == 7200
+    assert settings.compile_sidecar_max_bytes == 17179869184
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["compile_sidecar_ttl_seconds", "compile_sidecar_max_bytes"],
+)
+def test_settings_rejects_nonpositive_compile_sidecar_limits(field):
+    with pytest.raises(ValidationError):
+        Settings(**{field: 0})
 
 
 def test_settings_exposes_otel_defaults(monkeypatch):

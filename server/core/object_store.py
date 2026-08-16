@@ -158,8 +158,8 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
                 config=ObjectStoreConfig(
                     bucket=bucket,
                     description="Bounded binary sidecars for compile commands",
-                    ttl=24 * 60 * 60,
-                    max_bytes=1024 * 1024 * 1024,
+                    ttl=settings.compile_sidecar_ttl_seconds,
+                    max_bytes=settings.compile_sidecar_max_bytes,
                     storage=StorageType.FILE,
                 ),
             )

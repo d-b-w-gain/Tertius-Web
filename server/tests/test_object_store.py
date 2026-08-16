@@ -136,9 +136,17 @@ async def test_open_store_passes_bucket_to_create_call():
         async def create_object_store(self, bucket=None, config=None):
             assert bucket == "TERTIUS_COMPILE_SIDECARS"
             assert config.bucket == "TERTIUS_COMPILE_SIDECARS"
+            assert config.ttl == 7200
+            assert config.max_bytes == 16 * 1024 * 1024 * 1024
             return FakeStore()
 
-    adapter = await open_compile_sidecar_store(JetStream(), SimpleNamespace())
+    adapter = await open_compile_sidecar_store(
+        JetStream(),
+        SimpleNamespace(
+            compile_sidecar_ttl_seconds=7200,
+            compile_sidecar_max_bytes=16 * 1024 * 1024 * 1024,
+        ),
+    )
 
     assert adapter.bucket == "TERTIUS_COMPILE_SIDECARS"
 
@@ -162,6 +170,12 @@ async def test_open_store_recovers_when_another_worker_creates_bucket_first():
 
             raise APIError(code=400, err_code=10058, description="stream name already in use")
 
-    adapter = await open_compile_sidecar_store(JetStream(), SimpleNamespace())
+    adapter = await open_compile_sidecar_store(
+        JetStream(),
+        SimpleNamespace(
+            compile_sidecar_ttl_seconds=7200,
+            compile_sidecar_max_bytes=16 * 1024 * 1024 * 1024,
+        ),
+    )
 
     assert adapter.bucket == "TERTIUS_COMPILE_SIDECARS"

@@ -83,6 +83,8 @@ app:
     compileTimeoutSeconds: 300
     compileRequestMaxBytes: 8388608
     compileResultMaxBytes: 33554432
+    compileSidecarTtlSeconds: 86400
+    compileSidecarMaxBytes: 8589934592
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10
@@ -421,7 +423,7 @@ nats:
         dir: /data
         pvc:
           enabled: true
-          size: 1Gi
+          size: 10Gi
           storageClassName: local-path
   container:
     resources:
