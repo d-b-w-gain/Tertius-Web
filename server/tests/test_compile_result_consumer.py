@@ -8,6 +8,9 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from core.compile_messages import CompileResultPayload
+from core.project_assets import SOURCE_3MF_MEDIA_TYPE
+from core.repositories import CompileRepository
+from tests.fixtures.three_mf import make_box_3mf
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 from core.models import now_utc
 from core.structural.contracts import CompiledStructuralManifest
@@ -451,6 +454,82 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     assert persisted is not None
     assert persisted.status == "queued"
     assert persisted.claim_token is None
+
+
+def test_republish_stale_queued_job_uses_job_pinned_3mf_snapshot(
+    db_session, seeded_tenant, monkeypatch
+):
+    from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
+
+    original = make_box_3mf(size=1)
+    replacement = make_box_3mf(size=2)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="queued",
+        export_format="glb",
+        error_code="publish_pending",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        CompileJobFile(
+            compile_job_id=job.id,
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="design.py",
+            content="model = imported.compound\n",
+        )
+    )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        original,
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        replacement,
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    db_session.commit()
+    stored = []
+    published = []
+
+    async def fake_put(content, _settings):
+        stored.append(content)
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'a' * 64}",
+            sha256="a" * 64,
+            byte_size=len(content),
+        )
+
+    class FakePublisher:
+        async def publish_json(self, subject, command, message_id=None):
+            published.append(command)
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
+
+    republished = asyncio.run(
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), consumer_settings(), older_than_seconds=60
+        )
+    )
+
+    assert republished == 1
+    assert stored == [original]
+    assert len(published[0].assets) == 1
 
 
 def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_session, seeded_tenant):

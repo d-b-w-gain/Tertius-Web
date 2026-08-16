@@ -683,6 +683,11 @@ class CompileRepository:
             )
         )
 
+    def source_artifact_for_job(
+        self, job_id: UUID, kind: str = "source_3mf"
+    ) -> Artifact | None:
+        return self.artifact_for_job(job_id, kind)
+
     def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)
         query = (

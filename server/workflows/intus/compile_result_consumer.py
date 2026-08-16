@@ -311,7 +311,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
             assets: list[CompileBinaryAsset] = []
             source_artifact = CompileRepository(
                 db, job.tenant_id
-            ).project_source_artifact(job.project_id)
+            ).source_artifact_for_job(job.id)
             if source_artifact is not None:
                 if source_artifact.content is None:
                     CompileRepository(db, job.tenant_id).finish_job(

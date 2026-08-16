@@ -385,10 +385,19 @@ async def compile_project(
         if source_artifact is not None:
             if source_artifact.content is None:
                 raise RuntimeError("Project source 3MF content is missing")
+            source_snapshot = compile_repo.record_artifact(
+                project_id,
+                job.id,
+                "source_3mf",
+                source_artifact.content,
+                content_type=source_artifact.content_type,
+            )
+            if source_snapshot.content is None:
+                raise RuntimeError("Compile source 3MF snapshot is missing")
             assets.append(
                 CompileBinaryAsset(
                     logical_filename="source.3mf",
-                    object_ref=await store_compile_sidecar(source_artifact.content),
+                    object_ref=await store_compile_sidecar(source_snapshot.content),
                 )
             )
 

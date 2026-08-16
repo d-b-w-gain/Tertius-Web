@@ -184,6 +184,12 @@ def test_compile_submission_uses_project_source_artifact_as_object_reference(
             ),
         )
     ]
+    job = db_session.get(CompileJob, published[0].job_id)
+    snapshot = CompileRepository(
+        db_session, seeded_tenant.tenant_id
+    ).source_artifact_for_job(job.id)
+    assert snapshot is not None
+    assert snapshot.content == make_box_3mf()
     assert "PK" not in published[0].model_dump_json()
 
 
