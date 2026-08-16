@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from opentelemetry import propagate
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
@@ -113,6 +114,15 @@ async def store_compile_sidecar(content: bytes):
     return await put_compile_sidecar(content, get_settings())
 
 
+class ProjectNameConflictError(RuntimeError):
+    pass
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str | None:
+    diagnostic = getattr(exc.orig, "diag", None)
+    return getattr(diagnostic, "constraint_name", None)
+
+
 def create_imported_3mf_project(
     db: Session,
     *,
@@ -134,6 +144,11 @@ def create_imported_3mf_project(
         )
         db.commit()
         return project
+    except IntegrityError as exc:
+        db.rollback()
+        if _integrity_constraint_name(exc) == "uq_project_name_per_tenant":
+            raise ProjectNameConflictError("Project already exists") from exc
+        raise
     except Exception:
         db.rollback()
         raise
@@ -176,7 +191,7 @@ def list_projects(ctx: AuthContext = Depends(get_auth_context), db: Session = De
     return {"projects": ProjectRepository(db, ctx.tenant_id).list_projects()}
 
 @app.post("/projects/imports/3mf", status_code=status.HTTP_201_CREATED)
-async def import_3mf_project(
+def import_3mf_project(
     name: str = Form(...),
     file: UploadFile = File(...),
     ctx: AuthContext = Depends(get_auth_context),
@@ -191,19 +206,22 @@ async def import_3mf_project(
         return JSONResponse(status_code=409, content={"error": "Project already exists"})
     if not file.filename or not file.filename.lower().endswith(".3mf"):
         return JSONResponse(status_code=400, content={"error": "A .3mf file is required"})
-    content = await file.read(MAX_3MF_UPLOAD_BYTES + 1)
+    content = file.file.read(MAX_3MF_UPLOAD_BYTES + 1)
     try:
         validate_3mf_archive_bytes(content)
     except Invalid3mfArchiveError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
-    create_imported_3mf_project(
-        db,
-        tenant_id=ctx.tenant_id,
-        user_id=ctx.user_id,
-        name=name,
-        content=content,
-    )
+    try:
+        create_imported_3mf_project(
+            db,
+            tenant_id=ctx.tenant_id,
+            user_id=ctx.user_id,
+            name=name,
+            content=content,
+        )
+    except ProjectNameConflictError as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
     return {"success": True, "project": name}
 
 

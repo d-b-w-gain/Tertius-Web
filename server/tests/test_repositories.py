@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from core.compile_messages import CompileCommand
 from core.models import (
     AppUser,
+    Artifact,
     CompileJobFile,
     CompileJob,
     Project,
@@ -814,6 +815,125 @@ def test_compile_repository_finishes_only_current_claim(db_session, seeded_tenan
     assert finished is not None
     assert finished.status == "succeeded"
     assert finished.lease_expires_at is None
+
+
+@pytest.mark.parametrize("terminal_status", ["succeeded", "failed"])
+def test_compile_repository_terminal_finish_deletes_only_target_job_source(
+    db_session, seeded_tenant, terminal_status
+):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    target = repo.start_job(
+        seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="running"
+    )
+    other = repo.start_job(
+        seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="running"
+    )
+    durable = repo.record_artifact(
+        seeded_tenant.project_id, None, "source_3mf", b"durable"
+    )
+    target_source = repo.record_artifact(
+        seeded_tenant.project_id, target.id, "source_3mf", b"target"
+    )
+    other_source = repo.record_artifact(
+        seeded_tenant.project_id, other.id, "source_3mf", b"other"
+    )
+
+    repo.finish_job(target, terminal_status)
+    db_session.commit()
+
+    remaining_ids = set(db_session.scalars(select(Artifact.id)).all())
+    assert target_source.id not in remaining_ids
+    assert {durable.id, other_source.id} <= remaining_ids
+
+
+def test_repeated_terminal_compiles_retain_only_durable_project_source(
+    db_session, seeded_tenant
+):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable = repo.record_artifact(
+        seeded_tenant.project_id, None, "source_3mf", b"durable"
+    )
+    for index in range(3):
+        job = repo.start_job(
+            seeded_tenant.project_id,
+            seeded_tenant.user_id,
+            "glb",
+            status="running",
+        )
+        repo.record_artifact(
+            seeded_tenant.project_id,
+            job.id,
+            "source_3mf",
+            f"snapshot-{index}".encode(),
+        )
+        repo.finish_job(job, "succeeded")
+    db_session.commit()
+
+    sources = db_session.scalars(
+        select(Artifact).where(
+            Artifact.tenant_id == seeded_tenant.tenant_id,
+            Artifact.project_id == seeded_tenant.project_id,
+            Artifact.kind == "source_3mf",
+        )
+    ).all()
+    assert [artifact.id for artifact in sources] == [durable.id]
+
+
+def test_compile_repository_stale_reconciliation_deletes_job_source(
+    db_session, seeded_tenant
+):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="running"
+    )
+    job.lease_expires_at = now_utc() - timedelta(minutes=1)
+    repo.record_artifact(
+        seeded_tenant.project_id, job.id, "source_3mf", b"stale"
+    )
+    db_session.commit()
+
+    reconciled = repo.reconcile_stale_job(
+        seeded_tenant.project_id,
+        job.id,
+        queued_older_than_seconds=60,
+        running_older_than_seconds=60,
+    )
+
+    assert reconciled is not None
+    assert reconciled.status == "failed"
+    assert repo.source_artifact_for_job(job.id) is None
+
+
+def test_compile_repository_claimed_terminal_finish_deletes_job_source(
+    db_session, seeded_tenant
+):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="queued"
+    )
+    db_session.commit()
+    command = CompileCommand(
+        job_id=job.id,
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        export_format="glb",
+        created_at=job.created_at,
+    )
+    claimed = repo.claim_job_for_command(command, lease_seconds=60)
+    assert claimed is not None
+    assert claimed.claim_token is not None
+    repo.record_artifact(
+        seeded_tenant.project_id, job.id, "source_3mf", b"claimed"
+    )
+    db_session.commit()
+
+    finished = repo.finish_job_if_claim_current(
+        job.id, claimed.claim_token, "succeeded"
+    )
+
+    assert finished is not None
+    assert repo.source_artifact_for_job(job.id) is None
 
 
 def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):

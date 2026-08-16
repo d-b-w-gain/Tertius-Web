@@ -1,8 +1,13 @@
 import io
+import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+from fastapi import UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from core.compile_messages import CompileBinaryAsset
 from core.models import Artifact, CompileJob, Project, ProjectFile, Tenant
@@ -19,6 +24,109 @@ def test_ui_proxy_accepts_bounded_3mf_uploads():
     ).read_text(encoding="utf-8")
 
     assert "location /api/ {\n        client_max_body_size 129m;" in nginx_config
+
+
+def test_import_endpoint_is_sync_and_reads_spooled_file(monkeypatch):
+    content = make_box_3mf()
+    upload = UploadFile(filename="source.3mf", file=io.BytesIO(content))
+
+    async def forbid_async_read(*_args, **_kwargs):
+        raise AssertionError("UploadFile.read must not run on the event loop")
+
+    upload.read = forbid_async_read
+
+    class FakeProjectRepository:
+        def __init__(self, *_args):
+            pass
+
+        def get_project(self, _name):
+            return None
+
+    captured = {}
+
+    def fake_create(_db, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(intus_server, "ProjectRepository", FakeProjectRepository)
+    monkeypatch.setattr(intus_server, "validate_3mf_archive_bytes", lambda value: None)
+    monkeypatch.setattr(intus_server, "create_imported_3mf_project", fake_create)
+
+    assert inspect.iscoroutinefunction(intus_server.import_3mf_project) is False
+    result = intus_server.import_3mf_project(
+        name="threadpool_import",
+        file=upload,
+        ctx=SimpleNamespace(tenant_id=uuid4(), user_id=uuid4()),
+        db=object(),
+    )
+
+    assert result == {"success": True, "project": "threadpool_import"}
+    assert captured["content"] == content
+
+
+@pytest.mark.parametrize(
+    ("constraint_name", "expected_exception"),
+    [
+        ("uq_project_name_per_tenant", "ProjectNameConflictError"),
+        ("uq_project_file_name", "IntegrityError"),
+    ],
+)
+def test_import_creation_translates_only_project_name_integrity_error(
+    monkeypatch, constraint_name, expected_exception
+):
+    class DriverError(Exception):
+        diag = SimpleNamespace(constraint_name=constraint_name)
+
+    integrity_error = IntegrityError("insert project", {}, DriverError())
+
+    def fail_stage(*_args, **_kwargs):
+        raise integrity_error
+
+    class FakeDatabase:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = FakeDatabase()
+    monkeypatch.setattr(intus_server.ProjectRepository, "stage_project", fail_stage)
+
+    with pytest.raises(Exception) as raised:
+        intus_server.create_imported_3mf_project(
+            db,
+            tenant_id=uuid4(),
+            user_id=uuid4(),
+            name="raced_import",
+            content=make_box_3mf(),
+        )
+
+    assert type(raised.value).__name__ == expected_exception
+    assert db.rolled_back is True
+
+
+def test_import_endpoint_returns_conflict_for_project_name_race(monkeypatch):
+    class FakeProjectRepository:
+        def __init__(self, *_args):
+            pass
+
+        def get_project(self, _name):
+            return None
+
+    def fail_create(*_args, **_kwargs):
+        raise intus_server.ProjectNameConflictError("Project already exists")
+
+    monkeypatch.setattr(intus_server, "ProjectRepository", FakeProjectRepository)
+    monkeypatch.setattr(intus_server, "validate_3mf_archive_bytes", lambda value: None)
+    monkeypatch.setattr(intus_server, "create_imported_3mf_project", fail_create)
+
+    response = intus_server.import_3mf_project(
+        name="raced_import",
+        file=UploadFile(filename="source.3mf", file=io.BytesIO(make_box_3mf())),
+        ctx=SimpleNamespace(tenant_id=uuid4(), user_id=uuid4()),
+        db=object(),
+    )
+
+    assert response.status_code == 409
+    assert response.body == b'{"error":"Project already exists"}'
 
 
 def test_authenticated_import_creates_project_design_and_source_atomically(

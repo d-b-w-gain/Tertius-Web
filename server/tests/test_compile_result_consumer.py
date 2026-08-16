@@ -154,16 +154,38 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
         export_format="stl",
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
 
-    artifact = db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id))
+    artifact = db_session.scalar(
+        select(Artifact).where(
+            Artifact.compile_job_id == job.id,
+            Artifact.kind == "stl",
+        )
+    )
     persisted = db_session.get(CompileJob, job.id)
     assert applied is True
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
     assert artifact.content_type == "model/stl"
+    assert repo.source_artifact_for_job(job.id) is None
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_apply_compile_result_records_structural_manifest_sidecar(
@@ -274,6 +296,21 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
         export_format="stl",
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     payload = result_payload(
@@ -297,6 +334,7 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
     assert persisted.error_code == "timeout"
     assert persisted.retryable is True
     assert db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id)) is None
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_apply_compile_result_acks_duplicate_terminal_without_changes(db_session, seeded_tenant):
@@ -530,6 +568,7 @@ def test_republish_stale_queued_job_uses_job_pinned_3mf_snapshot(
     assert republished == 1
     assert stored == [original]
     assert len(published[0].assets) == 1
+    assert repo.source_artifact_for_job(job.id) is not None
 
 
 def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_session, seeded_tenant):
@@ -573,7 +612,9 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     assert persisted.error_code is None
 
 
-def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
+    db_session, seeded_tenant, monkeypatch
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -596,8 +637,37 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
             content="shape = 'too large'\n",
         )
     )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
     published = []
+
+    async def fake_put(content, _settings):
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'b' * 64}",
+            sha256="b" * 64,
+            byte_size=len(content),
+        )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
 
     class FakePublisher:
         async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
@@ -617,6 +687,8 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     assert persisted.status == "failed"
     assert persisted.error_code == "source_bundle_too_large"
     assert persisted.retryable is False
+    assert repo.source_artifact_for_job(job.id) is None
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, seeded_tenant):
@@ -705,6 +777,14 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
         lease_expires_at=now_utc() - timedelta(minutes=5),
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     failed = fail_stale_running_jobs(db_session)
@@ -714,6 +794,7 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     assert persisted.status == "failed"
     assert persisted.error_code == "worker_lost"
     assert persisted.retryable is True
+    assert repo.source_artifact_for_job(job.id) is None
 
 
 def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded_tenant):
