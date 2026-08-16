@@ -21,8 +21,8 @@ def load_helper(tmp_path):
     return module
 
 
-def write_source(tmp_path, *, unit="MM", objects):
-    content = make_3mf(unit=unit, objects=objects)
+def write_source(tmp_path, *, unit="MM", objects, **options):
+    content = make_3mf(unit=unit, objects=objects, **options)
     (tmp_path / "source.3mf").write_bytes(content)
     return content
 
@@ -59,6 +59,37 @@ def test_loader_returns_two_stable_parts(tmp_path, monkeypatch):
     assert len(imported.compound.first_level_shapes()) == 2
 
 
+@pytest.mark.parametrize(
+    ("options", "case"),
+    [
+        ({"build_transform": "1 0 0 0 1 0 0 0 1 10 0 0"}, "transform"),
+        ({"build_object_ids": [1, 1]}, "duplicate build item"),
+        (
+            {"component_object_ids": [1, 2], "build_object_ids": [3]},
+            "component assembly",
+        ),
+        ({"build_object_ids": [1]}, "mesh subset"),
+        ({"build_object_ids": [99]}, "missing object"),
+        (
+            {"include_non_mesh_object": True, "build_object_ids": [3]},
+            "non-mesh object",
+        ),
+    ],
+)
+def test_loader_rejects_unsupported_build_graph(tmp_path, monkeypatch, options, case):
+    helper = load_helper(tmp_path)
+    vertices, triangles = box_mesh(2)
+    write_source(
+        tmp_path,
+        objects=[("First", vertices, triangles), ("Second", vertices, triangles)],
+        **options,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeError, match="unsupported 3MF build graph"):
+        helper.load_3mf_model("source")
+
+
 def test_loader_rejects_unsafe_archive_before_native_parser(tmp_path, monkeypatch):
     helper = load_helper(tmp_path)
     with zipfile.ZipFile(tmp_path / "source.3mf", "w") as archive:
@@ -69,7 +100,7 @@ def test_loader_rejects_unsafe_archive_before_native_parser(tmp_path, monkeypatc
         helper.load_3mf_model("source")
 
 
-def test_compile_sandbox_injects_loader_and_exports_glb(tmp_path):
+def test_compile_sandbox_allows_design_to_move_identity_build(tmp_path):
     vertices, triangles = box_mesh(10)
     write_source(tmp_path, objects=[("Cube", vertices, triangles)])
     (tmp_path / "design.py").write_text(
@@ -86,6 +117,25 @@ def test_compile_sandbox_injects_loader_and_exports_glb(tmp_path):
     assert result.success is True, result.error
     assert result.output_path is not None
     assert result.output_path.read_bytes()[:4] == b"glTF"
+
+
+def test_compile_sandbox_rejects_input_build_transform(tmp_path):
+    vertices, triangles = box_mesh(10)
+    write_source(
+        tmp_path,
+        objects=[("Cube", vertices, triangles)],
+        build_transform="1 0 0 0 1 0 0 0 1 5 0 0",
+    )
+    (tmp_path / "design.py").write_text(
+        'from tertius_imports import load_3mf_model\n'
+        'model = load_3mf_model("source").compound\n',
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", quality="sketch", timeout_seconds=60)
+
+    assert result.success is False
+    assert "unsupported 3MF build graph" in (result.error or "")
 
 
 def test_loader_rejects_missing_or_unknown_source(tmp_path, monkeypatch):

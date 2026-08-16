@@ -7,10 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import build123d as bd
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
 
 MAX_UPLOAD_BYTES = 128 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 2_048
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+MAX_XML_BYTES = 64 * 1024 * 1024
+ROOT_RELATIONSHIPS = "_rels/.rels"
 UNIT_TO_MM = {
     bd.Unit.MC: 0.001,
     bd.Unit.MM: 1.0,
@@ -32,6 +36,68 @@ def _invalid_archive() -> RuntimeError:
     return RuntimeError("The file is not a safe 3MF archive.")
 
 
+def _unsupported_build_graph() -> RuntimeError:
+    return RuntimeError("The file uses an unsupported 3MF build graph.")
+
+
+def _safe_member_name(name: str, *, allow_leading_slash: bool = False) -> str:
+    normalized = name.replace("\\", "/")
+    if allow_leading_slash:
+        normalized = normalized.lstrip("/")
+    posix_path = PurePosixPath(normalized)
+    if (
+        not normalized
+        or posix_path.is_absolute()
+        or any(part in {"", ".", ".."} for part in posix_path.parts)
+        or (not allow_leading_slash and name.startswith(("/", "\\")))
+        or bool(PureWindowsPath(name).drive)
+    ):
+        raise _invalid_archive()
+    return posix_path.as_posix()
+
+
+def _parse_xml(content: bytes):
+    if len(content) > MAX_XML_BYTES:
+        raise _invalid_archive()
+    try:
+        return DefusedElementTree.fromstring(content)
+    except (DefusedXmlException, DefusedElementTree.ParseError) as exc:
+        raise _invalid_archive() from exc
+
+
+def _validate_supported_build_graph(model_root) -> None:
+    if model_root.find(".//{*}components") is not None:
+        raise _unsupported_build_graph()
+    resources = model_root.find("./{*}resources")
+    if resources is None:
+        raise _unsupported_build_graph()
+    objects = resources.findall("./{*}object")
+
+    all_object_ids: set[str] = set()
+    mesh_object_ids: set[str] = set()
+    for obj in objects:
+        object_id = obj.get("id")
+        if not object_id or object_id in all_object_ids:
+            raise _unsupported_build_graph()
+        all_object_ids.add(object_id)
+        if obj.find("./{*}mesh") is not None:
+            mesh_object_ids.add(object_id)
+    if not mesh_object_ids:
+        raise RuntimeError("The 3MF contains no supported geometry.")
+
+    build = model_root.find("./{*}build")
+    if build is None:
+        raise _unsupported_build_graph()
+    built_ids: list[str] = []
+    for item in build.findall("./{*}item"):
+        object_id = item.get("objectid")
+        if "transform" in item.attrib or object_id not in mesh_object_ids:
+            raise _unsupported_build_graph()
+        built_ids.append(object_id)
+    if len(built_ids) != len(set(built_ids)) or set(built_ids) != mesh_object_ids:
+        raise _unsupported_build_graph()
+
+
 def _validate_archive(path: Path) -> None:
     try:
         if not path.is_file() or path.stat().st_size > MAX_UPLOAD_BYTES:
@@ -42,24 +108,36 @@ def _validate_archive(path: Path) -> None:
                 raise _invalid_archive()
             total_size = 0
             for info in infos:
-                normalized = info.filename.replace("\\", "/")
-                posix_path = PurePosixPath(normalized)
+                _safe_member_name(info.filename)
                 if (
                     info.flag_bits & 0x1
                     or info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
-                    or posix_path.is_absolute()
-                    or any(part in {"", ".", ".."} for part in posix_path.parts)
-                    or info.filename.startswith(("/", "\\"))
-                    or bool(PureWindowsPath(info.filename).drive)
                     or (info.external_attr >> 16) & 0o170000 == 0o120000
                 ):
                     raise _invalid_archive()
                 total_size += info.file_size
                 if total_size > MAX_UNCOMPRESSED_BYTES:
                     raise _invalid_archive()
+            relationships_info = archive.getinfo(ROOT_RELATIONSHIPS)
+            if relationships_info.file_size > MAX_XML_BYTES:
+                raise _invalid_archive()
+            relationships = _parse_xml(archive.read(relationships_info))
+            model_targets = [
+                relationship.get("Target")
+                for relationship in relationships.findall("./{*}Relationship")
+                if relationship.get("Type", "").rsplit("/", 1)[-1] == "3dmodel"
+                and relationship.get("TargetMode", "Internal") == "Internal"
+            ]
+            if len(model_targets) != 1 or not model_targets[0]:
+                raise _invalid_archive()
+            model_path = _safe_member_name(model_targets[0], allow_leading_slash=True)
+            model_info = archive.getinfo(model_path)
+            if model_info.file_size > MAX_XML_BYTES:
+                raise _invalid_archive()
+            _validate_supported_build_graph(_parse_xml(archive.read(model_info)))
     except RuntimeError:
         raise
-    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+    except (KeyError, OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
         raise _invalid_archive() from exc
 
 

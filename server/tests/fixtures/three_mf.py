@@ -26,12 +26,16 @@ def make_3mf(
     relationship_target: str = "/3D/3dmodel.model",
     include_relationship: bool = True,
     build_transform: str | None = None,
+    build_object_ids: Iterable[int] | None = None,
+    component_object_ids: Iterable[int] | None = None,
+    include_non_mesh_object: bool = False,
     model_document: bytes | None = None,
     relationships_document: bytes | None = None,
 ) -> bytes:
     object_xml: list[str] = []
-    build_xml: list[str] = []
+    mesh_object_ids: list[int] = []
     for object_id, (name, vertices, triangles) in enumerate(objects, 1):
+        mesh_object_ids.append(object_id)
         vertex_xml = "".join(
             f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in vertices
         )
@@ -46,8 +50,25 @@ def make_3mf(
             f"<mesh><vertices>{vertex_xml}</vertices><triangles>{triangle_xml}</triangles></mesh>"
             "</object>"
         )
-        transform = f' transform="{build_transform}"' if build_transform else ""
-        build_xml.append(f'<item objectid="{object_id}"{transform}/>')
+    next_object_id = len(mesh_object_ids) + 1
+    if component_object_ids is not None:
+        component_xml = "".join(
+            f'<component objectid="{object_id}"/>' for object_id in component_object_ids
+        )
+        object_xml.append(
+            f'<object id="{next_object_id}" type="model">'
+            f"<components>{component_xml}</components></object>"
+        )
+        next_object_id += 1
+    if include_non_mesh_object:
+        object_xml.append(f'<object id="{next_object_id}" type="model"/>')
+    selected_build_ids = (
+        list(build_object_ids) if build_object_ids is not None else mesh_object_ids
+    )
+    transform = f' transform="{build_transform}"' if build_transform else ""
+    build_xml = [
+        f'<item objectid="{object_id}"{transform}/>' for object_id in selected_build_ids
+    ]
     model = (
         model_document
         or (
