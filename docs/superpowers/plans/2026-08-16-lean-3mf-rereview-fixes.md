@@ -16,7 +16,7 @@
 - Keep: `docs/superpowers/specs/2026-08-16-lean-3mf-rereview-fixes-design.md`
 - Remove from branch diff: unrelated edits in `scripts/test-k3s-deployment.sh` and `scripts/test-k3s-harness-lifecycle.sh`
 
-- [ ] **Step 1: Record the old stack heads**
+- [x] **Step 1: Record the old stack heads**
 
 Run:
 
@@ -26,7 +26,7 @@ rtk git rev-parse codex/3mf-lean-sidecars codex/3mf-lean-loader codex/3mf-lean-a
 
 Expected: the original four heads are recorded for later `rebase --onto` operations.
 
-- [ ] **Step 2: Rebase the spec commit around the unrelated cleanup commit**
+- [x] **Step 2: Rebase the spec commit around the unrelated cleanup commit**
 
 Run:
 
@@ -36,7 +36,7 @@ rtk git rebase --onto 1e4d7f5 67e6bc4 codex/3mf-lean-sidecars
 
 Expected: the sidecar branch contains its three sidecar commits followed by the design spec, but no `67e6bc4` cleanup commit.
 
-- [ ] **Step 3: Verify branch scope**
+- [x] **Step 3: Verify branch scope**
 
 Run:
 
@@ -52,10 +52,10 @@ Expected: the second command is empty and the sidecar files remain in scope.
 **Files:**
 - Modify: `server/tests/test_compile_job.py`
 - Modify: `server/workflows/intus/compile_job.py`
+- Modify: `server/tests/test_config.py`
 - Modify: `docs/configuration-and-secrets.md`
-- Modify: `scripts/test-deployment-config.sh`
 
-- [ ] **Step 1: Write failing sidecar transport tests**
+- [x] **Step 1: Write failing sidecar transport tests**
 
 Add tests that import `ObjectStoreUnavailableError` and prove:
 
@@ -80,7 +80,7 @@ Add a result-publication-failure variant asserting `msg.naked is True` and
 `msg.acked is False`. Retain the existing integrity test and explicitly assert
 `invalid_binary_asset` plus `retryable is False`.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -90,7 +90,7 @@ rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_compile_job.py -k
 
 Expected: the unavailable-store test fails because the exception currently reaches NAK without a result.
 
-- [ ] **Step 3: Implement the transport-specific result**
+- [x] **Step 3: Implement the transport-specific result**
 
 Import `ObjectStoreUnavailableError`. Catch it separately from integrity and
 missing-object failures:
@@ -120,26 +120,25 @@ Represent an Object Store open failure with an object whose `get()` raises the
 captured `ObjectStoreUnavailableError`, then pass it to
 `handle_compile_request_message()` so normal publish-and-ACK semantics apply.
 
-- [ ] **Step 4: Add the `run_once()` open-failure regression**
+- [x] **Step 4: Add the `run_once()` open-failure regression**
 
 Mock a valid asset command, make `open_compile_sidecar_store()` raise, and let
 the real handler run with a fake publisher. Assert a retryable
 `binary_asset_unavailable` result is published and the command ACKs.
 
-- [ ] **Step 5: Document and test intentional `MaxDeliver=1`**
+- [x] **Step 5: Document and test intentional `MaxDeliver=1`**
 
 Add an operator note that sidecar transport outages produce retryable terminal
 results and ACK the command, so `compileMaxDeliver: 1` is intentional rather
 than a NAK retry policy. Add shell assertions matching both the value and the
 documentation text.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 Run:
 
 ```bash
 rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_compile_job.py -q
-rtk bash scripts/test-deployment-config.sh
 rtk git diff --check
 ```
 

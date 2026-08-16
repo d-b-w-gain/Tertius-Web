@@ -40,7 +40,7 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.compileWorkerQueue` | `COMPILE_WORKER_QUEUE` | API, compile worker | Compile worker queue. |
 | `app.config.compileResultConsumer` | `COMPILE_RESULT_CONSUMER` | API | Result consumer durable. |
 | `app.config.compileAckWaitSeconds` | `COMPILE_ACK_WAIT_SECONDS` | API, compile worker | NATS ack window. |
-| `app.config.compileMaxDeliver` | `COMPILE_MAX_DELIVER` | API, compile worker | NATS redelivery limit. |
+| `app.config.compileMaxDeliver` | `COMPILE_MAX_DELIVER` | API, compile worker | NATS redelivery limit; the default uses result-driven retry semantics. |
 | `app.config.compileTimeoutSeconds` | `COMPILE_TIMEOUT_SECONDS` | API, compile worker | Compile timeout. |
 | `app.config.compileRequestMaxBytes` | `COMPILE_REQUEST_MAX_BYTES` | API, compile worker | Max compile command size. |
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
@@ -62,6 +62,14 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.billingFormatMultiplierStep` | `BILLING_FORMAT_MULTIPLIER_STEP` | API | STEP compile cost multiplier. |
 | `app.config.billingFormatMultiplierGltf` | `BILLING_FORMAT_MULTIPLIER_GLTF` | API | glTF compile cost multiplier. |
 | `app.config.billingFormatMultiplierGlb` | `BILLING_FORMAT_MULTIPLIER_GLB` | API | GLB compile cost multiplier. |
+
+`compileMaxDeliver: 1` is intentional. Compile workers publish a terminal
+result and ACK each valid command rather than depending on command redelivery.
+A temporary sidecar transport outage produces the retryable
+`binary_asset_unavailable` result; corrupt or missing immutable sidecars produce
+the non-retryable `invalid_binary_asset` result. If publishing the result fails,
+the worker NAKs because no outcome reached the API. Increasing
+`compileMaxDeliver` requires a separate, explicit redelivery and backoff policy.
 
 ## Secrets
 

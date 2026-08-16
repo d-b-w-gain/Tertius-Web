@@ -11,7 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from core.compile_messages import CompileBinaryAsset, CompileCommand, CompileSourceFile, serialized_message_size
-from core.object_store import ObjectIntegrityError, ObjectRef
+from core.object_store import ObjectIntegrityError, ObjectRef, ObjectStoreUnavailableError
 
 
 def command_payload(**overrides: object) -> bytes:
@@ -171,6 +171,84 @@ def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(m
     assert result.retryable is False
 
 
+def test_compile_job_reports_sidecar_transport_failure_without_running_sandbox(monkeypatch):
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    digest = "d" * 64
+    ref = ObjectRef(
+        bucket="TERTIUS_COMPILE_SIDECARS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+
+    class UnavailableObjectStore:
+        async def get(self, requested_ref):
+            assert requested_ref == ref
+            raise ObjectStoreUnavailableError("object store operation failed")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("sandbox must not run")
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fail_if_called)
+    msg = FakeMsg(
+        command_payload(
+            assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
+        )
+    )
+    publisher = FakePublisher()
+
+    asyncio.run(
+        handle_compile_request_message(
+            msg, publisher, job_settings(), UnavailableObjectStore()
+        )
+    )
+
+    assert msg.acked is True
+    assert msg.naked is False
+    result = publisher.published[0][1]
+    assert result.status == "failed"
+    assert result.error_code == "binary_asset_unavailable"
+    assert result.retryable is True
+
+
+def test_compile_job_naks_when_sidecar_outage_result_publish_fails(monkeypatch):
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    digest = "e" * 64
+    ref = ObjectRef(
+        bucket="TERTIUS_COMPILE_SIDECARS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+
+    class UnavailableObjectStore:
+        async def get(self, requested_ref):
+            raise ObjectStoreUnavailableError("object store operation failed")
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sandbox must not run")
+        ),
+    )
+    msg = FakeMsg(
+        command_payload(
+            assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
+        )
+    )
+
+    asyncio.run(
+        handle_compile_request_message(
+            msg, FakePublisher(fail=True), job_settings(), UnavailableObjectStore()
+        )
+    )
+
+    assert msg.acked is False
+    assert msg.naked is True
+
+
 def test_run_once_preserves_python_only_path_without_opening_object_store(monkeypatch):
     import workflows.intus.compile_job as compile_job
 
@@ -212,6 +290,77 @@ def test_run_once_preserves_python_only_path_without_opening_object_store(monkey
     monkeypatch.setattr(compile_job, "handle_compile_request_message", fake_handle)
 
     assert asyncio.run(compile_job.run_once()) == 0
+
+
+def test_run_once_publishes_retryable_result_when_object_store_open_fails(monkeypatch):
+    import workflows.intus.compile_job as compile_job
+
+    digest = "f" * 64
+    ref = ObjectRef(
+        bucket="TERTIUS_COMPILE_SIDECARS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+    msg = FakeMsg(
+        command_payload(
+            assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
+        )
+    )
+    published = []
+
+    class FakeSubscription:
+        async def fetch(self, batch, timeout):
+            return [msg]
+
+    class FakeJetStream:
+        pass
+
+    class FakeConnection:
+        async def close(self):
+            pass
+
+    class RecordingPublisher(FakePublisher):
+        async def publish_json(self, subject, message, message_id=None):
+            published.append((subject, message, message_id))
+
+    async def fake_connect(_url):
+        return FakeConnection()
+
+    async def fake_ensure(nc, settings):
+        return FakeJetStream()
+
+    async def fake_pull(js, settings):
+        return FakeSubscription()
+
+    async def unavailable_store(js, settings):
+        raise ObjectStoreUnavailableError("object store open failed")
+
+    monkeypatch.setattr(
+        compile_job,
+        "get_settings",
+        lambda: job_settings(nats_url="nats://test"),
+    )
+    monkeypatch.setattr(compile_job, "configure_telemetry", lambda *args: None)
+    monkeypatch.setattr(compile_job, "connect_nats", fake_connect)
+    monkeypatch.setattr(compile_job, "ensure_compile_stream", fake_ensure)
+    monkeypatch.setattr(compile_job, "pull_compile_subscription", fake_pull)
+    monkeypatch.setattr(compile_job, "open_compile_sidecar_store", unavailable_store)
+    monkeypatch.setattr(compile_job, "NatsPublisher", lambda js: RecordingPublisher())
+    monkeypatch.setattr(
+        compile_job,
+        "run_compile_sandbox",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sandbox must not run")
+        ),
+    )
+
+    assert asyncio.run(compile_job.run_once()) == 0
+    assert msg.acked is True
+    assert msg.naked is False
+    assert len(published) == 1
+    assert published[0][1].error_code == "binary_asset_unavailable"
+    assert published[0][1].retryable is True
 
 
 def test_compile_job_attaches_hashed_compiled_structural_manifest(

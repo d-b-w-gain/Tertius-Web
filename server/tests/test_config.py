@@ -1,8 +1,10 @@
 import core.config as config
 from core.config import Settings
 from core.pi_agent_models import DEFAULT_PI_AGENT_MODELS_JSON
+from pathlib import Path
 from pydantic import ValidationError
 import pytest
+import yaml
 
 
 def test_server_env_example_matches_settings_fields():
@@ -121,6 +123,20 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
     assert settings.compile_result_max_bytes == 90 * 1024 * 1024
     assert settings.compile_sidecar_ttl_seconds == 24 * 60 * 60
     assert settings.compile_sidecar_max_bytes == 8 * 1024 * 1024 * 1024
+
+
+def test_compile_max_deliver_one_documents_result_driven_retry_policy():
+    root = Path(__file__).parents[2]
+    values = yaml.safe_load(
+        (root / "infra/charts/tertius/values.yaml").read_text(encoding="utf-8")
+    )
+    documentation = (root / "docs/configuration-and-secrets.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["app"]["config"]["compileMaxDeliver"] == 1
+    assert "`compileMaxDeliver: 1` is intentional" in documentation
+    assert "`binary_asset_unavailable`" in documentation
 
 
 def test_settings_allows_compile_nats_overrides(monkeypatch):

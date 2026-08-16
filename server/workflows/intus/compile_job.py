@@ -37,6 +37,7 @@ from core.nats_client import (
 from core.object_store import (
     ObjectIntegrityError,
     ObjectNotFoundError,
+    ObjectStoreUnavailableError,
     open_compile_sidecar_store,
 )
 from core.telemetry import (
@@ -108,8 +109,8 @@ async def handle_compile_request_message(
                         command,
                         now_utc(),
                         error="Compile binary asset transport is unavailable",
-                        error_code="invalid_binary_asset",
-                        user_message="Compile input could not be loaded. Try again.",
+                        error_code="binary_asset_unavailable",
+                        user_message="Compile input storage is temporarily unavailable. Try again.",
                         retryable=True,
                     )
                 else:
@@ -118,6 +119,17 @@ async def handle_compile_request_message(
                             binary_files[asset.logical_filename] = await object_store.get(
                                 asset.object_ref
                             )
+                    except ObjectStoreUnavailableError as exc:
+                        result = _failed_result(
+                            command,
+                            now_utc(),
+                            error=str(exc),
+                            error_code="binary_asset_unavailable",
+                            user_message=(
+                                "Compile input storage is temporarily unavailable. Try again."
+                            ),
+                            retryable=True,
+                        )
                     except (ObjectIntegrityError, ObjectNotFoundError) as exc:
                         result = _failed_result(
                             command,
@@ -337,7 +349,10 @@ async def run_once() -> int:
             except Exception:
                 command = None
             if command is not None and command.assets and object_store is None:
-                object_store = await open_compile_sidecar_store(js, settings)
+                try:
+                    object_store = await open_compile_sidecar_store(js, settings)
+                except ObjectStoreUnavailableError:
+                    logger.exception("Compile sidecar Object Store is unavailable")
             await handle_compile_request_message(msg, publisher, settings, object_store)
         return 0
     finally:
