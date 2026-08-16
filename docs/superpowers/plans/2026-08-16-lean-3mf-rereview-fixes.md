@@ -378,27 +378,27 @@ current host environment; CI provides the PostgreSQL testcontainer.
 **Files:**
 - Modify: `infra/charts/tertius/values.yaml`
 - Modify: `infra/charts/tertius/values-local.yaml`
-- Modify: `scripts/test-deployment-config.sh`
+- Modify: `server/tests/test_project_assets.py`
 - Modify: `docs/configuration-and-secrets.md`
 
-- [ ] **Step 1: Add a failing deployment contract assertion**
+- [x] **Step 1: Add a failing deployment contract assertion**
 
 Parse both values files and assert the application PostgreSQL storage size is
 `32Gi`, while leaving the Keycloak database size unchanged. Also assert the
 operator documentation connects the 128 MiB per-project durable source limit
 to PostgreSQL sizing overhead.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
 ```bash
-rtk bash scripts/test-deployment-config.sh
+rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_project_assets.py::test_postgres_defaults_cover_durable_3mf_source_contract -q
 ```
 
 Expected: failure reports the current 2 GiB application database default.
 
-- [ ] **Step 3: Update values and documentation**
+- [x] **Step 3: Update values and documentation**
 
 Set only:
 
@@ -411,13 +411,14 @@ postgres:
 in default and local values. Document durable originals, project-count
 planning, normal database data, indexes, WAL, temporary space, and backups.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run:
 
 ```bash
-rtk bash scripts/test-deployment-config.sh
+rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_project_assets.py::test_postgres_defaults_cover_durable_3mf_source_contract -q
 rtk bash scripts/check-runtime-parity.sh
+rtk helm lint infra/charts/tertius
 rtk git diff --check
 ```
 
@@ -426,6 +427,10 @@ Commit the four listed files with message:
 ```text
 docs: align postgres capacity with 3mf sources
 ```
+
+The focused capacity contract, runtime parity, and Helm lint are green. The
+broader deployment script remains scheduled for CI because its unrelated
+pseudo-TTY fixture is not portable to this macOS host.
 
 ### Task 7: Restack #358 and make activation failure recoverable
 
