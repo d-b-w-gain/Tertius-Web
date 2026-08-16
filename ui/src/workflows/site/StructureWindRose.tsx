@@ -187,8 +187,9 @@ export function StructureWindRose({
           <div>
             <h3 className="text-sm font-semibold text-slate-200">Eight cardinal Md values</h3>
             <p className="mt-1 text-xs text-slate-500">
-              Enter values verified from the licensed project standard. Until enabled, the single
-              conservative Md is used for every direction.
+              {multipliers === null
+                ? 'No regional values are available; the single conservative Md is used for every direction.'
+                : 'Tertius populated these values for the selected wind region. Check them against the licensed project standard before certification.'}
             </p>
           </div>
           {multipliers === null && (
