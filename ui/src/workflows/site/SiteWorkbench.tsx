@@ -471,6 +471,20 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
     edit({ ...draft, wind: { ...draft.wind, [key]: value } })
   }
 
+  const updateWindRegion = (region: string) => {
+    if (!draft || region === draft.wind.region) return
+    edit({
+      ...draft,
+      wind: {
+        ...draft.wind,
+        region,
+        cardinal_direction_multipliers: null,
+        climate_change_multiplier: null,
+        table_status: 'starter',
+      },
+    })
+  }
+
   const updateStructure = (structure: SiteDefinition['structure']) => {
     if (!draft) return
     edit({ ...draft, structure })
@@ -576,10 +590,10 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
   }, [saveLatest])
 
   useEffect(() => {
-    if (!isActive || !isDirty || !draft) return
+    if (!isDirty || !draft) return
     const timer = window.setTimeout(() => void saveLatest(), 500)
     return () => window.clearTimeout(timer)
-  }, [draft, isActive, isDirty, saveLatest])
+  }, [draft, isDirty, saveLatest])
 
   const downloadSiteReport = useCallback(async () => {
     if (!draft) return
@@ -1036,7 +1050,7 @@ export function SiteWorkbench({ isActive = true }: SiteWorkbenchProps) {
               </Field>
               <Field label="Wind region">
                 <select className={inputClass} value={draft.wind.region}
-                  onChange={(event) => updateWind('region', event.target.value)}>
+                  onChange={(event) => updateWindRegion(event.target.value)}>
                   {WIND_REGIONS.map((region) => <option key={region} value={region}>{region}</option>)}
                 </select>
               </Field>

@@ -354,7 +354,9 @@ function App() {
           )}
         </div>
       </div>
-      <AiUsageGauge serverUrl={intusServerUrl} />
+      {(activeTab === 'generate' || activeTab === 'intus') && (
+        <AiUsageGauge serverUrl={intusServerUrl} />
+      )}
     </div>
   )
 }

@@ -369,6 +369,41 @@ describe('SiteWorkbench', () => {
     expect(submitted.wind.table_status).toBe('verified')
   })
 
+  it('finishes autosaving a certification change after leaving the Site tab', async () => {
+    const unverifiedResponse: SiteWorkbenchResponse = {
+      ...response,
+      site_dict: {
+        ...response.site_dict,
+        wind: { ...response.site_dict.wind, table_status: 'starter' },
+      },
+    }
+    mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => (
+      new Response(JSON.stringify(url.endsWith('/gis/health') ? {
+        status: 'ready', free_bytes: 1_000_000, total_bytes: 2_000_000,
+      } : url.endsWith('/active') && init?.method === 'PUT'
+        ? savedResponse(init)
+        : unverifiedResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    ))
+
+    const view = render(<SiteWorkbench isActive />)
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Wind tables checked/i }))
+    view.rerender(<SiteWorkbench isActive={false} />)
+
+    await waitFor(() => expect(
+      mocks.apiFetch.mock.calls.some(([url, _token, init]) => (
+        String(url).endsWith('/active') && init?.method === 'PUT'
+      )),
+    ).toBe(true))
+    const saveCall = mocks.apiFetch.mock.calls.find(([url, _token, init]) => (
+      String(url).endsWith('/active') && init?.method === 'PUT'
+    ))
+    const submitted = JSON.parse(String(saveCall?.[2]?.body))
+    expect(submitted.wind.table_status).toBe('verified')
+  })
+
   it('authors a true-north bearing and expands the fallback Md into eight cardinal inputs', async () => {
     mocks.apiFetch.mockImplementation(async (url: string, _token: unknown, init?: RequestInit) => new Response(JSON.stringify(
       url.endsWith('/gis/health')
@@ -433,7 +468,7 @@ describe('SiteWorkbench', () => {
     render(<SiteWorkbench isActive />)
 
     const apply = await screen.findByRole('button', {
-      name: 'Use Table 3.2(A) Md and Table 3.3 Mc',
+      name: 'Reset Md and Mc to table values',
     })
     fireEvent.click(apply)
     expect(screen.getByText(/licensed-standard verification is still required/i)).toBeInTheDocument()
