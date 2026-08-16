@@ -175,9 +175,14 @@ metadata:
   labels:
     {{- include "tertius.labels" . | nindent 4 }}
     app.kubernetes.io/component: gis-cache
-  {{- if .Values.gisCache.storage.retain }}
+  {{- if or .Values.gisCache.storage.retain .Values.harnessLifecycle.leaseId }}
   annotations:
+    {{- with .Values.harnessLifecycle.leaseId }}
+    tertius.io/lease-id: {{ . | quote }}
+    {{- end }}
+    {{- if .Values.gisCache.storage.retain }}
     helm.sh/resource-policy: keep
+    {{- end }}
   {{- end }}
 spec:
   accessModes: ["ReadWriteOnce"]

@@ -529,6 +529,8 @@ if ! rg -q 'endpoint: 0.0.0.0:4317' "${ROOT_DIR}/infra/otel/otel-collector-local
 fi
 
 rendered="$(render_local)"
+leased_secret_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES" \
+  --set-string harnessLifecycle.leaseId=11111111-1111-4111-8111-111111111111)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
@@ -541,6 +543,14 @@ external_observability_rendered="$(render_external_observability_collector)"
 pi_worker_rendered="$(render_pi_worker)"
 pi_disabled_rendered="$(render_pi_disabled)"
 pi_existing_claim_rendered="$(render_pi_existing_claim)"
+
+for leased_secret_name in tertius-app-db tertius-keycloak-db; do
+  leased_secret_doc="$(extract_render_doc "$leased_secret_rendered" 'kind: Secret' "name: ${leased_secret_name}")"
+  if ! rg -q 'tertius.io/lease-id: "11111111-1111-4111-8111-111111111111"' <<<"$leased_secret_doc"; then
+    echo "Local chart Secret ${leased_secret_name} must inherit the harness lifecycle lease." >&2
+    exit 1
+  fi
+done
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
@@ -1598,6 +1608,29 @@ if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/
   exit 1
 fi
 
+if ! rg -U -q 'name: Cleanup k3s chart test\n[[:space:]]+if: \$\{\{ always\(\) \}\}' "$CHART_WORKFLOW"; then
+  echo ".github/workflows/chart-tests.yml must run k3s cleanup as a distinct always() step." >&2
+  exit 1
+fi
+cleanup_step="$(sed -n '/- name: Cleanup k3s chart test/,/- name: Report chart test duration/p' "$CHART_WORKFLOW")"
+if [ -z "$cleanup_step" ] || ! rg -q 'test-k3s-deployment\.sh --cleanup' <<<"$cleanup_step" || rg -q '\|\|[[:space:]]+true' <<<"$cleanup_step"; then
+  echo ".github/workflows/chart-tests.yml cleanup must run full teardown and propagate failure." >&2
+  exit 1
+fi
+for lifecycle_path in \
+  scripts/cleanup-expired-k3s-harness.sh \
+  scripts/install-k3s-harness-cleanup-timer.sh \
+  scripts/diagnose-k3s-networkpolicy.sh \
+  scripts/install-gvisor-k3s.sh \
+  scripts/test-k3s-harness-lifecycle.sh \
+  scripts/test-k3s-harness-janitor.sh \
+  scripts/test-k3s-harness-process-cleanup.sh; do
+  if [ "$(rg -F -c -- "- '${lifecycle_path}'" "$CHART_WORKFLOW")" -lt 2 ]; then
+    echo ".github/workflows/chart-tests.yml must include ${lifecycle_path} in pull and push path filters." >&2
+    exit 1
+  fi
+done
+
 if ! python3 - "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml" <<'PY'
 from pathlib import Path
 import sys
@@ -1612,3 +1645,7 @@ then
   echo "Production HelmRelease must explicitly enable the GIS cache after image promotion." >&2
   exit 1
 fi
+
+"${ROOT_DIR}/scripts/test-k3s-harness-lifecycle.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-janitor.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-process-cleanup.sh"
