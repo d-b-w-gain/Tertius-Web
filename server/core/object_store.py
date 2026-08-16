@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
@@ -22,6 +23,17 @@ class ObjectIntegrityError(ObjectStoreError):
 
 class ObjectStoreUnavailableError(ObjectStoreError):
     pass
+
+
+class _BoundedBytesIO(io.BytesIO):
+    def __init__(self, max_bytes: int):
+        super().__init__()
+        self.max_bytes = max_bytes
+
+    def write(self, content: Any) -> int:
+        if self.tell() + len(content) > self.max_bytes:
+            raise ObjectIntegrityError("object is too large")
+        return super().write(content)
 
 
 BucketName = Annotated[
@@ -98,6 +110,8 @@ class CompileSidecarStore:
         except Exception as exc:
             if _is_not_found(exc):
                 raise ObjectNotFoundError("object was not found") from exc
+            if _is_integrity_error(exc):
+                raise ObjectIntegrityError("object metadata integrity check failed") from exc
             raise ObjectStoreUnavailableError("object store operation failed") from exc
         if (
             getattr(info, "deleted", False)
@@ -112,8 +126,9 @@ class CompileSidecarStore:
         except AttributeError as exc:
             raise ObjectIntegrityError("object metadata integrity check failed") from exc
         try:
-            result = await self.store.get(ref.key)
-            content = result.data
+            output = _BoundedBytesIO(self.max_object_bytes)
+            await self.store.get(ref.key, writeinto=output)
+            content = output.getvalue()
         except ObjectIntegrityError:
             raise
         except Exception as exc:
@@ -137,15 +152,22 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
     try:
         store = await jetstream.object_store(bucket)
     except (BucketNotFoundError, NotFoundError):
-        store = await jetstream.create_object_store(
-            config=ObjectStoreConfig(
+        try:
+            store = await jetstream.create_object_store(
                 bucket=bucket,
-                description="Bounded binary sidecars for compile commands",
-                ttl=24 * 60 * 60,
-                max_bytes=1024 * 1024 * 1024,
-                storage=StorageType.FILE,
+                config=ObjectStoreConfig(
+                    bucket=bucket,
+                    description="Bounded binary sidecars for compile commands",
+                    ttl=24 * 60 * 60,
+                    max_bytes=1024 * 1024 * 1024,
+                    storage=StorageType.FILE,
+                ),
             )
-        )
+        except Exception as create_exc:
+            try:
+                store = await jetstream.object_store(bucket)
+            except Exception:
+                raise create_exc
     return CompileSidecarStore(store, bucket)
 
 
