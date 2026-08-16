@@ -20,6 +20,10 @@ export const ProjectSelector: React.FC = () => {
   const [activeProject, setActiveProject] = useState<string>('');
   const [isCreating, setIsCreating] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importProjectName, setImportProjectName] = useState('');
+  const [importPending, setImportPending] = useState(false);
   const [gitStatus, setGitStatus] = useState<{ is_git: boolean, commit?: string, history?: string[], label?: string }>({ is_git: false });
 
   const fetchGitStatus = useCallback(async (name: string) => {
@@ -111,6 +115,24 @@ export const ProjectSelector: React.FC = () => {
     }
   };
 
+  const handleImportSubmit = async () => {
+    const name = importProjectName.trim();
+    if (!importFile || !name || importPending) return;
+    setImportPending(true);
+    try {
+      const result = await storage.import3mf(importFile, name);
+      await selectProject(result.project);
+      await fetchProjects();
+      setIsImporting(false);
+      setImportFile(null);
+      setImportProjectName('');
+    } catch (e) {
+      alert(errorMessage(e, '3MF import failed'));
+    } finally {
+      setImportPending(false);
+    }
+  };
+
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <select 
@@ -155,6 +177,37 @@ export const ProjectSelector: React.FC = () => {
         >
           ➕ New
         </button>
+      )}
+      {authMode === 'authenticated' && (
+        <button
+          onClick={() => setIsImporting(true)}
+          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded text-[10px] transition-colors"
+        >
+          Import 3MF
+        </button>
+      )}
+      {isImporting && (
+        <div role="dialog" aria-modal="true" aria-label="Import 3MF project" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70">
+          <form onSubmit={(event) => { event.preventDefault(); void handleImportSubmit(); }} className="w-80 space-y-3 rounded border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+            <h2 className="text-sm font-semibold text-slate-100">Import 3MF</h2>
+            <label className="block text-xs text-slate-300">
+              3MF file
+              <input aria-label="3MF file" type="file" accept=".3mf,application/vnd.ms-package.3dmanufacturing-3dmodel+xml" onChange={(event) => {
+                const file = event.target.files?.[0] ?? null;
+                setImportFile(file);
+                if (file && !importProjectName) setImportProjectName(file.name.replace(/\.3mf$/i, ''));
+              }} className="mt-1 block w-full text-xs" />
+            </label>
+            <label className="block text-xs text-slate-300">
+              Project name
+              <input aria-label="Imported project name" value={importProjectName} onChange={(event) => setImportProjectName(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1" />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setIsImporting(false)} className="px-2 py-1 text-xs text-slate-300">Cancel</button>
+              <button type="submit" disabled={!importFile || !importProjectName.trim() || importPending} className="rounded bg-indigo-600 px-2 py-1 text-xs text-white disabled:opacity-50">{importPending ? 'Importing…' : 'Import project'}</button>
+            </div>
+          </form>
+        </div>
       )}
     </div>
   );
