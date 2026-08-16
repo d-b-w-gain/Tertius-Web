@@ -156,7 +156,7 @@ fix: report transient compile sidecar outages
 - Modify: `server/tests/test_object_store.py`
 - Modify: `server/core/object_store.py`
 
-- [ ] **Step 1: Write failing reconciliation tests**
+- [x] **Step 1: Write failing reconciliation tests**
 
 Create a fake existing store whose `status()` returns a full `stream_info.config`
 containing Object Store subjects, storage, discard policy, rollup headers, and
@@ -172,7 +172,7 @@ assert updated.allow_rollup_hdrs == original.allow_rollup_hdrs
 
 Keep the create-race regression.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -182,7 +182,7 @@ rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_object_store.py -
 
 Expected: stale configuration tests fail because existing stores return without an update.
 
-- [ ] **Step 3: Implement full-config reconciliation**
+- [x] **Step 3: Implement full-config reconciliation**
 
 After obtaining an existing or race-recovered store, call `await store.status()`.
 Use `status.stream_info.config` as the update object. Compare its normalized
@@ -196,7 +196,7 @@ await jetstream.update_stream(config=updated_config)
 Do not create a new `StreamConfig`, alter subjects, or recreate the bucket.
 Map status/update transport failures to `ObjectStoreUnavailableError`.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run:
 

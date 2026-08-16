@@ -7,6 +7,7 @@ from core.object_store import (
     CompileSidecarStore,
     ObjectIntegrityError,
     ObjectRef,
+    ObjectStoreUnavailableError,
     open_compile_sidecar_store,
 )
 
@@ -156,6 +157,7 @@ async def test_open_store_recovers_when_another_worker_creates_bucket_first():
     class JetStream:
         def __init__(self):
             self.lookups = 0
+            self.store = ExistingStore(existing_stream_config())
 
         async def object_store(self, _bucket):
             self.lookups += 1
@@ -163,12 +165,15 @@ async def test_open_store_recovers_when_another_worker_creates_bucket_first():
                 from nats.js.errors import BucketNotFoundError
 
                 raise BucketNotFoundError
-            return FakeStore()
+            return self.store
 
         async def create_object_store(self, bucket=None, config=None):
             from nats.js.errors import APIError
 
             raise APIError(code=400, err_code=10058, description="stream name already in use")
+
+        async def update_stream(self, config=None):
+            raise AssertionError("race-created bucket already has the requested limits")
 
     adapter = await open_compile_sidecar_store(
         JetStream(),
@@ -179,3 +184,109 @@ async def test_open_store_recovers_when_another_worker_creates_bucket_first():
     )
 
     assert adapter.bucket == "TERTIUS_COMPILE_SIDECARS"
+
+
+def existing_stream_config(*, max_age=7200, max_bytes=16 * 1024 * 1024 * 1024):
+    from nats.js.api import RetentionPolicy, StorageType, StreamConfig
+
+    return StreamConfig(
+        name="OBJ_TERTIUS_COMPILE_SIDECARS",
+        description="existing object store",
+        subjects=[
+            "$O.TERTIUS_COMPILE_SIDECARS.C",
+            "$O.TERTIUS_COMPILE_SIDECARS.M.>",
+        ],
+        retention=RetentionPolicy.LIMITS,
+        max_age=max_age,
+        max_bytes=max_bytes,
+        max_msgs_per_subject=1,
+        storage=StorageType.FILE,
+        deny_delete=True,
+        allow_rollup_hdrs=True,
+        allow_direct=True,
+    )
+
+
+class ExistingStore(FakeStore):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    async def status(self):
+        return SimpleNamespace(
+            stream_info=SimpleNamespace(config=self.config),
+        )
+
+
+class ExistingStoreJetStream:
+    def __init__(self, config):
+        self.store = ExistingStore(config)
+        self.update_calls = []
+
+    async def object_store(self, _bucket):
+        return self.store
+
+    async def update_stream(self, config=None):
+        self.update_calls.append(config)
+
+
+def sidecar_settings():
+    return SimpleNamespace(
+        compile_sidecar_ttl_seconds=7200,
+        compile_sidecar_max_bytes=16 * 1024 * 1024 * 1024,
+    )
+
+
+@pytest.mark.asyncio
+async def test_open_store_does_not_update_matching_existing_configuration():
+    jetstream = ExistingStoreJetStream(existing_stream_config())
+
+    adapter = await open_compile_sidecar_store(jetstream, sidecar_settings())
+
+    assert adapter.bucket == "TERTIUS_COMPILE_SIDECARS"
+    assert jetstream.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_open_store_updates_stale_capacity_and_preserves_stream_configuration():
+    original = existing_stream_config(max_bytes=1024)
+    jetstream = ExistingStoreJetStream(original)
+
+    await open_compile_sidecar_store(jetstream, sidecar_settings())
+
+    assert len(jetstream.update_calls) == 1
+    updated = jetstream.update_calls[0]
+    assert original.max_bytes == 1024
+    assert updated.max_bytes == 16 * 1024 * 1024 * 1024
+    assert updated.max_age == original.max_age
+    assert updated.subjects == original.subjects
+    assert updated.retention == original.retention
+    assert updated.max_msgs_per_subject == original.max_msgs_per_subject
+    assert updated.storage == original.storage
+    assert updated.deny_delete is True
+    assert updated.allow_rollup_hdrs is True
+    assert updated.allow_direct is True
+
+
+@pytest.mark.asyncio
+async def test_open_store_updates_stale_ttl():
+    original = existing_stream_config(max_age=60)
+    jetstream = ExistingStoreJetStream(original)
+
+    await open_compile_sidecar_store(jetstream, sidecar_settings())
+
+    assert len(jetstream.update_calls) == 1
+    updated = jetstream.update_calls[0]
+    assert original.max_age == 60
+    assert updated.max_age == 7200
+    assert updated.max_bytes == original.max_bytes
+
+
+@pytest.mark.asyncio
+async def test_open_store_maps_lookup_failure_to_unavailable():
+    class JetStream:
+        async def object_store(self, _bucket):
+            raise RuntimeError("nats temporarily unavailable")
+
+    with pytest.raises(ObjectStoreUnavailableError, match="object store operation failed"):
+        await open_compile_sidecar_store(JetStream(), sidecar_settings())

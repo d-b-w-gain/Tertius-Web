@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from dataclasses import replace
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
@@ -149,6 +150,7 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
     from nats.js.errors import BucketNotFoundError, NotFoundError
 
     bucket = "TERTIUS_COMPILE_SIDECARS"
+    created = False
     try:
         store = await jetstream.object_store(bucket)
     except (BucketNotFoundError, NotFoundError):
@@ -163,11 +165,35 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
                     storage=StorageType.FILE,
                 ),
             )
+            created = True
         except Exception as create_exc:
             try:
                 store = await jetstream.object_store(bucket)
-            except Exception:
-                raise create_exc
+            except Exception as lookup_exc:
+                raise ObjectStoreUnavailableError(
+                    "object store operation failed"
+                ) from create_exc
+    except Exception as exc:
+        raise ObjectStoreUnavailableError("object store operation failed") from exc
+
+    if not created:
+        try:
+            status = await store.status()
+            current = status.stream_info.config
+            expected_max_age = float(settings.compile_sidecar_ttl_seconds)
+            expected_max_bytes = settings.compile_sidecar_max_bytes
+            if (
+                current.max_age != expected_max_age
+                or current.max_bytes != expected_max_bytes
+            ):
+                updated = replace(
+                    current,
+                    max_age=expected_max_age,
+                    max_bytes=expected_max_bytes,
+                )
+                await jetstream.update_stream(config=updated)
+        except Exception as exc:
+            raise ObjectStoreUnavailableError("object store operation failed") from exc
     return CompileSidecarStore(store, bucket)
 
 
