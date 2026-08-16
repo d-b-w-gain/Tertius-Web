@@ -285,7 +285,7 @@ test: complete supported 3mf graph matrix
 - Modify: `server/tests/test_lean_3mf_import_api.py`
 - Reuse: `server/tests/fixtures/three_mf.py`
 
-- [ ] **Step 1: Restack the API branch**
+- [x] **Step 1: Restack the API branch**
 
 Run:
 
@@ -296,7 +296,7 @@ rtk git rebase --onto codex/3mf-lean-loader 3c44915
 
 Expected: the three API commits follow the updated loader branch.
 
-- [ ] **Step 2: Add failing supported-subset preflight tests**
+- [x] **Step 2: Add failing supported-subset preflight tests**
 
 Parameterize the same common matrix through `validate_3mf_archive_bytes()`.
 Assert valid one- and two-mesh identity builds pass, while every unsupported
@@ -307,7 +307,7 @@ with pytest.raises(Unsupported3mfBuildGraphError, match="unsupported 3MF build g
     validate_3mf_archive_bytes(content)
 ```
 
-- [ ] **Step 3: Add failing streaming resource-limit tests**
+- [x] **Step 3: Add failing streaming resource-limit tests**
 
 Cover a reader that returns more than the configured XML limit, a document over
 the depth limit, large irrelevant metadata/vertex content, malformed XML, and
@@ -315,7 +315,7 @@ DTD/entity payloads. Instrument element clearing or the retained semantic state
 so the large irrelevant document test proves the parser does not construct a
 full retained DOM.
 
-- [ ] **Step 4: Run validator tests and verify RED**
+- [x] **Step 4: Run validator tests and verify RED**
 
 Run:
 
@@ -325,7 +325,7 @@ rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_three_mf_archive.
 
 Expected: unsupported graphs are accepted and resource-bound tests fail against `fromstring()`.
 
-- [ ] **Step 5: Implement the capped streaming parser**
+- [x] **Step 5: Implement the capped streaming parser**
 
 Add:
 
@@ -347,14 +347,14 @@ model, retain only object IDs, whether each object has a direct mesh or
 components, and each direct build item object ID/transform. Apply the exact
 set-equality and uniqueness rules from the injected loader.
 
-- [ ] **Step 6: Add endpoint rollback regression**
+- [x] **Step 6: Add endpoint rollback regression**
 
 POST one unsupported fixture through the authenticated endpoint and assert
 HTTP 400. Query both `Project` and `Artifact` by tenant/name and assert no rows
 were created. Ensure the endpoint preserves the stable unsupported-graph error
 body rather than replacing it with a generic 500.
 
-- [ ] **Step 7: Verify GREEN and commit**
+- [x] **Step 7: Verify GREEN and commit**
 
 Run:
 
@@ -368,6 +368,10 @@ Commit the validator, endpoint test, and common fixtures with message:
 ```text
 fix: reject unsupported 3mf imports during preflight
 ```
+
+Local validator/runtime/unit-endpoint coverage is green. The DB-backed rollback
+case remains scheduled for the final suite because Docker is unavailable in the
+current host environment; CI provides the PostgreSQL testcontainer.
 
 ### Task 6: Encode the 32 GiB PostgreSQL source-capacity contract on #357
 

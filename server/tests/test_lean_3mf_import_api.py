@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from core.compile_messages import CompileBinaryAsset
@@ -15,7 +15,7 @@ from core.object_store import ObjectRef
 from core.project_assets import SOURCE_3MF_MEDIA_TYPE, generated_3mf_design_source
 from core.repositories import CompileRepository
 from workflows.intus import intus_server
-from tests.fixtures.three_mf import make_box_3mf
+from tests.fixtures.three_mf import TRANSLATED_BUILD_TRANSFORM, box_mesh, make_3mf, make_box_3mf
 
 
 def test_ui_proxy_accepts_bounded_3mf_uploads():
@@ -129,6 +129,39 @@ def test_import_endpoint_returns_conflict_for_project_name_race(monkeypatch):
     assert response.body == b'{"error":"Project already exists"}'
 
 
+def test_import_endpoint_rejects_unsupported_graph_before_create(monkeypatch):
+    vertices, triangles = box_mesh()
+    content = make_3mf(
+        objects=[("Box", vertices, triangles)],
+        build_transform=TRANSLATED_BUILD_TRANSFORM,
+    )
+
+    class FakeProjectRepository:
+        def __init__(self, *_args):
+            pass
+
+        def get_project(self, _name):
+            return None
+
+    def fail_create(*_args, **_kwargs):
+        raise AssertionError("unsupported graph must not start the project transaction")
+
+    monkeypatch.setattr(intus_server, "ProjectRepository", FakeProjectRepository)
+    monkeypatch.setattr(intus_server, "create_imported_3mf_project", fail_create)
+
+    response = intus_server.import_3mf_project(
+        name="unsupported_graph",
+        file=UploadFile(filename="source.3mf", file=io.BytesIO(content)),
+        ctx=SimpleNamespace(tenant_id=uuid4(), user_id=uuid4()),
+        db=object(),
+    )
+
+    assert response.status_code == 400
+    assert response.body == (
+        b'{"error":"The file uses an unsupported 3MF build graph."}'
+    )
+
+
 def test_authenticated_import_creates_project_design_and_source_atomically(
     authenticated_intus_client, db_session, seeded_tenant
 ):
@@ -190,6 +223,43 @@ def test_import_rejects_duplicate_and_invalid_archive_without_partial_rows(
             Project.name == "invalid_import",
         )
     ) is None
+
+
+def test_import_rejects_unsupported_build_graph_without_project_or_artifact_rows(
+    authenticated_intus_client, db_session, seeded_tenant
+):
+    vertices, triangles = box_mesh()
+    content = make_3mf(
+        objects=[("Box", vertices, triangles)],
+        build_transform=TRANSLATED_BUILD_TRANSFORM,
+    )
+    artifact_count_before = db_session.scalar(
+        select(func.count())
+        .select_from(Artifact)
+        .where(Artifact.tenant_id == seeded_tenant.tenant_id)
+    )
+
+    response = authenticated_intus_client.post(
+        "/projects/imports/3mf",
+        data={"name": "unsupported_graph"},
+        files={"file": ("source.3mf", io.BytesIO(content), SOURCE_3MF_MEDIA_TYPE)},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": "The file uses an unsupported 3MF build graph."
+    }
+    assert db_session.scalar(
+        select(Project).where(
+            Project.tenant_id == seeded_tenant.tenant_id,
+            Project.name == "unsupported_graph",
+        )
+    ) is None
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(Artifact)
+        .where(Artifact.tenant_id == seeded_tenant.tenant_id)
+    ) == artifact_count_before
 
 
 def test_import_rolls_back_project_when_source_artifact_creation_fails(
