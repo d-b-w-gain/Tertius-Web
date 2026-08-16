@@ -57,10 +57,15 @@ export const ProjectSelector: React.FC = () => {
     }
   }, [storage, fetchGitStatus]);
 
+  const refreshProjectList = useCallback(async () => {
+    const list = await storage.listProjects();
+    setProjects(list);
+    return list;
+  }, [storage]);
+
   const fetchProjects = useCallback(async (selectName?: string) => {
     try {
-      const list = await storage.listProjects();
-      setProjects(list);
+      const list = await refreshProjectList();
       
       let currentBackendProject = activeProject;
       if (!currentBackendProject) {
@@ -83,7 +88,7 @@ export const ProjectSelector: React.FC = () => {
     } catch (e) {
       console.error("Failed to fetch projects");
     }
-  }, [storage, activeProject, selectProject, fetchGitStatus]);
+  }, [storage, activeProject, selectProject, fetchGitStatus, refreshProjectList]);
 
   // Sync active project with backend (in case another tab changed it, though this is the primary selector)
   useEffect(() => {
@@ -132,11 +137,18 @@ export const ProjectSelector: React.FC = () => {
     setImportPending(true);
     try {
       const result = await storage.import3mf(importFile, name);
-      if (!await selectProject(result.project)) return;
-      await fetchProjects();
+      setProjects((current) => current.includes(result.project)
+        ? current
+        : [...current, result.project]);
+      try {
+        await refreshProjectList();
+      } catch (error) {
+        console.error("Failed to refresh projects after import", error);
+      }
       setIsImporting(false);
       setImportFile(null);
       setImportProjectName('');
+      await selectProject(result.project);
     } catch (e) {
       alert(errorMessage(e, '3MF import failed'));
     } finally {
