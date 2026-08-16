@@ -11,6 +11,7 @@ from .model_geometry_runtime import TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE
 from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
 from .structural.authoring_runtime import helper_source as structural_helper_source
 from .tertius_bom_runtime import TERTIUS_BOM_HELPER_SOURCE
+from .tertius_imports_runtime import TERTIUS_IMPORTS_HELPER_SOURCE
 
 SUPPORTED_EXPORT_FORMATS = {"stl", "step", "gltf", "glb", "timus_views", "timus_bounds"}
 STRUCTURAL_MANIFEST_FILENAME = "tertius-structural-manifest.json"
@@ -776,6 +777,8 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
     output_path = project_dir / f"output.{ext}"
     bom_helper_path = project_dir / "tertius_bom.py"
     bom_helper_path.write_text(TERTIUS_BOM_HELPER_SOURCE, encoding="utf-8")
+    imports_helper_path = project_dir / "tertius_imports.py"
+    imports_helper_path.write_text(TERTIUS_IMPORTS_HELPER_SOURCE, encoding="utf-8")
     provenance_helper_path = project_dir / "tertius_provenance.py"
     provenance_helper_path.write_text(TERTIUS_PROVENANCE_HELPER_SOURCE, encoding="utf-8")
     model_geometry_helper_path = project_dir / "tertius_model_geometry.py"
