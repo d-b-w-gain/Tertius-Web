@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ACTIVE_PROJECT_CHANGED_EVENT, ProjectSelector } from './ProjectSelector'
+import {
+  ACTIVE_PROJECT_CHANGED_EVENT,
+  ProjectSelector,
+  suggestedProjectName,
+} from './ProjectSelector'
 
 const storage = vi.hoisted(() => ({
   listProjects: vi.fn(),
@@ -50,5 +54,35 @@ describe('ProjectSelector 3MF import', () => {
     await waitFor(() => expect(listener).toHaveBeenCalledTimes(1))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, listener)
+  })
+
+  it('keeps the current project and import dialog when activation fails', async () => {
+    const listener = vi.fn()
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, listener)
+    storage.activateProject.mockRejectedValueOnce(new Error('activation unavailable'))
+    render(<ProjectSelector />)
+
+    const selector = await screen.findByRole('combobox')
+    await waitFor(() => expect(selector).toHaveValue('default'))
+    fireEvent.click(screen.getByRole('button', { name: 'Import 3MF' }))
+    const file = new File(['3mf'], 'falcon9.3mf')
+    fireEvent.change(screen.getByLabelText('3MF file'), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Import project' }))
+
+    await waitFor(() => expect(storage.activateProject).toHaveBeenCalledWith('falcon9'))
+    expect(selector).toHaveValue('default')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(listener).not.toHaveBeenCalled()
+    expect(window.alert).toHaveBeenCalledWith('activation unavailable')
+    window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, listener)
+  })
+
+  it.each([
+    ['Falcon 9 final.3mf', 'Falcon_9_final'],
+    ['火箭 — final!!.3MF', 'final'],
+    [`${'a'.repeat(90)}.3mf`, 'a'.repeat(80)],
+    ['... .3mf', 'imported_3mf'],
+  ])('suggests a valid project name for %s', (filename, expected) => {
+    expect(suggestedProjectName(filename)).toBe(expected)
   })
 })

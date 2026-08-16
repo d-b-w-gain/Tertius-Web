@@ -8,6 +8,15 @@ export const ACTIVE_PROJECT_CHANGED_EVENT = 'tertius:active-project-changed';
 
 const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 
+export const suggestedProjectName = (filename: string) => {
+  const basename = filename.replace(/\.3mf$/i, '')
+  const normalized = basename
+    .replace(/[^A-Za-z0-9_.-]+/g, '_')
+    .slice(0, 80)
+    .replace(/^[._-]+|[._-]+$/g, '')
+  return normalized || 'imported_3mf'
+}
+
 export const ProjectSelector: React.FC = () => {
   const { authMode, getAccessToken } = useAuth();
   const serverUrl = resolveWorkflowServerUrl('intus', import.meta.env?.VITE_API_URL);
@@ -36,13 +45,15 @@ export const ProjectSelector: React.FC = () => {
   }, [storage]);
 
   const selectProject = useCallback(async (name: string) => {
-    setActiveProject(name);
     try {
       await storage.activateProject(name);
+      setActiveProject(name);
       fetchGitStatus(name);
       window.dispatchEvent(new CustomEvent(ACTIVE_PROJECT_CHANGED_EVENT, { detail: { activeProject: name } }));
+      return true;
     } catch (e) {
       alert(errorMessage(e, "Network error selecting project"));
+      return false;
     }
   }, [storage, fetchGitStatus]);
 
@@ -121,7 +132,7 @@ export const ProjectSelector: React.FC = () => {
     setImportPending(true);
     try {
       const result = await storage.import3mf(importFile, name);
-      await selectProject(result.project);
+      if (!await selectProject(result.project)) return;
       await fetchProjects();
       setIsImporting(false);
       setImportFile(null);
@@ -195,7 +206,7 @@ export const ProjectSelector: React.FC = () => {
               <input aria-label="3MF file" type="file" accept=".3mf,application/vnd.ms-package.3dmanufacturing-3dmodel+xml" onChange={(event) => {
                 const file = event.target.files?.[0] ?? null;
                 setImportFile(file);
-                if (file && !importProjectName) setImportProjectName(file.name.replace(/\.3mf$/i, ''));
+                if (file && !importProjectName) setImportProjectName(suggestedProjectName(file.name));
               }} className="mt-1 block w-full text-xs" />
             </label>
             <label className="block text-xs text-slate-300">
