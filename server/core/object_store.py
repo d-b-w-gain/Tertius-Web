@@ -169,7 +169,7 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
         except Exception as create_exc:
             try:
                 store = await jetstream.object_store(bucket)
-            except Exception as lookup_exc:
+            except Exception:
                 raise ObjectStoreUnavailableError(
                     "object store operation failed"
                 ) from create_exc
