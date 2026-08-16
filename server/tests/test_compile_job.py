@@ -10,7 +10,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from core.compile_messages import CompileCommand, CompileSourceFile, serialized_message_size
+from core.compile_messages import CompileBinaryAsset, CompileCommand, CompileSourceFile, serialized_message_size
+from core.object_store import ObjectIntegrityError, ObjectRef
 
 
 def command_payload(**overrides: object) -> bytes:
@@ -102,6 +103,115 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     assert base64.b64decode(result.artifact_content_base64) == b"solid job"
     assert result.artifact_byte_size == len(b"solid job")
     assert message_id == f"compile-result:{result.job_id}:succeeded"
+
+
+def test_compile_job_fetches_and_hydrates_3mf_sidecar(monkeypatch, tmp_path):
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    content = b"PK\x03\x04fixture-3mf"
+    digest = hashlib.sha256(content).hexdigest()
+    ref = ObjectRef(
+        bucket="TERTIUS_COMPILE_SIDECARS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=len(content),
+    )
+    output_path = tmp_path / "output.glb"
+    output_path.write_bytes(b"glb")
+
+    class FakeObjectStore:
+        async def get(self, requested_ref):
+            assert requested_ref == ref
+            return content
+
+    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+        assert (project_dir / "source.3mf").read_bytes() == content
+        return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    msg = FakeMsg(command_payload(assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings(), FakeObjectStore()))
+
+    assert msg.acked is True
+    assert msg.naked is False
+    assert publisher.published[0][1].status == "succeeded"
+
+
+def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(monkeypatch):
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    digest = "c" * 64
+    ref = ObjectRef(
+        bucket="TERTIUS_COMPILE_SIDECARS",
+        key=f"sha256/{digest}",
+        sha256=digest,
+        byte_size=3,
+    )
+
+    class BrokenObjectStore:
+        async def get(self, requested_ref):
+            raise ObjectIntegrityError("object integrity check failed")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("sandbox must not run")
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fail_if_called)
+    msg = FakeMsg(command_payload(assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]))
+    publisher = FakePublisher()
+
+    asyncio.run(handle_compile_request_message(msg, publisher, job_settings(), BrokenObjectStore()))
+
+    assert msg.acked is True
+    assert msg.naked is False
+    result = publisher.published[0][1]
+    assert result.status == "failed"
+    assert result.error_code == "invalid_binary_asset"
+    assert result.retryable is False
+
+
+def test_run_once_preserves_python_only_path_without_opening_object_store(monkeypatch):
+    import workflows.intus.compile_job as compile_job
+
+    msg = FakeMsg(command_payload())
+
+    class FakeSubscription:
+        async def fetch(self, batch, timeout):
+            return [msg]
+
+    class FakeConnection:
+        def jetstream(self):
+            return SimpleNamespace()
+
+        async def close(self):
+            pass
+
+    async def fake_connect(_url):
+        return FakeConnection()
+
+    async def fake_ensure(nc, settings):
+        return SimpleNamespace()
+
+    async def fake_pull(js, settings):
+        return FakeSubscription()
+
+    async def fail_if_opened(*args, **kwargs):
+        raise AssertionError("object store must remain unused")
+
+    async def fake_handle(message, publisher, settings, object_store=None):
+        assert message is msg
+        assert object_store is None
+
+    monkeypatch.setattr(compile_job, "get_settings", lambda: SimpleNamespace(nats_url="nats://test"))
+    monkeypatch.setattr(compile_job, "configure_telemetry", lambda *args: None)
+    monkeypatch.setattr(compile_job, "connect_nats", fake_connect)
+    monkeypatch.setattr(compile_job, "ensure_compile_stream", fake_ensure)
+    monkeypatch.setattr(compile_job, "pull_compile_subscription", fake_pull)
+    monkeypatch.setattr(compile_job, "open_compile_sidecar_store", fail_if_opened)
+    monkeypatch.setattr(compile_job, "handle_compile_request_message", fake_handle)
+
+    assert asyncio.run(compile_job.run_once()) == 0
 
 
 def test_compile_job_attaches_hashed_compiled_structural_manifest(

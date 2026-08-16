@@ -34,6 +34,11 @@ from core.nats_client import (
     extract_nats_context,
     pull_compile_subscription,
 )
+from core.object_store import (
+    ObjectIntegrityError,
+    ObjectNotFoundError,
+    open_compile_sidecar_store,
+)
 from core.telemetry import (
     configure_telemetry,
     counter_add,
@@ -53,7 +58,9 @@ def _hash_llm_edit_job_id(job_id: UUID) -> str:
     return hashlib.sha256(str(job_id).encode("ascii")).hexdigest()[:16]
 
 
-async def handle_compile_request_message(msg, publisher: Publisher, settings) -> None:
+async def handle_compile_request_message(
+    msg, publisher: Publisher, settings, object_store=None
+) -> None:
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.request")
     attributes = {
@@ -94,10 +101,44 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
         counter_add("tertius.compile.job.started.count", 1, {"export_format": command.export_format})
         start = perf_counter()
         try:
-            # Keep the NATS event loop responsive while CAD runs in its bounded
-            # subprocess. Otherwise a long Build123D compile prevents client
-            # keepalives and the result publish loses its connection.
-            result = await asyncio.to_thread(execute_compile_command, command, settings)
+            binary_files: dict[str, bytes] = {}
+            if command.assets:
+                if object_store is None:
+                    result = _failed_result(
+                        command,
+                        now_utc(),
+                        error="Compile binary asset transport is unavailable",
+                        error_code="invalid_binary_asset",
+                        user_message="Compile input could not be loaded. Try again.",
+                        retryable=True,
+                    )
+                else:
+                    try:
+                        for asset in command.assets:
+                            binary_files[asset.logical_filename] = await object_store.get(
+                                asset.object_ref
+                            )
+                    except (ObjectIntegrityError, ObjectNotFoundError) as exc:
+                        result = _failed_result(
+                            command,
+                            now_utc(),
+                            error=str(exc),
+                            error_code="invalid_binary_asset",
+                            user_message="Compile input failed its integrity check.",
+                            retryable=False,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            execute_compile_command,
+                            command,
+                            settings,
+                            binary_files,
+                        )
+            else:
+                # Keep the NATS event loop responsive while CAD runs in its bounded
+                # subprocess. Otherwise a long Build123D compile prevents client
+                # keepalives and the result publish loses its connection.
+                result = await asyncio.to_thread(execute_compile_command, command, settings)
             assert_message_size(result, settings.compile_result_max_bytes, "result")
             await publisher.publish_json(
                 settings.compile_result_subject,
@@ -128,7 +169,11 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
             await msg.nak()
 
 
-def execute_compile_command(command: CompileCommand, settings) -> CompileResultPayload:
+def execute_compile_command(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None = None,
+) -> CompileResultPayload:
     started_at = now_utc()
     if not command.files:
         return _failed_result(
@@ -141,7 +186,7 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
         )
 
     files = {file.filename: file.content for file in command.files}
-    with hydrate_project_files(files) as project_dir:
+    with hydrate_project_files(files, binary_files) as project_dir:
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
@@ -285,8 +330,15 @@ async def run_once() -> int:
         except TimeoutError:
             return 0
 
+        object_store = None
         for msg in messages:
-            await handle_compile_request_message(msg, publisher, settings)
+            try:
+                command = CompileCommand.model_validate_json(msg.data)
+            except Exception:
+                command = None
+            if command is not None and command.assets and object_store is None:
+                object_store = await open_compile_sidecar_store(js, settings)
+            await handle_compile_request_message(msg, publisher, settings, object_store)
         return 0
     finally:
         await nc.close()
