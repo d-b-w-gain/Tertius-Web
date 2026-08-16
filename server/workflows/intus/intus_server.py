@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, File, Form, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from opentelemetry import propagate
@@ -17,12 +17,19 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
+from core.compile_messages import CompileBinaryAsset, CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
+from core.object_store import put_compile_sidecar
+from core.project_assets import (
+    MAX_3MF_UPLOAD_BYTES,
+    SOURCE_3MF_MEDIA_TYPE,
+    generated_3mf_design_source,
+)
+from core.three_mf_archive import Invalid3mfArchiveError, validate_3mf_archive_bytes
 from core.pi_agent_conversation import next_conversation_context, render_conversation_context
 from core.pi_agent_messages import PiAgentCommand, PiAgentProgressSnapshot, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
 from core.pi_agent_prompt import (
@@ -102,6 +109,36 @@ async def publish_compile_command(command: CompileCommand) -> None:
         await nc.close()
 
 
+async def store_compile_sidecar(content: bytes):
+    return await put_compile_sidecar(content, get_settings())
+
+
+def create_imported_3mf_project(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    name: str,
+    content: bytes,
+) -> Project:
+    repo = ProjectRepository(db, tenant_id)
+    compile_repo = CompileRepository(db, tenant_id)
+    try:
+        project = repo.stage_project(name, user_id, generated_3mf_design_source())
+        compile_repo.record_artifact(
+            project.id,
+            None,
+            "source_3mf",
+            content,
+            content_type=SOURCE_3MF_MEDIA_TYPE,
+        )
+        db.commit()
+        return project
+    except Exception:
+        db.rollback()
+        raise
+
+
 
 
 
@@ -137,6 +174,38 @@ def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session =
 @app.get("/projects")
 def list_projects(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     return {"projects": ProjectRepository(db, ctx.tenant_id).list_projects()}
+
+@app.post("/projects/imports/3mf", status_code=status.HTTP_201_CREATED)
+async def import_3mf_project(
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    repo = ProjectRepository(db, ctx.tenant_id)
+    try:
+        existing = repo.get_project(name)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    if existing is not None:
+        return JSONResponse(status_code=409, content={"error": "Project already exists"})
+    if not file.filename or not file.filename.lower().endswith(".3mf"):
+        return JSONResponse(status_code=400, content={"error": "A .3mf file is required"})
+    content = await file.read(MAX_3MF_UPLOAD_BYTES + 1)
+    try:
+        validate_3mf_archive_bytes(content)
+    except Invalid3mfArchiveError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    create_imported_3mf_project(
+        db,
+        tenant_id=ctx.tenant_id,
+        user_id=ctx.user_id,
+        name=name,
+        content=content,
+    )
+    return {"success": True, "project": name}
+
 
 @app.post("/projects/{name}/new")
 def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -311,6 +380,18 @@ async def compile_project(
             return JSONResponse(status_code=404, content={"error": "Project not found"})
         compile_repo.snapshot_job_files(job, files)
 
+        assets: list[CompileBinaryAsset] = []
+        source_artifact = compile_repo.project_source_artifact(project_id)
+        if source_artifact is not None:
+            if source_artifact.content is None:
+                raise RuntimeError("Project source 3MF content is missing")
+            assets.append(
+                CompileBinaryAsset(
+                    logical_filename="source.3mf",
+                    object_ref=await store_compile_sidecar(source_artifact.content),
+                )
+            )
+
         request_id = f"compile-request:{job.id}"
         command = CompileCommand(
             job_id=job.id,
@@ -321,6 +402,7 @@ async def compile_project(
             quality=req.quality,
             created_at=job.created_at,
             files=[CompileSourceFile(filename=filename, content=content) for filename, content in files.items()],
+            assets=assets,
             request_id=request_id,
             originating_llm_edit_job_id=req.originating_llm_edit_job_id,
         )

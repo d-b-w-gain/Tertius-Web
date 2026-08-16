@@ -12,6 +12,7 @@ from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
 from core.compile_messages import (
+    CompileBinaryAsset,
     CompileCommand,
     CompileResultPayload,
     CompileSourceFile,
@@ -28,6 +29,7 @@ from core.nats_client import (
     extract_nats_context,
     pull_compile_result_subscription,
 )
+from core.object_store import put_compile_sidecar
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
@@ -306,6 +308,31 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 logger.warning("Marked stale queued compile job %s failed because it has no source snapshot", job.id)
                 continue
 
+            assets: list[CompileBinaryAsset] = []
+            source_artifact = CompileRepository(
+                db, job.tenant_id
+            ).project_source_artifact(job.project_id)
+            if source_artifact is not None:
+                if source_artifact.content is None:
+                    CompileRepository(db, job.tenant_id).finish_job(
+                        job,
+                        "failed",
+                        error="Project source 3MF content is missing",
+                        error_code="missing_snapshot",
+                        user_message="Compile failed because the source 3MF is missing.",
+                        retryable=False,
+                    )
+                    db.commit()
+                    continue
+                assets.append(
+                    CompileBinaryAsset(
+                        logical_filename="source.3mf",
+                        object_ref=await put_compile_sidecar(
+                            source_artifact.content, settings
+                        ),
+                    )
+                )
+
             request_id = f"compile-request:{job.id}"
             command = CompileCommand(
                 job_id=job.id,
@@ -315,6 +342,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 export_format=job.export_format,
                 created_at=job.created_at,
                 files=[CompileSourceFile(filename=file.filename, content=file.content) for file in files],
+                assets=assets,
                 request_id=request_id,
                 originating_llm_edit_job_id=job.originating_llm_edit_job_id,
             )

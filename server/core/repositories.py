@@ -130,7 +130,7 @@ class ProjectRepository:
         self.db.flush()
         return True
 
-    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+    def stage_project(self, name: str, user_id: UUID, default_code: str) -> Project:
         name = require_valid_project_name(name)
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)
         self.db.add(project)
@@ -143,6 +143,11 @@ class ProjectRepository:
                 content=default_code,
             )
         )
+        self.db.flush()
+        return project
+
+    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+        project = self.stage_project(name, user_id, default_code)
         self.db.commit()
         return project
 
@@ -666,6 +671,17 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
+    def project_source_artifact(
+        self, project_id: UUID, kind: str = "source_3mf"
+    ) -> Artifact | None:
+        return self.db.scalar(
+            select(Artifact).where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.project_id == project_id,
+                Artifact.compile_job_id.is_(None),
+                Artifact.kind == kind.lower(),
+            )
+        )
 
     def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)

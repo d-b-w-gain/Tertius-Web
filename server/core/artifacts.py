@@ -10,6 +10,7 @@ CONTENT_TYPES = {
     "glb": "model/gltf-binary",
     "pdf": "application/pdf",
     "timus_views": "application/json",
+    "source_3mf": "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
 }
 
 
