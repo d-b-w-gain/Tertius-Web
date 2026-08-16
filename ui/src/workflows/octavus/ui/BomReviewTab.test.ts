@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import * as THREE from 'three';
 import {
   buildSupplierQuoteHtml,
   buildSupplierQuoteCsv,
   canonicalRequirementKey,
-  deriveAssemblyTreeManifest,
   groupManifestRequirements,
   manifestCounts,
   normalizeManifestEnvelope,
@@ -198,55 +196,6 @@ describe('Procurement manifest grouping', () => {
     expect(resolveBomArtifactState(envelope(ready))).toBe('ready');
     expect(resolveBomArtifactState(envelope(ready, false))).toBe('stale_manifest');
     expect(resolveBomArtifactState(envelope(scopesOnly, true, 'diagnostic_only'))).toBe('diagnostic_only');
-  });
-
-  it('derives draft components from named GLTF leaf groups under assembly groups', () => {
-    const root = new THREE.Object3D();
-    const portal = new THREE.Object3D();
-    portal.name = 'Portal_1';
-    const leftColumn = new THREE.Object3D();
-    leftColumn.name = 'Left_Column';
-    leftColumn.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial()));
-    portal.add(leftColumn);
-    root.add(portal);
-
-    const manifest = deriveAssemblyTreeManifest(
-      root,
-      {
-        version: 1,
-        source_snapshot_hash: 'snapshot-a',
-        scopes: [],
-        components: [],
-        requirements: [],
-        diagnostics: [],
-      },
-      {
-        calls: [{
-          function: 'lysaght_zc_purlin',
-          sourceFile: 'design.py',
-          scope: 'make_portal::column',
-          line: 240,
-          parameters: {},
-          standardInputs: {
-            part_number: { kind: 'reference', name: 'PURLIN_PART_NUMBER' },
-            length_mm: { kind: 'reference', name: 'column_height' },
-          },
-          bomKind: 'structural_member',
-          bomReadiness: 'ok',
-          bomMissingFields: [],
-        }],
-      },
-      [
-        { name: 'PURLIN_PART_NUMBER', value: 'C10019' },
-        { name: 'column_height', value: 2400 },
-      ],
-    );
-
-    expect(manifest?.scopes.map((scope) => scope.label)).toEqual(['Portal_1']);
-    expect(manifest?.components.map((component) => component.label)).toEqual(['Left_Column']);
-    expect(manifest?.requirements[0]?.part_number).toBe('C10019');
-    expect(manifest?.requirements[0]?.dimensions).toEqual({ length_mm: 2400 });
-    expect(groupManifestRequirements(manifest, manifest?.scopes[0]?.id || '__all__')[0]?.displayName).toBe('C10019x24');
   });
 
   it('calculates generic box packaging from grouped requirements', () => {

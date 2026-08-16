@@ -26,6 +26,7 @@ vi.mock('./RichSiteMap', () => ({
 }))
 
 const props = {
+  projectName: 'shed',
   serverUrl: '/api/site',
   extusServerUrl: '/api/extus',
   getAccessToken: vi.fn().mockResolvedValue(''),
@@ -53,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  window.localStorage.clear()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -135,6 +137,28 @@ describe('SiteExplorer', () => {
 
     fireEvent.change(screen.getByLabelText('Site base map'), { target: { value: 'street' } })
     expect(screen.getByText(/Leaflet street terrain/)).toBeInTheDocument()
+  })
+
+  it('restores display preferences for the same project', async () => {
+    const first = render(<SiteExplorer {...props} />)
+
+    fireEvent.change(screen.getByLabelText('Site base map'), { target: { value: 'street' } })
+    fireEvent.change(screen.getByLabelText('Site map layer'), { target: { value: 'none' } })
+    fireEvent.change(screen.getByLabelText('Site ground surface'), { target: { value: 'flat' } })
+    fireEvent.click(screen.getByRole('button', { name: '3D' }))
+    await screen.findByLabelText('Candidate site camera')
+    fireEvent.change(screen.getByLabelText('Candidate site camera'), {
+      target: { value: 'perspective' },
+    })
+    first.unmount()
+
+    render(<SiteExplorer {...props} />)
+
+    await waitFor(() => expect(screen.getByLabelText('Site base map')).toHaveValue('street'))
+    expect(screen.getByLabelText('Site map layer')).toHaveValue('none')
+    expect(screen.getByLabelText('Site ground surface')).toHaveValue('flat')
+    expect(screen.getByRole('button', { name: '3D' })).toHaveClass('bg-cyan-600')
+    expect(await screen.findByLabelText('Candidate site camera')).toHaveValue('perspective')
   })
 
   it('defaults the candidate to a lightweight plan representation', async () => {

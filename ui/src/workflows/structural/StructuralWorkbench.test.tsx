@@ -399,6 +399,36 @@ const analysis: StructuralSnapshot = {
       basis: 'RENDERER REFERENCE ONLY — nominal Zxe × fy.',
     },
   ],
+  connection_checks: [
+    {
+      connection_id: 'gpb-ground',
+      label: '100GPB anchored to concrete',
+      status: 'unsupported',
+      evidence_status: 'unverified',
+      pack_id: 'project-demo-base-v1',
+      pack_version: '0.1',
+      identity_status: 'pass',
+      identity_mismatches: [],
+      governing_combination_id: 'DEMO-OVERLOAD',
+      governing_member_id: 'purlin-axis',
+      axial_demand_kN: 0,
+      shear_demand_kN: 8.778,
+      moment_demand_kNm: 7.0226,
+      design_axial_capacity_kN: null,
+      design_shear_capacity_kN: null,
+      design_moment_capacity_kNm: null,
+      axial_utilisation: null,
+      shear_utilisation: null,
+      moment_utilisation: null,
+      governing_utilisation: null,
+      expected_connector_part_numbers: ['M12X100'],
+      rendered_connector_part_numbers: ['M12X100'],
+      source: 'Project demonstration detail',
+      source_sha256: null,
+      basis: 'No verified anchor or concrete resistance source is connected.',
+      assumptions: ['Demand only.'],
+    },
+  ],
   serviceability_checks: [
     {
       member_id: 'purlin-axis',
@@ -678,6 +708,9 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('Equilibrium pass')).toBeInTheDocument()
     expect(screen.getByText('Validated catalogue section')).toBeInTheDocument()
     expect(screen.getByText('C10019 (100x1.9)')).toBeInTheDocument()
+    expect(screen.getByText('project-demo-base-v1 v0.1')).toBeInTheDocument()
+    expect(screen.getByText('Identity pass')).toBeInTheDocument()
+    expect(screen.getByText(/Resistance unavailable/)).toBeInTheDocument()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
     expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()
@@ -814,7 +847,7 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('0.5486 kN')).toBeInTheDocument()
     expect(screen.getByText('not verified')).toBeInTheDocument()
     expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
-    expect(screen.getByText('Identity pass')).toBeInTheDocument()
+    expect(screen.getAllByText('Identity pass')).toHaveLength(2)
     expect(screen.getByText('Anchorage unverified')).toBeInTheDocument()
     expect(screen.getByText('The test diaphragm has no grounded collector.')).toBeInTheDocument()
     expect(screen.getByText(

@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from core.compile_messages import (
+    CompileArtifactPayload,
     CompileCommand,
     CompileResultPayload,
     CompileSourceFile,
@@ -40,9 +41,16 @@ def test_compile_result_payload_serializes_artifact_metadata():
         project_id=uuid4(),
         export_format="stl",
         status="succeeded",
-        artifact_content_base64="c29saWQ=",
-        artifact_byte_size=5,
-        artifact_content_type="model/stl",
+        artifacts=[
+            CompileArtifactPayload(
+                kind="stl",
+                content_type="model/stl",
+                content_base64="c29saWQ=",
+                byte_size=5,
+                sha256="d" * 64,
+            )
+        ],
+        bundle_digest="e" * 64,
         worker_started_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
         worker_finished_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
     )
@@ -50,8 +58,9 @@ def test_compile_result_payload_serializes_artifact_metadata():
     payload = result.model_dump_json()
 
     assert '"status":"succeeded"' in payload
-    assert '"artifact_byte_size":5' in payload
-    assert '"artifact_content_base64":"c29saWQ="' in payload
+    assert '"byte_size":5' in payload
+    assert '"content_base64":"c29saWQ="' in payload
+    assert '"bundle_digest":"' + ("e" * 64) + '"' in payload
     assert compile_result_message_id(result) == f"compile-result:{result.job_id}:succeeded"
 
 

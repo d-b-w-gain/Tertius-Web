@@ -197,6 +197,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     () => new Map(capture?.components.map((component) => [component.id, component]) || []),
     [capture],
   )
+  const connectionChecksById = useMemo(
+    () => new Map(
+      (analysis?.connection_checks ?? []).map((check) => [check.connection_id, check]),
+    ),
+    [analysis],
+  )
   const firstLoad = capture?.loads[0]
   const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
   const resultantForce = firstLoad ? firstLoad.pressure_kPa * firstLoad.area_m2 : 0
@@ -264,7 +270,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     (stage) => stage.id === 'member_stability',
   )
   const selectedServiceability = analysis?.serviceability_checks.find(
-    (check) => check.member_id === selectedMember?.id,
+    (check) => (
+      check.member_id === selectedMember?.id
+      || check.analytical_member_ids?.includes(selectedMember?.id || '')
+    ),
   )
   const activeCombination = analysis?.load_combinations.find(
     (combination) => combination.id === selectedCombinationId,
@@ -389,7 +398,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           (candidate) => candidate.member_id === diagram.member_id,
         )
         : analysis.serviceability_checks.find(
-          (candidate) => candidate.member_id === diagram.member_id,
+          (candidate) => (
+            candidate.member_id === diagram.member_id
+            || candidate.analytical_member_ids?.includes(diagram.member_id)
+          ),
         )
       const restraintSegments = (analysis.member_restraint_traces ?? [])
         .filter((trace) => (
@@ -495,6 +507,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       wind_action_bases: analysis.wind_action_bases,
       active_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
+      connection_checks: analysis.connection_checks ?? [],
       member_restraint_traces: analysis.member_restraint_traces ?? [],
       member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
       verification_stages: analysis.verification_stages ?? [],
@@ -539,11 +552,27 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 HANDLE-AUTHORED
               </span>
             )}
+            {capture?.analysis_configuration_revision && (
+              <span
+                className="rounded border border-violet-500/50 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-violet-300"
+                title={capture.analysis_configuration_digest || undefined}
+              >
+                CONFIG R{capture.analysis_configuration_revision}
+              </span>
+            )}
+            {analysis?.action_standard_pack && (
+              <span
+                className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-amber-300"
+                title={`${analysis.action_standard_pack.standard_reference} — ${analysis.action_standard_pack.basis}`}
+              >
+                ACTIONS PACK {analysis.action_standard_pack.pack_version}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             {analysis
               ? 'Active-project geometry with PyNite member demand and signed diagrams'
-              : 'Active-project geometry with statically parsed structural connectivity'}
+              : 'Active-project compiled mechanical topology; analysis context required'}
           </p>
         </div>
         {analysis && (
@@ -991,6 +1020,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   {capture.connections.map((connection) => {
                     const from = componentsById.get(connection.from_component_id)
                     const to = componentsById.get(connection.to_component_id)
+                    const check = connectionChecksById.get(connection.id)
                     return (
                       <button
                         key={connection.id}
@@ -998,7 +1028,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         onClick={() => setSelectedVisualNodeId(to?.visual_node_id || '')}
                         className="w-full rounded border border-slate-800 bg-slate-900/70 p-3 text-left hover:border-slate-600"
                       >
-                        <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                          {check && (
+                            <span className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase ${
+                              verificationStyle[check.status]
+                            }`}>
+                              {check.status.replace('_', ' ')}
+                            </span>
+                          )}
+                        </div>
                         <div className="mt-1 text-[10px] text-cyan-300">
                           {from?.label || connection.from_component_id} → {to?.label || connection.to_component_id}
                         </div>
@@ -1007,6 +1046,30 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (id) => componentsById.get(id)?.label || id,
                           ).join(', ') || 'direct declaration'} · {connection.transfers.join(', ')}
                         </div>
+                        {check && (
+                          <div className="mt-2 border-t border-slate-800 pt-2">
+                            <div className="grid grid-cols-3 gap-2 font-mono text-[9px] text-slate-300">
+                              <span>N* {number(check.axial_demand_kN, 3)} kN</span>
+                              <span>V* {number(check.shear_demand_kN, 3)} kN</span>
+                              <span>M* {number(check.moment_demand_kNm, 3)} kN·m</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-slate-500">
+                              <span>{check.pack_id} v{check.pack_version}</span>
+                              <span className={
+                                check.identity_status === 'pass'
+                                  ? 'text-emerald-400'
+                                  : 'text-red-400'
+                              }>
+                                Identity {check.identity_status}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
+                              {check.evidence_status === 'verified'
+                                ? `Governing utilisation ${number(check.governing_utilisation ?? 0, 3)}.`
+                                : 'Resistance unavailable—demand is visible but this joint cannot pass.'}
+                            </p>
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -1238,7 +1301,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (candidate) => candidate.member_id === member.id,
                           ))
                         : analysis.serviceability_checks.find(
-                          (candidate) => candidate.member_id === member.id,
+                          (candidate) => (
+                            candidate.member_id === member.id
+                            || candidate.analytical_member_ids?.includes(member.id)
+                          ),
                         )
                       return (
                         <button
@@ -1451,7 +1517,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         </div>
                       </dl>
                       <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
-                        Candidate resistance is shown for comparison only; the exact Airco strap and C100 screw connection remain unverified.
+                        Candidate resistance is shown for comparison only; the selected strap product and rendered end-fastener connection remain unverified.
                       </p>
                     </div>
                   )}
@@ -1874,7 +1940,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {crossSectionStage?.summary ||
-                    'Select a versioned Australian capacity pack in design.py.'}
+                    'Select a versioned Australian capacity pack in Structural workbench configuration.'}
                   {' '}This colour is Stage 6 cross-section resistance only. Member buckling,
                   restraint, bracing, connections, bases, and the final order decision remain
                   separate verification stages.
@@ -1894,7 +1960,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {memberStabilityStage?.summary ||
-                    'Author restraint-defined segments in design.py.'}
+                    'Author restraint-defined segments in Structural workbench configuration.'}
                   {' '}Green/red member colours only represent Stage 7 when the
                   governing compression-flange/twist restraint and distortional
                   buckling resistance are verified.

@@ -47,6 +47,7 @@ COPY server/gis_cache/__init__.py server/gis_cache/directional_geometry.py ./ser
 RUN chmod 0444 /app/server/core/pi_agent_system_prompt.md
 COPY server/migrations/ ./server/migrations/
 COPY server/workflows/ ./server/workflows/
+COPY tertius/ ./tertius/
 
 RUN uv sync --no-dev --locked \
     && chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh /app/server/start-pi-agent-job.sh

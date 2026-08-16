@@ -112,6 +112,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
     component_id: str
     start: Vector3
     end: Vector3
+    start_node_key: str | None = None
+    end_node_key: str | None = None
     start_restraints: Restraints = Field(default_factory=Restraints)
     end_restraints: Restraints = Field(default_factory=Restraints)
     section_id: str
@@ -134,6 +136,9 @@ class AnalyticalMemberDeclaration(StructuralContract):
     deflection_limit_ratio: float | None = None
     deflection_limit_mm: float | None = None
     deflection_limit_basis: str | None = None
+    serviceability_group_id: str | None = None
+    serviceability_group_label: str | None = None
+    serviceability_span_m: float | None = Field(default=None, gt=0)
     assumption: str
 
     @model_validator(mode="after")
@@ -218,6 +223,15 @@ class LoadCombination(StructuralContract):
     label: str
     limit_state: Literal["serviceability", "ultimate"]
     factors: dict[str, float]
+
+
+class ActionStandardPackEvidence(StructuralContract):
+    pack_id: str
+    pack_version: str
+    standard_reference: str
+    status: Literal["working"]
+    combination_ids: list[str]
+    basis: str
 
 
 class StabilityDirectionDefinition(StructuralContract):
@@ -422,6 +436,35 @@ class MemberCheck(StructuralContract):
     basis: str
 
 
+class ConnectionCheck(StructuralContract):
+    connection_id: str
+    label: str
+    status: Literal["pass", "fail", "not_checked", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    identity_status: Literal["pass", "fail"]
+    identity_mismatches: list[str] = Field(default_factory=list)
+    governing_combination_id: str | None = None
+    governing_member_id: str | None = None
+    axial_demand_kN: float
+    shear_demand_kN: float
+    moment_demand_kNm: float
+    design_axial_capacity_kN: float | None = None
+    design_shear_capacity_kN: float | None = None
+    design_moment_capacity_kNm: float | None = None
+    axial_utilisation: float | None = None
+    shear_utilisation: float | None = None
+    moment_utilisation: float | None = None
+    governing_utilisation: float | None = None
+    expected_connector_part_numbers: list[str] = Field(default_factory=list)
+    rendered_connector_part_numbers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    source_sha256: str | None = None
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
+
+
 class TensionMemberCheck(StructuralContract):
     member_id: str
     label: str
@@ -600,6 +643,9 @@ class MemberRestraintCandidateCheck(StructuralContract):
 
 class ServiceabilityCheck(StructuralContract):
     member_id: str
+    physical_member_id: str | None = None
+    analytical_member_ids: list[str] = Field(default_factory=list)
+    span_m: float | None = Field(default=None, gt=0)
     label: str
     combination_id: str
     displacement_mm: float
@@ -712,6 +758,7 @@ class DesignComponent(StructuralContract):
     visual_node_id: str
     grounded: bool = False
     part_number: str | None = None
+    role: str | None = None
 
 
 class ConnectionMemberEngagement(StructuralContract):
@@ -742,6 +789,28 @@ class ConnectionJointModel(StructuralContract):
     member_engagements: list[ConnectionMemberEngagement] = Field(min_length=2)
 
 
+class ConnectionResistanceEvidence(StructuralContract):
+    pack_id: str
+    version: str
+    status: Literal["unverified", "candidate", "verified"]
+    basis: str
+    connector_part_numbers: list[str] = Field(min_length=1)
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    design_axial_capacity_kN: float | None = Field(default=None, gt=0)
+    design_shear_capacity_kN: float | None = Field(default=None, gt=0)
+    design_moment_capacity_kNm: float | None = Field(default=None, gt=0)
+    assumptions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_verified_source(self) -> ConnectionResistanceEvidence:
+        if self.status == "verified" and (
+            self.source is None or self.source_sha256 is None
+        ):
+            raise ValueError("verified connection resistance requires a hashed source")
+        return self
+
+
 class DesignConnection(StructuralContract):
     id: str
     label: str
@@ -750,6 +819,7 @@ class DesignConnection(StructuralContract):
     connector_component_ids: list[str] = Field(default_factory=list)
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
     joint_model: ConnectionJointModel | None = None
+    resistance: ConnectionResistanceEvidence | None = None
 
 
 class StructuralWindActionBasis(StructuralContract):
@@ -830,6 +900,7 @@ class DesignAnalysisDefinition(StructuralContract):
     member_loads: list[MemberPointLoad]
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    action_standard_pack: ActionStandardPackEvidence | None = None
     stability: StabilityDefinition | None = None
     cross_section_verification: CrossSectionVerificationDefinition | None = None
     member_stability_verification: MemberStabilityVerificationDefinition | None = None
@@ -839,6 +910,12 @@ class ProjectStructuralCapture(StructuralContract):
     schema_version: Literal["0.1"] = "0.1"
     project_name: str
     design_hash: str
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
     title: str
     authoring_mode: Literal["legacy", "generated"]
     design_basis: StructuralDesignBasis | None = None
@@ -1259,6 +1336,8 @@ class SnapshotSource(StructuralContract):
     label: str
     design_id: str | None = None
     design_hash: str | None = None
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = None
 
 
 class StructuralSnapshot(StructuralContract):
@@ -1276,6 +1355,7 @@ class StructuralSnapshot(StructuralContract):
     materials: list[StructuralMaterial]
     load_cases: list[LoadCase]
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    action_standard_pack: ActionStandardPackEvidence | None = None
     loads: list[NodalLoad]
     member_loads: list[MemberPointLoad] = Field(default_factory=list)
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
@@ -1283,6 +1363,7 @@ class StructuralSnapshot(StructuralContract):
     member_results: list[MemberResult]
     member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
+    connection_checks: list[ConnectionCheck] = Field(default_factory=list)
     tension_member_checks: list[TensionMemberCheck] = Field(default_factory=list)
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
@@ -1416,6 +1497,12 @@ class StructuralSnapshot(StructuralContract):
                 service_check.member_id,
                 member_ids,
             )
+            for analytical_member_id in service_check.analytical_member_ids:
+                _require_reference(
+                    "serviceability check analytical member",
+                    analytical_member_id,
+                    member_ids,
+                )
         return self
 
 

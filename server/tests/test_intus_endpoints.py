@@ -4,6 +4,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from core.models import AppUser, LlmEditJob, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership
+from core.project_templates import default_project_files
 from core.pi_agent_messages import PiAgentProgressEvent, PiAgentProgressSnapshot
 
 
@@ -113,7 +114,10 @@ def test_create_save_list_code_git_status_and_delete_are_tenant_scoped(
 
     files_response = authenticated_intus_client.get("/projects/new_part/files")
     assert files_response.status_code == 200
-    assert files_response.json()["files"] == ["design.py", "helper.py"]
+    expected_files = sorted({*default_project_files(), "helper.py"})
+    expected_files.remove("design.py")
+    expected_files.insert(0, "design.py")
+    assert files_response.json()["files"] == expected_files
 
     code_response = authenticated_intus_client.get("/projects/new_part/code", params={"file": "helper.py"})
     assert code_response.status_code == 200
@@ -134,7 +138,8 @@ def test_create_save_list_code_git_status_and_delete_are_tenant_scoped(
 
     remaining_files_response = authenticated_intus_client.get("/projects/new_part/files")
     assert remaining_files_response.status_code == 200
-    assert remaining_files_response.json()["files"] == ["design.py"]
+    expected_files.remove("helper.py")
+    assert remaining_files_response.json()["files"] == expected_files
 
     assert db_session.scalar(
         select(ProjectFile).where(

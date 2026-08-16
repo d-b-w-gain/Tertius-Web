@@ -196,6 +196,32 @@ class SiteWindDefinition(SiteContract):
         default_factory=SiteWindActionEnvelope
     )
 
+    @model_validator(mode="after")
+    def populate_standard_table_starters(self):
+        """Seed region-specific Md and Mc without claiming table verification."""
+
+        if (
+            self.cardinal_direction_multipliers is not None
+            and self.climate_change_multiplier is not None
+        ):
+            return self
+
+        evidence = site_table_evidence(self.region)
+        if self.cardinal_direction_multipliers is None:
+            self.cardinal_direction_multipliers = (
+                SiteCardinalDirectionMultipliers.model_validate(
+                    evidence["direction_multipliers"]
+                )
+            )
+        if self.climate_change_multiplier is None:
+            self.climate_change_multiplier = float(
+                evidence["climate_change_multiplier"]
+            )
+        # Automatic starter values still require review against the licensed
+        # project standard and its applicable amendments.
+        self.table_status = "starter"
+        return self
+
 
 class SiteTerrainEvidenceReference(SiteContract):
     evidence_id: str = Field(pattern=r"^gisv1-[0-9a-f]{32}$")

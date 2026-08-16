@@ -121,6 +121,7 @@ export type DesignComponent = {
   visual_node_id: string
   grounded: boolean
   part_number: string | null
+  role?: string | null
 }
 
 export type DesignConnection = {
@@ -144,6 +145,19 @@ export type DesignConnection = {
       plate_length_m: number
       bolt_line_distances_m: number[]
     }>
+  } | null
+  resistance?: {
+    pack_id: string
+    version: string
+    status: 'unverified' | 'candidate' | 'verified'
+    basis: string
+    connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    assumptions: string[]
   } | null
 }
 
@@ -175,6 +189,8 @@ export type ProjectStructuralCapture = {
   schema_version: '0.1'
   project_name: string
   design_hash: string
+  analysis_configuration_revision?: number | null
+  analysis_configuration_digest?: string | null
   title: string
   authoring_mode: 'legacy' | 'generated'
   design_basis: StructuralDesignBasis | null
@@ -192,6 +208,8 @@ export type ProjectStructuralCapture = {
       component_id: string
       start: Vector3
       end: Vector3
+      start_node_key?: string | null
+      end_node_key?: string | null
       start_restraints: StructuralNode['restraints']
       end_restraints: StructuralNode['restraints']
       section_id: string
@@ -216,6 +234,7 @@ export type ProjectStructuralCapture = {
     }>
     load_cases: StructuralSnapshot['load_cases']
     load_combinations: LoadCombination[]
+    action_standard_pack?: ActionStandardPackEvidence | null
     member_loads: MemberPointLoad[]
     member_distributed_loads: MemberDistributedLoad[]
   } | null
@@ -254,6 +273,15 @@ export type LoadCombination = {
   label: string
   limit_state: 'serviceability' | 'ultimate'
   factors: Record<string, number>
+}
+
+export type ActionStandardPackEvidence = {
+  pack_id: string
+  pack_version: string
+  standard_reference: string
+  status: 'working'
+  combination_ids: string[]
+  basis: string
 }
 
 export type MemberDiagramStation = {
@@ -305,6 +333,8 @@ export type StructuralSnapshot = {
     label: string
     design_id: string | null
     design_hash: string | null
+    analysis_configuration_revision?: number | null
+    analysis_configuration_digest?: string | null
   }
   design_basis: StructuralDesignBasis | null
   wind_action_bases: StructuralWindActionBasis[]
@@ -352,6 +382,7 @@ export type StructuralSnapshot = {
     category: 'dead' | 'live' | 'wind' | 'imperfection' | 'fixture'
   }>
   load_combinations: LoadCombination[]
+  action_standard_pack?: ActionStandardPackEvidence | null
   loads: Array<{
     id: string
     label: string
@@ -390,6 +421,34 @@ export type StructuralSnapshot = {
     utilisation: number | null
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
+  }>
+  connection_checks?: Array<{
+    connection_id: string
+    label: string
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    evidence_status: 'unverified' | 'candidate' | 'verified'
+    pack_id: string
+    pack_version: string
+    identity_status: 'pass' | 'fail'
+    identity_mismatches: string[]
+    governing_combination_id: string | null
+    governing_member_id: string | null
+    axial_demand_kN: number
+    shear_demand_kN: number
+    moment_demand_kNm: number
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    axial_utilisation: number | null
+    shear_utilisation: number | null
+    moment_utilisation: number | null
+    governing_utilisation: number | null
+    expected_connector_part_numbers: string[]
+    rendered_connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    basis: string
+    assumptions: string[]
   }>
   tension_member_checks?: Array<{
     member_id: string
@@ -534,6 +593,9 @@ export type StructuralSnapshot = {
   }>
   serviceability_checks: Array<{
     member_id: string
+    physical_member_id?: string | null
+    analytical_member_ids?: string[]
+    span_m?: number | null
     label: string
     combination_id: string
     displacement_mm: number

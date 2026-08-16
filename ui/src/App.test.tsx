@@ -98,8 +98,13 @@ describe('App guest mode', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Site/ }))
     expect(screen.getByText('Site mock')).toBeVisible()
+    expect(screen.queryByText('Usage mock')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Structural/ }))
     expect(screen.getByText('Structural mock')).toBeVisible()
+    expect(screen.queryByText('Usage mock')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Intus Compiler/ }))
+    expect(screen.getByText('Usage mock')).toBeInTheDocument()
   })
 })

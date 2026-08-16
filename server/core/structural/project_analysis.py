@@ -16,6 +16,7 @@ from .contracts import (
     CalculationInput,
     CalculationSheet,
     CapabilityState,
+    ConnectionCheck,
     DesignComponent,
     DesignConnection,
     EquilibriumDiagnostic,
@@ -59,6 +60,153 @@ NODE_COORDINATE_DIGITS = 9
 
 class StructuralAnalysisError(ValueError):
     """Raised when the active design cannot be represented by the MVP solver."""
+
+
+def _connection_checks(
+    model,
+    analysis,
+    connections: Sequence[DesignConnection],
+    components: dict[str, DesignComponent],
+) -> list[ConnectionCheck]:
+    """Envelope physical-joint end actions without inventing resistance evidence."""
+
+    ultimate_combinations = [
+        combination
+        for combination in analysis.load_combinations
+        if combination.limit_state == "ultimate"
+    ]
+    checks: list[ConnectionCheck] = []
+    for connection in connections:
+        evidence = connection.resistance
+        if evidence is None:
+            continue
+        expected_parts = sorted(evidence.connector_part_numbers)
+        rendered_parts = sorted(
+            components[component_id].part_number or f"<missing:{component_id}>"
+            for component_id in connection.connector_component_ids
+        )
+        identity_mismatches = (
+            []
+            if rendered_parts == expected_parts
+            else [
+                "connector part-number multiset expected "
+                f"{expected_parts!r}, rendered {rendered_parts!r}"
+            ]
+        )
+        axial_demand = 0.0
+        shear_demand = 0.0
+        moment_demand = 0.0
+        governing_combination_id: str | None = None
+        governing_member_id: str | None = None
+        governing_moment = -1.0
+        connection_node_key = f"joint:{connection.id}"
+        for declaration in analysis.members:
+            member_length = _length(declaration.start, declaration.end)
+            endpoint_distances = [
+                distance
+                for node_key, distance in (
+                    (declaration.start_node_key, 0.0),
+                    (declaration.end_node_key, member_length),
+                )
+                if node_key == connection_node_key
+            ]
+            if not endpoint_distances:
+                continue
+            member = model.members[declaration.id]
+            for combination in ultimate_combinations:
+                for distance_m in endpoint_distances:
+                    endpoint_axial = abs(member.axial(distance_m, combination.id))
+                    endpoint_shear = sqrt(
+                        member.shear("Fy", distance_m, combination.id) ** 2
+                        + member.shear("Fz", distance_m, combination.id) ** 2
+                    )
+                    endpoint_moment = sqrt(
+                        member.moment("My", distance_m, combination.id) ** 2
+                        + member.moment("Mz", distance_m, combination.id) ** 2
+                    )
+                    axial_demand = max(axial_demand, endpoint_axial)
+                    shear_demand = max(shear_demand, endpoint_shear)
+                    moment_demand = max(moment_demand, endpoint_moment)
+                    if endpoint_moment > governing_moment:
+                        governing_moment = endpoint_moment
+                        governing_combination_id = combination.id
+                        governing_member_id = declaration.id
+
+        axial_utilisation = (
+            axial_demand / evidence.design_axial_capacity_kN
+            if evidence.design_axial_capacity_kN is not None
+            else None
+        )
+        shear_utilisation = (
+            shear_demand / evidence.design_shear_capacity_kN
+            if evidence.design_shear_capacity_kN is not None
+            else None
+        )
+        moment_utilisation = (
+            moment_demand / evidence.design_moment_capacity_kNm
+            if evidence.design_moment_capacity_kNm is not None
+            else None
+        )
+        relevant_utilisations = [
+            utilisation
+            for transfer, utilisation in (
+                ("force", axial_utilisation),
+                ("shear", shear_utilisation),
+                ("moment", moment_utilisation),
+            )
+            if transfer in connection.transfers and utilisation is not None
+        ]
+        governing_utilisation = (
+            max(relevant_utilisations) if relevant_utilisations else None
+        )
+        if not ultimate_combinations:
+            status: Literal["pass", "fail", "not_checked", "unsupported"] = (
+                "not_checked"
+            )
+        elif evidence.status != "verified" or identity_mismatches:
+            status = "unsupported"
+        else:
+            status = (
+                "pass"
+                if governing_utilisation is not None and governing_utilisation <= 1.0
+                else "fail"
+            )
+        assumptions = list(evidence.assumptions)
+        if evidence.status != "verified":
+            assumptions.append(
+                "Demand is calculated, but resistance is not verified and cannot pass."
+            )
+        checks.append(
+            ConnectionCheck(
+                connection_id=connection.id,
+                label=connection.label,
+                status=status,
+                evidence_status=evidence.status,
+                pack_id=evidence.pack_id,
+                pack_version=evidence.version,
+                identity_status="fail" if identity_mismatches else "pass",
+                identity_mismatches=identity_mismatches,
+                governing_combination_id=governing_combination_id,
+                governing_member_id=governing_member_id,
+                axial_demand_kN=axial_demand,
+                shear_demand_kN=shear_demand,
+                moment_demand_kNm=moment_demand,
+                design_axial_capacity_kN=evidence.design_axial_capacity_kN,
+                design_shear_capacity_kN=evidence.design_shear_capacity_kN,
+                design_moment_capacity_kNm=evidence.design_moment_capacity_kNm,
+                axial_utilisation=axial_utilisation,
+                shear_utilisation=shear_utilisation,
+                moment_utilisation=moment_utilisation,
+                governing_utilisation=governing_utilisation,
+                expected_connector_part_numbers=expected_parts,
+                rendered_connector_part_numbers=rendered_parts,
+                source=evidence.source,
+                source_sha256=evidence.source_sha256,
+                basis=evidence.basis,
+                assumptions=assumptions,
+            )
+        )
+    return checks
 
 
 def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
@@ -1611,7 +1759,7 @@ def _governing_working_combination(
     analysis,
     combinations: list[LoadCombination],
 ) -> LoadCombination:
-    """Select the worst credible service combination already authored by design.py."""
+    """Select the worst credible service combination in Structural workbench state."""
 
     excluded_words = ("demo", "deliberate", "illustrative")
     candidates = [
@@ -1656,7 +1804,10 @@ def _governing_working_combination(
                     maximum_ratio,
                     moment / section.bending_reference_kNm,
                 )
-            member_length_mm = _length(declaration.start, declaration.end) * 1000.0
+            member_length_mm = (
+                declaration.serviceability_span_m
+                or _length(declaration.start, declaration.end)
+            ) * 1000.0
             displacement_limit = declaration.deflection_limit_mm
             if (
                 displacement_limit is None
@@ -1761,6 +1912,7 @@ def _p399_evidence(
     members: list[StructuralMember],
     member_results: list[MemberResult],
     member_checks: list[MemberCheck],
+    connection_checks: list[ConnectionCheck],
     tension_member_checks: list[TensionMemberCheck],
     cross_section_checks: list[MemberCrossSectionCheck],
     member_stability_checks: list[MemberStabilityCheck],
@@ -1785,7 +1937,7 @@ def _p399_evidence(
             *(f"{role}: {reference}" for role, reference in basis.standards.items()),
         ]
         if basis is not None
-        else ["No design basis declared in design.py."]
+        else ["No design basis declared in Structural workbench state."]
     )
     member_ids = [member.id for member in members]
     node_ids = [node.id for node in nodes]
@@ -1822,7 +1974,7 @@ def _p399_evidence(
                     symbol=f"site,{wind_basis.id}",
                     label="Site",
                     value=wind_basis.site_address,
-                    source="design.py StructuralModel.wind_action_basis",
+                    source="Structural workbench wind action basis",
                 ),
                 CalculationInput(
                     symbol=f"region,{wind_basis.id}",
@@ -1837,21 +1989,21 @@ def _p399_evidence(
                     symbol=f"TC,{wind_basis.id}",
                     label="Terrain category",
                     value=wind_basis.terrain_category,
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"R,{wind_basis.id}",
                     label="Annual recurrence interval",
                     value=wind_basis.annual_recurrence_interval_years,
                     unit="years",
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"z,{wind_basis.id}",
                     label="Reference height",
                     value=wind_basis.reference_height_m,
                     unit="m",
-                    source="design.py site wind input",
+                    source="Site workbench input",
                 ),
                 CalculationInput(
                     symbol=f"enclosure,{wind_basis.id}",
@@ -2041,14 +2193,43 @@ def _p399_evidence(
         for load in wind_surface_loads
         if load.coefficient_status == "working_conservative"
     ]
-    wind_actions_ready = not wind_surface_loads or (
-        bool(capture.wind_action_bases)
+    blocked_wind_load_paths = [
+        path.load_id
+        for path in capture.load_paths
+        if path.status == "blocked"
+        and any(load.id == path.load_id for load in wind_surface_loads)
+    ]
+    wind_required = bool(
+        capture.wind_action_bases
+        or any("wind" in role.lower() for role in (basis.standards if basis else {}))
+    )
+    missing_required_wind_actions = wind_required and not wind_surface_loads
+    wind_actions_ready = (not wind_required and not wind_surface_loads) or (
+        bool(wind_surface_loads)
+        and bool(capture.wind_action_bases)
         and not unlinked_wind_loads
         and not unverified_wind_bases
         and not assumed_wind_coefficients
+        and not blocked_wind_load_paths
     )
     action_basis_ready = action_basis_ready and wind_actions_ready
     action_assumptions = [
+        *(
+            [
+                "Wind actions do not have a complete compiled connection path to "
+                "ground: " + ", ".join(blocked_wind_load_paths)
+            ]
+            if blocked_wind_load_paths
+            else []
+        ),
+        *(
+            [
+                "The Site/Structural design basis requires wind actions, but no "
+                "wind action was generated from the compiled mechanical geometry."
+            ]
+            if missing_required_wind_actions
+            else []
+        ),
         *(
             ["The project action standard references still require confirmation."]
             if not action_standard_references
@@ -2060,7 +2241,7 @@ def _p399_evidence(
         ),
         *(
             [
-                "Wind loads are not linked to a design.py wind action basis: "
+                "Wind loads are not linked to a Structural workbench wind action basis: "
                 + ", ".join(unlinked_wind_loads)
             ]
             if unlinked_wind_loads
@@ -2103,7 +2284,10 @@ def _p399_evidence(
     ]
     actions_status: Literal["pass", "warning", "blocked"] = (
         "blocked"
-        if not action_equations or basis is None
+        if not action_equations
+        or basis is None
+        or missing_required_wind_actions
+        or blocked_wind_load_paths
         else "pass"
         if action_basis_ready
         else "warning"
@@ -2195,8 +2379,6 @@ def _p399_evidence(
     ]
     if cross_section_definition is None:
         cross_section_status = "not_checked"
-    elif stability_status != "pass":
-        cross_section_status = "blocked"
     elif not cross_section_checks:
         cross_section_status = "not_checked"
     elif any(check.status == "fail" for check in cross_section_checks):
@@ -2328,8 +2510,6 @@ def _p399_evidence(
     ]
     if member_stability_definition is None:
         member_stability_status = "not_checked"
-    elif cross_section_status != "pass":
-        member_stability_status = "blocked"
     elif not member_stability_checks:
         member_stability_status = "not_checked"
     elif any(check.status == "fail" for check in member_stability_checks):
@@ -2360,6 +2540,18 @@ def _p399_evidence(
         bracing_status = "unsupported"
     else:
         bracing_status = "warning"
+
+    connection_status: Literal["pass", "fail", "not_checked", "unsupported"]
+    if not connection_checks:
+        connection_status = "not_checked"
+    elif any(check.status == "fail" for check in connection_checks):
+        connection_status = "fail"
+    elif any(check.status == "unsupported" for check in connection_checks):
+        connection_status = "unsupported"
+    elif all(check.status == "pass" for check in connection_checks):
+        connection_status = "pass"
+    else:
+        connection_status = "not_checked"
 
     member_stability_equations = [
         equation
@@ -2492,7 +2684,7 @@ def _p399_evidence(
             *(
                 [
                     "The declared analytical base model does not match the actual "
-                    "design.py member-end restraints."
+                    "compiled physical connection topology."
                 ]
                 if not stability_base_model_matches
                 else []
@@ -2626,7 +2818,10 @@ def _p399_evidence(
             title="Geometry and analytical scheme",
             status=basis_status,
             p399_reference="SCI P399 Sections 3 and 6.1",
-            purpose="Prove which design.py geometry became nodes, members, and supports.",
+            purpose=(
+                "Prove which compiled mechanical components became nodes, members, "
+                "and supports."
+            ),
             assumptions=list(
                 dict.fromkeys(member.assumption for member in analysis.members)
             ),
@@ -2635,7 +2830,7 @@ def _p399_evidence(
                     symbol="n_member",
                     label="Analytical members",
                     value=len(members),
-                    source="design.py StructuralModel.member_axis declarations",
+                    source="Compiled-design structural projection",
                 ),
                 CalculationInput(
                     symbol="n_node",
@@ -2649,7 +2844,7 @@ def _p399_evidence(
                     value=sum(
                         any(node.restraints.model_dump().values()) for node in nodes
                     ),
-                    source="design.py authored end restraints",
+                    source="Physical connection topology",
                 ),
             ],
             equations=geometry_equations,
@@ -2703,7 +2898,7 @@ def _p399_evidence(
                     symbol="limit_state",
                     label="Limit state",
                     value=combination.limit_state,
-                    source="design.py load_combination declaration",
+                    source="Structural workbench configuration",
                 )
             ],
             equations=combination_equations,
@@ -2723,7 +2918,7 @@ def _p399_evidence(
                     symbol="method",
                     label="Declared analysis method",
                     value=basis.analysis_method if basis else "not declared",
-                    source="design.py design_basis",
+                    source="Structural workbench configuration",
                 ),
                 CalculationInput(
                     symbol="r_tol",
@@ -2774,7 +2969,7 @@ def _p399_evidence(
                         symbol="method",
                         label="Second-order method",
                         value=stability_definition.method,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="combinations",
@@ -2786,7 +2981,7 @@ def _p399_evidence(
                             )
                             or stability_definition.stability_combination_id
                         ),
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="imperfection_cases",
@@ -2810,14 +3005,14 @@ def _p399_evidence(
                         symbol="analysis_basis_status",
                         label="Analytical basis status",
                         value=stability_definition.analysis_basis_status,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="analysis_base_match",
                         label="Base model matches member restraints",
                         value=stability_base_model_matches,
                         source=(
-                            "Direct comparison with design.py start restraints on "
+                            "Direct comparison with projected physical start restraints on "
                             "the declared eaves/column members"
                         ),
                     ),
@@ -2840,13 +3035,13 @@ def _p399_evidence(
                             for direction in stability_definition.direction_cases
                         )
                         or "not authored",
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                     CalculationInput(
                         symbol="η_warning",
                         label="Amplification warning ratio",
                         value=stability_definition.amplification_warning_ratio,
-                        source="design.py StructuralModel.stability",
+                        source="Structural workbench stability configuration",
                     ),
                 ]
             ),
@@ -2961,13 +3156,13 @@ def _p399_evidence(
                         symbol="capacity_pack",
                         label="Versioned capacity pack",
                         value=cross_section_definition.pack_id,
-                        source="design.py StructuralModel.cross_section_verification",
+                        source="Structural workbench capacity-pack configuration",
                     ),
                     CalculationInput(
                         symbol="ULS_envelope",
                         label="Checked ULS combinations",
                         value=", ".join(cross_section_definition.combination_ids),
-                        source="design.py StructuralModel.cross_section_verification",
+                        source="Structural workbench capacity-pack configuration",
                     ),
                 ]
             ),
@@ -3009,17 +3204,13 @@ def _p399_evidence(
                         symbol="member_capacity_pack",
                         label="Versioned member-capacity pack",
                         value=member_stability_definition.pack_id,
-                        source=(
-                            "design.py StructuralModel.member_stability_verification"
-                        ),
+                        source=("Structural workbench member-stability configuration"),
                     ),
                     CalculationInput(
                         symbol="member_ULS_envelope",
                         label="Checked ULS combinations",
                         value=", ".join(member_stability_definition.combination_ids),
-                        source=(
-                            "design.py StructuralModel.member_stability_verification"
-                        ),
+                        source=("Structural workbench member-stability configuration"),
                     ),
                 ]
             ),
@@ -3168,11 +3359,11 @@ def _p399_evidence(
             id="sheet-p399-connections",
             stage_id="connections",
             title="Connections and bases",
-            status="blocked",
+            status=connection_status,
             p399_reference="SCI P399 Section 11",
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
-                "Rendered screws, bolts, bracket, anchors, and concrete are physical evidence only.",
+                "Rendered screws, bolts, bracket, anchors, and concrete establish identity and geometry, not resistance by themselves.",
                 *(
                     [
                         "Finite connection zones terminate the flexible member axes at the outer rendered bolt lines; the remaining centreline arms are deliberately idealised as rigid.",
@@ -3180,6 +3371,11 @@ def _p399_evidence(
                     ]
                     if joint_connections
                     else ["Connection stiffness and resistance are not yet calculated."]
+                ),
+                *(
+                    assumption
+                    for check in connection_checks
+                    for assumption in check.assumptions
                 ),
             ],
             inputs=[
@@ -3191,6 +3387,18 @@ def _p399_evidence(
                 )
                 for connection in joint_connections
                 if connection.joint_model is not None
+            ]
+            + [
+                CalculationInput(
+                    symbol=f"identity,{check.connection_id}",
+                    label=f"{check.label} rendered connector identity",
+                    value=check.identity_status,
+                    source=(
+                        f"expected={check.expected_connector_part_numbers!r}; "
+                        f"rendered={check.rendered_connector_part_numbers!r}"
+                    ),
+                )
+                for check in connection_checks
             ],
             equations=[
                 CalculationEquation(
@@ -3210,6 +3418,45 @@ def _p399_evidence(
                 for connection in joint_connections
                 if connection.joint_model is not None
                 for engagement in connection.joint_model.member_engagements
+            ]
+            + [
+                CalculationEquation(
+                    label=f"{check.label} {action} utilisation",
+                    expression=f"u_{symbol} = {demand_symbol}*/{capacity_symbol}",
+                    substitution=f"{demand:g} / {capacity:g}",
+                    result=utilisation,
+                )
+                for check in connection_checks
+                for action, symbol, demand_symbol, capacity_symbol, demand, capacity, utilisation in (
+                    (
+                        "axial",
+                        "N",
+                        "N",
+                        "phi N_c",
+                        check.axial_demand_kN,
+                        check.design_axial_capacity_kN,
+                        check.axial_utilisation,
+                    ),
+                    (
+                        "shear",
+                        "V",
+                        "V",
+                        "phi V_c",
+                        check.shear_demand_kN,
+                        check.design_shear_capacity_kN,
+                        check.shear_utilisation,
+                    ),
+                    (
+                        "moment",
+                        "M",
+                        "M",
+                        "phi M_c",
+                        check.moment_demand_kNm,
+                        check.design_moment_capacity_kNm,
+                        check.moment_utilisation,
+                    ),
+                )
+                if capacity is not None and utilisation is not None
             ],
             outputs=[
                 CalculationInput(
@@ -3225,8 +3472,43 @@ def _p399_evidence(
                 for connection in joint_connections
                 if connection.joint_model is not None
                 for engagement in connection.joint_model.member_engagements
+            ]
+            + [
+                CalculationInput(
+                    symbol=f"demand,{check.connection_id}",
+                    label=f"{check.label} ULS end-action envelope",
+                    value=check.status,
+                    source=(
+                        f"{check.governing_combination_id or 'no ULS'}; "
+                        f"N={check.axial_demand_kN:g} kN; "
+                        f"V={check.shear_demand_kN:g} kN; "
+                        f"M={check.moment_demand_kNm:g} kN.m; "
+                        f"resistance pack={check.pack_id} v{check.pack_version} "
+                        f"({check.evidence_status})"
+                    ),
+                )
+                for check in connection_checks
             ],
-            references=basis_references,
+            references=list(
+                dict.fromkeys(
+                    [
+                        *basis_references,
+                        *(
+                            reference
+                            for check in connection_checks
+                            for reference in (
+                                check.source,
+                                (
+                                    f"SHA-256 {check.source_sha256}"
+                                    if check.source_sha256 is not None
+                                    else None
+                                ),
+                            )
+                            if reference is not None
+                        ),
+                    ]
+                )
+            ),
             related_node_ids=[
                 node.id for node in nodes if any(node.restraints.model_dump().values())
             ],
@@ -3416,12 +3698,15 @@ def _p399_evidence(
             order=9,
             label="Connections/bases",
             p399_reference="§11",
-            status="blocked",
+            status=connection_status,
             summary=(
-                f"{len(joint_connections)} geometry-linked finite joint model(s); "
-                "resistance and validated stiffness checks remain blocked."
-                if joint_connections
-                else "Rendered detail exists; resistance and stiffness checks do not."
+                f"{len(connection_checks)} physical connection demand/resistance "
+                f"check(s): {sum(check.status == 'pass' for check in connection_checks)} "
+                f"pass, {sum(check.status == 'fail' for check in connection_checks)} "
+                f"fail, {sum(check.status == 'unsupported' for check in connection_checks)} "
+                "without verified resistance."
+                if connection_checks
+                else "Rendered detail exists; no resistance evidence pack is connected."
             ),
             sheet_ids=["sheet-p399-connections"],
             blocking_stage_ids=["analysis"],
@@ -3472,6 +3757,21 @@ def solve_project_structural(
         raise StructuralAnalysisError("Active design has no analytical member loads")
 
     from Pynite import FEModel3D
+    from Pynite.PhysMember import PhysMember
+
+    class ExplicitTopologyPhysMember(PhysMember):
+        """Prevent PyNite from inferring joints from unrelated spatial nodes."""
+
+        def descritize(self) -> None:
+            all_nodes = self.model.nodes
+            self.model.nodes = {
+                self.i_node.name: self.i_node,
+                self.j_node.name: self.j_node,
+            }
+            try:
+                super().descritize()
+            finally:
+                self.model.nodes = all_nodes
 
     combinations = _combination_list(analysis)
     active_combination = _select_combination(combinations, combination_id)
@@ -3517,20 +3817,35 @@ def solve_project_structural(
             J=section.torsion_j_m4,
         )
 
-    nodes_by_coordinate: dict[tuple[float, float, float], dict[str, Any]] = {}
+    nodes_by_topology: dict[tuple[object, ...], dict[str, Any]] = {}
     member_node_ids: dict[str, tuple[str, str]] = {}
     for declaration in analysis.members:
         component = components[declaration.component_id]
         member_nodes: list[str] = []
-        for position, restraints in (
-            (declaration.start, declaration.start_restraints),
-            (declaration.end, declaration.end_restraints),
+        for endpoint, position, node_key, restraints in (
+            (
+                "start",
+                declaration.start,
+                declaration.start_node_key,
+                declaration.start_restraints,
+            ),
+            (
+                "end",
+                declaration.end,
+                declaration.end_node_key,
+                declaration.end_restraints,
+            ),
         ):
-            key = _coordinate_key(position)
-            node = nodes_by_coordinate.get(key)
+            coordinate = _coordinate_key(position)
+            key: tuple[object, ...] = (
+                ("explicit", node_key)
+                if node_key is not None
+                else ("coordinate", *coordinate)
+            )
+            node = nodes_by_topology.get(key)
             if node is None:
                 node = {
-                    "id": f"node-{len(nodes_by_coordinate) + 1}",
+                    "id": f"node-{len(nodes_by_topology) + 1}",
                     "position": position,
                     "restraints": {
                         "dx": False,
@@ -3543,13 +3858,18 @@ def solve_project_structural(
                     "visual_node_id": component.visual_node_id,
                     "labels": [],
                 }
-                nodes_by_coordinate[key] = node
+                nodes_by_topology[key] = node
+            elif _coordinate_key(node["position"]) != coordinate:
+                raise StructuralAnalysisError(
+                    f"analytical node key {node_key!r} joins different coordinates; "
+                    f"check the physical connection at {declaration.id}.{endpoint}"
+                )
             _merge_restraints(node["restraints"], restraints)
             node["labels"].append(declaration.label)
             member_nodes.append(node["id"])
         member_node_ids[declaration.id] = (member_nodes[0], member_nodes[1])
 
-    for node in nodes_by_coordinate.values():
+    for node in nodes_by_topology.values():
         position = node["position"]
         model.add_node(node["id"], position.x, position.y, position.z)
         restraints = node["restraints"]
@@ -3565,16 +3885,18 @@ def solve_project_structural(
 
     for declaration in analysis.members:
         start_node_id, end_node_id = member_node_ids[declaration.id]
-        model.add_member(
+        model.members[declaration.id] = ExplicitTopologyPhysMember(
+            model,
             declaration.id,
-            start_node_id,
-            end_node_id,
+            model.nodes[start_node_id],
+            model.nodes[end_node_id],
             declaration.material_id,
             declaration.section_id,
             rotation=declaration.rotation_deg,
             tension_only=declaration.tension_only,
             comp_only=declaration.compression_only,
         )
+        model.solution = None
         start_releases = declaration.start_releases
         end_releases = declaration.end_releases
         if any(
@@ -3919,13 +4241,19 @@ def solve_project_structural(
             restraints=node["restraints"],
             visual_node_id=node["visual_node_id"],
         )
-        for node in nodes_by_coordinate.values()
+        for node in nodes_by_topology.values()
     ]
     structural_members: list[StructuralMember] = []
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
     tension_member_checks = _tension_member_checks(model, analysis)
+    connection_checks = _connection_checks(
+        model,
+        analysis,
+        capture.connections,
+        components,
+    )
     cross_section_checks = _cross_section_checks(
         model,
         analysis,
@@ -3953,6 +4281,7 @@ def solve_project_structural(
             [],
         ).append(stability_check)
     serviceability_checks: list[ServiceabilityCheck] = []
+    serviceability_groups: dict[str, dict[str, Any]] = {}
     sections_by_id = {section.id: section for section in analysis.sections}
 
     for declaration in analysis.members:
@@ -4272,52 +4601,80 @@ def solve_project_structural(
                     )
                 )
 
+        serviceability_span_m = declaration.serviceability_span_m or member_length
         limit_candidates: list[float] = []
         if declaration.deflection_limit_ratio is not None:
             limit_candidates.append(
-                member_length * 1000.0 / declaration.deflection_limit_ratio
+                serviceability_span_m * 1000.0 / declaration.deflection_limit_ratio
             )
         if declaration.deflection_limit_mm is not None:
             limit_candidates.append(declaration.deflection_limit_mm)
         limit_mm = min(limit_candidates) if limit_candidates else None
-        if active_combination.limit_state != "serviceability" or limit_mm is None:
-            serviceability_checks.append(
-                ServiceabilityCheck(
-                    member_id=declaration.id,
-                    label=f"{declaration.label} deflection",
-                    combination_id=active_combination.id,
-                    displacement_mm=max_displacement,
-                    limit_mm=limit_mm,
-                    utilisation=None,
-                    status="not_checked",
-                    basis=(
-                        "Deflection checks require a serviceability combination "
-                        "and an authored project criterion."
-                        if declaration.deflection_limit_basis is None
-                        else declaration.deflection_limit_basis
-                    ),
-                )
+        group_id = declaration.serviceability_group_id or declaration.id
+        group = serviceability_groups.setdefault(
+            group_id,
+            {
+                "physical_member_id": declaration.serviceability_group_id,
+                "label": declaration.serviceability_group_label or declaration.label,
+                "span_m": serviceability_span_m,
+                "member_ids": [],
+                "governing_member_id": declaration.id,
+                "displacement_mm": max_displacement,
+                "limits_mm": [],
+                "bases": [],
+            },
+        )
+        group["member_ids"].append(declaration.id)
+        group["span_m"] = max(float(group["span_m"]), serviceability_span_m)
+        if max_displacement > float(group["displacement_mm"]):
+            group["displacement_mm"] = max_displacement
+            group["governing_member_id"] = declaration.id
+        if limit_mm is not None:
+            group["limits_mm"].append(limit_mm)
+        if declaration.deflection_limit_basis:
+            group["bases"].append(declaration.deflection_limit_basis)
+
+    for group in serviceability_groups.values():
+        group_limits = [float(value) for value in group["limits_mm"]]
+        limit_mm = min(group_limits) if group_limits else None
+        bases = list(dict.fromkeys(str(value) for value in group["bases"]))
+        basis = "; ".join(bases)
+        displacement_mm = float(group["displacement_mm"])
+        checked = (
+            active_combination.limit_state == "serviceability" and limit_mm is not None
+        )
+        utilisation = displacement_mm / limit_mm if checked and limit_mm else None
+        serviceability_checks.append(
+            ServiceabilityCheck(
+                member_id=str(group["governing_member_id"]),
+                physical_member_id=group["physical_member_id"],
+                analytical_member_ids=list(group["member_ids"]),
+                span_m=float(group["span_m"]),
+                label=f"{group['label']} deflection",
+                combination_id=active_combination.id,
+                displacement_mm=displacement_mm,
+                limit_mm=limit_mm,
+                utilisation=utilisation,
+                status=(
+                    "not_checked"
+                    if not checked
+                    else "pass"
+                    if utilisation is not None and utilisation <= 1.0
+                    else "fail"
+                ),
+                basis=(
+                    basis
+                    if basis
+                    else "Deflection checks require a serviceability combination "
+                    "and an authored project criterion."
+                ),
             )
-        else:
-            utilisation = max_displacement / limit_mm
-            serviceability_checks.append(
-                ServiceabilityCheck(
-                    member_id=declaration.id,
-                    label=f"{declaration.label} deflection",
-                    combination_id=active_combination.id,
-                    displacement_mm=max_displacement,
-                    limit_mm=limit_mm,
-                    utilisation=utilisation,
-                    status="pass" if utilisation <= 1.0 else "fail",
-                    basis=declaration.deflection_limit_basis
-                    or "Authored project deflection criterion.",
-                )
-            )
+        )
 
     reaction_values: list[NodeReaction] = []
     reaction_force_sum = [0.0, 0.0, 0.0]
     reaction_moment_sum = [0.0, 0.0, 0.0]
-    for node in nodes_by_coordinate.values():
+    for node in nodes_by_topology.values():
         restraints = node["restraints"]
         if not any(restraints.values()):
             continue
@@ -4494,6 +4851,7 @@ def solve_project_structural(
         members=structural_members,
         member_results=member_results,
         member_checks=member_checks,
+        connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
@@ -4542,6 +4900,8 @@ def solve_project_structural(
             label=capture.project_name,
             design_id=capture.project_name,
             design_hash=capture.design_hash,
+            analysis_configuration_revision=(capture.analysis_configuration_revision),
+            analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,
         wind_action_bases=capture.wind_action_bases,
@@ -4551,6 +4911,7 @@ def solve_project_structural(
         materials=analysis.materials,
         load_cases=analysis.load_cases,
         load_combinations=combinations,
+        action_standard_pack=analysis.action_standard_pack,
         loads=[],
         member_loads=analysis.member_loads,
         member_distributed_loads=analysis.member_distributed_loads,
@@ -4558,6 +4919,7 @@ def solve_project_structural(
         member_results=member_results,
         member_diagrams=member_diagrams,
         member_checks=member_checks,
+        connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
@@ -4698,8 +5060,8 @@ def solve_project_structural(
             ),
             *dict.fromkeys(member.assumption for member in analysis.members),
             (
-                "Non-steel permanent actions are included only where design.py "
-                "authors a traceable distributed or point load."
+                "Non-steel permanent actions are included only where Structural "
+                "workbench state authors a traceable distributed or point load."
             ),
             (
                 "Stage 6 uses catalogue effective properties and a versioned "
