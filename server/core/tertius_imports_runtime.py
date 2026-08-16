@@ -83,7 +83,7 @@ def _validate_supported_build_graph(model_root) -> None:
         if obj.find("./{*}mesh") is not None:
             mesh_object_ids.add(object_id)
     if not mesh_object_ids:
-        raise RuntimeError("The 3MF contains no supported geometry.")
+        raise _unsupported_build_graph()
 
     build = model_root.find("./{*}build")
     if build is None:

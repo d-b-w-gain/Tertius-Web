@@ -7,7 +7,11 @@ import pytest
 
 from core.compile_sandbox import run_compile_sandbox
 from core.tertius_imports_runtime import TERTIUS_IMPORTS_HELPER_SOURCE
-from tests.fixtures.three_mf import box_mesh, make_3mf
+from tests.fixtures.three_mf import (
+    UNSUPPORTED_BUILD_GRAPH_CASES,
+    box_mesh,
+    make_3mf,
+)
 
 
 def load_helper(tmp_path):
@@ -60,23 +64,11 @@ def test_loader_returns_two_stable_parts(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("options", "case"),
-    [
-        ({"build_transform": "1 0 0 0 1 0 0 0 1 10 0 0"}, "transform"),
-        ({"build_object_ids": [1, 1]}, "duplicate build item"),
-        (
-            {"component_object_ids": [1, 2], "build_object_ids": [3]},
-            "component assembly",
-        ),
-        ({"build_object_ids": [1]}, "mesh subset"),
-        ({"build_object_ids": [99]}, "missing object"),
-        (
-            {"include_non_mesh_object": True, "build_object_ids": [3]},
-            "non-mesh object",
-        ),
-    ],
+    ("case", "options"),
+    UNSUPPORTED_BUILD_GRAPH_CASES,
+    ids=[case for case, _options in UNSUPPORTED_BUILD_GRAPH_CASES],
 )
-def test_loader_rejects_unsupported_build_graph(tmp_path, monkeypatch, options, case):
+def test_loader_rejects_unsupported_build_graph(tmp_path, monkeypatch, case, options):
     helper = load_helper(tmp_path)
     vertices, triangles = box_mesh(2)
     write_source(

@@ -14,6 +14,24 @@ _UNIT_NAMES = {
     "FT": "foot",
 }
 
+TRANSLATED_BUILD_TRANSFORM = "1 0 0 0 1 0 0 0 1 10 0 0"
+UNSUPPORTED_BUILD_GRAPH_CASES = (
+    ("transform", {"build_transform": TRANSLATED_BUILD_TRANSFORM}),
+    ("repeated-build-object", {"build_object_ids": [1, 1]}),
+    (
+        "component-assembly",
+        {"component_object_ids": [1, 2], "build_object_ids": [3]},
+    ),
+    ("mesh-subset", {"build_object_ids": [1]}),
+    ("missing-object", {"build_object_ids": [99]}),
+    (
+        "non-mesh-object",
+        {"include_non_mesh_object": True, "build_object_ids": [3]},
+    ),
+    ("missing-build", {"include_build": False}),
+    ("no-mesh-objects", {"include_mesh_objects": False}),
+)
+
 
 def make_3mf(
     *,
@@ -29,12 +47,15 @@ def make_3mf(
     build_object_ids: Iterable[int] | None = None,
     component_object_ids: Iterable[int] | None = None,
     include_non_mesh_object: bool = False,
+    include_build: bool = True,
+    include_mesh_objects: bool = True,
     model_document: bytes | None = None,
     relationships_document: bytes | None = None,
 ) -> bytes:
     object_xml: list[str] = []
     mesh_object_ids: list[int] = []
-    for object_id, (name, vertices, triangles) in enumerate(objects, 1):
+    source_objects = objects if include_mesh_objects else []
+    for object_id, (name, vertices, triangles) in enumerate(source_objects, 1):
         mesh_object_ids.append(object_id)
         vertex_xml = "".join(
             f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in vertices
@@ -66,9 +87,10 @@ def make_3mf(
         list(build_object_ids) if build_object_ids is not None else mesh_object_ids
     )
     transform = f' transform="{build_transform}"' if build_transform else ""
-    build_xml = [
+    build_xml = "".join(
         f'<item objectid="{object_id}"{transform}/>' for object_id in selected_build_ids
-    ]
+    )
+    build = f"<build>{build_xml}</build>" if include_build else ""
     model = (
         model_document
         or (
@@ -76,7 +98,7 @@ def make_3mf(
             f'<model unit="{_UNIT_NAMES[unit]}" xml:lang="en-US" '
             'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
             f"<resources>{''.join(object_xml)}</resources>"
-            f"<build>{''.join(build_xml)}</build></model>"
+            f"{build}</model>"
         ).encode()
     )
     content_types = (
