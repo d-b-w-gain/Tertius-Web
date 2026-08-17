@@ -163,7 +163,7 @@ If the worktree has no `.venv`, set both `PATH` and
 `UV_PROJECT_ENVIRONMENT=/home/johnson/code/Tertius-Web/.venv`. Expected: every
 command exits zero.
 
-- [ ] **Step 4: Request independent code review**
+- [x] **Step 4: Request independent code review**
 
 Give the reviewer the approved design, base SHA, head SHA, diff, and verification evidence. Resolve all critical and important findings before publishing.
 
