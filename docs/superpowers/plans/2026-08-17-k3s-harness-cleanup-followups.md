@@ -23,11 +23,11 @@
 - Modify: `scripts/test-k3s-harness-lifecycle.sh`
 - Modify: `scripts/test-k3s-deployment.sh:951-962`
 
-- [ ] **Step 1: Extend the kubectl mock to expose the first applied Secret manifest**
+- [x] **Step 1: Extend the kubectl mock to expose the first applied Secret manifest**
 
 Teach the mock `create secret generic "$APP_SECRET_NAME" ... -o json` path to emit a minimal Secret JSON document and teach `apply -f -` to save stdin in `${COMMAND_LOG}.stdin`. Do not log test Secret values.
 
-- [ ] **Step 2: Add the failing atomic-ownership test**
+- [x] **Step 2: Add the failing atomic-ownership test**
 
 Invoke `ensure_app_secret` through the library-only entry point with a known lease and dummy values. Assert:
 
@@ -39,13 +39,13 @@ assert_not_log 'kubectl annotate secret test-release-app' \
   'application Secret ownership must not require a second server-side write'
 ```
 
-- [ ] **Step 3: Run the test and verify RED**
+- [x] **Step 3: Run the test and verify RED**
 
 Run: `bash scripts/test-k3s-harness-lifecycle.sh`
 
 Expected: FAIL because the applied Secret manifest lacks `tertius.io/lease-id` and the existing function performs a later `kubectl annotate`.
 
-- [ ] **Step 4: Implement the single-write Secret pipeline**
+- [x] **Step 4: Implement the single-write Secret pipeline**
 
 Change `ensure_app_secret` to produce JSON locally, add the annotation with jq, and apply the resulting manifest:
 
@@ -63,7 +63,7 @@ kubectl -n "$NAMESPACE" create secret generic "$APP_SECRET_NAME" \
 
 Remove the separate server-side `kubectl annotate secret` call while preserving the redacted diagnostic line.
 
-- [ ] **Step 5: Run the lifecycle test and verify GREEN**
+- [x] **Step 5: Run the lifecycle test and verify GREEN**
 
 Run: `bash scripts/test-k3s-harness-lifecycle.sh`
 

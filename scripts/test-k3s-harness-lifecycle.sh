@@ -74,11 +74,20 @@ EOF
 cat >"${MOCK_BIN}/kubectl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+joined=" $* "
 printf 'kubectl' >>"$COMMAND_LOG"
-printf ' %q' "$@" >>"$COMMAND_LOG"
+for arg in "$@"; do
+  case "$arg" in
+    --from-literal=*)
+      literal_name=${arg#--from-literal=}
+      literal_name=${literal_name%%=*}
+      printf ' %q' "--from-literal=${literal_name}=<redacted>" >>"$COMMAND_LOG"
+      ;;
+    *) printf ' %q' "$arg" >>"$COMMAND_LOG" ;;
+  esac
+done
 printf '\n' >>"$COMMAND_LOG"
 
-joined=" $* "
 output=""
 if [[ "$joined" == *" -o jsonpath="* ]]; then
   output=jsonpath
@@ -86,6 +95,12 @@ elif [[ "$joined" == *" -o json "* ]] || [[ "$joined" == *" -o json" ]]; then
   output=json
 elif [[ "$joined" == *" -o name "* ]] || [[ "$joined" == *" -o name" ]]; then
   output=name
+fi
+
+if [[ "$joined" == *" create secret generic ${APP_SECRET_NAME} "* ]] && [ "$output" = json ]; then
+  jq -n --arg name "$APP_SECRET_NAME" --arg namespace "$NAMESPACE" \
+    '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:$namespace},type:"Opaque",data:{}}'
+  exit 0
 fi
 
 if [ "${1:-}" = get ] && [[ "$joined" == *" helmrelease"* || "$joined" == *" helmreleases"* ]]; then
@@ -418,7 +433,21 @@ if [ "${1:-}" = delete ]; then
   exit 0
 fi
 
-if [ "${1:-}" = apply ] || [ "${1:-}" = create ]; then
+if [ "${1:-}" = apply ] && [ "${2:-}" = -f ] && [ "${3:-}" = - ]; then
+  input=$(cat)
+  printf 'apply\n' >>"${COMMAND_LOG}.apply"
+  if [ ! -s "${COMMAND_LOG}.stdin" ]; then
+    printf '%s\n' "$input" >"${COMMAND_LOG}.stdin"
+  fi
+  if printf '%s' "$input" | jq -e '.kind == "Secret"' >/dev/null 2>&1; then
+    touch "$STATE_DIR/secret"
+  else
+    touch "$STATE_DIR/marker"
+  fi
+  exit 0
+fi
+
+if [ "${1:-}" = create ]; then
   input=$(cat)
   printf '%s\n' "$input" >>"${COMMAND_LOG}.stdin"
   touch "$STATE_DIR/marker"
@@ -509,6 +538,26 @@ if PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
   fail "renewal CAS interleave must be refused"
 fi
 assert_not_log 'kubectl (apply|create) -f -' "failed renewal CAS must not fall back to overwrite"
+
+: >"$COMMAND_LOG"
+rm -f "${COMMAND_LOG}.apply" "${COMMAND_LOG}.stdin"
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  TEST_K3S_DEPLOYMENT_LIB_ONLY=true NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  APP_DATABASE_URL=postgresql://dummy-db APP_VALKEY_URL=redis://dummy-valkey \
+  APP_OIDC_CLIENT_SECRET=dummy-oidc APP_AUTH_SESSION_SECRET=dummy-session \
+  bash -c '
+    script=$1; shift; . "$script"; trap - ERR EXIT INT TERM
+    LIFECYCLE_LEASE_ID=11111111-1111-4111-8111-111111111111
+    ensure_app_secret
+  ' bash "$ROOT_DIR/scripts/test-k3s-deployment.sh"
+jq -e --arg lease '11111111-1111-4111-8111-111111111111' \
+  '.metadata.annotations["tertius.io/lease-id"] == $lease' \
+  "${COMMAND_LOG}.stdin" >/dev/null || \
+  fail "first applied application Secret manifest must contain lifecycle lease ownership"
+assert_not_log 'kubectl annotate secret test-release-app' \
+  'application Secret ownership must not require a second server-side write'
+[ "$(grep -c '^apply$' "${COMMAND_LOG}.apply")" -eq 1 ] || \
+  fail 'application Secret creation must use exactly one server-side apply'
 
 : >"$COMMAND_LOG"
 PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \

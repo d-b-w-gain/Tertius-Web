@@ -949,16 +949,17 @@ ensure_namespace() {
 }
 
 ensure_app_secret() {
-  printf '+ kubectl -n %q create secret generic %q --from-literal=DATABASE_URL=<redacted> --from-literal=VALKEY_URL=<redacted> --from-literal=OIDC_CLIENT_SECRET=<redacted> --from-literal=AUTH_SESSION_SECRET=<redacted> --dry-run=client -o yaml | kubectl apply -f -\n' "$NAMESPACE" "$APP_SECRET_NAME" >&2
+  printf '+ kubectl -n %q create secret generic %q --from-literal=DATABASE_URL=<redacted> --from-literal=VALKEY_URL=<redacted> --from-literal=OIDC_CLIENT_SECRET=<redacted> --from-literal=AUTH_SESSION_SECRET=<redacted> --dry-run=client -o json | jq <add lifecycle lease annotation> | kubectl apply -f -\n' "$NAMESPACE" "$APP_SECRET_NAME" >&2
   kubectl -n "$NAMESPACE" create secret generic "$APP_SECRET_NAME" \
     --from-literal=DATABASE_URL="$APP_DATABASE_URL" \
     --from-literal=VALKEY_URL="$APP_VALKEY_URL" \
     --from-literal=OIDC_CLIENT_SECRET="$APP_OIDC_CLIENT_SECRET" \
     --from-literal=AUTH_SESSION_SECRET="$APP_AUTH_SESSION_SECRET" \
     --dry-run=client \
-    -o yaml | kubectl apply -f -
-  run kubectl annotate secret "$APP_SECRET_NAME" -n "$NAMESPACE" \
-    "tertius.io/lease-id=${LIFECYCLE_LEASE_ID}" --overwrite
+    -o json |
+    jq --arg lease "$LIFECYCLE_LEASE_ID" \
+      '.metadata.annotations = ((.metadata.annotations // {}) + {"tertius.io/lease-id": $lease})' |
+    kubectl apply -f -
 }
 
 pi_auth_manifest_fields() {
