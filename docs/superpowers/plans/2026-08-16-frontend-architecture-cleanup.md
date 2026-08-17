@@ -61,12 +61,13 @@
 - Create: `ui/src/workflows/artus/ui/FeatureTreeNode.tsx`
 - Modify: `ui/src/workflows/artus/ui/FeatureTreeTab.tsx`
 
-- [ ] Add failing tests for assembly-node filtering and tree/BOM naming helpers exported from a feature-local model module.
-- [ ] Move pure tree/BOM helper functions and types to `model/featureTree.ts` without changing their return values.
-- [ ] Extract recursive node UI to `FeatureTreeNode.tsx` and tree-section composition to `FeatureTree.tsx` using explicit callbacks for visibility, transparency, targeting, and selection.
-- [ ] Keep authenticated loading, storage synchronization, AI edit, compile queueing, and transaction-like UI sequencing in `FeatureTreeTab`.
-- [ ] Run focused Artus tests, lint, typecheck, full tests, and build.
-- [ ] Commit, review, push, and open draft PR 3 against PR 2's branch.
+- [x] Add failing tests for assembly-node filtering and tree/BOM naming helpers exported from a feature-local model module.
+- [x] Move pure tree/BOM helper functions and types to `model/featureTree.ts` without changing their return values.
+- [x] Extract recursive node UI to `FeatureTreeNode.tsx` and tree-section composition to `FeatureTree.tsx` using explicit callbacks for visibility, transparency, targeting, and selection.
+- [x] Keep authenticated loading, storage synchronization, AI edit, compile queueing, and transaction-like UI sequencing in `FeatureTreeTab`.
+- [x] Run focused Artus tests, lint, typecheck, full tests, and build.
+- [x] Commit and review Task 3.
+- [ ] Push and open draft PR 3 against PR 2's branch.
 
 ### Task 4: Extus PR
 
