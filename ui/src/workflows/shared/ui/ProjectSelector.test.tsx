@@ -56,6 +56,31 @@ describe('ProjectSelector 3MF import', () => {
     window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, listener)
   })
 
+  it('disables Cancel while import is pending and completes normally', async () => {
+    let resolveImport!: (result: { success: boolean; project: string }) => void
+    storage.import3mf.mockImplementation(() => new Promise((resolve) => {
+      resolveImport = resolve
+    }))
+    storage.listProjects
+      .mockResolvedValueOnce(['default'])
+      .mockResolvedValueOnce(['default', 'falcon9'])
+    render(<ProjectSelector />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Import 3MF' }))
+    const file = new File(['3mf'], 'falcon9.3mf')
+    fireEvent.change(screen.getByLabelText('3MF file'), { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: 'Import project' }))
+
+    await waitFor(() => expect(storage.import3mf).toHaveBeenCalledWith(file, 'falcon9'))
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
+
+    resolveImport({ success: true, project: 'falcon9' })
+
+    await waitFor(() => expect(storage.activateProject).toHaveBeenCalledWith('falcon9'))
+    expect(storage.activateProject).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
   it('keeps an imported project selectable when its first activation fails', async () => {
     const listener = vi.fn()
     window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, listener)

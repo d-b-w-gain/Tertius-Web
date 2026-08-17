@@ -226,7 +226,14 @@ export const ProjectSelector: React.FC = () => {
               <input aria-label="Imported project name" value={importProjectName} onChange={(event) => setImportProjectName(event.target.value)} className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1" />
             </label>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setIsImporting(false)} className="px-2 py-1 text-xs text-slate-300">Cancel</button>
+              <button
+                type="button"
+                disabled={importPending}
+                onClick={() => setIsImporting(false)}
+                className="px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+              >
+                Cancel
+              </button>
               <button type="submit" disabled={!importFile || !importProjectName.trim() || importPending} className="rounded bg-indigo-600 px-2 py-1 text-xs text-white disabled:opacity-50">{importPending ? 'Importing…' : 'Import project'}</button>
             </div>
           </form>
