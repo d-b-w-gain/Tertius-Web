@@ -128,11 +128,11 @@ Expected: both contract suites pass, and the janitor still reports retained tomb
 - Modify: `docs/harness/local-harness.md:93-110`
 - Modify: `docs/superpowers/plans/2026-08-17-k3s-harness-cleanup-followups.md` (check completed steps)
 
-- [ ] **Step 1: Document later removal of retained data**
+- [x] **Step 1: Document later removal of retained data**
 
 State that `down --retain-data` and `down --retain-auth` create an identity-bearing tombstone and that a later plain `down` removes the exact retained objects after validating their recorded UIDs.
 
-- [ ] **Step 2: Run focused cleanup gates**
+- [x] **Step 2: Run focused cleanup gates**
 
 Run:
 
@@ -144,7 +144,7 @@ bash scripts/test-k3s-harness-process-cleanup.sh
 
 Expected: all three suites pass.
 
-- [ ] **Step 3: Run broad deployment gates**
+- [x] **Step 3: Run broad deployment gates**
 
 Run:
 
