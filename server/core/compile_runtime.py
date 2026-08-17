@@ -46,10 +46,16 @@ def structural_runtime_files_hash(files: dict[str, str]) -> str:
 
 
 @contextmanager
-def hydrate_project_files(files: dict[str, str]) -> Iterator[Path]:
+def hydrate_project_files(
+    files: dict[str, str], binary_files: dict[str, bytes] | None = None
+) -> Iterator[Path]:
     with TemporaryDirectory(prefix="tertius-project-") as tmp:
         project_dir = Path(tmp)
         for filename, content in files.items():
             safe_name = require_valid_runtime_filename(filename)
             (project_dir / safe_name).write_text(content, encoding="utf-8")
+        for binary_filename, binary_content in (binary_files or {}).items():
+            if binary_filename != "source.3mf":
+                raise ValueError("Invalid binary runtime filename")
+            (project_dir / binary_filename).write_bytes(binary_content)
         yield project_dir

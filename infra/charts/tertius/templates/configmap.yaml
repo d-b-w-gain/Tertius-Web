@@ -61,6 +61,8 @@ data:
   COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+  COMPILE_SIDECAR_TTL_SECONDS: {{ printf "%d" (.Values.app.config.compileSidecarTtlSeconds | int64) | quote }}
+  COMPILE_SIDECAR_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileSidecarMaxBytes | int64) | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_FILES: {{ .Values.app.config.llmFileEditMaxContextFiles | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_CHARS: {{ printf "%d" (.Values.app.config.llmFileEditMaxContextChars | int64) | quote }}
   LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
