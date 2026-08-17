@@ -40,6 +40,9 @@ reset_state() {
   printf 'cluster-uid\n' >"$STATE_DIR/cluster-uid"
   printf 'data-uid\n' >"$STATE_DIR/data-pvc-uid"
   printf 'auth-uid\n' >"$STATE_DIR/auth-pvc-uid"
+  printf 'operator-child-uid\n' >"$STATE_DIR/operator-child-uid"
+  touch "$STATE_DIR/cluster-labelled" "$STATE_DIR/data-pvc-labelled" \
+    "$STATE_DIR/auth-pvc-labelled"
 }
 
 reset_legacy_state() {
@@ -281,15 +284,15 @@ if [ "${1:-}" = patch ] && [[ "$joined" == *" secret "* ]]; then
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* ]]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* || "$joined" == *" Cluster "* ]]; then
   cluster_uid=$(sed -n '1p' "$STATE_DIR/cluster-uid")
   if [ "$output" = json ]; then
     if [[ "$joined" == *" ${RELEASE_NAME}-postgres "* ]]; then
       [ -f "$STATE_DIR/cluster" ] || exit 0
-      printf '{"apiVersion":"postgresql.cnpg.io/v1","kind":"Cluster","metadata":{"name":"%s-postgres","uid":"%s","resourceVersion":"cluster-rv"}}\n' "$RELEASE_NAME" "$cluster_uid"
+      printf '{"apiVersion":"postgresql.cnpg.io/v1","kind":"Cluster","metadata":{"name":"%s-postgres","uid":"%s","resourceVersion":"cluster-rv","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$RELEASE_NAME" "$cluster_uid" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       exit 0
     fi
-    if [ -f "$STATE_DIR/cluster" ]; then
+    if [ -f "$STATE_DIR/cluster" ] && [ -f "$STATE_DIR/cluster-labelled" ]; then
       printf '{"items":[{"apiVersion":"postgresql.cnpg.io/v1","kind":"Cluster","metadata":{"name":"%s-postgres","uid":"%s","resourceVersion":"cluster-rv","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}]}\n' "$RELEASE_NAME" "$cluster_uid" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
     else
       printf '{"items":[]}\n'
@@ -313,25 +316,26 @@ if [ "${1:-}" = get ] && [[ "$joined" == *"keycloaks.k8s.keycloak.org"* ]]; then
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistentvolumeclaims "* ]]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistentvolumeclaims "* || "$joined" == *" PersistentVolumeClaim "* ]]; then
   if [ "$output" = json ]; then
     if [[ "$joined" == *" ${RELEASE_NAME}-data "* || "$joined" == *" ${RELEASE_NAME}-pi-agent-auth "* ]]; then
       pvc_name=${3:-}
       case "$pvc_name" in
         "${RELEASE_NAME}-data") state_file=data-pvc; uid=$(sed -n '1p' "$STATE_DIR/data-pvc-uid"); rv=data-rv ;;
         "${RELEASE_NAME}-pi-agent-auth") state_file=auth-pvc; uid=$(sed -n '1p' "$STATE_DIR/auth-pvc-uid"); rv=auth-rv ;;
+        *) exit 0 ;;
       esac
       [ -f "$STATE_DIR/$state_file" ] || exit 0
-      printf '{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s","uid":"%s","resourceVersion":"%s"}}\n' "$pvc_name" "$uid" "$rv"
+      printf '{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s","uid":"%s","resourceVersion":"%s","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$pvc_name" "$uid" "$rv" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       exit 0
     fi
     printf '{"items":['
     separator=""
-    if [ -f "$STATE_DIR/data-pvc" ]; then
+    if [ -f "$STATE_DIR/data-pvc" ] && [ -f "$STATE_DIR/data-pvc-labelled" ]; then
       printf '%s{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s-data","uid":"%s","resourceVersion":"data-rv","labels":{"app.kubernetes.io/instance":"%s"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$(sed -n '1p' "$STATE_DIR/data-pvc-uid")" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       separator=,
     fi
-    if [ -f "$STATE_DIR/auth-pvc" ]; then
+    if [ -f "$STATE_DIR/auth-pvc" ] && [ -f "$STATE_DIR/auth-pvc-labelled" ]; then
       printf '%s{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s-pi-agent-auth","uid":"%s","resourceVersion":"auth-rv","labels":{"app.kubernetes.io/instance":"%s","app.kubernetes.io/component":"pi-agent-auth"},"annotations":{"tertius.io/lease-id":"%s"}}}' "$separator" "$RELEASE_NAME" "$(sed -n '1p' "$STATE_DIR/auth-pvc-uid")" "$RELEASE_NAME" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       separator=,
     fi
@@ -350,7 +354,7 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" deployment,statefulset,daemonset,rep
   printf '{"items":['
   separator=""
   if [ -f "$STATE_DIR/operator-child" ]; then
-    printf '%s{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"operator-child-uid","ownerReferences":[{"uid":"%s"}]}}' "$separator" "$RELEASE_NAME" "$(sed -n '1p' "$STATE_DIR/cluster-uid")"
+    printf '%s{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"%s","resourceVersion":"operator-child-rv","ownerReferences":[{"uid":"cluster-uid"}]}}' "$separator" "$RELEASE_NAME" "$(sed -n '1p' "$STATE_DIR/operator-child-uid")"
     separator=,
   fi
   if [ -f "$STATE_DIR/operator-grandchild" ]; then
@@ -373,7 +377,7 @@ fi
 if [ "${1:-}" = get ] && [[ "$joined" == *" deployment "*"${RELEASE_NAME}-operator-child"* ]]; then
   [ -f "$STATE_DIR/operator-child" ] || exit 0
   if [ "$output" = json ]; then
-    printf '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"operator-child-uid"}}\n' "$RELEASE_NAME"
+    printf '{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"%s-operator-child","uid":"%s","resourceVersion":"operator-child-rv"}}\n' "$RELEASE_NAME" "$(sed -n '1p' "$STATE_DIR/operator-child-uid")"
   else
     printf 'deployment/%s-operator-child\n' "$RELEASE_NAME"
   fi
@@ -717,6 +721,64 @@ printf '%s\n' \
 run_deploy_cleanup
 [ ! -e "$STATE_DIR/operator-child" ] && [ ! -e "$STATE_DIR/marker" ] || \
   fail "an exact retained operator descendant record must permit plain cleanup"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/cluster"
+touch "$STATE_DIR/operator-child"
+printf '%s\n' \
+  'Cluster/test-release-postgres@cluster-uid,PersistentVolumeClaim/test-release-data@data-uid,PersistentVolumeClaim/test-release-pi-agent-auth@auth-uid,deployment/test-release-operator-child@operator-child-uid' \
+  >"$STATE_DIR/marker-retained"
+PATH="${MOCK_BIN}:$PATH" COMMAND_LOG="$COMMAND_LOG" STATE_DIR="$STATE_DIR" \
+  TEST_K3S_DEPLOYMENT_LIB_ONLY=true NAMESPACE=test-ns RELEASE_NAME=test-release APP_SECRET_NAME=test-release-app \
+  bash -c '
+    script=$1; shift; . "$script"; trap - ERR EXIT INT TERM
+    clusters_json="{\"items\":[]}"; pvcs_json="{\"items\":[]}"; claim_cleanup_marker "[]"
+  ' bash "$ROOT_DIR/scripts/test-k3s-deployment.sh"
+assert_log 'kubectl get deployment test-release-operator-child .*--ignore-not-found=true -o json' \
+  "retained validation must resolve a recorded surviving descendant when its root is missing"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/cluster"
+touch "$STATE_DIR/operator-child"
+printf 'replacement-operator-child-uid\n' >"$STATE_DIR/operator-child-uid"
+printf '%s\n' \
+  'Cluster/test-release-postgres@cluster-uid,PersistentVolumeClaim/test-release-data@data-uid,PersistentVolumeClaim/test-release-pi-agent-auth@auth-uid,deployment/test-release-operator-child@operator-child-uid' \
+  >"$STATE_DIR/marker-retained"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse a replacement descendant UID when its recorded root is missing"
+fi
+assert_cleanup_refused_before_mutation \
+  "replacement descendant UID with missing root must be refused before mutation"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/cluster-labelled"
+run_deploy_cleanup
+[ ! -e "$STATE_DIR/cluster" ] && [ ! -e "$STATE_DIR/marker" ] || \
+  fail "an exact recorded Cluster without its release label must still be deleted"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/cluster-labelled"
+printf 'replacement-cluster-uid\n' >"$STATE_DIR/cluster-uid"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse an unlabelled replacement Cluster UID"
+fi
+assert_cleanup_refused_before_mutation \
+  "unlabelled replacement Cluster UID must be refused before mutation"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/data-pvc-labelled"
+run_deploy_cleanup
+[ ! -e "$STATE_DIR/data-pvc" ] && [ ! -e "$STATE_DIR/marker" ] || \
+  fail "an exact recorded PVC without its release label must still be deleted"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/data-pvc-labelled"
+printf 'replacement-data-uid\n' >"$STATE_DIR/data-pvc-uid"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse an unlabelled replacement PVC UID"
+fi
+assert_cleanup_refused_before_mutation \
+  "unlabelled replacement PVC UID must be refused before mutation"
 
 reset_retained_data_state
 printf 'replacement-cluster-uid\n' >"$STATE_DIR/cluster-uid"

@@ -107,7 +107,7 @@ Remove one object recorded by the tombstone before plain cleanup. The test must 
 
 - [x] **Step 6: Implement retained-tombstone validation**
 
-Add a helper that parses the marker annotation as comma-separated `kind/name@uid` records, rejects malformed or duplicate records, builds exact records for current Cluster roots, PVCs, and discovered operator descendants, and requires every current record to appear in the tombstone. Existing lease checks remain mandatory for Cluster/PVC roots.
+Add a helper that parses the marker annotation as comma-separated `kind/name@uid` records, rejects malformed or duplicate records, resolves every recorded object independently by kind and name, builds exact records for current Cluster roots, PVCs, and discovered operator descendants, and requires every current record to appear in the tombstone. Only a confirmed missing exact lookup is treated as absent; surviving roots without release labels and descendants whose recorded root is missing still require matching UIDs. Existing lease checks remain mandatory for Cluster/PVC roots.
 
 In `claim_cleanup_marker`, accept `retain` only when no janitor expected-snapshot variables are present and the retained-tombstone validation succeeds. Keep `delete|cleaning` behavior unchanged. Use the existing UID/resourceVersion policy test in the claim patch so the transition to `cleaning` remains atomic.
 
