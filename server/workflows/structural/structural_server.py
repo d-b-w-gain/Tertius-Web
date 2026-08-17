@@ -4,6 +4,7 @@ import json
 from math import atan2, degrees, dist, sqrt
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
@@ -16,6 +17,7 @@ from core.auth_types import AuthContext
 from core.db import get_db
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
 from core.structural.action_standard_packs import (
+    ActionRole,
     StructuralActionCase,
     resolve_action_standard_pack,
 )
@@ -573,7 +575,7 @@ def _portal_frame_wind_actions(
         raise ValueError("portal-frame wind actions require a permanent action case")
 
     def ensure_action_case(
-        *, case_id: str, label: str, role: str
+        *, case_id: str, label: str, role: ActionRole
     ) -> StructuralActionCase:
         existing_by_role = next(
             (
@@ -1199,7 +1201,9 @@ def _p399_stability_actions(
         return [], [], None, unavailable, [reason]
 
     assert default_base is not None
-    direction_specs = (
+    direction_specs: tuple[
+        tuple[str, str, Literal["x", "y"], Literal[-1, 1], str], ...
+    ] = (
         ("positive-x", "+X", "x", 1, "WX+"),
         ("negative-x", "-X", "x", -1, "WX-"),
         ("positive-y", "+Y", "y", 1, "WY+"),
@@ -1285,6 +1289,9 @@ def _p399_stability_actions(
             for member in component_members
         ]
         base_restraints.append(min(endpoint_restraints, key=lambda item: item[0])[1])
+    base_model: Literal[
+        "unspecified", "perfectly_pinned", "rotational_spring", "fixed"
+    ]
     if all(
         restraint.rx and restraint.ry and restraint.rz
         for restraint in base_restraints
