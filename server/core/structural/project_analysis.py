@@ -16,6 +16,8 @@ from .contracts import (
     CalculationInput,
     CalculationSheet,
     CapabilityState,
+    CertificationGate,
+    CertificationReadiness,
     ConnectionCheck,
     DesignComponent,
     DesignConnection,
@@ -1903,7 +1905,7 @@ def _load_summary(
     )
 
 
-def _p399_evidence(
+def _certification_evidence(
     *,
     capture: ProjectStructuralCapture,
     analysis,
@@ -1923,11 +1925,12 @@ def _p399_evidence(
     equilibrium_tolerance: float,
     stability_result: StabilityResult | None,
 ) -> tuple[list[VerificationStage], list[CalculationSheet]]:
-    """Build inspectable evidence for every P399 process stage.
+    """Build inspectable evidence for the Australian verification process.
 
     These sheets distinguish a completed model/data calculation from an
     engineering verification. Unsupported resistance and stability stages are
     deliberately blocked rather than inferred from an elastic demand result.
+    SCI P399 is retained only as supplemental portal-frame analysis guidance.
     """
 
     basis = capture.design_basis
@@ -2813,11 +2816,12 @@ def _p399_evidence(
 
     sheets = [
         CalculationSheet(
-            id="sheet-p399-geometry",
+            id="sheet-au-geometry",
             stage_id="geometry",
             title="Geometry and analytical scheme",
             status=basis_status,
-            p399_reference="SCI P399 Sections 3 and 6.1",
+            primary_reference="NCC 2022 Volume Two H1P1; Housing Provisions 2.2",
+            supplemental_references=["SCI P399 Sections 3 and 6.1"],
             purpose=(
                 "Prove which compiled mechanical components became nodes, members, "
                 "and supports."
@@ -2853,11 +2857,12 @@ def _p399_evidence(
             related_node_ids=node_ids,
         ),
         CalculationSheet(
-            id="sheet-p399-actions",
+            id="sheet-au-actions",
             stage_id="actions",
             title="Actions and tributary transfer",
             status=actions_status,
-            p399_reference="SCI P399 Section 4",
+            primary_reference="AS/NZS 1170.0, AS/NZS 1170.1 and AS/NZS 1170.2",
+            supplemental_references=["SCI P399 Section 4"],
             purpose="Trace every authored action from its physical source to member load.",
             assumptions=(
                 action_assumptions
@@ -2879,11 +2884,12 @@ def _p399_evidence(
             related_load_case_ids=case_ids,
         ),
         CalculationSheet(
-            id="sheet-p399-combinations",
+            id="sheet-au-combinations",
             stage_id="combinations",
             title="Active action combination",
             status=combinations_status,
-            p399_reference="SCI P399 Section 4.7",
+            primary_reference="AS/NZS 1170.0:2002 action combinations",
+            supplemental_references=["SCI P399 Section 4.7"],
             purpose="Expose factors selected for the current solve; no hidden combinations.",
             assumptions=(
                 []
@@ -2907,11 +2913,12 @@ def _p399_evidence(
             related_combination_ids=[combination.id],
         ),
         CalculationSheet(
-            id="sheet-p399-analysis",
+            id="sheet-au-analysis",
             stage_id="analysis",
             title="Elastic frame analysis",
             status=analysis_status,
-            p399_reference="SCI P399 Section 5",
+            primary_reference="AS/NZS 1170.0 analysis and limit-state requirements",
+            supplemental_references=["SCI P399 Section 5"],
             purpose="Record the active solver method, member demands, and equilibrium audit.",
             inputs=[
                 CalculationInput(
@@ -2951,11 +2958,12 @@ def _p399_evidence(
             related_combination_ids=[combination.id],
         ),
         CalculationSheet(
-            id="sheet-p399-stability",
+            id="sheet-au-stability",
             stage_id="stability",
             title="Imperfections and global stability",
             status=stability_status,
-            p399_reference="SCI P399 Sections 7.2–7.8",
+            primary_reference="AS/NZS 4600:2018 member and system stability",
+            supplemental_references=["SCI P399 Sections 7.2–7.8"],
             purpose=(
                 "Compare first-order elastic and iterative P-Delta response for the "
                 "Tertius-resolved imperfection combination."
@@ -3142,11 +3150,12 @@ def _p399_evidence(
             ),
         ),
         CalculationSheet(
-            id="sheet-p399-cross-section",
+            id="sheet-au-cross-section",
             stage_id="cross_section",
             title="Cross-section verification",
             status=cross_section_status,
-            p399_reference="SCI P399 Section 8.1",
+            primary_reference="AS/NZS 4600:2018 cross-section resistance",
+            supplemental_references=["SCI P399 Section 8.1"],
             purpose="Check classification/effective properties and governing force interactions.",
             inputs=(
                 []
@@ -3190,11 +3199,12 @@ def _p399_evidence(
             ),
         ),
         CalculationSheet(
-            id="sheet-p399-member-stability",
+            id="sheet-au-member-stability",
             stage_id="member_stability",
             title="Member stability",
             status=member_stability_status,
-            p399_reference="SCI P399 Sections 8.2–8.4",
+            primary_reference="AS/NZS 4600:2018 member buckling and restraint",
+            supplemental_references=["SCI P399 Sections 8.2–8.4"],
             purpose="Verify buckling and axial-bending interaction on restraint-defined segments.",
             inputs=(
                 []
@@ -3238,11 +3248,12 @@ def _p399_evidence(
             ),
         ),
         CalculationSheet(
-            id="sheet-p399-bracing",
+            id="sheet-au-bracing",
             stage_id="bracing",
             title="Bracing and restraint",
             status=bracing_status,
-            p399_reference="SCI P399 Section 9",
+            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            supplemental_references=["SCI P399 Section 9"],
             purpose="Trace restraint forces and stiffness to a complete resisting system.",
             assumptions=[
                 "Cladding and fasteners are not assumed to provide unverified restraint.",
@@ -3356,11 +3367,12 @@ def _p399_evidence(
             ),
         ),
         CalculationSheet(
-            id="sheet-p399-connections",
+            id="sheet-au-connections",
             stage_id="connections",
             title="Connections and bases",
             status=connection_status,
-            p399_reference="SCI P399 Section 11",
+            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            supplemental_references=["SCI P399 Section 11"],
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
                 "Rendered screws, bolts, bracket, anchors, and concrete establish identity and geometry, not resistance by themselves.",
@@ -3515,11 +3527,12 @@ def _p399_evidence(
             related_combination_ids=[combination.id],
         ),
         CalculationSheet(
-            id="sheet-p399-serviceability",
+            id="sheet-au-serviceability",
             stage_id="serviceability",
             title="Serviceability",
             status=serviceability_status,
-            p399_reference="SCI P399 Section 12",
+            primary_reference="AS/NZS 1170.0 serviceability limit state",
+            supplemental_references=["SCI P399 Section 12"],
             purpose="Compare elastic SLS movement with explicitly authored project criteria.",
             outputs=[
                 CalculationInput(
@@ -3536,11 +3549,12 @@ def _p399_evidence(
             related_combination_ids=[combination.id],
         ),
         CalculationSheet(
-            id="sheet-p399-decision",
+            id="sheet-au-decision",
             stage_id="decision",
             title="Evidence and order decision",
             status="blocked",
-            p399_reference="SCI P399 complete verification process",
+            primary_reference="NCC 2022 A5G3 evidence of suitability and H1P1",
+            supplemental_references=["SCI P399 complete verification process"],
             purpose="Prevent a green design/order decision while required stages are incomplete.",
             assumptions=[
                 "Current result is analysis evidence only and is not suitable for ordering.",
@@ -3557,36 +3571,39 @@ def _p399_evidence(
             id="geometry",
             order=1,
             label="Geometry",
-            p399_reference="§3, §6.1",
+            primary_reference="NCC H1P1; Housing Provisions 2.2",
+            supplemental_references=["SCI P399 §§3, 6.1"],
             status=basis_status,
             summary=(
                 f"{len(members)} members, {len(nodes)} nodes, "
                 f"{sum(any(node.restraints.model_dump().values()) for node in nodes)} supports."
             ),
-            sheet_ids=["sheet-p399-geometry"],
+            sheet_ids=["sheet-au-geometry"],
         ),
         VerificationStage(
             id="actions",
             order=2,
             label="Actions",
-            p399_reference="§4",
+            primary_reference="AS/NZS 1170.0/.1/.2",
+            supplemental_references=["SCI P399 §4"],
             status=actions_status,
             summary=(
                 f"{len(capture.wind_action_bases)} site basis/bases, "
                 f"{len(wind_surface_loads)} wind surface action(s), "
                 f"{len(action_equations)} trace equation(s)."
             ),
-            sheet_ids=["sheet-p399-actions"],
+            sheet_ids=["sheet-au-actions"],
             blocking_stage_ids=[] if basis_status == "pass" else ["geometry"],
         ),
         VerificationStage(
             id="combinations",
             order=3,
             label="Combinations",
-            p399_reference="§4.7",
+            primary_reference="AS/NZS 1170.0",
+            supplemental_references=["SCI P399 §4.7"],
             status=combinations_status,
             summary=f"{combination.id}: {len(combination.factors)} explicit factors.",
-            sheet_ids=["sheet-p399-combinations"],
+            sheet_ids=["sheet-au-combinations"],
             blocking_stage_ids=[]
             if actions_status in {"pass", "warning"}
             else ["actions"],
@@ -3595,10 +3612,11 @@ def _p399_evidence(
             id="analysis",
             order=4,
             label="Analysis",
-            p399_reference="§5",
+            primary_reference="AS/NZS 1170.0 analysis requirements",
+            supplemental_references=["SCI P399 §5"],
             status=analysis_status,
             summary=f"PyNite elastic solve; equilibrium residual {residual:.3e}.",
-            sheet_ids=["sheet-p399-analysis"],
+            sheet_ids=["sheet-au-analysis"],
             blocking_stage_ids=(
                 [] if combinations_status in {"pass", "warning"} else ["combinations"]
             ),
@@ -3607,7 +3625,8 @@ def _p399_evidence(
             id="stability",
             order=5,
             label="Global stability",
-            p399_reference="§7.2–§7.8",
+            primary_reference="AS/NZS 4600:2018 stability",
+            supplemental_references=["SCI P399 §§7.2–7.8"],
             status=stability_status,
             summary=(
                 "Imperfection load and P-Delta comparison are missing."
@@ -3629,14 +3648,15 @@ def _p399_evidence(
                     )
                 )
             ),
-            sheet_ids=["sheet-p399-stability"],
+            sheet_ids=["sheet-au-stability"],
             blocking_stage_ids=[] if analysis_status == "pass" else ["analysis"],
         ),
         VerificationStage(
             id="cross_section",
             order=6,
             label="Cross-section",
-            p399_reference="§8.1",
+            primary_reference="AS/NZS 4600:2018 cross-section resistance",
+            supplemental_references=["SCI P399 §8.1"],
             status=cross_section_status,
             summary=(
                 "No versioned Australian capacity pack is selected."
@@ -3651,14 +3671,15 @@ def _p399_evidence(
                     else "Cross-section envelope produced no member results."
                 )
             ),
-            sheet_ids=["sheet-p399-cross-section"],
+            sheet_ids=["sheet-au-cross-section"],
             blocking_stage_ids=["stability"],
         ),
         VerificationStage(
             id="member_stability",
             order=7,
             label="Member stability",
-            p399_reference="§8.2–§8.4",
+            primary_reference="AS/NZS 4600:2018 member stability",
+            supplemental_references=["SCI P399 §§8.2–8.4"],
             status=member_stability_status,
             summary=(
                 "No restraint-defined member-capacity pack is selected."
@@ -3673,14 +3694,15 @@ def _p399_evidence(
                     "need restraint and/or distortional-buckling evidence."
                 )
             ),
-            sheet_ids=["sheet-p399-member-stability"],
+            sheet_ids=["sheet-au-member-stability"],
             blocking_stage_ids=["stability", "cross_section"],
         ),
         VerificationStage(
             id="bracing",
             order=8,
             label="Bracing/restraint",
-            p399_reference="§9",
+            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            supplemental_references=["SCI P399 §9"],
             status=bracing_status,
             summary=(
                 f"{len(member_restraint_candidate_checks)} active restraint candidate "
@@ -3690,14 +3712,15 @@ def _p399_evidence(
                 if member_restraint_candidate_checks
                 else "No verified restraint or bracing load path is active."
             ),
-            sheet_ids=["sheet-p399-bracing"],
+            sheet_ids=["sheet-au-bracing"],
             blocking_stage_ids=["member_stability"],
         ),
         VerificationStage(
             id="connections",
             order=9,
             label="Connections/bases",
-            p399_reference="§11",
+            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            supplemental_references=["SCI P399 §11"],
             status=connection_status,
             summary=(
                 f"{len(connection_checks)} physical connection demand/resistance "
@@ -3708,31 +3731,33 @@ def _p399_evidence(
                 if connection_checks
                 else "Rendered detail exists; no resistance evidence pack is connected."
             ),
-            sheet_ids=["sheet-p399-connections"],
+            sheet_ids=["sheet-au-connections"],
             blocking_stage_ids=["analysis"],
         ),
         VerificationStage(
             id="serviceability",
             order=10,
             label="Serviceability",
-            p399_reference="§12",
+            primary_reference="AS/NZS 1170.0 serviceability",
+            supplemental_references=["SCI P399 §12"],
             status=serviceability_status,
             summary=(
                 f"{len(checked_serviceability)} authored SLS criteria evaluated."
                 if checked_serviceability
                 else "Select an SLS combination with an authored deflection criterion."
             ),
-            sheet_ids=["sheet-p399-serviceability"],
+            sheet_ids=["sheet-au-serviceability"],
             blocking_stage_ids=[] if analysis_status == "pass" else ["analysis"],
         ),
         VerificationStage(
             id="decision",
             order=11,
             label="Evidence/decision",
-            p399_reference="Complete process",
+            primary_reference="NCC A5G3 and H1P1",
+            supplemental_references=["SCI P399 complete process"],
             status="blocked",
-            summary="NOT READY TO ORDER: required P399 stages remain incomplete.",
-            sheet_ids=["sheet-p399-decision"],
+            summary="NOT READY TO CERTIFY OR ORDER: Australian verification gates remain incomplete.",
+            sheet_ids=["sheet-au-decision"],
             blocking_stage_ids=[
                 "stability",
                 "cross_section",
@@ -3743,6 +3768,268 @@ def _p399_evidence(
         ),
     ]
     return stages, sheets
+
+
+def _australian_certification_readiness(
+    *,
+    capture: ProjectStructuralCapture,
+    analysis,
+    stages: list[VerificationStage],
+    sheets: list[CalculationSheet],
+    equilibrium_status: Literal["pass", "fail"],
+    tension_member_checks: list[TensionMemberCheck],
+) -> tuple[CertificationReadiness, list[VerificationStage], list[CalculationSheet]]:
+    """Convert detailed calculations into conservative Australian release gates."""
+
+    stages_by_id = {stage.id: stage for stage in stages}
+
+    def combined_status(stage_ids: list[str]):
+        statuses = [stages_by_id[stage_id].status for stage_id in stage_ids]
+        if all(status == "pass" for status in statuses):
+            return "pass"
+        if "fail" in statuses:
+            return "fail"
+        if "warning" in statuses and all(
+            status in {"pass", "warning"} for status in statuses
+        ):
+            return "warning"
+        return "blocked"
+
+    basis = capture.design_basis
+    basis_missing: list[str] = []
+    if basis is None or basis.framework_id != "AU-NCC-2022":
+        basis_missing.append("NCC 2022 Australian primary framework")
+    if basis is None or not basis.building_classification:
+        basis_missing.append("NCC building classification")
+    if basis is None or not basis.importance_level:
+        basis_missing.append("importance level")
+    if basis is None or basis.design_life_years is None:
+        basis_missing.append("design life")
+    required_standard_roles = {
+        "action_combinations",
+        "permanent_and_imposed_actions",
+        "wind_actions",
+        "members",
+    }
+    if basis is None or not required_standard_roles.issubset(basis.standards):
+        basis_missing.append("complete Australian standard register")
+    if basis is None or any(
+        "unconfirmed" in reference.lower() for reference in basis.standards.values()
+    ):
+        basis_missing.append("confirmed project standard editions")
+    if capture.wind_action_bases and any(
+        wind.region_status != "verified" or wind.table_status != "verified"
+        for wind in capture.wind_action_bases
+    ):
+        basis_missing.append("verified wind region and standard-table evidence")
+
+    basis_gate = CertificationGate(
+        id="project_basis",
+        order=1,
+        label="Project and NCC basis",
+        status="pass" if not basis_missing else "blocked",
+        primary_reference="NCC 2022 A6, H1 and Housing Provisions 2.2",
+        summary=(
+            "NCC classification, importance, design life and project standards are recorded."
+            if not basis_missing
+            else "Missing or unverified: " + ", ".join(basis_missing) + "."
+        ),
+        stage_ids=["geometry"],
+    )
+
+    action_pack = analysis.action_standard_pack
+    actions_calculated = combined_status(["actions", "combinations"]) == "pass"
+    action_evidence_ready = bool(
+        actions_calculated
+        and action_pack is not None
+        and action_pack.status != "working"
+    )
+    action_gate = CertificationGate(
+        id="actions",
+        order=2,
+        label="Actions and combinations",
+        status="pass" if action_evidence_ready else "blocked",
+        primary_reference="AS/NZS 1170.0, AS/NZS 1170.1 and AS/NZS 1170.2",
+        summary=(
+            "Applicable actions and combinations use certification evidence."
+            if action_evidence_ready
+            else (
+                "Actions are calculated for engineering review, but the selected "
+                "action pack is working evidence and cannot support certification."
+                if actions_calculated
+                else "Required action calculations or combinations are incomplete."
+            )
+        ),
+        stage_ids=["actions", "combinations"],
+    )
+
+    analysis_stage_status = combined_status(["geometry", "analysis"])
+    analysis_gate = CertificationGate(
+        id="analysis",
+        order=3,
+        label="Structural analysis",
+        status=(
+            "pass"
+            if analysis_stage_status == "pass" and equilibrium_status == "pass"
+            else "fail"
+            if equilibrium_status == "fail"
+            else "blocked"
+        ),
+        primary_reference="AS/NZS 1170.0 analysis and limit-state requirements",
+        summary=(
+            "The compiled mechanical model solves and satisfies global equilibrium."
+            if analysis_stage_status == "pass" and equilibrium_status == "pass"
+            else "The analytical model or its equilibrium check is incomplete."
+        ),
+        stage_ids=["geometry", "analysis"],
+    )
+
+    stability_gate = CertificationGate(
+        id="stability",
+        order=4,
+        label="System stability",
+        status=stages_by_id["stability"].status,
+        primary_reference="AS/NZS 4600:2018 stability requirements",
+        summary=stages_by_id["stability"].summary,
+        stage_ids=["stability"],
+    )
+    capacity_gate = CertificationGate(
+        id="member_capacity",
+        order=5,
+        label="Member resistance and stability",
+        status=combined_status(["cross_section", "member_stability"]),
+        primary_reference="AS/NZS 4600:2018 cold-formed steel design",
+        summary=(
+            f"Cross-section: {stages_by_id['cross_section'].status}; member stability: "
+            f"{stages_by_id['member_stability'].status}."
+        ),
+        stage_ids=["cross_section", "member_stability"],
+    )
+    tension_ready = all(
+        check.status == "pass" for check in tension_member_checks
+    )
+    load_path_status = combined_status(["bracing", "connections"])
+    load_path_gate = CertificationGate(
+        id="load_path",
+        order=6,
+        label="Bracing, connections and foundations",
+        status=(
+            "pass"
+            if load_path_status == "pass" and tension_ready
+            else "fail"
+            if load_path_status == "fail"
+            else "blocked"
+        ),
+        primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+        summary=(
+            "Bracing and connection resistance form a verified load path to ground."
+            if load_path_status == "pass" and tension_ready
+            else (
+                f"Bracing: {stages_by_id['bracing'].status}; connections: "
+                f"{stages_by_id['connections'].status}; verified tension components: "
+                f"{sum(check.status == 'pass' for check in tension_member_checks)}/"
+                f"{len(tension_member_checks)}."
+            )
+        ),
+        stage_ids=["bracing", "connections"],
+    )
+    serviceability_gate = CertificationGate(
+        id="serviceability",
+        order=7,
+        label="Serviceability",
+        status=stages_by_id["serviceability"].status,
+        primary_reference="AS/NZS 1170.0 serviceability limit state",
+        summary=stages_by_id["serviceability"].summary,
+        stage_ids=["serviceability"],
+    )
+
+    technical_gates = [
+        basis_gate,
+        action_gate,
+        analysis_gate,
+        stability_gate,
+        capacity_gate,
+        load_path_gate,
+        serviceability_gate,
+    ]
+    technical_ready = all(gate.status == "pass" for gate in technical_gates)
+    documentation_gate = CertificationGate(
+        id="documentation",
+        order=8,
+        label="Evidence and engineering decision",
+        status="pass" if technical_ready else "blocked",
+        primary_reference="NCC 2022 A5G3 evidence of suitability",
+        summary=(
+            "The technical gates support preparation of a certificate for engineer sign-off."
+            if technical_ready
+            else "A positive certificate cannot be prepared while technical gates remain open."
+        ),
+        stage_ids=["decision"],
+    )
+    gates = [*technical_gates, documentation_gate]
+    blocking_gates = [gate for gate in gates if gate.status != "pass"]
+    ready_for_engineering_review = analysis_gate.status == "pass"
+    ready_for_certificate = not blocking_gates
+    document_status: Literal[
+        "analysis_incomplete", "engineering_review_draft", "certificate_ready"
+    ] = (
+        "certificate_ready"
+        if ready_for_certificate
+        else "engineering_review_draft"
+        if ready_for_engineering_review
+        else "analysis_incomplete"
+    )
+    readiness = CertificationReadiness(
+        document_status=document_status,
+        draft_document_label=(
+            "DRAFT STRUCTURAL CERTIFICATE — ENGINEER REVIEW AND SIGNATURE REQUIRED"
+            if ready_for_certificate
+            else "DRAFT ENGINEERING REVIEW REPORT — NOT A STRUCTURAL CERTIFICATE"
+        ),
+        ready_for_engineering_review=ready_for_engineering_review,
+        ready_for_certificate=ready_for_certificate,
+        ready_for_order=ready_for_certificate,
+        conclusion=(
+            "Australian technical gates pass; prepare the controlled certificate draft for engineer review."
+            if ready_for_certificate
+            else "Analysis evidence is available for engineering review, but certification and ordering remain blocked."
+            if ready_for_engineering_review
+            else "The structural analysis is incomplete and no engineering review document should be issued."
+        ),
+        blocking_gate_ids=[gate.id for gate in blocking_gates],
+        blocking_reasons=[f"{gate.label}: {gate.summary}" for gate in blocking_gates],
+        gates=gates,
+    )
+
+    decision_status = "pass" if ready_for_certificate else "blocked"
+    decision_summary = (
+        "READY FOR CONTROLLED CERTIFICATE DRAFT AND ENGINEER SIGN-OFF."
+        if ready_for_certificate
+        else "NOT READY TO CERTIFY OR ORDER: Australian verification gates remain incomplete."
+    )
+    stages = [
+        stage.model_copy(
+            update={"status": decision_status, "summary": decision_summary}
+        )
+        if stage.id == "decision"
+        else stage
+        for stage in stages
+    ]
+    sheets = [
+        sheet.model_copy(
+            update={
+                "status": decision_status,
+                "assumptions": [
+                    readiness.draft_document_label,
+                    *readiness.blocking_reasons,
+                ],
+            }
+        )
+        if sheet.stage_id == "decision"
+        else sheet
+        for sheet in sheets
+    ]
+    return readiness, stages, sheets
 
 
 def _generate_p399_nodal_loads(
@@ -4889,7 +5176,7 @@ def solve_project_structural(
     checked_serviceability = [
         check for check in serviceability_checks if check.status != "not_checked"
     ]
-    verification_stages, calculation_sheets = _p399_evidence(
+    verification_stages, calculation_sheets = _certification_evidence(
         capture=capture,
         analysis=analysis,
         combination=active_combination,
@@ -4907,6 +5194,18 @@ def solve_project_structural(
         residual=residual,
         equilibrium_tolerance=equilibrium_tolerance,
         stability_result=stability_result,
+    )
+    (
+        certification_readiness,
+        verification_stages,
+        calculation_sheets,
+    ) = _australian_certification_readiness(
+        capture=capture,
+        analysis=analysis,
+        stages=verification_stages,
+        sheets=calculation_sheets,
+        equilibrium_status=equilibrium_status,
+        tension_member_checks=tension_member_checks,
     )
     cross_section_stage = next(
         stage for stage in verification_stages if stage.id == "cross_section"
@@ -4997,6 +5296,7 @@ def solve_project_structural(
         stability=stability_result,
         verification_stages=verification_stages,
         calculation_sheets=calculation_sheets,
+        certification_readiness=certification_readiness,
         capabilities=[
             CapabilityState(
                 id="design-capture",

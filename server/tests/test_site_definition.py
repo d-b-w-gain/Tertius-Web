@@ -352,6 +352,10 @@ def test_site_overlay_recalculates_wind_load_without_changing_topology():
     assert overlaid["loads"][0]["pressure_kPa"] == pytest.approx(0.8 * 0.837014)
     assert overlaid["loads"][0]["coefficient_status"] == "working_conservative"
     assert overlaid["design_basis"]["standards"]["wind_actions"] == "AS/NZS 1170.2:2021"
+    assert overlaid["design_basis"]["framework_id"] == "AU-NCC-2022"
+    assert overlaid["design_basis"]["building_classification"] == "Class 10a"
+    assert overlaid["design_basis"]["importance_level"] == "2"
+    assert overlaid["design_basis"]["supplemental_methods"][0]["id"] == "SCI-P399"
     assert "confirm" not in (
         overlaid["design_basis"]["standards"]["action_combinations"].lower()
     )

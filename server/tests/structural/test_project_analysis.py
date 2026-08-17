@@ -220,9 +220,9 @@ from tertius_structural import StructuralModel
 
 structure = StructuralModel(title="Two-member gravity frame")
 structure.design_basis(
-    framework_id="SCI-P399",
-    framework_label="SCI P399 verification process",
-    framework_reference="Table 3.1 and Sections 4-12",
+    framework_id="AU-NCC-2022",
+    framework_label="NCC 2022 Australian structural verification",
+    framework_reference="NCC 2022 Volume Two Part H1",
     jurisdiction="Australia",
     analysis_method="3D first-order elastic frame analysis",
     standards={
@@ -400,8 +400,15 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert stages["cross_section"].status == "not_checked"
     assert stages["decision"].status == "blocked"
     assert service.design_basis is not None
-    assert service.design_basis.framework_id == "SCI-P399"
+    assert service.design_basis.framework_id == "AU-NCC-2022"
     assert len(service.calculation_sheets) == 11
+    assert service.certification_readiness is not None
+    assert service.certification_readiness.ready_for_engineering_review is True
+    assert service.certification_readiness.ready_for_certificate is False
+    assert service.certification_readiness.document_status == "engineering_review_draft"
+    assert "DRAFT ENGINEERING REVIEW REPORT" in (
+        service.certification_readiness.draft_document_label
+    )
     actions_sheet = next(
         sheet for sheet in service.calculation_sheets if sheet.stage_id == "actions"
     )

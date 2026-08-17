@@ -1133,9 +1133,6 @@ def _p399_stability_actions(
 ]:
     """Plan solver-generated P399 EHF and NEd/200 NHF action cases."""
 
-    if configuration.design_basis.framework_id != "SCI-P399":
-        return [], [], None, [], []
-
     roles = {
         component.id: (component.role or "").strip().lower()
         for component in components

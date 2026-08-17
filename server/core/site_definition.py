@@ -817,6 +817,32 @@ def apply_site_definition(
     design_basis = value.get("design_basis")
     standards = site.project_basis.standards
     if isinstance(design_basis, dict):
+        design_basis.update(
+            {
+                "framework_id": "AU-NCC-2022",
+                "framework_label": "NCC 2022 Australian structural verification",
+                "framework_reference": (
+                    "NCC 2022 Volume Two Part H1 and ABCB Housing Provisions Part 2.2"
+                ),
+                "building_classification": (
+                    f"Class {site.project_basis.building_classification}"
+                ),
+                "importance_level": site.project_basis.importance_level,
+                "design_life_years": site.project_basis.design_life_years,
+                "compliance_pathway": "Engineered solution",
+                "supplemental_methods": [
+                    {
+                        "id": "SCI-P399",
+                        "label": "SCI P399 portal-frame stability workflow",
+                        "reference": "Table 3.1 and Sections 4-12",
+                        "role": (
+                            "Supplemental analysis guidance; not the Australian "
+                            "compliance basis"
+                        ),
+                    }
+                ],
+            }
+        )
         design_basis["jurisdiction"] = site.project_basis.jurisdiction
         design_standards = dict(design_basis.get("standards") or {})
 

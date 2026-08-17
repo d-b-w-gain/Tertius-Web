@@ -242,7 +242,7 @@ class ActionStandardPackEvidence(StructuralContract):
     pack_id: str
     pack_version: str
     standard_reference: str
-    status: Literal["working"]
+    status: Literal["working", "verified"]
     combination_ids: list[str]
     basis: str
 
@@ -713,13 +713,25 @@ VerificationStatus = Literal[
 ]
 
 
+class SupplementalMethod(StructuralContract):
+    id: str
+    label: str
+    reference: str
+    role: str
+
+
 class StructuralDesignBasis(StructuralContract):
     framework_id: str
     framework_label: str
     framework_reference: str
     jurisdiction: str
     analysis_method: str
+    building_classification: str | None = None
+    importance_level: str | None = None
+    design_life_years: int | None = Field(default=None, gt=0)
+    compliance_pathway: str = "Engineered solution"
     standards: dict[str, str] = Field(default_factory=dict)
+    supplemental_methods: list[SupplementalMethod] = Field(default_factory=list)
 
 
 class CalculationInput(StructuralContract):
@@ -743,7 +755,8 @@ class CalculationSheet(StructuralContract):
     stage_id: str
     title: str
     status: VerificationStatus
-    p399_reference: str
+    primary_reference: str
+    supplemental_references: list[str] = Field(default_factory=list)
     purpose: str
     assumptions: list[str] = Field(default_factory=list)
     inputs: list[CalculationInput] = Field(default_factory=list)
@@ -760,11 +773,40 @@ class VerificationStage(StructuralContract):
     id: str
     order: int
     label: str
-    p399_reference: str
+    primary_reference: str
+    supplemental_references: list[str] = Field(default_factory=list)
     status: VerificationStatus
     summary: str
     sheet_ids: list[str] = Field(default_factory=list)
     blocking_stage_ids: list[str] = Field(default_factory=list)
+
+
+class CertificationGate(StructuralContract):
+    id: str
+    order: int
+    label: str
+    status: VerificationStatus
+    primary_reference: str
+    summary: str
+    stage_ids: list[str] = Field(default_factory=list)
+
+
+class CertificationReadiness(StructuralContract):
+    scheme_id: Literal["AU-NCC-2022"] = "AU-NCC-2022"
+    scheme_label: str = "Australian structural certification readiness"
+    document_status: Literal[
+        "analysis_incomplete",
+        "engineering_review_draft",
+        "certificate_ready",
+    ]
+    draft_document_label: str
+    ready_for_engineering_review: bool
+    ready_for_certificate: bool
+    ready_for_order: bool
+    conclusion: str
+    blocking_gate_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    gates: list[CertificationGate] = Field(default_factory=list)
 
 
 class DesignComponent(StructuralContract):
@@ -1385,7 +1427,7 @@ class SnapshotSource(StructuralContract):
 
 
 class StructuralSnapshot(StructuralContract):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mode: Literal["fixture", "design"]
     title: str
     subtitle: str
@@ -1433,6 +1475,7 @@ class StructuralSnapshot(StructuralContract):
     stability: StabilityResult | None = None
     verification_stages: list[VerificationStage] = Field(default_factory=list)
     calculation_sheets: list[CalculationSheet] = Field(default_factory=list)
+    certification_readiness: CertificationReadiness | None = None
     capabilities: list[CapabilityState]
     warnings: list[str]
 

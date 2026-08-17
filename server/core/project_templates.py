@@ -39,15 +39,26 @@ def default_structural_configuration() -> dict[str, object]:
         "schema_version": "2.0",
         "title": "Compiled mechanical structure draft analysis",
         "design_basis": {
-            "framework_id": "SCI-P399",
-            "framework_label": "SCI P399 verification process",
-            "framework_reference": "Table 3.1 and Sections 4-12",
+            "framework_id": "AU-NCC-2022",
+            "framework_label": "NCC 2022 Australian structural verification",
+            "framework_reference": (
+                "NCC 2022 Volume Two Part H1 and ABCB Housing Provisions Part 2.2"
+            ),
             "jurisdiction": "Australia",
-            "analysis_method": "3D first-order elastic frame analysis",
+            "analysis_method": "3D elastic frame analysis with P-Delta comparison",
+            "compliance_pathway": "Engineered solution",
             "standards": {
                 "actions": "AS/NZS 1170 project inputs",
-                "members": "AS/NZS 4600 verification required",
+                "members": "AS/NZS 4600:2018",
             },
+            "supplemental_methods": [
+                {
+                    "id": "SCI-P399",
+                    "label": "SCI P399 portal-frame stability workflow",
+                    "reference": "Table 3.1 and Sections 4-12",
+                    "role": "Supplemental analysis guidance; not the Australian compliance basis",
+                }
+            ],
         },
         "action_standard_pack_id": "as_nzs_1170_0_2002_working_v1",
         "action_cases": [

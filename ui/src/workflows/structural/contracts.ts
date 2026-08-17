@@ -25,7 +25,17 @@ export type StructuralDesignBasis = {
   framework_reference: string
   jurisdiction: string
   analysis_method: string
+  building_classification: string | null
+  importance_level: string | null
+  design_life_years: number | null
+  compliance_pathway: string
   standards: Record<string, string>
+  supplemental_methods: Array<{
+    id: string
+    label: string
+    reference: string
+    role: string
+  }>
 }
 
 export type StructuralWindActionBasis = {
@@ -90,7 +100,8 @@ export type CalculationSheet = {
   stage_id: string
   title: string
   status: VerificationStatus
-  p399_reference: string
+  primary_reference: string
+  supplemental_references: string[]
   purpose: string
   assumptions: string[]
   inputs: CalculationInput[]
@@ -107,7 +118,8 @@ export type VerificationStage = {
   id: string
   order: number
   label: string
-  p399_reference: string
+  primary_reference: string
+  supplemental_references: string[]
   status: VerificationStatus
   summary: string
   sheet_ids: string[]
@@ -277,6 +289,33 @@ export type LoadCombination = {
   purpose?: 'design' | 'stability_probe'
 }
 
+export type CertificationGate = {
+  id: string
+  order: number
+  label: string
+  status: VerificationStatus
+  primary_reference: string
+  summary: string
+  stage_ids: string[]
+}
+
+export type CertificationReadiness = {
+  scheme_id: 'AU-NCC-2022'
+  scheme_label: string
+  document_status:
+    | 'analysis_incomplete'
+    | 'engineering_review_draft'
+    | 'certificate_ready'
+  draft_document_label: string
+  ready_for_engineering_review: boolean
+  ready_for_certificate: boolean
+  ready_for_order: boolean
+  conclusion: string
+  blocking_gate_ids: string[]
+  blocking_reasons: string[]
+  gates: CertificationGate[]
+}
+
 export type UnavailableLoadCombination = {
   id: string
   label: string
@@ -290,7 +329,7 @@ export type ActionStandardPackEvidence = {
   pack_id: string
   pack_version: string
   standard_reference: string
-  status: 'working'
+  status: 'working' | 'verified'
   combination_ids: string[]
   basis: string
 }
@@ -335,7 +374,7 @@ export type StructuralMember = {
 }
 
 export type StructuralSnapshot = {
-  schema_version: '1.0'
+  schema_version: '2.0'
   mode: 'fixture' | 'design'
   title: string
   subtitle: string
@@ -689,6 +728,7 @@ export type StructuralSnapshot = {
   } | null
   verification_stages: VerificationStage[]
   calculation_sheets: CalculationSheet[]
+  certification_readiness: CertificationReadiness | null
   capabilities: CapabilityState[]
   warnings: string[]
 }

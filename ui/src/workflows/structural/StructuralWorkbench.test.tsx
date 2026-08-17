@@ -91,12 +91,22 @@ const capture: ProjectStructuralCapture = {
   title: 'Structural Workbench — C100 wall connection microcosm',
   authoring_mode: 'generated',
   design_basis: {
-    framework_id: 'SCI-P399',
-    framework_label: 'SCI P399 verification process',
-    framework_reference: 'Table 3.1 and Sections 4–12',
+    framework_id: 'AU-NCC-2022',
+    framework_label: 'NCC 2022 Australian structural verification',
+    framework_reference: 'NCC 2022 Volume Two Part H1',
     jurisdiction: 'Australia',
     analysis_method: '3D first-order elastic frame analysis',
+    building_classification: 'Class 10a',
+    importance_level: '2',
+    design_life_years: 50,
+    compliance_pathway: 'Engineered solution',
     standards: { wind: 'AS/NZS 1170.2 test mapping' },
+    supplemental_methods: [{
+      id: 'SCI-P399',
+      label: 'SCI P399 portal-frame stability workflow',
+      reference: 'Sections 4–12',
+      role: 'Supplemental analysis guidance; not the Australian compliance basis',
+    }],
   },
   wind_action_bases: [],
   components: [
@@ -220,7 +230,7 @@ const capture: ProjectStructuralCapture = {
 }
 
 const analysis: StructuralSnapshot = {
-  schema_version: '1.0',
+  schema_version: '2.0',
   mode: 'design',
   title: capture.title,
   subtitle: 'Active-project first-order elastic member demand',
@@ -483,17 +493,19 @@ const analysis: StructuralSnapshot = {
       id: 'geometry',
       order: 1,
       label: 'Geometry',
-      p399_reference: '§3, §6.1',
+      primary_reference: 'NCC H1P1',
+      supplemental_references: ['SCI P399 §§3, 6.1'],
       status: 'pass',
       summary: 'One member, two nodes, one support.',
-      sheet_ids: ['sheet-p399-geometry'],
+      sheet_ids: ['sheet-au-geometry'],
       blocking_stage_ids: [],
     },
     {
       id: 'stability',
       order: 5,
       label: 'Global stability',
-      p399_reference: '§7.2–§7.8',
+      primary_reference: 'AS/NZS 4600:2018 stability',
+      supplemental_references: ['SCI P399 §§7.2–7.8'],
       status: 'blocked',
       summary: 'Imperfections and second-order effects are missing.',
       sheet_ids: [],
@@ -502,11 +514,12 @@ const analysis: StructuralSnapshot = {
   ],
   calculation_sheets: [
     {
-      id: 'sheet-p399-geometry',
+      id: 'sheet-au-geometry',
       stage_id: 'geometry',
       title: 'Geometry and analytical scheme',
       status: 'pass',
-      p399_reference: 'SCI P399 Sections 3 and 6.1',
+      primary_reference: 'NCC H1P1',
+      supplemental_references: ['SCI P399 Sections 3 and 6.1'],
       purpose: 'Prove which design.py geometry became nodes, members, and supports.',
       assumptions: ['Fixed base is an authored analysis assumption.'],
       inputs: [
@@ -535,6 +548,38 @@ const analysis: StructuralSnapshot = {
       related_combination_ids: [],
     },
   ],
+  certification_readiness: {
+    scheme_id: 'AU-NCC-2022',
+    scheme_label: 'Australian structural certification readiness',
+    document_status: 'engineering_review_draft',
+    draft_document_label: 'DRAFT ENGINEERING REVIEW REPORT — NOT A STRUCTURAL CERTIFICATE',
+    ready_for_engineering_review: true,
+    ready_for_certificate: false,
+    ready_for_order: false,
+    conclusion: 'Analysis evidence is available, but certification remains blocked.',
+    blocking_gate_ids: ['stability'],
+    blocking_reasons: ['System stability: incomplete.'],
+    gates: [
+      {
+        id: 'analysis',
+        order: 1,
+        label: 'Structural analysis',
+        status: 'pass',
+        primary_reference: 'AS/NZS 1170.0',
+        summary: 'Analysis passes.',
+        stage_ids: ['geometry'],
+      },
+      {
+        id: 'stability',
+        order: 2,
+        label: 'System stability',
+        status: 'blocked',
+        primary_reference: 'AS/NZS 4600:2018',
+        summary: 'Stability remains open.',
+        stage_ids: ['stability'],
+      },
+    ],
+  },
   capabilities: [
     {
       id: 'solver',
@@ -573,10 +618,11 @@ const crossSectionAnalysis: StructuralSnapshot = {
       id: 'cross_section',
       order: 6,
       label: 'Cross-section',
-      p399_reference: '§8.1',
+      primary_reference: 'AS/NZS 4600:2018 cross-section resistance',
+      supplemental_references: ['SCI P399 §8.1'],
       status: 'unsupported',
       summary: 'Off-axis action has a candidate collector path but no verified resistance.',
-      sheet_ids: ['sheet-p399-cross-section'],
+      sheet_ids: ['sheet-au-cross-section'],
       blocking_stage_ids: [],
     },
   ],
@@ -719,7 +765,10 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText(/Load arrows: 3/)).toBeInTheDocument()
     expect(screen.getByText(/Nodes: 2/)).toBeInTheDocument()
     expect(screen.getByText(/Reactions: 1/)).toBeInTheDocument()
-    expect(screen.getByText('P399 verification spine')).toBeInTheDocument()
+    expect(screen.getByText('Australian verification detail')).toBeInTheDocument()
+    expect(screen.getByText('Australian certification readiness')).toBeInTheDocument()
+    expect(screen.getByText(/DRAFT ENGINEERING REVIEW REPORT/)).toBeInTheDocument()
+    expect(screen.getByText(/Supplemental method: SCI-P399/)).toBeInTheDocument()
     expect(screen.getByText('Geometry and analytical scheme')).toBeInTheDocument()
     expect(screen.getByText(/Global stability/)).toBeInTheDocument()
     expect(screen.getByText('0.5852 kN·m')).toBeInTheDocument()
@@ -833,7 +882,7 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('working conservative')).toBeInTheDocument()
   })
 
-  it('keeps an exceeded renderer reference not-checked until P399 stages pass', async () => {
+  it('keeps an exceeded renderer reference not-checked until Australian gates pass', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
       new Response(JSON.stringify(
         url.includes('combination_id=DEMO-OVERLOAD')

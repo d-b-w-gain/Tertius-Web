@@ -614,12 +614,32 @@ floor topology is compiled from final CAD placements and fabricated connection
 workpoints. Raw nonstructural furnishings and finishes remain visible and keep
 procurement release blocked until their legacy BoM decorators are migrated.
 
+### Task 9.5: Cut over to Australian certification readiness
+
+**Files:** structural contracts and analysis, site overlay, starter project
+configuration, Structural workbench UI and tests.
+
+- [x] Make NCC 2022 and the selected AS/NZS editions the primary verification
+  framework; retain SCI P399 only as named supplemental portal-frame guidance.
+- [x] Replace P399-named stage/sheet API fields and artifact IDs with primary
+  Australian references and generic Australian evidence identifiers.
+- [x] Derive conservative project-basis, actions, analysis, stability, member,
+  load-path, serviceability, and documentation certification gates from the
+  live calculation evidence.
+- [x] Permit an explicitly non-certifying engineering-review draft when the
+  solver/equilibrium gate passes while blocking a certificate and ordering.
+- [x] Surface the Australian gate status and supplemental P399 role in the
+  Structural workbench and engineering-review JSON export.
+- [ ] Complete the working action pack, member stability, bracing/strap,
+  connection/base/foundation, and serviceability evidence needed to close the
+  live shed's remaining Australian gates.
+
 ### Task 10: Validate the real workflow and release gates
 
 **Files:** unit/integration/e2e tests, harness scripts, runtime parity docs,
 observability.
 
-- [ ] Run focused Python and UI test suites from the test matrix below.
+- [x] Run focused Python and UI test suites from the test matrix below.
 - [ ] Run Compose live-flow during development and canonical isolated local-k3s
   full live-flow before finalising.
 - [ ] Compile the complete structural worked example and compare rendering,

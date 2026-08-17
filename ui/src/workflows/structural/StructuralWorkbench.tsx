@@ -528,6 +528,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       connection_checks: analysis.connection_checks ?? [],
       member_restraint_traces: analysis.member_restraint_traces ?? [],
       member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
+      certification_readiness: analysis.certification_readiness,
       verification_stages: analysis.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
     }
@@ -537,7 +538,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     ))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${analysis.source.design_id || 'tertius'}-p399-calculations.json`
+    anchor.download = `${analysis.source.design_id || 'tertius'}-australian-structural-evidence.json`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -718,11 +719,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         </div>
       </header>
 
-      <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
-        {analysis
-          ? analysis.stability
-            ? 'P399 PROCESS ACTIVE — LINEAR/P-DELTA DEMAND IS VISIBLE; ASSUMPTIONS AND INCOMPLETE VERIFICATION STAGES REMAIN'
-            : 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
+      <div className={`shrink-0 border-b px-5 py-2 text-xs font-semibold ${
+        analysis?.certification_readiness?.ready_for_certificate
+          ? 'border-emerald-500/30 bg-emerald-950/40 text-emerald-200'
+          : 'border-amber-500/30 bg-amber-950/40 text-amber-200'
+      }`}>
+        {analysis?.certification_readiness
+          ? analysis.certification_readiness.ready_for_certificate
+            ? 'AUSTRALIAN TECHNICAL GATES PASS — CONTROLLED CERTIFICATE DRAFT REQUIRES ENGINEER REVIEW AND SIGNATURE'
+            : `AUSTRALIAN VERIFICATION ACTIVE — ${analysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${analysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
@@ -750,7 +755,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-                        Working design framework
+                        Primary Australian compliance framework
                       </div>
                       <div className="mt-1 text-sm font-semibold text-slate-100">
                         {analysis.design_basis.framework_label}
@@ -765,6 +770,55 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {analysis.design_basis.jurisdiction} ·{' '}
                     {analysis.design_basis.analysis_method}
                   </p>
+                  {analysis.design_basis.supplemental_methods.length > 0 && (
+                    <div className="mt-2 rounded border border-slate-700 bg-slate-950/60 px-2 py-1.5 text-[9px] text-slate-400">
+                      Supplemental method: {analysis.design_basis.supplemental_methods
+                        .map((method) => `${method.id} — ${method.role}`)
+                        .join('; ')}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {analysis?.certification_readiness && (
+                <section className={`rounded border p-3 ${
+                  analysis.certification_readiness.ready_for_certificate
+                    ? verificationStyle.pass
+                    : verificationStyle.blocked
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] opacity-80">
+                        Australian certification readiness
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-slate-100">
+                        {analysis.certification_readiness.draft_document_label}
+                      </div>
+                    </div>
+                    <span className="font-mono text-[9px] uppercase">
+                      {analysis.certification_readiness.document_status.replaceAll('_', ' ')}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] leading-relaxed text-slate-300">
+                    {analysis.certification_readiness.conclusion}
+                  </p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {analysis.certification_readiness.gates.map((gate) => (
+                      <div
+                        key={gate.id}
+                        title={gate.summary}
+                        className={`rounded border p-2 ${verificationStyle[gate.status]}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-semibold">{gate.order}. {gate.label}</span>
+                          <span className="font-mono text-[8px] uppercase">
+                            {gate.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[8px] opacity-70">{gate.primary_reference}</div>
+                      </div>
+                    ))}
+                  </div>
                 </section>
               )}
 
@@ -772,14 +826,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 <section>
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                      P399 verification spine
+                      Australian verification detail
                     </div>
                     <button
                       type="button"
                       onClick={downloadCalculationSheets}
                       className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[9px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-200"
                     >
-                      Export calculation JSON
+                      Export engineering-review JSON
                     </button>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
@@ -803,7 +857,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             {stage.status.replace('_', ' ')}
                           </span>
                         </div>
-                        <div className="mt-1 text-[8px] opacity-70">{stage.p399_reference}</div>
+                        <div className="mt-1 text-[8px] opacity-70">{stage.primary_reference}</div>
                       </button>
                     ))}
                   </div>
@@ -831,8 +885,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {selectedCalculationSheet.purpose}
                   </p>
                   <div className="mt-2 rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-slate-400">
-                    {selectedCalculationSheet.p399_reference}
+                    {selectedCalculationSheet.primary_reference}
                   </div>
+                  {selectedCalculationSheet.supplemental_references.length > 0 && (
+                    <div className="mt-1 rounded bg-slate-950/40 px-2 py-1 text-[9px] text-slate-500">
+                      Supplemental: {selectedCalculationSheet.supplemental_references.join('; ')}
+                    </div>
+                  )}
                   {selectedCalculationSheet.inputs.length > 0 && (
                     <div className="mt-3">
                       <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
