@@ -52,6 +52,8 @@ jobs:
           context: .
           file: Dockerfile.api
           target: api
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
           push: true
           tags: ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
           cache-from: type=gha,scope=tertius-api
@@ -132,6 +134,8 @@ jobs:
           context: .
           file: Dockerfile.api
           target: api
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
@@ -146,6 +150,8 @@ jobs:
           context: .
           file: Dockerfile.api
           target: pi-agent
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-pi-agent:${{ steps.vars.outputs.image_tag }}

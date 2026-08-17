@@ -24,6 +24,12 @@ WORKDIR /app
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --home-dir /app --shell /usr/sbin/nologin app
 
+# Make application-source layers commit-specific. The shared BuildKit cache is
+# intentionally reused across branch smoke builds, so the source revision must
+# be part of the parent layer before any repository files are copied.
+ARG SOURCE_COMMIT=unknown
+RUN printf '%s\n' "$SOURCE_COMMIT" > /app/.source-commit
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
