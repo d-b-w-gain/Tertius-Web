@@ -139,6 +139,30 @@ def test_compile_max_deliver_one_documents_result_driven_retry_policy():
     assert "`binary_asset_unavailable`" in documentation
 
 
+@pytest.mark.parametrize(
+    "values_name",
+    ["values.yaml", "values-local.yaml"],
+)
+def test_nats_storage_has_headroom_for_compile_sidecars(values_name: str):
+    root = Path(__file__).parents[2]
+    chart_dir = root / "infra/charts/tertius"
+    defaults = yaml.safe_load(
+        (chart_dir / "values.yaml").read_text(encoding="utf-8")
+    )
+    values = yaml.safe_load(
+        (chart_dir / values_name).read_text(encoding="utf-8")
+    )
+
+    sidecar_max_bytes = defaults["app"]["config"]["compileSidecarMaxBytes"]
+    nats_pvc_size = values["nats"]["config"]["jetstream"]["fileStore"]["pvc"][
+        "size"
+    ]
+
+    assert sidecar_max_bytes == 8 * 1024**3
+    assert nats_pvc_size == "10Gi"
+    assert int(nats_pvc_size.removesuffix("Gi")) * 1024**3 >= sidecar_max_bytes
+
+
 def test_settings_allows_compile_nats_overrides(monkeypatch):
     monkeypatch.setenv("NATS_URL", "nats://nats.tertius.svc:4222")
     monkeypatch.setenv("COMPILE_STREAM_NAME", "CUSTOM_COMPILE")

@@ -26,7 +26,7 @@
 - Modify: `infra/charts/tertius/values-local.yaml`
 - Modify: `docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md`
 
-- [ ] **Step 1: Add the failing deployment-values test**
+- [x] **Step 1: Add the failing deployment-values test**
 
 Append this focused test near the existing compile configuration tests:
 
@@ -49,7 +49,7 @@ def test_nats_storage_has_headroom_for_compile_sidecars(values_name: str):
     assert int(nats_pvc_size.removesuffix("Gi")) * 1024**3 >= sidecar_max_bytes
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -59,7 +59,7 @@ rtk .venv/bin/pytest server/tests/test_config.py::test_nats_storage_has_headroom
 
 Expected: one parameter case passes for `values.yaml`; the local case fails because it reads `1Gi` instead of `10Gi`.
 
-- [ ] **Step 3: Raise the local NATS PVC to 10 GiB**
+- [x] **Step 3: Raise the local NATS PVC to 10 GiB**
 
 Change only the NATS JetStream PVC entry in `infra/charts/tertius/values-local.yaml`:
 
@@ -75,7 +75,7 @@ nats:
 
 Do not alter the unrelated 1 GiB observability or Valkey volumes.
 
-- [ ] **Step 4: Verify GREEN and deployment rendering**
+- [x] **Step 4: Verify GREEN and deployment rendering**
 
 Run:
 
@@ -88,7 +88,7 @@ rtk git diff --check
 
 Expected: the focused test reports two passes and Helm lint succeeds. On this macOS host the broader deployment script may stop at its known `I-019` pseudo-TTY portability fixture; record that exact blocker after confirming all preceding storage/render checks pass.
 
-- [ ] **Step 5: Commit the #355 fix**
+- [x] **Step 5: Commit the #355 fix**
 
 ```bash
 rtk git add server/tests/test_config.py infra/charts/tertius/values-local.yaml docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md
