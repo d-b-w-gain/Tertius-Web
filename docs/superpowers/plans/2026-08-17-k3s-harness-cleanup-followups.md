@@ -167,6 +167,6 @@ command exits zero.
 
 Give the reviewer the approved design, base SHA, head SHA, diff, and verification evidence. Resolve all critical and important findings before publishing.
 
-- [ ] **Step 5: Commit and publish**
+- [x] **Step 5: Commit and publish**
 
 Stage only the specification, plan, two scripts, and harness documentation. Commit with a scoped fix message, push `codex/fix-k3s-cleanup-followups`, create one non-draft PR against `master`, and confirm the PR URL and initial check rollup.
