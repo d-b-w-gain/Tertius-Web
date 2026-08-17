@@ -1748,6 +1748,79 @@ validate_expected_marker_snapshot() {
   fi
 }
 
+validate_retained_tombstone() {
+  retained_marker=$1
+
+  if truthy "$RETAIN_DATA" || truthy "$RETAIN_AUTH" ||
+     [ -n "${EXPECTED_HARNESS_MARKER_UID:-}${EXPECTED_HARNESS_MARKER_RESOURCE_VERSION:-}${EXPECTED_HARNESS_LEASE_ID:-}${EXPECTED_HARNESS_EXPIRES_AT:-}${EXPECTED_HARNESS_NOW_EPOCH:-}" ]; then
+    echo "Retained lifecycle markers may only be claimed by explicit plain cleanup." >&2
+    return 1
+  fi
+  if ! retained_clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null) ||
+     ! retained_pvcs=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null) ||
+     ! retained_keycloaks=$(kubectl get keycloaks.k8s.keycloak.org -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null) ||
+     ! retained_namespace_objects=$(kubectl get deployment,statefulset,daemonset,replicaset,controllerrevision,pod,poddisruptionbudget,service,endpoints,endpointslice,job,configmap,secret,serviceaccount,role,rolebinding,networkpolicy,scaledjob,scaledobject,keycloakrealmimports.k8s.keycloak.org,pvc \
+    -n "$NAMESPACE" -o json 2>/dev/null); then
+    echo "Unable to refresh retained-object inventories before the cleanup claim; refusing cleanup." >&2
+    return 1
+  fi
+  [ -n "$retained_clusters" ] || retained_clusters='{"items":[]}'
+  [ -n "$retained_pvcs" ] || retained_pvcs='{"items":[]}'
+  [ -n "$retained_keycloaks" ] || retained_keycloaks='{"items":[]}'
+  [ -n "$retained_namespace_objects" ] || retained_namespace_objects='{"items":[]}'
+  if ! { printf '%s\n' "$retained_clusters"; printf '%s\n' "$retained_pvcs"; \
+    printf '%s\n' "$retained_keycloaks"; printf '%s\n' "$retained_namespace_objects"; } | \
+    jq -se 'all(.[]; type == "object" and (.items | type == "array"))' >/dev/null; then
+    echo "Malformed refreshed retained-object inventory; refusing cleanup." >&2
+    return 1
+  fi
+  retained_cluster_roots=$(printf '%s' "$retained_clusters" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]') || return 1
+  retained_keycloak_roots=$(printf '%s' "$retained_keycloaks" | jq '[.items[]?.metadata.uid | select(type == "string" and length > 0)]') || return 1
+  retained_cluster_descendants=$(operator_descendants_json "$retained_cluster_roots" "$retained_namespace_objects") || return 1
+  retained_keycloak_descendants=$(operator_descendants_json "$retained_keycloak_roots" "$retained_namespace_objects") || return 1
+  RETAINED_CURRENT_OPERATOR_DESCENDANTS=$(jq -cn --argjson clusters "$retained_cluster_descendants" \
+    --argjson keycloaks "$retained_keycloak_descendants" '($clusters + $keycloaks) | unique_by(.uid)') || return 1
+  retained_lease=$(printf '%s' "$retained_marker" | jq -er '.metadata.annotations["tertius.io/lease-id"]') || return 1
+  if ! { printf '%s\n' "$retained_clusters"; printf '%s\n' "$retained_pvcs"; } | jq -se --arg lease "$retained_lease" '
+    all(.[].items[]?; .metadata.annotations["tertius.io/lease-id"] == $lease)
+  ' >/dev/null; then
+    echo "Retained data no longer matches the lifecycle marker lease; refusing cleanup." >&2
+    return 1
+  fi
+  retained_value=$(printf '%s' "$retained_marker" | jq -er '.metadata.annotations["tertius.io/retained-objects"]') || {
+    echo "Lifecycle marker has malformed retained-object metadata; refusing cleanup." >&2
+    return 1
+  }
+  if ! retained_records=$(printf '%s' "$retained_value" | jq -Rce '
+    split(",") as $records |
+    select(length > 0) |
+    select(all($records[]; test("^[^,/@\\s]+/[^,/@\\s]+@[^,/@\\s]+$"))) |
+    select(($records | unique | length) == ($records | length)) |
+    $records
+  '); then
+    echo "Lifecycle marker has malformed or duplicate retained-object records; refusing cleanup." >&2
+    return 1
+  fi
+  if ! current_records=$(jq -cn --argjson clusters "$retained_clusters" --argjson pvcs "$retained_pvcs" \
+    --argjson descendants "$RETAINED_CURRENT_OPERATOR_DESCENDANTS" '
+      ([$clusters.items[]?, $pvcs.items[]?] |
+        map(.kind + "/" + .metadata.name + "@" + .metadata.uid)) +
+      ($descendants | map(.kind + "/" + .name + "@" + .uid))
+    '); then
+    echo "Unable to build current retained-object identities; refusing cleanup." >&2
+    return 1
+  fi
+  if ! jq -en --argjson recorded "$retained_records" --argjson current "$current_records" '
+    all($current[]; . as $identity | $recorded | index($identity))
+  ' >/dev/null; then
+    echo "Current retained objects do not exactly match the lifecycle tombstone; refusing cleanup." >&2
+    return 1
+  fi
+}
+
 claim_cleanup_marker() {
   discovered_descendants=$1
   validate_expected_marker_snapshot || return 1
@@ -1766,6 +1839,10 @@ claim_cleanup_marker() {
   marker_policy=$(printf '%s' "$fresh_marker" | jq -er '.metadata.annotations["tertius.io/cleanup-policy"]') || return 1
   case "$marker_policy" in
     delete|cleaning) ;;
+    retain)
+      validate_retained_tombstone "$fresh_marker" || return 1
+      discovered_descendants=$RETAINED_CURRENT_OPERATOR_DESCENDANTS
+      ;;
     *) echo "Lifecycle marker is not eligible for cleanup claiming." >&2; return 1 ;;
   esac
   persisted_descendants=$(printf '%s' "$fresh_marker" | jq -r '.metadata.annotations["tertius.io/operator-descendants"] // "[]"') || return 1

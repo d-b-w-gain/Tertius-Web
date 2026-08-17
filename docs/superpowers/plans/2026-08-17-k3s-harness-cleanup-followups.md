@@ -76,21 +76,21 @@ Expected: `k3s harness lifecycle contract tests passed`.
 - Modify: `scripts/test-k3s-deployment.sh:1750-1795`
 - Modify: `scripts/test-k3s-deployment.sh:1940-2000`
 
-- [ ] **Step 1: Model retained-object metadata in the lifecycle marker mock**
+- [x] **Step 1: Model retained-object metadata in the lifecycle marker mock**
 
 Add a marker state file whose default is an empty string and expose it as the `tertius.io/retained-objects` annotation. Add helpers that create the post-`--retain-data` state: no Helm release or Secret, marker policy `retain`, and exact records for the surviving Cluster and PVC UIDs.
 
-- [ ] **Step 2: Add a failing valid-tombstone cleanup test**
+- [x] **Step 2: Add a failing valid-tombstone cleanup test**
 
 Start from the retained-data state and run plain cleanup. Assert that the marker is claimed from `retain` to `cleaning`, each surviving Cluster/PVC is deleted with preconditions, and the marker is deleted.
 
-- [ ] **Step 3: Run the lifecycle test and verify RED**
+- [x] **Step 3: Run the lifecycle test and verify RED**
 
 Run: `bash scripts/test-k3s-harness-lifecycle.sh`
 
 Expected: FAIL with `Lifecycle marker is not eligible for cleanup claiming.`
 
-- [ ] **Step 4: Add failing replacement and unexpected-data refusal tests**
+- [x] **Step 4: Add failing replacement and unexpected-data refusal tests**
 
 Add cases where:
 
@@ -101,17 +101,17 @@ PersistentVolumeClaim/test-release-extra@extra-uid
 
 appear in live inventory but not as exact tombstone records. Each case must return nonzero and log no marker patch, Helm uninstall, annotation, or raw delete.
 
-- [ ] **Step 5: Add a failing missing-recorded-object idempotency test**
+- [x] **Step 5: Add a failing missing-recorded-object idempotency test**
 
 Remove one object recorded by the tombstone before plain cleanup. The test must expect cleanup to succeed and remove the remaining exact objects and marker.
 
-- [ ] **Step 6: Implement retained-tombstone validation**
+- [x] **Step 6: Implement retained-tombstone validation**
 
 Add a helper that parses the marker annotation as comma-separated `kind/name@uid` records, rejects malformed or duplicate records, builds exact records for current Cluster roots, PVCs, and discovered operator descendants, and requires every current record to appear in the tombstone. Existing lease checks remain mandatory for Cluster/PVC roots.
 
 In `claim_cleanup_marker`, accept `retain` only when no janitor expected-snapshot variables are present and the retained-tombstone validation succeeds. Keep `delete|cleaning` behavior unchanged. Use the existing UID/resourceVersion policy test in the claim patch so the transition to `cleaning` remains atomic.
 
-- [ ] **Step 7: Run lifecycle and janitor tests and verify GREEN**
+- [x] **Step 7: Run lifecycle and janitor tests and verify GREEN**
 
 Run:
 
