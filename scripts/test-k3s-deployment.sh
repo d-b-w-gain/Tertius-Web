@@ -1761,7 +1761,8 @@ validate_retained_tombstone() {
     echo "Lifecycle marker has malformed retained-object metadata; refusing cleanup." >&2
     return 1
   }
-  if ! retained_records=$(printf '%s' "$retained_value" | jq -Rce '
+  if ! retained_records=$(printf '%s' "$retained_value" | jq -Rsce '
+    select((contains("\n") or contains("\r")) | not) |
     split(",") as $records |
     select(length > 0) |
     select(all($records[]; test("^[A-Za-z][A-Za-z0-9.]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?@[A-Za-z0-9][A-Za-z0-9_.:-]*$"))) |
@@ -1889,7 +1890,16 @@ claim_cleanup_marker() {
   marker_expires=$(printf '%s' "$fresh_marker" | jq -er '.metadata.annotations["tertius.io/expires-at"]') || return 1
   marker_policy=$(printf '%s' "$fresh_marker" | jq -er '.metadata.annotations["tertius.io/cleanup-policy"]') || return 1
   case "$marker_policy" in
-    delete|cleaning) ;;
+    delete) ;;
+    cleaning)
+      marker_retained_objects=$(printf '%s' "$fresh_marker" | jq -er '.metadata.annotations["tertius.io/retained-objects"] // ""') || return 1
+      if [ -n "$marker_retained_objects" ]; then
+        validate_retained_tombstone "$fresh_marker" || return 1
+        clusters_json=$RETAINED_CURRENT_CLUSTERS_JSON
+        pvcs_json=$RETAINED_CURRENT_PVCS_JSON
+        discovered_descendants=$RETAINED_CURRENT_OPERATOR_DESCENDANTS
+      fi
+      ;;
     retain)
       validate_retained_tombstone "$fresh_marker" || return 1
       clusters_json=$RETAINED_CURRENT_CLUSTERS_JSON

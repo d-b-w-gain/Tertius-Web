@@ -175,7 +175,7 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" configmap "*"${RELEASE_NAME}-harness
       --arg expires "${MOCK_MARKER_EXPIRES_AT:-2099-01-01T00:00:00Z}" \
       --arg policy "${MOCK_MARKER_POLICY:-$(sed -n '1p' "$STATE_DIR/marker-policy")}" \
       --arg descendants "$(sed -n '1p' "$STATE_DIR/marker-descendants")" \
-      --arg retained "$(sed -n '1p' "$STATE_DIR/marker-retained")" \
+      --arg retained "$(<"$STATE_DIR/marker-retained")" \
       '{metadata:{name:$name,namespace:$namespace,uid:"marker-uid",resourceVersion:$rv,
         labels:{"tertius.io/harness-managed":"true","app.kubernetes.io/instance":$release},
         annotations:{"tertius.io/lease-id":$lease,"tertius.io/release-name":$release,
@@ -683,6 +683,20 @@ assert_not_log 'kubectl annotate configmap test-release-harness-lifecycle' \
   "retention finalization must not mutate a marker by name without CAS"
 
 reset_retained_data_state
+if MOCK_MUTATION_FAILURE=raw-delete run_deploy_cleanup; then
+  fail "forced retained-object deletion failure must interrupt cleanup"
+fi
+[ "$(sed -n '1p' "$STATE_DIR/marker-policy")" = cleaning ] || \
+  fail "interrupted retained cleanup must leave its claimed marker in cleaning"
+printf 'replacement-cluster-uid\n' >"$STATE_DIR/cluster-uid"
+: >"$COMMAND_LOG"
+if run_deploy_cleanup; then
+  fail "retrying an interrupted retained cleanup must refuse a replacement UID"
+fi
+assert_cleanup_refused_before_mutation \
+  "interrupted retained cleanup retry must revalidate its tombstone before mutation"
+
+reset_retained_data_state
 run_deploy_cleanup
 assert_log 'kubectl patch configmap test-release-harness-lifecycle .*cleanup-policy.*retain.*cleanup-policy.*cleaning' \
   "plain cleanup must atomically claim a valid retained tombstone"
@@ -835,6 +849,16 @@ for invalid_retained_records in \
   assert_cleanup_refused_before_mutation \
     "malformed or duplicate retained records must be refused before mutation"
 done
+
+reset_retained_data_state
+printf '%s\n%s\n' 'corrupt-record-line' \
+  'Cluster/test-release-postgres@cluster-uid,PersistentVolumeClaim/test-release-data@data-uid,PersistentVolumeClaim/test-release-pi-agent-auth@auth-uid' \
+  >"$STATE_DIR/marker-retained"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse newline-corrupted retained-object metadata"
+fi
+assert_cleanup_refused_before_mutation \
+  "newline-corrupted retained-object metadata must be refused before mutation"
 
 reset_retained_data_state
 touch "$STATE_DIR/operator-child"
