@@ -102,7 +102,12 @@ scripts/harness-k3s.sh down --retain-auth
 CNPG clusters, PVCs, and lifecycle marker, then verifies scoped resources are
 absent. `delete-data` remains an alias for full cleanup. Persistence is always
 explicit: `--retain-data` keeps CNPG clusters and all release PVCs, while
-`--retain-auth` keeps only the Pi-agent authentication PVC.
+`--retain-auth` keeps only the Pi-agent authentication PVC. Either retention
+mode leaves an identity-bearing lifecycle tombstone that records each retained
+object's kind, name, and UID. A later plain `down` validates every surviving
+object against those recorded UIDs before removing the exact retained objects
+and the tombstone; it refuses cleanup if an object has been replaced or
+unexpected release data is present.
 
 Each non-Flux `up` creates a release lifecycle marker with a six-hour expiry.
 Override the lease from 15 minutes through 24 hours with
