@@ -234,6 +234,7 @@ export type ProjectStructuralCapture = {
     }>
     load_cases: StructuralSnapshot['load_cases']
     load_combinations: LoadCombination[]
+    unavailable_load_combinations?: UnavailableLoadCombination[]
     action_standard_pack?: ActionStandardPackEvidence | null
     member_loads: MemberPointLoad[]
     member_distributed_loads: MemberDistributedLoad[]
@@ -273,6 +274,16 @@ export type LoadCombination = {
   label: string
   limit_state: 'serviceability' | 'ultimate'
   factors: Record<string, number>
+  purpose?: 'design' | 'stability_probe'
+}
+
+export type UnavailableLoadCombination = {
+  id: string
+  label: string
+  limit_state: 'serviceability' | 'ultimate'
+  family: 'action_standard' | 'global_stability'
+  missing_inputs: string[]
+  reason: string
 }
 
 export type ActionStandardPackEvidence = {
@@ -382,6 +393,7 @@ export type StructuralSnapshot = {
     category: 'dead' | 'live' | 'wind' | 'imperfection' | 'fixture'
   }>
   load_combinations: LoadCombination[]
+  unavailable_load_combinations?: UnavailableLoadCombination[]
   action_standard_pack?: ActionStandardPackEvidence | null
   loads: Array<{
     id: string
@@ -391,6 +403,7 @@ export type StructuralSnapshot = {
     force: Vector3
     moment: Vector3
     visual_node_id: string
+    provenance?: string | null
   }>
   member_loads: MemberPointLoad[]
   member_distributed_loads: MemberDistributedLoad[]

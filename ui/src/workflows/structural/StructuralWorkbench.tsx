@@ -278,6 +278,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const activeCombination = analysis?.load_combinations.find(
     (combination) => combination.id === selectedCombinationId,
   ) || analysis?.load_combinations[0]
+  const unavailableCombinations = analysis?.unavailable_load_combinations ?? []
   const selectedCalculationSheet = analysis?.calculation_sheets?.find(
     (sheet) => sheet.id === selectedSheetId,
   ) || analysis?.calculation_sheets?.[0]
@@ -375,6 +376,23 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             },
           }]
         })
+      const nodalArrows = diagramIndex === 0
+        ? analysis.loads.flatMap((load) => {
+          const factor = activeCombination.factors[load.case_id] ?? 0
+          const node = nodes.get(load.node_id)
+          if (factor === 0 || !node) return []
+          return [{
+            id: load.id,
+            label: load.label,
+            position: node.position,
+            force_kN: {
+              x: load.force.x * factor,
+              y: load.force.y * factor,
+              z: load.force.z * factor,
+            },
+          }]
+        })
+        : []
       const lineArrows = analysis.member_distributed_loads
         .filter((load) => load.member_id === diagram.member_id)
         .flatMap((load) => {
@@ -440,7 +458,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               : station.moment_kNm,
           displacement_mm: station.displacement_mm,
         })),
-        loadArrows: [...pointArrows, ...lineArrows],
+        loadArrows: [...nodalArrows, ...pointArrows, ...lineArrows],
         nodes: diagramIndex === 0
           ? analysis.nodes.map((node) => ({
             id: node.id,
@@ -590,8 +608,55 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {combination.id} · {combination.label}
                   </option>
                 ))}
+                {unavailableCombinations.length > 0 && (
+                  <optgroup label="Unavailable — missing inputs">
+                    {unavailableCombinations.map((combination) => (
+                      <option
+                        key={`unavailable-${combination.family}-${combination.id}`}
+                        value={`unavailable:${combination.family}:${combination.id}`}
+                        disabled
+                      >
+                        {combination.id} · unavailable — {combination.reason}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
+            {unavailableCombinations.length > 0 && (
+              <details className="relative">
+                <summary className="cursor-pointer list-none rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/15">
+                  {unavailableCombinations.length} unavailable
+                </summary>
+                <div className="absolute right-0 z-50 mt-2 max-h-[70vh] w-96 overflow-y-auto rounded border border-amber-500/40 bg-slate-950 p-3 text-xs shadow-2xl shadow-black/50">
+                  <p className="font-semibold text-amber-200">
+                    Combinations waiting for required actions
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    These formulas are owned by Tertius, but remain disabled until
+                    their inputs can be generated from the project model.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {unavailableCombinations.map((combination) => (
+                      <div
+                        key={`unavailable-detail-${combination.family}-${combination.id}`}
+                        className="border-t border-slate-800 pt-2 first:border-0 first:pt-0"
+                      >
+                        <p className="font-mono font-semibold text-slate-200">
+                          {combination.id}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {combination.label}
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-amber-100/80">
+                          {combination.reason}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </details>
+            )}
             {analysis.solver.combination_selection === 'governing_working_envelope' && (
               <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">
                 Governing working envelope

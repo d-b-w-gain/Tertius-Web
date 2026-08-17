@@ -193,6 +193,15 @@ and result artifacts consumed by the workbench and calculation reports.
 - [ ] Port connection, base, anchor, concrete, and serviceability checks with
   the correct responsibility and evidence boundaries.
 
+Action-pipeline evidence (2026-08-17): the Tertius-owned working action pack now
+derives the R2 roof imposed action, transverse and longitudinal wind in both
+directions, stabilizing/destabilizing ULS wind combinations, and four-direction
+SCI P399 EHF/NHF cases from the compiled mechanical graph and Site basis. The
+current 3x5 shed resolves 14 action cases and 24 combinations with no unavailable
+combinations, generates 48 stability nodal actions, and passes the solver-native
+global equilibrium audit. Licensed coefficient/table verification and the
+separate concentrated roof-action check remain certification boundaries.
+
 ### Task 7: Migrate and reconcile the current shed
 
 - [x] Port site capture and job-specific wind inputs with provenance.

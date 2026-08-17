@@ -32,6 +32,7 @@ from .contracts import (
     MemberRestraintTrace,
     MemberStabilityComparison,
     MemberStabilityCheck,
+    NodalLoad,
     NodeReaction,
     ProjectStructuralCapture,
     ServiceabilityCheck,
@@ -53,7 +54,6 @@ DEFAULT_COMBINATION_ID = "SLS-1.0"
 STATION_INTERVALS = 32
 RESIDUAL_TOLERANCE = 1e-8
 PDELTA_RESIDUAL_RELATIVE_TOLERANCE = 1e-3
-PDELTA_EQUILIBRIUM_INTERVALS = 64
 STANDARD_GRAVITY_M_S2 = 9.80665
 NODE_COORDINATE_DIGITS = 9
 
@@ -73,7 +73,7 @@ def _connection_checks(
     ultimate_combinations = [
         combination
         for combination in analysis.load_combinations
-        if combination.limit_state == "ultimate"
+        if combination.limit_state == "ultimate" and combination.purpose == "design"
     ]
     checks: list[ConnectionCheck] = []
     for connection in connections:
@@ -215,7 +215,7 @@ def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
     ultimate_combinations = [
         combination
         for combination in analysis.load_combinations
-        if combination.limit_state == "ultimate"
+        if combination.limit_state == "ultimate" and combination.purpose == "design"
     ]
     checks: list[TensionMemberCheck] = []
     for declaration in analysis.members:
@@ -2665,7 +2665,7 @@ def _p399_evidence(
 
     stability_assumptions = (
         [
-            "Equivalent horizontal forces/geometric imperfections are not authored.",
+            "Equivalent horizontal forces/geometric imperfections are not available.",
             "First-/second-order amplification is not available.",
             "Base rotational stiffness has not been declared.",
         ]
@@ -2702,7 +2702,7 @@ def _p399_evidence(
             *(
                 [
                     "Both sway directions and their NEd/200 NHF displacement "
-                    "checks have not all been authored."
+                    "checks are not all available."
                 ]
                 if not stability_direction_evidence_complete
                 else []
@@ -2958,7 +2958,7 @@ def _p399_evidence(
             p399_reference="SCI P399 Sections 7.2–7.8",
             purpose=(
                 "Compare first-order elastic and iterative P-Delta response for the "
-                "authored imperfection combination."
+                "Tertius-resolved imperfection combination."
             ),
             assumptions=stability_assumptions,
             inputs=(
@@ -3034,8 +3034,8 @@ def _p399_evidence(
                             direction.nhf_combination_id
                             for direction in stability_definition.direction_cases
                         )
-                        or "not authored",
-                        source="Structural workbench stability configuration",
+                        or "not available",
+                        source="Tertius structural stability action generator",
                     ),
                     CalculationInput(
                         symbol="η_warning",
@@ -3745,6 +3745,116 @@ def _p399_evidence(
     return stages, sheets
 
 
+def _generate_p399_nodal_loads(
+    model,
+    *,
+    analysis,
+    member_node_ids: dict[str, tuple[str, str]],
+    nodes_by_topology: dict[tuple[object, ...], dict[str, Any]],
+) -> list[NodalLoad]:
+    """Solve vertical reactions, then add Tertius-generated P399 EHF/NHF."""
+
+    stability = analysis.stability
+    if stability is None or not stability.column_component_ids:
+        return []
+    generated_directions = [
+        direction
+        for direction in stability.direction_cases
+        if direction.base_combination_id is not None
+    ]
+    if not generated_directions:
+        return []
+
+    model.analyze_linear(check_statics=False, log=False)
+    topology_nodes = {
+        str(node["id"]): node for node in nodes_by_topology.values()
+    }
+    members_by_component: dict[str, list[Any]] = {}
+    for declaration in analysis.members:
+        members_by_component.setdefault(declaration.component_id, []).append(
+            declaration
+        )
+    combinations_by_id = {
+        combination.id: combination for combination in analysis.load_combinations
+    }
+    generated_loads: list[NodalLoad] = []
+    for direction in generated_directions:
+        base_combination_id = direction.base_combination_id
+        assert base_combination_id is not None
+        nhf_combination = combinations_by_id[direction.nhf_combination_id]
+        nhf_case_ids = list(nhf_combination.factors)
+        if len(nhf_case_ids) != 1:
+            raise StructuralAnalysisError(
+                f"P399 NHF combination {direction.nhf_combination_id!r} must "
+                "contain exactly one generated action case"
+            )
+        nhf_case_id = nhf_case_ids[0]
+        pynite_direction = "FX" if direction.horizontal_axis == "x" else "FY"
+        for component_id in stability.column_component_ids:
+            component_members = members_by_component.get(component_id, [])
+            if not component_members:
+                raise StructuralAnalysisError(
+                    f"P399 column component {component_id!r} has no analytical member"
+                )
+            endpoints: list[tuple[float, str]] = []
+            for declaration in component_members:
+                start_node_id, end_node_id = member_node_ids[declaration.id]
+                endpoints.extend(
+                    (
+                        (declaration.start.z, start_node_id),
+                        (declaration.end.z, end_node_id),
+                    )
+                )
+            base_node_id = min(endpoints, key=lambda item: item[0])[1]
+            eaves_node_id = max(endpoints, key=lambda item: item[0])[1]
+            base_node = model.nodes[base_node_id]
+            vertical_reaction_kN = max(
+                0.0,
+                float(base_node.RxnFZ[base_combination_id]),
+            )
+            horizontal_force_kN = (
+                vertical_reaction_kN / 200.0 * direction.direction_sign
+            )
+            if abs(horizontal_force_kN) <= 1e-12:
+                continue
+            eaves_node = topology_nodes[eaves_node_id]
+            for case_id, action_label in (
+                (direction.imperfection_case_id, "equivalent horizontal force"),
+                (nhf_case_id, "notional horizontal force"),
+            ):
+                model.add_node_load(
+                    eaves_node_id,
+                    pynite_direction,
+                    horizontal_force_kN,
+                    case=case_id,
+                )
+                force = Vector3(
+                    x=(horizontal_force_kN if direction.horizontal_axis == "x" else 0),
+                    y=(horizontal_force_kN if direction.horizontal_axis == "y" else 0),
+                    z=0,
+                )
+                generated_loads.append(
+                    NodalLoad(
+                        id=(
+                            f"p399:{case_id}:{component_id}:{eaves_node_id}"
+                        ),
+                        label=(
+                            f"P399 {action_label} at {component_id} column top"
+                        ),
+                        node_id=eaves_node_id,
+                        case_id=case_id,
+                        force=force,
+                        visual_node_id=str(eaves_node["visual_node_id"]),
+                        provenance=(
+                            f"SCI P399 working method: 1/200 of the solved vertical "
+                            f"base reaction ({vertical_reaction_kN:.6g} kN) under "
+                            f"{base_combination_id}."
+                        ),
+                    )
+                )
+    return generated_loads
+
+
 def solve_project_structural(
     capture: ProjectStructuralCapture,
     *,
@@ -3986,10 +4096,17 @@ def solve_project_structural(
     first_order_nhf_eaves_displacement_mm: dict[str, float] = {}
     first_order_rafter_axial_kN: dict[str, float] = {}
     stability_result: StabilityResult | None = None
+    generated_nodal_loads: list[NodalLoad] = []
     try:
         if analysis.stability is None:
             model.analyze(check_statics=False, log=False)
         else:
+            generated_nodal_loads = _generate_p399_nodal_loads(
+                model,
+                analysis=analysis,
+                member_node_ids=member_node_ids,
+                nodes_by_topology=nodes_by_topology,
+            )
             model.analyze_linear(check_statics=False, log=False)
             members_by_id = {
                 declaration.id: declaration for declaration in analysis.members
@@ -4701,113 +4818,42 @@ def solve_project_structural(
         _add(reaction_moment_sum, moment)
         _add(reaction_moment_sum, _cross(node["position"], force))
 
+    # Audit the exact global action vector assembled by PyNite. Reconstructing
+    # distributed member actions from the declarations can diverge from the
+    # solver after physical-member segmentation or P-Delta analysis. PyNite
+    # solves K D = P - FER, so P - FER is the single authoritative equivalent
+    # nodal action vector for the active combination.
+    equivalent_nodal_actions = (
+        model.P(active_combination.id) - model.FER(active_combination.id)
+    ).reshape(-1)
     applied_force_sum = [0.0, 0.0, 0.0]
     applied_moment_sum = [0.0, 0.0, 0.0]
-    declarations = {member.id: member for member in analysis.members}
-    for equilibrium_point_load in analysis.member_loads:
-        factor = active_combination.factors.get(
-            equilibrium_point_load.case_id,
-            0.0,
+    for solved_node in model.nodes.values():
+        dof = solved_node.ID * 6
+        force = Vector3(
+            x=_clean(equivalent_nodal_actions[dof]),
+            y=_clean(equivalent_nodal_actions[dof + 1]),
+            z=_clean(equivalent_nodal_actions[dof + 2]),
         )
-        if factor == 0:
-            continue
-        declaration = declarations[equilibrium_point_load.member_id]
-        member_axis = _axis(declaration.start, declaration.end)
-        position = _plus(
-            declaration.start,
-            _scaled(member_axis, equilibrium_point_load.distance_m),
+        moment = Vector3(
+            x=_clean(equivalent_nodal_actions[dof + 3]),
+            y=_clean(equivalent_nodal_actions[dof + 4]),
+            z=_clean(equivalent_nodal_actions[dof + 5]),
+        )
+        position = Vector3(
+            x=float(solved_node.X),
+            y=float(solved_node.Y),
+            z=float(solved_node.Z),
         )
         if analysis.stability is not None:
-            position = _plus(
-                position,
-                _member_global_displacement(
-                    model,
-                    member_id=equilibrium_point_load.member_id,
-                    distance_m=equilibrium_point_load.distance_m,
-                    combination_id=active_combination.id,
-                ),
+            position = Vector3(
+                x=position.x + _clean(solved_node.DX[active_combination.id]),
+                y=position.y + _clean(solved_node.DY[active_combination.id]),
+                z=position.z + _clean(solved_node.DZ[active_combination.id]),
             )
-        _add(applied_force_sum, equilibrium_point_load.force, factor)
-        _add(applied_moment_sum, equilibrium_point_load.moment, factor)
-        _add(
-            applied_moment_sum,
-            _cross(position, equilibrium_point_load.force),
-            factor,
-        )
-
-    for equilibrium_line_load in analysis.member_distributed_loads:
-        factor = active_combination.factors.get(
-            equilibrium_line_load.case_id,
-            0.0,
-        )
-        if factor == 0:
-            continue
-        declaration = declarations[equilibrium_line_load.member_id]
-        member_axis = _axis(declaration.start, declaration.end)
-        if analysis.stability is None:
-            segment_start = _plus(
-                declaration.start,
-                _scaled(member_axis, equilibrium_line_load.start_distance_m),
-            )
-            resultant, line_first_moment = _distributed_resultant(equilibrium_line_load)
-            _add(applied_force_sum, resultant, factor)
-            _add(applied_moment_sum, _cross(segment_start, resultant), factor)
-            _add(
-                applied_moment_sum,
-                _cross(member_axis, line_first_moment),
-                factor,
-            )
-        else:
-            loaded_span = (
-                equilibrium_line_load.end_distance_m
-                - equilibrium_line_load.start_distance_m
-            )
-            interval = loaded_span / PDELTA_EQUILIBRIUM_INTERVALS
-            for interval_index in range(PDELTA_EQUILIBRIUM_INTERVALS):
-                distance = (
-                    equilibrium_line_load.start_distance_m
-                    + (interval_index + 0.5) * interval
-                )
-                load_ratio = (
-                    distance - equilibrium_line_load.start_distance_m
-                ) / loaded_span
-                force = Vector3(
-                    **{
-                        axis_name: (
-                            getattr(
-                                equilibrium_line_load.start_force_kN_m,
-                                axis_name,
-                            )
-                            + (
-                                getattr(
-                                    equilibrium_line_load.end_force_kN_m,
-                                    axis_name,
-                                )
-                                - getattr(
-                                    equilibrium_line_load.start_force_kN_m,
-                                    axis_name,
-                                )
-                            )
-                            * load_ratio
-                        )
-                        * interval
-                        for axis_name in ("x", "y", "z")
-                    }
-                )
-                position = _plus(
-                    _plus(
-                        declaration.start,
-                        _scaled(member_axis, distance),
-                    ),
-                    _member_global_displacement(
-                        model,
-                        member_id=equilibrium_line_load.member_id,
-                        distance_m=distance,
-                        combination_id=active_combination.id,
-                    ),
-                )
-                _add(applied_force_sum, force, factor)
-                _add(applied_moment_sum, _cross(position, force), factor)
+        _add(applied_force_sum, force)
+        _add(applied_moment_sum, moment)
+        _add(applied_moment_sum, _cross(position, force))
 
     force_residual = tuple(
         applied_force_sum[index] + reaction_force_sum[index] for index in range(3)
@@ -4911,8 +4957,9 @@ def solve_project_structural(
         materials=analysis.materials,
         load_cases=analysis.load_cases,
         load_combinations=combinations,
+        unavailable_load_combinations=analysis.unavailable_load_combinations,
         action_standard_pack=analysis.action_standard_pack,
-        loads=[],
+        loads=generated_nodal_loads,
         member_loads=analysis.member_loads,
         member_distributed_loads=analysis.member_distributed_loads,
         reactions=reaction_values,

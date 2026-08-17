@@ -28,6 +28,8 @@ from core.structural.contracts import (
     DesignConnection,
     DesignLoadPath,
     DesignSurfaceLoad,
+    LoadCase,
+    LoadCombination,
     MemberDistributedLoad,
     MemberPointLoad,
     MemberStabilitySegmentDefinition,
@@ -39,6 +41,9 @@ from core.structural.contracts import (
     StructuralMaterial,
     StructuralSnapshot,
     StructuralWindActionBasis,
+    StabilityDefinition,
+    StabilityDirectionDefinition,
+    UnavailableLoadCombination,
     Vector3,
 )
 from core.structural.project_configuration import (
@@ -410,7 +415,7 @@ def _portal_frame_wind_actions(
     dict[str, str],
     list[str],
 ]:
-    """Derive a transverse portal-frame strip model from roles and Site data."""
+    """Derive portal-frame wind and roof-imposed actions from roles and Site data."""
 
     configured = configuration.portal_frame_wind_actions
     if configured is None:
@@ -566,31 +571,111 @@ def _portal_frame_wind_actions(
     )
     if dead_case is None:
         raise ValueError("portal-frame wind actions require a permanent action case")
-    generated_cases = (
-        StructuralActionCase(
-            id="wind-plus-x",
+
+    def ensure_action_case(
+        *, case_id: str, label: str, role: str
+    ) -> StructuralActionCase:
+        existing_by_role = next(
+            (
+                case
+                for case in analysis_configuration.action_cases
+                if case.role == role
+            ),
+            None,
+        )
+        if existing_by_role is not None:
+            if existing_by_role.id != case_id:
+                raise ValueError(
+                    f"Tertius-derived {role!r} action requires stable case ID "
+                    f"{case_id!r}, but the configuration uses "
+                    f"{existing_by_role.id!r}"
+                )
+            return existing_by_role
+        existing_by_id = next(
+            (
+                case
+                for case in analysis_configuration.action_cases
+                if case.id == case_id
+            ),
+            None,
+        )
+        if existing_by_id is not None:
+            raise ValueError(
+                f"generated action case {case_id!r} conflicts with configured "
+                f"{existing_by_id.role!r} action"
+            )
+        generated = StructuralActionCase(id=case_id, label=label, role=role)
+        analysis_configuration.action_cases.append(generated)
+        return generated
+
+    imposed_case = ensure_action_case(
+        case_id="roof-imposed",
+        label="R2 roof imposed action",
+        role="imposed",
+    )
+    wind_cases = {
+        "positive_x": ensure_action_case(
+            case_id="wind-plus-x",
             label="Transverse wind +X",
             role="wind_positive_x",
         ),
-        StructuralActionCase(
-            id="wind-minus-x",
+        "negative_x": ensure_action_case(
+            case_id="wind-minus-x",
             label="Transverse wind -X",
             role="wind_negative_x",
         ),
-    )
-    existing_cases = {case.id: case for case in analysis_configuration.action_cases}
-    for generated_case in generated_cases:
-        existing = existing_cases.get(generated_case.id)
-        if existing is not None and existing.role != generated_case.role:
-            raise ValueError(
-                f"generated wind case {generated_case.id!r} conflicts with a "
-                f"configured {existing.role!r} action"
-            )
-        if existing is None:
-            analysis_configuration.action_cases.append(generated_case)
+        "positive_y": ensure_action_case(
+            case_id="wind-plus-y",
+            label="Longitudinal wind +Y",
+            role="wind_positive_y",
+        ),
+        "negative_y": ensure_action_case(
+            case_id="wind-minus-y",
+            label="Longitudinal wind -Y",
+            role="wind_negative_y",
+        ),
+    }
 
     raw_loads: list[dict[str, object]] = []
     load_geometry: dict[str, tuple[str, float, Vector3]] = {}
+
+    def add_surface_action(
+        *,
+        load_id: str,
+        label: str,
+        case: str,
+        case_id: str,
+        component_id: str,
+        pressure_kPa: float,
+        area_m2: float,
+        line_tributary_width_m: float,
+        direction: Vector3,
+        provenance: str,
+        net_pressure_coefficient: float | None = None,
+        coefficient_status: str | None = None,
+    ) -> None:
+        load: dict[str, object] = {
+            "id": load_id,
+            "label": label,
+            "case": case,
+            "case_id": case_id,
+            "component_id": component_id,
+            "pressure_kPa": pressure_kPa,
+            "area_m2": area_m2,
+            "direction": direction.model_dump(),
+            "provenance": provenance,
+        }
+        if net_pressure_coefficient is not None:
+            load["net_pressure_coefficient"] = net_pressure_coefficient
+        if coefficient_status is not None:
+            load["coefficient_status"] = coefficient_status
+        raw_loads.append(load)
+        load_geometry[load_id] = (
+            component_id,
+            line_tributary_width_m,
+            direction,
+        )
+
     for frame_y in frame_positions:
         tributary_width = tributary_widths[frame_y]
         frame = frame_components[frame_y]
@@ -606,7 +691,10 @@ def _portal_frame_wind_actions(
                 value.x for value in physical_endpoints(component_id)
             ),
         )
-        for case_id, wind_sign in (("wind-plus-x", 1.0), ("wind-minus-x", -1.0)):
+        for case_id, wind_sign in (
+            (wind_cases["positive_x"].id, 1.0),
+            (wind_cases["negative_x"].id, -1.0),
+        ):
             for column_index, component_id in enumerate(columns):
                 is_windward = (wind_sign > 0 and column_index == 0) or (
                     wind_sign < 0 and column_index == 1
@@ -622,22 +710,20 @@ def _portal_frame_wind_actions(
                 )
                 load_id = f"site:{case_id}:{component_id}:wall"
                 direction = Vector3(x=wind_sign, y=0, z=0)
-                raw_loads.append(
-                    {
-                        "id": load_id,
-                        "label": f"{case_id} wall action on {component_id}",
-                        "case": "wind",
-                        "case_id": case_id,
-                        "component_id": component_id,
-                        "pressure_kPa": abs(coefficient),
-                        "area_m2": member_length * tributary_width,
-                        "direction": direction.model_dump(),
-                        "provenance": configured.coefficient_basis,
-                        "net_pressure_coefficient": coefficient,
-                        "coefficient_status": configured.coefficient_status,
-                    }
+                add_surface_action(
+                    load_id=load_id,
+                    label=f"{case_id} wall action on {component_id}",
+                    case="wind",
+                    case_id=case_id,
+                    component_id=component_id,
+                    pressure_kPa=abs(coefficient),
+                    area_m2=member_length * tributary_width,
+                    line_tributary_width_m=tributary_width,
+                    direction=direction,
+                    provenance=configured.coefficient_basis,
+                    net_pressure_coefficient=coefficient,
+                    coefficient_status=configured.coefficient_status,
                 )
-                load_geometry[load_id] = (component_id, tributary_width, direction)
             for component_id in rafters:
                 start, end = physical_endpoints(component_id)
                 member_length = dist(
@@ -656,22 +742,145 @@ def _portal_frame_wind_actions(
                     z=abs(delta_x) / slope_length,
                 )
                 load_id = f"site:{case_id}:{component_id}:roof"
-                raw_loads.append(
-                    {
-                        "id": load_id,
-                        "label": f"{case_id} roof suction on {component_id}",
-                        "case": "wind",
-                        "case_id": case_id,
-                        "component_id": component_id,
-                        "pressure_kPa": abs(configured.roof_suction_coefficient),
-                        "area_m2": member_length * tributary_width,
-                        "direction": outward.model_dump(),
-                        "provenance": configured.coefficient_basis,
-                        "net_pressure_coefficient": configured.roof_suction_coefficient,
-                        "coefficient_status": configured.coefficient_status,
-                    }
+                add_surface_action(
+                    load_id=load_id,
+                    label=f"{case_id} roof suction on {component_id}",
+                    case="wind",
+                    case_id=case_id,
+                    component_id=component_id,
+                    pressure_kPa=abs(configured.roof_suction_coefficient),
+                    area_m2=member_length * tributary_width,
+                    line_tributary_width_m=tributary_width,
+                    direction=outward,
+                    provenance=configured.coefficient_basis,
+                    net_pressure_coefficient=configured.roof_suction_coefficient,
+                    coefficient_status=configured.coefficient_status,
                 )
-                load_geometry[load_id] = (component_id, tributary_width, outward)
+
+        for component_id in rafters:
+            start, end = physical_endpoints(component_id)
+            member_length = dist(start.model_dump().values(), end.model_dump().values())
+            plan_area = abs(end.x - start.x) * tributary_width
+            if plan_area <= 1e-9:
+                raise ValueError(
+                    f"portal rafter {component_id!r} has no projected roof plan area"
+                )
+            imposed_pressure = max(1.8 / plan_area + 0.12, 0.25)
+            plan_to_slope = abs(end.x - start.x) / member_length
+            load_id = f"site:{imposed_case.id}:{component_id}:roof"
+            add_surface_action(
+                load_id=load_id,
+                label=f"R2 roof imposed action on {component_id}",
+                case="live",
+                case_id=imposed_case.id,
+                component_id=component_id,
+                pressure_kPa=imposed_pressure,
+                area_m2=plan_area,
+                line_tributary_width_m=tributary_width * plan_to_slope,
+                direction=Vector3(x=0, y=0, z=-1),
+                provenance=(
+                    "Tertius AS/NZS 1170.1:2002 Table 3.2 R2 working formula: "
+                    "q = max(1.8/A + 0.12, 0.25) kPa; A is the compiled "
+                    "member plan tributary area. Concentrated roof action requires "
+                    "a separate local member check."
+                ),
+            )
+
+    end_frame_positions = (frame_positions[0], frame_positions[-1])
+    for case_id, wind_sign in (
+        (wind_cases["positive_y"].id, 1.0),
+        (wind_cases["negative_y"].id, -1.0),
+    ):
+        for end_index, frame_y in enumerate(end_frame_positions):
+            is_windward = (wind_sign > 0 and end_index == 0) or (
+                wind_sign < 0 and end_index == 1
+            )
+            coefficient = (
+                configured.windward_wall_coefficient
+                if is_windward
+                else configured.leeward_wall_coefficient
+            )
+            direction = Vector3(x=0, y=wind_sign, z=0)
+            frame = frame_components[frame_y]
+            for component_id in frame["columns"]:
+                start, end = physical_endpoints(component_id)
+                member_length = dist(
+                    start.model_dump().values(), end.model_dump().values()
+                )
+                tributary_width = site.structure.footprint_width_m / 2.0
+                load_id = f"site:{case_id}:{component_id}:gable-wall"
+                add_surface_action(
+                    load_id=load_id,
+                    label=f"{case_id} gable wall action on {component_id}",
+                    case="wind",
+                    case_id=case_id,
+                    component_id=component_id,
+                    pressure_kPa=abs(coefficient),
+                    area_m2=member_length * tributary_width,
+                    line_tributary_width_m=tributary_width,
+                    direction=direction,
+                    provenance=configured.coefficient_basis,
+                    net_pressure_coefficient=coefficient,
+                    coefficient_status=configured.coefficient_status,
+                )
+            for component_id in frame["rafters"]:
+                start, end = physical_endpoints(component_id)
+                member_length = dist(
+                    start.model_dump().values(), end.model_dump().values()
+                )
+                gable_area = abs(end.x - start.x) * abs(end.z - start.z) / 2.0
+                if gable_area <= 1e-9:
+                    continue
+                load_id = f"site:{case_id}:{component_id}:gable"
+                add_surface_action(
+                    load_id=load_id,
+                    label=f"{case_id} gable action on {component_id}",
+                    case="wind",
+                    case_id=case_id,
+                    component_id=component_id,
+                    pressure_kPa=abs(coefficient),
+                    area_m2=gable_area,
+                    line_tributary_width_m=gable_area / member_length,
+                    direction=direction,
+                    provenance=configured.coefficient_basis,
+                    net_pressure_coefficient=coefficient,
+                    coefficient_status=configured.coefficient_status,
+                )
+
+        for frame_y in frame_positions:
+            tributary_width = tributary_widths[frame_y]
+            for component_id in frame_components[frame_y]["rafters"]:
+                start, end = physical_endpoints(component_id)
+                member_length = dist(
+                    start.model_dump().values(), end.model_dump().values()
+                )
+                delta_x = end.x - start.x
+                delta_z = end.z - start.z
+                slope_length = sqrt(delta_x**2 + delta_z**2)
+                outward = Vector3(
+                    x=(
+                        -abs(delta_z) / slope_length
+                        if (start.x + end.x) < 0
+                        else abs(delta_z) / slope_length
+                    ),
+                    y=0,
+                    z=abs(delta_x) / slope_length,
+                )
+                load_id = f"site:{case_id}:{component_id}:roof"
+                add_surface_action(
+                    load_id=load_id,
+                    label=f"{case_id} roof suction on {component_id}",
+                    case="wind",
+                    case_id=case_id,
+                    component_id=component_id,
+                    pressure_kPa=abs(configured.roof_suction_coefficient),
+                    area_m2=member_length * tributary_width,
+                    line_tributary_width_m=tributary_width,
+                    direction=outward,
+                    provenance=configured.coefficient_basis,
+                    net_pressure_coefficient=configured.roof_suction_coefficient,
+                    coefficient_status=configured.coefficient_status,
+                )
 
     overlaid = apply_site_definition(
         {
@@ -696,11 +905,11 @@ def _portal_frame_wind_actions(
     surface_sources: dict[str, str] = {}
     distributed_configs: list[ConfiguredMemberDistributedLoad] = []
     for surface_load in surface_loads:
-        component_id, tributary_width, direction = load_geometry[surface_load.id]
+        component_id, line_tributary_width, direction = load_geometry[surface_load.id]
         force = Vector3(
-            x=surface_load.pressure_kPa * tributary_width * direction.x,
-            y=surface_load.pressure_kPa * tributary_width * direction.y,
-            z=surface_load.pressure_kPa * tributary_width * direction.z,
+            x=surface_load.pressure_kPa * line_tributary_width * direction.x,
+            y=surface_load.pressure_kPa * line_tributary_width * direction.y,
+            z=surface_load.pressure_kPa * line_tributary_width * direction.z,
         )
         distributed_id = f"distribution:{surface_load.id}"
         surface_sources[distributed_id] = surface_load.id
@@ -714,8 +923,8 @@ def _portal_frame_wind_actions(
                 end_force_kN_m=force,
                 provenance=(
                     surface_load.provenance
-                    + "; tributary width derived from the Site footprint and "
-                    "compiled portal-frame spacing."
+                    + "; line tributary width derived from the Site footprint and "
+                    "compiled portal-frame envelope."
                 ),
             )
         )
@@ -909,6 +1118,215 @@ def _endpoint_connection_effects(
     return restraints, releases, warnings, node_key
 
 
+def _p399_stability_actions(
+    configuration: StructuralProjectConfiguration,
+    *,
+    components: Sequence[DesignComponent],
+    members: Sequence[AnalyticalMemberDeclaration],
+    load_combinations: Sequence[LoadCombination],
+) -> tuple[
+    list[LoadCase],
+    list[LoadCombination],
+    StabilityDefinition | None,
+    list[UnavailableLoadCombination],
+    list[str],
+]:
+    """Plan solver-generated P399 EHF and NEd/200 NHF action cases."""
+
+    if configuration.design_basis.framework_id != "SCI-P399":
+        return [], [], None, [], []
+
+    roles = {
+        component.id: (component.role or "").strip().lower()
+        for component in components
+    }
+    column_component_ids = sorted(
+        component_id
+        for component_id, role in roles.items()
+        if role == "portal column"
+    )
+    rafter_component_ids = {
+        component_id
+        for component_id, role in roles.items()
+        if role == "portal rafter"
+    }
+    members_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(
+        list
+    )
+    for member in members:
+        members_by_component[member.component_id].append(member)
+
+    missing_inputs: list[str] = []
+    if not column_component_ids or any(
+        not members_by_component.get(component_id)
+        for component_id in column_component_ids
+    ):
+        missing_inputs.append("portal_column_axes")
+    rafter_member_ids = [
+        member.id for member in members if member.component_id in rafter_component_ids
+    ]
+    if not rafter_member_ids:
+        missing_inputs.append("portal_rafter_axes")
+
+    combinations_by_id = {
+        combination.id: combination for combination in load_combinations
+    }
+    default_base = combinations_by_id.get("ULS-1.2G+1.5Q") or combinations_by_id.get(
+        "ULS-1.35G"
+    )
+    if default_base is None:
+        missing_inputs.append("uls_vertical_action_combination")
+
+    if missing_inputs:
+        reason = (
+            "Tertius cannot derive the SCI P399 EHF/NHF actions until the compiled "
+            "model supplies "
+            + ", ".join(input_id.replace("_", " ") for input_id in missing_inputs)
+            + "."
+        )
+        unavailable = [
+            UnavailableLoadCombination(
+                id=f"{prefix}{suffix}",
+                label=f"P399 {label} {suffix}",
+                limit_state="ultimate",
+                family="global_stability",
+                missing_inputs=missing_inputs,
+                reason=reason,
+            )
+            for suffix in ("+X", "-X", "+Y", "-Y")
+            for prefix, label in (
+                ("ULS-STABILITY", "global-stability actions"),
+                ("NHF-CHECK", "notional-horizontal-force check"),
+            )
+        ]
+        return [], [], None, unavailable, [reason]
+
+    assert default_base is not None
+    direction_specs = (
+        ("positive-x", "+X", "x", 1, "WX+"),
+        ("negative-x", "-X", "x", -1, "WX-"),
+        ("positive-y", "+Y", "y", 1, "WY+"),
+        ("negative-y", "-Y", "y", -1, "WY-"),
+    )
+    generated_cases: list[LoadCase] = []
+    generated_combinations: list[LoadCombination] = []
+    directions: list[StabilityDirectionDefinition] = []
+    for direction_id, suffix, axis, sign, wind_suffix in direction_specs:
+        design_base = (
+            combinations_by_id.get(f"ULS-1.2G+{wind_suffix}") or default_base
+        )
+        ehf_case_id = f"p399-ehf-{direction_id}"
+        nhf_case_id = f"p399-nhf-{direction_id}"
+        stability_combination_id = f"ULS-STABILITY{suffix}"
+        nhf_combination_id = f"NHF-CHECK{suffix}"
+        generated_cases.extend(
+            (
+                LoadCase(
+                    id=ehf_case_id,
+                    label=f"P399 equivalent horizontal force {suffix}",
+                    category="imperfection",
+                ),
+                LoadCase(
+                    id=nhf_case_id,
+                    label=f"P399 NEd/200 notional horizontal force {suffix}",
+                    category="imperfection",
+                ),
+            )
+        )
+        generated_combinations.extend(
+            (
+                LoadCombination(
+                    id=stability_combination_id,
+                    label=f"{design_base.label} plus P399 EHF {suffix}",
+                    limit_state="ultimate",
+                    factors={**design_base.factors, ehf_case_id: 1.0},
+                ),
+                LoadCombination(
+                    id=nhf_combination_id,
+                    label=f"P399 NEd/200 stiffness probe {suffix}",
+                    limit_state="ultimate",
+                    factors={nhf_case_id: 1.0},
+                    purpose="stability_probe",
+                ),
+            )
+        )
+        directions.append(
+            StabilityDirectionDefinition(
+                id=direction_id,
+                base_combination_id=default_base.id,
+                stability_combination_id=stability_combination_id,
+                imperfection_case_id=ehf_case_id,
+                nhf_combination_id=nhf_combination_id,
+                horizontal_axis=axis,
+                direction_sign=sign,
+            )
+        )
+
+    eaves_member_ids = [
+        max(
+            members_by_component[component_id],
+            key=lambda member: max(member.start.z, member.end.z),
+        ).id
+        for component_id in column_component_ids
+    ]
+    column_members = [
+        member
+        for component_id in column_component_ids
+        for member in members_by_component[component_id]
+    ]
+    column_height = max(
+        max(member.start.z, member.end.z) for member in column_members
+    ) - min(min(member.start.z, member.end.z) for member in column_members)
+    base_restraints = []
+    for component_id in column_component_ids:
+        component_members = members_by_component[component_id]
+        endpoint_restraints = [
+            (member.start.z, member.start_restraints)
+            for member in component_members
+        ] + [
+            (member.end.z, member.end_restraints)
+            for member in component_members
+        ]
+        base_restraints.append(min(endpoint_restraints, key=lambda item: item[0])[1])
+    if all(
+        restraint.rx and restraint.ry and restraint.rz
+        for restraint in base_restraints
+    ):
+        base_model = "fixed"
+    elif all(
+        not restraint.rx and not restraint.ry and not restraint.rz
+        for restraint in base_restraints
+    ):
+        base_model = "perfectly_pinned"
+    else:
+        base_model = "unspecified"
+
+    first_direction = directions[0]
+    stability = StabilityDefinition(
+        method="p_delta",
+        stability_combination_id=first_direction.stability_combination_id,
+        imperfection_case_id=first_direction.imperfection_case_id,
+        imperfection_basis=(
+            "SCI P399 Sections 7.2-7.6 working implementation: Tertius derives "
+            "EHF and NHF at 1/200 of the solved factored vertical base reactions."
+        ),
+        base_stiffness_basis=(
+            "Compiled support restraints; physical rotational stiffness remains "
+            "subject to connection evidence."
+        ),
+        base_stiffness_status="assumed",
+        direction_cases=directions,
+        column_component_ids=column_component_ids,
+        eaves_member_ids=eaves_member_ids,
+        rafter_member_ids=rafter_member_ids,
+        column_height_m=column_height,
+        analysis_base_model=base_model,
+        analysis_basis_status="assumed",
+        physical_connection_stiffness_status="not_checked",
+    )
+    return generated_cases, generated_combinations, stability, [], []
+
+
 def _analysis_from_projection(
     projection: dict,
     *,
@@ -921,11 +1339,6 @@ def _analysis_from_projection(
         configuration.action_standard_pack_id,
         configuration.action_cases,
     )
-    ultimate_combination_ids = [
-        combination.id
-        for combination in resolved_action_pack.load_combinations
-        if combination.limit_state == "ultimate"
-    ]
     product_facets = {
         str(facet.get("product_key")): facet
         for facet in projection.get("product_facets", [])
@@ -1417,6 +1830,33 @@ def _analysis_from_projection(
     )
     for declaration in declarations:
         declarations_by_component[declaration.component_id].append(declaration)
+    (
+        p399_load_cases,
+        p399_load_combinations,
+        stability,
+        p399_unavailable,
+        p399_warnings,
+    ) = _p399_stability_actions(
+        configuration,
+        components=components,
+        members=declarations,
+        load_combinations=resolved_action_pack.load_combinations,
+    )
+    load_cases = [*resolved_action_pack.load_cases, *p399_load_cases]
+    load_combinations = [
+        *resolved_action_pack.load_combinations,
+        *p399_load_combinations,
+    ]
+    unavailable_combinations = [
+        *resolved_action_pack.unavailable_combinations,
+        *p399_unavailable,
+    ]
+    warnings.extend(p399_warnings)
+    ultimate_combination_ids = [
+        combination.id
+        for combination in load_combinations
+        if combination.limit_state == "ultimate" and combination.purpose == "design"
+    ]
     projected_by_id = {str(member["id"]): member for member in projected_members}
     cross_section_verification = None
     if configuration.cross_section_verification is not None:
@@ -1568,11 +2008,13 @@ def _analysis_from_projection(
             materials=list(materials.values()),
             sections=list(sections.values()),
             members=declarations,
-            load_cases=resolved_action_pack.load_cases,
+            load_cases=load_cases,
             member_loads=point_loads,
             member_distributed_loads=distributed_loads,
-            load_combinations=resolved_action_pack.load_combinations,
+            load_combinations=load_combinations,
+            unavailable_load_combinations=unavailable_combinations,
             action_standard_pack=resolved_action_pack.evidence,
+            stability=stability,
             cross_section_verification=cross_section_verification,
             member_stability_verification=member_stability_verification,
         ),

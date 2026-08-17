@@ -13,11 +13,18 @@ from core.structural.action_standard_packs import resolve_action_standard_pack
 from core.site_definition import default_site_definition
 from core.structural.project_analysis import solve_project_structural
 from core.structural.project_configuration import StructuralProjectConfiguration
-from core.structural.contracts import DesignComponent, ProjectStructuralCapture
+from core.structural.contracts import (
+    AnalyticalMemberDeclaration,
+    DesignComponent,
+    ProjectStructuralCapture,
+    Restraints,
+    Vector3,
+)
 from tertius.runner import execute_design
 from workflows.structural.structural_server import (
     _capture_from_structural_projection,
     _endpoint_connection_effects,
+    _p399_stability_actions,
     _portal_frame_wind_actions,
 )
 
@@ -284,18 +291,29 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
 
     assert warnings == []
     assert len(wind_bases) == 4
-    assert len(surface_loads) == 16
-    assert len(line_loads) == 16
-    assert len(surface_sources) == 16
+    assert len(surface_loads) == 44
+    assert len(line_loads) == 44
+    assert len(surface_sources) == 44
     assert {load.case_id for load in line_loads} == {
+        "roof-imposed",
         "wind-plus-x",
         "wind-minus-x",
+        "wind-plus-y",
+        "wind-minus-y",
     }
-    assert {load.coefficient_status for load in surface_loads} == {
+    assert {
+        load.coefficient_status for load in surface_loads if load.case == "wind"
+    } == {
         "working_conservative"
     }
     assert {case.role for case in effective_configuration.action_cases}.issuperset(
-        {"wind_positive_x", "wind_negative_x"}
+        {
+            "imposed",
+            "wind_positive_x",
+            "wind_negative_x",
+            "wind_positive_y",
+            "wind_negative_y",
+        }
     )
     assert "load_combinations" not in type(effective_configuration).model_fields
     resolved = resolve_action_standard_pack(
@@ -303,8 +321,70 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
         effective_configuration.action_cases,
     )
     assert {combination.id for combination in resolved.load_combinations}.issuperset(
-        {"SLS-G+WX+", "SLS-G+WX-", "ULS-1.2G+WX+", "ULS-1.2G+WX-"}
+        {
+            "SLS-G+WX+",
+            "SLS-G+WX-",
+            "ULS-1.2G+WX+",
+            "ULS-1.2G+WX-",
+            "ULS-0.9G+WX+",
+            "ULS-0.9G+WX-",
+            "SLS-G+WY+",
+            "SLS-G+WY-",
+            "ULS-1.2G+WY+",
+            "ULS-1.2G+WY-",
+            "ULS-0.9G+WY+",
+            "ULS-0.9G+WY-",
+            "SLS-G+Q",
+            "ULS-1.2G+1.5Q",
+        }
     )
+    assert resolved.unavailable_combinations == []
+    p399_members = [
+        AnalyticalMemberDeclaration(
+            id=str(member["id"]),
+            label=str(member["component_id"]),
+            component_id=str(member["component_id"]),
+            start=Vector3.model_validate(
+                dict(zip(("x", "y", "z"), member["start_m"], strict=True))
+            ),
+            end=Vector3.model_validate(
+                dict(zip(("x", "y", "z"), member["end_m"], strict=True))
+            ),
+            start_restraints=(
+                Restraints(dx=True, dy=True, dz=True, rx=True, ry=True, rz=True)
+                if str(member["component_id"]).endswith(("CL", "CR"))
+                else Restraints()
+            ),
+            section_id="section",
+            material_id="material",
+            assumption="P399 action-planning fixture.",
+        )
+        for member in analytical_members
+    ]
+    (
+        p399_cases,
+        p399_combinations,
+        p399_stability,
+        p399_unavailable,
+        p399_warnings,
+    ) = _p399_stability_actions(
+        effective_configuration,
+        components=components,
+        members=p399_members,
+        load_combinations=resolved.load_combinations,
+    )
+    assert len(p399_cases) == 8
+    assert len(p399_combinations) == 8
+    assert p399_stability is not None
+    assert len(p399_stability.direction_cases) == 4
+    assert p399_stability.column_component_ids == [
+        "F1CL",
+        "F1CR",
+        "F2CL",
+        "F2CR",
+    ]
+    assert p399_unavailable == []
+    assert p399_warnings == []
 
 
 def test_split_analytical_segments_share_one_physical_serviceability_check(

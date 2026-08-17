@@ -10,6 +10,7 @@ from core.structural.contracts import (
     LoadCase,
     LoadCombination,
     StructuralContract,
+    UnavailableLoadCombination,
 )
 
 
@@ -46,6 +47,7 @@ class ResolvedActionStandardPack(StructuralContract):
     evidence: ActionStandardPackEvidence
     load_cases: list[LoadCase]
     load_combinations: list[LoadCombination]
+    unavailable_combinations: list[UnavailableLoadCombination]
 
     @model_validator(mode="after")
     def validate_evidence(self) -> ResolvedActionStandardPack:
@@ -93,13 +95,14 @@ def resolve_action_standard_pack(
             factors={permanent.id: 1.0},
         ),
         LoadCombination(
-            id="ULS-1.2G",
-            label="ULS permanent actions",
+            id="ULS-1.35G",
+            label="ULS permanent actions only",
             limit_state="ultimate",
-            factors={permanent.id: 1.2},
+            factors={permanent.id: 1.35},
         ),
     ]
     imposed = by_role.get("imposed")
+    unavailable: list[UnavailableLoadCombination] = []
     if imposed is not None:
         combinations.extend(
             (
@@ -117,9 +120,66 @@ def resolve_action_standard_pack(
                 ),
             )
         )
+    else:
+        unavailable.extend(
+            (
+                UnavailableLoadCombination(
+                    id="SLS-G+Q",
+                    label="Permanent plus imposed actions",
+                    limit_state="serviceability",
+                    family="action_standard",
+                    missing_inputs=["imposed"],
+                    reason=(
+                        "No imposed action (Q) is declared or derived for this project."
+                    ),
+                ),
+                UnavailableLoadCombination(
+                    id="ULS-1.2G+1.5Q",
+                    label="ULS permanent plus imposed actions",
+                    limit_state="ultimate",
+                    family="action_standard",
+                    missing_inputs=["imposed"],
+                    reason=(
+                        "No imposed action (Q) is declared or derived for this project."
+                    ),
+                ),
+            )
+        )
     for role, (suffix, label) in _DIRECTION_SUFFIXES.items():
         wind = by_role.get(role)
         if wind is None:
+            reason = (
+                f"No {label} action is generated from the Site basis and compiled "
+                "structural topology."
+            )
+            unavailable.extend(
+                (
+                    UnavailableLoadCombination(
+                        id=f"SLS-G+{suffix}",
+                        label=f"Permanent plus {label}",
+                        limit_state="serviceability",
+                        family="action_standard",
+                        missing_inputs=[role],
+                        reason=reason,
+                    ),
+                    UnavailableLoadCombination(
+                        id=f"ULS-1.2G+{suffix}",
+                        label=f"ULS permanent plus {label} (destabilizing)",
+                        limit_state="ultimate",
+                        family="action_standard",
+                        missing_inputs=[role],
+                        reason=reason,
+                    ),
+                    UnavailableLoadCombination(
+                        id=f"ULS-0.9G+{suffix}",
+                        label=f"ULS stabilizing permanent action plus {label}",
+                        limit_state="ultimate",
+                        family="action_standard",
+                        missing_inputs=[role],
+                        reason=reason,
+                    ),
+                )
+            )
             continue
         combinations.extend(
             (
@@ -131,9 +191,15 @@ def resolve_action_standard_pack(
                 ),
                 LoadCombination(
                     id=f"ULS-1.2G+{suffix}",
-                    label=f"ULS permanent plus {label}",
+                    label=f"ULS permanent plus {label} (destabilizing)",
                     limit_state="ultimate",
                     factors={permanent.id: 1.2, wind.id: 1.0},
+                ),
+                LoadCombination(
+                    id=f"ULS-0.9G+{suffix}",
+                    label=f"ULS stabilizing permanent action plus {label}",
+                    limit_state="ultimate",
+                    factors={permanent.id: 0.9, wind.id: 1.0},
                 ),
             )
         )
@@ -141,15 +207,21 @@ def resolve_action_standard_pack(
     return ResolvedActionStandardPack(
         evidence=ActionStandardPackEvidence(
             pack_id=pack_id,
-            pack_version="1.0.0",
-            standard_reference="AS/NZS 1170.0:2002 working implementation",
+            pack_version="1.1.0",
+            standard_reference=(
+                "AS/NZS 1170.0:2002 Clauses 4.2.1, 4.2.2 and 4.3 "
+                "working implementation"
+            ),
             status="working",
             combination_ids=[combination.id for combination in combinations],
             basis=(
-                "Tertius-owned deterministic action envelope. Factors are not "
-                "project-authored and this working pack is not certification evidence."
+                "Tertius-owned deterministic action envelope including permanent-only, "
+                "gravity, destabilizing wind, and 0.9G wind-reversal cases. Factors "
+                "are not project-authored and this working pack is not certification "
+                "evidence."
             ),
         ),
         load_cases=[action.to_load_case() for action in action_cases],
         load_combinations=combinations,
+        unavailable_combinations=unavailable,
     )

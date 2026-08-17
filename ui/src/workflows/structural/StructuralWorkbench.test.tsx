@@ -331,6 +331,24 @@ const analysis: StructuralSnapshot = {
       factors: { 'case-dead': 1, 'case-wind-inward': 12 },
     },
   ],
+  unavailable_load_combinations: [
+    {
+      id: 'SLS-G+WY+',
+      label: 'Permanent plus longitudinal wind +Y',
+      limit_state: 'serviceability',
+      family: 'action_standard',
+      missing_inputs: ['wind_positive_y'],
+      reason: 'No longitudinal wind +Y action is generated from the Site basis and compiled structural topology.',
+    },
+    {
+      id: 'ULS-STABILITY+X',
+      label: 'P399 global-stability actions +X',
+      limit_state: 'ultimate',
+      family: 'global_stability',
+      missing_inputs: ['p399_equivalent_horizontal_force'],
+      reason: 'Tertius has not yet generated the SCI P399 equivalent horizontal force from the compiled frame topology.',
+    },
+  ],
   loads: [],
   member_loads: [0.35, 0.8, 1.25].map((distance, index) => ({
     id: `wind-${index}`,
@@ -711,6 +729,17 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('project-demo-base-v1 v0.1')).toBeInTheDocument()
     expect(screen.getByText('Identity pass')).toBeInTheDocument()
     expect(screen.getByText(/Resistance unavailable/)).toBeInTheDocument()
+    expect(screen.getByText('2 unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('option', {
+      name: /SLS-G\+WY\+ · unavailable — No longitudinal wind \+Y action/,
+    })).toBeDisabled()
+    expect(screen.getByRole('option', {
+      name: /ULS-STABILITY\+X · unavailable — Tertius has not yet generated/,
+    })).toBeDisabled()
+
+    fireEvent.click(screen.getByText('2 unavailable'))
+    expect(screen.getByText('Combinations waiting for required actions')).toBeInTheDocument()
+    expect(screen.getAllByText(/SCI P399 equivalent horizontal force/).length).toBeGreaterThan(0)
 
     fireEvent.click(screen.getAllByRole('button', { name: /Grounded concrete block/ })[0]!)
     expect(screen.getByText(/Viewer selection: block/)).toBeInTheDocument()

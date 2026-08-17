@@ -499,6 +499,148 @@ structural_assembly = structure.assembly""",
     )
 
 
+def test_tertius_generates_p399_ehf_and_nhf_from_solved_base_reactions():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="generated_stability_frame",
+    )
+    capture_data = capture.model_dump(mode="python")
+    components = {
+        component["id"]: component for component in capture_data["components"]
+    }
+    components["column"]["role"] = "portal column"
+    components["beam"]["role"] = "portal rafter"
+    analysis = capture_data["analysis"]
+    dead_case_id = next(
+        case["id"] for case in analysis["load_cases"] if case["category"] == "dead"
+    )
+    analysis["load_cases"].extend(
+        [
+            {
+                "id": "p399-ehf-positive-x",
+                "label": "P399 EHF +X",
+                "category": "imperfection",
+            },
+            {
+                "id": "p399-nhf-positive-x",
+                "label": "P399 NHF +X",
+                "category": "imperfection",
+            },
+            {
+                "id": "p399-ehf-negative-x",
+                "label": "P399 EHF -X",
+                "category": "imperfection",
+            },
+            {
+                "id": "p399-nhf-negative-x",
+                "label": "P399 NHF -X",
+                "category": "imperfection",
+            },
+        ]
+    )
+    analysis["load_combinations"].extend(
+        [
+            {
+                "id": "ULS-1.35G",
+                "label": "ULS permanent actions",
+                "limit_state": "ultimate",
+                "factors": {dead_case_id: 1.35},
+            },
+            {
+                "id": "ULS-STABILITY+X",
+                "label": "ULS permanent plus EHF +X",
+                "limit_state": "ultimate",
+                "factors": {
+                    dead_case_id: 1.35,
+                    "p399-ehf-positive-x": 1.0,
+                },
+            },
+            {
+                "id": "NHF-CHECK+X",
+                "label": "NHF probe +X",
+                "limit_state": "ultimate",
+                "factors": {"p399-nhf-positive-x": 1.0},
+                "purpose": "stability_probe",
+            },
+            {
+                "id": "ULS-STABILITY-X",
+                "label": "ULS permanent plus EHF -X",
+                "limit_state": "ultimate",
+                "factors": {
+                    dead_case_id: 1.35,
+                    "p399-ehf-negative-x": 1.0,
+                },
+            },
+            {
+                "id": "NHF-CHECK-X",
+                "label": "NHF probe -X",
+                "limit_state": "ultimate",
+                "factors": {"p399-nhf-negative-x": 1.0},
+                "purpose": "stability_probe",
+            },
+        ]
+    )
+    analysis["stability"] = {
+        "method": "p_delta",
+        "stability_combination_id": "ULS-STABILITY+X",
+        "imperfection_case_id": "p399-ehf-positive-x",
+        "imperfection_basis": "Tertius-generated P399 EHF/NHF test.",
+        "base_stiffness_basis": "Fixed fixture base.",
+        "base_stiffness_status": "verified",
+        "direction_cases": [
+            {
+                "id": "positive-x",
+                "base_combination_id": "ULS-1.35G",
+                "stability_combination_id": "ULS-STABILITY+X",
+                "imperfection_case_id": "p399-ehf-positive-x",
+                "nhf_combination_id": "NHF-CHECK+X",
+                "horizontal_axis": "x",
+                "direction_sign": 1,
+            },
+            {
+                "id": "negative-x",
+                "base_combination_id": "ULS-1.35G",
+                "stability_combination_id": "ULS-STABILITY-X",
+                "imperfection_case_id": "p399-ehf-negative-x",
+                "nhf_combination_id": "NHF-CHECK-X",
+                "horizontal_axis": "x",
+                "direction_sign": -1,
+            },
+        ],
+        "column_component_ids": ["column"],
+        "eaves_member_ids": ["column-axis"],
+        "rafter_member_ids": ["beam-axis"],
+        "column_height_m": 2.0,
+        "analysis_base_model": "fixed",
+        "analysis_basis_status": "verified",
+        "physical_connection_stiffness_status": "verified",
+    }
+    generated_capture = ProjectStructuralCapture.model_validate(capture_data)
+
+    snapshot = solve_project_structural(
+        generated_capture,
+        combination_id="ULS-STABILITY+X",
+    )
+
+    assert snapshot.stability is not None
+    assert snapshot.stability.converged
+    assert len(snapshot.loads) == 4
+    ehf_positive = next(
+        load for load in snapshot.loads if load.case_id == "p399-ehf-positive-x"
+    )
+    nhf_positive = next(
+        load for load in snapshot.loads if load.case_id == "p399-nhf-positive-x"
+    )
+    ehf_negative = next(
+        load for load in snapshot.loads if load.case_id == "p399-ehf-negative-x"
+    )
+    assert ehf_positive.force.x > 0
+    assert ehf_negative.force.x == pytest.approx(-ehf_positive.force.x)
+    assert nhf_positive.force.x == pytest.approx(ehf_positive.force.x)
+    assert "1/200 of the solved vertical base reaction" in (ehf_positive.provenance or "")
+    assert snapshot.equilibrium.status == "pass"
+
+
 def test_bidirectional_nhf_evidence_completes_global_stability_stage():
     stability_source = GRAVITY_FRAME_DESIGN.replace(
         "structural_assembly = structure.assembly",

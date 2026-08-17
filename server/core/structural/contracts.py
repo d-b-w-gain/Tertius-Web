@@ -190,6 +190,7 @@ class NodalLoad(StructuralContract):
     force: Vector3
     moment: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
     visual_node_id: str
+    provenance: str | None = None
 
 
 class MemberPointLoad(StructuralContract):
@@ -223,6 +224,18 @@ class LoadCombination(StructuralContract):
     label: str
     limit_state: Literal["serviceability", "ultimate"]
     factors: dict[str, float]
+    purpose: Literal["design", "stability_probe"] = "design"
+
+
+class UnavailableLoadCombination(StructuralContract):
+    """A Tertius-owned formula that cannot yet be assembled for this project."""
+
+    id: str
+    label: str
+    limit_state: Literal["serviceability", "ultimate"]
+    family: Literal["action_standard", "global_stability"]
+    missing_inputs: list[str] = Field(default_factory=list)
+    reason: str
 
 
 class ActionStandardPackEvidence(StructuralContract):
@@ -236,10 +249,12 @@ class ActionStandardPackEvidence(StructuralContract):
 
 class StabilityDirectionDefinition(StructuralContract):
     id: str
+    base_combination_id: str | None = None
     stability_combination_id: str
     imperfection_case_id: str
     nhf_combination_id: str
     horizontal_axis: Literal["x", "y"] = "x"
+    direction_sign: Literal[-1, 1] = 1
 
 
 class StabilityDefinition(StructuralContract):
@@ -251,6 +266,7 @@ class StabilityDefinition(StructuralContract):
     base_stiffness_status: Literal["verified", "assumed"]
     amplification_warning_ratio: float = Field(default=1.1, gt=1.0)
     direction_cases: list[StabilityDirectionDefinition] = Field(default_factory=list)
+    column_component_ids: list[str] = Field(default_factory=list)
     eaves_member_ids: list[str] = Field(default_factory=list)
     rafter_member_ids: list[str] = Field(default_factory=list)
     column_height_m: float | None = Field(default=None, gt=0)
@@ -900,6 +916,9 @@ class DesignAnalysisDefinition(StructuralContract):
     member_loads: list[MemberPointLoad]
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    unavailable_load_combinations: list[UnavailableLoadCombination] = Field(
+        default_factory=list
+    )
     action_standard_pack: ActionStandardPackEvidence | None = None
     stability: StabilityDefinition | None = None
     cross_section_verification: CrossSectionVerificationDefinition | None = None
@@ -1123,10 +1142,13 @@ class ProjectStructuralCapture(StructuralContract):
                     )
             if self.analysis.stability is not None:
                 stability = self.analysis.stability
+                combination_ids = {
+                    item.id for item in self.analysis.load_combinations
+                }
                 _require_reference(
                     "stability combination",
                     stability.stability_combination_id,
-                    {item.id for item in self.analysis.load_combinations},
+                    combination_ids,
                 )
                 _require_reference(
                     "stability imperfection case",
@@ -1141,6 +1163,28 @@ class ProjectStructuralCapture(StructuralContract):
                 if imperfection_case.category != "imperfection":
                     raise ValueError(
                         "stability imperfection case must use category 'imperfection'"
+                    )
+                for direction in stability.direction_cases:
+                    if direction.base_combination_id is not None:
+                        _require_reference(
+                            "stability base combination",
+                            direction.base_combination_id,
+                            combination_ids,
+                        )
+                    _require_reference(
+                        "stability direction combination",
+                        direction.stability_combination_id,
+                        combination_ids,
+                    )
+                    _require_reference(
+                        "stability NHF combination",
+                        direction.nhf_combination_id,
+                        combination_ids,
+                    )
+                    _require_reference(
+                        "stability direction imperfection case",
+                        direction.imperfection_case_id,
+                        load_case_ids,
                     )
             if self.analysis.cross_section_verification is not None:
                 verification = self.analysis.cross_section_verification
@@ -1355,6 +1399,9 @@ class StructuralSnapshot(StructuralContract):
     materials: list[StructuralMaterial]
     load_cases: list[LoadCase]
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    unavailable_load_combinations: list[UnavailableLoadCombination] = Field(
+        default_factory=list
+    )
     action_standard_pack: ActionStandardPackEvidence | None = None
     loads: list[NodalLoad]
     member_loads: list[MemberPointLoad] = Field(default_factory=list)

@@ -43,11 +43,12 @@ class ConfiguredMemberDistributedLoad(StructuralContract):
 
 
 class ConfiguredPortalFrameWindActions(StructuralContract):
-    """Working transverse-wind action model derived from mechanical member roles.
+    """Working building-envelope action model derived from mechanical member roles.
 
     The geometry remains owned by ``design.py``.  This revisioned Structural
-    input says which mechanical roles receive the Site workbench wind basis and
-    records the pressure coefficients used to derive solver line actions.
+    input identifies the portal members that receive Site wind and R2 roof
+    imposed actions. Tertius owns the action formulae and uses the compiled
+    geometry to derive tributary areas and solver line actions.
     """
 
     model_id: Literal["transverse_portal_frame_strip_v1"] = (
