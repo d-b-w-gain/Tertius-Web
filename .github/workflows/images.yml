@@ -54,6 +54,7 @@ jobs:
           target: api
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
           push: true
           tags: ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
           cache-from: type=gha,scope=tertius-api
@@ -136,6 +137,7 @@ jobs:
           target: api
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
@@ -152,6 +154,7 @@ jobs:
           target: pi-agent
           build-args: |
             SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-pi-agent:${{ steps.vars.outputs.image_tag }}
