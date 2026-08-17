@@ -1787,8 +1787,8 @@ validate_retained_tombstone() {
       --arg name "$recorded_name" --arg uid "$recorded_uid" '
         .metadata.name == $name and .metadata.uid == $uid and
         (.metadata.resourceVersion | type == "string" and length > 0) and
-        (if ($kind == "Cluster" or $kind == "PersistentVolumeClaim")
-         then .kind == $kind else (.kind | ascii_downcase) == $kind end)
+        (if (.kind == "Cluster" or .kind == "PersistentVolumeClaim")
+         then $kind == .kind else (.kind | ascii_downcase) == $kind end)
       ' >/dev/null; then
       echo "Retained object ${recorded_kind}/${recorded_name} no longer has its recorded identity; refusing cleanup." >&2
       return 1

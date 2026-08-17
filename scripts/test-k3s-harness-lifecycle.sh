@@ -284,7 +284,7 @@ if [ "${1:-}" = patch ] && [[ "$joined" == *" secret "* ]]; then
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* || "$joined" == *" Cluster "* ]]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *"clusters.postgresql.cnpg.io"* || "$joined" == *" cluster "* || "$joined" == *" Cluster "* ]]; then
   cluster_uid=$(sed -n '1p' "$STATE_DIR/cluster-uid")
   if [ "$output" = json ]; then
     if [[ "$joined" == *" ${RELEASE_NAME}-postgres "* ]]; then
@@ -316,7 +316,7 @@ if [ "${1:-}" = get ] && [[ "$joined" == *"keycloaks.k8s.keycloak.org"* ]]; then
   exit 0
 fi
 
-if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistentvolumeclaims "* || "$joined" == *" PersistentVolumeClaim "* ]]; then
+if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistentvolumeclaim "* || "$joined" == *" persistentvolumeclaims "* || "$joined" == *" PersistentVolumeClaim "* ]]; then
   if [ "$output" = json ]; then
     if [[ "$joined" == *" ${RELEASE_NAME}-data "* || "$joined" == *" ${RELEASE_NAME}-pi-agent-auth "* ]]; then
       pvc_name=${3:-}
@@ -772,6 +772,17 @@ run_deploy_cleanup
 
 reset_retained_data_state
 rm -f "$STATE_DIR/cluster-labelled"
+printf '%s\n' \
+  'cluster/test-release-postgres@cluster-uid,PersistentVolumeClaim/test-release-data@data-uid,PersistentVolumeClaim/test-release-pi-agent-auth@auth-uid' \
+  >"$STATE_DIR/marker-retained"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse lowercase Cluster tombstone kind tampering"
+fi
+assert_cleanup_refused_before_mutation \
+  "lowercase Cluster tombstone kind must be refused before mutation"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/cluster-labelled"
 printf 'replacement-cluster-uid\n' >"$STATE_DIR/cluster-uid"
 if run_deploy_cleanup; then
   fail "retained cleanup must refuse an unlabelled replacement Cluster UID"
@@ -784,6 +795,17 @@ rm -f "$STATE_DIR/data-pvc-labelled"
 run_deploy_cleanup
 [ ! -e "$STATE_DIR/data-pvc" ] && [ ! -e "$STATE_DIR/marker" ] || \
   fail "an exact recorded PVC without its release label must still be deleted"
+
+reset_retained_data_state
+rm -f "$STATE_DIR/data-pvc-labelled"
+printf '%s\n' \
+  'Cluster/test-release-postgres@cluster-uid,persistentvolumeclaim/test-release-data@data-uid,PersistentVolumeClaim/test-release-pi-agent-auth@auth-uid' \
+  >"$STATE_DIR/marker-retained"
+if run_deploy_cleanup; then
+  fail "retained cleanup must refuse lowercase PVC tombstone kind tampering"
+fi
+assert_cleanup_refused_before_mutation \
+  "lowercase PVC tombstone kind must be refused before mutation"
 
 reset_retained_data_state
 rm -f "$STATE_DIR/data-pvc-labelled"
