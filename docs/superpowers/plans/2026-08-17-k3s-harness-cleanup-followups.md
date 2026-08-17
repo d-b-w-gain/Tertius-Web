@@ -150,13 +150,18 @@ Run:
 
 ```bash
 bash scripts/check-runtime-parity.sh
-PATH="$(pwd)/.venv/bin:$PATH" UV_CACHE_DIR=/tmp/tertius-uv-cache UV_NO_SYNC=1 \
+PATH="$(pwd)/.venv/bin:$PATH" UV_PROJECT_ENVIRONMENT="$(pwd)/.venv" \
+  UV_CACHE_DIR=/tmp/tertius-uv-cache UV_NO_SYNC=1 \
   bash scripts/test-deployment-config.sh
 bash -n scripts/test-k3s-deployment.sh scripts/test-k3s-harness-lifecycle.sh
 git diff --check
 ```
 
-If the worktree has no `.venv`, use the main checkout's existing `.venv/bin` at `/home/johnson/code/Tertius-Web/.venv/bin`. Expected: every command exits zero.
+If the worktree has no `.venv`, set both `PATH` and
+`UV_PROJECT_ENVIRONMENT` to the main checkout's existing environment:
+`PATH="/home/johnson/code/Tertius-Web/.venv/bin:$PATH"` and
+`UV_PROJECT_ENVIRONMENT=/home/johnson/code/Tertius-Web/.venv`. Expected: every
+command exits zero.
 
 - [ ] **Step 4: Request independent code review**
 
