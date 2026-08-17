@@ -99,7 +99,12 @@ fi
 
 if [[ "$joined" == *" create secret generic ${APP_SECRET_NAME} "* ]] && [ "$output" = json ]; then
   jq -n --arg name "$APP_SECRET_NAME" --arg namespace "$NAMESPACE" \
-    '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:$namespace},type:"Opaque",data:{}}'
+    '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:$namespace},type:"Opaque",data:{
+      DATABASE_URL:"cG9zdGdyZXNxbDovL2R1bW15LWRi",
+      VALKEY_URL:"cmVkaXM6Ly9kdW1teS12YWxrZXk=",
+      OIDC_CLIENT_SECRET:"ZHVtbXktb2lkYw==",
+      AUTH_SESSION_SECRET:"ZHVtbXktc2Vzc2lvbg=="
+    }}'
   exit 0
 fi
 
@@ -554,6 +559,18 @@ jq -e --arg lease '11111111-1111-4111-8111-111111111111' \
   '.metadata.annotations["tertius.io/lease-id"] == $lease' \
   "${COMMAND_LOG}.stdin" >/dev/null || \
   fail "first applied application Secret manifest must contain lifecycle lease ownership"
+jq -e '.data == {
+    "DATABASE_URL":"cG9zdGdyZXNxbDovL2R1bW15LWRi",
+    "VALKEY_URL":"cmVkaXM6Ly9kdW1teS12YWxrZXk=",
+    "OIDC_CLIENT_SECRET":"ZHVtbXktb2lkYw==",
+    "AUTH_SESSION_SECRET":"ZHVtbXktc2Vzc2lvbg=="
+  }' "${COMMAND_LOG}.stdin" >/dev/null || \
+  fail "atomic application Secret transform must preserve every rendered payload entry"
+for secret_value in postgresql://dummy-db redis://dummy-valkey dummy-oidc dummy-session; do
+  if grep -Fq -- "$secret_value" "$COMMAND_LOG"; then
+    fail "application Secret command log must redact raw dummy values"
+  fi
+done
 assert_not_log 'kubectl annotate secret test-release-app' \
   'application Secret ownership must not require a second server-side write'
 [ "$(grep -c '^apply$' "${COMMAND_LOG}.apply")" -eq 1 ] || \
