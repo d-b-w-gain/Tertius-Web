@@ -8,7 +8,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import desc, func, or_, select, update
+from sqlalchemy import delete, desc, func, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -130,7 +130,7 @@ class ProjectRepository:
         self.db.flush()
         return True
 
-    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+    def stage_project(self, name: str, user_id: UUID, default_code: str) -> Project:
         name = require_valid_project_name(name)
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)
         self.db.add(project)
@@ -143,6 +143,11 @@ class ProjectRepository:
                 content=default_code,
             )
         )
+        self.db.flush()
+        return project
+
+    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+        project = self.stage_project(name, user_id, default_code)
         self.db.commit()
         return project
 
@@ -461,6 +466,8 @@ class CompileRepository:
         job.user_message = user_message
         job.retryable = retryable
         job.finished_at = now_utc()
+        if status in {"succeeded", "failed"}:
+            self.delete_job_source_artifacts(job.id)
 
     def claim_job_for_command(self, command: CompileCommand, lease_seconds: int) -> CompileJob | None:
         now = now_utc()
@@ -605,6 +612,7 @@ class CompileRepository:
         )
         reconciled_id = self.db.scalar(stmt)
         if reconciled_id is not None:
+            self.delete_job_source_artifacts(reconciled_id)
             self.db.flush()
         return self.get_job(project_id, job_id)
 
@@ -640,6 +648,8 @@ class CompileRepository:
         finished_id = self.db.scalar(stmt)
         if finished_id is None:
             return None
+        if status in {"succeeded", "failed"}:
+            self.delete_job_source_artifacts(finished_id)
         return self.db.get(CompileJob, finished_id)
 
     def record_artifact(
@@ -666,6 +676,32 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
+    def project_source_artifact(
+        self, project_id: UUID, kind: str = "source_3mf"
+    ) -> Artifact | None:
+        return self.db.scalar(
+            select(Artifact).where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.project_id == project_id,
+                Artifact.compile_job_id.is_(None),
+                Artifact.kind == kind.lower(),
+            )
+        )
+
+    def source_artifact_for_job(
+        self, job_id: UUID, kind: str = "source_3mf"
+    ) -> Artifact | None:
+        return self.artifact_for_job(job_id, kind)
+
+    def delete_job_source_artifacts(self, job_id: UUID) -> None:
+        self.db.execute(
+            delete(Artifact).where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.compile_job_id == job_id,
+                Artifact.kind == "source_3mf",
+            )
+        )
+        self.db.flush()
 
     def prunable_artifacts(self, project_id: UUID, kind: str, keep_latest: int) -> list[Artifact]:
         keep_latest = max(0, keep_latest)
