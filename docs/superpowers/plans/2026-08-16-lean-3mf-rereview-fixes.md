@@ -219,7 +219,7 @@ fix: reconcile compile sidecar bucket limits
 - Modify: `server/tests/fixtures/three_mf.py`
 - Modify: `server/tests/test_tertius_imports_runtime.py`
 
-- [ ] **Step 1: Restack the loader branch**
+- [x] **Step 1: Restack the loader branch**
 
 Run `rebase --onto` using the recorded old #355 head and the new
 `codex/3mf-lean-sidecars` head:
@@ -231,7 +231,7 @@ rtk git rebase --onto codex/3mf-lean-sidecars 67e6bc4
 
 Expected: the two loader commits follow the updated sidecar branch.
 
-- [ ] **Step 2: Extend fixtures and write failing runtime cases**
+- [x] **Step 2: Extend fixtures and write failing runtime cases**
 
 Extend `make_3mf()` with explicit `include_build` and `include_mesh_objects`
 controls. Export a named case matrix such as:
@@ -252,7 +252,7 @@ UNSUPPORTED_BUILD_GRAPH_CASES = [
 Use plain `(id, options)` data rather than pytest-specific parameters if that
 keeps the fixture module reusable by both suites.
 
-- [ ] **Step 3: Verify RED then retain the minimal runtime guard**
+- [x] **Step 3: Verify RED then retain the minimal runtime guard**
 
 Run:
 
@@ -262,7 +262,7 @@ rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_tertius_imports_r
 
 Expected: missing-build/no-mesh fixture coverage initially exposes any generator or message mismatch. Adjust only the injected guard and fixture generator needed for stable unsupported-graph rejection.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run:
 
