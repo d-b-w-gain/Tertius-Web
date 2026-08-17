@@ -1147,8 +1147,18 @@ if ! rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' <<<"$rendered" || ! rg -q 'COM
   exit 1
 fi
 
+if ! rg -q 'COMPILE_SIDECAR_TTL_SECONDS: "86400"' <<<"$rendered" || ! rg -q 'COMPILE_SIDECAR_MAX_BYTES: "8589934592"' <<<"$rendered"; then
+  echo "ConfigMap compile sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
+  exit 1
+fi
+
 if ! rg -q 'name: COMPILE_REQUEST_MAX_BYTES' <<<"$scaled_job" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
   echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_TTL_SECONDS' | rg -q 'value: "86400"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_MAX_BYTES' | rg -q 'value: "8589934592"'; then
+  echo "Compile ScaledJob sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
   exit 1
 fi
 
