@@ -316,7 +316,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       selectedRestraintTrace?.combination_id === check.combination_id
       && selectedBoundaryCandidateIds.has(check.candidate_id)
     ))
-  const selectedRestraintVisualNodeIds = useMemo(() => {
+  const selectedRestraintVisualNodeIds = (() => {
     if (!capture) {
       return selectedVisualNodeId ? [selectedVisualNodeId] : undefined
     }
@@ -336,14 +336,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       ...(selectedGlobalBracingTrace?.componentIds ?? [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
     ].filter(Boolean)))
-  }, [
-    capture,
-    selectedCrossSectionCheck,
-    selectedRestraintChecks,
-    selectedRestraintTrace,
-    selectedGlobalBracingTrace,
-    selectedVisualNodeId,
-  ])
+  })()
   const selectRestraintTrace = useCallback((traceId: string) => {
     const currentAnalysis = analysis
     const trace = currentAnalysis?.member_restraint_traces?.find(

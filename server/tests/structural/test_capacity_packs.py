@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from server.core.structural.capacity_packs import (
+from core.structural.capacity_packs import (
     AS_NZS_4600_2005_A1_SHA256,
     CapacityPackError,
     as_nzs_4600_2005_a1_member_capacity,
 )
-from server.core.structural.contracts import SectionCatalogReference, SectionProperties
+from core.structural.contracts import SectionCatalogReference, SectionProperties
 
 
 def _c10012_section(**property_overrides: object) -> SectionProperties:
