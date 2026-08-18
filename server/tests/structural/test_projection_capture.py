@@ -726,7 +726,6 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
             "end_fastener_nominal_diameter_mm": 5.0,
             "end_fastener_spacing_mm": 15.0,
             "end_fastener_edge_distance_mm": 20.0,
-            "end_fastener_shear_capacity_kN": 1.7,
         }
     )
     structural_facet["material"].update(
@@ -763,9 +762,14 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
     assert section.tension_width_mm == pytest.approx(30.0)
     assert section.tension_hole_diameter_mm == pytest.approx(5.5)
     assert section.end_fastener_spacing_mm == pytest.approx(15.0)
-    assert section.end_fastener_shear_capacity_kN == pytest.approx(1.7)
     assert material.yield_strength_MPa == pytest.approx(450.0)
     assert material.tensile_strength_MPa == pytest.approx(480.0)
+    component = next(item for item in capture.components if item.id == "P1")
+    assert component.product_key == product_key
+    assert component.product_definition_digest == projected_purlin[
+        "product_definition_digest"
+    ]
+    assert component.structural_properties["end_fastener_count"] == 2
     assert capture.analysis.cross_section_verification is not None
     assert declaration.id not in capture.analysis.cross_section_verification.member_ids
     assert capture.analysis.member_stability_verification is not None

@@ -75,7 +75,6 @@ class SectionProperties(StructuralContract):
     end_fastener_nominal_diameter_mm: float | None = Field(default=None, gt=0)
     end_fastener_spacing_mm: float | None = Field(default=None, gt=0)
     end_fastener_edge_distance_mm: float | None = Field(default=None, gt=0)
-    end_fastener_shear_capacity_kN: float | None = Field(default=None, gt=0)
     catalog: SectionCatalogReference | None = None
 
     @model_validator(mode="after")
@@ -528,7 +527,20 @@ class TensionMemberCheck(StructuralContract):
     connected_part_net_capacity_kN: float | None = None
     end_bearing_capacity_kN: float | None = None
     end_tearout_capacity_kN: float | None = None
-    end_fastener_shear_capacity_kN: float | None = None
+    end_fastener_part_numbers: list[str] = Field(default_factory=list)
+    end_fastener_product_keys: list[str] = Field(default_factory=list)
+    end_fastener_product_definition_digests: list[str] = Field(default_factory=list)
+    fastener_tested_single_shear_strength_kN: float | None = None
+    fastener_required_single_shear_strength_kN: float | None = None
+    fastener_shear_qualification_status: Literal[
+        "not_checked", "candidate", "pass", "fail"
+    ] = "not_checked"
+    fastener_evidence_status: Literal[
+        "unverified", "candidate", "verified"
+    ] | None = None
+    fastener_evidence_source: str | None = None
+    fastener_evidence_revision: str | None = None
+    fastener_evidence_url: str | None = None
     spacing_status: Literal["not_checked", "pass", "fail"] = "not_checked"
     edge_distance_status: Literal["not_checked", "pass", "fail"] = "not_checked"
     standard_reference: str | None = None
@@ -931,6 +943,17 @@ class DesignComponent(StructuralContract):
     grounded: bool = False
     part_number: str | None = None
     role: str | None = None
+    product_key: str | None = None
+    product_definition_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    structural_evidence_status: Literal[
+        "unverified", "candidate", "verified"
+    ] | None = None
+    structural_evidence_basis: str | None = None
+    structural_properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionMemberEngagement(StructuralContract):

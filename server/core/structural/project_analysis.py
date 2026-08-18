@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 
 from .capacity_packs import (
     CapacityPackError,
+    as_nzs_4600_2005_a1_screw_shear_qualification,
     cross_section_capacity,
     member_compression_capacity,
     tension_member_capacity,
@@ -379,6 +380,7 @@ def _tension_member_checks(
     model,
     analysis,
     connections: Sequence[DesignConnection] = (),
+    components: dict[str, DesignComponent] | None = None,
 ) -> list[TensionMemberCheck]:
     """Envelope tension-only members and derive AS/NZS 4600 resistance."""
 
@@ -388,6 +390,7 @@ def _tension_member_checks(
         if combination.limit_state == "ultimate" and combination.purpose == "design"
     ]
     checks: list[TensionMemberCheck] = []
+    components = components or {}
     sections = {section.id: section for section in analysis.sections}
     materials = {material.id: material for material in analysis.materials}
     for declaration in analysis.members:
@@ -443,6 +446,128 @@ def _tension_member_checks(
             len(connection.connector_component_ids)
             for connection in rendered_end_connections
         ]
+        rendered_fasteners = [
+            components[connector_id]
+            for connection in rendered_end_connections
+            for connector_id in connection.connector_component_ids
+            if connector_id in components
+        ]
+        fastener_part_numbers = sorted(
+            {
+                component.part_number
+                for component in rendered_fasteners
+                if component.part_number is not None
+            }
+        )
+        fastener_product_keys = sorted(
+            {
+                component.product_key
+                for component in rendered_fasteners
+                if component.product_key is not None
+            }
+        )
+        fastener_product_definition_digests = sorted(
+            {
+                component.product_definition_digest
+                for component in rendered_fasteners
+                if component.product_definition_digest is not None
+            }
+        )
+        tested_strength_values = {
+            float(value)
+            for component in rendered_fasteners
+            if isinstance(
+                value := component.structural_properties.get(
+                    "tested_single_shear_strength_kN"
+                ),
+                (int, float),
+            )
+            and not isinstance(value, bool)
+            and float(value) > 0.0
+        }
+        product_diameter_values = {
+            float(value)
+            for component in rendered_fasteners
+            if isinstance(
+                value := component.structural_properties.get("nominal_diameter_mm"),
+                (int, float),
+            )
+            and not isinstance(value, bool)
+            and float(value) > 0.0
+        }
+        fastener_tested_single_shear_strength_kN = (
+            next(iter(tested_strength_values))
+            if len(tested_strength_values) == 1
+            and len(rendered_fasteners)
+            == sum(rendered_end_fastener_counts)
+            else None
+        )
+        evidence_sources = {
+            str(value)
+            for component in rendered_fasteners
+            if (
+                value := component.structural_properties.get("test_evidence_source")
+            )
+        }
+        evidence_revisions = {
+            str(value)
+            for component in rendered_fasteners
+            if (
+                value := component.structural_properties.get("test_evidence_revision")
+            )
+        }
+        evidence_urls = {
+            str(value)
+            for component in rendered_fasteners
+            if (value := component.structural_properties.get("test_evidence_url"))
+        }
+        fastener_identity_matches = bool(rendered_fasteners) and all(
+            (
+                component.kind == "connector"
+                and component.part_number is not None
+                and component.product_key is not None
+                and component.product_definition_digest is not None
+                and isinstance(
+                    component.structural_properties.get(
+                        "tested_single_shear_strength_kN"
+                    ),
+                    (int, float),
+                )
+                and not isinstance(
+                    component.structural_properties.get(
+                        "tested_single_shear_strength_kN"
+                    ),
+                    bool,
+                )
+                and component.structural_properties.get("test_evidence_source")
+            )
+            for component in rendered_fasteners
+        ) and all(
+            len(values) == 1
+            for values in (
+                fastener_part_numbers,
+                fastener_product_keys,
+                fastener_product_definition_digests,
+                tested_strength_values,
+                evidence_sources,
+            )
+        )
+        if not rendered_fasteners:
+            fastener_evidence_status: Literal[
+                "unverified", "candidate", "verified"
+            ] | None = None
+        elif fastener_identity_matches and all(
+            component.structural_evidence_status == "verified"
+            for component in rendered_fasteners
+        ):
+            fastener_evidence_status = "verified"
+        elif any(
+            component.structural_evidence_status == "candidate"
+            for component in rendered_fasteners
+        ):
+            fastener_evidence_status = "candidate"
+        else:
+            fastener_evidence_status = "unverified"
         rendered_layout_matches = (
             fastener_count is not None
             and len(rendered_end_connections) == 2
@@ -457,7 +582,10 @@ def _tension_member_checks(
         connected_part_net_capacity_kN: float | None = None
         end_bearing_capacity_kN: float | None = None
         end_tearout_capacity_kN: float | None = None
-        end_fastener_shear_capacity_kN: float | None = None
+        fastener_required_single_shear_strength_kN: float | None = None
+        fastener_shear_qualification_status: Literal[
+            "not_checked", "candidate", "pass", "fail"
+        ] = "not_checked"
         derived_connection_capacity_kN: float | None = None
         connection_basis_parts: list[str] = []
         if (
@@ -503,7 +631,7 @@ def _tension_member_checks(
                 * material.tensile_strength_MPa
                 / 1000.0
             )
-            bearing_capacities: list[float] = []
+            nominal_bearing_capacities: list[float] = []
             for support_section, support_material in _tension_member_supports(
                 declaration,
                 analysis,
@@ -529,26 +657,48 @@ def _tension_member_checks(
                         diameter_mm=diameter_mm,
                     ),
                 )
-                bearing_capacities.append(
-                    fastener_count * 0.50 * min(orientation_capacities)
+                nominal_bearing_capacities.append(min(orientation_capacities))
+            if nominal_bearing_capacities:
+                end_bearing_capacity_kN = (
+                    fastener_count * 0.50 * min(nominal_bearing_capacities)
                 )
-            if bearing_capacities:
-                end_bearing_capacity_kN = min(bearing_capacities)
-            if section.end_fastener_shear_capacity_kN is not None:
-                end_fastener_shear_capacity_kN = (
-                    fastener_count * section.end_fastener_shear_capacity_kN
-                )
+                if fastener_tested_single_shear_strength_kN is not None:
+                    qualification = (
+                        as_nzs_4600_2005_a1_screw_shear_qualification(
+                            tested_single_shear_strength_kN=(
+                                fastener_tested_single_shear_strength_kN
+                            ),
+                            nominal_bearing_capacity_kN=max(
+                                nominal_bearing_capacities
+                            ),
+                        )
+                    )
+                    fastener_required_single_shear_strength_kN = (
+                        qualification.required_single_shear_strength_kN
+                    )
+                    product_diameter_matches = (
+                        len(product_diameter_values) == 1
+                        and diameter_mm in product_diameter_values
+                    )
+                    if (
+                        fastener_evidence_status == "verified"
+                        and fastener_identity_matches
+                        and product_diameter_matches
+                    ):
+                        fastener_shear_qualification_status = qualification.status
+                    else:
+                        fastener_shear_qualification_status = "candidate"
             connection_limits = [
                 connected_part_net_capacity_kN,
                 end_bearing_capacity_kN,
                 end_tearout_capacity_kN,
-                end_fastener_shear_capacity_kN,
             ]
             if (
                 all(value is not None for value in connection_limits)
                 and spacing_status == "pass"
                 and edge_distance_status == "pass"
                 and rendered_layout_matches
+                and fastener_shear_qualification_status == "pass"
             ):
                 derived_connection_capacity_kN = min(
                     cast(float, value) for value in connection_limits
@@ -556,7 +706,9 @@ def _tension_member_checks(
             connection_basis_parts.append(
                 "AS/NZS 4600:2005+A1 Clauses 5.4.2.1-5.4.2.5 connected-part "
                 "net tension, spacing, edge distance, tilting/bearing, tearout, "
-                "and tested screw shear."
+                "and Section 8 tested screw-shear qualification. Clause 5.4.2.5 "
+                "is applied as the 1.25 Vb product qualification, not as another "
+                "factored resistance limit."
             )
 
         if derived_connection_capacity_kN is not None:
@@ -564,6 +716,12 @@ def _tension_member_checks(
                 "not_checked", "candidate", "verified"
             ] = "verified"
             connection_capacity = derived_connection_capacity_kN
+        elif (
+            fastener_shear_qualification_status == "fail"
+            and fastener_evidence_status == "verified"
+        ):
+            connection_capacity_status = "verified"
+            connection_capacity = None
         elif fastener_count is not None:
             connection_capacity_status = "candidate"
             connection_capacity = None
@@ -599,8 +757,10 @@ def _tension_member_checks(
             )
             if capacity_status == "verified" and utilisation is not None
         ]
-        if any(utilisation > 1.0 for utilisation in verified_utilisations):
+        if fastener_shear_qualification_status == "fail":
             status: Literal["pass", "fail", "not_checked", "unsupported"] = "fail"
+        elif any(utilisation > 1.0 for utilisation in verified_utilisations):
+            status = "fail"
         elif not ultimate_combinations:
             status = "not_checked"
         elif (
@@ -628,11 +788,20 @@ def _tension_member_checks(
                 "No Tertius-owned ULS design combination is available for the "
                 "tension envelope."
             )
-        if fastener_count is not None and end_fastener_shear_capacity_kN is None:
+        if fastener_count is not None and fastener_tested_single_shear_strength_kN is None:
             missing_assumptions.append(
-                "The fastener product has no Section 8 tested screw shear resistance; "
-                "Clause 5.4.2.5 prevents the connected-part bearing calculation from "
-                "being treated as the screw capacity."
+                "The rendered fastener product has no single, positive manufacturer "
+                "single-shear test strength for the Clause 5.4.2.5 qualification."
+            )
+        elif fastener_shear_qualification_status == "candidate":
+            missing_assumptions.append(
+                "The fastener test value is visible, but its rendered product identity, "
+                "diameter, or structural evidence is not verified consistently at every end."
+            )
+        elif fastener_shear_qualification_status == "fail":
+            missing_assumptions.append(
+                "The selected fastener's tested single-shear strength is below the "
+                "Clause 5.4.2.5 requirement of 1.25 Vb."
             )
         if len(rendered_end_connections) != 2:
             missing_assumptions.append(
@@ -691,7 +860,34 @@ def _tension_member_checks(
                 connected_part_net_capacity_kN=connected_part_net_capacity_kN,
                 end_bearing_capacity_kN=end_bearing_capacity_kN,
                 end_tearout_capacity_kN=end_tearout_capacity_kN,
-                end_fastener_shear_capacity_kN=end_fastener_shear_capacity_kN,
+                end_fastener_part_numbers=fastener_part_numbers,
+                end_fastener_product_keys=fastener_product_keys,
+                end_fastener_product_definition_digests=(
+                    fastener_product_definition_digests
+                ),
+                fastener_tested_single_shear_strength_kN=(
+                    fastener_tested_single_shear_strength_kN
+                ),
+                fastener_required_single_shear_strength_kN=(
+                    fastener_required_single_shear_strength_kN
+                ),
+                fastener_shear_qualification_status=(
+                    fastener_shear_qualification_status
+                ),
+                fastener_evidence_status=fastener_evidence_status,
+                fastener_evidence_source=(
+                    next(iter(evidence_sources))
+                    if len(evidence_sources) == 1
+                    else None
+                ),
+                fastener_evidence_revision=(
+                    next(iter(evidence_revisions))
+                    if len(evidence_revisions) == 1
+                    else None
+                ),
+                fastener_evidence_url=(
+                    next(iter(evidence_urls)) if len(evidence_urls) == 1 else None
+                ),
                 spacing_status=spacing_status,
                 edge_distance_status=edge_distance_status,
                 standard_reference=(pack.standard_reference if pack is not None else None),
@@ -5736,6 +5932,7 @@ def solve_project_structural(
         model,
         analysis,
         capture.connections,
+        components,
     )
     bracing_load_path_traces = _bracing_load_path_traces(
         capture,

@@ -175,6 +175,11 @@ def _capture_from_structural_projection(
     if len(design_digest) != 64:
         raise ValueError("structural projection is missing its compiled-design digest")
 
+    product_facets = {
+        str(facet["product_key"]): facet
+        for facet in projection.get("product_facets", [])
+        if isinstance(facet, dict) and facet.get("product_key")
+    }
     components = [
         DesignComponent(
             id=str(component["component_id"]),
@@ -186,6 +191,36 @@ def _capture_from_structural_projection(
                 str(component["part_number"]) if component.get("part_number") else None
             ),
             role=(str(component["role"]) if component.get("role") else None),
+            product_key=(
+                str(component["product_key"])
+                if component.get("product_key")
+                else None
+            ),
+            product_definition_digest=(
+                str(component["product_definition_digest"])
+                if component.get("product_definition_digest")
+                else None
+            ),
+            structural_evidence_status=(
+                product_facets.get(str(component.get("product_key") or ""), {}).get(
+                    "evidence_status"
+                )
+            ),
+            structural_evidence_basis=(
+                str(evidence_basis)
+                if (
+                    evidence_basis := product_facets.get(
+                        str(component.get("product_key") or ""), {}
+                    ).get("evidence_basis")
+                )
+                else None
+            ),
+            structural_properties=dict(
+                product_facets.get(str(component.get("product_key") or ""), {}).get(
+                    "properties"
+                )
+                or {}
+            ),
         )
         for component in projection.get("components", [])
         if isinstance(component, dict)
@@ -1913,11 +1948,6 @@ def _analysis_from_projection(
                 end_fastener_edge_distance_mm=(
                     float(section_data["end_fastener_edge_distance_mm"])
                     if section_data.get("end_fastener_edge_distance_mm") is not None
-                    else None
-                ),
-                end_fastener_shear_capacity_kN=(
-                    float(section_data["end_fastener_shear_capacity_kN"])
-                    if section_data.get("end_fastener_shear_capacity_kN") is not None
                     else None
                 ),
                 catalog=(

@@ -1672,15 +1672,47 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Bearing / tear-out / screw shear</dt>
+                          <dt className="text-slate-500">Bearing / tear-out capacity</dt>
                           <dd className="font-mono text-slate-200">
                             {[
                               selectedTensionCheck.end_bearing_capacity_kN,
                               selectedTensionCheck.end_tearout_capacity_kN,
-                              selectedTensionCheck.end_fastener_shear_capacity_kN,
                             ].map((value) => (
                               value == null ? '—' : number(value, 3)
                             )).join(' / ')} kN
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Installed fastener product</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.end_fastener_part_numbers.join(', ') || 'Unidentified'}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {(selectedTensionCheck.fastener_evidence_status || 'unverified').replace('_', ' ')} evidence
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Tested shear / required 1.25 Vb</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.fastener_tested_single_shear_strength_kN == null
+                              || selectedTensionCheck.fastener_required_single_shear_strength_kN == null
+                              ? 'Not qualified'
+                              : `${number(
+                                  selectedTensionCheck.fastener_tested_single_shear_strength_kN,
+                                  3,
+                                )} / ${number(
+                                  selectedTensionCheck.fastener_required_single_shear_strength_kN,
+                                  3,
+                                )} kN`}
+                          </dd>
+                          <dd className={`mt-0.5 font-mono text-[9px] uppercase ${
+                            selectedTensionCheck.fastener_shear_qualification_status === 'pass'
+                              ? 'text-emerald-300'
+                              : selectedTensionCheck.fastener_shear_qualification_status === 'fail'
+                                ? 'text-red-300'
+                                : 'text-amber-300'
+                          }`}>
+                            {selectedTensionCheck.fastener_shear_qualification_status.replace('_', ' ')}
                           </dd>
                         </div>
                         <div>
@@ -1706,6 +1738,26 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               : `${selectedTensionCheck.rendered_end_fastener_counts.join(' / ')} across ${
                                   selectedTensionCheck.rendered_end_connection_count
                                 } ends`}
+                          </dd>
+                        </div>
+                        <div className="col-span-2">
+                          <dt className="text-slate-500">Fastener evidence</dt>
+                          <dd className="text-[10px] leading-relaxed text-slate-300">
+                            {selectedTensionCheck.fastener_evidence_url ? (
+                              <a
+                                className="text-cyan-300 underline decoration-cyan-500/50 underline-offset-2"
+                                href={selectedTensionCheck.fastener_evidence_url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {selectedTensionCheck.fastener_evidence_source || 'Manufacturer source'}
+                                {selectedTensionCheck.fastener_evidence_revision
+                                  ? ` · ${selectedTensionCheck.fastener_evidence_revision}`
+                                  : ''}
+                              </a>
+                            ) : (
+                              selectedTensionCheck.fastener_evidence_source || 'No source linked'
+                            )}
                           </dd>
                         </div>
                         <div>

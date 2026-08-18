@@ -66,6 +66,20 @@ class TensionMemberCapacity:
 
 
 @dataclass(frozen=True)
+class ScrewShearQualification:
+    pack_id: str
+    tested_single_shear_strength_kN: float
+    nominal_bearing_capacity_kN: float
+    required_single_shear_strength_kN: float
+    status: Literal["pass", "fail"]
+    standard_reference: str
+    standard_status: str
+    standard_source_sha256: str
+    developments_supplement_sha256: str
+    basis: str
+
+
+@dataclass(frozen=True)
 class MemberCompressionCapacity:
     pack_id: str
     section_record_sha256: str
@@ -236,6 +250,49 @@ def tension_member_capacity(
     if pack_id == "as_nzs_4600_2005_a1_tension":
         return as_nzs_4600_2005_a1_tension_capacity(section, material)
     raise CapacityPackError(f"unsupported tension capacity pack {pack_id!r}")
+
+
+def as_nzs_4600_2005_a1_screw_shear_qualification(
+    *,
+    tested_single_shear_strength_kN: float,
+    nominal_bearing_capacity_kN: float,
+) -> ScrewShearQualification:
+    """Qualify a screw for the Clause 5.4.2.3 bearing resistance.
+
+    Clause 5.4.2.5 does not define a separate factored screw-shear design
+    resistance. It requires the nominal screw strength established by Section 8
+    testing to be at least 1.25 times the Clause 5.4.2.3 nominal bearing value.
+    """
+
+    if tested_single_shear_strength_kN <= 0:
+        raise CapacityPackError("tested single-shear strength must be positive")
+    if nominal_bearing_capacity_kN <= 0:
+        raise CapacityPackError("nominal screw bearing capacity must be positive")
+    required_strength_kN = 1.25 * nominal_bearing_capacity_kN
+    return ScrewShearQualification(
+        pack_id="as_nzs_4600_2005_a1_screw_shear_qualification",
+        tested_single_shear_strength_kN=tested_single_shear_strength_kN,
+        nominal_bearing_capacity_kN=nominal_bearing_capacity_kN,
+        required_single_shear_strength_kN=required_strength_kN,
+        status=(
+            "pass"
+            if tested_single_shear_strength_kN >= required_strength_kN
+            else "fail"
+        ),
+        standard_reference=AS_NZS_4600_2005_A1_REFERENCE,
+        standard_status=ACCEPTED_STANDARD_STATUS,
+        standard_source_sha256=AS_NZS_4600_2005_A1_SHA256,
+        developments_supplement_sha256=(
+            AS_NZS_4600_DEVELOPMENTS_SUPPLEMENT_SHA256
+        ),
+        basis=(
+            "AS/NZS 4600:2005 incorporating Amendment No. 1 Clause 5.4.2.5: "
+            "the Section 8 tested nominal screw shear strength must be not less "
+            "than 1.25 Vb, where Vb is the Clause 5.4.2.3 nominal single-screw "
+            "bearing resistance. Screw shear is a qualification gate, not an "
+            "additional factored connection-capacity limit."
+        ),
+    )
 
 
 def _simple_lipped_channel_distortional_stress(

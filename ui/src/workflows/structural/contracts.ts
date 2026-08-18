@@ -421,7 +421,6 @@ export type StructuralSnapshot = {
     end_fastener_nominal_diameter_mm?: number | null
     end_fastener_spacing_mm?: number | null
     end_fastener_edge_distance_mm?: number | null
-    end_fastener_shear_capacity_kN?: number | null
     catalog?: {
       catalog_id: string
       catalog_version: string
@@ -545,7 +544,16 @@ export type StructuralSnapshot = {
     connected_part_net_capacity_kN: number | null
     end_bearing_capacity_kN: number | null
     end_tearout_capacity_kN: number | null
-    end_fastener_shear_capacity_kN: number | null
+    end_fastener_part_numbers: string[]
+    end_fastener_product_keys: string[]
+    end_fastener_product_definition_digests: string[]
+    fastener_tested_single_shear_strength_kN: number | null
+    fastener_required_single_shear_strength_kN: number | null
+    fastener_shear_qualification_status: 'not_checked' | 'candidate' | 'pass' | 'fail'
+    fastener_evidence_status: 'unverified' | 'candidate' | 'verified' | null
+    fastener_evidence_source: string | null
+    fastener_evidence_revision: string | null
+    fastener_evidence_url: string | null
     spacing_status: 'not_checked' | 'pass' | 'fail'
     edge_distance_status: 'not_checked' | 'pass' | 'fail'
     standard_reference: string | null

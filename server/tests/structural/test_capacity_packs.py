@@ -6,6 +6,7 @@ from core.structural.capacity_packs import (
     AS_NZS_4600_2005_A1_SHA256,
     CapacityPackError,
     as_nzs_4600_2005_a1_member_capacity,
+    as_nzs_4600_2005_a1_screw_shear_qualification,
     as_nzs_4600_2005_a1_tension_capacity,
 )
 from core.structural.contracts import (
@@ -200,3 +201,23 @@ def test_tension_pack_rejects_holes_wider_than_the_strap() -> None:
                 tensile_strength_MPa=480.0,
             ),
         )
+
+
+def test_screw_shear_qualification_applies_clause_5425_as_a_gate() -> None:
+    qualification = as_nzs_4600_2005_a1_screw_shear_qualification(
+        tested_single_shear_strength_kN=5.75,
+        nominal_bearing_capacity_kN=2.4,
+    )
+
+    assert qualification.required_single_shear_strength_kN == pytest.approx(3.0)
+    assert qualification.status == "pass"
+    assert "qualification gate" in qualification.basis
+
+
+def test_screw_shear_qualification_fails_below_125_vb() -> None:
+    qualification = as_nzs_4600_2005_a1_screw_shear_qualification(
+        tested_single_shear_strength_kN=2.99,
+        nominal_bearing_capacity_kN=2.4,
+    )
+
+    assert qualification.status == "fail"

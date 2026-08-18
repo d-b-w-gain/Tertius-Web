@@ -16,6 +16,8 @@ from core.structural.contracts import (
     DesignConnection,
     MemberStabilityComparison,
     ProjectStructuralCapture,
+    SectionProperties,
+    StructuralMaterial,
     TensionMemberCheck,
 )
 from core.structural.design_capture import (
@@ -26,6 +28,7 @@ from core.structural.project_analysis import (
     _bracing_load_path_traces,
     _off_axis_load_path,
     _stability_scope_comparisons,
+    _tension_member_checks,
     solve_project_structural,
 )
 
@@ -167,6 +170,147 @@ def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
         "foundation-right",
     ]
     assert trace.blockers == []
+
+
+def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> None:
+    brace_section = SectionProperties(
+        id="strap",
+        label="30 x 1 mm strap",
+        area_m2=30e-6,
+        iy_m4=2.5e-12,
+        iz_m4=2.25e-9,
+        torsion_j_m4=2.5e-12,
+        tension_width_mm=30.0,
+        tension_thickness_mm=1.0,
+        tension_hole_diameter_mm=5.5,
+        tension_holes_in_critical_section=2,
+        tension_force_distribution_factor=1.0,
+        end_fastener_nominal_diameter_mm=5.0,
+        end_fastener_spacing_mm=15.0,
+        end_fastener_edge_distance_mm=20.0,
+    )
+    support_section = SectionProperties(
+        id="support",
+        label="1.2 mm support sheet",
+        area_m2=258e-6,
+        iy_m4=4.32e-7,
+        iz_m4=8.92e-8,
+        torsion_j_m4=1.24e-10,
+        tension_thickness_mm=1.2,
+    )
+    brace_material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=76.923e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    support_material = StructuralMaterial(
+        id="g500",
+        label="G500",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=76.923e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=500.0,
+        tensile_strength_MPa=550.0,
+    )
+    declaration = SimpleNamespace(
+        id="brace-axis",
+        label="Brace axis",
+        component_id="brace",
+        tension_only=True,
+        section_id="strap",
+        material_id="g450",
+        end_fastener_count=2,
+        assumption="Tension-only physical strap.",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+    )
+    support_left = SimpleNamespace(
+        id="support-left-axis",
+        component_id="support-left",
+        tension_only=False,
+        section_id="support",
+        material_id="g500",
+    )
+    support_right = SimpleNamespace(
+        id="support-right-axis",
+        component_id="support-right",
+        tension_only=False,
+        section_id="support",
+        material_id="g500",
+    )
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=[declaration, support_left, support_right],
+        sections=[brace_section, support_section],
+        materials=[brace_material, support_material],
+    )
+    model = SimpleNamespace(
+        members={"brace-axis": SimpleNamespace(axial=lambda _x, _combo: -0.4)}
+    )
+    fastener_ids = ("s1", "s2", "e1", "e2")
+    fastener_components = {
+        component_id: DesignComponent(
+            id=component_id,
+            label="Buildex Smooth Top Tek",
+            kind="connector",
+            visual_node_id=component_id,
+            part_number="6-311-0695-5MP",
+            product_key="buildex:smooth-top-tek:6-311-0695-5mp",
+            product_definition_digest="d" * 64,
+            structural_evidence_status="verified",
+            structural_evidence_basis="Buildex PDS 31195-PDS Issue 2.",
+            structural_properties={
+                "nominal_diameter_mm": 5.0,
+                "tested_single_shear_strength_kN": 5.75,
+                "test_evidence_source": "Buildex PDS 31195-PDS, Issue 2",
+                "test_evidence_revision": "Issue 2, 5 July 2017",
+                "test_evidence_url": "https://example.test/buildex-pds.pdf",
+            },
+        )
+        for component_id in fastener_ids
+    }
+    connections = [
+        DesignConnection(
+            id="brace-left",
+            label="Brace left",
+            from_component_id="brace",
+            to_component_id="support-left",
+            connector_component_ids=["s1", "s2"],
+            transfers=["force"],
+        ),
+        DesignConnection(
+            id="brace-right",
+            label="Brace right",
+            from_component_id="brace",
+            to_component_id="support-right",
+            connector_component_ids=["e1", "e2"],
+            transfers=["force"],
+        ),
+    ]
+
+    check = _tension_member_checks(
+        model,
+        analysis,
+        connections,
+        fastener_components,
+    )[0]
+
+    assert check.status == "pass"
+    assert check.connection_capacity_status == "verified"
+    assert check.fastener_shear_qualification_status == "pass"
+    assert check.fastener_tested_single_shear_strength_kN == pytest.approx(5.75)
+    assert check.fastener_required_single_shear_strength_kN is not None
+    assert check.fastener_required_single_shear_strength_kN < 5.75
+    assert check.end_fastener_part_numbers == ["6-311-0695-5MP"]
+    assert check.end_connection_capacity_kN is not None
 
 
 def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():
