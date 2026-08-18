@@ -616,6 +616,18 @@ brace ends to grounded components. Project-authored strap or end-connection
 capacity numbers are not consumed. Missing Section 8 screw test resistance
 remains an explicit blocker rather than a hidden assumption.
 
+Completed Stage 8 restraint-identity/demand slice: project-owned Lysaght
+imports now preserve each PB1230HS M12 x 30 grade 8.8 bolt/nut/washer kit as
+one orderable and structural connector identity. Tertius matches the compiled
+C10019/C10012/100AC/(100CP)/PB1230HS configuration to an immutable evidence
+pack and calculates the AS/NZS 4600:2005+A1 Clauses 4.3.2.2-4.3.2.3 restraint
+demand as 2.5% of the maximum critical-flange force. Combination-expanded
+checks remain in exported evidence, while the calculation sheet and Stage 8
+summary envelope them by physical location. The live gate remains open until
+the separately rendered shared support-side bolts are members of the same
+physical connection and their resistance, stiffness, and anchored collector
+path are verified; nearby geometry is not credited implicitly.
+
 ### Task 7: Add atomic multi-artifact compile bundles
 
 **Files:** compile messages, worker, result consumer, artifact models/migration,

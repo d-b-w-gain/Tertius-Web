@@ -1500,6 +1500,37 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
     assert loaded_candidate.required_moment_kNm == pytest.approx(0.15)
     assert loaded_candidate.status == "pass"
 
+    standard_manifest = deepcopy(manifest)
+    for candidate in standard_manifest["analysis"][
+        "member_stability_verification"
+    ]["restraint_candidates"]:
+        candidate["demand_model"] = (
+            "as_nzs_4600_2005_4_3_2_flange_force"
+        )
+    standard_capture = capture_project_structural_declaration(
+        standard_manifest,
+        project_name="as_nzs_restraint_demand",
+        design_hash="b" * 64,
+    )
+    standard_result = solve_project_structural(
+        standard_capture,
+        combination_id=inward.solver.combination_id,
+    )
+    standard_candidate = max(
+        standard_result.member_restraint_candidate_checks,
+        key=lambda check: check.required_force_kN or 0.0,
+    )
+    assert standard_candidate.required_force_kN == pytest.approx(
+        0.025 * (standard_candidate.transferred_load_kN or 0.0)
+    )
+    assert standard_candidate.required_moment_kNm == pytest.approx(
+        (standard_candidate.required_force_kN or 0.0)
+        * (standard_candidate.member_depth_m or 0.0)
+    )
+    assert "AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3" in (
+        standard_candidate.mechanism
+    )
+
     inadequate_manifest = deepcopy(manifest)
     for candidate in inadequate_manifest["analysis"]["member_stability_verification"][
         "restraint_candidates"
@@ -1528,11 +1559,11 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
     for candidate in evidence_manifest["analysis"]["member_stability_verification"][
         "restraint_candidates"
     ]:
-        candidate["evidence_pack_id"] = "lysaght-zc-2026-07-c10012-100ac-pb1230hs"
+        candidate["evidence_pack_id"] = "lysaght-zc-2026-08-c10012-100ac-pb1230hs"
         candidate["configuration"] = {
             "primary_part_number": "C10019",
             "bracing_part_number": "C10012",
-            "connector_part_numbers": ["100AC-M12X25-END-JOINTS"],
+            "connector_part_numbers": ["100AC", "DIN-6921-M12X25"],
         }
         candidate["anchorage_basis"] = "No grounded test anchorage exists."
     evidence_capture = capture_project_structural_declaration(

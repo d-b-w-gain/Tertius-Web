@@ -70,6 +70,7 @@ from core.structural.project_analysis import (
     StructuralAnalysisError,
     solve_project_structural,
 )
+from core.structural.restraint_evidence import match_restraint_evidence_pack
 from core.structural.site_wind import (
     REGION_SOURCE,
     REGION_VERIFY_AGAINST,
@@ -555,12 +556,16 @@ def _derive_member_restraint_candidates(
                     if component_id in components_by_id
                 ]
                 connector_part_numbers = sorted(
-                    {
-                        part_number
-                        for component_id in connector_component_ids
-                        if (part_number := components_by_id[component_id].part_number)
-                    }
+                    part_number
+                    for component_id in connector_component_ids
+                    if (part_number := components_by_id[component_id].part_number)
                 )
+                configuration = RestraintConfigurationIdentity(
+                    primary_part_number=primary_component.part_number,
+                    bracing_part_number=bracing_component.part_number,
+                    connector_part_numbers=connector_part_numbers,
+                )
+                evidence = match_restraint_evidence_pack(configuration)
                 for declaration in declarations_by_component.get(
                     primary_component_id, []
                 ):
@@ -606,35 +611,74 @@ def _derive_member_restraint_candidates(
                                 brace_position=brace_position,
                                 distance_m=distance_m,
                                 axis_separation_m=axis_separation_m,
-                                restrains_lateral_translation=True,
-                                restrains_twist=False,
-                                restrained_flange="auto",
-                                demand_model="not_defined",
-                                stiffness_status="unverified",
-                                evidence_status="candidate",
+                                restrains_lateral_translation=(
+                                    evidence.restrains_lateral_translation
+                                    if evidence is not None
+                                    else True
+                                ),
+                                restrains_twist=(
+                                    evidence.restrains_twist
+                                    if evidence is not None
+                                    else False
+                                ),
+                                restrained_flange=(
+                                    evidence.restrained_flange
+                                    if evidence is not None
+                                    else "auto"
+                                ),
+                                demand_model=(
+                                    evidence.demand_model
+                                    if evidence is not None
+                                    else "not_defined"
+                                ),
+                                stiffness_status=(
+                                    evidence.stiffness_status
+                                    if evidence is not None
+                                    else "unverified"
+                                ),
+                                evidence_status=(
+                                    "verified"
+                                    if evidence is not None
+                                    and evidence.identity_status == "pass"
+                                    and evidence.design_force_capacity_kN is not None
+                                    and evidence.design_moment_capacity_kNm is not None
+                                    and evidence.stiffness_status == "verified"
+                                    else "candidate"
+                                ),
                                 evidence_basis=(
-                                    "Tertius derived this possible lateral-restraint "
-                                    "location from the compiled physical joint between "
-                                    f"{primary_component_id} ({primary_role}) and "
-                                    f"{bracing_component_id} ({bracing_role}). Twist "
-                                    "restraint and effective-flange engagement are not "
-                                    "credited."
+                                    (
+                                        f"Exact rendered products match evidence pack "
+                                        f"{evidence.pack_id} v{evidence.pack_version}. "
+                                        f"{evidence.capacity_basis}"
+                                    )
+                                    if evidence is not None
+                                    else (
+                                        "Tertius derived this possible lateral-restraint "
+                                        "location from the compiled physical joint between "
+                                        f"{primary_component_id} ({primary_role}) and "
+                                        f"{bracing_component_id} ({bracing_role}). Twist "
+                                        "restraint and effective-flange engagement are not "
+                                        "credited."
+                                    )
                                 ),
                                 capacity_basis=(
-                                    "No verified restraint force, moment, stiffness, or "
-                                    "connection resistance is attached to this rendered "
-                                    "configuration."
+                                    evidence.capacity_basis
+                                    if evidence is not None
+                                    else (
+                                        "No verified restraint force, moment, stiffness, or "
+                                        "connection resistance is attached to this rendered "
+                                        "configuration."
+                                    )
                                 ),
                                 provenance=(
                                     "Compiled Build123d component axes, registered "
                                     "physical joint, connector identities, and Tertius "
                                     "topology traversal."
                                 ),
-                                configuration=RestraintConfigurationIdentity(
-                                    primary_part_number=(primary_component.part_number),
-                                    bracing_part_number=(bracing_component.part_number),
-                                    connector_part_numbers=connector_part_numbers,
+                                evidence_pack_id=(
+                                    evidence.pack_id if evidence is not None else None
                                 ),
+                                configuration=configuration,
                                 anchorage_status="unverified",
                                 anchorage_component_ids=anchorage_components,
                                 anchorage_connection_ids=anchorage_connections,

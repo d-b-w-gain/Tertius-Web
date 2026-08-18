@@ -2,42 +2,104 @@
   "schema_version": "1.0",
   "packs": [
     {
-      "id": "lysaght-zc-2026-07-c10012-100ac-pb1230hs",
-      "version": "2026.07.07.1",
-      "label": "Lysaght C10012 / 100AC / PB1230HS restraint identity",
+      "id": "lysaght-zc-2026-08-c10012-100ac-pb1230hs",
+      "version": "2026.08.18.1",
+      "label": "Lysaght C10012 / 100AC / PB1230HS rafter-restraint candidate",
       "source": {
         "title": "LYSAGHT Zeds and Cees Design and Installation Guide",
         "url": "https://cdn.dcs.lysaght.com/download/lysaght-zeds-cees-purlins-and-girts-user-guide",
         "sha256": "8202f3c759be2ce929964d6feaee39e0d28a5f756045fefc65b663698e279c57",
         "pages": [
-          "13: purlin bolt catalogue and angle connectors",
-          "17-18: holes, cleats, orientation and bridging locations",
+          "13: PB1230HS M12 x 30 grade 8.8 purlin-bolt catalogue identity",
+          "17-18: Cee holes, 100AC cleats, orientation and bridging locations",
           "19-20: capacity-table assumptions and cleat connections"
         ]
       },
+      "references": [
+        "AS/NZS 4600:2005 incorporating Amendment No. 1, clauses 4.3.2.1-4.3.2.3 and 5.3; SHA-256 9af589ce2bfee5a156c7f6600a738fcc158683bd27bea9d22adb559f172fc2d1"
+      ],
       "applicability": {
         "primary_part_number": "C10019",
         "bracing_part_number": "C10012",
         "connector_part_numbers": [
-          "100AC-PB1230HS-M12X30-G8.8-END-JOINTS"
+          "100AC",
+          "PB1230HS",
+          "PB1230HS"
         ]
+      },
+      "mechanism": {
+        "restrains_lateral_translation": true,
+        "restrains_twist": true,
+        "restrained_flange": "auto",
+        "demand_model": "as_nzs_4600_2005_4_3_2_flange_force"
       },
       "resistance": {
         "design_force_capacity_kN": null,
         "design_moment_capacity_kNm": null,
         "stiffness_status": "unverified",
-        "basis": "The guide verifies product geometry and identifies the standard cleat/bolt system, but does not publish a generic portal-rafter brace-force resistance or connection stiffness for this restraint use. The purlin capacity tables are configuration-specific system capacities and are not substituted for this missing evidence."
+        "basis": "The exact C10012, 100AC and two PB1230HS purlin-web bolt kits establish a physically capable lateral/twist-restraint candidate. Tertius calculates the 2.5% critical-flange force required by AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3. Capacity and stiffness remain unverified because the rendered physical joint does not yet include the separate support-side shared bolts that connect the 100AC leg to the C10019 rafter."
       },
       "assumptions": [
-        "C10012 is a single-span secondary member between the two portal frames.",
-        "The rendered fasteners are PB1230HS M12 x 30 grade 8.8 purlin bolts.",
-        "A separate combined bending-plus-axial check is required before C10012 axial reserve may carry brace force.",
+        "C10012 is a single-span secondary member between portal frames.",
+        "Each rendered purlin-web fastener is one PB1230HS M12 x 30 grade 8.8 bolt/nut/washer kit.",
+        "The 100AC-to-rafter support-side bolt group must be included in the same physical connection before resistance or stiffness can be credited.",
         "A separate longitudinal roof-bracing or verified diaphragm path is required."
       ],
       "exclusions": [
         "No connection stiffness is inferred from bracket geometry.",
+        "No support-side bolt resistance is inferred from unlinked nearby geometry.",
         "No rafter distortional-buckling resistance is inferred from purlin load tables.",
         "No cladding-diaphragm capacity or collector anchorage is credited."
+      ]
+    },
+    {
+      "id": "lysaght-zc-2026-08-c10012-100ac-100cp-pb1230hs",
+      "version": "2026.08.18.1",
+      "label": "Lysaght C10012 / 100AC / 100CP / PB1230HS rafter-restraint candidate",
+      "source": {
+        "title": "LYSAGHT Zeds and Cees Design and Installation Guide",
+        "url": "https://cdn.dcs.lysaght.com/download/lysaght-zeds-cees-purlins-and-girts-user-guide",
+        "sha256": "8202f3c759be2ce929964d6feaee39e0d28a5f756045fefc65b663698e279c57",
+        "pages": [
+          "13: PB1230HS M12 x 30 grade 8.8 purlin-bolt catalogue identity",
+          "17-18: Cee holes, 100AC/100CP cleats, orientation and bridging locations",
+          "19-20: capacity-table assumptions and cleat connections"
+        ]
+      },
+      "references": [
+        "AS/NZS 4600:2005 incorporating Amendment No. 1, clauses 4.3.2.1-4.3.2.3 and 5.3; SHA-256 9af589ce2bfee5a156c7f6600a738fcc158683bd27bea9d22adb559f172fc2d1"
+      ],
+      "applicability": {
+        "primary_part_number": "C10019",
+        "bracing_part_number": "C10012",
+        "connector_part_numbers": [
+          "100AC",
+          "100CP",
+          "PB1230HS",
+          "PB1230HS"
+        ]
+      },
+      "mechanism": {
+        "restrains_lateral_translation": true,
+        "restrains_twist": true,
+        "restrained_flange": "auto",
+        "demand_model": "as_nzs_4600_2005_4_3_2_flange_force"
+      },
+      "resistance": {
+        "design_force_capacity_kN": null,
+        "design_moment_capacity_kNm": null,
+        "stiffness_status": "unverified",
+        "basis": "The exact C10012, 100AC, 100CP and two PB1230HS purlin-web bolt kits establish a physically capable lateral/twist-restraint candidate at the open rafter face. Tertius calculates the AS/NZS 4600:2005 2.5% critical-flange force, but cannot credit resistance or stiffness until the shared support-side bolt group is part of this physical connection identity."
+      },
+      "assumptions": [
+        "C10012 is a single-span secondary member between portal frames.",
+        "Each rendered purlin-web fastener is one PB1230HS M12 x 30 grade 8.8 bolt/nut/washer kit.",
+        "The 100CP is a rendered clamp plate and is not a substitute for the missing support-side bolt identity."
+      ],
+      "exclusions": [
+        "No connection stiffness is inferred from bracket or clamp-plate geometry.",
+        "No support-side bolt resistance is inferred from unlinked nearby geometry.",
+        "No cladding-diaphragm or collector anchorage is credited."
       ]
     }
   ]

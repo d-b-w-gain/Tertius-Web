@@ -85,7 +85,7 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
             label="Portal rafter",
             kind="member",
             visual_node_id="R1",
-            part_number="C20024",
+            part_number="C10019",
             role="portal rafter",
         ),
         DesignComponent(
@@ -93,17 +93,28 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
             label="Roof purlin",
             kind="member",
             visual_node_id="P1",
-            part_number="C10019",
+            part_number="C10012",
             role="roof/ceiling purlin",
         ),
         DesignComponent(
-            id="B1",
-            label="Purlin bracket",
+            id="AC1",
+            label="100AC purlin bracket",
             kind="connector",
-            visual_node_id="B1",
-            part_number="PB1230",
+            visual_node_id="AC1",
+            part_number="100AC",
             role="roof purlin end connection",
         ),
+        *[
+            DesignComponent(
+                id=f"PB{index}",
+                label=f"PB1230HS purlin bolt kit {index}",
+                kind="connector",
+                visual_node_id=f"PB{index}",
+                part_number="PB1230HS",
+                role="roof purlin end connection",
+            )
+            for index in (1, 2)
+        ],
         DesignComponent(
             id="G1",
             label="Foundation",
@@ -159,7 +170,7 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
                     {"component_id": "P1", "port": "end"},
                     {"component_id": "R1", "port": "roof:1"},
                 ],
-                "connector_component_ids": ["B1"],
+                "connector_component_ids": ["AC1", "PB1", "PB2"],
                 "transfers": ["force", "shear"],
             },
             {
@@ -187,7 +198,7 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
     }
     assert {candidate.distance_m for candidate in candidates} == {0.0, 1.0}
     assert all(candidate.restrains_lateral_translation for candidate in candidates)
-    assert all(not candidate.restrains_twist for candidate in candidates)
+    assert all(candidate.restrains_twist for candidate in candidates)
     assert all(candidate.evidence_status == "candidate" for candidate in candidates)
     assert all(candidate.stiffness_status == "unverified" for candidate in candidates)
     assert all(candidate.anchorage_status == "unverified" for candidate in candidates)
@@ -198,9 +209,17 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
         for candidate in candidates
     )
     assert all(
-        candidate.configuration.primary_part_number == "C20024"
-        and candidate.configuration.bracing_part_number == "C10019"
-        and candidate.configuration.connector_part_numbers == ["PB1230"]
+        candidate.configuration.primary_part_number == "C10019"
+        and candidate.configuration.bracing_part_number == "C10012"
+        and candidate.configuration.connector_part_numbers
+        == ["100AC", "PB1230HS", "PB1230HS"]
+        for candidate in candidates
+    )
+    assert all(
+        candidate.evidence_pack_id
+        == "lysaght-zc-2026-08-c10012-100ac-pb1230hs"
+        and candidate.demand_model
+        == "as_nzs_4600_2005_4_3_2_flange_force"
         for candidate in candidates
     )
 

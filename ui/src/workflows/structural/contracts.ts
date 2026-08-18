@@ -707,7 +707,10 @@ export type StructuralSnapshot = {
     combination_id: string
     contact_flange: 'positive_local_y' | 'negative_local_y' | 'both' | 'none'
     status: 'unsupported' | 'candidate' | 'pass' | 'fail' | 'not_required'
-    demand_model: 'not_defined' | 'aisi_2004_d3_2_2_eccentric_load_couple'
+  demand_model:
+    | 'not_defined'
+    | 'aisi_2004_d3_2_2_eccentric_load_couple'
+    | 'as_nzs_4600_2005_4_3_2_flange_force'
     transferred_load_kN: number | null
     load_eccentricity_m: number | null
     member_depth_m: number | null

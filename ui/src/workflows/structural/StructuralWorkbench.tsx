@@ -512,6 +512,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         void selectCombination(governingCombination)
       }
     }
+    if (stageId === 'bracing') {
+      const trace = analysis.member_restraint_traces?.find((candidate) => (
+        candidate.combination_id === selectedCombinationId
+        && candidate.status !== 'not_required'
+      )) || analysis.member_restraint_traces?.find(
+        (candidate) => candidate.status !== 'not_required',
+      )
+      if (trace) {
+        selectRestraintTrace(trace.id)
+        setSelectedSheetId(sheet.id)
+        return
+      }
+    }
     const memberId = sheet.related_member_ids[0]
     const member = analysis.members.find((candidate) => candidate.id === memberId)
     if (member) {
@@ -1052,6 +1065,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             ? '—'
                             : `${number(check.available_force_kN, 4)} kN`}
                           {' · '}stiffness {check.stiffness_status}
+                        </div>
+                        <div className="mt-1 text-[8px] uppercase tracking-wide text-slate-500">
+                          Demand {check.demand_model === 'as_nzs_4600_2005_4_3_2_flange_force'
+                            ? 'AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3 · 2.5% critical flange force'
+                            : check.demand_model.replaceAll('_', ' ')}
                         </div>
                         <div className="mt-2 grid grid-cols-2 gap-1 font-mono text-[8px] uppercase">
                           <span className={check.identity_status === 'pass'

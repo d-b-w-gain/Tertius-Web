@@ -771,7 +771,7 @@ const restraintAnalysis: StructuralSnapshot = {
       combination_id: 'SLS-1.0',
       contact_flange: 'positive_local_y',
       status: 'candidate',
-      demand_model: 'aisi_2004_d3_2_2_eccentric_load_couple',
+      demand_model: 'as_nzs_4600_2005_4_3_2_flange_force',
       transferred_load_kN: 0.73152,
       load_eccentricity_m: 0.05,
       member_depth_m: 0.1,
@@ -792,7 +792,7 @@ const restraintAnalysis: StructuralSnapshot = {
       anchorage_connection_ids: ['purlin-diaphragm'],
       anchorage_grounded_component_id: null,
       anchorage_basis: 'The test diaphragm has no grounded collector.',
-      mechanism: 'Factored tributary load acting through the purlin axis.',
+      mechanism: 'AS/NZS 4600 critical-flange restraint force.',
       provenance: 'Builder-derived purlin and registered connection.',
       basis: 'Working AISI D3.2.2 adaptation; AS/NZS verification remains open.',
     },
@@ -1118,11 +1118,68 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('not verified')).toBeInTheDocument()
     expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
     expect(screen.getAllByText('Identity pass')).toHaveLength(2)
+    expect(screen.getByText(/2.5% critical flange force/)).toBeInTheDocument()
     expect(screen.getByText('Anchorage unverified')).toBeInTheDocument()
     expect(screen.getByText('The test diaphragm has no grounded collector.')).toBeInTheDocument()
     expect(screen.getByText(
       'Builder-derived purlin and registered connection.',
     )).toBeInTheDocument()
+  })
+
+  it('opens the governing restraint trace when Stage 8 is selected', async () => {
+    const stage8RestraintAnalysis: StructuralSnapshot = {
+      ...restraintAnalysis,
+      verification_stages: [
+        ...restraintAnalysis.verification_stages,
+        {
+          id: 'bracing',
+          order: 8,
+          label: 'Bracing/restraint',
+          primary_reference: 'AS/NZS 4600:2005+A1',
+          supplemental_references: [],
+          status: 'warning',
+          summary: 'One physical restraint location; stiffness remains unverified.',
+          sheet_ids: ['sheet-au-bracing'],
+          blocking_stage_ids: ['member_stability'],
+        },
+      ],
+      calculation_sheets: [
+        ...restraintAnalysis.calculation_sheets,
+        {
+          id: 'sheet-au-bracing',
+          stage_id: 'bracing',
+          title: 'Bracing and restraint',
+          status: 'warning',
+          primary_reference: 'AS/NZS 4600:2005+A1',
+          supplemental_references: [],
+          purpose: 'Verify physical member restraint.',
+          assumptions: ['Support-side bolt stiffness remains unverified.'],
+          inputs: [],
+          equations: [],
+          outputs: [],
+          references: [],
+          related_member_ids: ['purlin-axis'],
+          related_node_ids: [],
+          related_load_case_ids: [],
+          related_combination_ids: ['SLS-1.0'],
+        },
+      ],
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? stage8RestraintAnalysis : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    render(<StructuralWorkbench isActive />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /8\. Bracing\/restraint/ }))
+
+    expect(screen.getByText('Selected 3D restraint trace')).toBeInTheDocument()
+    expect(screen.getByText(/2.5% critical flange force/)).toBeInTheDocument()
+    expect(screen.getByText('Bracing and restraint')).toBeInTheDocument()
   })
 
   it('shows mechanically located restraint candidates that are not yet credited', async () => {

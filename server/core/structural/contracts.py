@@ -399,6 +399,7 @@ class MemberRestraintCandidateDefinition(StructuralContract):
     demand_model: Literal[
         "not_defined",
         "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
     ] = "not_defined"
     demand_factor: float = Field(default=1.5, gt=0)
     design_force_capacity_kN: float | None = Field(default=None, gt=0)
@@ -757,6 +758,7 @@ class MemberRestraintCandidateCheck(StructuralContract):
     demand_model: Literal[
         "not_defined",
         "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
     ]
     transferred_load_kN: float | None = None
     load_eccentricity_m: float | None = None
