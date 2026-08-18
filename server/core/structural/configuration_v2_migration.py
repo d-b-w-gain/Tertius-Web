@@ -42,6 +42,7 @@ def migrate_configuration_v1_content(
     if not isinstance(legacy_cases, list):
         raise ValueError("v1 configuration has no load_cases list")
     action_cases: list[dict[str, str]] = []
+    discarded_case_ids: set[str] = set()
     for item in legacy_cases:
         if not isinstance(item, Mapping):
             raise ValueError("v1 load case must be an object")
@@ -50,6 +51,7 @@ def migrate_configuration_v1_content(
         if category in {"live", "wind"}:
             # The v2 pipeline derives roof-imposed and separate SLS/ULS wind
             # actions from the Site basis and compiled mechanical roles.
+            discarded_case_ids.add(case_id)
             continue
         role = _ROLE_BY_LEGACY_CATEGORY.get(category)
         if role is None:
@@ -64,6 +66,7 @@ def migrate_configuration_v1_content(
             }
         )
 
+    _discard_member_loads_for_cases(migrated, discarded_case_ids)
     migrated.pop("load_combinations", None)
     for field in (
         "cross_section_verification",
@@ -101,17 +104,41 @@ def migrate_working_v2_content(
     if not isinstance(action_cases, list):
         raise ValueError("v2 configuration has no action_cases list")
     retained_cases: list[Mapping[str, Any]] = []
+    discarded_case_ids: set[str] = set()
     for item in action_cases:
         if not isinstance(item, Mapping):
             raise ValueError("v2 action case must be an object")
         role = str(item.get("role") or "")
         if role == "permanent":
             retained_cases.append(item)
-        elif role not in _WORKING_DERIVED_ROLES:
+        elif role in _WORKING_DERIVED_ROLES:
+            discarded_case_ids.add(str(item.get("id") or ""))
+        else:
             raise ValueError(f"working v2 action role {role!r} cannot be migrated")
     migrated["action_standard_pack_id"] = _VERIFIED_PACK_ID
     migrated["action_cases"] = retained_cases
+    _discard_member_loads_for_cases(migrated, discarded_case_ids)
     return StructuralProjectConfiguration.model_validate(migrated)
+
+
+def _discard_member_loads_for_cases(
+    content: dict[str, Any],
+    case_ids: set[str],
+) -> None:
+    if not case_ids:
+        return
+    for field in ("member_loads", "member_distributed_loads"):
+        loads = content.get(field)
+        if not isinstance(loads, list):
+            continue
+        content[field] = [
+            load
+            for load in loads
+            if not (
+                isinstance(load, Mapping)
+                and str(load.get("case_id") or "") in case_ids
+            )
+        ]
 
 
 def migrate_latest_revisions(db: Session, *, apply: bool) -> tuple[int, int]:

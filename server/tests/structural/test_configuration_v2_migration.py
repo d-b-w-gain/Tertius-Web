@@ -76,6 +76,36 @@ def test_working_v2_migration_replaces_pack_and_regenerates_derived_actions() ->
         {"id": "roof-imposed", "label": "Roof", "role": "imposed"},
         {"id": "wind-plus-x", "label": "Wind +X", "role": "wind_positive_x"},
     ]
+    legacy["member_loads"] = [
+        {
+            "id": "dead-point",
+            "label": "Retained permanent point load",
+            "component_id": "P1",
+            "case_id": "dead",
+            "distance_m": 0.5,
+            "force": {"x": 0, "y": 0, "z": -1},
+            "provenance": "migration test",
+        },
+        {
+            "id": "roof-point",
+            "label": "Retired imposed point load",
+            "component_id": "P1",
+            "case_id": "roof-imposed",
+            "distance_m": 0.5,
+            "force": {"x": 0, "y": 0, "z": -1},
+            "provenance": "migration test",
+        },
+    ]
+    legacy["member_distributed_loads"] = [
+        {
+            "id": "wind-line",
+            "label": "Retired wind line load",
+            "component_id": "P1",
+            "case_id": "wind-plus-x",
+            "start_force_kN_m": {"x": 1, "y": 0, "z": 0},
+            "provenance": "migration test",
+        }
+    ]
 
     migrated = migrate_working_v2_content(legacy)
 
@@ -83,6 +113,8 @@ def test_working_v2_migration_replaces_pack_and_regenerates_derived_actions() ->
     assert [(action.id, action.role) for action in migrated.action_cases] == [
         ("dead", "permanent")
     ]
+    assert [load.id for load in migrated.member_loads] == ["dead-point"]
+    assert migrated.member_distributed_loads == []
 
 
 def test_working_v2_migration_refuses_unknown_semantic_action() -> None:
