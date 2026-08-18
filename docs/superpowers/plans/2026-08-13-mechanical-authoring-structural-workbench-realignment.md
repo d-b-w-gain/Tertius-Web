@@ -517,8 +517,10 @@ aligns the PyNite local frame with the rendered section frame, runs the pinned
 AS/NZS 4600 section-resistance pack for the configured ULS combination, and
 traces section demand, capacity, utilisation, pack version, product digest,
 graph digest, and configuration digest in the calculation evidence. Member
-stability is evaluated separately and remains unsupported where distortional
-buckling or restraint resistance is unverified. Physical knee and base
+stability is evaluated separately. The original slice left distortional and
+unrestrained lateral-torsional resistance unsupported; the later project-basis
+AS/NZS 4600:2005+A1 member-capacity slice below closes those two calculation
+gaps without trusting project-authored verification flags. Physical knee and base
 connections now declare versioned resistance-evidence slots and exact expected
 connector identities; the workbench reports their ULS axial, shear, and moment
 demands while refusing a pass when published bracket, bolt, anchor, or base
@@ -545,10 +547,64 @@ Completed action-standard ownership slice: Structural configuration schema 2.0
 contains semantic action identities but no combination formulae. Directional
 Site adapters may add semantic wind cases, but cannot create SLS/ULS factors or
 choose a subset for capacity checks. The selected versioned Tertius action pack
-generates the complete effective envelope and automatically sends every ULS
-combination to cross-section and member-stability verification. Schema 1.0 is
-rejected at runtime; a one-time migration creates new v2 revisions while
-discarding project-authored formulae and per-check combination selections.
+generates the scoped AS/NZS 1170.0 envelope and automatically sends every ULS
+combination to cross-section and member-stability verification. Its evidence
+records the exact source digest, clauses, applicability, and exclusions. SLS
+wind is now generated from a separate 1-in-25-year Site event while ULS wind
+uses the project ultimate event; all-other-roofs imposed action uses the
+verified 0.7 short-term factor. Schema 1.0 is rejected at runtime; a one-time
+migration creates new v2 revisions while discarding project-authored formulae
+and per-check combination selections.
+
+Completed concentrated roof-action slice: Tertius locates the compiled
+`roof/ceiling purlin` members and creates one alternative 1.4 kN midspan action
+case for each physical member. The AS/NZS 1170.0 pack generates separate SLS
+and ULS combinations using the concentrated-action factors, never combines two
+receiver cases, and never combines a concentrated case with the distributed
+R2 roof action. The live shed now contains 12 concentrated receiver cases, 24
+corresponding combinations, 30 action cases and 49 total combinations. Its
+complete solve confirms that SLS transverse wind, not a new concentrated case,
+governs the remaining portal-rafter deflection failure.
+
+Completed restraint-location ownership slice: Tertius now derives possible
+rafter/purlin, rafter/roof-brace, column/longitudinal-track, and
+column/wall-brace restraint locations from compiled physical joints and split
+analytical axes. It records the exact primary, bracing, and connector product
+identities plus an alternate physical topology path to ground. These records
+remain deliberately candidate-only: no twist control, effective-flange
+engagement, stiffness, anchorage resistance, or connection resistance is
+credited until matching evidence is attached. The Structural UI shows located
+but uncredited candidates instead of hiding them or treating geometry as proof.
+
+Completed connection-demand coverage slice: every compiled physical joint now
+receives an envelope of the ULS actions it declares that it transfers. Tertius
+uses the compiled component-port identities to take demand from true member
+ends at branch joints, preserves combined-node connection membership, and
+records every rendered connector part number. Joints with no resistance pack
+are reported as unsupported demand checks rather than disappearing; no
+capacity, identity match, stiffness, or foundation resistance is inferred.
+
+Completed cold-formed member-stability slice: Tertius now records the
+full AS/NZS 4600:2005 incorporating Amendment No. 1 source digest and the
+developments paper as the accepted project supplement. For prequalified simple
+lipped C sections it calculates global flexural/flexural-torsional compression,
+Appendix D2 distortional compression, full-length unbraced lateral-torsional
+bending with `Cb=1`, and Appendix D3 distortional bending. Governing design
+compression and bending resistances, modes, formula substitutions, source
+hashes, and combined utilisation are emitted in Structural evidence. Candidate
+cladding/bridging restraint is displayed but not credited, so `design.py` no
+longer has to assert restraint or distortional verification.
+
+Completed off-axis member-resistance slice: the same Tertius pack now derives
+conservative effective minor-axis modulus, both-axis unbraced member bending,
+both-axis shear, full St-Venant torsion, Clause 3.5.1 biaxial axial-bending
+interaction with calculated Euler amplification, and Clause 3.3.5
+bending-shear interaction. No warping or physical-restraint benefit is
+credited. The selected-member UI explicitly switches between Stage 6 section
+resistance and Stage 7 member stability so neither evidence set masks the
+other. The live shed now evaluates all 183 selected sections and member
+segments as pass/fail rather than unsupported; physical restraint-system and
+connection resistance remain separate certification gates.
 
 ### Task 7: Add atomic multi-artifact compile bundles
 
@@ -619,8 +675,9 @@ procurement release blocked until their legacy BoM decorators are migrated.
 **Files:** structural contracts and analysis, site overlay, starter project
 configuration, Structural workbench UI and tests.
 
-- [x] Make NCC 2022 and the selected AS/NZS editions the primary verification
-  framework; retain SCI P399 only as named supplemental portal-frame guidance.
+- [x] Make NCC 2022 Amendment 2 and the selected AS/NZS editions the primary
+  verification framework; retain SCI P399 only as named supplemental
+  portal-frame guidance.
 - [x] Replace P399-named stage/sheet API fields and artifact IDs with primary
   Australian references and generic Australian evidence identifiers.
 - [x] Derive conservative project-basis, actions, analysis, stability, member,
@@ -630,9 +687,25 @@ configuration, Structural workbench UI and tests.
   solver/equilibrium gate passes while blocking a certificate and ordering.
 - [x] Surface the Australian gate status and supplemental P399 role in the
   Structural workbench and engineering-review JSON export.
-- [ ] Complete the working action pack, member stability, bracing/strap,
-  connection/base/foundation, and serviceability evidence needed to close the
-  live shed's remaining Australian gates.
+- [x] Replace the working action combinations with a source-digested AS/NZS
+  1170.0 roof/wind pack, separate SLS/ULS wind events, and explicit
+  applicability/exclusions.
+- [ ] Verify AS/NZS 1170.2 surface-zone/internal-pressure coefficients.
+- [x] Add the separate concentrated roof-action check as mutually exclusive
+  physical roof-member alternatives owned by the Tertius action pack.
+- [x] Derive member-restraint candidate locations, product identities, and
+  topology-to-ground traces from compiled mechanical joints without adding
+  restraint bookkeeping to `design.py`.
+- [x] Envelope declared ULS force/shear/moment transfers for every compiled
+  physical joint even when resistance evidence is absent.
+- [x] Add conservative full-length unbraced lateral-torsional and Appendix D
+  distortional member resistance from the source-digested AS/NZS
+  4600:2005+A1 Tertius pack; do not require project-authored verification flags.
+- [x] Complete conservative off-axis member resistance for minor-axis bending,
+  both shear axes, torsion, and biaxial member interaction.
+- [ ] Complete bracing/strap resistance, connection/base/foundation resistance,
+  and remaining serviceability evidence
+  needed to close the live shed's Australian gates.
 
 ### Task 10: Validate the real workflow and release gates
 

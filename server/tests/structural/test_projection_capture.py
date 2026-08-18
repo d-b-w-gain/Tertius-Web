@@ -23,6 +23,7 @@ from core.structural.contracts import (
 from tertius.runner import execute_design
 from workflows.structural.structural_server import (
     _capture_from_structural_projection,
+    _derive_member_restraint_candidates,
     _endpoint_connection_effects,
     _p399_stability_actions,
     _portal_frame_wind_actions,
@@ -61,6 +62,7 @@ def test_structural_workbench_capture_uses_compiled_projection() -> None:
     assert capture.design_hash == "d" * 64
     assert [component.id for component in capture.components] == ["C1", "R1", "KB1"]
     assert capture.connections[0].connector_component_ids == ["KB1"]
+    assert capture.connections[0].component_ports == {"C1": "end", "R1": "start"}
     assert capture.analysis is None
     assert {capability.status for capability in capture.capabilities} == {
         "online",
@@ -74,6 +76,133 @@ def test_structural_workbench_rejects_old_manifest_schema() -> None:
             {"schema_version": "1.0", "compiled_design_digest": "d" * 64},
             project_name="legacy-frame",
         )
+
+
+def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> None:
+    components = [
+        DesignComponent(
+            id="R1",
+            label="Portal rafter",
+            kind="member",
+            visual_node_id="R1",
+            part_number="C20024",
+            role="portal rafter",
+        ),
+        DesignComponent(
+            id="P1",
+            label="Roof purlin",
+            kind="member",
+            visual_node_id="P1",
+            part_number="C10019",
+            role="roof/ceiling purlin",
+        ),
+        DesignComponent(
+            id="B1",
+            label="Purlin bracket",
+            kind="connector",
+            visual_node_id="B1",
+            part_number="PB1230",
+            role="roof purlin end connection",
+        ),
+        DesignComponent(
+            id="G1",
+            label="Foundation",
+            kind="ground",
+            visual_node_id="G1",
+            grounded=True,
+            role="foundation",
+        ),
+    ]
+    declarations = [
+        AnalyticalMemberDeclaration(
+            id="member:R1:segment:01",
+            label="Rafter segment 1",
+            component_id="R1",
+            start=Vector3(x=0, y=0, z=2),
+            end=Vector3(x=1, y=0, z=2),
+            start_node_key="joint:KNEE",
+            end_node_key="joint:PURLIN-JOINT",
+            section_id="C20024",
+            material_id="G450",
+            assumption="Compiled physical segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:R1:segment:02",
+            label="Rafter segment 2",
+            component_id="R1",
+            start=Vector3(x=1, y=0, z=2),
+            end=Vector3(x=2, y=0, z=2),
+            start_node_key="joint:PURLIN-JOINT",
+            end_node_key="joint:APEX",
+            section_id="C20024",
+            material_id="G450",
+            assumption="Compiled physical segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:P1",
+            label="Purlin",
+            component_id="P1",
+            start=Vector3(x=1, y=-2, z=2),
+            end=Vector3(x=1, y=0, z=2),
+            start_node_key="joint:PURLIN-GROUND",
+            end_node_key="joint:PURLIN-JOINT",
+            section_id="C10019",
+            material_id="G450",
+            assumption="Compiled physical purlin.",
+        ),
+    ]
+    projection = {
+        "joints": [
+            {
+                "connection_id": "PURLIN-JOINT",
+                "ports": [
+                    {"component_id": "P1", "port": "end"},
+                    {"component_id": "R1", "port": "roof:1"},
+                ],
+                "connector_component_ids": ["B1"],
+                "transfers": ["force", "shear"],
+            },
+            {
+                "connection_id": "PURLIN-GROUND",
+                "ports": [
+                    {"component_id": "P1", "port": "start"},
+                    {"component_id": "G1", "port": "purlin"},
+                ],
+                "connector_component_ids": [],
+                "transfers": ["force"],
+            },
+        ]
+    }
+
+    candidates = _derive_member_restraint_candidates(
+        projection,
+        components=components,
+        declarations=declarations,
+    )
+
+    assert len(candidates) == 2
+    assert {candidate.member_id for candidate in candidates} == {
+        "member:R1:segment:01",
+        "member:R1:segment:02",
+    }
+    assert {candidate.distance_m for candidate in candidates} == {0.0, 1.0}
+    assert all(candidate.restrains_lateral_translation for candidate in candidates)
+    assert all(not candidate.restrains_twist for candidate in candidates)
+    assert all(candidate.evidence_status == "candidate" for candidate in candidates)
+    assert all(candidate.stiffness_status == "unverified" for candidate in candidates)
+    assert all(candidate.anchorage_status == "unverified" for candidate in candidates)
+    assert all(
+        candidate.anchorage_component_ids == ["P1", "G1"]
+        and candidate.anchorage_connection_ids == ["PURLIN-GROUND"]
+        and candidate.anchorage_grounded_component_id == "G1"
+        for candidate in candidates
+    )
+    assert all(
+        candidate.configuration.primary_part_number == "C20024"
+        and candidate.configuration.bracing_part_number == "C10019"
+        and candidate.configuration.connector_part_numbers == ["PB1230"]
+        for candidate in candidates
+    )
 
 
 def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
@@ -110,7 +239,9 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     assert capture.analysis.cross_section_verification is not None
     assert capture.analysis.cross_section_verification.combination_ids == ultimate_ids
     assert capture.analysis.member_stability_verification is not None
-    assert capture.analysis.member_stability_verification.combination_ids == ultimate_ids
+    assert (
+        capture.analysis.member_stability_verification.combination_ids == ultimate_ids
+    )
     members = {member.component_id: member for member in capture.analysis.members}
     assert members["C1"].start_restraints.model_dump() == {
         "dx": True,
@@ -161,11 +292,11 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
         and check.section_record_sha256
         for check in snapshot.cross_section_checks
     )
-    assert {check.status for check in snapshot.member_stability_checks} == {
-        "unsupported"
-    }
+    assert {check.status for check in snapshot.member_stability_checks} == {"pass"}
     assert all(
-        check.distortional_buckling_status == "unverified"
+        check.distortional_buckling_status == "verified"
+        and check.design_lateral_torsional_bending_capacity_kNm is not None
+        and check.design_distortional_bending_capacity_kNm is not None
         for check in snapshot.member_stability_checks
     )
     connection_checks = {
@@ -181,7 +312,7 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     )
     stages = {stage.id: stage.status for stage in snapshot.verification_stages}
     assert stages["cross_section"] == "pass"
-    assert stages["member_stability"] == "unsupported"
+    assert stages["member_stability"] == "pass"
     assert stages["connections"] == "unsupported"
     assert stages["decision"] == "blocked"
 
@@ -274,6 +405,27 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
                     "physical_end_distance_m": dist(start, end),
                 }
             )
+    for purlin_index, (x, z) in enumerate(((-0.75, 2.7), (0.75, 2.7)), start=1):
+        component_id = f"RP{purlin_index}"
+        components.append(
+            DesignComponent(
+                id=component_id,
+                label=component_id,
+                kind="member",
+                visual_node_id=component_id,
+                role="roof/ceiling purlin",
+            )
+        )
+        analytical_members.append(
+            {
+                "id": f"member:{component_id}",
+                "component_id": component_id,
+                "start_m": [x, 0.0, z],
+                "end_m": [x, 5.0, z],
+                "physical_start_distance_m": 0.0,
+                "physical_end_distance_m": 5.0,
+            }
+        )
 
     (
         effective_configuration,
@@ -290,29 +442,62 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     )
 
     assert warnings == []
-    assert len(wind_bases) == 4
-    assert len(surface_loads) == 44
-    assert len(line_loads) == 44
-    assert len(surface_sources) == 44
+    assert len(wind_bases) == 8
+    assert len(surface_loads) == 84
+    assert len(line_loads) == 84
+    assert len(surface_sources) == 84
+    assert len(effective_configuration.member_loads) == 2
+    assert {
+        load.case_id for load in effective_configuration.member_loads
+    } == {"roof-concentrated:RP1", "roof-concentrated:RP2"}
+    assert all(
+        load.distance_m == pytest.approx(2.5)
+        and load.force.z == pytest.approx(-1.4)
+        for load in effective_configuration.member_loads
+    )
+    bases_by_event = {
+        event: [basis for basis in wind_bases if basis.design_event == event]
+        for event in ("serviceability", "ultimate")
+    }
+    assert {event: len(bases) for event, bases in bases_by_event.items()} == {
+        "serviceability": 4,
+        "ultimate": 4,
+    }
+    assert {
+        basis.annual_recurrence_interval_years
+        for basis in bases_by_event["serviceability"]
+    } == {25}
+    assert {
+        basis.annual_recurrence_interval_years for basis in bases_by_event["ultimate"]
+    } == {500}
+    assert max(basis.q_z_kPa for basis in bases_by_event["serviceability"]) < max(
+        basis.q_z_kPa for basis in bases_by_event["ultimate"]
+    )
     assert {load.case_id for load in line_loads} == {
         "roof-imposed",
-        "wind-plus-x",
-        "wind-minus-x",
-        "wind-plus-y",
-        "wind-minus-y",
+        "wind-sls-plus-x",
+        "wind-sls-minus-x",
+        "wind-sls-plus-y",
+        "wind-sls-minus-y",
+        "wind-uls-plus-x",
+        "wind-uls-minus-x",
+        "wind-uls-plus-y",
+        "wind-uls-minus-y",
     }
     assert {
         load.coefficient_status for load in surface_loads if load.case == "wind"
-    } == {
-        "working_conservative"
-    }
+    } == {"working_conservative"}
     assert {case.role for case in effective_configuration.action_cases}.issuperset(
         {
             "imposed",
-            "wind_positive_x",
-            "wind_negative_x",
-            "wind_positive_y",
-            "wind_negative_y",
+            "wind_serviceability_positive_x",
+            "wind_serviceability_negative_x",
+            "wind_serviceability_positive_y",
+            "wind_serviceability_negative_y",
+            "wind_ultimate_positive_x",
+            "wind_ultimate_negative_x",
+            "wind_ultimate_positive_y",
+            "wind_ultimate_negative_y",
         }
     )
     assert "load_combinations" not in type(effective_configuration).model_fields
@@ -336,6 +521,10 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
             "ULS-0.9G+WY-",
             "SLS-G+Q",
             "ULS-1.2G+1.5Q",
+            "SLS-G+Qc:roof-concentrated:RP1",
+            "ULS-1.2G+1.5Qc:roof-concentrated:RP1",
+            "SLS-G+Qc:roof-concentrated:RP2",
+            "ULS-1.2G+1.5Qc:roof-concentrated:RP2",
         }
     )
     assert resolved.unavailable_combinations == []
@@ -622,6 +811,44 @@ def test_connection_resistance_fails_closed_when_rendered_part_identity_drifts(
     assert check.identity_status == "fail"
     assert "WRONG-BOLT" in check.rendered_connector_part_numbers
     assert check.identity_mismatches
+
+
+def test_rendered_connection_without_resistance_still_exposes_uls_demand(
+    tmp_path,
+) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    projection = deepcopy(execution.projections["structural"])
+    knee = next(
+        joint for joint in projection["joints"] if joint["connection_id"] == "KNEE1"
+    )
+    knee["resistance"] = None
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+
+    snapshot = solve_project_structural(
+        _capture_from_structural_projection(
+            projection,
+            project_name="demand-only-connection",
+            configuration=configuration,
+        )
+    )
+    check = next(
+        item for item in snapshot.connection_checks if item.connection_id == "KNEE1"
+    )
+
+    assert check.status == "unsupported"
+    assert check.evidence_status == "unverified"
+    assert check.identity_status == "not_declared"
+    assert check.pack_id == "unverified-rendered-connection"
+    assert check.rendered_connector_part_numbers
+    assert check.governing_combination_id is not None
+    assert check.governing_member_id is not None
+    assert check.moment_demand_kNm > 0
+    assert check.design_moment_capacity_kNm is None
+    assert "no resistance evidence pack" in check.assumptions[0].lower()
 
 
 def test_explicit_topology_keeps_touching_unconnected_endpoints_separate() -> None:

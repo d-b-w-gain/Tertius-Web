@@ -221,8 +221,8 @@ from tertius_structural import StructuralModel
 structure = StructuralModel(title="Two-member gravity frame")
 structure.design_basis(
     framework_id="AU-NCC-2022",
-    framework_label="NCC 2022 Australian structural verification",
-    framework_reference="NCC 2022 Volume Two Part H1",
+    framework_label="NCC 2022 Amendment 2 Australian structural verification",
+    framework_reference="NCC 2022 Amendment 2, Volume Two Part H1",
     jurisdiction="Australia",
     analysis_method="3D first-order elastic frame analysis",
     standards={
@@ -776,16 +776,20 @@ structural_assembly = structure.assembly""",
                     "lip": 14.5,
                     "fy": 450,
                     "E": 200000,
-                    "G": 80000,
-                    "A": 409,
-                    "Ae": 329,
-                    "Zxe": 12300,
-                    "d1": 92.5,
+                        "G": 80000,
+                        "A": 409,
+                        "Ae": 329,
+                        "Zxe": 12300,
+                        "Zx": 13200,
+                        "Zy": 4210,
+                        "flange": 51,
+                        "d1": 92.5,
                     "t": 1.9,
                     "rx": 40.6,
                     "ry": 18.7,
                     "x0": 40.4,
-                    "ro2": 3630,
+                        "ro2": 3630,
+                        "beta_y": 122,
                     "J": 492,
                     "Iw": 311000000,
                 },
@@ -793,12 +797,12 @@ structural_assembly = structure.assembly""",
         }
     )
     capture_data["analysis"]["cross_section_verification"] = {
-        "pack_id": "as_nzs_4600_2018_ewm",
+        "pack_id": "as_nzs_4600_2005_a1_ewm",
         "combination_ids": ["ULS-STABILITY+X", "ULS-STABILITY-X"],
         "off_axis_tolerance": 1e-6,
     }
     capture_data["analysis"]["member_stability_verification"] = {
-        "pack_id": "as_nzs_4600_2018_ewm_member",
+        "pack_id": "as_nzs_4600_2005_a1_member",
         "combination_ids": ["ULS-STABILITY+X", "ULS-STABILITY-X"],
         "segments": [
             {
@@ -908,7 +912,15 @@ structural_assembly = structure.assembly""",
     )
     assert cross_section_sheet.status == "pass"
     assert any(
-        equation.expression == "u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)"
+        equation.expression.startswith("u_NMM = N*/(phi_c N_s)")
+        for equation in cross_section_sheet.equations
+    )
+    assert any(
+        equation.expression == "u_T = T*/[phi_v (0.60 fy J/t)]"
+        for equation in cross_section_sheet.equations
+    )
+    assert any(
+        equation.expression == "u_gov=max(u_NMM, u_MzVy, u_MyVz) + u_T"
         for equation in cross_section_sheet.equations
     )
     assert any(
@@ -925,6 +937,13 @@ structural_assembly = structure.assembly""",
         equation.expression == "u_N = N*/(phi_c N_c)"
         for equation in member_stability_sheet.equations
     )
+    assert all(
+        check.design_minor_bending_capacity_kNm is not None
+        and check.design_off_axis_shear_capacity_kN is not None
+        and check.design_st_venant_torsion_capacity_kNm is not None
+        and check.governing_minor_bending_mode is not None
+        for check in snapshot.member_stability_checks
+    )
 
     unrestrained_data = deepcopy(capture_data)
     for segment in unrestrained_data["analysis"]["member_stability_verification"][
@@ -939,9 +958,9 @@ structural_assembly = structure.assembly""",
     unrestrained_stages = {
         stage.id: stage for stage in unrestrained_snapshot.verification_stages
     }
-    assert unrestrained_stages["member_stability"].status == "unsupported"
+    assert unrestrained_stages["member_stability"].status == "pass"
     assert all(
-        check.status == "unsupported"
+        check.status == "pass"
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert all(
@@ -949,8 +968,13 @@ structural_assembly = structure.assembly""",
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert all(
-        check.status == "not_checked" for check in unrestrained_snapshot.member_checks
+        check.distortional_buckling_status == "verified"
+        and check.governing_bending_mode is not None
+        and check.standard_reference
+        == "AS/NZS 4600:2005 incorporating Amendment No. 1"
+        for check in unrestrained_snapshot.member_stability_checks
     )
+    assert {check.status for check in unrestrained_snapshot.member_checks} == {"pass"}
 
     overloaded_data = deepcopy(capture_data)
     overloaded_properties = overloaded_data["analysis"]["sections"][0]["catalog"][
@@ -1143,7 +1167,7 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
             factors={case_id: 1.0},
         )
     model.member_stability_verification(
-        pack_id="as_nzs_4600_2018_ewm_member",
+        pack_id="as_nzs_4600_2005_a1_member",
         combination_ids=("ULS-inward", "ULS-outward"),
         members=(primary,),
         distortional_buckling_basis="Distortional evidence is outside this trace test.",

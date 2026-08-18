@@ -40,16 +40,22 @@ def default_structural_configuration() -> dict[str, object]:
         "title": "Compiled mechanical structure draft analysis",
         "design_basis": {
             "framework_id": "AU-NCC-2022",
-            "framework_label": "NCC 2022 Australian structural verification",
+            "framework_label": (
+                "NCC 2022 Amendment 2 Australian structural verification"
+            ),
             "framework_reference": (
-                "NCC 2022 Volume Two Part H1 and ABCB Housing Provisions Part 2.2"
+                "NCC 2022 Amendment 2, Volume Two Part H1 and ABCB Housing "
+                "Provisions Part 2.2"
             ),
             "jurisdiction": "Australia",
             "analysis_method": "3D elastic frame analysis with P-Delta comparison",
             "compliance_pathway": "Engineered solution",
             "standards": {
                 "actions": "AS/NZS 1170 project inputs",
-                "members": "AS/NZS 4600:2018",
+                "members": (
+                    "AS/NZS 4600:2005 incorporating Amendment No. 1 with "
+                    "the AS/NZS 4600 developments paper as project supplement"
+                ),
             },
             "supplemental_methods": [
                 {
@@ -60,7 +66,7 @@ def default_structural_configuration() -> dict[str, object]:
                 }
             ],
         },
-        "action_standard_pack_id": "as_nzs_1170_0_2002_working_v1",
+        "action_standard_pack_id": "as_nzs_1170_0_2002_amd5_roof_wind_v1",
         "action_cases": [
             {"id": "dead", "label": "Permanent actions", "role": "permanent"},
         ],
@@ -78,12 +84,12 @@ def default_structural_configuration() -> dict[str, object]:
             }
         ],
         "cross_section_verification": {
-            "pack_id": "as_nzs_4600_2018_ewm",
+            "pack_id": "as_nzs_4600_2005_a1_ewm",
             "component_ids": [],
             "off_axis_tolerance": 1e-6,
         },
         "member_stability_verification": {
-            "pack_id": "as_nzs_4600_2018_ewm_member",
+            "pack_id": "as_nzs_4600_2005_a1_member",
             "segments": [],
             "off_axis_tolerance": 1e-6,
         },

@@ -14,13 +14,15 @@ from core.structural.project_configuration import StructuralProjectConfiguration
 
 _ROLE_BY_LEGACY_CATEGORY = {
     "dead": "permanent",
-    "live": "imposed",
 }
-_WIND_ROLE_BY_ID = {
-    "wind-plus-x": "wind_positive_x",
-    "wind-minus-x": "wind_negative_x",
-    "wind-plus-y": "wind_positive_y",
-    "wind-minus-y": "wind_negative_y",
+_WORKING_PACK_ID = "as_nzs_1170_0_2002_working_v1"
+_VERIFIED_PACK_ID = "as_nzs_1170_0_2002_amd5_roof_wind_v1"
+_WORKING_DERIVED_ROLES = {
+    "imposed",
+    "wind_positive_x",
+    "wind_negative_x",
+    "wind_positive_y",
+    "wind_negative_y",
 }
 
 
@@ -45,11 +47,11 @@ def migrate_configuration_v1_content(
             raise ValueError("v1 load case must be an object")
         case_id = str(item.get("id") or "")
         category = str(item.get("category") or "")
-        role = (
-            _WIND_ROLE_BY_ID.get(case_id)
-            if category == "wind"
-            else _ROLE_BY_LEGACY_CATEGORY.get(category)
-        )
+        if category in {"live", "wind"}:
+            # The v2 pipeline derives roof-imposed and separate SLS/ULS wind
+            # actions from the Site basis and compiled mechanical roles.
+            continue
+        role = _ROLE_BY_LEGACY_CATEGORY.get(category)
         if role is None:
             raise ValueError(
                 f"v1 load case {case_id!r} cannot be mapped to a semantic action role"
@@ -73,10 +75,42 @@ def migrate_configuration_v1_content(
     migrated.update(
         {
             "schema_version": "2.0",
-            "action_standard_pack_id": "as_nzs_1170_0_2002_working_v1",
+            "action_standard_pack_id": _VERIFIED_PACK_ID,
             "action_cases": action_cases,
         }
     )
+    return StructuralProjectConfiguration.model_validate(migrated)
+
+
+def migrate_working_v2_content(
+    content: Mapping[str, Any],
+) -> StructuralProjectConfiguration:
+    """Replace the retired working pack in one stored v2 revision.
+
+    The runtime does not accept the old pack. This flag-day migration discards
+    its derived roof/wind action identities so the current pipeline regenerates
+    distinct SLS and ULS cases from Site data and compiled mechanical roles.
+    """
+
+    if content.get("schema_version") != "2.0":
+        raise ValueError("configuration is not schema version 2.0")
+    if content.get("action_standard_pack_id") != _WORKING_PACK_ID:
+        raise ValueError("configuration does not use the retired working pack")
+    migrated = deepcopy(dict(content))
+    action_cases = migrated.get("action_cases")
+    if not isinstance(action_cases, list):
+        raise ValueError("v2 configuration has no action_cases list")
+    retained_cases: list[Mapping[str, Any]] = []
+    for item in action_cases:
+        if not isinstance(item, Mapping):
+            raise ValueError("v2 action case must be an object")
+        role = str(item.get("role") or "")
+        if role == "permanent":
+            retained_cases.append(item)
+        elif role not in _WORKING_DERIVED_ROLES:
+            raise ValueError(f"working v2 action role {role!r} cannot be migrated")
+    migrated["action_standard_pack_id"] = _VERIFIED_PACK_ID
+    migrated["action_cases"] = retained_cases
     return StructuralProjectConfiguration.model_validate(migrated)
 
 
@@ -95,11 +129,16 @@ def migrate_latest_revisions(db: Session, *, apply: bool) -> tuple[int, int]:
     current_count = 0
     for latest in latest_by_project.values():
         schema_version = latest.content.get("schema_version")
-        if schema_version == "2.0":
+        pack_id = latest.content.get("action_standard_pack_id")
+        if schema_version == "2.0" and pack_id != _WORKING_PACK_ID:
             StructuralProjectConfiguration.model_validate(latest.content)
             current_count += 1
             continue
-        migrated = migrate_configuration_v1_content(latest.content)
+        migrated = (
+            migrate_working_v2_content(latest.content)
+            if schema_version == "2.0"
+            else migrate_configuration_v1_content(latest.content)
+        )
         migrated_count += 1
         if apply:
             db.add(
@@ -119,7 +158,10 @@ def migrate_latest_revisions(db: Session, *, apply: bool) -> tuple[int, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create v2 Structural configuration revisions from latest v1 data."
+        description=(
+            "Create current Structural configuration revisions from legacy v1 "
+            "or retired working-pack data."
+        )
     )
     parser.add_argument(
         "--apply",
@@ -133,7 +175,7 @@ def main() -> None:
     with SessionLocal() as db:
         migrated, current = migrate_latest_revisions(db, apply=args.apply)
     mode = "applied" if args.apply else "would migrate"
-    print(f"{mode}: {migrated}; already v2: {current}")
+    print(f"{mode}: {migrated}; already current: {current}")
 
 
 if __name__ == "__main__":

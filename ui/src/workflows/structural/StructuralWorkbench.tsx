@@ -76,6 +76,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [momentComponent, setMomentComponent] = useState<'resultant' | 'major' | 'minor'>(
     'resultant',
   )
+  const [memberEvidenceStage, setMemberEvidenceStage] = useState<
+    'cross_section' | 'member_stability'
+  >('member_stability')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
@@ -117,6 +120,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
         setSelectedSheetId(nextAnalysis.calculation_sheets?.[0]?.id || '')
+        setMemberEvidenceStage('member_stability')
       } else {
         setAnalysis(null)
         setAnalysisError(
@@ -252,17 +256,35 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       ])),
     }
   }, [capture, componentsById, selectedMember])
-  const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
+  const availableCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const selectedMemberStabilityCheck = analysis?.member_stability_checks
+  const availableMemberStabilityCheck = analysis?.member_stability_checks
     ?.filter((check) => check.member_id === selectedMember?.id)
     .sort((left, right) => (
       stabilityStatusRank[right.status] - stabilityStatusRank[left.status]
       || (right.governing_utilisation ?? -1) - (left.governing_utilisation ?? -1)
     ))[0]
+  const activeMemberEvidenceStage = memberEvidenceStage === 'cross_section'
+    && availableCrossSectionCheck
+    ? 'cross_section'
+    : memberEvidenceStage === 'member_stability' && availableMemberStabilityCheck
+      ? 'member_stability'
+      : availableMemberStabilityCheck
+        ? 'member_stability'
+        : 'cross_section'
+  const selectedCrossSectionCheck = activeMemberEvidenceStage === 'cross_section'
+    ? availableCrossSectionCheck
+    : undefined
+  const selectedMemberStabilityCheck = activeMemberEvidenceStage === 'member_stability'
+    ? availableMemberStabilityCheck
+    : undefined
   const selectedDisplayCheckStatus = selectedMemberStabilityCheck?.status
+    || selectedCrossSectionCheck?.status
     || selectedCheck?.status
+  const selectedDisplayUtilisation = selectedMemberStabilityCheck?.governing_utilisation
+    ?? selectedCrossSectionCheck?.governing_utilisation
+    ?? selectedCheck?.utilisation
   const crossSectionStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'cross_section',
   )
@@ -285,8 +307,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedRestraintTrace = analysis?.member_restraint_traces?.find(
     (trace) => trace.id === selectedRestraintTraceId,
   )
+  const selectedBoundaryCandidateIds = new Set([
+    ...(selectedRestraintTrace?.start_restraint_candidate_ids ?? []),
+    ...(selectedRestraintTrace?.end_restraint_candidate_ids ?? []),
+  ])
   const selectedRestraintChecks = (analysis?.member_restraint_candidate_checks ?? [])
-    .filter((check) => selectedRestraintTrace?.governing_candidate_check_ids.includes(check.id))
+    .filter((check) => (
+      selectedRestraintTrace?.combination_id === check.combination_id
+      && selectedBoundaryCandidateIds.has(check.candidate_id)
+    ))
   const selectedRestraintVisualNodeIds = useMemo(() => {
     if (!capture) {
       return selectedVisualNodeId ? [selectedVisualNodeId] : undefined
@@ -495,6 +524,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!sheet) return
     setSelectedSheetId(sheet.id)
+    if (stageId === 'cross_section' || stageId === 'member_stability') {
+      setMemberEvidenceStage(stageId)
+    }
     if (stageId === 'stability' && analysis.stability) {
       setDiagramMode('displacement')
       if (selectedCombinationId !== analysis.stability.combination_id) {
@@ -516,6 +548,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setSelectedMemberId(member.id)
       setSelectedVisualNodeId(member.visual_node_id)
     }
+  }
+  const selectMemberEvidenceStage = (
+    stageId: 'cross_section' | 'member_stability',
+  ) => {
+    setMemberEvidenceStage(stageId)
+    const sheet = analysis?.calculation_sheets?.find(
+      (candidate) => candidate.stage_id === stageId,
+    )
+    if (sheet) setSelectedSheetId(sheet.id)
   }
   const downloadCalculationSheets = () => {
     if (!analysis) return
@@ -1026,7 +1067,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       >
                         <div className="flex justify-between gap-2">
                           <span className="font-semibold text-slate-200">{check.candidate_id}</span>
-                          <span className="font-mono uppercase text-slate-300">{check.status}</span>
+                          <span className="font-mono uppercase text-slate-300">
+                            {selectedRestraintTrace.effective_restraint_candidate_ids
+                              .includes(check.candidate_id)
+                              ? check.status
+                              : 'located — not credited'}
+                          </span>
                         </div>
                         <div className="mt-1 font-mono text-cyan-200">
                           P* {check.required_force_kN === null
@@ -1182,9 +1228,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               <span className={
                                 check.identity_status === 'pass'
                                   ? 'text-emerald-400'
-                                  : 'text-red-400'
+                                  : check.identity_status === 'fail'
+                                    ? 'text-red-400'
+                                    : 'text-amber-300'
                               }>
-                                Identity {check.identity_status}
+                                Identity {check.identity_status.replace('_', ' ')}
                               </span>
                             </div>
                             <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
@@ -1672,7 +1720,63 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </p>
                     </div>
                   )}
-                  {selectedCheck && (
+                  {(availableCrossSectionCheck || availableMemberStabilityCheck) && (
+                    <div
+                      role="group"
+                      aria-label="Selected member verification stage"
+                      className="mt-3 grid grid-cols-2 gap-2 rounded border border-slate-700 bg-slate-950/50 p-1.5"
+                    >
+                      <button
+                        type="button"
+                        disabled={!availableCrossSectionCheck}
+                        onClick={() => selectMemberEvidenceStage('cross_section')}
+                        className={`rounded border px-2 py-2 text-left transition ${
+                          activeMemberEvidenceStage === 'cross_section'
+                            ? 'border-cyan-400 bg-cyan-500/15 text-cyan-100'
+                            : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-600'
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        <span className="block text-[9px] font-bold uppercase tracking-[0.14em]">
+                          6. Cross-section
+                        </span>
+                        <span className="mt-1 block font-mono text-[9px] uppercase">
+                          {availableCrossSectionCheck?.status.replace('_', ' ') || 'not available'}
+                          {availableCrossSectionCheck?.governing_utilisation !== null
+                            && availableCrossSectionCheck?.governing_utilisation !== undefined
+                            ? ` · ${number(
+                                availableCrossSectionCheck.governing_utilisation * 100,
+                                1,
+                              )}%`
+                            : ''}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!availableMemberStabilityCheck}
+                        onClick={() => selectMemberEvidenceStage('member_stability')}
+                        className={`rounded border px-2 py-2 text-left transition ${
+                          activeMemberEvidenceStage === 'member_stability'
+                            ? 'border-violet-400 bg-violet-500/15 text-violet-100'
+                            : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-600'
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        <span className="block text-[9px] font-bold uppercase tracking-[0.14em]">
+                          7. Member stability
+                        </span>
+                        <span className="mt-1 block font-mono text-[9px] uppercase">
+                          {availableMemberStabilityCheck?.status.replace('_', ' ') || 'not available'}
+                          {availableMemberStabilityCheck?.governing_utilisation !== null
+                            && availableMemberStabilityCheck?.governing_utilisation !== undefined
+                            ? ` · ${number(
+                                availableMemberStabilityCheck.governing_utilisation * 100,
+                                1,
+                              )}%`
+                            : ''}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                  {(selectedCheck || selectedCrossSectionCheck || selectedMemberStabilityCheck) && (
                     <div className={`mt-3 rounded border p-3 ${
                       selectedDisplayCheckStatus === 'pass'
                         ? 'border-emerald-500/40 bg-emerald-950/30'
@@ -1721,18 +1825,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                                   )} kN axial screen`}
                             </>
                           )
-                          : (
+                          : selectedCrossSectionCheck
+                            ? (
+                              <>
+                                {selectedCrossSectionCheck.governing_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck.governing_utilisation * 100,
+                                      1,
+                                    )}% governing section envelope`}
+                              </>
+                            )
+                            : selectedCheck
+                              ? (
                             <>
                               {number(selectedCheck.demand_kNm, 4)} kN·m /{' '}
                               {selectedCheck.capacity_kNm === null
                                 ? 'no reference'
                                 : `${number(selectedCheck.capacity_kNm, 4)} kN·m`}
                             </>
-                          )}
+                              )
+                              : '—'}
                       </div>
-                      {selectedCheck.utilisation !== null && (
+                      {selectedDisplayUtilisation !== null
+                        && selectedDisplayUtilisation !== undefined && (
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
-                          {number(selectedCheck.utilisation * 100, 1)}%{' '}
+                          {number(selectedDisplayUtilisation * 100, 1)}%{' '}
                           {selectedMemberStabilityCheck
                             ? 'governing member utilisation'
                             : selectedCrossSectionCheck
@@ -1798,26 +1916,56 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-pink-400">Minor-axis My</dt>
+                            <dt className="text-pink-400">Minor-axis My / resistance</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.minor_moment_kNm === null
                                 ? '—'
-                                : `${number(
+                                : number(
                                     selectedCrossSectionCheck.minor_moment_kNm,
                                     4,
-                                  )} kN·m`}
-                              {' · no verified resistance'}
+                                  )}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_minor_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_minor_bending_capacity_kNm,
+                                    4,
+                                  )} kN·m
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-pink-400">Off-axis shear Fz</dt>
+                            <dt className="text-pink-400">Off-axis shear Fz / resistance</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.off_axis_shear_kN === null
                                 ? '—'
-                                : `${number(
+                                : number(
                                     selectedCrossSectionCheck.off_axis_shear_kN,
                                     4,
-                                  )} kN`}
+                                  )}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_off_axis_shear_capacity_kN === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_off_axis_shear_capacity_kN,
+                                    4,
+                                  )} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Torque / St-Venant resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.torsion_kNm === null
+                                ? '—'
+                                : number(selectedCrossSectionCheck.torsion_kNm, 4)}
+                              {' / '}
+                              {selectedCrossSectionCheck
+                                .design_st_venant_torsion_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck
+                                      .design_st_venant_torsion_capacity_kNm,
+                                    4,
+                                  )} kN·m
                             </dd>
                           </div>
                           <div>
@@ -1825,6 +1973,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
                             </dd>
+                          </div>
+                          <div className="col-span-2 grid grid-cols-2 gap-2 rounded border border-slate-700/70 p-2">
+                            <div>
+                              <dt className="text-slate-500">Biaxial N + M utilisation</dt>
+                              <dd className="font-mono text-slate-300">
+                                {selectedCrossSectionCheck
+                                  .biaxial_axial_bending_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck
+                                        .biaxial_axial_bending_utilisation * 100,
+                                      1,
+                                    )}%`}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Torsion utilisation</dt>
+                              <dd className="font-mono text-slate-300">
+                                {selectedCrossSectionCheck.torsion_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck.torsion_utilisation * 100,
+                                      1,
+                                    )}%`}
+                              </dd>
+                            </div>
                           </div>
                           <div className="col-span-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
                             <div className="flex items-center justify-between gap-2">
@@ -1888,6 +2062,122 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
+                            <dt className="text-cyan-400">Major Mz / member resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.major_moment_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.major_moment_kNm, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.design_major_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_major_bending_capacity_kNm,
+                                    3,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Minor My / member resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.minor_moment_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.minor_moment_kNm, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.design_minor_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_minor_bending_capacity_kNm,
+                                    3,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Shear Fy / Fz</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.web_shear_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.web_shear_kN, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.off_axis_shear_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.off_axis_shear_kN, 3)} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Torque / resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.torsion_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.torsion_kNm, 4)}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .design_st_venant_torsion_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_st_venant_torsion_capacity_kNm,
+                                    4,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Governing modes N / Mz / My</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.governing_compression_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                              {' / '}
+                              {selectedMemberStabilityCheck.governing_bending_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                              {' / '}
+                              {selectedMemberStabilityCheck.governing_minor_bending_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Interaction / torsion</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .biaxial_member_interaction_utilisation === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .biaxial_member_interaction_utilisation * 100,
+                                    1,
+                                  )}%
+                              {' / '}
+                              {selectedMemberStabilityCheck.torsion_utilisation === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck.torsion_utilisation * 100,
+                                    1,
+                                  )}%
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Axial amplification Mz / My</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .major_axis_amplification_factor === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .major_axis_amplification_factor,
+                                    3,
+                                  )}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .minor_axis_amplification_factor === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .minor_axis_amplification_factor,
+                                    3,
+                                  )}
+                            </dd>
+                          </div>
+                          <div>
                             <dt className="text-slate-500">Flexural-torsional Fe</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedMemberStabilityCheck
@@ -1901,7 +2191,29 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-slate-500">Compression-flange restraint</dt>
+                            <dt className="text-slate-500">Distortional fod (N / M)</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .elastic_distortional_compression_stress_MPa === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .elastic_distortional_compression_stress_MPa,
+                                    2,
+                                  )}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .elastic_distortional_bending_stress_MPa === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .elastic_distortional_bending_stress_MPa,
+                                    2,
+                                  )} MPa
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Candidate restraint (not credited)</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedMemberStabilityCheck.lateral_bending_restraint
                                 .replaceAll('_', ' ')}
@@ -1930,10 +2242,22 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               {selectedMemberStabilityCheck.distortional_buckling_status}
                             </dd>
                           </div>
+                          <div className="col-span-2">
+                            <dt className="text-slate-500">Calculation basis</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.standard_reference || '—'}
+                            </dd>
+                            <dd className="break-all font-mono text-[8px] text-slate-500">
+                              {selectedMemberStabilityCheck.standard_source_sha256 || 'source hash missing'}
+                            </dd>
+                          </div>
                         </dl>
                       )}
                       <p className="mt-2 text-[9px] text-slate-500">
-                        {selectedCheck.basis}
+                        {selectedMemberStabilityCheck?.basis
+                          || selectedCrossSectionCheck?.basis
+                          || selectedCheck?.basis
+                          || 'No calculation basis is available for this member.'}
                       </p>
                     </div>
                   )}

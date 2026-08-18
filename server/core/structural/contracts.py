@@ -243,6 +243,11 @@ class ActionStandardPackEvidence(StructuralContract):
     pack_version: str
     standard_reference: str
     status: Literal["working", "verified"]
+    source_document_sha256: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
+    applicability: list[str] = Field(default_factory=list)
+    exclusions: list[str] = Field(default_factory=list)
     combination_ids: list[str]
     basis: str
 
@@ -326,7 +331,7 @@ class StabilityResult(StructuralContract):
 
 
 class CrossSectionVerificationDefinition(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    pack_id: Literal["as_nzs_4600_2005_a1_ewm"]
     combination_ids: list[str] = Field(min_length=1)
     member_ids: list[str] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
@@ -401,7 +406,7 @@ class MemberRestraintCandidateDefinition(StructuralContract):
 
 
 class MemberStabilityVerificationDefinition(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    pack_id: Literal["as_nzs_4600_2005_a1_member"]
     combination_ids: list[str] = Field(min_length=1)
     segments: list[MemberStabilitySegmentDefinition] = Field(min_length=1)
     restraint_candidates: list[MemberRestraintCandidateDefinition] = Field(
@@ -459,7 +464,7 @@ class ConnectionCheck(StructuralContract):
     evidence_status: Literal["unverified", "candidate", "verified"]
     pack_id: str
     pack_version: str
-    identity_status: Literal["pass", "fail"]
+    identity_status: Literal["not_declared", "pass", "fail"]
     identity_mismatches: list[str] = Field(default_factory=list)
     governing_combination_id: str | None = None
     governing_member_id: str | None = None
@@ -503,7 +508,7 @@ class TensionMemberCheck(StructuralContract):
 class MemberCrossSectionCheck(StructuralContract):
     member_id: str
     label: str
-    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    pack_id: Literal["as_nzs_4600_2005_a1_ewm"]
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     governing_combination_id: str | None = None
     governing_station_m: float | None = None
@@ -515,9 +520,15 @@ class MemberCrossSectionCheck(StructuralContract):
     torsion_kNm: float | None = None
     design_compression_capacity_kN: float | None = None
     design_major_bending_capacity_kNm: float | None = None
+    design_minor_bending_capacity_kNm: float | None = None
     design_web_shear_capacity_kN: float | None = None
+    design_off_axis_shear_capacity_kN: float | None = None
+    design_st_venant_torsion_capacity_kNm: float | None = None
     axial_bending_utilisation: float | None = None
+    biaxial_axial_bending_utilisation: float | None = None
     bending_shear_utilisation: float | None = None
+    minor_bending_shear_utilisation: float | None = None
+    torsion_utilisation: float | None = None
     governing_utilisation: float | None = None
     section_record_sha256: str | None = None
     capacity_factors: dict[str, float] = Field(default_factory=dict)
@@ -525,6 +536,10 @@ class MemberCrossSectionCheck(StructuralContract):
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
         None
     )
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     off_axis_load_path_status: Literal["not_declared", "candidate", "verified"] = (
         "not_declared"
     )
@@ -543,7 +558,7 @@ class MemberStabilityCheck(StructuralContract):
     segment_id: str
     member_id: str
     label: str
-    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    pack_id: Literal["as_nzs_4600_2005_a1_member"]
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     governing_combination_id: str | None = None
     governing_station_m: float | None = None
@@ -552,14 +567,61 @@ class MemberStabilityCheck(StructuralContract):
     unbraced_length_m: float
     axial_kN: float | None = None
     major_moment_kNm: float | None = None
+    minor_moment_kNm: float | None = None
+    web_shear_kN: float | None = None
+    off_axis_shear_kN: float | None = None
+    torsion_kNm: float | None = None
     elastic_flexural_buckling_stress_MPa: float | None = None
     elastic_torsional_buckling_stress_MPa: float | None = None
     elastic_flexural_torsional_buckling_stress_MPa: float | None = None
+    elastic_distortional_compression_stress_MPa: float | None = None
+    elastic_distortional_bending_stress_MPa: float | None = None
+    elastic_lateral_torsional_buckling_moment_kNm: float | None = None
+    elastic_minor_lateral_torsional_buckling_moment_kNm: float | None = None
+    elastic_major_axis_flexural_buckling_load_kN: float | None = None
+    elastic_minor_axis_flexural_buckling_load_kN: float | None = None
     nominal_global_buckling_stress_MPa: float | None = None
+    nominal_global_compression_capacity_kN: float | None = None
+    nominal_distortional_compression_capacity_kN: float | None = None
+    nominal_lateral_torsional_bending_capacity_kNm: float | None = None
+    nominal_distortional_bending_capacity_kNm: float | None = None
+    nominal_minor_lateral_torsional_bending_capacity_kNm: float | None = None
     design_member_compression_capacity_kN: float | None = None
     design_major_bending_capacity_kNm: float | None = None
+    design_minor_bending_capacity_kNm: float | None = None
+    design_global_compression_capacity_kN: float | None = None
+    design_distortional_compression_capacity_kN: float | None = None
+    design_lateral_torsional_bending_capacity_kNm: float | None = None
+    design_distortional_bending_capacity_kNm: float | None = None
+    design_section_minor_bending_capacity_kNm: float | None = None
+    design_minor_lateral_torsional_bending_capacity_kNm: float | None = None
+    design_web_shear_capacity_kN: float | None = None
+    design_off_axis_shear_capacity_kN: float | None = None
+    design_st_venant_torsion_capacity_kNm: float | None = None
+    governing_compression_mode: Literal["section", "global", "distortional"] | None = (
+        None
+    )
+    governing_bending_mode: Literal[
+        "section",
+        "lateral_torsional",
+        "distortional",
+    ] | None = None
+    governing_minor_bending_mode: Literal[
+        "section",
+        "lateral_torsional",
+    ] | None = None
     axial_utilisation: float | None = None
     axial_bending_utilisation: float | None = None
+    major_bending_utilisation: float | None = None
+    minor_bending_utilisation: float | None = None
+    web_shear_utilisation: float | None = None
+    off_axis_shear_utilisation: float | None = None
+    torsion_utilisation: float | None = None
+    major_axis_amplification_factor: float | None = None
+    minor_axis_amplification_factor: float | None = None
+    biaxial_member_interaction_utilisation: float | None = None
+    major_bending_shear_utilisation: float | None = None
+    minor_bending_shear_utilisation: float | None = None
     governing_utilisation: float | None = None
     lateral_bending_restraint: Literal[
         "unverified",
@@ -581,6 +643,10 @@ class MemberStabilityCheck(StructuralContract):
     restraint_candidate_ids: list[str] = Field(default_factory=list)
     distortional_buckling_status: Literal["unverified", "verified"]
     section_record_sha256: str | None = None
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 
@@ -874,6 +940,7 @@ class DesignConnection(StructuralContract):
     label: str
     from_component_id: str
     to_component_id: str
+    component_ports: dict[str, str] = Field(default_factory=dict)
     connector_component_ids: list[str] = Field(default_factory=list)
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
     joint_model: ConnectionJointModel | None = None
@@ -895,6 +962,7 @@ class StructuralWindActionBasis(StructuralContract):
     table_status: Literal["starter", "verified"]
     importance_level: str
     annual_recurrence_interval_years: int
+    design_event: Literal["serviceability", "ultimate"] = "ultimate"
     terrain_category: str
     reference_height_m: float
     regional_wind_speed_m_s: float
@@ -1184,9 +1252,7 @@ class ProjectStructuralCapture(StructuralContract):
                     )
             if self.analysis.stability is not None:
                 stability = self.analysis.stability
-                combination_ids = {
-                    item.id for item in self.analysis.load_combinations
-                }
+                combination_ids = {item.id for item in self.analysis.load_combinations}
                 _require_reference(
                     "stability combination",
                     stability.stability_combination_id,

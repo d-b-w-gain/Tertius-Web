@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { StructuralWorkbench } from './StructuralWorkbench'
@@ -92,8 +92,8 @@ const capture: ProjectStructuralCapture = {
   authoring_mode: 'generated',
   design_basis: {
     framework_id: 'AU-NCC-2022',
-    framework_label: 'NCC 2022 Australian structural verification',
-    framework_reference: 'NCC 2022 Volume Two Part H1',
+    framework_label: 'NCC 2022 Amendment 2 Australian structural verification',
+    framework_reference: 'NCC 2022 Amendment 2, Volume Two Part H1',
     jurisdiction: 'Australia',
     analysis_method: '3D first-order elastic frame analysis',
     building_classification: 'Class 10a',
@@ -620,9 +620,20 @@ const crossSectionAnalysis: StructuralSnapshot = {
       label: 'Cross-section',
       primary_reference: 'AS/NZS 4600:2018 cross-section resistance',
       supplemental_references: ['SCI P399 §8.1'],
-      status: 'unsupported',
-      summary: 'Off-axis action has a candidate collector path but no verified resistance.',
+      status: 'pass',
+      summary: 'Both-axis resistance is calculated; the collector path remains candidate evidence.',
       sheet_ids: ['sheet-au-cross-section'],
+      blocking_stage_ids: [],
+    },
+    {
+      id: 'member_stability',
+      order: 7,
+      label: 'Member stability',
+      primary_reference: 'AS/NZS 4600:2005+A1 member resistance',
+      supplemental_references: [],
+      status: 'pass',
+      summary: 'Both-axis member resistance and interaction pass.',
+      sheet_ids: [],
       blocking_stage_ids: [],
     },
   ],
@@ -630,8 +641,8 @@ const crossSectionAnalysis: StructuralSnapshot = {
     {
       member_id: 'purlin-axis',
       label: 'C100 purlin cross-section',
-      pack_id: 'as_nzs_4600_2018_ewm',
-      status: 'unsupported',
+      pack_id: 'as_nzs_4600_2005_a1_ewm',
+      status: 'pass',
       governing_combination_id: 'ULS-WIND',
       governing_station_m: 0.8,
       axial_kN: 0,
@@ -642,14 +653,24 @@ const crossSectionAnalysis: StructuralSnapshot = {
       torsion_kNm: 0,
       design_compression_capacity_kN: 31.2,
       design_major_bending_capacity_kNm: 4.4,
+      design_minor_bending_capacity_kNm: 0.8,
       design_web_shear_capacity_kN: 22.1,
+      design_off_axis_shear_capacity_kN: 15.7,
+      design_st_venant_torsion_capacity_kNm: 0.04,
       axial_bending_utilisation: 0.0755,
+      biaxial_axial_bending_utilisation: 0.2266,
       bending_shear_utilisation: 0.0788,
-      governing_utilisation: 0.0788,
+      minor_bending_shear_utilisation: 0.1516,
+      torsion_utilisation: 0,
+      governing_utilisation: 0.2266,
       section_record_sha256: 'a'.repeat(64),
       capacity_factors: { phi_c: 0.85, phi_b: 0.9, phi_v: 0.9 },
       web_slenderness: 48.7,
       shear_regime: 'stocky',
+      standard_reference: 'AS/NZS 4600:2005 incorporating Amendment No. 1',
+      standard_status: 'accepted_project_basis_2005_a1_with_developments_supplement',
+      standard_source_sha256: 'b'.repeat(64),
+      developments_supplement_sha256: 'c'.repeat(64),
       off_axis_load_path_status: 'candidate',
       off_axis_required_reaction_kN: 0.186,
       off_axis_source_component_ids: ['sheet'],
@@ -660,6 +681,81 @@ const crossSectionAnalysis: StructuralSnapshot = {
       off_axis_load_path_basis: 'Authored force/shear path reaches grounded block.',
       basis: 'Versioned catalogue effective-width capacity pack.',
       assumptions: ['Collector resistance and stiffness remain unverified.'],
+    },
+  ],
+  member_stability_checks: [
+    {
+      segment_id: 'purlin-segment-01',
+      member_id: 'purlin-axis',
+      label: 'C100 purlin member stability',
+      pack_id: 'as_nzs_4600_2005_a1_member',
+      status: 'pass',
+      governing_combination_id: 'ULS-WIND',
+      governing_station_m: 0.8,
+      segment_start_m: 0,
+      segment_end_m: 1.6,
+      unbraced_length_m: 1.6,
+      axial_kN: 0.4,
+      major_moment_kNm: 0.3321,
+      minor_moment_kNm: 0.1209,
+      web_shear_kN: 0.499,
+      off_axis_shear_kN: 0.186,
+      torsion_kNm: 0.002,
+      elastic_flexural_buckling_stress_MPa: 210,
+      elastic_torsional_buckling_stress_MPa: 175,
+      elastic_flexural_torsional_buckling_stress_MPa: 128,
+      elastic_distortional_compression_stress_MPa: 245,
+      elastic_distortional_bending_stress_MPa: 370,
+      elastic_lateral_torsional_buckling_moment_kNm: 1.2,
+      elastic_minor_lateral_torsional_buckling_moment_kNm: 0.4,
+      elastic_major_axis_flexural_buckling_load_kN: 95,
+      elastic_minor_axis_flexural_buckling_load_kN: 19.5,
+      nominal_global_buckling_stress_MPa: 180,
+      nominal_global_compression_capacity_kN: 18,
+      nominal_distortional_compression_capacity_kN: 22,
+      nominal_lateral_torsional_bending_capacity_kNm: 0.9,
+      nominal_distortional_bending_capacity_kNm: 1.1,
+      nominal_minor_lateral_torsional_bending_capacity_kNm: 0.24,
+      design_member_compression_capacity_kN: 15.3,
+      design_major_bending_capacity_kNm: 0.81,
+      design_minor_bending_capacity_kNm: 0.216,
+      design_global_compression_capacity_kN: 15.3,
+      design_distortional_compression_capacity_kN: 18.7,
+      design_lateral_torsional_bending_capacity_kNm: 0.81,
+      design_distortional_bending_capacity_kNm: 0.99,
+      design_section_minor_bending_capacity_kNm: 0.73,
+      design_minor_lateral_torsional_bending_capacity_kNm: 0.216,
+      design_web_shear_capacity_kN: 22.1,
+      design_off_axis_shear_capacity_kN: 15.7,
+      design_st_venant_torsion_capacity_kNm: 0.04,
+      governing_compression_mode: 'global',
+      governing_bending_mode: 'lateral_torsional',
+      governing_minor_bending_mode: 'lateral_torsional',
+      axial_utilisation: 0.026,
+      axial_bending_utilisation: 0.66,
+      major_bending_utilisation: 0.41,
+      minor_bending_utilisation: 0.56,
+      web_shear_utilisation: 0.023,
+      off_axis_shear_utilisation: 0.012,
+      torsion_utilisation: 0.05,
+      major_axis_amplification_factor: 1.004,
+      minor_axis_amplification_factor: 1.021,
+      biaxial_member_interaction_utilisation: 0.61,
+      major_bending_shear_utilisation: 0.411,
+      minor_bending_shear_utilisation: 0.56,
+      governing_utilisation: 0.66,
+      lateral_bending_restraint: 'unverified',
+      restraint_status: 'candidate',
+      compression_flange: 'positive_local_y',
+      restraint_candidate_ids: ['restraint-purlin'],
+      distortional_buckling_status: 'verified',
+      section_record_sha256: 'a'.repeat(64),
+      standard_reference: 'AS/NZS 4600:2005 incorporating Amendment No. 1',
+      standard_status: 'accepted_project_basis_2005_a1_with_developments_supplement',
+      standard_source_sha256: 'b'.repeat(64),
+      developments_supplement_sha256: 'c'.repeat(64),
+      basis: 'Conservative both-axis unbraced member resistance.',
+      assumptions: ['No physical restraint benefit credited.'],
     },
   ],
 }
@@ -838,8 +934,28 @@ describe('StructuralWorkbench', () => {
     render(<StructuralWorkbench isActive />)
 
     await waitFor(() => {
-      expect(screen.getByText('Off-axis load path')).toBeInTheDocument()
+      expect(screen.getByText('AS/NZS 4600 Stage 7 member stability')).toBeInTheDocument()
     })
+    const memberStageSelector = screen.getByRole('group', {
+      name: 'Selected member verification stage',
+    })
+    const crossSectionButton = within(memberStageSelector).getByRole('button', {
+      name: /6\. Cross-section/i,
+    })
+    const memberStabilityButton = within(memberStageSelector).getByRole('button', {
+      name: /7\. Member stability/i,
+    })
+    expect(crossSectionButton).toBeInTheDocument()
+    expect(memberStabilityButton).toBeInTheDocument()
+    expect(screen.getByText('Interaction / torsion')).toBeInTheDocument()
+    expect(screen.getByText('Axial amplification Mz / My')).toBeInTheDocument()
+
+    fireEvent.click(crossSectionButton)
+
+    expect(screen.getByText('AS/NZS 4600 Stage 6 cross-section')).toBeInTheDocument()
+    expect(screen.getByText('Minor-axis My / resistance')).toBeInTheDocument()
+    expect(screen.getByText('Torque / St-Venant resistance')).toBeInTheDocument()
+    expect(screen.getByText('Off-axis load path')).toBeInTheDocument()
     expect(screen.getByText('Required support reaction: 0.1860 kN')).toBeInTheDocument()
     expect(screen.getByText('Action source: sheet')).toBeInTheDocument()
     expect(screen.getByText(
@@ -847,7 +963,10 @@ describe('StructuralWorkbench', () => {
     )).toBeInTheDocument()
     expect(screen.getByText(/Viewer selection:.*sheet.*purlin.*gpb.*anchors.*block/))
       .toBeInTheDocument()
-    expect(screen.getByText('Cross-section status: UNSUPPORTED')).toBeInTheDocument()
+    expect(screen.getByText('Cross-section status: PASS')).toBeInTheDocument()
+
+    fireEvent.click(memberStabilityButton)
+    expect(screen.getByText('AS/NZS 4600 Stage 7 member stability')).toBeInTheDocument()
   })
 
   it('shows the governing working envelope and coefficient basis explicitly', async () => {
@@ -931,5 +1050,37 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText(
       'Builder-derived purlin and registered connection.',
     )).toBeInTheDocument()
+  })
+
+  it('shows mechanically located restraint candidates that are not yet credited', async () => {
+    const locatedOnlyAnalysis: StructuralSnapshot = {
+      ...restraintAnalysis,
+      member_restraint_traces: (restraintAnalysis.member_restraint_traces ?? []).map(
+        (trace) => ({
+          ...trace,
+          status: 'missing',
+          effective_restraint_candidate_ids: [],
+          governing_candidate_check_ids: [],
+          required_restraint_force_kN: null,
+          available_restraint_force_kN: null,
+          restraint_force_utilisation: null,
+        }),
+      ),
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? locatedOnlyAnalysis : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    render(<StructuralWorkbench isActive />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Select restraint trace' }))
+
+    expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
+    expect(screen.getByText('located — not credited')).toBeInTheDocument()
+    expect(screen.getByText('The test diaphragm has no grounded collector.')).toBeInTheDocument()
   })
 })

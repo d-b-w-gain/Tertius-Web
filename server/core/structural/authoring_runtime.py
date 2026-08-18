@@ -857,7 +857,7 @@ class StructuralModel:
     def cross_section_verification(
         self,
         *,
-        pack_id: Literal["as_nzs_4600_2018_ewm"],
+        pack_id: Literal["as_nzs_4600_2005_a1_ewm"],
         combination_ids: Sequence[str],
         members: Sequence[StructuralPart | StructuralAnalyticalMemberSpec] = (),
         off_axis_tolerance: float = 1e-6,
@@ -903,7 +903,7 @@ class StructuralModel:
     def member_stability_verification(
         self,
         *,
-        pack_id: Literal["as_nzs_4600_2018_ewm_member"],
+        pack_id: Literal["as_nzs_4600_2005_a1_member"],
         combination_ids: Sequence[str],
         segments: Sequence[Mapping[str, Any]] | None = None,
         members: Sequence[StructuralPart | StructuralAnalyticalMemberSpec] = (),
@@ -917,7 +917,7 @@ class StructuralModel:
             raise StructuralAuthoringError(
                 "the member-stability verification basis is already defined"
             )
-        if pack_id != "as_nzs_4600_2018_ewm_member":
+        if pack_id != "as_nzs_4600_2005_a1_member":
             raise StructuralAuthoringError(
                 f"unsupported member-stability pack {pack_id!r}"
             )

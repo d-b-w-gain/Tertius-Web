@@ -53,6 +53,7 @@ export type StructuralWindActionBasis = {
   table_status: 'starter' | 'verified'
   importance_level: string
   annual_recurrence_interval_years: number
+  design_event: 'serviceability' | 'ultimate'
   terrain_category: string
   reference_height_m: number
   regional_wind_speed_m_s: number
@@ -141,6 +142,7 @@ export type DesignConnection = {
   label: string
   from_component_id: string
   to_component_id: string
+  component_ports?: Record<string, string>
   connector_component_ids: string[]
   transfers: Array<'force' | 'shear' | 'moment' | 'wind_normal'>
   joint_model?: {
@@ -330,6 +332,9 @@ export type ActionStandardPackEvidence = {
   pack_version: string
   standard_reference: string
   status: 'working' | 'verified'
+  source_document_sha256: string | null
+  applicability: string[]
+  exclusions: string[]
   combination_ids: string[]
   basis: string
 }
@@ -481,7 +486,7 @@ export type StructuralSnapshot = {
     evidence_status: 'unverified' | 'candidate' | 'verified'
     pack_id: string
     pack_version: string
-    identity_status: 'pass' | 'fail'
+    identity_status: 'not_declared' | 'pass' | 'fail'
     identity_mismatches: string[]
     governing_combination_id: string | null
     governing_member_id: string | null
@@ -523,7 +528,7 @@ export type StructuralSnapshot = {
   cross_section_checks?: Array<{
     member_id: string
     label: string
-    pack_id: 'as_nzs_4600_2018_ewm'
+    pack_id: 'as_nzs_4600_2005_a1_ewm'
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     governing_combination_id: string | null
     governing_station_m: number | null
@@ -535,14 +540,24 @@ export type StructuralSnapshot = {
     torsion_kNm: number | null
     design_compression_capacity_kN: number | null
     design_major_bending_capacity_kNm: number | null
+    design_minor_bending_capacity_kNm: number | null
     design_web_shear_capacity_kN: number | null
+    design_off_axis_shear_capacity_kN: number | null
+    design_st_venant_torsion_capacity_kNm: number | null
     axial_bending_utilisation: number | null
+    biaxial_axial_bending_utilisation: number | null
     bending_shear_utilisation: number | null
+    minor_bending_shear_utilisation: number | null
+    torsion_utilisation: number | null
     governing_utilisation: number | null
     section_record_sha256: string | null
     capacity_factors: Record<string, number>
     web_slenderness: number | null
     shear_regime: 'stocky' | 'inelastic_buckling' | 'elastic_buckling' | null
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     off_axis_load_path_status: 'not_declared' | 'candidate' | 'verified'
     off_axis_required_reaction_kN: number | null
     off_axis_source_component_ids: string[]
@@ -558,7 +573,7 @@ export type StructuralSnapshot = {
     segment_id: string
     member_id: string
     label: string
-    pack_id: 'as_nzs_4600_2018_ewm_member'
+    pack_id: 'as_nzs_4600_2005_a1_member'
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     governing_combination_id: string | null
     governing_station_m: number | null
@@ -567,14 +582,52 @@ export type StructuralSnapshot = {
     unbraced_length_m: number
     axial_kN: number | null
     major_moment_kNm: number | null
+    minor_moment_kNm: number | null
+    web_shear_kN: number | null
+    off_axis_shear_kN: number | null
+    torsion_kNm: number | null
     elastic_flexural_buckling_stress_MPa: number | null
     elastic_torsional_buckling_stress_MPa: number | null
     elastic_flexural_torsional_buckling_stress_MPa: number | null
+    elastic_distortional_compression_stress_MPa: number | null
+    elastic_distortional_bending_stress_MPa: number | null
+    elastic_lateral_torsional_buckling_moment_kNm: number | null
+    elastic_minor_lateral_torsional_buckling_moment_kNm: number | null
+    elastic_major_axis_flexural_buckling_load_kN: number | null
+    elastic_minor_axis_flexural_buckling_load_kN: number | null
     nominal_global_buckling_stress_MPa: number | null
+    nominal_global_compression_capacity_kN: number | null
+    nominal_distortional_compression_capacity_kN: number | null
+    nominal_lateral_torsional_bending_capacity_kNm: number | null
+    nominal_distortional_bending_capacity_kNm: number | null
+    nominal_minor_lateral_torsional_bending_capacity_kNm: number | null
     design_member_compression_capacity_kN: number | null
     design_major_bending_capacity_kNm: number | null
+    design_minor_bending_capacity_kNm: number | null
+    design_global_compression_capacity_kN: number | null
+    design_distortional_compression_capacity_kN: number | null
+    design_lateral_torsional_bending_capacity_kNm: number | null
+    design_distortional_bending_capacity_kNm: number | null
+    design_section_minor_bending_capacity_kNm: number | null
+    design_minor_lateral_torsional_bending_capacity_kNm: number | null
+    design_web_shear_capacity_kN: number | null
+    design_off_axis_shear_capacity_kN: number | null
+    design_st_venant_torsion_capacity_kNm: number | null
+    governing_compression_mode: 'section' | 'global' | 'distortional' | null
+    governing_bending_mode: 'section' | 'lateral_torsional' | 'distortional' | null
+    governing_minor_bending_mode: 'section' | 'lateral_torsional' | null
     axial_utilisation: number | null
     axial_bending_utilisation: number | null
+    major_bending_utilisation: number | null
+    minor_bending_utilisation: number | null
+    web_shear_utilisation: number | null
+    off_axis_shear_utilisation: number | null
+    torsion_utilisation: number | null
+    major_axis_amplification_factor: number | null
+    minor_axis_amplification_factor: number | null
+    biaxial_member_interaction_utilisation: number | null
+    major_bending_shear_utilisation: number | null
+    minor_bending_shear_utilisation: number | null
     governing_utilisation: number | null
     lateral_bending_restraint:
       | 'unverified'
@@ -588,6 +641,10 @@ export type StructuralSnapshot = {
     restraint_candidate_ids: string[]
     distortional_buckling_status: 'unverified' | 'verified'
     section_record_sha256: string | null
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     basis: string
     assumptions: string[]
   }>

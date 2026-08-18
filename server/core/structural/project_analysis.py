@@ -12,6 +12,7 @@ from .capacity_packs import (
     member_compression_capacity,
 )
 from .contracts import (
+    AnalyticalMemberDeclaration,
     CalculationEquation,
     CalculationInput,
     CalculationSheet,
@@ -77,19 +78,32 @@ def _connection_checks(
         for combination in analysis.load_combinations
         if combination.limit_state == "ultimate" and combination.purpose == "design"
     ]
+    member_endpoints_by_connection: dict[
+        str, list[tuple[AnalyticalMemberDeclaration, float]]
+    ] = {}
+    for declaration in analysis.members:
+        member_length = _length(declaration.start, declaration.end)
+        for node_key, distance_m in (
+            (declaration.start_node_key, 0.0),
+            (declaration.end_node_key, member_length),
+        ):
+            for connection_id in _node_key_connection_ids(node_key):
+                member_endpoints_by_connection.setdefault(connection_id, []).append(
+                    (declaration, distance_m)
+                )
     checks: list[ConnectionCheck] = []
     for connection in connections:
         evidence = connection.resistance
-        if evidence is None:
-            continue
-        expected_parts = sorted(evidence.connector_part_numbers)
+        expected_parts = (
+            sorted(evidence.connector_part_numbers) if evidence is not None else []
+        )
         rendered_parts = sorted(
             components[component_id].part_number or f"<missing:{component_id}>"
             for component_id in connection.connector_component_ids
         )
         identity_mismatches = (
             []
-            if rendered_parts == expected_parts
+            if evidence is None or rendered_parts == expected_parts
             else [
                 "connector part-number multiset expected "
                 f"{expected_parts!r}, rendered {rendered_parts!r}"
@@ -100,53 +114,69 @@ def _connection_checks(
         moment_demand = 0.0
         governing_combination_id: str | None = None
         governing_member_id: str | None = None
-        governing_moment = -1.0
-        connection_node_key = f"joint:{connection.id}"
-        for declaration in analysis.members:
-            member_length = _length(declaration.start, declaration.end)
-            endpoint_distances = [
-                distance
-                for node_key, distance in (
-                    (declaration.start_node_key, 0.0),
-                    (declaration.end_node_key, member_length),
-                )
-                if node_key == connection_node_key
-            ]
-            if not endpoint_distances:
+        governing_resultant = -1.0
+        connection_component_ids = {
+            connection.from_component_id,
+            connection.to_component_id,
+        }
+        boundary_component_ids = {
+            component_id
+            for component_id, port_name in connection.component_ports.items()
+            if port_name in {"start", "end"}
+        }
+        demand_component_ids = boundary_component_ids or connection_component_ids
+        for declaration, distance_m in member_endpoints_by_connection.get(
+            connection.id, []
+        ):
+            if declaration.component_id not in demand_component_ids:
                 continue
             member = model.members[declaration.id]
             for combination in ultimate_combinations:
-                for distance_m in endpoint_distances:
-                    endpoint_axial = abs(member.axial(distance_m, combination.id))
-                    endpoint_shear = sqrt(
+                endpoint_axial = (
+                    abs(member.axial(distance_m, combination.id))
+                    if "force" in connection.transfers
+                    else 0.0
+                )
+                endpoint_shear = (
+                    sqrt(
                         member.shear("Fy", distance_m, combination.id) ** 2
                         + member.shear("Fz", distance_m, combination.id) ** 2
                     )
-                    endpoint_moment = sqrt(
+                    if "shear" in connection.transfers
+                    else 0.0
+                )
+                endpoint_moment = (
+                    sqrt(
                         member.moment("My", distance_m, combination.id) ** 2
                         + member.moment("Mz", distance_m, combination.id) ** 2
                     )
-                    axial_demand = max(axial_demand, endpoint_axial)
-                    shear_demand = max(shear_demand, endpoint_shear)
-                    moment_demand = max(moment_demand, endpoint_moment)
-                    if endpoint_moment > governing_moment:
-                        governing_moment = endpoint_moment
-                        governing_combination_id = combination.id
-                        governing_member_id = declaration.id
+                    if "moment" in connection.transfers
+                    else 0.0
+                )
+                axial_demand = max(axial_demand, endpoint_axial)
+                shear_demand = max(shear_demand, endpoint_shear)
+                moment_demand = max(moment_demand, endpoint_moment)
+                endpoint_resultant = sqrt(
+                    endpoint_axial**2 + endpoint_shear**2 + endpoint_moment**2
+                )
+                if endpoint_resultant > governing_resultant:
+                    governing_resultant = endpoint_resultant
+                    governing_combination_id = combination.id
+                    governing_member_id = declaration.id
 
         axial_utilisation = (
             axial_demand / evidence.design_axial_capacity_kN
-            if evidence.design_axial_capacity_kN is not None
+            if evidence is not None and evidence.design_axial_capacity_kN is not None
             else None
         )
         shear_utilisation = (
             shear_demand / evidence.design_shear_capacity_kN
-            if evidence.design_shear_capacity_kN is not None
+            if evidence is not None and evidence.design_shear_capacity_kN is not None
             else None
         )
         moment_utilisation = (
             moment_demand / evidence.design_moment_capacity_kNm
-            if evidence.design_moment_capacity_kNm is not None
+            if evidence is not None and evidence.design_moment_capacity_kNm is not None
             else None
         )
         relevant_utilisations = [
@@ -165,7 +195,7 @@ def _connection_checks(
             status: Literal["pass", "fail", "not_checked", "unsupported"] = (
                 "not_checked"
             )
-        elif evidence.status != "verified" or identity_mismatches:
+        elif evidence is None or evidence.status != "verified" or identity_mismatches:
             status = "unsupported"
         else:
             status = (
@@ -173,8 +203,13 @@ def _connection_checks(
                 if governing_utilisation is not None and governing_utilisation <= 1.0
                 else "fail"
             )
-        assumptions = list(evidence.assumptions)
-        if evidence.status != "verified":
+        assumptions = list(evidence.assumptions) if evidence is not None else []
+        if evidence is None:
+            assumptions.append(
+                "The rendered connector identity and joint demand are recorded, but "
+                "no resistance evidence pack is attached."
+            )
+        elif evidence.status != "verified":
             assumptions.append(
                 "Demand is calculated, but resistance is not verified and cannot pass."
             )
@@ -183,32 +218,70 @@ def _connection_checks(
                 connection_id=connection.id,
                 label=connection.label,
                 status=status,
-                evidence_status=evidence.status,
-                pack_id=evidence.pack_id,
-                pack_version=evidence.version,
-                identity_status="fail" if identity_mismatches else "pass",
+                evidence_status=(
+                    evidence.status if evidence is not None else "unverified"
+                ),
+                pack_id=(
+                    evidence.pack_id
+                    if evidence is not None
+                    else "unverified-rendered-connection"
+                ),
+                pack_version=(evidence.version if evidence is not None else "0"),
+                identity_status=(
+                    "fail"
+                    if identity_mismatches
+                    else "pass"
+                    if evidence is not None
+                    else "not_declared"
+                ),
                 identity_mismatches=identity_mismatches,
                 governing_combination_id=governing_combination_id,
                 governing_member_id=governing_member_id,
                 axial_demand_kN=axial_demand,
                 shear_demand_kN=shear_demand,
                 moment_demand_kNm=moment_demand,
-                design_axial_capacity_kN=evidence.design_axial_capacity_kN,
-                design_shear_capacity_kN=evidence.design_shear_capacity_kN,
-                design_moment_capacity_kNm=evidence.design_moment_capacity_kNm,
+                design_axial_capacity_kN=(
+                    evidence.design_axial_capacity_kN if evidence is not None else None
+                ),
+                design_shear_capacity_kN=(
+                    evidence.design_shear_capacity_kN if evidence is not None else None
+                ),
+                design_moment_capacity_kNm=(
+                    evidence.design_moment_capacity_kNm
+                    if evidence is not None
+                    else None
+                ),
                 axial_utilisation=axial_utilisation,
                 shear_utilisation=shear_utilisation,
                 moment_utilisation=moment_utilisation,
                 governing_utilisation=governing_utilisation,
                 expected_connector_part_numbers=expected_parts,
                 rendered_connector_part_numbers=rendered_parts,
-                source=evidence.source,
-                source_sha256=evidence.source_sha256,
-                basis=evidence.basis,
+                source=(evidence.source if evidence is not None else None),
+                source_sha256=(
+                    evidence.source_sha256 if evidence is not None else None
+                ),
+                basis=(
+                    evidence.basis
+                    if evidence is not None
+                    else "ULS endpoint forces are enveloped from the compiled physical "
+                    "joint. No resistance, stiffness, bearing, tear-out, pull-out, "
+                    "anchor, or foundation capacity is inferred."
+                ),
                 assumptions=assumptions,
             )
         )
     return checks
+
+
+def _node_key_connection_ids(node_key: str | None) -> set[str]:
+    if not node_key or not node_key.startswith("joint:"):
+        return set()
+    return {
+        connection_id
+        for connection_id in node_key.removeprefix("joint:").split("+")
+        if connection_id
+    }
 
 
 def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
@@ -346,6 +419,15 @@ def _add(
     values = (value.x, value.y, value.z) if isinstance(value, Vector3) else value
     for index in range(3):
         accumulator[index] += values[index] * scale
+
+
+def _add_absolute(
+    accumulator: list[float],
+    value: Vector3 | tuple[float, float, float],
+) -> None:
+    values = (value.x, value.y, value.z) if isinstance(value, Vector3) else value
+    for index in range(3):
+        accumulator[index] += abs(values[index])
 
 
 def _scaled(value: Vector3, scale: float) -> Vector3:
@@ -637,8 +719,17 @@ def _cross_section_checks(
                     design_major_bending_capacity_kNm=(
                         capacity.design_major_bending_capacity_kNm
                     ),
+                    design_minor_bending_capacity_kNm=(
+                        capacity.design_minor_bending_capacity_kNm
+                    ),
                     design_web_shear_capacity_kN=(
                         capacity.design_web_shear_capacity_kN
+                    ),
+                    design_off_axis_shear_capacity_kN=(
+                        capacity.design_off_axis_shear_capacity_kN
+                    ),
+                    design_st_venant_torsion_capacity_kNm=(
+                        capacity.design_st_venant_torsion_capacity_kNm
                     ),
                     section_record_sha256=capacity.section_record_sha256,
                     capacity_factors={
@@ -648,6 +739,12 @@ def _cross_section_checks(
                     },
                     web_slenderness=capacity.web_slenderness,
                     shear_regime=capacity.shear_regime,
+                    standard_reference=capacity.standard_reference,
+                    standard_status=capacity.standard_status,
+                    standard_source_sha256=capacity.standard_source_sha256,
+                    developments_supplement_sha256=(
+                        capacity.developments_supplement_sha256
+                    ),
                     basis=(
                         "The selected pack requires the catalogue major-axis "
                         "reference to map to PyNite local_z."
@@ -657,10 +754,7 @@ def _cross_section_checks(
             continue
 
         governing: dict[str, float | str] | None = None
-        off_axis_exceeded = False
-        peak_minor_moment_kNm = 0.0
         peak_off_axis_shear_kN = 0.0
-        peak_torsion_kNm = 0.0
         for combination_id in definition.combination_ids:
             for distance in _member_station_distances(analysis, declaration):
                 member = model.members[declaration.id]
@@ -670,25 +764,48 @@ def _cross_section_checks(
                 web_shear_kN = abs(member.shear("Fy", distance, combination_id))
                 off_axis_shear_kN = abs(member.shear("Fz", distance, combination_id))
                 torsion_kNm = abs(member.torque(distance, combination_id))
-                peak_minor_moment_kNm = max(
-                    peak_minor_moment_kNm,
-                    minor_moment_kNm,
-                )
                 peak_off_axis_shear_kN = max(
                     peak_off_axis_shear_kN,
                     off_axis_shear_kN,
                 )
-                peak_torsion_kNm = max(peak_torsion_kNm, torsion_kNm)
 
                 axial_bending = (
                     axial_kN / capacity.design_compression_capacity_kN
                     + major_moment_kNm / capacity.design_major_bending_capacity_kNm
                 )
+                biaxial_axial_bending = (
+                    axial_bending
+                    + minor_moment_kNm
+                    / capacity.design_minor_bending_capacity_kNm
+                )
                 bending_shear = sqrt(
                     (major_moment_kNm / capacity.design_major_bending_capacity_kNm) ** 2
                     + (web_shear_kN / capacity.design_web_shear_capacity_kN) ** 2
                 )
-                utilization = max(axial_bending, bending_shear)
+                minor_bending_shear = sqrt(
+                    (
+                        minor_moment_kNm
+                        / capacity.design_minor_bending_capacity_kNm
+                    )
+                    ** 2
+                    + (
+                        off_axis_shear_kN
+                        / capacity.design_off_axis_shear_capacity_kN
+                    )
+                    ** 2
+                )
+                torsion_utilisation = (
+                    torsion_kNm
+                    / capacity.design_st_venant_torsion_capacity_kNm
+                )
+                utilization = (
+                    max(
+                        biaxial_axial_bending,
+                        bending_shear,
+                        minor_bending_shear,
+                    )
+                    + torsion_utilisation
+                )
                 candidate: dict[str, float | str] = {
                     "combination_id": combination_id,
                     "distance": distance,
@@ -699,30 +816,21 @@ def _cross_section_checks(
                     "off_axis_shear": off_axis_shear_kN,
                     "torsion": torsion_kNm,
                     "axial_bending": axial_bending,
+                    "biaxial_axial_bending": biaxial_axial_bending,
                     "bending_shear": bending_shear,
+                    "minor_bending_shear": minor_bending_shear,
+                    "torsion_utilisation": torsion_utilisation,
                     "utilization": utilization,
                 }
                 if governing is None or utilization > float(governing["utilization"]):
                     governing = candidate
-                off_axis_exceeded = off_axis_exceeded or any(
-                    value > definition.off_axis_tolerance
-                    for value in (
-                        minor_moment_kNm,
-                        off_axis_shear_kN,
-                        torsion_kNm,
-                    )
-                )
 
         if governing is None:
             raise StructuralAnalysisError(
                 f"cross-section envelope for {declaration.id!r} has no stations"
             )
         status: Literal["pass", "fail", "unsupported"] = (
-            "unsupported"
-            if off_axis_exceeded
-            else "fail"
-            if float(governing["utilization"]) > 1.0
-            else "pass"
+            "fail" if float(governing["utilization"]) > 1.0 else "pass"
         )
         off_axis_path = _off_axis_load_path(
             declaration.component_id,
@@ -739,19 +847,35 @@ def _cross_section_checks(
                 governing_station_m=float(governing["distance"]),
                 axial_kN=float(governing["axial"]),
                 major_moment_kNm=float(governing["major_moment"]),
-                minor_moment_kNm=peak_minor_moment_kNm,
+                minor_moment_kNm=float(governing["minor_moment"]),
                 web_shear_kN=float(governing["web_shear"]),
-                off_axis_shear_kN=peak_off_axis_shear_kN,
-                torsion_kNm=peak_torsion_kNm,
+                off_axis_shear_kN=float(governing["off_axis_shear"]),
+                torsion_kNm=float(governing["torsion"]),
                 design_compression_capacity_kN=(
                     capacity.design_compression_capacity_kN
                 ),
                 design_major_bending_capacity_kNm=(
                     capacity.design_major_bending_capacity_kNm
                 ),
+                design_minor_bending_capacity_kNm=(
+                    capacity.design_minor_bending_capacity_kNm
+                ),
                 design_web_shear_capacity_kN=(capacity.design_web_shear_capacity_kN),
+                design_off_axis_shear_capacity_kN=(
+                    capacity.design_off_axis_shear_capacity_kN
+                ),
+                design_st_venant_torsion_capacity_kNm=(
+                    capacity.design_st_venant_torsion_capacity_kNm
+                ),
                 axial_bending_utilisation=float(governing["axial_bending"]),
+                biaxial_axial_bending_utilisation=float(
+                    governing["biaxial_axial_bending"]
+                ),
                 bending_shear_utilisation=float(governing["bending_shear"]),
+                minor_bending_shear_utilisation=float(
+                    governing["minor_bending_shear"]
+                ),
+                torsion_utilisation=float(governing["torsion_utilisation"]),
                 governing_utilisation=float(governing["utilization"]),
                 section_record_sha256=capacity.section_record_sha256,
                 capacity_factors={
@@ -761,6 +885,12 @@ def _cross_section_checks(
                 },
                 web_slenderness=capacity.web_slenderness,
                 shear_regime=capacity.shear_regime,
+                standard_reference=capacity.standard_reference,
+                standard_status=capacity.standard_status,
+                standard_source_sha256=capacity.standard_source_sha256,
+                developments_supplement_sha256=(
+                    capacity.developments_supplement_sha256
+                ),
                 off_axis_load_path_status=off_axis_path["status"],
                 off_axis_required_reaction_kN=peak_off_axis_shear_kN,
                 off_axis_source_component_ids=off_axis_path["source_component_ids"],
@@ -785,31 +915,11 @@ def _cross_section_checks(
                         "local load introduction, and system capacity remain "
                         "outside this Stage 6 check."
                     ),
-                    *(
-                        [
-                            "Minor-axis bending exceeds the authored tolerance; "
-                            "the catalogue record has no verified effective "
-                            "minor-axis design resistance."
-                        ]
-                        if peak_minor_moment_kNm > definition.off_axis_tolerance
-                        else []
-                    ),
-                    *(
-                        [
-                            "Off-axis shear exceeds the authored tolerance; no "
-                            "verified flange-direction shear resistance has been "
-                            "inferred."
-                        ]
-                        if peak_off_axis_shear_kN > definition.off_axis_tolerance
-                        else []
-                    ),
-                    *(
-                        [
-                            "Torsion exceeds the authored tolerance; no verified "
-                            "torsional design resistance has been inferred."
-                        ]
-                        if peak_torsion_kNm > definition.off_axis_tolerance
-                        else []
+                    (
+                        "Clause 3.5.1 biaxial axial-bending interaction and "
+                        "Clause 3.3.5 bending-shear interactions are evaluated "
+                        "for both local axes. Full St-Venant torsion utilisation "
+                        "is then added linearly without warping-restraint credit."
                     ),
                     *(
                         [
@@ -817,7 +927,8 @@ def _cross_section_checks(
                             "fasteners, member support transfer, collector/brace resistance "
                             "and stiffness, and anchorage remain unverified."
                         ]
-                        if off_axis_path["status"] == "candidate" and off_axis_exceeded
+                        if off_axis_path["status"] == "candidate"
+                        and peak_off_axis_shear_kN > definition.off_axis_tolerance
                         else []
                     ),
                 ],
@@ -1446,9 +1557,6 @@ def _member_stability_checks(
         }
         station_distances.update((segment.start_distance_m, segment.end_distance_m))
         governing: dict[str, Any] | None = None
-        off_axis_exceeded = False
-        lateral_bending_unverified = False
-        restraint_capacity_fails = False
         compression_flange_values: set[str] = set()
         member = model.members[declaration.id]
         for combination_id in definition.combination_ids:
@@ -1457,10 +1565,40 @@ def _member_stability_checks(
                 signed_major_moment_kNm = member.moment("Mz", distance, combination_id)
                 major_moment_kNm = abs(signed_major_moment_kNm)
                 minor_moment_kNm = abs(member.moment("My", distance, combination_id))
+                web_shear_kN = abs(member.shear("Fy", distance, combination_id))
                 off_axis_shear_kN = abs(member.shear("Fz", distance, combination_id))
                 torsion_kNm = abs(member.torque(distance, combination_id))
                 axial_utilisation = (
                     axial_kN / capacity.design_member_compression_capacity_kN
+                )
+                major_bending_utilisation = (
+                    major_moment_kNm / capacity.design_major_bending_capacity_kNm
+                )
+                minor_bending_utilisation = (
+                    minor_moment_kNm / capacity.design_minor_bending_capacity_kNm
+                )
+                web_shear_utilisation = (
+                    web_shear_kN / capacity.design_web_shear_capacity_kN
+                )
+                off_axis_shear_utilisation = (
+                    off_axis_shear_kN
+                    / capacity.design_off_axis_shear_capacity_kN
+                )
+                torsion_utilisation = (
+                    torsion_kNm
+                    / capacity.design_st_venant_torsion_capacity_kNm
+                )
+                major_axis_amplification_factor = 1.0 / max(
+                    1e-9,
+                    1.0
+                    - axial_kN
+                    / capacity.elastic_major_axis_flexural_buckling_load_kN,
+                )
+                minor_axis_amplification_factor = 1.0 / max(
+                    1e-9,
+                    1.0
+                    - axial_kN
+                    / capacity.elastic_minor_axis_flexural_buckling_load_kN,
                 )
                 compression_flange = _compression_flange(
                     signed_major_moment_kNm,
@@ -1477,37 +1615,61 @@ def _member_stability_checks(
                         candidate_checks_by_combination[combination_id],
                     )
                 )
-                has_verified_lateral_restraint = restraint_status == "verified"
-                restraint_capacity_fails |= restraint_status == "inadequate"
-                if major_moment_kNm > definition.off_axis_tolerance:
-                    lateral_bending_unverified |= not has_verified_lateral_restraint
-                axial_bending_utilisation = (
+                biaxial_member_interaction_utilisation = (
                     axial_utilisation
-                    + major_moment_kNm / capacity.design_major_bending_capacity_kNm
+                    + major_bending_utilisation
+                    * major_axis_amplification_factor
+                    + minor_bending_utilisation
+                    * minor_axis_amplification_factor
+                )
+                major_bending_shear_utilisation = sqrt(
+                    major_bending_utilisation**2 + web_shear_utilisation**2
+                )
+                minor_bending_shear_utilisation = sqrt(
+                    minor_bending_utilisation**2
+                    + off_axis_shear_utilisation**2
                 )
                 utilisation = (
-                    axial_bending_utilisation
-                    if has_verified_lateral_restraint
-                    else axial_utilisation
-                )
-                off_axis_exceeded |= (
                     max(
-                        minor_moment_kNm,
-                        off_axis_shear_kN,
-                        torsion_kNm,
+                        biaxial_member_interaction_utilisation,
+                        major_bending_shear_utilisation,
+                        minor_bending_shear_utilisation,
                     )
-                    > definition.off_axis_tolerance
+                    + torsion_utilisation
                 )
                 candidate: dict[str, Any] = {
                     "combination_id": combination_id,
                     "distance": distance,
                     "axial": axial_kN,
                     "major_moment": major_moment_kNm,
+                    "minor_moment": minor_moment_kNm,
+                    "web_shear": web_shear_kN,
+                    "off_axis_shear": off_axis_shear_kN,
+                    "torsion": torsion_kNm,
                     "compression_flange": compression_flange,
                     "restraint_status": restraint_status,
                     "restraint_candidate_ids": effective_candidate_ids,
                     "axial_utilisation": axial_utilisation,
-                    "axial_bending_utilisation": axial_bending_utilisation,
+                    "major_bending_utilisation": major_bending_utilisation,
+                    "minor_bending_utilisation": minor_bending_utilisation,
+                    "web_shear_utilisation": web_shear_utilisation,
+                    "off_axis_shear_utilisation": off_axis_shear_utilisation,
+                    "torsion_utilisation": torsion_utilisation,
+                    "major_axis_amplification_factor": (
+                        major_axis_amplification_factor
+                    ),
+                    "minor_axis_amplification_factor": (
+                        minor_axis_amplification_factor
+                    ),
+                    "biaxial_member_interaction_utilisation": (
+                        biaxial_member_interaction_utilisation
+                    ),
+                    "major_bending_shear_utilisation": (
+                        major_bending_shear_utilisation
+                    ),
+                    "minor_bending_shear_utilisation": (
+                        minor_bending_shear_utilisation
+                    ),
                     "utilisation": utilisation,
                 }
                 if governing is None or float(candidate["utilisation"]) > float(
@@ -1519,23 +1681,8 @@ def _member_stability_checks(
             raise StructuralAnalysisError(
                 f"member-stability segment {segment.id!r} has no stations"
             )
-        axial_fails = float(governing["axial_utilisation"]) > 1.0
-        combined_fails = float(governing["axial_bending_utilisation"]) > 1.0
-        distortional_buckling_unverified = (
-            segment.distortional_buckling_status != "verified"
-        )
         status: Literal["pass", "fail", "unsupported"] = (
-            "fail"
-            if axial_fails or restraint_capacity_fails
-            else "unsupported"
-            if (
-                lateral_bending_unverified
-                or distortional_buckling_unverified
-                or off_axis_exceeded
-            )
-            else "fail"
-            if combined_fails
-            else "pass"
+            "fail" if float(governing["utilisation"]) > 1.0 else "pass"
         )
         checks.append(
             MemberStabilityCheck(
@@ -1551,6 +1698,10 @@ def _member_stability_checks(
                 unbraced_length_m=unbraced_length_m,
                 axial_kN=float(governing["axial"]),
                 major_moment_kNm=float(governing["major_moment"]),
+                minor_moment_kNm=float(governing["minor_moment"]),
+                web_shear_kN=float(governing["web_shear"]),
+                off_axis_shear_kN=float(governing["off_axis_shear"]),
+                torsion_kNm=float(governing["torsion"]),
                 elastic_flexural_buckling_stress_MPa=(
                     capacity.elastic_flexural_buckling_stress_MPa
                 ),
@@ -1560,8 +1711,41 @@ def _member_stability_checks(
                 elastic_flexural_torsional_buckling_stress_MPa=(
                     capacity.elastic_flexural_torsional_buckling_stress_MPa
                 ),
+                elastic_distortional_compression_stress_MPa=(
+                    capacity.elastic_distortional_compression_stress_MPa
+                ),
+                elastic_distortional_bending_stress_MPa=(
+                    capacity.elastic_distortional_bending_stress_MPa
+                ),
+                elastic_lateral_torsional_buckling_moment_kNm=(
+                    capacity.elastic_lateral_torsional_buckling_moment_kNm
+                ),
+                elastic_minor_lateral_torsional_buckling_moment_kNm=(
+                    capacity.elastic_minor_lateral_torsional_buckling_moment_kNm
+                ),
+                elastic_major_axis_flexural_buckling_load_kN=(
+                    capacity.elastic_major_axis_flexural_buckling_load_kN
+                ),
+                elastic_minor_axis_flexural_buckling_load_kN=(
+                    capacity.elastic_minor_axis_flexural_buckling_load_kN
+                ),
                 nominal_global_buckling_stress_MPa=(
                     capacity.nominal_global_buckling_stress_MPa
+                ),
+                nominal_global_compression_capacity_kN=(
+                    capacity.nominal_global_compression_capacity_kN
+                ),
+                nominal_distortional_compression_capacity_kN=(
+                    capacity.nominal_distortional_compression_capacity_kN
+                ),
+                nominal_lateral_torsional_bending_capacity_kNm=(
+                    capacity.nominal_lateral_torsional_bending_capacity_kNm
+                ),
+                nominal_distortional_bending_capacity_kNm=(
+                    capacity.nominal_distortional_bending_capacity_kNm
+                ),
+                nominal_minor_lateral_torsional_bending_capacity_kNm=(
+                    capacity.nominal_minor_lateral_torsional_bending_capacity_kNm
                 ),
                 design_member_compression_capacity_kN=(
                     capacity.design_member_compression_capacity_kN
@@ -1569,17 +1753,72 @@ def _member_stability_checks(
                 design_major_bending_capacity_kNm=(
                     capacity.design_major_bending_capacity_kNm
                 ),
+                design_minor_bending_capacity_kNm=(
+                    capacity.design_minor_bending_capacity_kNm
+                ),
+                design_global_compression_capacity_kN=(
+                    capacity.design_global_compression_capacity_kN
+                ),
+                design_distortional_compression_capacity_kN=(
+                    capacity.design_distortional_compression_capacity_kN
+                ),
+                design_lateral_torsional_bending_capacity_kNm=(
+                    capacity.design_lateral_torsional_bending_capacity_kNm
+                ),
+                design_distortional_bending_capacity_kNm=(
+                    capacity.design_distortional_bending_capacity_kNm
+                ),
+                design_section_minor_bending_capacity_kNm=(
+                    capacity.design_section_minor_bending_capacity_kNm
+                ),
+                design_minor_lateral_torsional_bending_capacity_kNm=(
+                    capacity.design_minor_lateral_torsional_bending_capacity_kNm
+                ),
+                design_web_shear_capacity_kN=(
+                    capacity.design_web_shear_capacity_kN
+                ),
+                design_off_axis_shear_capacity_kN=(
+                    capacity.design_off_axis_shear_capacity_kN
+                ),
+                design_st_venant_torsion_capacity_kNm=(
+                    capacity.design_st_venant_torsion_capacity_kNm
+                ),
+                governing_compression_mode=capacity.governing_compression_mode,
+                governing_bending_mode=capacity.governing_bending_mode,
+                governing_minor_bending_mode=(
+                    capacity.governing_minor_bending_mode
+                ),
                 axial_utilisation=float(governing["axial_utilisation"]),
-                axial_bending_utilisation=(
-                    float(governing["axial_bending_utilisation"])
-                    if not lateral_bending_unverified
-                    else None
+                axial_bending_utilisation=float(
+                    governing["biaxial_member_interaction_utilisation"]
                 ),
-                governing_utilisation=(
-                    float(governing["utilisation"])
-                    if not lateral_bending_unverified
-                    else None
+                major_bending_utilisation=float(
+                    governing["major_bending_utilisation"]
                 ),
+                minor_bending_utilisation=float(
+                    governing["minor_bending_utilisation"]
+                ),
+                web_shear_utilisation=float(governing["web_shear_utilisation"]),
+                off_axis_shear_utilisation=float(
+                    governing["off_axis_shear_utilisation"]
+                ),
+                torsion_utilisation=float(governing["torsion_utilisation"]),
+                major_axis_amplification_factor=float(
+                    governing["major_axis_amplification_factor"]
+                ),
+                minor_axis_amplification_factor=float(
+                    governing["minor_axis_amplification_factor"]
+                ),
+                biaxial_member_interaction_utilisation=float(
+                    governing["biaxial_member_interaction_utilisation"]
+                ),
+                major_bending_shear_utilisation=float(
+                    governing["major_bending_shear_utilisation"]
+                ),
+                minor_bending_shear_utilisation=float(
+                    governing["minor_bending_shear_utilisation"]
+                ),
+                governing_utilisation=float(governing["utilisation"]),
                 lateral_bending_restraint=segment.lateral_bending_restraint,
                 restraint_status=cast(
                     Literal[
@@ -1603,44 +1842,38 @@ def _member_stability_checks(
                     else next(iter(compression_flange_values), "none"),
                 ),
                 restraint_candidate_ids=list(governing["restraint_candidate_ids"]),
-                distortional_buckling_status=(segment.distortional_buckling_status),
+                distortional_buckling_status="verified",
                 section_record_sha256=capacity.section_record_sha256,
+                standard_reference=capacity.standard_reference,
+                standard_status=capacity.standard_status,
+                standard_source_sha256=capacity.standard_source_sha256,
+                developments_supplement_sha256=(
+                    capacity.developments_supplement_sha256
+                ),
                 basis=capacity.basis,
                 assumptions=[
                     segment.restraint_basis,
-                    segment.distortional_buckling_basis,
                     (
                         "Absolute axial demand is treated as compression; tension "
                         "is not used to improve the result."
                     ),
-                    *(
-                        [
-                            "Major-axis bending is present, but restraint to the "
-                            "compression flange and twist is not verified for every "
-                            "governing combination. Lateral-torsional resistance and "
-                            "the combined member utilisation therefore remain "
-                            "unsupported."
-                        ]
-                        if lateral_bending_unverified
-                        else []
+                    (
+                        "The full physical segment is checked as unbraced for "
+                        "lateral-torsional buckling with Cb=1. Candidate cladding, "
+                        "bridging, or flange restraint is displayed as evidence but "
+                        "is not credited in resistance."
                     ),
-                    *(
-                        [
-                            "Distortional buckling resistance is not verified; "
-                            "the global compression calculation cannot by itself "
-                            "complete the member check."
-                        ]
-                        if distortional_buckling_unverified
-                        else []
+                    (
+                        "Tertius calculates distortional compression and bending "
+                        "resistance from the catalogue section dimensions; any "
+                        "project-authored distortional status is not used."
                     ),
-                    *(
-                        [
-                            "Minor-axis bending, off-axis shear, or torsion exceeds "
-                            "the authored tolerance; the member pack does not cover "
-                            "that action."
-                        ]
-                        if off_axis_exceeded
-                        else []
+                    (
+                        "Clause 3.5.1 member interaction uses Cm=1 and calculated "
+                        "Euler axial amplification for both bending axes. Clause "
+                        "3.3.5 bending-shear interactions are checked about both "
+                        "axes; full St-Venant torsion utilisation is added "
+                        "linearly without warping-restraint benefit."
                     ),
                 ],
             )
@@ -2213,6 +2446,7 @@ def _certification_evidence(
         and not unlinked_wind_loads
         and not unverified_wind_bases
         and not assumed_wind_coefficients
+        and not working_wind_coefficients
         and not blocked_wind_load_paths
     )
     action_basis_ready = action_basis_ready and wind_actions_ready
@@ -2399,14 +2633,19 @@ def _certification_evidence(
         if check.governing_utilisation is not None
         for equation in (
             CalculationEquation(
-                label=f"{check.member_id} axial + major bending interaction",
-                expression="u_NM = N*/(phi_c N_s) + M*/(phi_b M_s)",
+                label=f"{check.member_id} biaxial axial + bending interaction",
+                expression=(
+                    "u_NMM = N*/(phi_c N_s) + Mz*/(phi_b M_sz) "
+                    "+ My*/(phi_b M_sy)"
+                ),
                 substitution=(
                     f"{check.axial_kN:g}/{check.design_compression_capacity_kN:g} "
                     f"+ {check.major_moment_kNm:g}/"
-                    f"{check.design_major_bending_capacity_kNm:g}"
+                    f"{check.design_major_bending_capacity_kNm:g} + "
+                    f"{check.minor_moment_kNm:g}/"
+                    f"{check.design_minor_bending_capacity_kNm:g}"
                 ),
-                result=check.axial_bending_utilisation or 0.0,
+                result=check.biaxial_axial_bending_utilisation or 0.0,
             ),
             CalculationEquation(
                 label=f"{check.member_id} major bending + web shear interaction",
@@ -2418,6 +2657,42 @@ def _certification_evidence(
                     f"{check.design_web_shear_capacity_kN:g})²]"
                 ),
                 result=check.bending_shear_utilisation or 0.0,
+            ),
+            CalculationEquation(
+                label=f"{check.member_id} minor bending + off-axis shear interaction",
+                expression=(
+                    "u_MyVz = sqrt[(My*/(phi_b M_sy))² + "
+                    "(Vz*/(phi_v V_vz))²]"
+                ),
+                substitution=(
+                    f"sqrt[({check.minor_moment_kNm:g}/"
+                    f"{check.design_minor_bending_capacity_kNm:g})² + "
+                    f"({check.off_axis_shear_kN:g}/"
+                    f"{check.design_off_axis_shear_capacity_kN:g})²]"
+                ),
+                result=check.minor_bending_shear_utilisation or 0.0,
+            ),
+            CalculationEquation(
+                label=f"{check.member_id} open-section torsion screen",
+                expression="u_T = T*/[phi_v (0.60 fy J/t)]",
+                substitution=(
+                    f"{check.torsion_kNm:g}/"
+                    f"{check.design_st_venant_torsion_capacity_kNm:g}"
+                ),
+                result=check.torsion_utilisation or 0.0,
+            ),
+            CalculationEquation(
+                label=f"{check.member_id} governing off-axis section envelope",
+                expression=(
+                    "u_gov=max(u_NMM, u_MzVy, u_MyVz) + u_T"
+                ),
+                substitution=(
+                    f"max({check.biaxial_axial_bending_utilisation:g}, "
+                    f"{check.bending_shear_utilisation:g}, "
+                    f"{check.minor_bending_shear_utilisation:g}) + "
+                    f"{check.torsion_utilisation:g}"
+                ),
+                result=check.governing_utilisation or 0.0,
             ),
         )
     ]
@@ -2465,6 +2740,21 @@ def _certification_evidence(
                 source=check.basis,
             ),
             CalculationInput(
+                symbol=f"phi_b M_sy,{check.member_id}",
+                label=f"{check.label} design minor-bending resistance",
+                value=(
+                    check.design_minor_bending_capacity_kNm
+                    if check.design_minor_bending_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_minor_bending_capacity_kNm is not None
+                    else None
+                ),
+                source=check.basis,
+            ),
+            CalculationInput(
                 symbol=f"phi_c N_s,{check.member_id}",
                 label=f"{check.label} design compression section resistance",
                 value=(
@@ -2489,6 +2779,45 @@ def _certification_evidence(
                 source=(
                     f"{check.shear_regime or 'unknown'} web; "
                     f"d1/t={check.web_slenderness or 0:g}"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"phi_v V_vz,{check.member_id}",
+                label=f"{check.label} design off-axis shear resistance",
+                value=(
+                    check.design_off_axis_shear_capacity_kN
+                    if check.design_off_axis_shear_capacity_kN is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN"
+                    if check.design_off_axis_shear_capacity_kN is not None
+                    else None
+                ),
+                source=check.basis,
+            ),
+            CalculationInput(
+                symbol=f"phi_v T_v,{check.member_id}",
+                label=f"{check.label} full St-Venant torsion resistance",
+                value=(
+                    check.design_st_venant_torsion_capacity_kNm
+                    if check.design_st_venant_torsion_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_st_venant_torsion_capacity_kNm is not None
+                    else None
+                ),
+                source="No warping or restraint benefit credited.",
+            ),
+            CalculationInput(
+                symbol=f"standard,{check.member_id}",
+                label=f"{check.label} accepted calculation basis",
+                value=check.standard_reference or "not available",
+                source=(
+                    f"standard SHA-256={check.standard_source_sha256 or 'missing'}; "
+                    f"status={check.standard_status or 'missing'}"
                 ),
             ),
         )
@@ -2582,6 +2911,96 @@ def _certification_evidence(
                 ),
                 result=check.axial_utilisation or 0.0,
             ),
+            CalculationEquation(
+                label=f"{check.segment_id} distortional compression capacity",
+                expression=(
+                    "lambda_d=sqrt(Ny/Nod); "
+                    "Ncd=[1-0.25(Nod/Ny)^0.6](Nod/Ny)^0.6 Ny"
+                ),
+                substitution=(
+                    f"fod={check.elastic_distortional_compression_stress_MPa:g} "
+                    "MPa; "
+                    f"phi_c Ncd={check.design_distortional_compression_capacity_kN:g}"
+                ),
+                result=check.design_distortional_compression_capacity_kN or 0.0,
+                unit="kN",
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} unbraced lateral-torsional capacity",
+                expression=(
+                    "Mo=A r0 sqrt(foy foz), Cb=1; "
+                    "phi_b Mb=phi_b (Zxe/Zx) Mc"
+                ),
+                substitution=(
+                    f"Lb={check.unbraced_length_m:g} m; "
+                    f"Mo={check.elastic_lateral_torsional_buckling_moment_kNm:g}; "
+                    f"phi_b Mb={check.design_lateral_torsional_bending_capacity_kNm:g}"
+                ),
+                result=(
+                    check.design_lateral_torsional_bending_capacity_kNm or 0.0
+                ),
+                unit="kN.m",
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} distortional bending capacity",
+                expression=(
+                    "lambda_d=sqrt(My/Mod); "
+                    "Mc=(My/lambda_d)(1-0.22/lambda_d)"
+                ),
+                substitution=(
+                    f"fod={check.elastic_distortional_bending_stress_MPa:g} MPa; "
+                    f"phi_b Mc={check.design_distortional_bending_capacity_kNm:g}"
+                ),
+                result=check.design_distortional_bending_capacity_kNm or 0.0,
+                unit="kN.m",
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} minor-axis lateral-torsional capacity",
+                expression=(
+                    "Mo=Cs A fox [beta_y/2 + Cs sqrt((beta_y/2)^2 "
+                    "+ ro1^2 foz/fox)], CTF=1; "
+                    "phi_b Mby=phi_b (Zey/Zy) Mc"
+                ),
+                substitution=(
+                    f"Lb={check.unbraced_length_m:g} m; "
+                    f"Mo={check.elastic_minor_lateral_torsional_buckling_moment_kNm:g}; "
+                    f"phi_b Mby={check.design_minor_bending_capacity_kNm:g}"
+                ),
+                result=check.design_minor_bending_capacity_kNm or 0.0,
+                unit="kN.m",
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} biaxial member interaction",
+                expression=(
+                    "u_NMM = N*/(phi_c Nc) + Cmz Mz*/"
+                    "[phi_b Mbz (1-N*/Nez)] + Cmy My*/"
+                    "[phi_b Mby (1-N*/Ney)], Cmz=Cmy=1"
+                ),
+                substitution=(
+                    f"{check.axial_kN:g}/{check.design_member_compression_capacity_kN:g}"
+                    f" + {check.major_moment_kNm:g}/"
+                    f"{check.design_major_bending_capacity_kNm:g}"
+                    f"×{check.major_axis_amplification_factor:g}"
+                    f" + {check.minor_moment_kNm:g}/"
+                    f"{check.design_minor_bending_capacity_kNm:g}"
+                    f"×{check.minor_axis_amplification_factor:g}"
+                ),
+                result=check.biaxial_member_interaction_utilisation or 0.0,
+            ),
+            CalculationEquation(
+                label=f"{check.segment_id} conservative off-axis envelope",
+                expression=(
+                    "u_gov=max(u_NMM, u_MzVy, u_MyVz) + "
+                    "T*/[phi_v (0.60 fy J/t)]"
+                ),
+                substitution=(
+                    f"max({check.biaxial_member_interaction_utilisation:g}, "
+                    f"{check.major_bending_shear_utilisation:g}, "
+                    f"{check.minor_bending_shear_utilisation:g}) + "
+                    f"{check.torsion_utilisation:g}"
+                ),
+                result=check.governing_utilisation or 0.0,
+            ),
         )
     ]
     member_stability_equations.extend(
@@ -2631,10 +3050,56 @@ def _certification_evidence(
                 ),
             ),
             CalculationInput(
-                symbol=f"LTB,{check.segment_id}",
-                label=f"{check.label} lateral-bending restraint",
-                value=(f"{check.lateral_bending_restraint} ({check.restraint_status})"),
-                source=check.assumptions[0] if check.assumptions else check.basis,
+                symbol=f"phi_b M_b,{check.segment_id}",
+                label=f"{check.label} governing design bending resistance",
+                value=(
+                    check.design_major_bending_capacity_kNm
+                    if check.design_major_bending_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_major_bending_capacity_kNm is not None
+                    else None
+                ),
+                source=(
+                    f"governing mode={check.governing_bending_mode or 'not available'}; "
+                    f"candidate restraint={check.restraint_status}, not credited"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"phi_b M_by,{check.segment_id}",
+                label=f"{check.label} governing minor-axis bending resistance",
+                value=(
+                    check.design_minor_bending_capacity_kNm
+                    if check.design_minor_bending_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_minor_bending_capacity_kNm is not None
+                    else None
+                ),
+                source=(
+                    f"governing mode="
+                    f"{check.governing_minor_bending_mode or 'not available'}; "
+                    "CTF=1 and less favourable moment sense"
+                ),
+            ),
+            CalculationInput(
+                symbol=f"phi_v T_v,{check.segment_id}",
+                label=f"{check.label} full St-Venant torsion resistance",
+                value=(
+                    check.design_st_venant_torsion_capacity_kNm
+                    if check.design_st_venant_torsion_capacity_kNm is not None
+                    else "not available"
+                ),
+                unit=(
+                    "kN.m"
+                    if check.design_st_venant_torsion_capacity_kNm is not None
+                    else None
+                ),
+                source="No warping or restraint benefit credited.",
             ),
             CalculationInput(
                 symbol=f"compression_flange,{check.segment_id}",
@@ -2659,8 +3124,15 @@ def _certification_evidence(
                 symbol=f"distortional,{check.segment_id}",
                 label=f"{check.label} distortional buckling",
                 value=check.distortional_buckling_status,
+                source=check.basis,
+            ),
+            CalculationInput(
+                symbol=f"standard,{check.segment_id}",
+                label=f"{check.label} accepted calculation basis",
+                value=check.standard_reference or "not available",
                 source=(
-                    check.assumptions[1] if len(check.assumptions) > 1 else check.basis
+                    f"standard SHA-256={check.standard_source_sha256 or 'missing'}; "
+                    f"status={check.standard_status or 'missing'}"
                 ),
             ),
         )
@@ -2820,7 +3292,9 @@ def _certification_evidence(
             stage_id="geometry",
             title="Geometry and analytical scheme",
             status=basis_status,
-            primary_reference="NCC 2022 Volume Two H1P1; Housing Provisions 2.2",
+            primary_reference=(
+                "NCC 2022 Amendment 2, Volume Two H1P1; Housing Provisions 2.2"
+            ),
             supplemental_references=["SCI P399 Sections 3 and 6.1"],
             purpose=(
                 "Prove which compiled mechanical components became nodes, members, "
@@ -2936,8 +3410,9 @@ def _certification_evidence(
                         "Absolute first-order tolerance."
                         if stability_result is None
                         else (
-                            "0.1% of the governing action/reaction scale; distributed "
-                            "loads are integrated over the displaced member geometry."
+                            "0.1% of the governing absolute action/reaction scale; "
+                            "distributed loads are integrated over the displaced "
+                            "member geometry."
                         )
                     ),
                 ),
@@ -2962,7 +3437,9 @@ def _certification_evidence(
             stage_id="stability",
             title="Imperfections and global stability",
             status=stability_status,
-            primary_reference="AS/NZS 4600:2018 member and system stability",
+            primary_reference=(
+                "AS/NZS 4600:2005 incorporating Amendment No. 1"
+            ),
             supplemental_references=["SCI P399 Sections 7.2–7.8"],
             purpose=(
                 "Compare first-order elastic and iterative P-Delta response for the "
@@ -3154,7 +3631,9 @@ def _certification_evidence(
             stage_id="cross_section",
             title="Cross-section verification",
             status=cross_section_status,
-            primary_reference="AS/NZS 4600:2018 cross-section resistance",
+            primary_reference=(
+                "AS/NZS 4600:2005 incorporating Amendment No. 1"
+            ),
             supplemental_references=["SCI P399 Section 8.1"],
             purpose="Check classification/effective properties and governing force interactions.",
             inputs=(
@@ -3203,7 +3682,9 @@ def _certification_evidence(
             stage_id="member_stability",
             title="Member stability",
             status=member_stability_status,
-            primary_reference="AS/NZS 4600:2018 member buckling and restraint",
+            primary_reference=(
+                "AS/NZS 4600:2005 incorporating Amendment No. 1"
+            ),
             supplemental_references=["SCI P399 Sections 8.2–8.4"],
             purpose="Verify buckling and axial-bending interaction on restraint-defined segments.",
             inputs=(
@@ -3252,7 +3733,9 @@ def _certification_evidence(
             stage_id="bracing",
             title="Bracing and restraint",
             status=bracing_status,
-            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            primary_reference=(
+                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
+            ),
             supplemental_references=["SCI P399 Section 9"],
             purpose="Trace restraint forces and stiffness to a complete resisting system.",
             assumptions=[
@@ -3371,7 +3854,9 @@ def _certification_evidence(
             stage_id="connections",
             title="Connections and bases",
             status=connection_status,
-            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            primary_reference=(
+                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
+            ),
             supplemental_references=["SCI P399 Section 11"],
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
@@ -3553,7 +4038,9 @@ def _certification_evidence(
             stage_id="decision",
             title="Evidence and order decision",
             status="blocked",
-            primary_reference="NCC 2022 A5G3 evidence of suitability and H1P1",
+            primary_reference=(
+                "NCC 2022 Amendment 2, A5G3 evidence of suitability and H1P1"
+            ),
             supplemental_references=["SCI P399 complete verification process"],
             purpose="Prevent a green design/order decision while required stages are incomplete.",
             assumptions=[
@@ -3625,7 +4112,7 @@ def _certification_evidence(
             id="stability",
             order=5,
             label="Global stability",
-            primary_reference="AS/NZS 4600:2018 stability",
+            primary_reference="AS/NZS 4600:2005+A1 stability",
             supplemental_references=["SCI P399 §§7.2–7.8"],
             status=stability_status,
             summary=(
@@ -3655,7 +4142,7 @@ def _certification_evidence(
             id="cross_section",
             order=6,
             label="Cross-section",
-            primary_reference="AS/NZS 4600:2018 cross-section resistance",
+            primary_reference="AS/NZS 4600:2005+A1 cross-section resistance",
             supplemental_references=["SCI P399 §8.1"],
             status=cross_section_status,
             summary=(
@@ -3678,7 +4165,7 @@ def _certification_evidence(
             id="member_stability",
             order=7,
             label="Member stability",
-            primary_reference="AS/NZS 4600:2018 member stability",
+            primary_reference="AS/NZS 4600:2005+A1 member stability",
             supplemental_references=["SCI P399 §§8.2–8.4"],
             status=member_stability_status,
             summary=(
@@ -3691,7 +4178,7 @@ def _certification_evidence(
                     f"{sum(check.status == 'fail' for check in member_stability_checks)} "
                     "fail, "
                     f"{sum(check.status == 'unsupported' for check in member_stability_checks)} "
-                    "need restraint and/or distortional-buckling evidence."
+                    "have unsupported off-axis actions."
                 )
             ),
             sheet_ids=["sheet-au-member-stability"],
@@ -3701,7 +4188,9 @@ def _certification_evidence(
             id="bracing",
             order=8,
             label="Bracing/restraint",
-            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            primary_reference=(
+                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
+            ),
             supplemental_references=["SCI P399 §9"],
             status=bracing_status,
             summary=(
@@ -3719,7 +4208,9 @@ def _certification_evidence(
             id="connections",
             order=9,
             label="Connections/bases",
-            primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+            primary_reference=(
+                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
+            ),
             supplemental_references=["SCI P399 §11"],
             status=connection_status,
             summary=(
@@ -3798,7 +4289,7 @@ def _australian_certification_readiness(
     basis = capture.design_basis
     basis_missing: list[str] = []
     if basis is None or basis.framework_id != "AU-NCC-2022":
-        basis_missing.append("NCC 2022 Australian primary framework")
+        basis_missing.append("NCC 2022 Amendment 2 Australian primary framework")
     if basis is None or not basis.building_classification:
         basis_missing.append("NCC building classification")
     if basis is None or not basis.importance_level:
@@ -3828,7 +4319,9 @@ def _australian_certification_readiness(
         order=1,
         label="Project and NCC basis",
         status="pass" if not basis_missing else "blocked",
-        primary_reference="NCC 2022 A6, H1 and Housing Provisions 2.2",
+        primary_reference=(
+            "NCC 2022 Amendment 2, A6, H1 and Housing Provisions 2.2"
+        ),
         summary=(
             "NCC classification, importance, design life and project standards are recorded."
             if not basis_missing
@@ -3889,7 +4382,7 @@ def _australian_certification_readiness(
         order=4,
         label="System stability",
         status=stages_by_id["stability"].status,
-        primary_reference="AS/NZS 4600:2018 stability requirements",
+        primary_reference="AS/NZS 4600:2005+A1 stability requirements",
         summary=stages_by_id["stability"].summary,
         stage_ids=["stability"],
     )
@@ -3898,16 +4391,14 @@ def _australian_certification_readiness(
         order=5,
         label="Member resistance and stability",
         status=combined_status(["cross_section", "member_stability"]),
-        primary_reference="AS/NZS 4600:2018 cold-formed steel design",
+        primary_reference="AS/NZS 4600:2005+A1 cold-formed steel design",
         summary=(
             f"Cross-section: {stages_by_id['cross_section'].status}; member stability: "
             f"{stages_by_id['member_stability'].status}."
         ),
         stage_ids=["cross_section", "member_stability"],
     )
-    tension_ready = all(
-        check.status == "pass" for check in tension_member_checks
-    )
+    tension_ready = all(check.status == "pass" for check in tension_member_checks)
     load_path_status = combined_status(["bracing", "connections"])
     load_path_gate = CertificationGate(
         id="load_path",
@@ -3920,7 +4411,9 @@ def _australian_certification_readiness(
             if load_path_status == "fail"
             else "blocked"
         ),
-        primary_reference="NCC Housing Provisions 2.2; AS/NZS 4600:2018",
+        primary_reference=(
+            "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
+        ),
         summary=(
             "Bracing and connection resistance form a verified load path to ground."
             if load_path_status == "pass" and tension_ready
@@ -3958,7 +4451,9 @@ def _australian_certification_readiness(
         order=8,
         label="Evidence and engineering decision",
         status="pass" if technical_ready else "blocked",
-        primary_reference="NCC 2022 A5G3 evidence of suitability",
+        primary_reference=(
+            "NCC 2022 Amendment 2, A5G3 evidence of suitability"
+        ),
         summary=(
             "The technical gates support preparation of a certificate for engineer sign-off."
             if technical_ready
@@ -4053,9 +4548,7 @@ def _generate_p399_nodal_loads(
         return []
 
     model.analyze_linear(check_statics=False, log=False)
-    topology_nodes = {
-        str(node["id"]): node for node in nodes_by_topology.values()
-    }
+    topology_nodes = {str(node["id"]): node for node in nodes_by_topology.values()}
     members_by_component: dict[str, list[Any]] = {}
     for declaration in analysis.members:
         members_by_component.setdefault(declaration.component_id, []).append(
@@ -4122,12 +4615,8 @@ def _generate_p399_nodal_loads(
                 )
                 generated_loads.append(
                     NodalLoad(
-                        id=(
-                            f"p399:{case_id}:{component_id}:{eaves_node_id}"
-                        ),
-                        label=(
-                            f"P399 {action_label} at {component_id} column top"
-                        ),
+                        id=(f"p399:{case_id}:{component_id}:{eaves_node_id}"),
+                        label=(f"P399 {action_label} at {component_id} column top"),
                         node_id=eaves_node_id,
                         case_id=case_id,
                         force=force,
@@ -5078,6 +5567,8 @@ def solve_project_structural(
     reaction_values: list[NodeReaction] = []
     reaction_force_sum = [0.0, 0.0, 0.0]
     reaction_moment_sum = [0.0, 0.0, 0.0]
+    reaction_force_absolute_sum = [0.0, 0.0, 0.0]
+    reaction_moment_absolute_sum = [0.0, 0.0, 0.0]
     for node in nodes_by_topology.values():
         restraints = node["restraints"]
         if not any(restraints.values()):
@@ -5103,7 +5594,11 @@ def solve_project_structural(
         )
         _add(reaction_force_sum, force)
         _add(reaction_moment_sum, moment)
-        _add(reaction_moment_sum, _cross(node["position"], force))
+        reaction_force_moment = _cross(node["position"], force)
+        _add(reaction_moment_sum, reaction_force_moment)
+        _add_absolute(reaction_force_absolute_sum, force)
+        _add_absolute(reaction_moment_absolute_sum, moment)
+        _add_absolute(reaction_moment_absolute_sum, reaction_force_moment)
 
     # Audit the exact global action vector assembled by PyNite. Reconstructing
     # distributed member actions from the declarations can diverge from the
@@ -5115,6 +5610,8 @@ def solve_project_structural(
     ).reshape(-1)
     applied_force_sum = [0.0, 0.0, 0.0]
     applied_moment_sum = [0.0, 0.0, 0.0]
+    applied_force_absolute_sum = [0.0, 0.0, 0.0]
+    applied_moment_absolute_sum = [0.0, 0.0, 0.0]
     for solved_node in model.nodes.values():
         dof = solved_node.ID * 6
         force = Vector3(
@@ -5140,7 +5637,11 @@ def solve_project_structural(
             )
         _add(applied_force_sum, force)
         _add(applied_moment_sum, moment)
-        _add(applied_moment_sum, _cross(position, force))
+        applied_force_moment = _cross(position, force)
+        _add(applied_moment_sum, applied_force_moment)
+        _add_absolute(applied_force_absolute_sum, force)
+        _add_absolute(applied_moment_absolute_sum, moment)
+        _add_absolute(applied_moment_absolute_sum, applied_force_moment)
 
     force_residual = tuple(
         applied_force_sum[index] + reaction_force_sum[index] for index in range(3)
@@ -5149,17 +5650,15 @@ def solve_project_structural(
         applied_moment_sum[index] + reaction_moment_sum[index] for index in range(3)
     )
     residual = max(abs(value) for value in (*force_residual, *moment_residual))
+    # A signed resultant can be close to zero when large opposing actions are
+    # present. Scale the nonlinear numeric audit by the absolute assembled
+    # action/reaction magnitude so cancellation cannot make the tolerance
+    # arbitrarily stricter than the solved model's force scale.
     equilibrium_scale = max(
-        (
-            abs(value)
-            for value in (
-                *applied_force_sum,
-                *applied_moment_sum,
-                *reaction_force_sum,
-                *reaction_moment_sum,
-            )
-        ),
-        default=0.0,
+        *applied_force_absolute_sum,
+        *applied_moment_absolute_sum,
+        *reaction_force_absolute_sum,
+        *reaction_moment_absolute_sum,
     )
     equilibrium_tolerance = (
         RESIDUAL_TOLERANCE
@@ -5411,10 +5910,12 @@ def solve_project_structural(
                 "workbench state authors a traceable distributed or point load."
             ),
             (
-                "Stage 6 uses catalogue effective properties and a versioned "
-                "AS/NZS 4600:2018 cross-section pack. Member/local/distortional/"
-                "lateral-torsional buckling, restraint, connections, anchors, "
-                "concrete, impact, and progressive collapse are not checked."
+                "Stages 6 and 7 use catalogue effective properties and the "
+                "accepted AS/NZS 4600:2005+A1 project-basis pack. Global, "
+                "distortional, and unbraced lateral-torsional member resistance "
+                "are calculated; off-axis member resistance, restraint systems, "
+                "connections, anchors, concrete, impact, and progressive collapse "
+                "remain separate or incomplete checks."
                 if analysis.cross_section_verification is not None
                 else "The displayed bending threshold is an effective-section "
                 "yield reference only. AS/NZS 4600 member capacity, "

@@ -56,6 +56,7 @@ class ConfiguredPortalFrameWindActions(StructuralContract):
     )
     column_role: str = "portal column"
     rafter_role: str = "portal rafter"
+    roof_imposed_receiver_role: str = "roof/ceiling purlin"
     windward_wall_coefficient: float = Field(default=0.8, gt=0)
     leeward_wall_coefficient: float = Field(default=-0.5, lt=0)
     roof_suction_coefficient: float = Field(default=-0.9, lt=0)
@@ -80,7 +81,7 @@ class ConfiguredMemberCriteria(StructuralContract):
 
 
 class ConfiguredCrossSectionVerification(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    pack_id: Literal["as_nzs_4600_2005_a1_ewm"]
     component_ids: list[str] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
@@ -114,7 +115,7 @@ class ConfiguredMemberStabilitySegment(StructuralContract):
 
 
 class ConfiguredMemberStabilityVerification(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    pack_id: Literal["as_nzs_4600_2005_a1_member"]
     segments: list[ConfiguredMemberStabilitySegment] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
 
@@ -143,9 +144,20 @@ class StructuralProjectConfiguration(StructuralContract):
         case_ids = [case.id for case in self.action_cases]
         if len(case_ids) != len(set(case_ids)):
             raise ValueError("action cases contain duplicate IDs")
-        action_roles = [case.role for case in self.action_cases]
-        if len(action_roles) != len(set(action_roles)):
-            raise ValueError("action cases contain duplicate semantic roles")
+        non_imposed_roles = [
+            case.role for case in self.action_cases if case.role != "imposed"
+        ]
+        if len(non_imposed_roles) != len(set(non_imposed_roles)):
+            raise ValueError("non-imposed action cases contain duplicate semantic roles")
+        distributed_roof_actions = [
+            case
+            for case in self.action_cases
+            if case.imposed_profile == "all_other_roofs_distributed"
+        ]
+        if len(distributed_roof_actions) > 1:
+            raise ValueError(
+                "all-other-roofs distributed action requires one semantic case"
+            )
         case_id_set = set(case_ids)
         if (
             sum(criterion.component_id is None for criterion in self.member_criteria)
@@ -166,7 +178,7 @@ class StructuralProjectConfiguration(StructuralContract):
                     f"member load {distributed_load.id!r} references missing case "
                     f"{distributed_load.case_id!r}"
                 )
-        if self.include_self_weight and "permanent" not in action_roles:
+        if self.include_self_weight and "permanent" not in non_imposed_roles:
             raise ValueError("self-weight requires a permanent action case")
         resolve_action_standard_pack(
             self.action_standard_pack_id,

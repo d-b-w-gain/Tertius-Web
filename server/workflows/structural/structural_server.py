@@ -18,6 +18,7 @@ from core.db import get_db
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
 from core.structural.action_standard_packs import (
     ActionRole,
+    ImposedActionProfile,
     StructuralActionCase,
     resolve_action_standard_pack,
 )
@@ -34,9 +35,11 @@ from core.structural.contracts import (
     LoadCombination,
     MemberDistributedLoad,
     MemberPointLoad,
+    MemberRestraintCandidateDefinition,
     MemberStabilitySegmentDefinition,
     MemberStabilityVerificationDefinition,
     ProjectStructuralCapture,
+    RestraintConfigurationIdentity,
     Restraints,
     SectionCatalogReference,
     SectionProperties,
@@ -50,6 +53,7 @@ from core.structural.contracts import (
 )
 from core.structural.project_configuration import (
     ConfiguredMemberDistributedLoad,
+    ConfiguredMemberPointLoad,
     StructuralConfigurationRevisionResponse,
     StructuralProjectConfiguration,
     fixed_restraints,
@@ -86,6 +90,9 @@ app = FastAPI(
     title="Tertius Structural Design Workbench",
     dependencies=[Depends(require_structural_workbench)],
 )
+
+
+_ALL_OTHER_ROOFS_CONCENTRATED_ACTION_KN = 1.4
 
 
 class WindSiteRequest(BaseModel):
@@ -203,6 +210,12 @@ def _capture_from_structural_projection(
                 label=str(joint["connection_id"]),
                 from_component_id=connected_ids[0],
                 to_component_id=connected_ids[1],
+                component_ports={
+                    str(port["component_id"]): str(port.get("port") or "")
+                    for port in joint.get("ports", [])
+                    if isinstance(port, dict)
+                    and port.get("component_id") in connected_ids
+                },
                 connector_component_ids=[
                     str(component_id)
                     for component_id in joint.get("connector_component_ids", [])
@@ -345,6 +358,266 @@ def _member_length(member: dict) -> float:
     return float(dist(start, end))
 
 
+_PRIMARY_RESTRAINT_ROLE_PAIRS: dict[str, frozenset[str]] = {
+    "portal rafter": frozenset(
+        {
+            "roof/ceiling purlin",
+            "left roof-plane tension cross brace",
+            "right roof-plane tension cross brace",
+        }
+    ),
+    "portal column": frozenset(
+        {
+            "wall top track",
+            "wall bottom track",
+            "long-wall tension cross brace",
+        }
+    ),
+}
+
+
+def _node_key_connection_ids(node_key: str | None) -> set[str]:
+    if not node_key or not node_key.startswith("joint:"):
+        return set()
+    return {
+        connection_id
+        for connection_id in node_key.removeprefix("joint:").split("+")
+        if connection_id
+    }
+
+
+def _compiled_anchorage_path(
+    *,
+    start_component_id: str,
+    excluded_connection_id: str,
+    components_by_id: Mapping[str, DesignComponent],
+    joints: Sequence[object],
+) -> tuple[list[str], list[str], str | None]:
+    """Trace physical topology without treating it as resistance evidence."""
+
+    adjacency: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for raw_joint in joints:
+        if not isinstance(raw_joint, dict):
+            continue
+        connection_id = str(raw_joint.get("connection_id") or "")
+        if not connection_id or connection_id == excluded_connection_id:
+            continue
+        connected_ids = list(
+            dict.fromkeys(
+                str(port["component_id"])
+                for port in raw_joint.get("ports", [])
+                if isinstance(port, dict)
+                and port.get("component_id") in components_by_id
+            )
+        )
+        for index, component_id in enumerate(connected_ids):
+            for other_id in connected_ids[index + 1 :]:
+                adjacency[component_id].append((other_id, connection_id))
+                adjacency[other_id].append((component_id, connection_id))
+
+    queue: deque[tuple[str, list[str], list[str]]] = deque(
+        [(start_component_id, [start_component_id], [])]
+    )
+    visited = {start_component_id}
+    while queue:
+        component_id, component_path, connection_path = queue.popleft()
+        component = components_by_id[component_id]
+        if component.grounded:
+            return component_path, connection_path, component_id
+        for next_id, connection_id in adjacency.get(component_id, []):
+            if next_id in visited:
+                continue
+            visited.add(next_id)
+            queue.append(
+                (
+                    next_id,
+                    [*component_path, next_id],
+                    [*connection_path, connection_id],
+                )
+            )
+    return [start_component_id], [], None
+
+
+def _derive_member_restraint_candidates(
+    projection: Mapping[str, object],
+    *,
+    components: Sequence[DesignComponent],
+    declarations: Sequence[AnalyticalMemberDeclaration],
+) -> list[MemberRestraintCandidateDefinition]:
+    """Locate restraint candidates from compiled parts and physical joints.
+
+    This deliberately derives only topology and identity. A rendered connection is
+    not, by itself, evidence that it has sufficient stiffness, twist restraint,
+    anchorage, or resistance, so no candidate produced here is credited as verified.
+    """
+
+    components_by_id = {component.id: component for component in components}
+    declarations_by_component: dict[str, list[AnalyticalMemberDeclaration]] = (
+        defaultdict(list)
+    )
+    for declaration in declarations:
+        declarations_by_component[declaration.component_id].append(declaration)
+    joints = projection.get("joints")
+    if not isinstance(joints, list):
+        return []
+
+    candidates: list[MemberRestraintCandidateDefinition] = []
+    candidate_ids: set[str] = set()
+    for raw_joint in joints:
+        if not isinstance(raw_joint, dict):
+            continue
+        connection_id = str(raw_joint.get("connection_id") or "")
+        ports = [
+            port
+            for port in raw_joint.get("ports", [])
+            if isinstance(port, dict) and port.get("component_id") in components_by_id
+        ]
+        if not connection_id or len(ports) < 2:
+            continue
+
+        for primary_port in ports:
+            primary_component_id = str(primary_port["component_id"])
+            primary_component = components_by_id[primary_component_id]
+            primary_role = (primary_component.role or "").strip().lower()
+            bracing_roles = _PRIMARY_RESTRAINT_ROLE_PAIRS.get(primary_role)
+            if not bracing_roles:
+                continue
+            for bracing_port in ports:
+                bracing_component_id = str(bracing_port["component_id"])
+                if bracing_component_id == primary_component_id:
+                    continue
+                bracing_component = components_by_id[bracing_component_id]
+                bracing_role = (bracing_component.role or "").strip().lower()
+                if bracing_role not in bracing_roles:
+                    continue
+
+                brace_endpoints: list[Vector3] = []
+                for brace_declaration in declarations_by_component.get(
+                    bracing_component_id, []
+                ):
+                    if connection_id in _node_key_connection_ids(
+                        brace_declaration.start_node_key
+                    ):
+                        brace_endpoints.append(brace_declaration.start)
+                    if connection_id in _node_key_connection_ids(
+                        brace_declaration.end_node_key
+                    ):
+                        brace_endpoints.append(brace_declaration.end)
+                if not brace_endpoints:
+                    continue
+
+                anchorage_components, anchorage_connections, grounded_id = (
+                    _compiled_anchorage_path(
+                        start_component_id=bracing_component_id,
+                        excluded_connection_id=connection_id,
+                        components_by_id=components_by_id,
+                        joints=joints,
+                    )
+                )
+                connector_component_ids = [
+                    str(component_id)
+                    for component_id in raw_joint.get("connector_component_ids", [])
+                    if component_id in components_by_id
+                ]
+                connector_part_numbers = sorted(
+                    {
+                        part_number
+                        for component_id in connector_component_ids
+                        if (part_number := components_by_id[component_id].part_number)
+                    }
+                )
+                for declaration in declarations_by_component.get(
+                    primary_component_id, []
+                ):
+                    endpoint_specs: list[tuple[float, Vector3]] = []
+                    declaration_length = dist(
+                        declaration.start.model_dump().values(),
+                        declaration.end.model_dump().values(),
+                    )
+                    if connection_id in _node_key_connection_ids(
+                        declaration.start_node_key
+                    ):
+                        endpoint_specs.append((0.0, declaration.start))
+                    if connection_id in _node_key_connection_ids(
+                        declaration.end_node_key
+                    ):
+                        endpoint_specs.append((declaration_length, declaration.end))
+                    for distance_m, member_position in endpoint_specs:
+                        brace_position = min(
+                            brace_endpoints,
+                            key=lambda position: dist(
+                                member_position.model_dump().values(),
+                                position.model_dump().values(),
+                            ),
+                        )
+                        axis_separation_m = dist(
+                            member_position.model_dump().values(),
+                            brace_position.model_dump().values(),
+                        )
+                        candidate_id = (
+                            f"derived-restraint:{connection_id}:{declaration.id}"
+                        )
+                        if candidate_id in candidate_ids:
+                            continue
+                        candidate_ids.add(candidate_id)
+                        candidates.append(
+                            MemberRestraintCandidateDefinition(
+                                id=candidate_id,
+                                member_id=declaration.id,
+                                bracing_component_id=bracing_component_id,
+                                connection_id=connection_id,
+                                connector_component_ids=connector_component_ids,
+                                member_position=member_position,
+                                brace_position=brace_position,
+                                distance_m=distance_m,
+                                axis_separation_m=axis_separation_m,
+                                restrains_lateral_translation=True,
+                                restrains_twist=False,
+                                restrained_flange="auto",
+                                demand_model="not_defined",
+                                stiffness_status="unverified",
+                                evidence_status="candidate",
+                                evidence_basis=(
+                                    "Tertius derived this possible lateral-restraint "
+                                    "location from the compiled physical joint between "
+                                    f"{primary_component_id} ({primary_role}) and "
+                                    f"{bracing_component_id} ({bracing_role}). Twist "
+                                    "restraint and effective-flange engagement are not "
+                                    "credited."
+                                ),
+                                capacity_basis=(
+                                    "No verified restraint force, moment, stiffness, or "
+                                    "connection resistance is attached to this rendered "
+                                    "configuration."
+                                ),
+                                provenance=(
+                                    "Compiled Build123d component axes, registered "
+                                    "physical joint, connector identities, and Tertius "
+                                    "topology traversal."
+                                ),
+                                configuration=RestraintConfigurationIdentity(
+                                    primary_part_number=(primary_component.part_number),
+                                    bracing_part_number=(bracing_component.part_number),
+                                    connector_part_numbers=connector_part_numbers,
+                                ),
+                                anchorage_status="unverified",
+                                anchorage_component_ids=anchorage_components,
+                                anchorage_connection_ids=anchorage_connections,
+                                anchorage_grounded_component_id=grounded_id,
+                                anchorage_basis=(
+                                    "Compiled topology reaches grounded component "
+                                    f"{grounded_id}; connection resistance and "
+                                    "longitudinal anchorage remain unverified."
+                                    if grounded_id is not None
+                                    else "No alternate compiled topology path from this "
+                                    "bracing component reaches a grounded component."
+                                ),
+                            )
+                        )
+    candidates.sort(key=lambda candidate: candidate.id)
+    return candidates
+
+
 def _trace_generated_load_paths(
     components: Sequence[DesignComponent],
     connections: Sequence[DesignConnection],
@@ -466,6 +739,11 @@ def _portal_frame_wind_actions(
         for component_id, role in role_by_component.items()
         if role == configured.rafter_role.strip().lower()
     }
+    roof_imposed_receiver_ids = {
+        component_id
+        for component_id, role in role_by_component.items()
+        if role == configured.roof_imposed_receiver_role.strip().lower()
+    }
 
     def physical_endpoints(component_id: str) -> tuple[Vector3, Vector3]:
         members = members_by_component.get(component_id, [])
@@ -575,24 +853,12 @@ def _portal_frame_wind_actions(
         raise ValueError("portal-frame wind actions require a permanent action case")
 
     def ensure_action_case(
-        *, case_id: str, label: str, role: ActionRole
+        *,
+        case_id: str,
+        label: str,
+        role: ActionRole,
+        imposed_profile: ImposedActionProfile | None = None,
     ) -> StructuralActionCase:
-        existing_by_role = next(
-            (
-                case
-                for case in analysis_configuration.action_cases
-                if case.role == role
-            ),
-            None,
-        )
-        if existing_by_role is not None:
-            if existing_by_role.id != case_id:
-                raise ValueError(
-                    f"Tertius-derived {role!r} action requires stable case ID "
-                    f"{case_id!r}, but the configuration uses "
-                    f"{existing_by_role.id!r}"
-                )
-            return existing_by_role
         existing_by_id = next(
             (
                 case
@@ -602,11 +868,51 @@ def _portal_frame_wind_actions(
             None,
         )
         if existing_by_id is not None:
-            raise ValueError(
-                f"generated action case {case_id!r} conflicts with configured "
-                f"{existing_by_id.role!r} action"
+            if (
+                existing_by_id.role != role
+                or existing_by_id.imposed_profile != imposed_profile
+            ):
+                raise ValueError(
+                    f"generated action case {case_id!r} conflicts with configured "
+                    f"{existing_by_id.role!r} action"
+                )
+            return existing_by_id
+        if role != "imposed":
+            existing_by_role = next(
+                (
+                    case
+                    for case in analysis_configuration.action_cases
+                    if case.role == role
+                ),
+                None,
             )
-        generated = StructuralActionCase(id=case_id, label=label, role=role)
+            if existing_by_role is not None:
+                raise ValueError(
+                    f"Tertius-derived {role!r} action requires stable case ID "
+                    f"{case_id!r}, but the configuration uses "
+                    f"{existing_by_role.id!r}"
+                )
+        elif imposed_profile == "all_other_roofs_distributed":
+            existing_distributed = next(
+                (
+                    case
+                    for case in analysis_configuration.action_cases
+                    if case.imposed_profile == imposed_profile
+                ),
+                None,
+            )
+            if existing_distributed is not None:
+                raise ValueError(
+                    "Tertius-derived distributed roof action requires stable case ID "
+                    f"{case_id!r}, but the configuration uses "
+                    f"{existing_distributed.id!r}"
+                )
+        generated = StructuralActionCase(
+            id=case_id,
+            label=label,
+            role=role,
+            imposed_profile=imposed_profile,
+        )
         analysis_configuration.action_cases.append(generated)
         return generated
 
@@ -614,28 +920,62 @@ def _portal_frame_wind_actions(
         case_id="roof-imposed",
         label="R2 roof imposed action",
         role="imposed",
+        imposed_profile="all_other_roofs_distributed",
+    )
+    event_specs: tuple[
+        tuple[str, str, str, ActionRole, ActionRole, ActionRole, ActionRole], ...
+    ] = (
+        (
+            "serviceability",
+            "sls",
+            "Serviceability",
+            "wind_serviceability_positive_x",
+            "wind_serviceability_negative_x",
+            "wind_serviceability_positive_y",
+            "wind_serviceability_negative_y",
+        ),
+        (
+            "ultimate",
+            "uls",
+            "Ultimate",
+            "wind_ultimate_positive_x",
+            "wind_ultimate_negative_x",
+            "wind_ultimate_positive_y",
+            "wind_ultimate_negative_y",
+        ),
     )
     wind_cases = {
-        "positive_x": ensure_action_case(
-            case_id="wind-plus-x",
-            label="Transverse wind +X",
-            role="wind_positive_x",
-        ),
-        "negative_x": ensure_action_case(
-            case_id="wind-minus-x",
-            label="Transverse wind -X",
-            role="wind_negative_x",
-        ),
-        "positive_y": ensure_action_case(
-            case_id="wind-plus-y",
-            label="Longitudinal wind +Y",
-            role="wind_positive_y",
-        ),
-        "negative_y": ensure_action_case(
-            case_id="wind-minus-y",
-            label="Longitudinal wind -Y",
-            role="wind_negative_y",
-        ),
+        event: {
+            "positive_x": ensure_action_case(
+                case_id=f"wind-{case_prefix}-plus-x",
+                label=f"{event_label} transverse wind +X",
+                role=positive_x_role,
+            ),
+            "negative_x": ensure_action_case(
+                case_id=f"wind-{case_prefix}-minus-x",
+                label=f"{event_label} transverse wind -X",
+                role=negative_x_role,
+            ),
+            "positive_y": ensure_action_case(
+                case_id=f"wind-{case_prefix}-plus-y",
+                label=f"{event_label} longitudinal wind +Y",
+                role=positive_y_role,
+            ),
+            "negative_y": ensure_action_case(
+                case_id=f"wind-{case_prefix}-minus-y",
+                label=f"{event_label} longitudinal wind -Y",
+                role=negative_y_role,
+            ),
+        }
+        for (
+            event,
+            case_prefix,
+            event_label,
+            positive_x_role,
+            negative_x_role,
+            positive_y_role,
+            negative_y_role,
+        ) in event_specs
     }
 
     raw_loads: list[dict[str, object]] = []
@@ -694,8 +1034,14 @@ def _portal_frame_wind_actions(
             ),
         )
         for case_id, wind_sign in (
-            (wind_cases["positive_x"].id, 1.0),
-            (wind_cases["negative_x"].id, -1.0),
+            *(
+                (wind_cases[event]["positive_x"].id, 1.0)
+                for event in ("serviceability", "ultimate")
+            ),
+            *(
+                (wind_cases[event]["negative_x"].id, -1.0)
+                for event in ("serviceability", "ultimate")
+            ),
         ):
             for column_index, component_id in enumerate(columns):
                 is_windward = (wind_sign > 0 and column_index == 0) or (
@@ -783,15 +1129,75 @@ def _portal_frame_wind_actions(
                 provenance=(
                     "Tertius AS/NZS 1170.1:2002 Table 3.2 R2 working formula: "
                     "q = max(1.8/A + 0.12, 0.25) kPa; A is the compiled "
-                    "member plan tributary area. Concentrated roof action requires "
-                    "a separate local member check."
+                    "member plan tributary area."
                 ),
             )
 
+    if not roof_imposed_receiver_ids:
+        analysis_configuration.design_basis.standards[
+            "permanent_and_imposed_actions"
+        ] = (
+            "AS/NZS 1170.1:2002 including Amendments 1 and 2 — concentrated "
+            "roof-action receiver missing"
+        )
+        action_warnings = [
+            "The concentrated roof action was not generated because no compiled "
+            f"member has role {configured.roof_imposed_receiver_role!r}."
+        ]
+    else:
+        action_warnings = []
+        existing_load_ids = {load.id for load in analysis_configuration.member_loads}
+        for component_id in sorted(roof_imposed_receiver_ids):
+            start, end = physical_endpoints(component_id)
+            member_length = dist(
+                start.model_dump().values(), end.model_dump().values()
+            )
+            case_id = f"roof-concentrated:{component_id}"
+            point_load_id = f"tertius:{case_id}:midspan"
+            if point_load_id in existing_load_ids:
+                raise ValueError(
+                    f"configured member load {point_load_id!r} uses a reserved "
+                    "Tertius-derived roof-action identity"
+                )
+            concentrated_case = ensure_action_case(
+                case_id=case_id,
+                label=f"1.4 kN concentrated roof action on {component_id}",
+                role="imposed",
+                imposed_profile="all_other_roofs_concentrated",
+            )
+            analysis_configuration.member_loads.append(
+                ConfiguredMemberPointLoad(
+                    id=point_load_id,
+                    label=f"Concentrated roof action on {component_id}",
+                    component_id=component_id,
+                    case_id=concentrated_case.id,
+                    distance_m=member_length / 2.0,
+                    force=Vector3(
+                        x=0,
+                        y=0,
+                        z=-_ALL_OTHER_ROOFS_CONCENTRATED_ACTION_KN,
+                    ),
+                    provenance=(
+                        "Tertius AS/NZS 1170.1:2002 Table 3.2 all-other-roofs "
+                        "concentrated action. Each compiled roof receiver is an "
+                        "alternative 1.4 kN midspan case; the AS/NZS 1170.0 action "
+                        "pack prevents simultaneous application with the distributed "
+                        "roof action or another concentrated receiver case."
+                    ),
+                )
+            )
+            existing_load_ids.add(point_load_id)
+
     end_frame_positions = (frame_positions[0], frame_positions[-1])
     for case_id, wind_sign in (
-        (wind_cases["positive_y"].id, 1.0),
-        (wind_cases["negative_y"].id, -1.0),
+        *(
+            (wind_cases[event]["positive_y"].id, 1.0)
+            for event in ("serviceability", "ultimate")
+        ),
+        *(
+            (wind_cases[event]["negative_y"].id, -1.0)
+            for event in ("serviceability", "ultimate")
+        ),
     ):
         for end_index, frame_y in enumerate(end_frame_positions):
             is_windward = (wind_sign > 0 and end_index == 0) or (
@@ -884,25 +1290,57 @@ def _portal_frame_wind_actions(
                     coefficient_status=configured.coefficient_status,
                 )
 
-    overlaid = apply_site_definition(
+    ultimate_overlaid = apply_site_definition(
         {
             "design_basis": analysis_configuration.design_basis.model_dump(
                 mode="python"
             ),
             "wind_action_bases": [],
-            "loads": raw_loads,
+            "loads": [
+                load
+                for load in raw_loads
+                if load.get("case") != "wind"
+                or str(load.get("case_id") or "").startswith("wind-uls-")
+            ],
         },
         site,
+        basis_suffix="-uls",
+        design_event="ultimate",
+    )
+    serviceability_overlaid = apply_site_definition(
+        {
+            "design_basis": analysis_configuration.design_basis.model_dump(
+                mode="python"
+            ),
+            "wind_action_bases": [],
+            "loads": [
+                load
+                for load in raw_loads
+                if load.get("case") == "wind"
+                and str(load.get("case_id") or "").startswith("wind-sls-")
+            ],
+        },
+        site,
+        annual_probability="1/25",
+        basis_suffix="-sls",
+        design_event="serviceability",
     )
     analysis_configuration.design_basis = type(
         configuration.design_basis
-    ).model_validate(overlaid["design_basis"])
+    ).model_validate(ultimate_overlaid["design_basis"])
     wind_bases = [
         StructuralWindActionBasis.model_validate(value)
-        for value in overlaid["wind_action_bases"]
+        for value in (
+            *ultimate_overlaid["wind_action_bases"],
+            *serviceability_overlaid["wind_action_bases"],
+        )
     ]
     surface_loads = [
-        DesignSurfaceLoad.model_validate(value) for value in overlaid["loads"]
+        DesignSurfaceLoad.model_validate(value)
+        for value in (
+            *ultimate_overlaid["loads"],
+            *serviceability_overlaid["loads"],
+        )
     ]
     surface_sources: dict[str, str] = {}
     distributed_configs: list[ConfiguredMemberDistributedLoad] = []
@@ -936,7 +1374,7 @@ def _portal_frame_wind_actions(
         surface_loads,
         distributed_configs,
         surface_sources,
-        [],
+        action_warnings,
     )
 
 
@@ -1136,18 +1574,13 @@ def _p399_stability_actions(
     """Plan solver-generated P399 EHF and NEd/200 NHF action cases."""
 
     roles = {
-        component.id: (component.role or "").strip().lower()
-        for component in components
+        component.id: (component.role or "").strip().lower() for component in components
     }
     column_component_ids = sorted(
-        component_id
-        for component_id, role in roles.items()
-        if role == "portal column"
+        component_id for component_id, role in roles.items() if role == "portal column"
     )
     rafter_component_ids = {
-        component_id
-        for component_id, role in roles.items()
-        if role == "portal rafter"
+        component_id for component_id, role in roles.items() if role == "portal rafter"
     }
     members_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(
         list
@@ -1213,9 +1646,7 @@ def _p399_stability_actions(
     generated_combinations: list[LoadCombination] = []
     directions: list[StabilityDirectionDefinition] = []
     for direction_id, suffix, axis, sign, wind_suffix in direction_specs:
-        design_base = (
-            combinations_by_id.get(f"ULS-1.2G+{wind_suffix}") or default_base
-        )
+        design_base = combinations_by_id.get(f"ULS-1.2G+{wind_suffix}") or default_base
         ehf_case_id = f"p399-ehf-{direction_id}"
         nhf_case_id = f"p399-nhf-{direction_id}"
         stability_combination_id = f"ULS-STABILITY{suffix}"
@@ -1282,19 +1713,12 @@ def _p399_stability_actions(
     for component_id in column_component_ids:
         component_members = members_by_component[component_id]
         endpoint_restraints = [
-            (member.start.z, member.start_restraints)
-            for member in component_members
-        ] + [
-            (member.end.z, member.end_restraints)
-            for member in component_members
-        ]
+            (member.start.z, member.start_restraints) for member in component_members
+        ] + [(member.end.z, member.end_restraints) for member in component_members]
         base_restraints.append(min(endpoint_restraints, key=lambda item: item[0])[1])
-    base_model: Literal[
-        "unspecified", "perfectly_pinned", "rotational_spring", "fixed"
-    ]
+    base_model: Literal["unspecified", "perfectly_pinned", "rotational_spring", "fixed"]
     if all(
-        restraint.rx and restraint.ry and restraint.rz
-        for restraint in base_restraints
+        restraint.rx and restraint.ry and restraint.rz for restraint in base_restraints
     ):
         base_model = "fixed"
     elif all(
@@ -1793,9 +2217,7 @@ def _analysis_from_projection(
 
     if configuration.include_self_weight:
         dead_cases = [
-            case
-            for case in resolved_action_pack.load_cases
-            if case.category == "dead"
+            case for case in resolved_action_pack.load_cases if case.category == "dead"
         ]
         if not dead_cases:
             raise ValueError("self-weight requires a dead load case")
@@ -1834,6 +2256,16 @@ def _analysis_from_projection(
     )
     for declaration in declarations:
         declarations_by_component[declaration.component_id].append(declaration)
+    inferred_restraint_candidates = _derive_member_restraint_candidates(
+        projection,
+        components=components,
+        declarations=declarations,
+    )
+    restraint_candidates_by_member: dict[
+        str, list[MemberRestraintCandidateDefinition]
+    ] = defaultdict(list)
+    for candidate in inferred_restraint_candidates:
+        restraint_candidates_by_member[candidate.member_id].append(candidate)
     (
         p399_load_cases,
         p399_load_combinations,
@@ -1922,6 +2354,20 @@ def _analysis_from_projection(
                             "No configuration-specific distortional-buckling evidence "
                             "has been attached to this compiled segment."
                         ),
+                        start_restraint_candidate_ids=[
+                            candidate.id
+                            for candidate in restraint_candidates_by_member.get(
+                                declaration.id, []
+                            )
+                            if abs(candidate.distance_m) <= 1e-9
+                        ],
+                        end_restraint_candidate_ids=[
+                            candidate.id
+                            for candidate in restraint_candidates_by_member.get(
+                                declaration.id, []
+                            )
+                            if abs(candidate.distance_m - member_length) <= 1e-9
+                        ],
                     )
                 )
         for configured_segment in configured_segments:
@@ -1971,6 +2417,8 @@ def _analysis_from_projection(
                 overlap_start,
                 overlap_end,
             ) in enumerate(overlapping_declarations, start=1):
+                local_start = overlap_start - member_start
+                local_end = overlap_end - member_start
                 segments.append(
                     MemberStabilitySegmentDefinition(
                         id=(
@@ -1979,8 +2427,8 @@ def _analysis_from_projection(
                             else f"{configured_segment.id}:segment:{segment_index:02d}"
                         ),
                         member_id=segment_declaration.id,
-                        start_distance_m=overlap_start - member_start,
-                        end_distance_m=overlap_end - member_start,
+                        start_distance_m=local_start,
+                        end_distance_m=local_end,
                         minor_axis_effective_length_factor=(
                             configured_segment.minor_axis_effective_length_factor
                         ),
@@ -1998,12 +2446,32 @@ def _analysis_from_projection(
                         distortional_buckling_basis=(
                             configured_segment.distortional_buckling_basis
                         ),
+                        start_restraint_candidate_ids=[
+                            candidate.id
+                            for candidate in restraint_candidates_by_member.get(
+                                segment_declaration.id, []
+                            )
+                            if abs(candidate.distance_m - local_start) <= 1e-9
+                        ],
+                        end_restraint_candidate_ids=[
+                            candidate.id
+                            for candidate in restraint_candidates_by_member.get(
+                                segment_declaration.id, []
+                            )
+                            if abs(candidate.distance_m - local_end) <= 1e-9
+                        ],
                     )
                 )
+        active_member_ids = {segment.member_id for segment in segments}
         member_stability_verification = MemberStabilityVerificationDefinition(
             pack_id=configured_member_stability.pack_id,
             combination_ids=ultimate_combination_ids,
             segments=segments,
+            restraint_candidates=[
+                candidate
+                for candidate in inferred_restraint_candidates
+                if candidate.member_id in active_member_ids
+            ],
             off_axis_tolerance=configured_member_stability.off_axis_tolerance,
         )
 

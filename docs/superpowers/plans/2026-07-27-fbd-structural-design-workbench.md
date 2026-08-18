@@ -188,19 +188,28 @@ and result artifacts consumed by the workbench and calculation reports.
   assessment, and first-/second-order decision to the solver adapter.
 - [ ] Port and independently verify the applicable FBD cross-section/member
   calculations into a versioned Australian calculation pack.
-- [ ] Model restraint segments, load reversal, purlin/girt/batten continuity,
-  opening interruptions, and bracing before activating member pass/fail.
-- [ ] Port connection, base, anchor, concrete, and serviceability checks with
-  the correct responsibility and evidence boundaries.
+- [x] Derive restraint candidate locations and topology-to-ground paths from
+  compiled purlin/rafter, longitudinal-member/column, and brace joints without
+  separate design-file member/restraint lists.
+- [ ] Verify restraint twist control, effective-flange engagement, stiffness,
+  capacity, load reversal, opening interruptions, and anchorage before
+  activating member pass/fail.
+- [x] Envelope ULS actions at every compiled physical joint and retain rendered
+  connector identity even when no resistance evidence is available.
+- [ ] Port connection, base, anchor, concrete resistance and remaining
+  serviceability checks with the correct responsibility and evidence
+  boundaries.
 
-Action-pipeline evidence (2026-08-17): the Tertius-owned working action pack now
-derives the R2 roof imposed action, transverse and longitudinal wind in both
-directions, stabilizing/destabilizing ULS wind combinations, and four-direction
+Action-pipeline evidence (2026-08-17): the Tertius-owned, source-digested
+AS/NZS 1170.0 pack derives the R2 roof imposed action, distinct 1-in-25 SLS and
+project-ultimate wind actions in both structural directions, the scoped
+stabilizing/destabilizing combinations, and the supplemental four-direction
 SCI P399 EHF/NHF cases from the compiled mechanical graph and Site basis. The
-current 3x5 shed resolves 14 action cases and 24 combinations with no unavailable
-combinations, generates 48 stability nodal actions, and passes the solver-native
-global equilibrium audit. Licensed coefficient/table verification and the
-separate concentrated roof-action check remain certification boundaries.
+pipeline resolved 18 action cases and 25 combinations before local roof
+alternatives were added. The live shed now has 12 mutually exclusive 1.4 kN
+midspan cases on its compiled roof/ceiling purlins, producing 30 action cases
+and 49 combinations. AS/NZS 1170.2 surface-zone/internal-pressure coefficient
+verification remains a certification boundary.
 
 ### Task 7: Migrate and reconcile the current shed
 
