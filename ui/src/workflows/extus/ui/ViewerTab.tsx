@@ -83,7 +83,33 @@ export type StructuralViewerOverlay = {
     end: { x: number; y: number; z: number };
     compressionFlange: 'positive_local_y' | 'negative_local_y' | 'none';
     status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
+    selected?: boolean;
   }>;
+  restraintMarkers?: Array<{
+    id: string;
+    traceId: string;
+    label: string;
+    position: { x: number; y: number; z: number };
+    direction: { x: number; y: number; z: number };
+    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
+    evidenceStatus: 'verified' | 'missing' | 'mismatch' | 'not_checked';
+    requiredForceKN?: number | null;
+    selected?: boolean;
+  }>;
+  stageFocus?: {
+    id: string;
+    order: number;
+    label: string;
+    status: 'pass' | 'fail' | 'warning' | 'not_checked' | 'unsupported' | 'blocked';
+    summary: string;
+    visualDescription: string;
+    combinationLabel?: string;
+    metrics: Array<{ label: string; value: string }>;
+    legend: Array<{
+      label: string;
+      tone: 'verified' | 'candidate' | 'missing' | 'demand' | 'neutral';
+    }>;
+  };
   maxOffsetMm?: number;
 };
 
@@ -103,6 +129,37 @@ export function structuralRestraintColor(
   if (status === 'missing' || status === 'inadequate') return 0xef4444;
   return 0x64748b;
 }
+
+export function structuralEvidenceColor(
+  status: NonNullable<StructuralViewerOverlay['restraintMarkers']>[number]['evidenceStatus'],
+): number {
+  if (status === 'verified') return 0x22c55e;
+  if (status === 'missing' || status === 'mismatch') return 0xef4444;
+  return 0x94a3b8;
+}
+
+const stageFocusStatusStyle: Record<
+  NonNullable<StructuralViewerOverlay['stageFocus']>['status'],
+  string
+> = {
+  pass: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200',
+  fail: 'border-red-500/60 bg-red-500/15 text-red-200',
+  warning: 'border-amber-500/50 bg-amber-500/10 text-amber-200',
+  not_checked: 'border-slate-600 bg-slate-800/70 text-slate-300',
+  unsupported: 'border-fuchsia-500/50 bg-fuchsia-500/10 text-fuchsia-200',
+  blocked: 'border-red-500/50 bg-red-950/50 text-red-200',
+};
+
+const stageLegendToneStyle: Record<
+  NonNullable<StructuralViewerOverlay['stageFocus']>['legend'][number]['tone'],
+  string
+> = {
+  verified: 'bg-emerald-400',
+  candidate: 'bg-amber-400',
+  missing: 'bg-red-400',
+  demand: 'bg-cyan-400',
+  neutral: 'bg-slate-400',
+};
 
 export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 const COMPONENT_PREVIEW_SIZE = 512;
@@ -1203,6 +1260,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         Math.hypot(force.x, force.y, force.z)
       )),
     );
+    const restraintDemandMarkers = structuralOverlays.flatMap(
+      (overlay) => overlay.restraintMarkers ?? [],
+    );
+    const restraintDemandPeak = Math.max(
+      Number.EPSILON,
+      ...restraintDemandMarkers.map((marker) => marker.requiredForceKN ?? 0),
+    );
 
     for (const node of diagnosticNodes) {
       const nodeGroup = new THREE.Group();
@@ -1304,7 +1368,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         if (length <= Number.EPSILON) continue;
         const color = structuralRestraintColor(restraint.status);
         const segment = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.014, 0.014, length, 10),
+          new THREE.CylinderGeometry(
+            restraint.selected ? 0.022 : 0.011,
+            restraint.selected ? 0.022 : 0.011,
+            length,
+            10,
+          ),
           new THREE.MeshBasicMaterial({
             color,
             transparent: true,
@@ -1358,6 +1427,115 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           marker.userData.tertiusStructuralOverlay = true;
           marker.userData.tertiusStructuralRestraint = restraint;
           memberGroup.add(marker);
+        }
+      }
+
+      for (const demandMarker of structuralOverlay.restraintMarkers ?? []) {
+        const origin = toModelCoordinates(new THREE.Vector3(
+          demandMarker.position.x,
+          demandMarker.position.y,
+          demandMarker.position.z,
+        ));
+        const markerColor = structuralRestraintColor(demandMarker.status);
+        const markerGroup = new THREE.Group();
+        markerGroup.position.copy(origin);
+        markerGroup.name = `${STRUCTURAL_OVERLAY_NAME}Demand-${demandMarker.id}`;
+        markerGroup.userData.tertiusStructuralOverlay = true;
+        markerGroup.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+
+        const core = new THREE.Mesh(
+          new THREE.SphereGeometry(demandMarker.selected ? 0.035 : 0.027, 14, 10),
+          new THREE.MeshBasicMaterial({
+            color: markerColor,
+            transparent: true,
+            opacity: 0.96,
+            depthTest: false,
+          }),
+        );
+        core.renderOrder = 39;
+        core.userData.tertiusStructuralOverlay = true;
+        core.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(core);
+
+        if (demandMarker.evidenceStatus !== 'verified') {
+          const evidenceRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.047, 0.006, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: structuralEvidenceColor(demandMarker.evidenceStatus),
+              transparent: true,
+              opacity: 0.98,
+              depthTest: false,
+            }),
+          );
+          evidenceRing.renderOrder = 40;
+          evidenceRing.userData.tertiusStructuralOverlay = true;
+          evidenceRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(evidenceRing);
+        }
+
+        if (demandMarker.selected) {
+          const selectionRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.061, 0.004, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: 0x22d3ee,
+              transparent: true,
+              opacity: 0.95,
+              depthTest: false,
+            }),
+          );
+          selectionRing.rotation.x = Math.PI / 2;
+          selectionRing.renderOrder = 41;
+          selectionRing.userData.tertiusStructuralOverlay = true;
+          selectionRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(selectionRing);
+        }
+
+        const hitTarget = new THREE.Mesh(
+          new THREE.SphereGeometry(0.075, 10, 8),
+          new THREE.MeshBasicMaterial({
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        hitTarget.userData.tertiusStructuralOverlay = true;
+        hitTarget.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(hitTarget);
+        memberGroup.add(markerGroup);
+
+        const requiredForceKN = demandMarker.requiredForceKN ?? 0;
+        const sourceDirection = new THREE.Vector3(
+          demandMarker.direction.x,
+          demandMarker.direction.y,
+          demandMarker.direction.z,
+        );
+        if (requiredForceKN > Number.EPSILON && sourceDirection.lengthSq() > 0) {
+          const direction = toModelCoordinates(sourceDirection).normalize();
+          const length = 0.10 + 0.20 * Math.min(1, requiredForceKN / restraintDemandPeak);
+          const arrow = new THREE.ArrowHelper(
+            direction,
+            origin,
+            length,
+            0x22d3ee,
+            Math.min(0.065, length * 0.35),
+            Math.min(0.038, length * 0.2),
+          );
+          arrow.name = `${STRUCTURAL_OVERLAY_NAME}RestraintDemand-${demandMarker.id}`;
+          arrow.renderOrder = 38;
+          arrow.traverse((object) => {
+            object.userData.tertiusStructuralOverlay = true;
+            object.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+            object.renderOrder = 38;
+            const material = (object as THREE.Mesh | THREE.Line).material;
+            const materials = Array.isArray(material) ? material : material ? [material] : [];
+            for (const candidate of materials) {
+              candidate.depthTest = false;
+              candidate.transparent = true;
+              candidate.opacity = 0.96;
+            }
+          });
+          memberGroup.add(arrow);
         }
       }
 
@@ -1846,6 +2024,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     return () => window.clearTimeout(timer);
   }, [captureExternalSelectionPreview, externalSelectionKey, onExternalSelectionPreviewChange, sceneGraph]);
 
+  const stageFocus = structuralOverlays?.find((overlay) => overlay.stageFocus)?.stageFocus;
+
   return (
     <div className="flex-1 relative bg-slate-900 flex overflow-hidden">
       
@@ -1861,7 +2041,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
               {projectName}
             </div>
           )}
-          {structuralOverlays?.length ? (
+          {stageFocus ? (
+            <div
+              className={`rounded border px-2 py-0.5 text-xs font-bold ${stageFocusStatusStyle[stageFocus.status]}`}
+              title={stageFocus.summary}
+            >
+              Stage {stageFocus.order} focus · {stageFocus.status.replace('_', ' ')}
+            </div>
+          ) : structuralOverlays?.length ? (
             <div
               className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
               title={structuralOverlays.map((overlay) => overlay.label).join('\n')}
@@ -1911,6 +2098,57 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
             Rotate: {autoRotate ? 'ON' : 'OFF'}
           </button>
         </div>
+        {stageFocus && (
+          <div
+            className={`max-w-4xl rounded border px-3 py-2 ${stageFocusStatusStyle[stageFocus.status]}`}
+            data-testid="structural-stage-focus"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-75">
+                  Stage {stageFocus.order} visual check
+                </div>
+                <div className="mt-0.5 text-sm font-semibold text-slate-100">
+                  {stageFocus.label}
+                </div>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-300">
+                  {stageFocus.visualDescription}
+                </p>
+              </div>
+              {stageFocus.combinationLabel && (
+                <span className="rounded border border-current/30 bg-slate-950/50 px-2 py-1 font-mono text-[9px]">
+                  {stageFocus.combinationLabel}
+                </span>
+              )}
+            </div>
+            <p className="mt-2 text-[10px] leading-relaxed opacity-85">
+              {stageFocus.summary}
+            </p>
+            {stageFocus.metrics.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {stageFocus.metrics.map((metric) => (
+                  <span
+                    key={`${metric.label}-${metric.value}`}
+                    className="rounded border border-current/20 bg-slate-950/45 px-2 py-1 text-[9px]"
+                  >
+                    <span className="opacity-65">{metric.label}</span>{' '}
+                    <span className="font-mono font-semibold text-slate-100">{metric.value}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {stageFocus.legend.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-slate-300">
+                {stageFocus.legend.map((item) => (
+                  <span key={item.label} className="flex items-center gap-1.5">
+                    <span className={`h-2 w-2 rounded-full ${stageLegendToneStyle[item.tone]}`} />
+                    {item.label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         <div className="text-xs text-slate-400" aria-live="polite">
           {loadErrorText || (isModelLoading ? 'Loading model...' : statusText)}
         </div>

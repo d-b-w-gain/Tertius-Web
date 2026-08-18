@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiFetch } from '../../api/client'
 import { useAuth } from '../../auth/AuthProvider'
-import { LatestModelViewer } from '../extus/ui/ViewerTab'
+import {
+  LatestModelViewer,
+  type StructuralViewerOverlay,
+} from '../extus/ui/ViewerTab'
 import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
@@ -16,6 +19,7 @@ import type {
 } from './contracts'
 import { SITE_BASIS_CHANGED_EVENT } from '../site/SiteWorkbench'
 import { StructuralWindBasisPanel } from './StructuralWindBasisPanel'
+import { buildStage8Overlays, buildStructuralStageFocus } from './stageFocus'
 
 type StructuralWorkbenchProps = {
   isActive?: boolean
@@ -71,6 +75,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [selectedMemberId, setSelectedMemberId] = useState('')
   const [selectedCombinationId, setSelectedCombinationId] = useState('')
   const [selectedSheetId, setSelectedSheetId] = useState('')
+  const [activeStageId, setActiveStageId] = useState('')
   const [selectedRestraintTraceId, setSelectedRestraintTraceId] = useState('')
   const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
   const [momentComponent, setMomentComponent] = useState<'resultant' | 'major' | 'minor'>(
@@ -120,6 +125,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
         setSelectedSheetId(nextAnalysis.calculation_sheets?.[0]?.id || '')
+        setActiveStageId(nextAnalysis.calculation_sheets?.[0]?.stage_id || '')
         setMemberEvidenceStage('member_stability')
       } else {
         setAnalysis(null)
@@ -283,7 +289,17 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   ) || analysis?.calculation_sheets?.[0]
   const selectedRestraintTrace = analysis?.member_restraint_traces?.find(
     (trace) => trace.id === selectedRestraintTraceId,
-  )
+  ) || (activeStageId === 'bracing'
+    ? analysis?.member_restraint_traces
+      ?.filter((trace) => (
+        trace.combination_id === selectedCombinationId
+        && trace.status !== 'not_required'
+      ))
+      .sort((left, right) => (
+        (right.required_restraint_force_kN ?? 0)
+        - (left.required_restraint_force_kN ?? 0)
+      ))[0]
+    : undefined)
   const selectedBoundaryCandidateIds = new Set([
     ...(selectedRestraintTrace?.start_restraint_candidate_ids ?? []),
     ...(selectedRestraintTrace?.end_restraint_candidate_ids ?? []),
@@ -321,6 +337,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!trace || !currentAnalysis) return
     setSelectedRestraintTraceId(trace.id)
+    setActiveStageId('bracing')
     setSelectedMemberId(trace.member_id)
     setSelectedVisualNodeId(
       currentAnalysis.members.find(
@@ -329,13 +346,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     setSelectedSheetId(
       currentAnalysis.calculation_sheets?.find(
+        (sheet) => sheet.stage_id === 'bracing',
+      )?.id
+      || currentAnalysis.calculation_sheets?.find(
         (sheet) => sheet.stage_id === 'member_stability',
       )?.id
       || '',
     )
     setDiagramMode('moment')
   }, [analysis])
-  const structuralOverlays = useMemo(() => {
+  const analysisOverlays = useMemo(() => {
     if (!analysis || !activeCombination) return undefined
     const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
     return analysis.member_diagrams
@@ -484,10 +504,58 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
     })
   }, [activeCombination, analysis, diagramMode, momentComponent])
+  const activeStage = analysis?.verification_stages?.find(
+    (stage) => stage.id === activeStageId,
+  )
+  const stageFocus = useMemo(() => (
+    buildStructuralStageFocus(analysis, activeStageId, activeCombination)
+  ), [activeCombination, activeStageId, analysis])
+  const stage8Overlays = useMemo(() => (
+    buildStage8Overlays(
+      analysis,
+      activeStageId,
+      activeCombination?.id,
+      selectedRestraintTraceId,
+      stageFocus,
+    )
+  ), [
+    activeCombination?.id,
+    activeStageId,
+    analysis,
+    selectedRestraintTraceId,
+    stageFocus,
+  ])
+  const structuralOverlays = useMemo<StructuralViewerOverlay[] | undefined>(() => {
+    if (!analysis) return undefined
+    if (activeStageId === 'bracing') return stage8Overlays
+    if (!stageFocus) return analysisOverlays
+    const baseOverlays = analysisOverlays ?? []
+    if (baseOverlays.length === 0) {
+      return [{
+        id: `stage-focus-${stageFocus.id}`,
+        label: `Stage ${stageFocus.order} ${stageFocus.label}`,
+        mode: diagramMode,
+        status: 'not_checked',
+        stations: [],
+        stageFocus,
+      }]
+    }
+    return baseOverlays.map((overlay, index) => (
+      index === 0 ? { ...overlay, stageFocus } : overlay
+    ))
+  }, [
+    activeStageId,
+    analysis,
+    analysisOverlays,
+    diagramMode,
+    stage8Overlays,
+    stageFocus,
+  ])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
   const windActionBases = analysis?.wind_action_bases || capture?.wind_action_bases || []
   const selectVerificationStage = (stageId: string) => {
     if (!analysis) return
+    setActiveStageId(stageId)
     const stage = analysis.verification_stages?.find((candidate) => candidate.id === stageId)
     const sheet = analysis.calculation_sheets?.find(
       (candidate) => stage?.sheet_ids.includes(candidate.id),
@@ -535,6 +603,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectMemberEvidenceStage = (
     stageId: 'cross_section' | 'member_stability',
   ) => {
+    setActiveStageId(stageId)
     setMemberEvidenceStage(stageId)
     const sheet = analysis?.calculation_sheets?.find(
       (candidate) => candidate.stage_id === stageId,
@@ -868,7 +937,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         title={stage.summary}
                         onClick={() => selectVerificationStage(stage.id)}
                         className={`rounded border p-2 text-left ${verificationStyle[stage.status]} ${
-                          selectedCalculationSheet?.stage_id === stage.id
+                          activeStageId === stage.id
                             ? 'ring-1 ring-cyan-300'
                             : ''
                         }`}
@@ -2564,7 +2633,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             isActive={isActive}
             statusTextOverride={
               analysis
-                ? `Active-project model with PyNite ${diagramMode} overlay`
+                ? activeStage
+                  ? `Stage ${activeStage.order} ${activeStage.label} · ${activeStage.status.replace('_', ' ')}`
+                  : `Active-project model with PyNite ${diagramMode} overlay`
                 : 'Active-project model linked to parsed structural declarations'
             }
             externalSelectedNodeIds={selectedRestraintVisualNodeIds}

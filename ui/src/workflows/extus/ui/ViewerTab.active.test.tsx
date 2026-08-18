@@ -5,6 +5,8 @@ import {
   ModelViewerCanvas,
   ViewerTab,
   structuralCheckColor,
+  structuralEvidenceColor,
+  structuralRestraintColor,
 } from './ViewerTab'
 
 const mocks = vi.hoisted(() => ({
@@ -177,6 +179,52 @@ describe('ViewerTab active state', () => {
     expect(structuralCheckColor('pass')).toBe(0x22c55e)
     expect(structuralCheckColor('fail')).toBe(0xef4444)
     expect(structuralCheckColor('not_checked')).toBe(0x94a3b8)
+  })
+
+  it('distinguishes restraint state from missing physical evidence', () => {
+    expect(structuralRestraintColor('verified')).toBe(0x22c55e)
+    expect(structuralRestraintColor('candidate')).toBe(0xf59e0b)
+    expect(structuralEvidenceColor('verified')).toBe(0x22c55e)
+    expect(structuralEvidenceColor('missing')).toBe(0xef4444)
+    expect(structuralEvidenceColor('mismatch')).toBe(0xef4444)
+    expect(structuralEvidenceColor('not_checked')).toBe(0x94a3b8)
+  })
+
+  it('explains the selected structural stage in the viewer HUD', () => {
+    render(
+      <ModelViewerCanvas
+        modelUrl=""
+        getAccessToken={mocks.getAccessToken}
+        statusText="Stage 8 Bracing/restraint"
+        structuralOverlays={[{
+          id: 'stage-focus-bracing',
+          label: 'Stage 8 restraint focus',
+          mode: 'moment',
+          status: 'not_checked',
+          stations: [],
+          stageFocus: {
+            id: 'bracing',
+            order: 8,
+            label: 'Bracing/restraint',
+            status: 'warning',
+            summary: 'One exact product candidate still lacks stiffness and anchorage.',
+            visualDescription: 'Compression-flange restraint and physical evidence.',
+            combinationLabel: 'ULS-WX+ · transverse wind',
+            metrics: [{ label: 'Maximum required', value: '0.268 kN' }],
+            legend: [
+              { label: 'Exact-product candidate', tone: 'candidate' },
+              { label: 'Missing stiffness / anchorage ring', tone: 'missing' },
+            ],
+          },
+        }]}
+      />,
+    )
+
+    expect(screen.getByText('Stage 8 visual check')).toBeInTheDocument()
+    expect(screen.getByText('Bracing/restraint')).toBeInTheDocument()
+    expect(screen.getByText('Compression-flange restraint and physical evidence.')).toBeInTheDocument()
+    expect(screen.getByText('0.268 kN')).toBeInTheDocument()
+    expect(screen.getByText('Missing stiffness / anchorage ring')).toBeInTheDocument()
   })
 
   afterEach(() => {

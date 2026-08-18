@@ -34,6 +34,17 @@ vi.mock('../extus/ui/ViewerTab', () => ({
       nodes?: unknown[]
       reactions?: unknown[]
       restraintSegments?: Array<{ id: string }>
+      restraintMarkers?: Array<{
+        requiredForceKN?: number | null
+        evidenceStatus: string
+      }>
+      stageFocus?: {
+        order: number
+        label: string
+        visualDescription: string
+        metrics: Array<{ label: string; value: string }>
+        legend: Array<{ label: string }>
+      }
     }>
   }) => (
     <div>
@@ -70,6 +81,37 @@ vi.mock('../extus/ui/ViewerTab', () => ({
           0,
         ) || 0
       }
+      {' · '}
+      Stage focus: {structuralOverlays?.[0]?.stageFocus
+        ? `Stage ${structuralOverlays[0].stageFocus.order} · ${structuralOverlays[0].stageFocus.label}`
+        : 'none'}
+      {' · '}
+      Stage visual: {structuralOverlays?.[0]?.stageFocus?.visualDescription || 'none'}
+      {' · '}
+      Stage metrics: {structuralOverlays?.[0]?.stageFocus?.metrics
+        .map((metric) => `${metric.label} ${metric.value}`)
+        .join(', ') || 'none'}
+      {' · '}
+      Stage legend: {structuralOverlays?.[0]?.stageFocus?.legend
+        .map((item) => item.label)
+        .join(', ') || 'none'}
+      {' · '}
+      Demand markers: {structuralOverlays?.reduce(
+        (count, overlay) => count + (overlay.restraintMarkers?.length ?? 0),
+        0,
+      ) || 0}
+      {' · '}
+      Missing evidence markers: {structuralOverlays?.reduce(
+        (count, overlay) => count + (overlay.restraintMarkers
+          ?.filter((marker) => marker.evidenceStatus === 'missing').length ?? 0),
+        0,
+      ) || 0}
+      {' · '}
+      Maximum marker demand: {Math.max(
+        0,
+        ...(structuralOverlays?.flatMap((overlay) => overlay.restraintMarkers
+          ?.map((marker) => marker.requiredForceKN ?? 0) ?? []) ?? []),
+      ).toFixed(4)} kN
       {structuralOverlays?.[0]?.restraintSegments?.[0] && (
         <button
           type="button"
@@ -1180,6 +1222,15 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('Selected 3D restraint trace')).toBeInTheDocument()
     expect(screen.getByText(/2.5% critical flange force/)).toBeInTheDocument()
     expect(screen.getByText('Bracing and restraint')).toBeInTheDocument()
+    expect(screen.getByText(/Stage focus: Stage 8 · Bracing\/restraint/)).toBeInTheDocument()
+    expect(screen.getByText(/Compression-flange restraint segments/)).toBeInTheDocument()
+    expect(screen.getByText(/Physical locations 1/)).toBeInTheDocument()
+    expect(screen.getByText(/Exact products 1/)).toBeInTheDocument()
+    expect(screen.getByText(/AS\/NZS demand 1/)).toBeInTheDocument()
+    expect(screen.getByText(/Missing stiffness \/ anchorage ring/)).toBeInTheDocument()
+    expect(screen.getByText(/Demand markers: 2/)).toBeInTheDocument()
+    expect(screen.getByText(/Missing evidence markers: 2/)).toBeInTheDocument()
+    expect(screen.getByText(/Maximum marker demand: 0\.5486 kN/)).toBeInTheDocument()
   })
 
   it('shows mechanically located restraint candidates that are not yet credited', async () => {

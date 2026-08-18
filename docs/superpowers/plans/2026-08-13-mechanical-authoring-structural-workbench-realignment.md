@@ -628,6 +628,17 @@ the separately rendered shared support-side bolts are members of the same
 physical connection and their resistance, stiffness, and anchored collector
 path are verified; nearby geometry is not credited implicitly.
 
+Completed Stage Focus visual-feedback slice: each verification-stage selection
+now becomes explicit viewer state with its purpose, status, governing
+combination, summary, metrics, and legend shown in the Extus HUD. Stage 8 uses
+a dedicated focused overlay rather than the whole-building moment-ribbon set:
+the governing compression-flange segment is highlighted, physical restraint
+boundaries are clickable, cyan arrows scale with calculated AS/NZS restraint
+demand, exact-product candidates are amber, and missing stiffness or anchorage
+evidence is ringed red. The demand-arrow direction is labelled schematic while
+its magnitude remains calculated evidence. The overlay contract is reusable by
+the remaining stage-specific visual modes.
+
 ### Task 7: Add atomic multi-artifact compile bundles
 
 **Files:** compile messages, worker, result consumer, artifact models/migration,
