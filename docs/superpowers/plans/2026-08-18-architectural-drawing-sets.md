@@ -1,8 +1,9 @@
 # Architectural Drawing Sets Epic Implementation Plan
 
 > **For agentic workers:** Keep these checkboxes current as work lands. Split
-> implementation into focused follow-up PRs; this kickoff PR defines the epic
-> boundary and acceptance gates but does not authorise one monolithic rewrite.
+> implementation into focused slices; this kickoff PR defines the epic boundary
+> and lands layout/export parity plus safe review defaults, but does not
+> authorise one monolithic rewrite.
 
 **Goal:** Evolve Timus from a fixed four-view part-sheet exporter into a
 revision-safe architectural documentation workbench that generates a
@@ -27,10 +28,10 @@ and multi-sheet vector outputs without independently executing project source.
 - Modify: `ui/src/workflows/timus/ui/DraftingTab*.test.tsx`
 - Add: focused PDF/preview parity fixtures
 
-- [ ] Capture the current top/front/side/isometric hidden-line output as a
+- [x] Capture the current top/front/side/isometric hidden-line output as a
   deterministic compatibility fixture.
-- [ ] Add a failing test proving that the selected preview layout is not sent to
-  or honoured by the PDF endpoint.
+- [x] Add a regression test proving that the selected preview layout is sent to
+  and honoured by the PDF endpoint.
 - [ ] Add failing tests for the fixed drawing number, sheet count, revision,
   `NTS`, applicant, checker, and approval-like defaults.
 - [ ] Record current unit, axis, scale, camera, clipping, and tessellation
@@ -93,7 +94,7 @@ and multi-sheet vector outputs without independently executing project source.
 - [ ] Store size, orientation, discipline, revision, status, dates,
   author/checker fields, project data, notes, and revision history.
 - [ ] Replace fixed title-block values with validated project/sheet metadata.
-- [ ] Default new sets to `PRELIMINARY - NOT FOR CONSTRUCTION`; do not default
+- [x] Default new sets to `PRELIMINARY - NOT FOR CONSTRUCTION`; do not default
   to `APPROVED`, a named checker, or certification language.
 - [ ] Support drawing-register generation and accurate `sheet N of M` values.
 - [ ] Version title-block and drawing templates independently of project data.
@@ -109,7 +110,7 @@ and multi-sheet vector outputs without independently executing project source.
 - [ ] Save viewport type, position, crop, orientation, scale, visibility, and
   display style in the drawing contract.
 - [ ] Make browser preview and PDF consume the same drawing definition.
-- [ ] Honour individual/combined layout selections in both preview and export.
+- [x] Honour individual/combined layout selections in both preview and export.
 - [ ] Support multiple independently scaled viewports per sheet.
 - [ ] Verify printed scale numerically in generated PDF coordinates and display
   the actual scale in each viewport/title block.

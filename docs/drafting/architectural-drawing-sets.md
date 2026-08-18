@@ -26,15 +26,18 @@ The present implementation has useful foundations:
 - A4-A0 sheet sizes, projection scale, line visibility, and basic title data;
 - stale-artifact rejection after `design.py` changes.
 
-It is nevertheless a part-view exporter rather than a drawing-set system:
+The first delivery slice makes the saved layout authoritative in preview and
+PDF export, supports either a single enlarged view or the established combined
+four-view sheet, and defaults review output to `PRELIMINARY` and `NOT FOR
+CONSTRUCTION`. It is nevertheless a part-view exporter rather than a
+drawing-set system:
 
-- the backend always exports one sheet with four fixed views;
-- the preview-only layout selection is not part of the PDF request or artifact;
+- the backend still exports only one sheet from a fixed set of four projections;
 - floor plans are top projections, not horizontal cut-plane views;
 - there are no configurable sections, crop regions, category filters, levels,
   dimensions, tags, symbols, hatches, schedules, or linked details;
-- the title block contains fixed drawing, sheet, revision, scale, applicant, and
-  checker values;
+- the title block still contains fixed drawing, sheet, and revision values and
+  has no project, author, checker, issue-date, or multi-sheet register data;
 - the sheet settings are one project-wide record rather than versioned sheet
   and viewport definitions;
 - Timus can still execute source separately instead of consuming all drawing

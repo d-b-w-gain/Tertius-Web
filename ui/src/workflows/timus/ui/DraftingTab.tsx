@@ -12,6 +12,66 @@ import {
 } from '../../shared/polling';
 import { runWithInteractionSpan } from '../../../telemetry';
 
+export type DraftingLayout = 'combined' | 'top' | 'front' | 'side' | 'iso';
+type DraftingViewName = Exclude<DraftingLayout, 'combined'>;
+type DraftingViewRect = { x: number; y: number; width: number; height: number };
+
+const DEFAULT_ISSUE_STATUS = 'PRELIMINARY';
+
+export const formatDraftingScale = (scale: number): string =>
+  scale >= 1 ? `${scale.toString()}:1` : `1:${(1 / scale).toString()}`;
+
+export const getDraftingViewLayout = (
+  layout: DraftingLayout,
+  sheetWidth: number,
+  sheetHeight: number,
+): Partial<Record<DraftingViewName, DraftingViewRect>> => {
+  if (layout !== 'combined') {
+    return {
+      [layout]: { x: 20, y: 30, width: sheetWidth - 40, height: sheetHeight - 75 },
+    };
+  }
+
+  const width = (sheetWidth - 60) / 2;
+  const height = (sheetHeight - 60) / 2;
+  return {
+    top: { x: 20, y: 30, width, height },
+    iso: { x: 40 + width, y: 30, width, height },
+    front: { x: 20, y: 30 + height, width, height },
+    side: { x: 40 + width, y: 30 + height, width, height },
+  };
+};
+
+export const buildDraftingPdfUrl = (
+  serverUrl: string,
+  activeProject: string,
+  options: {
+    title: string;
+    issueStatus: string;
+    showIssueMarkup: boolean;
+    showHiddenLines: boolean;
+    scale: number;
+    sheetSize: string;
+    layout: DraftingLayout;
+  },
+): string => {
+  const params = new URLSearchParams({
+    title: options.title,
+    stamp: options.issueStatus,
+    redline: options.showIssueMarkup.toString(),
+    hidden_lines: options.showHiddenLines.toString(),
+    scale: options.scale.toString(),
+    size: options.sheetSize,
+    layout: options.layout,
+  });
+  return `${serverUrl}/projects/${encodeURIComponent(activeProject)}/drafting.pdf?${params.toString()}`;
+};
+
+const toDraftingLayout = (value: unknown): DraftingLayout =>
+  value === 'top' || value === 'front' || value === 'side' || value === 'iso'
+    ? value
+    : 'combined';
+
 const scalePresets = [
   { value: 10, label: '10:1 (Enlarged 10x)' },
   { value: 5, label: '5:1 (Enlarged 5x)' },
@@ -60,12 +120,12 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   
   // Customizer State
   const [title, setTitle] = useState('UNTITLED PART');
-  const [stampText, setStampText] = useState('APPROVED');
+  const [stampText, setStampText] = useState(DEFAULT_ISSUE_STATUS);
   const [showRedline, setShowRedline] = useState(true);
   const [showHiddenLines, setShowHiddenLines] = useState(false);
   const [scale, setScale] = useState(1.0);
   const [sheetSize, setSheetSize] = useState('A4');
-  const [selectedView, setSelectedView] = useState('combined');
+  const [selectedView, setSelectedView] = useState<DraftingLayout>('combined');
   
   const [debouncedScale, setDebouncedScale] = useState(1.0);
   const [debouncedTitle, setDebouncedTitle] = useState('UNTITLED PART');
@@ -115,11 +175,12 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     const loadSettings = async () => {
       setSettingsLoaded(false);
       setTitle(activeProject.toUpperCase());
-      setStampText('APPROVED');
+      setStampText(DEFAULT_ISSUE_STATUS);
       setShowRedline(true);
       setShowHiddenLines(false);
       setScale(1.0);
       setSheetSize('A4');
+      setSelectedView('combined');
 
       try {
         const res = await apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken);
@@ -131,6 +192,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
         if (parsed.show_hidden_lines !== undefined) setShowHiddenLines(parsed.show_hidden_lines);
         if (parsed.scale !== undefined) setScale(toSafeScale(parsed.scale));
         if (parsed.sheet_size) setSheetSize(parsed.sheet_size);
+        setSelectedView(toDraftingLayout(parsed.layout));
       } catch (e) {
         console.error("Failed to load Timus settings");
       } finally {
@@ -152,7 +214,8 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
       show_redline: showRedline,
       show_hidden_lines: showHiddenLines,
       scale,
-      sheet_size: sheetSize
+      sheet_size: sheetSize,
+      layout: selectedView,
     };
     apiFetch(`${serverUrl}/projects/${activeProject}/settings`, getAccessToken, {
       method: 'PUT',
@@ -160,7 +223,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
     }).catch(() => {
       console.error("Failed to save Timus settings");
     });
-  }, [activeProject, settingsLoaded, title, stampText, showRedline, showHiddenLines, scale, sheetSize, serverUrl, getAccessToken]);
+  }, [activeProject, settingsLoaded, title, stampText, showRedline, showHiddenLines, scale, sheetSize, selectedView, serverUrl, getAccessToken]);
 
   useEffect(() => {
     if (!activeProject || !isActive) return;
@@ -210,9 +273,18 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
       workflow: 'timus',
       artifact_type: 'drafting_pdf',
       sheet_size: sheetSize,
+      layout: selectedView,
     }, async () => {
       try {
-        const url = `${serverUrl}/projects/${activeProject}/drafting.pdf?title=${encodeURIComponent(debouncedTitle)}&stamp=${encodeURIComponent(stampText)}&redline=${showRedline}&hidden_lines=${showHiddenLines}&scale=${debouncedScale}&size=${sheetSize}`;
+        const url = buildDraftingPdfUrl(serverUrl, activeProject, {
+          title: debouncedTitle,
+          issueStatus: stampText,
+          showIssueMarkup: showRedline,
+          showHiddenLines,
+          scale: debouncedScale,
+          sheetSize,
+          layout: selectedView,
+        });
         const res = await apiFetch(url, getAccessToken);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -266,7 +338,7 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
             <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Layout</label>
             <select
               value={selectedView}
-              onChange={(e) => setSelectedView(e.target.value)}
+              onChange={(e) => setSelectedView(toDraftingLayout(e.target.value))}
               className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
             >
               <option value="combined">Combined (4 Views)</option>
@@ -301,18 +373,18 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
           </div>
 
           <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Redline Stamp Code</label>
+            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Issue Status</label>
             <input
               type="text"
               value={stampText}
-              onChange={(e) => setStampText(e.target.value.substring(0, 16).toUpperCase())}
+              onChange={(e) => setStampText(e.target.value.substring(0, 32).toUpperCase())}
               className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
-              placeholder="e.g. APPROVED"
+              placeholder="e.g. PRELIMINARY"
             />
           </div>
 
           <div className="flex items-center justify-between border-t border-slate-900 pt-4">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Show Redline Markups</span>
+            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Highlight Issue Status</span>
             <button
               onClick={() => setShowRedline(!showRedline)}
               className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${showRedline ? 'bg-orange-500' : 'bg-slate-800'}`}
@@ -412,14 +484,13 @@ const DraftingCanvas: React.FC<{
   activeProject: string;
   getAccessToken: () => Promise<string>;
   isActive: boolean;
-  selectedView: string;
+  selectedView: DraftingLayout;
 }> = ({ sheetSize, title, stampText, showRedline, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView }) => {
   const formats: Record<string, [number, number]> = {
     "A4": [297, 210], "A3": [420, 297], "A2": [594, 420], "A1": [841, 594], "A0": [1189, 841]
   };
   const [w, h] = formats[sheetSize] || [297, 210];
-  const view_w = (w - 60) / 2;
-  const view_h = (h - 60) / 2;
+  const viewLayout = getDraftingViewLayout(selectedView, w, h);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -459,10 +530,10 @@ const DraftingCanvas: React.FC<{
     return () => { mounted = false; clearInterval(interval); };
   }, [serverUrl, activeProject, isActive]);
 
-  const stateRef = useRef({ w, h, view_w, view_h, scale, selectedView });
+  const stateRef = useRef({ w, h, scale, selectedView });
   useEffect(() => {
-    stateRef.current = { w, h, view_w, view_h, scale, selectedView };
-  }, [w, h, view_w, view_h, scale, selectedView]);
+    stateRef.current = { w, h, scale, selectedView };
+  }, [w, h, scale, selectedView]);
 
   // Three.js renderer (Only initialize ONCE per model)
   useEffect(() => {
@@ -606,10 +677,16 @@ const DraftingCanvas: React.FC<{
           renderer.render(scene, cam);
       };
       
-      if (s.selectedView === 'combined' || s.selectedView === 'top') renderView(topCam, 20, 30, s.view_w, s.view_h);
-      if (s.selectedView === 'combined' || s.selectedView === 'front') renderView(frontCam, 20, 30 + s.view_h, s.view_w, s.view_h);
-      if (s.selectedView === 'combined' || s.selectedView === 'side') renderView(sideCam, 40 + s.view_w, 30 + s.view_h, s.view_w, s.view_h);
-      if (s.selectedView === 'combined' || s.selectedView === 'iso') renderView(isoCam, 40 + s.view_w, 30, s.view_w, s.view_h);
+      const cameras: Record<DraftingViewName, THREE.Camera> = {
+        top: topCam,
+        front: frontCam,
+        side: sideCam,
+        iso: isoCam,
+      };
+      const layout = getDraftingViewLayout(s.selectedView, s.w, s.h);
+      (Object.entries(layout) as [DraftingViewName, DraftingViewRect][]).forEach(([viewName, rect]) => {
+        renderView(cameras[viewName], rect.x, rect.y, rect.width, rect.height);
+      });
     };
     
     // Draw once immediately
@@ -734,37 +811,32 @@ const DraftingCanvas: React.FC<{
           <text x="2" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">{title}</text>
           
           <text x="52" y="3" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">DOCUMENT NO.</text>
-          <text x="52" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS-DWG-001</text>
+          <text x="52" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">DRAFT-001</text>
           
           <text x="82" y="3" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SHEET NO.</text>
           <text x="82" y="7" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">1 OF 1</text>
 
           {/* Row 2 */}
-          <text x="2" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">CHECKED BY</text>
-          <text x="2" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS SYSTEMS ENG</text>
+          <text x="2" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">ISSUE STATUS</text>
+          <text x="2" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">{stampText}</text>
           
           <text x="52" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">REVISION STATUS</text>
-          <text x="52" y="15" fontSize="3.5" fontFamily="sans-serif" fill="#0f172a">REV 1.0</text>
+          <text x="52" y="15" fontSize="3.5" fontFamily="sans-serif" fill="#0f172a">P01</text>
           
           <text x="82" y="11" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SCALE</text>
-          <text x="82" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">NTS</text>
+          <text x="82" y="15" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">{formatDraftingScale(scale)}</text>
 
           {/* Row 3 */}
-          <text x="2" y="19" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">APPLICANT NAME</text>
-          <text x="2" y="23" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">PLACEHOLDER NAME</text>
+          <text x="2" y="19" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">DOCUMENT STATUS</text>
+          <text x="2" y="23" fontSize="3.1" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">NOT FOR CONSTRUCTION</text>
           
           <text x="37" y="19" fontSize="2" fontFamily="monospace" fontWeight="bold" fill="#0f172a">SYSTEM</text>
-          <text x="37" y="23" fontSize="3.5" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS CAD COMPILER</text>
+          <text x="37" y="23" fontSize="3" fontFamily="sans-serif" fontWeight="bold" fill="#0f172a">TERTIUS DRAFTING WORKBENCH</text>
 
           {/* Stamp */}
           {showRedline && stampText && (
             <g>
-              <line x1="52" y1="14.0" x2="63" y2="14.0" stroke="#ef4444" strokeWidth="0.3" />
-              <text x="64" y="15" fontSize="4" fontFamily="sans-serif" fontWeight="bold" fill="#ef4444">{stampText}</text>
-              <g transform="translate(40, 14) rotate(-3)">
-                <rect x="-2" y="-5" width="10" height="4" fill="none" stroke="#ef4444" strokeWidth="0.3" />
-                <text x="-1" y="-2" fontSize="2.5" fontFamily="sans-serif" fontWeight="bold" fill="#ef4444">QTD OK</text>
-              </g>
+              <rect x="1" y="9.5" width="48" height="7.5" fill="none" stroke="#ef4444" strokeWidth="0.3" />
             </g>
           )}
         </g>
@@ -775,10 +847,11 @@ const DraftingCanvas: React.FC<{
         {/* View Grid Lines */}
         {/* View Labels */}
         <g fontSize="3" fontFamily="sans-serif" fontWeight="bold" fill="#9ca3af">
-          <text x={20} y={30 + view_h - 2}>PLAN VIEW</text>
-          <text x={20} y={h - 20}>FRONT ELEVATION</text>
-          <text x={40 + view_w} y={h - 20}>SIDE ELEVATION</text>
-          <text x={40 + view_w} y={30 + view_h - 2}>ISOMETRIC VIEW</text>
+          {(Object.entries(viewLayout) as [DraftingViewName, DraftingViewRect][]).map(([viewName, rect]) => (
+            <text key={viewName} x={rect.x} y={rect.y + rect.height - 2}>
+              {{ top: 'TOP VIEW', front: 'FRONT ELEVATION', side: 'SIDE ELEVATION', iso: 'ISOMETRIC VIEW' }[viewName]}
+            </text>
+          ))}
         </g>
       </svg>
       

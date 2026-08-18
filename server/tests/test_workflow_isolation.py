@@ -721,11 +721,12 @@ def test_extus_historical_model_returns_404_when_content_is_missing(
 def test_timus_settings_round_trip(authenticated_timus_client, db_session, seeded_tenant):
     payload = {
         "title": "PART A",
-        "stamp_text": "APPROVED",
+        "stamp_text": "PRELIMINARY",
         "show_redline": True,
         "show_hidden_lines": False,
         "scale": 0.25,
         "sheet_size": "A3",
+        "layout": "front",
     }
 
     default_response = authenticated_timus_client.get("/projects/default_purlin/settings")
