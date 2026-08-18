@@ -6,8 +6,13 @@ from core.structural.capacity_packs import (
     AS_NZS_4600_2005_A1_SHA256,
     CapacityPackError,
     as_nzs_4600_2005_a1_member_capacity,
+    as_nzs_4600_2005_a1_tension_capacity,
 )
-from core.structural.contracts import SectionCatalogReference, SectionProperties
+from core.structural.contracts import (
+    SectionCatalogReference,
+    SectionProperties,
+    StructuralMaterial,
+)
 
 
 def _c10012_section(**property_overrides: object) -> SectionProperties:
@@ -129,4 +134,69 @@ def test_member_pack_rejects_channel_outside_prequalified_bounds() -> None:
             unbraced_length_m=3.0,
             minor_axis_effective_length_factor=1.0,
             torsional_effective_length_factor=1.0,
+        )
+
+
+def test_tension_pack_calculates_gross_yield_and_net_fracture() -> None:
+    capacity = as_nzs_4600_2005_a1_tension_capacity(
+        SectionProperties(
+            id="section-strap-30x1",
+            label="30 x 1 mm G450 strap",
+            area_m2=30e-6,
+            iy_m4=2.5e-12,
+            iz_m4=2.25e-9,
+            torsion_j_m4=2.5e-12,
+            tension_width_mm=30.0,
+            tension_thickness_mm=1.0,
+            tension_hole_diameter_mm=5.5,
+            tension_holes_in_critical_section=2,
+            tension_force_distribution_factor=1.0,
+        ),
+        StructuralMaterial(
+            id="material-g450",
+            label="G450 steel",
+            elastic_modulus_kN_m2=200e6,
+            shear_modulus_kN_m2=76.923e6,
+            poisson_ratio=0.3,
+            density_kg_m3=7850,
+            yield_strength_MPa=450.0,
+            tensile_strength_MPa=480.0,
+        ),
+    )
+
+    assert capacity.standard_source_sha256 == AS_NZS_4600_2005_A1_SHA256
+    assert capacity.gross_area_mm2 == pytest.approx(30.0)
+    assert capacity.net_area_mm2 == pytest.approx(19.0)
+    assert capacity.gross_yield_capacity_kN == pytest.approx(12.15)
+    assert capacity.net_fracture_capacity_kN == pytest.approx(6.9768)
+    assert capacity.design_tension_capacity_kN == pytest.approx(6.9768)
+    assert "Clauses 3.2.1 and 3.2.2" in capacity.basis
+
+
+def test_tension_pack_rejects_holes_wider_than_the_strap() -> None:
+    with pytest.raises(CapacityPackError, match="remove the complete critical section"):
+        as_nzs_4600_2005_a1_tension_capacity(
+            SectionProperties(
+                id="section-invalid-strap",
+                label="Invalid strap",
+                area_m2=30e-6,
+                iy_m4=2.5e-12,
+                iz_m4=2.25e-9,
+                torsion_j_m4=2.5e-12,
+                tension_width_mm=30.0,
+                tension_thickness_mm=1.0,
+                tension_hole_diameter_mm=20.0,
+                tension_holes_in_critical_section=2,
+                tension_force_distribution_factor=1.0,
+            ),
+            StructuralMaterial(
+                id="material-g450",
+                label="G450 steel",
+                elastic_modulus_kN_m2=200e6,
+                shear_modulus_kN_m2=76.923e6,
+                poisson_ratio=0.3,
+                density_kg_m3=7850,
+                yield_strength_MPa=450.0,
+                tensile_strength_MPa=480.0,
+            ),
         )

@@ -292,7 +292,9 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
         and check.section_record_sha256
         for check in snapshot.cross_section_checks
     )
-    assert {check.status for check in snapshot.member_stability_checks} == {"pass"}
+    assert {check.status for check in snapshot.member_stability_checks} == {
+        "unsupported"
+    }
     assert all(
         check.distortional_buckling_status == "verified"
         and check.design_lateral_torsional_bending_capacity_kNm is not None
@@ -312,7 +314,7 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     )
     stages = {stage.id: stage.status for stage in snapshot.verification_stages}
     assert stages["cross_section"] == "pass"
-    assert stages["member_stability"] == "pass"
+    assert stages["member_stability"] == "unsupported"
     assert stages["connections"] == "unsupported"
     assert stages["decision"] == "blocked"
 
@@ -714,6 +716,25 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
             "end_connection_basis": "Candidate product connection evidence.",
         }
     )
+    structural_facet["section"].update(
+        {
+            "tension_width_mm": 30.0,
+            "tension_thickness_mm": 1.0,
+            "tension_hole_diameter_mm": 5.5,
+            "tension_holes_in_critical_section": 2,
+            "tension_force_distribution_factor": 1.0,
+            "end_fastener_nominal_diameter_mm": 5.0,
+            "end_fastener_spacing_mm": 15.0,
+            "end_fastener_edge_distance_mm": 20.0,
+            "end_fastener_shear_capacity_kN": 1.7,
+        }
+    )
+    structural_facet["material"].update(
+        {
+            "yield_strength_pa": 450e6,
+            "tensile_strength_pa": 480e6,
+        }
+    )
     configuration = StructuralProjectConfiguration.model_validate(
         default_structural_configuration()
     )
@@ -733,6 +754,18 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
     assert declaration.tension_capacity_kN == pytest.approx(12.5)
     assert declaration.end_fastener_count == 2
     assert declaration.end_connection_capacity_kN == pytest.approx(8.0)
+    section = next(
+        item for item in capture.analysis.sections if item.id == declaration.section_id
+    )
+    material = next(
+        item for item in capture.analysis.materials if item.id == declaration.material_id
+    )
+    assert section.tension_width_mm == pytest.approx(30.0)
+    assert section.tension_hole_diameter_mm == pytest.approx(5.5)
+    assert section.end_fastener_spacing_mm == pytest.approx(15.0)
+    assert section.end_fastener_shear_capacity_kN == pytest.approx(1.7)
+    assert material.yield_strength_MPa == pytest.approx(450.0)
+    assert material.tensile_strength_MPa == pytest.approx(480.0)
     assert capture.analysis.cross_section_verification is not None
     assert declaration.id not in capture.analysis.cross_section_verification.member_ids
     assert capture.analysis.member_stability_verification is not None

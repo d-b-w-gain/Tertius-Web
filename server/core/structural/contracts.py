@@ -63,6 +63,19 @@ class SectionProperties(StructuralContract):
     bending_reference_kNm: float | None = None
     bending_reference_axis: Literal["local_y", "local_z", "resultant"] | None = None
     bending_reference_basis: str | None = None
+    tension_width_mm: float | None = Field(default=None, gt=0)
+    tension_thickness_mm: float | None = Field(default=None, gt=0)
+    tension_hole_diameter_mm: float | None = Field(default=None, gt=0)
+    tension_holes_in_critical_section: int | None = Field(default=None, ge=0)
+    tension_force_distribution_factor: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+    )
+    end_fastener_nominal_diameter_mm: float | None = Field(default=None, gt=0)
+    end_fastener_spacing_mm: float | None = Field(default=None, gt=0)
+    end_fastener_edge_distance_mm: float | None = Field(default=None, gt=0)
+    end_fastener_shear_capacity_kN: float | None = Field(default=None, gt=0)
     catalog: SectionCatalogReference | None = None
 
     @model_validator(mode="after")
@@ -104,6 +117,8 @@ class StructuralMaterial(StructuralContract):
     shear_modulus_kN_m2: float
     poisson_ratio: float
     density_kg_m3: float
+    yield_strength_MPa: float | None = Field(default=None, gt=0)
+    tensile_strength_MPa: float | None = Field(default=None, gt=0)
 
 
 class AnalyticalMemberDeclaration(StructuralContract):
@@ -491,6 +506,9 @@ class TensionMemberCheck(StructuralContract):
     label: str
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     capacity_status: Literal["not_checked", "candidate", "verified"]
+    member_capacity_status: Literal["not_checked", "candidate", "verified"]
+    connection_capacity_status: Literal["not_checked", "candidate", "verified"]
+    pack_id: Literal["as_nzs_4600_2005_a1_tension"] | None = None
     governing_combination_id: str | None = None
     tension_demand_kN: float
     tension_capacity_kN: float | None = None
@@ -500,9 +518,39 @@ class TensionMemberCheck(StructuralContract):
     connection_utilisation: float | None = None
     governing_utilisation: float | None = None
     end_fastener_count: int | None = None
+    rendered_end_connection_count: int = 0
+    rendered_end_fastener_counts: list[int] = Field(default_factory=list)
     required_force_per_end_fastener_kN: float | None = None
+    gross_area_mm2: float | None = None
+    net_area_mm2: float | None = None
+    gross_yield_capacity_kN: float | None = None
+    net_fracture_capacity_kN: float | None = None
+    connected_part_net_capacity_kN: float | None = None
+    end_bearing_capacity_kN: float | None = None
+    end_tearout_capacity_kN: float | None = None
+    end_fastener_shear_capacity_kN: float | None = None
+    spacing_status: Literal["not_checked", "pass", "fail"] = "not_checked"
+    edge_distance_status: Literal["not_checked", "pass", "fail"] = "not_checked"
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
+
+
+class BracingLoadPathTrace(StructuralContract):
+    id: str
+    member_id: str
+    component_id: str
+    governing_combination_id: str | None = None
+    status: Literal["pass", "fail", "candidate", "blocked"]
+    tension_demand_kN: float
+    component_ids: list[str] = Field(default_factory=list)
+    connection_ids: list[str] = Field(default_factory=list)
+    grounded_component_ids: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    basis: str
 
 
 class MemberCrossSectionCheck(StructuralContract):
@@ -1520,6 +1568,7 @@ class StructuralSnapshot(StructuralContract):
     member_checks: list[MemberCheck]
     connection_checks: list[ConnectionCheck] = Field(default_factory=list)
     tension_member_checks: list[TensionMemberCheck] = Field(default_factory=list)
+    bracing_load_path_traces: list[BracingLoadPathTrace] = Field(default_factory=list)
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
     member_restraint_candidate_checks: list[MemberRestraintCandidateCheck] = Field(
@@ -1603,6 +1652,12 @@ class StructuralSnapshot(StructuralContract):
             _require_reference(
                 "member-stability check member",
                 stability_check.member_id,
+                member_ids,
+            )
+        for bracing_trace in self.bracing_load_path_traces:
+            _require_reference(
+                "bracing load-path trace member",
+                bracing_trace.member_id,
                 member_ids,
             )
         candidate_check_ids = _unique_ids(

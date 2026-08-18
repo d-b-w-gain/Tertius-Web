@@ -413,6 +413,15 @@ export type StructuralSnapshot = {
     bending_reference_kNm: number | null
     bending_reference_axis: 'local_y' | 'local_z' | 'resultant' | null
     bending_reference_basis: string | null
+    tension_width_mm?: number | null
+    tension_thickness_mm?: number | null
+    tension_hole_diameter_mm?: number | null
+    tension_holes_in_critical_section?: number | null
+    tension_force_distribution_factor?: number | null
+    end_fastener_nominal_diameter_mm?: number | null
+    end_fastener_spacing_mm?: number | null
+    end_fastener_edge_distance_mm?: number | null
+    end_fastener_shear_capacity_kN?: number | null
     catalog?: {
       catalog_id: string
       catalog_version: string
@@ -430,6 +439,8 @@ export type StructuralSnapshot = {
     shear_modulus_kN_m2: number
     poisson_ratio: number
     density_kg_m3: number
+    yield_strength_MPa?: number | null
+    tensile_strength_MPa?: number | null
   }>
   load_cases: Array<{
     id: string
@@ -512,6 +523,9 @@ export type StructuralSnapshot = {
     label: string
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     capacity_status: 'not_checked' | 'candidate' | 'verified'
+    member_capacity_status: 'not_checked' | 'candidate' | 'verified'
+    connection_capacity_status: 'not_checked' | 'candidate' | 'verified'
+    pack_id: 'as_nzs_4600_2005_a1_tension' | null
     governing_combination_id: string | null
     tension_demand_kN: number
     tension_capacity_kN: number | null
@@ -521,9 +535,38 @@ export type StructuralSnapshot = {
     connection_utilisation: number | null
     governing_utilisation: number | null
     end_fastener_count: number | null
+    rendered_end_connection_count: number
+    rendered_end_fastener_counts: number[]
     required_force_per_end_fastener_kN: number | null
+    gross_area_mm2: number | null
+    net_area_mm2: number | null
+    gross_yield_capacity_kN: number | null
+    net_fracture_capacity_kN: number | null
+    connected_part_net_capacity_kN: number | null
+    end_bearing_capacity_kN: number | null
+    end_tearout_capacity_kN: number | null
+    end_fastener_shear_capacity_kN: number | null
+    spacing_status: 'not_checked' | 'pass' | 'fail'
+    edge_distance_status: 'not_checked' | 'pass' | 'fail'
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     basis: string
     assumptions: string[]
+  }>
+  bracing_load_path_traces?: Array<{
+    id: string
+    member_id: string
+    component_id: string
+    governing_combination_id: string | null
+    status: 'pass' | 'fail' | 'candidate' | 'blocked'
+    tension_demand_kN: number
+    component_ids: string[]
+    connection_ids: string[]
+    grounded_component_ids: string[]
+    blockers: string[]
+    basis: string
   }>
   cross_section_checks?: Array<{
     member_id: string

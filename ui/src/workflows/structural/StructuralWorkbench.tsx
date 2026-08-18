@@ -230,32 +230,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedTensionCheck = analysis?.tension_member_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const selectedGlobalBracingTrace = useMemo(() => {
-    if (!capture || !selectedMember?.tension_only) return undefined
-    const declaration = capture.analysis?.members.find(
-      (member) => member.id === selectedMember.id,
-    )
-    if (!declaration) return undefined
-    const collectorConnection = capture.connections.find((connection) => (
-      connection.to_component_id === declaration.component_id
-      && connection.id.endsWith('-collector')
-    ))
-    const foundationConnection = capture.connections.find((connection) => (
-      connection.from_component_id === declaration.component_id
-      && connection.id.endsWith('-foundation')
-      && componentsById.get(connection.to_component_id)?.grounded
-    ))
-    if (!collectorConnection || !foundationConnection) return undefined
-    return {
-      componentIds: Array.from(new Set([
-        collectorConnection.from_component_id,
-        ...collectorConnection.connector_component_ids,
-        declaration.component_id,
-        ...foundationConnection.connector_component_ids,
-        foundationConnection.to_component_id,
-      ])),
-    }
-  }, [capture, componentsById, selectedMember])
+  const selectedGlobalBracingTrace = analysis?.bracing_load_path_traces?.find(
+    (trace) => trace.member_id === selectedMember?.id,
+  )
   const availableCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
@@ -333,7 +310,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         ? selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
         : [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
-      ...(selectedGlobalBracingTrace?.componentIds ?? [])
+      ...(selectedGlobalBracingTrace?.component_ids ?? [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
     ].filter(Boolean)))
   })()
@@ -1649,11 +1626,68 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Candidate strap capacity</dt>
+                          <dt className="text-slate-500">Strap design capacity</dt>
                           <dd className="font-mono text-slate-200">
                             {selectedTensionCheck.tension_capacity_kN == null
                               ? 'Unverified'
                               : `${number(selectedTensionCheck.tension_capacity_kN, 3)} kN`}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {selectedTensionCheck.member_capacity_status.replace('_', ' ')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">End connection capacity</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.end_connection_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.end_connection_capacity_kN, 3)} kN`}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {selectedTensionCheck.connection_capacity_status.replace('_', ' ')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Gross / net area</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.gross_area_mm2 == null
+                              || selectedTensionCheck.net_area_mm2 == null
+                              ? 'Unspecified'
+                              : `${number(selectedTensionCheck.gross_area_mm2, 2)} / ${number(
+                                  selectedTensionCheck.net_area_mm2,
+                                  2,
+                                )} mm²`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Gross yield / net fracture</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.gross_yield_capacity_kN == null
+                              || selectedTensionCheck.net_fracture_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.gross_yield_capacity_kN, 3)} / ${number(
+                                  selectedTensionCheck.net_fracture_capacity_kN,
+                                  3,
+                                )} kN`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Bearing / tear-out / screw shear</dt>
+                          <dd className="font-mono text-slate-200">
+                            {[
+                              selectedTensionCheck.end_bearing_capacity_kN,
+                              selectedTensionCheck.end_tearout_capacity_kN,
+                              selectedTensionCheck.end_fastener_shear_capacity_kN,
+                            ].map((value) => (
+                              value == null ? '—' : number(value, 3)
+                            )).join(' / ')} kN
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Spacing / edge distance</dt>
+                          <dd className="font-mono uppercase text-slate-200">
+                            {selectedTensionCheck.spacing_status.replace('_', ' ')} /{' '}
+                            {selectedTensionCheck.edge_distance_status.replace('_', ' ')}
                           </dd>
                         </div>
                         <div>
@@ -1665,34 +1699,57 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Candidate screw-group capacity</dt>
+                          <dt className="text-slate-500">Rendered end fasteners</dt>
                           <dd className="font-mono text-slate-200">
-                            {selectedTensionCheck.end_connection_capacity_kN == null
-                              ? 'Unverified'
-                              : `${number(selectedTensionCheck.end_connection_capacity_kN, 3)} kN`}
+                            {selectedTensionCheck.rendered_end_connection_count === 0
+                              ? 'No physical ends found'
+                              : `${selectedTensionCheck.rendered_end_fastener_counts.join(' / ')} across ${
+                                  selectedTensionCheck.rendered_end_connection_count
+                                } ends`}
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Screw-group utilisation</dt>
+                          <dt className="text-slate-500">Governing utilisation</dt>
                           <dd className="font-mono text-slate-200">
-                            {selectedTensionCheck.connection_utilisation == null
+                            {selectedTensionCheck.governing_utilisation == null
                               ? 'Unverified'
-                              : `${number(selectedTensionCheck.connection_utilisation * 100, 1)}%`}
+                              : `${number(selectedTensionCheck.governing_utilisation * 100, 1)}%`}
                           </dd>
                         </div>
                       </dl>
-                      <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
-                        Candidate resistance is shown for comparison only; the selected strap product and rendered end-fastener connection remain unverified.
-                      </p>
+                      <div className="mt-2 border-t border-slate-800 pt-2 text-[10px] leading-relaxed text-slate-400">
+                        <p>
+                          {selectedTensionCheck.standard_reference || selectedTensionCheck.basis}
+                        </p>
+                        {selectedTensionCheck.assumptions.length > 0 && (
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/80">
+                            {selectedTensionCheck.assumptions.map((assumption) => (
+                              <li key={assumption}>{assumption}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     </div>
                   )}
                   {selectedMember.tension_only && selectedGlobalBracingTrace && (
                     <div className="mt-3 rounded border border-cyan-500/30 bg-slate-950/50 p-3">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
-                        Selected global bracing trace
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
+                          Selected global bracing trace
+                        </span>
+                        <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
+                          selectedGlobalBracingTrace.status === 'pass'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : selectedGlobalBracingTrace.status === 'fail'
+                              || selectedGlobalBracingTrace.status === 'blocked'
+                              ? 'bg-red-500/15 text-red-300'
+                              : 'bg-amber-500/15 text-amber-300'
+                        }`}>
+                          {selectedGlobalBracingTrace.status.toUpperCase()}
+                        </span>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-1 text-[9px] text-slate-200">
-                        {selectedGlobalBracingTrace.componentIds.map((componentId, index) => (
+                        {selectedGlobalBracingTrace.component_ids.map((componentId, index) => (
                           <span key={componentId} className="contents">
                             {index > 0 && <span className="text-slate-500">→</span>}
                             <button
@@ -1708,9 +1765,29 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         ))}
                       </div>
                       <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
-                        Collector → tension strap → grounded foundation. This global X-bracing
-                        path is shown separately from the Stage 7 compression-flange restraint trace.
+                        {selectedGlobalBracingTrace.basis}
                       </p>
+                      <dl className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                        <div>
+                          <dt className="text-slate-500">Grounded components</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedGlobalBracingTrace.grounded_component_ids.join(', ') || 'None'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Governing ULS</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedGlobalBracingTrace.governing_combination_id || 'No tension'}
+                          </dd>
+                        </div>
+                      </dl>
+                      {selectedGlobalBracingTrace.blockers.length > 0 && (
+                        <ul className="mt-2 list-disc space-y-0.5 pl-4 text-[10px] leading-relaxed text-amber-200/80">
+                          {selectedGlobalBracingTrace.blockers.map((blocker) => (
+                            <li key={blocker}>{blocker}</li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   )}
                   {(availableCrossSectionCheck || availableMemberStabilityCheck) && (

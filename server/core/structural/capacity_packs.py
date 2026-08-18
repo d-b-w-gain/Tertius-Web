@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from math import pi, sqrt
 from typing import Literal, cast
 
-from .contracts import SectionProperties
+from .contracts import SectionProperties, StructuralMaterial
 
 
 class CapacityPackError(ValueError):
@@ -41,6 +41,23 @@ class CrossSectionCapacity:
     web_yield_boundary: float
     web_elastic_boundary: float
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"]
+    standard_reference: str
+    standard_status: str
+    standard_source_sha256: str
+    developments_supplement_sha256: str
+    basis: str
+
+
+@dataclass(frozen=True)
+class TensionMemberCapacity:
+    pack_id: str
+    design_tension_capacity_kN: float
+    gross_yield_capacity_kN: float
+    net_fracture_capacity_kN: float
+    gross_area_mm2: float
+    net_area_mm2: float
+    phi_t: float
+    force_distribution_factor: float
     standard_reference: str
     standard_status: str
     standard_source_sha256: str
@@ -119,6 +136,106 @@ def _positive(
     if normalized <= 0:
         raise CapacityPackError(f"catalogue property {key!r} must be positive")
     return normalized
+
+
+def as_nzs_4600_2005_a1_tension_capacity(
+    section: SectionProperties,
+    material: StructuralMaterial,
+) -> TensionMemberCapacity:
+    """Return the Clause 3.2 design tension resistance for a flat strap.
+
+    Product geometry supplies the critical fastener-hole deduction and force
+    distribution factor. Tertius owns the standard equations and capacity
+    reduction factor; a design import does not provide a pre-calculated result.
+    """
+
+    width_mm = section.tension_width_mm
+    thickness_mm = section.tension_thickness_mm
+    hole_diameter_mm = section.tension_hole_diameter_mm
+    hole_count = section.tension_holes_in_critical_section
+    force_distribution_factor = section.tension_force_distribution_factor
+    fy_mpa = material.yield_strength_MPa
+    fu_mpa = material.tensile_strength_MPa
+    required = {
+        "tension_width_mm": width_mm,
+        "tension_thickness_mm": thickness_mm,
+        "tension_hole_diameter_mm": hole_diameter_mm,
+        "tension_holes_in_critical_section": hole_count,
+        "tension_force_distribution_factor": force_distribution_factor,
+        "yield_strength_MPa": fy_mpa,
+        "tensile_strength_MPa": fu_mpa,
+    }
+    missing = [key for key, value in required.items() if value is None]
+    if missing:
+        raise CapacityPackError(
+            "tension member is missing product facts: " + ", ".join(missing)
+        )
+    assert width_mm is not None
+    assert thickness_mm is not None
+    assert hole_diameter_mm is not None
+    assert hole_count is not None
+    assert force_distribution_factor is not None
+    assert fy_mpa is not None
+    assert fu_mpa is not None
+    gross_area_mm2 = width_mm * thickness_mm
+    net_width_mm = width_mm - hole_count * hole_diameter_mm
+    if net_width_mm <= 0:
+        raise CapacityPackError(
+            "tension fastener holes remove the complete critical section"
+        )
+    if abs(gross_area_mm2 - section.area_m2 * 1_000_000.0) > max(
+        1e-6,
+        gross_area_mm2 * 0.01,
+    ):
+        raise CapacityPackError(
+            "tension width and thickness do not reproduce the analytical gross area"
+        )
+    net_area_mm2 = net_width_mm * thickness_mm
+    phi_t = 0.90
+    gross_yield_capacity_kN = phi_t * gross_area_mm2 * fy_mpa / 1000.0
+    net_fracture_capacity_kN = (
+        phi_t
+        * 0.85
+        * force_distribution_factor
+        * net_area_mm2
+        * fu_mpa
+        / 1000.0
+    )
+    return TensionMemberCapacity(
+        pack_id="as_nzs_4600_2005_a1_tension",
+        design_tension_capacity_kN=min(
+            gross_yield_capacity_kN,
+            net_fracture_capacity_kN,
+        ),
+        gross_yield_capacity_kN=gross_yield_capacity_kN,
+        net_fracture_capacity_kN=net_fracture_capacity_kN,
+        gross_area_mm2=gross_area_mm2,
+        net_area_mm2=net_area_mm2,
+        phi_t=phi_t,
+        force_distribution_factor=force_distribution_factor,
+        standard_reference=AS_NZS_4600_2005_A1_REFERENCE,
+        standard_status=ACCEPTED_STANDARD_STATUS,
+        standard_source_sha256=AS_NZS_4600_2005_A1_SHA256,
+        developments_supplement_sha256=(
+            AS_NZS_4600_DEVELOPMENTS_SUPPLEMENT_SHA256
+        ),
+        basis=(
+            "AS/NZS 4600:2005 incorporating Amendment No. 1 Clauses 3.2.1 "
+            "and 3.2.2: phi_t=0.90 and Nt=min(Ag fy, 0.85 kt An fu). "
+            "Gross and net areas come from the compiled product width, "
+            "thickness, critical fastener-hole layout, and material strengths."
+        ),
+    )
+
+
+def tension_member_capacity(
+    pack_id: str,
+    section: SectionProperties,
+    material: StructuralMaterial,
+) -> TensionMemberCapacity:
+    if pack_id == "as_nzs_4600_2005_a1_tension":
+        return as_nzs_4600_2005_a1_tension_capacity(section, material)
+    raise CapacityPackError(f"unsupported tension capacity pack {pack_id!r}")
 
 
 def _simple_lipped_channel_distortional_stress(

@@ -606,6 +606,16 @@ other. The live shed now evaluates all 183 selected sections and member
 segments as pass/fail rather than unsupported; physical restraint-system and
 connection resistance remain separate certification gates.
 
+Completed Stage 8 tension-bracing slice: Tertius now envelopes every
+tension-only brace across the generated ULS design combinations and calculates
+AS/NZS 4600:2005+A1 gross-yield and net-fracture resistance from product
+geometry and material facts. It checks the rendered two-end screw layout,
+connected-part net tension, bearing, tear-out, and required tested screw shear,
+then traverses the compiled physical connection graph independently from both
+brace ends to grounded components. Project-authored strap or end-connection
+capacity numbers are not consumed. Missing Section 8 screw test resistance
+remains an explicit blocker rather than a hidden assumption.
+
 ### Task 7: Add atomic multi-artifact compile bundles
 
 **Files:** compile messages, worker, result consumer, artifact models/migration,
@@ -703,9 +713,10 @@ configuration, Structural workbench UI and tests.
   4600:2005+A1 Tertius pack; do not require project-authored verification flags.
 - [x] Complete conservative off-axis member resistance for minor-axis bending,
   both shear axes, torsion, and biaxial member interaction.
-- [ ] Complete bracing/strap resistance, connection/base/foundation resistance,
-  and remaining serviceability evidence
-  needed to close the live shed's Australian gates.
+- [x] Complete Tertius-owned tension-strap member resistance, rendered end-layout
+  checks, and two-ended brace-to-ground load-path evidence.
+- [ ] Attach tested screw resistance, complete general connection/base/foundation
+  resistance, and close the remaining live-shed serviceability evidence.
 
 ### Task 10: Validate the real workflow and release gates
 

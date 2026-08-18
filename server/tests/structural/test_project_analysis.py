@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 import build123d as bd
@@ -21,10 +22,135 @@ from core.structural.design_capture import (
     parse_project_structural_capture,
 )
 from core.structural.project_analysis import (
+    _bracing_load_path_traces,
     _off_axis_load_path,
     _stability_scope_comparisons,
     solve_project_structural,
 )
+
+
+def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
+    components = [
+        DesignComponent(
+            id="foundation-left",
+            label="Left footing",
+            kind="ground",
+            visual_node_id="foundation-left-node",
+            grounded=True,
+        ),
+        DesignComponent(
+            id="collector-left",
+            label="Left column",
+            kind="member",
+            visual_node_id="collector-left-node",
+        ),
+        DesignComponent(
+            id="brace",
+            label="Wall strap",
+            kind="member",
+            visual_node_id="brace-node",
+        ),
+        DesignComponent(
+            id="collector-right",
+            label="Right column",
+            kind="member",
+            visual_node_id="collector-right-node",
+        ),
+        DesignComponent(
+            id="foundation-right",
+            label="Right footing",
+            kind="ground",
+            visual_node_id="foundation-right-node",
+            grounded=True,
+        ),
+        DesignComponent(
+            id="screws-left",
+            label="Left screws",
+            kind="connector",
+            visual_node_id="screws-left-node",
+        ),
+        DesignComponent(
+            id="screws-right",
+            label="Right screws",
+            kind="connector",
+            visual_node_id="screws-right-node",
+        ),
+    ]
+    connections = [
+        DesignConnection(
+            id="brace-left",
+            label="Brace left end",
+            from_component_id="brace",
+            to_component_id="collector-left",
+            connector_component_ids=["screws-left"],
+            transfers=["force", "shear"],
+        ),
+        DesignConnection(
+            id="brace-right",
+            label="Brace right end",
+            from_component_id="brace",
+            to_component_id="collector-right",
+            connector_component_ids=["screws-right"],
+            transfers=["force", "shear"],
+        ),
+        DesignConnection(
+            id="left-ground",
+            label="Left base",
+            from_component_id="collector-left",
+            to_component_id="foundation-left",
+            transfers=["force", "shear", "moment"],
+        ),
+        DesignConnection(
+            id="right-ground",
+            label="Right base",
+            from_component_id="collector-right",
+            to_component_id="foundation-right",
+            transfers=["force", "shear", "moment"],
+        ),
+    ]
+    capture = SimpleNamespace(components=components, connections=connections)
+    analysis = SimpleNamespace(
+        members=[
+            SimpleNamespace(
+                id="brace-axis",
+                component_id="brace",
+                tension_only=True,
+            )
+        ]
+    )
+    tension_check = SimpleNamespace(
+        member_id="brace-axis",
+        connection_capacity_status="verified",
+        governing_combination_id="ULS-1.2G+WX+",
+        tension_demand_kN=4.2,
+        status="pass",
+    )
+
+    traces = _bracing_load_path_traces(capture, analysis, [tension_check])
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.status == "pass"
+    assert trace.component_ids == [
+        "foundation-left",
+        "collector-left",
+        "screws-left",
+        "brace",
+        "screws-right",
+        "collector-right",
+        "foundation-right",
+    ]
+    assert trace.connection_ids == [
+        "left-ground",
+        "brace-left",
+        "brace-right",
+        "right-ground",
+    ]
+    assert trace.grounded_component_ids == [
+        "foundation-left",
+        "foundation-right",
+    ]
+    assert trace.blockers == []
 
 
 def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():
@@ -958,9 +1084,9 @@ structural_assembly = structure.assembly""",
     unrestrained_stages = {
         stage.id: stage for stage in unrestrained_snapshot.verification_stages
     }
-    assert unrestrained_stages["member_stability"].status == "pass"
+    assert unrestrained_stages["member_stability"].status == "unsupported"
     assert all(
-        check.status == "pass"
+        check.status == "unsupported"
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert all(
@@ -974,7 +1100,9 @@ structural_assembly = structure.assembly""",
         == "AS/NZS 4600:2005 incorporating Amendment No. 1"
         for check in unrestrained_snapshot.member_stability_checks
     )
-    assert {check.status for check in unrestrained_snapshot.member_checks} == {"pass"}
+    assert {check.status for check in unrestrained_snapshot.member_checks} == {
+        "not_checked"
+    }
 
     overloaded_data = deepcopy(capture_data)
     overloaded_properties = overloaded_data["analysis"]["sections"][0]["catalog"][

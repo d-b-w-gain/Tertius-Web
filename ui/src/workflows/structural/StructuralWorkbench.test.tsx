@@ -820,6 +820,70 @@ const restraintAnalysis: StructuralSnapshot = {
   ],
 }
 
+const stage8Analysis: StructuralSnapshot = {
+  ...analysis,
+  members: analysis.members.map((member) => ({
+    ...member,
+    tension_only: true,
+  })),
+  tension_member_checks: [
+    {
+      member_id: 'purlin-axis',
+      label: '30 x 1 mm G450 wall strap',
+      status: 'unsupported',
+      capacity_status: 'candidate',
+      member_capacity_status: 'verified',
+      connection_capacity_status: 'candidate',
+      pack_id: 'as_nzs_4600_2005_a1_tension',
+      governing_combination_id: 'DEMO-OVERLOAD',
+      tension_demand_kN: 4.2,
+      tension_capacity_kN: 6.9768,
+      end_connection_capacity_kN: null,
+      governing_capacity_kN: 6.9768,
+      member_utilisation: 0.602,
+      connection_utilisation: null,
+      governing_utilisation: 0.602,
+      end_fastener_count: 2,
+      rendered_end_connection_count: 2,
+      rendered_end_fastener_counts: [2, 2],
+      required_force_per_end_fastener_kN: 2.1,
+      gross_area_mm2: 30,
+      net_area_mm2: 19,
+      gross_yield_capacity_kN: 12.15,
+      net_fracture_capacity_kN: 6.9768,
+      connected_part_net_capacity_kN: 5.928,
+      end_bearing_capacity_kN: 4.8,
+      end_tearout_capacity_kN: 11.52,
+      end_fastener_shear_capacity_kN: null,
+      spacing_status: 'pass',
+      edge_distance_status: 'pass',
+      standard_reference: 'AS/NZS 4600:2005 incorporating Amendment No. 1',
+      standard_status: 'accepted_project_basis_2005_a1_with_developments_supplement',
+      standard_source_sha256: 'b'.repeat(64),
+      developments_supplement_sha256: 'c'.repeat(64),
+      basis: 'Tertius-owned tension and connected-part resistance.',
+      assumptions: [
+        'The fastener product has no Section 8 tested screw shear resistance.',
+      ],
+    },
+  ],
+  bracing_load_path_traces: [
+    {
+      id: 'bracing-path:purlin-axis',
+      member_id: 'purlin-axis',
+      component_id: 'purlin',
+      governing_combination_id: 'DEMO-OVERLOAD',
+      status: 'candidate',
+      tension_demand_kN: 4.2,
+      component_ids: ['block', 'anchors', 'gpb', 'purlin', 'sheet'],
+      connection_ids: ['gpb-ground', 'purlin-gpb', 'sheet-purlin'],
+      grounded_component_ids: ['block'],
+      blockers: ['The rendered end connection has no complete verified resistance.'],
+      basis: 'Both physical brace ends were traversed through the compiled connection graph.',
+    },
+  ],
+}
+
 describe('StructuralWorkbench', () => {
   afterEach(cleanup)
 
@@ -1082,5 +1146,35 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('restraint-purlin')).toBeInTheDocument()
     expect(screen.getByText('located — not credited')).toBeInTheDocument()
     expect(screen.getByText('The test diaphragm has no grounded collector.')).toBeInTheDocument()
+  })
+
+  it('shows Stage 8 strap resistance and the real bracing path blocker', async () => {
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      new Response(JSON.stringify(
+        url.includes('/active/analysis') ? stage8Analysis : capture,
+      ), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+
+    render(<StructuralWorkbench isActive />)
+
+    expect(await screen.findByText('Stage 8 strap check')).toBeInTheDocument()
+    expect(screen.getByText('Strap design capacity')).toBeInTheDocument()
+    expect(screen.getByText('Gross / net area')).toBeInTheDocument()
+    expect(screen.getByText('30.00 / 19.00 mm²')).toBeInTheDocument()
+    expect(screen.getByText('Spacing / edge distance')).toBeInTheDocument()
+    expect(screen.getByText('Spacing / edge distance').parentElement)
+      .toHaveTextContent('pass / pass')
+    expect(screen.getByText('Rendered end fasteners').parentElement)
+      .toHaveTextContent('2 / 2 across 2 ends')
+    expect(screen.getByText('Selected global bracing trace')).toBeInTheDocument()
+    expect(screen.getByText('Grounded components')).toBeInTheDocument()
+    expect(screen.getByText(
+      'The rendered end connection has no complete verified resistance.',
+    )).toBeInTheDocument()
+    expect(screen.getByText(/Viewer selection:.*block.*anchors.*gpb.*purlin.*sheet/))
+      .toBeInTheDocument()
   })
 })

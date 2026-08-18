@@ -1872,6 +1872,54 @@ def _analysis_from_projection(
                     and material_data.get("yield_strength_pa") is not None
                     else None
                 ),
+                tension_width_mm=(
+                    float(section_data["tension_width_mm"])
+                    if section_data.get("tension_width_mm") is not None
+                    else None
+                ),
+                tension_thickness_mm=(
+                    float(section_data["tension_thickness_mm"])
+                    if section_data.get("tension_thickness_mm") is not None
+                    else None
+                ),
+                tension_hole_diameter_mm=(
+                    float(section_data["tension_hole_diameter_mm"])
+                    if section_data.get("tension_hole_diameter_mm") is not None
+                    else None
+                ),
+                tension_holes_in_critical_section=(
+                    int(section_data["tension_holes_in_critical_section"])
+                    if section_data.get("tension_holes_in_critical_section")
+                    is not None
+                    else None
+                ),
+                tension_force_distribution_factor=(
+                    float(section_data["tension_force_distribution_factor"])
+                    if section_data.get("tension_force_distribution_factor")
+                    is not None
+                    else None
+                ),
+                end_fastener_nominal_diameter_mm=(
+                    float(section_data["end_fastener_nominal_diameter_mm"])
+                    if section_data.get("end_fastener_nominal_diameter_mm")
+                    is not None
+                    else None
+                ),
+                end_fastener_spacing_mm=(
+                    float(section_data["end_fastener_spacing_mm"])
+                    if section_data.get("end_fastener_spacing_mm") is not None
+                    else None
+                ),
+                end_fastener_edge_distance_mm=(
+                    float(section_data["end_fastener_edge_distance_mm"])
+                    if section_data.get("end_fastener_edge_distance_mm") is not None
+                    else None
+                ),
+                end_fastener_shear_capacity_kN=(
+                    float(section_data["end_fastener_shear_capacity_kN"])
+                    if section_data.get("end_fastener_shear_capacity_kN") is not None
+                    else None
+                ),
                 catalog=(
                     SectionCatalogReference(
                         catalog_id=str(catalogue_data["id"]),
@@ -1908,6 +1956,16 @@ def _analysis_from_projection(
                 shear_modulus_kN_m2=float(material_data["shear_modulus_pa"]) / 1000.0,
                 poisson_ratio=float(material_data["poisson_ratio"]),
                 density_kg_m3=float(material_data["density_kg_m3"]),
+                yield_strength_MPa=(
+                    float(material_data["yield_strength_pa"]) / 1_000_000.0
+                    if material_data.get("yield_strength_pa") is not None
+                    else None
+                ),
+                tensile_strength_MPa=(
+                    float(material_data["tensile_strength_pa"]) / 1_000_000.0
+                    if material_data.get("tensile_strength_pa") is not None
+                    else None
+                ),
             ),
         )
         (

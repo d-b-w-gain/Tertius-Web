@@ -10,9 +10,11 @@ from .capacity_packs import (
     CapacityPackError,
     cross_section_capacity,
     member_compression_capacity,
+    tension_member_capacity,
 )
 from .contracts import (
     AnalyticalMemberDeclaration,
+    BracingLoadPathTrace,
     CalculationEquation,
     CalculationInput,
     CalculationSheet,
@@ -284,8 +286,101 @@ def _node_key_connection_ids(node_key: str | None) -> set[str]:
     }
 
 
-def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
-    """Envelope authored tension-only members across every ULS combination."""
+def _section_thickness_mm(section) -> float | None:
+    if section.tension_thickness_mm is not None:
+        return section.tension_thickness_mm
+    if section.catalog is None:
+        return None
+    value = section.catalog.properties.get(
+        "t_mm",
+        section.catalog.properties.get("t"),
+    )
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if float(value) > 0 else None
+
+
+def _screw_bearing_factor(diameter_mm: float, thickness_mm: float) -> float:
+    ratio = diameter_mm / thickness_mm
+    if ratio < 6.0:
+        return 2.7
+    if ratio <= 13.0:
+        return 3.3 - 0.1 * ratio
+    return 2.0
+
+
+def _screw_bearing_nominal_kN(
+    *,
+    head_sheet_thickness_mm: float,
+    head_sheet_fu_MPa: float,
+    other_sheet_thickness_mm: float,
+    other_sheet_fu_MPa: float,
+    diameter_mm: float,
+) -> float:
+    """AS/NZS 4600:2005 Clause 5.4.2.3 single-shear sheet bearing."""
+
+    t1 = head_sheet_thickness_mm
+    t2 = other_sheet_thickness_mm
+    c1 = _screw_bearing_factor(diameter_mm, t1)
+    c2 = _screw_bearing_factor(diameter_mm, t2)
+    low_ratio_capacity = min(
+        4.2 * sqrt(t2**3 * diameter_mm) * other_sheet_fu_MPa,
+        c1 * t1 * diameter_mm * head_sheet_fu_MPa,
+        c2 * t2 * diameter_mm * other_sheet_fu_MPa,
+    )
+    high_ratio_capacity = min(
+        c1 * t1 * diameter_mm * head_sheet_fu_MPa,
+        c2 * t2 * diameter_mm * other_sheet_fu_MPa,
+    )
+    ratio = t2 / t1
+    if ratio <= 1.0:
+        nominal_n = low_ratio_capacity
+    elif ratio >= 2.5:
+        nominal_n = high_ratio_capacity
+    else:
+        interpolation = (ratio - 1.0) / 1.5
+        nominal_n = low_ratio_capacity + interpolation * (
+            high_ratio_capacity - low_ratio_capacity
+        )
+    return nominal_n / 1000.0
+
+
+def _tension_member_supports(
+    declaration,
+    analysis,
+    connections: Sequence[DesignConnection],
+) -> list[tuple[Any, Any]]:
+    declarations_by_component: dict[str, list[Any]] = {}
+    for member in analysis.members:
+        declarations_by_component.setdefault(member.component_id, []).append(member)
+    sections = {section.id: section for section in analysis.sections}
+    materials = {material.id: material for material in analysis.materials}
+    supports: list[tuple[Any, Any]] = []
+    for connection in connections:
+        if not ({"force", "shear"} & set(connection.transfers)):
+            continue
+        if connection.from_component_id == declaration.component_id:
+            other_component_id = connection.to_component_id
+        elif connection.to_component_id == declaration.component_id:
+            other_component_id = connection.from_component_id
+        else:
+            continue
+        support_declarations = declarations_by_component.get(other_component_id, [])
+        if not support_declarations:
+            continue
+        support = support_declarations[0]
+        supports.append(
+            (sections[support.section_id], materials[support.material_id])
+        )
+    return supports
+
+
+def _tension_member_checks(
+    model,
+    analysis,
+    connections: Sequence[DesignConnection] = (),
+) -> list[TensionMemberCheck]:
+    """Envelope tension-only members and derive AS/NZS 4600 resistance."""
 
     ultimate_combinations = [
         combination
@@ -293,6 +388,8 @@ def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
         if combination.limit_state == "ultimate" and combination.purpose == "design"
     ]
     checks: list[TensionMemberCheck] = []
+    sections = {section.id: section for section in analysis.sections}
+    materials = {material.id: material for material in analysis.materials}
     for declaration in analysis.members:
         if not declaration.tension_only:
             continue
@@ -309,8 +406,170 @@ def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
                 tension_demand_kN = demand
                 governing_combination_id = combination.id
 
-        tension_capacity = declaration.tension_capacity_kN
-        connection_capacity = declaration.end_connection_capacity_kN
+        section = sections[declaration.section_id]
+        material = materials[declaration.material_id]
+        pack = None
+        pack_error: str | None = None
+        try:
+            pack = tension_member_capacity(
+                "as_nzs_4600_2005_a1_tension",
+                section,
+                material,
+            )
+        except CapacityPackError as exc:
+            pack_error = str(exc)
+
+        if pack is not None:
+            member_capacity_status: Literal[
+                "not_checked", "candidate", "verified"
+            ] = "verified"
+            tension_capacity = pack.design_tension_capacity_kN
+        else:
+            member_capacity_status = "not_checked"
+            tension_capacity = None
+
+        diameter_mm = section.end_fastener_nominal_diameter_mm
+        spacing_mm = section.end_fastener_spacing_mm
+        end_distance_mm = section.end_fastener_edge_distance_mm
+        fastener_count = declaration.end_fastener_count
+        rendered_end_connections = [
+            connection
+            for connection in connections
+            if ({"force", "shear"} & set(connection.transfers))
+            and declaration.component_id
+            in {connection.from_component_id, connection.to_component_id}
+        ]
+        rendered_end_fastener_counts = [
+            len(connection.connector_component_ids)
+            for connection in rendered_end_connections
+        ]
+        rendered_layout_matches = (
+            fastener_count is not None
+            and len(rendered_end_connections) == 2
+            and all(
+                count == fastener_count for count in rendered_end_fastener_counts
+            )
+        )
+        spacing_status: Literal["not_checked", "pass", "fail"] = "not_checked"
+        edge_distance_status: Literal["not_checked", "pass", "fail"] = (
+            "not_checked"
+        )
+        connected_part_net_capacity_kN: float | None = None
+        end_bearing_capacity_kN: float | None = None
+        end_tearout_capacity_kN: float | None = None
+        end_fastener_shear_capacity_kN: float | None = None
+        derived_connection_capacity_kN: float | None = None
+        connection_basis_parts: list[str] = []
+        if (
+            pack is not None
+            and diameter_mm is not None
+            and spacing_mm is not None
+            and end_distance_mm is not None
+            and fastener_count is not None
+            and section.tension_width_mm is not None
+            and section.tension_thickness_mm is not None
+            and material.tensile_strength_MPa is not None
+            and material.yield_strength_MPa is not None
+        ):
+            spacing_status = "pass" if spacing_mm >= 3.0 * diameter_mm else "fail"
+            transverse_edge_distance_mm = (
+                section.tension_width_mm - spacing_mm
+            ) / 2.0
+            edge_distance_status = (
+                "pass"
+                if min(end_distance_mm, transverse_edge_distance_mm)
+                >= 1.5 * diameter_mm
+                else "fail"
+            )
+            row_factor = min(1.0, 2.5 * diameter_mm / spacing_mm)
+            connected_part_net_capacity_kN = (
+                0.65
+                * row_factor
+                * pack.net_area_mm2
+                * material.tensile_strength_MPa
+                / 1000.0
+            )
+            tearout_phi = (
+                0.70
+                if material.tensile_strength_MPa / material.yield_strength_MPa
+                >= 1.08
+                else 0.60
+            )
+            end_tearout_capacity_kN = (
+                fastener_count
+                * tearout_phi
+                * section.tension_thickness_mm
+                * end_distance_mm
+                * material.tensile_strength_MPa
+                / 1000.0
+            )
+            bearing_capacities: list[float] = []
+            for support_section, support_material in _tension_member_supports(
+                declaration,
+                analysis,
+                connections,
+            ):
+                support_thickness_mm = _section_thickness_mm(support_section)
+                support_fu_MPa = support_material.tensile_strength_MPa
+                if support_thickness_mm is None or support_fu_MPa is None:
+                    continue
+                orientation_capacities = (
+                    _screw_bearing_nominal_kN(
+                        head_sheet_thickness_mm=section.tension_thickness_mm,
+                        head_sheet_fu_MPa=material.tensile_strength_MPa,
+                        other_sheet_thickness_mm=support_thickness_mm,
+                        other_sheet_fu_MPa=support_fu_MPa,
+                        diameter_mm=diameter_mm,
+                    ),
+                    _screw_bearing_nominal_kN(
+                        head_sheet_thickness_mm=support_thickness_mm,
+                        head_sheet_fu_MPa=support_fu_MPa,
+                        other_sheet_thickness_mm=section.tension_thickness_mm,
+                        other_sheet_fu_MPa=material.tensile_strength_MPa,
+                        diameter_mm=diameter_mm,
+                    ),
+                )
+                bearing_capacities.append(
+                    fastener_count * 0.50 * min(orientation_capacities)
+                )
+            if bearing_capacities:
+                end_bearing_capacity_kN = min(bearing_capacities)
+            if section.end_fastener_shear_capacity_kN is not None:
+                end_fastener_shear_capacity_kN = (
+                    fastener_count * section.end_fastener_shear_capacity_kN
+                )
+            connection_limits = [
+                connected_part_net_capacity_kN,
+                end_bearing_capacity_kN,
+                end_tearout_capacity_kN,
+                end_fastener_shear_capacity_kN,
+            ]
+            if (
+                all(value is not None for value in connection_limits)
+                and spacing_status == "pass"
+                and edge_distance_status == "pass"
+                and rendered_layout_matches
+            ):
+                derived_connection_capacity_kN = min(
+                    cast(float, value) for value in connection_limits
+                )
+            connection_basis_parts.append(
+                "AS/NZS 4600:2005+A1 Clauses 5.4.2.1-5.4.2.5 connected-part "
+                "net tension, spacing, edge distance, tilting/bearing, tearout, "
+                "and tested screw shear."
+            )
+
+        if derived_connection_capacity_kN is not None:
+            connection_capacity_status: Literal[
+                "not_checked", "candidate", "verified"
+            ] = "verified"
+            connection_capacity = derived_connection_capacity_kN
+        elif fastener_count is not None:
+            connection_capacity_status = "candidate"
+            connection_capacity = None
+        else:
+            connection_capacity_status = "not_checked"
+            connection_capacity = None
         capacities = [
             capacity
             for capacity in (tension_capacity, connection_capacity)
@@ -332,22 +591,79 @@ def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
             if governing_capacity is not None
             else None
         )
-        if declaration.tension_capacity_status == "verified":
-            status: Literal["pass", "fail", "not_checked", "unsupported"] = (
-                "pass"
-                if governing_utilisation is not None and governing_utilisation <= 1.0
-                else "fail"
+        verified_utilisations = [
+            utilisation
+            for capacity_status, utilisation in (
+                (member_capacity_status, member_utilisation),
+                (connection_capacity_status, connection_utilisation),
             )
-        elif declaration.tension_capacity_status == "candidate":
+            if capacity_status == "verified" and utilisation is not None
+        ]
+        if any(utilisation > 1.0 for utilisation in verified_utilisations):
+            status: Literal["pass", "fail", "not_checked", "unsupported"] = "fail"
+        elif not ultimate_combinations:
+            status = "not_checked"
+        elif (
+            member_capacity_status == "verified"
+            and connection_capacity_status == "verified"
+        ):
+            status = "pass"
+        elif "candidate" in {member_capacity_status, connection_capacity_status}:
             status = "unsupported"
         else:
             status = "not_checked"
+        capacity_status: Literal["not_checked", "candidate", "verified"] = (
+            "verified"
+            if member_capacity_status == connection_capacity_status == "verified"
+            else "candidate"
+            if "candidate" in {member_capacity_status, connection_capacity_status}
+            or "verified" in {member_capacity_status, connection_capacity_status}
+            else "not_checked"
+        )
+        missing_assumptions: list[str] = []
+        if pack_error is not None:
+            missing_assumptions.append(pack_error)
+        if not ultimate_combinations:
+            missing_assumptions.append(
+                "No Tertius-owned ULS design combination is available for the "
+                "tension envelope."
+            )
+        if fastener_count is not None and end_fastener_shear_capacity_kN is None:
+            missing_assumptions.append(
+                "The fastener product has no Section 8 tested screw shear resistance; "
+                "Clause 5.4.2.5 prevents the connected-part bearing calculation from "
+                "being treated as the screw capacity."
+            )
+        if len(rendered_end_connections) != 2:
+            missing_assumptions.append(
+                "The compiled brace does not have exactly two physical force/shear "
+                "end connections."
+            )
+        elif fastener_count is not None and not rendered_layout_matches:
+            missing_assumptions.append(
+                "The rendered connector count at one or both brace ends does not "
+                "match the product-declared end-fastener count."
+            )
+        if spacing_status == "fail":
+            missing_assumptions.append(
+                "Rendered screw spacing is below the Clause 5.4.2.1 minimum of 3df."
+            )
+        if edge_distance_status == "fail":
+            missing_assumptions.append(
+                "Rendered screw edge distance is below the Australian Clause 5.4.2.1 "
+                "minimum of 1.5df."
+            )
         checks.append(
             TensionMemberCheck(
                 member_id=declaration.id,
                 label=declaration.label,
                 status=status,
-                capacity_status=declaration.tension_capacity_status,
+                capacity_status=capacity_status,
+                member_capacity_status=member_capacity_status,
+                connection_capacity_status=connection_capacity_status,
+                pack_id=(
+                    "as_nzs_4600_2005_a1_tension" if pack is not None else None
+                ),
                 governing_combination_id=governing_combination_id,
                 tension_demand_kN=tension_demand_kN,
                 tension_capacity_kN=tension_capacity,
@@ -356,24 +672,218 @@ def _tension_member_checks(model, analysis) -> list[TensionMemberCheck]:
                 member_utilisation=member_utilisation,
                 connection_utilisation=connection_utilisation,
                 governing_utilisation=governing_utilisation,
-                end_fastener_count=declaration.end_fastener_count,
+                end_fastener_count=fastener_count,
+                rendered_end_connection_count=len(rendered_end_connections),
+                rendered_end_fastener_counts=rendered_end_fastener_counts,
                 required_force_per_end_fastener_kN=(
-                    tension_demand_kN / declaration.end_fastener_count
-                    if declaration.end_fastener_count is not None
+                    tension_demand_kN / fastener_count
+                    if fastener_count is not None
                     else None
                 ),
+                gross_area_mm2=pack.gross_area_mm2 if pack is not None else None,
+                net_area_mm2=pack.net_area_mm2 if pack is not None else None,
+                gross_yield_capacity_kN=(
+                    pack.gross_yield_capacity_kN if pack is not None else None
+                ),
+                net_fracture_capacity_kN=(
+                    pack.net_fracture_capacity_kN if pack is not None else None
+                ),
+                connected_part_net_capacity_kN=connected_part_net_capacity_kN,
+                end_bearing_capacity_kN=end_bearing_capacity_kN,
+                end_tearout_capacity_kN=end_tearout_capacity_kN,
+                end_fastener_shear_capacity_kN=end_fastener_shear_capacity_kN,
+                spacing_status=spacing_status,
+                edge_distance_status=edge_distance_status,
+                standard_reference=(pack.standard_reference if pack is not None else None),
+                standard_status=(pack.standard_status if pack is not None else None),
+                standard_source_sha256=(
+                    pack.standard_source_sha256 if pack is not None else None
+                ),
+                developments_supplement_sha256=(
+                    pack.developments_supplement_sha256 if pack is not None else None
+                ),
                 basis=(
-                    declaration.tension_capacity_basis
-                    or "No authored tension resistance basis."
+                    " ".join(
+                        filter(
+                            None,
+                            (
+                                pack.basis if pack is not None else None,
+                                *connection_basis_parts,
+                            ),
+                        )
+                    )
+                    or "No tension-member resistance basis is available."
                 ),
                 assumptions=[
                     declaration.assumption,
-                    declaration.end_connection_basis
-                    or "End-connection resistance remains unverified.",
+                    *missing_assumptions,
                 ],
             )
         )
     return checks
+
+
+def _path_to_ground(
+    start_component_id: str,
+    *,
+    excluded_component_id: str,
+    components: dict[str, DesignComponent],
+    connections: Sequence[DesignConnection],
+) -> tuple[list[str], list[DesignConnection], str | None]:
+    adjacency: dict[str, list[tuple[str, DesignConnection]]] = {}
+    for connection in connections:
+        if not ({"force", "shear"} & set(connection.transfers)):
+            continue
+        if excluded_component_id in {
+            connection.from_component_id,
+            connection.to_component_id,
+        }:
+            continue
+        adjacency.setdefault(connection.from_component_id, []).append(
+            (connection.to_component_id, connection)
+        )
+        adjacency.setdefault(connection.to_component_id, []).append(
+            (connection.from_component_id, connection)
+        )
+    queue: deque[tuple[str, list[str], list[DesignConnection]]] = deque(
+        [(start_component_id, [start_component_id], [])]
+    )
+    visited = {start_component_id, excluded_component_id}
+    while queue:
+        current_id, component_path, connection_path = queue.popleft()
+        current = components.get(current_id)
+        if current is not None and current.grounded:
+            return component_path, connection_path, current_id
+        for next_id, connection in adjacency.get(current_id, []):
+            if next_id in visited or next_id not in components:
+                continue
+            visited.add(next_id)
+            queue.append(
+                (
+                    next_id,
+                    [*component_path, next_id],
+                    [*connection_path, connection],
+                )
+            )
+    return [start_component_id], [], None
+
+
+def _expanded_component_path(
+    component_path: Sequence[str],
+    connection_path: Sequence[DesignConnection],
+) -> list[str]:
+    expanded = [component_path[0]] if component_path else []
+    for next_component_id, connection in zip(
+        component_path[1:],
+        connection_path,
+        strict=True,
+    ):
+        expanded.extend(connection.connector_component_ids)
+        expanded.append(next_component_id)
+    return expanded
+
+
+def _bracing_load_path_traces(
+    capture: ProjectStructuralCapture,
+    analysis,
+    tension_checks: Sequence[TensionMemberCheck],
+) -> list[BracingLoadPathTrace]:
+    """Trace every tension-only brace through both physical ends to ground."""
+
+    components = {component.id: component for component in capture.components}
+    checks_by_member = {check.member_id: check for check in tension_checks}
+    traces: list[BracingLoadPathTrace] = []
+    for declaration in analysis.members:
+        if not declaration.tension_only:
+            continue
+        incident: list[tuple[DesignConnection, str]] = []
+        for connection in capture.connections:
+            if not ({"force", "shear"} & set(connection.transfers)):
+                continue
+            if connection.from_component_id == declaration.component_id:
+                incident.append((connection, connection.to_component_id))
+            elif connection.to_component_id == declaration.component_id:
+                incident.append((connection, connection.from_component_id))
+        incident.sort(key=lambda item: item[0].id)
+        blockers: list[str] = []
+        if len(incident) < 2:
+            blockers.append(
+                "The brace does not have two authored force/shear end connections."
+            )
+        legs: list[tuple[list[str], list[DesignConnection], str | None]] = []
+        for _connection, support_component_id in incident[:2]:
+            leg = _path_to_ground(
+                support_component_id,
+                excluded_component_id=declaration.component_id,
+                components=components,
+                connections=capture.connections,
+            )
+            legs.append(leg)
+            if leg[2] is None:
+                blockers.append(
+                    f"No force/shear path from {support_component_id!r} reaches a "
+                    "grounded component without relying on the brace itself."
+                )
+        check = checks_by_member.get(declaration.id)
+        if check is None:
+            blockers.append("No tension-member demand/resistance check was produced.")
+        elif check.connection_capacity_status != "verified":
+            blockers.append(
+                "The rendered end connection has no complete verified resistance."
+            )
+        component_ids: list[str] = [declaration.component_id]
+        connection_ids: list[str] = []
+        grounded_ids: list[str] = [
+            ground
+            for _path, _connections, ground in legs
+            if ground is not None
+        ]
+        if len(legs) == 2 and len(incident) >= 2:
+            first_components = _expanded_component_path(legs[0][0], legs[0][1])
+            second_components = _expanded_component_path(legs[1][0], legs[1][1])
+            component_ids = [
+                *reversed(first_components),
+                *incident[0][0].connector_component_ids,
+                declaration.component_id,
+                *incident[1][0].connector_component_ids,
+                *second_components,
+            ]
+            connection_ids = [
+                *(connection.id for connection in reversed(legs[0][1])),
+                incident[0][0].id,
+                incident[1][0].id,
+                *(connection.id for connection in legs[1][1]),
+            ]
+        if any(ground is None for _path, _connections, ground in legs) or len(legs) < 2:
+            status: Literal["pass", "fail", "candidate", "blocked"] = "blocked"
+        elif check is not None and check.status == "fail":
+            status = "fail"
+        elif check is not None and check.status == "pass" and not blockers:
+            status = "pass"
+        else:
+            status = "candidate"
+        traces.append(
+            BracingLoadPathTrace(
+                id=f"bracing-path:{declaration.id}",
+                member_id=declaration.id,
+                component_id=declaration.component_id,
+                governing_combination_id=(
+                    check.governing_combination_id if check is not None else None
+                ),
+                status=status,
+                tension_demand_kN=(check.tension_demand_kN if check is not None else 0),
+                component_ids=list(dict.fromkeys(component_ids)),
+                connection_ids=list(dict.fromkeys(connection_ids)),
+                grounded_component_ids=list(dict.fromkeys(grounded_ids)),
+                blockers=list(dict.fromkeys(blockers)),
+                basis=(
+                    "The compiled physical connection graph was traversed independently "
+                    "from each brace end to grounded components. A pass additionally "
+                    "requires the governing ULS strap and end-connection resistance to pass."
+                ),
+            )
+        )
+    return traces
 
 
 def _clean(value: float, tolerance: float = 1e-12) -> float:
@@ -1681,9 +2191,14 @@ def _member_stability_checks(
             raise StructuralAnalysisError(
                 f"member-stability segment {segment.id!r} has no stations"
             )
-        status: Literal["pass", "fail", "unsupported"] = (
-            "fail" if float(governing["utilisation"]) > 1.0 else "pass"
-        )
+        if float(governing["utilisation"]) > 1.0:
+            status: Literal["pass", "fail", "unsupported"] = "fail"
+        elif governing["restraint_status"] == "verified":
+            status = "pass"
+        elif governing["restraint_status"] == "inadequate":
+            status = "fail"
+        else:
+            status = "unsupported"
         checks.append(
             MemberStabilityCheck(
                 segment_id=segment.id,
@@ -1860,8 +2375,9 @@ def _member_stability_checks(
                     (
                         "The full physical segment is checked as unbraced for "
                         "lateral-torsional buckling with Cb=1. Candidate cladding, "
-                        "bridging, or flange restraint is displayed as evidence but "
-                        "is not credited in resistance."
+                        "bridging, or flange restraint is not credited in resistance. "
+                        "A capacity result below unity cannot pass until Stage 8 "
+                        "verifies effective restraint at both segment boundaries."
                     ),
                     (
                         "Tertius calculates distortional compression and bending "
@@ -2149,6 +2665,7 @@ def _certification_evidence(
     member_checks: list[MemberCheck],
     connection_checks: list[ConnectionCheck],
     tension_member_checks: list[TensionMemberCheck],
+    bracing_load_path_traces: list[BracingLoadPathTrace],
     cross_section_checks: list[MemberCrossSectionCheck],
     member_stability_checks: list[MemberStabilityCheck],
     member_restraint_candidate_checks: list[MemberRestraintCandidateCheck],
@@ -2854,22 +3371,33 @@ def _certification_evidence(
         member_stability_status = "not_checked"
 
     bracing_status: Literal["pass", "fail", "warning", "not_checked", "unsupported"]
-    if any(check.status == "fail" for check in tension_member_checks):
+    if any(check.status == "fail" for check in tension_member_checks) or any(
+        trace.status in {"fail", "blocked"} for trace in bracing_load_path_traces
+    ):
         bracing_status = "fail"
-    elif any(check.status == "unsupported" for check in tension_member_checks):
-        bracing_status = "unsupported"
-    elif not member_restraint_candidate_checks and not tension_member_checks:
-        bracing_status = "not_checked"
     elif any(check.status == "fail" for check in member_restraint_candidate_checks):
         bracing_status = "fail"
-    elif all(
-        check.status == "pass" for check in member_restraint_candidate_checks
-    ) and all(check.status == "pass" for check in tension_member_checks):
-        bracing_status = "pass"
-    elif any(
-        check.status == "unsupported" for check in member_restraint_candidate_checks
+    elif (
+        any(check.status == "unsupported" for check in tension_member_checks)
+        or any(trace.status == "candidate" for trace in bracing_load_path_traces)
+        or any(
+            check.status == "unsupported"
+            for check in member_restraint_candidate_checks
+        )
     ):
         bracing_status = "unsupported"
+    elif (
+        not member_restraint_candidate_checks
+        and not tension_member_checks
+        and not bracing_load_path_traces
+    ):
+        bracing_status = "not_checked"
+    elif all(
+        check.status == "pass" for check in member_restraint_candidate_checks
+    ) and all(check.status == "pass" for check in tension_member_checks) and all(
+        trace.status == "pass" for trace in bracing_load_path_traces
+    ):
+        bracing_status = "pass"
     else:
         bracing_status = "warning"
 
@@ -3737,13 +4265,22 @@ def _certification_evidence(
                 "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
             ),
             supplemental_references=["SCI P399 Section 9"],
-            purpose="Trace restraint forces and stiffness to a complete resisting system.",
+            purpose=(
+                "Verify tension-only braces, both end connections, and complete "
+                "physical load paths to grounded components; separately verify "
+                "member compression-flange restraint."
+            ),
             assumptions=[
                 "Cladding and fasteners are not assumed to provide unverified restraint.",
                 *[
                     assumption
                     for check in tension_member_checks
                     for assumption in check.assumptions
+                ],
+                *[
+                    blocker
+                    for trace in bracing_load_path_traces
+                    for blocker in trace.blockers
                 ],
                 *(
                     [
@@ -3758,6 +4295,19 @@ def _certification_evidence(
                 ),
             ],
             inputs=[
+                CalculationInput(
+                    symbol=f"path,{trace.member_id}",
+                    label=f"{trace.member_id} brace-to-ground path",
+                    value=trace.status,
+                    source=(
+                        " → ".join(trace.component_ids)
+                        if trace.component_ids
+                        else trace.basis
+                    ),
+                )
+                for trace in bracing_load_path_traces
+            ]
+            + [
                 CalculationInput(
                     symbol=f"restraint,{check.candidate_id}",
                     label=f"{check.candidate_id} demand/capacity state",
@@ -3780,6 +4330,8 @@ def _certification_evidence(
                     source=(
                         f"governing={check.governing_combination_id or 'none'}; "
                         f"demand={check.tension_demand_kN:g} kN; "
+                        f"member evidence={check.member_capacity_status}; "
+                        f"connection evidence={check.connection_capacity_status}; "
                         f"strap capacity={check.tension_capacity_kN if check.tension_capacity_kN is not None else 'not declared'} kN; "
                         f"end capacity={check.end_connection_capacity_kN if check.end_connection_capacity_kN is not None else 'unverified'} kN; "
                         f"per end fastener={check.required_force_per_end_fastener_kN if check.required_force_per_end_fastener_kN is not None else 'not declared'} kN"
@@ -3793,6 +4345,20 @@ def _certification_evidence(
                         *basis_references,
                         *(
                             reference
+                            for check in tension_member_checks
+                            for reference in (
+                                check.standard_reference,
+                                (
+                                    f"AS/NZS 4600 source SHA-256 "
+                                    f"{check.standard_source_sha256}"
+                                    if check.standard_source_sha256
+                                    else None
+                                ),
+                            )
+                            if reference is not None
+                        ),
+                        *(
+                            reference
                             for check in member_restraint_candidate_checks
                             for reference in check.evidence_references
                         ),
@@ -3800,6 +4366,32 @@ def _certification_evidence(
                 )
             ),
             equations=[
+                CalculationEquation(
+                    label=f"{check.label} gross-section yielding",
+                    expression="phi Nt,gross = 0.90 Ag fy",
+                    substitution=(
+                        f"Ag={check.gross_area_mm2} mm2"
+                    ),
+                    result=check.gross_yield_capacity_kN or 0.0,
+                    unit="kN",
+                )
+                for check in tension_member_checks
+                if check.gross_yield_capacity_kN is not None
+            ]
+            + [
+                CalculationEquation(
+                    label=f"{check.label} net-section fracture",
+                    expression="phi Nt,net = 0.90(0.85 kt An fu)",
+                    substitution=(
+                        f"An={check.net_area_mm2} mm2"
+                    ),
+                    result=check.net_fracture_capacity_kN or 0.0,
+                    unit="kN",
+                )
+                for check in tension_member_checks
+                if check.net_fracture_capacity_kN is not None
+            ]
+            + [
                 CalculationEquation(
                     label=f"{check.label} governing strap utilisation",
                     expression="u = N* / min(phi Nt, phi Nc,end)",
@@ -5140,7 +5732,16 @@ def solve_project_structural(
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
-    tension_member_checks = _tension_member_checks(model, analysis)
+    tension_member_checks = _tension_member_checks(
+        model,
+        analysis,
+        capture.connections,
+    )
+    bracing_load_path_traces = _bracing_load_path_traces(
+        capture,
+        analysis,
+        tension_member_checks,
+    )
     connection_checks = _connection_checks(
         model,
         analysis,
@@ -5157,10 +5758,26 @@ def solve_project_structural(
         check.member_id: check for check in cross_section_checks
     }
     member_stability_checks = _member_stability_checks(model, analysis)
-    member_restraint_candidate_checks = _member_restraint_candidate_checks(
-        model,
-        analysis,
-        combination_id=active_combination.id,
+    member_restraint_candidate_checks = (
+        [
+            check
+            for restraint_combination_id in (
+                list(analysis.member_stability_verification.combination_ids)
+                + (
+                    [active_combination.id]
+                    if active_combination.id
+                    not in analysis.member_stability_verification.combination_ids
+                    else []
+                )
+            )
+            for check in _member_restraint_candidate_checks(
+                model,
+                analysis,
+                combination_id=restraint_combination_id,
+            )
+        ]
+        if analysis.member_stability_verification is not None
+        else []
     )
     member_restraint_traces = _member_restraint_traces(
         model,
@@ -5685,6 +6302,7 @@ def solve_project_structural(
         member_checks=member_checks,
         connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
+        bracing_load_path_traces=bracing_load_path_traces,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
         member_restraint_candidate_checks=member_restraint_candidate_checks,
@@ -5766,6 +6384,7 @@ def solve_project_structural(
         member_checks=member_checks,
         connection_checks=connection_checks,
         tension_member_checks=tension_member_checks,
+        bracing_load_path_traces=bracing_load_path_traces,
         cross_section_checks=cross_section_checks,
         member_stability_checks=member_stability_checks,
         member_restraint_candidate_checks=member_restraint_candidate_checks,
