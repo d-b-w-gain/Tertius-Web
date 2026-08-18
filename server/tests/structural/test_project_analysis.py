@@ -16,6 +16,7 @@ from core.structural.contracts import (
     DesignConnection,
     MemberStabilityComparison,
     ProjectStructuralCapture,
+    TensionMemberCheck,
 )
 from core.structural.design_capture import (
     capture_project_structural_declaration,
@@ -108,7 +109,18 @@ def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
             transfers=["force", "shear", "moment"],
         ),
     ]
-    capture = SimpleNamespace(components=components, connections=connections)
+    capture = ProjectStructuralCapture(
+        project_name="test",
+        design_hash="0" * 64,
+        title="Bracing load path test",
+        authoring_mode="generated",
+        components=components,
+        connections=connections,
+        loads=[],
+        load_paths=[],
+        capabilities=[],
+        warnings=[],
+    )
     analysis = SimpleNamespace(
         members=[
             SimpleNamespace(
@@ -118,12 +130,16 @@ def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
             )
         ]
     )
-    tension_check = SimpleNamespace(
+    tension_check = TensionMemberCheck(
         member_id="brace-axis",
+        label="Brace axis",
+        capacity_status="verified",
+        member_capacity_status="verified",
         connection_capacity_status="verified",
         governing_combination_id="ULS-1.2G+WX+",
         tension_demand_kN=4.2,
         status="pass",
+        basis="Typed Stage 8 load-path test fixture.",
     )
 
     traces = _bracing_load_path_traces(capture, analysis, [tension_check])
