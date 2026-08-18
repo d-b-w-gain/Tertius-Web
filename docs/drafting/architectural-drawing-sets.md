@@ -211,6 +211,11 @@ The workbench should have three coordinated surfaces:
 3. **Properties/inspector** - selected sheet/view/object inputs, provenance,
    warnings, and links to the model/site/structural workbenches.
 
+The first workspace slice establishes this canvas-first shell with collapsible,
+resizable navigation and property panels, compact generation/export controls,
+display-only sheet zoom, and a focus mode. At compact widths, panels become
+on-demand overlays so they do not permanently reduce the drawing surface.
+
 Automatic layout templates create the initial shed set. Authors then make
 bounded composition changes without breaking model association. Preview and
 export consume the same saved drawing definition and vector renderer.

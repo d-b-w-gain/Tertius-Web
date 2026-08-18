@@ -111,6 +111,9 @@ and multi-sheet vector outputs without independently executing project source.
   display style in the drawing contract.
 - [ ] Make browser preview and PDF consume the same drawing definition.
 - [x] Honour individual/combined layout selections in both preview and export.
+- [x] Establish a canvas-first workspace with collapsible drawing navigation,
+  contextual properties, compact output controls, focus mode, and responsive
+  overlay panels.
 - [ ] Support multiple independently scaled viewports per sheet.
 - [ ] Verify printed scale numerically in generated PDF coordinates and display
   the actual scale in each viewport/title block.

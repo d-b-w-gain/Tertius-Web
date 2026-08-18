@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import * as THREE from 'three';
@@ -11,60 +11,57 @@ import {
   shouldRunPollingRequest,
 } from '../../shared/polling';
 import { runWithInteractionSpan } from '../../../telemetry';
-
-export type DraftingLayout = 'combined' | 'top' | 'front' | 'side' | 'iso';
-type DraftingViewName = Exclude<DraftingLayout, 'combined'>;
-type DraftingViewRect = { x: number; y: number; width: number; height: number };
+import {
+  DraftingInspector,
+  DraftingStatusBar,
+  DraftingToolbar,
+  DrawingSetNavigator,
+  draftingScalePresets,
+} from './DraftingWorkspaceChrome';
+import {
+  buildDraftingPdfUrl,
+  formatDraftingScale,
+  getDraftingViewLayout,
+  type DraftingLayout,
+  type DraftingViewName,
+  type DraftingViewRect,
+} from './draftingLayout';
 
 const DEFAULT_ISSUE_STATUS = 'PRELIMINARY';
+const NAVIGATOR_STORAGE_KEY = 'tertius.timus.navigator-open';
+const INSPECTOR_STORAGE_KEY = 'tertius.timus.inspector-open';
+const NAVIGATOR_WIDTH_STORAGE_KEY = 'tertius.timus.navigator-width';
+const INSPECTOR_WIDTH_STORAGE_KEY = 'tertius.timus.inspector-width';
 
-export const formatDraftingScale = (scale: number): string =>
-  scale >= 1 ? `${scale.toString()}:1` : `1:${(1 / scale).toString()}`;
+const clamp = (value: number, minimum: number, maximum: number): number =>
+  Math.min(maximum, Math.max(minimum, value));
 
-export const getDraftingViewLayout = (
-  layout: DraftingLayout,
-  sheetWidth: number,
-  sheetHeight: number,
-): Partial<Record<DraftingViewName, DraftingViewRect>> => {
-  if (layout !== 'combined') {
-    return {
-      [layout]: { x: 20, y: 30, width: sheetWidth - 40, height: sheetHeight - 75 },
-    };
+const readStoredBoolean = (key: string, fallback: boolean): boolean => {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const value = window.localStorage.getItem(key);
+    return value === null ? fallback : value === 'true';
+  } catch {
+    return fallback;
   }
-
-  const width = (sheetWidth - 60) / 2;
-  const height = (sheetHeight - 60) / 2;
-  return {
-    top: { x: 20, y: 30, width, height },
-    iso: { x: 40 + width, y: 30, width, height },
-    front: { x: 20, y: 30 + height, width, height },
-    side: { x: 40 + width, y: 30 + height, width, height },
-  };
 };
 
-export const buildDraftingPdfUrl = (
-  serverUrl: string,
-  activeProject: string,
-  options: {
-    title: string;
-    issueStatus: string;
-    showIssueMarkup: boolean;
-    showHiddenLines: boolean;
-    scale: number;
-    sheetSize: string;
-    layout: DraftingLayout;
-  },
-): string => {
-  const params = new URLSearchParams({
-    title: options.title,
-    stamp: options.issueStatus,
-    redline: options.showIssueMarkup.toString(),
-    hidden_lines: options.showHiddenLines.toString(),
-    scale: options.scale.toString(),
-    size: options.sheetSize,
-    layout: options.layout,
-  });
-  return `${serverUrl}/projects/${encodeURIComponent(activeProject)}/drafting.pdf?${params.toString()}`;
+const readStoredNumber = (key: string, fallback: number, minimum: number, maximum: number): number => {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const value = Number(window.localStorage.getItem(key));
+    return Number.isFinite(value) && value > 0 ? clamp(value, minimum, maximum) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const storeWorkspacePreference = (key: string, value: string | number | boolean) => {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Workspace preferences are optional in private or storage-restricted sessions.
+  }
 };
 
 const toDraftingLayout = (value: unknown): DraftingLayout =>
@@ -72,30 +69,13 @@ const toDraftingLayout = (value: unknown): DraftingLayout =>
     ? value
     : 'combined';
 
-const scalePresets = [
-  { value: 10, label: '10:1 (Enlarged 10x)' },
-  { value: 5, label: '5:1 (Enlarged 5x)' },
-  { value: 2, label: '2:1 (Enlarged 2x)' },
-  { value: 1, label: '1:1 (Full Size)' },
-  { value: 0.5, label: '1:2 (Half Size)' },
-  { value: 0.25, label: '1:4' },
-  { value: 0.2, label: '1:5' },
-  { value: 0.1, label: '1:10' },
-  { value: 0.05, label: '1:20' },
-  { value: 0.02, label: '1:50' },
-  { value: 0.01, label: '1:100' },
-  { value: 0.005, label: '1:200' },
-  { value: 0.002, label: '1:500' },
-  { value: 0.001, label: '1:1000' },
-];
-
 const toSafeScale = (value: unknown): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 1.0;
   const clamped = Math.min(10, Math.max(0.001, parsed));
-  const firstPreset = scalePresets[0];
+  const firstPreset = draftingScalePresets[0];
   if (!firstPreset) return clamped;
-  return scalePresets.reduce((closest, item) =>
+  return draftingScalePresets.reduce((closest, item) =>
     Math.abs(item.value - clamped) < Math.abs(closest.value - clamped) ? item : closest
   , firstPreset).value;
 };
@@ -133,6 +113,99 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [buildStatus, setBuildStatus] = useState<string>('none');
   const [buildMessage, setBuildMessage] = useState<string>('');
+  const [navigatorOpen, setNavigatorOpen] = useState(() => readStoredBoolean(NAVIGATOR_STORAGE_KEY, false));
+  const [inspectorOpen, setInspectorOpen] = useState(() => readStoredBoolean(INSPECTOR_STORAGE_KEY, true));
+  const [navigatorWidth, setNavigatorWidth] = useState(() =>
+    readStoredNumber(NAVIGATOR_WIDTH_STORAGE_KEY, 232, 200, 360));
+  const [inspectorWidth, setInspectorWidth] = useState(() =>
+    readStoredNumber(INSPECTOR_WIDTH_STORAGE_KEY, 300, 260, 420));
+  const [focusMode, setFocusMode] = useState(false);
+  const [canvasZoom, setCanvasZoom] = useState(1);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const compactWorkspace = window.matchMedia('(max-width: 1279px)');
+    const collapseOverlayPanels = (matches: boolean) => {
+      if (!matches) return;
+      setNavigatorOpen(false);
+      setInspectorOpen(false);
+    };
+    const handleChange = (event: MediaQueryListEvent) => collapseOverlayPanels(event.matches);
+
+    collapseOverlayPanels(compactWorkspace.matches);
+    compactWorkspace.addEventListener('change', handleChange);
+    return () => compactWorkspace.removeEventListener('change', handleChange);
+  }, []);
+
+  const visibleNavigator = navigatorOpen && !focusMode;
+  const visibleInspector = inspectorOpen && !focusMode;
+
+  const toggleNavigator = () => {
+    if (focusMode) setFocusMode(false);
+    setNavigatorOpen((value) => {
+      const next = focusMode ? true : !value;
+      storeWorkspacePreference(NAVIGATOR_STORAGE_KEY, next);
+      return next;
+    });
+  };
+
+  const toggleInspector = () => {
+    if (focusMode) setFocusMode(false);
+    setInspectorOpen((value) => {
+      const next = focusMode ? true : !value;
+      storeWorkspacePreference(INSPECTOR_STORAGE_KEY, next);
+      return next;
+    });
+  };
+
+  const closeNavigator = () => {
+    setNavigatorOpen(false);
+    storeWorkspacePreference(NAVIGATOR_STORAGE_KEY, false);
+  };
+
+  const closeInspector = () => {
+    setInspectorOpen(false);
+    storeWorkspacePreference(INSPECTOR_STORAGE_KEY, false);
+  };
+
+  const beginPanelResize = useCallback((
+    panel: 'navigator' | 'inspector',
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    const startingX = event.clientX;
+    const startingWidth = panel === 'navigator' ? navigatorWidth : inspectorWidth;
+    let latestWidth = startingWidth;
+
+    const move = (pointerEvent: PointerEvent) => {
+      const delta = panel === 'navigator'
+        ? pointerEvent.clientX - startingX
+        : startingX - pointerEvent.clientX;
+      const nextWidth = panel === 'navigator'
+        ? clamp(startingWidth + delta, 200, 360)
+        : clamp(startingWidth + delta, 260, 420);
+      latestWidth = nextWidth;
+
+      if (panel === 'navigator') setNavigatorWidth(nextWidth);
+      else setInspectorWidth(nextWidth);
+    };
+
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      storeWorkspacePreference(
+        panel === 'navigator' ? NAVIGATOR_WIDTH_STORAGE_KEY : INSPECTOR_WIDTH_STORAGE_KEY,
+        latestWidth,
+      );
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+  }, [inspectorWidth, navigatorWidth]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedScale(scale), 300);
@@ -311,164 +384,133 @@ const AuthenticatedDraftingTab: React.FC<{ serverUrl: string, isActive?: boolean
   }
 
   return (
-    <div className="flex-1 flex min-h-0 overflow-hidden bg-slate-900 selection:bg-cyan-500/30">
-      <div className="w-80 border-r border-slate-800 bg-slate-950 p-6 flex flex-col justify-between overflow-y-auto">
-        <div className="space-y-6">
-          <div>
-            <h3 className="text-lg font-bold text-orange-400">Timus Compiler</h3>
-            <p className="text-xs text-slate-500">Automated A4 Drafting-Sheet PDF Generation.</p>
+    <div
+      data-testid="drafting-workspace"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-slate-900 selection:bg-cyan-500/30"
+    >
+      <DraftingToolbar
+        activeProject={activeProject}
+        buildStatus={buildStatus}
+        navigatorOpen={visibleNavigator}
+        inspectorOpen={visibleInspector}
+        focusMode={focusMode}
+        onToggleNavigator={toggleNavigator}
+        onToggleInspector={toggleInspector}
+        onToggleFocusMode={() => setFocusMode((value) => !value)}
+        onGenerate={triggerBuild}
+        onDownload={handleDownloadPdf}
+      />
+
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {visibleNavigator && (
+          <>
+            <DrawingSetNavigator
+              width={navigatorWidth}
+              selectedView={selectedView}
+              onSelectView={setSelectedView}
+              onClose={closeNavigator}
+            />
+            <div
+              role="separator"
+              aria-label="Resize drawing navigator"
+              aria-orientation="vertical"
+              onPointerDown={(event) => beginPanelResize('navigator', event)}
+              className="hidden w-1 flex-none cursor-col-resize border-r border-slate-800 bg-slate-950 hover:bg-orange-500/40 xl:block"
+            />
+          </>
+        )}
+
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-800">
+          <div className="flex min-h-9 flex-none items-center justify-between gap-3 border-b border-slate-700/70 bg-slate-900/80 px-3">
+            <div className="min-w-0 truncate text-[10px] text-slate-400">
+              WebGL preview <span className="text-slate-600">/</span> export PDF for authoritative vectors
+            </div>
+            <div className="flex flex-none items-center gap-1" aria-label="Sheet zoom controls">
+              <button
+                type="button"
+                aria-label="Zoom out"
+                disabled={canvasZoom <= 0.5}
+                onClick={() => setCanvasZoom((value) => clamp(value - 0.25, 0.5, 2))}
+                className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-30"
+              >
+                -
+              </button>
+              <button
+                type="button"
+                onClick={() => setCanvasZoom(1)}
+                className="min-w-14 rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-slate-500"
+              >
+                Fit {Math.round(canvasZoom * 100)}%
+              </button>
+              <button
+                type="button"
+                aria-label="Zoom in"
+                disabled={canvasZoom >= 2}
+                onClick={() => setCanvasZoom((value) => clamp(value + 0.25, 0.5, 2))}
+                className="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-30"
+              >
+                +
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Sheet Size</label>
-            <select
-              value={sheetSize}
-              onChange={(e) => setSheetSize(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
-            >
-              <option value="A4">A4 (297 × 210 mm)</option>
-              <option value="A3">A3 (420 × 297 mm)</option>
-              <option value="A2">A2 (594 × 420 mm)</option>
-              <option value="A1">A1 (841 × 594 mm)</option>
-              <option value="A0">A0 (1189 × 841 mm)</option>
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Layout</label>
-            <select
-              value={selectedView}
-              onChange={(e) => setSelectedView(toDraftingLayout(e.target.value))}
-              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
-            >
-              <option value="combined">Combined (4 Views)</option>
-              <option value="top">Top View Only</option>
-              <option value="front">Front Elevation Only</option>
-              <option value="side">Side Elevation Only</option>
-              <option value="iso">Isometric View Only</option>
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Drawing Title</label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
+          <div data-testid="drafting-sheet-viewport" className="min-h-0 flex-1 overflow-auto p-2 sm:p-3">
+            <DraftingCanvas
+              sheetSize={sheetSize}
+              title={debouncedTitle}
+              stampText={stampText}
+              showRedline={showRedline}
+              showHiddenLines={showHiddenLines}
+              scale={debouncedScale}
+              serverUrl={serverUrl}
+              activeProject={activeProject}
+              getAccessToken={getAccessToken}
+              isActive={isActive}
+              selectedView={selectedView}
+              zoom={canvasZoom}
             />
           </div>
+        </main>
 
-          <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Projection Scale</label>
-            <select
-              value={scale.toString()}
-              onChange={(e) => setScale(parseFloat(e.target.value))}
-              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
-            >
-              {scalePresets.map((entry) => (
-                <option value={entry.value.toString()} key={entry.value}>{entry.label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-mono uppercase tracking-wider text-slate-400">Issue Status</label>
-            <input
-              type="text"
-              value={stampText}
-              onChange={(e) => setStampText(e.target.value.substring(0, 32).toUpperCase())}
-              className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-100 font-mono outline-none focus:border-orange-400"
-              placeholder="e.g. PRELIMINARY"
+        {visibleInspector && (
+          <>
+            <div
+              role="separator"
+              aria-label="Resize properties inspector"
+              aria-orientation="vertical"
+              onPointerDown={(event) => beginPanelResize('inspector', event)}
+              className="hidden w-1 flex-none cursor-col-resize border-l border-slate-800 bg-slate-950 hover:bg-orange-500/40 xl:block"
             />
-          </div>
-
-          <div className="flex items-center justify-between border-t border-slate-900 pt-4">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Highlight Issue Status</span>
-            <button
-              onClick={() => setShowRedline(!showRedline)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${showRedline ? 'bg-orange-500' : 'bg-slate-800'}`}
-            >
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${showRedline ? 'translate-x-5.5' : 'translate-x-1'}`} />
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between pt-1">
-            <span className="text-xs font-mono uppercase tracking-wider text-slate-400">Show Hidden Lines</span>
-            <button
-              onClick={() => setShowHiddenLines(!showHiddenLines)}
-              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors outline-none ${showHiddenLines ? 'bg-orange-500' : 'bg-slate-800'}`}
-            >
-              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${showHiddenLines ? 'translate-x-5.5' : 'translate-x-1'}`} />
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-2 pt-6 border-t border-slate-900">
-          <button
-            type="button"
-            onClick={triggerBuild}
-            disabled={buildStatus === 'building'}
-            className={`w-full font-semibold py-2 px-4 rounded border transition-all text-xs flex justify-center items-center gap-1.5 cursor-pointer ${
-              buildStatus === 'building' 
-                ? 'bg-orange-900/50 border-orange-800 text-orange-400 opacity-70 cursor-not-allowed' 
-                : 'bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-slate-100 border-slate-800'
-            }`}
-          >
-            {buildStatus === 'building' ? 'Calculating PDF Lines...' : 'Generate PDF Data'}
-          </button>
-          <button
-            type="button"
-            onClick={handleDownloadPdf}
-            disabled={buildStatus !== 'ready'}
-            className={`w-full font-bold py-2.5 px-4 rounded transition-all text-xs flex justify-center items-center gap-1.5 shadow-lg ${
-              buildStatus === 'ready'
-                ? 'bg-orange-600 hover:bg-orange-500 text-white shadow-orange-500/20 cursor-pointer'
-                : 'bg-slate-800 text-slate-500 shadow-none cursor-not-allowed'
-            }`}
-          >
-            📥 Download PDF
-          </button>
-          {buildStatus === 'stale' && (
-             <div className="text-[10px] text-orange-400 text-center font-mono uppercase mt-1">
-               PDF data is not current. Use Generate PDF Data to refresh.
-             </div>
-          )}
-          {buildStatus === 'failed' && (
-             <div className="text-[10px] text-red-400 text-center font-mono uppercase mt-1">
-               {buildMessage || 'PDF Data generation failed. Try again.'}
-             </div>
-          )}
-          {buildStatus !== 'failed' && buildMessage && (
-             <div className="text-[10px] text-slate-400 text-center font-mono uppercase mt-1">
-               {buildMessage}
-             </div>
-          )}
-        </div>
+            <DraftingInspector
+              width={inspectorWidth}
+              sheetSize={sheetSize}
+              title={title}
+              issueStatus={stampText}
+              selectedView={selectedView}
+              scale={scale}
+              showIssueMarkup={showRedline}
+              showHiddenLines={showHiddenLines}
+              onSheetSizeChange={setSheetSize}
+              onTitleChange={setTitle}
+              onIssueStatusChange={setStampText}
+              onSelectedViewChange={(value) => setSelectedView(toDraftingLayout(value))}
+              onScaleChange={setScale}
+              onShowIssueMarkupChange={setShowRedline}
+              onShowHiddenLinesChange={setShowHiddenLines}
+              onClose={closeInspector}
+            />
+          </>
+        )}
       </div>
 
-      <div className="flex-1 p-6 overflow-hidden flex flex-col items-center space-y-4 select-none bg-slate-800">
-        <div className="text-center space-y-1 z-20">
-          <h2 className="text-xl font-bold text-white tracking-wide">Timus Interactive Preview</h2>
-          <p className="text-xs text-slate-400">Instant WebGL approximation. Export for perfect vectors.</p>
-        </div>
-
-        <div className="flex-1 w-full max-w-5xl bg-slate-950 shadow-2xl overflow-hidden rounded relative flex items-center justify-center p-4">
-          <DraftingCanvas 
-            sheetSize={sheetSize} 
-            title={debouncedTitle} 
-            stampText={stampText} 
-            showRedline={showRedline} 
-            showHiddenLines={showHiddenLines} 
-            scale={debouncedScale} 
-            serverUrl={serverUrl}
-            activeProject={activeProject}
-            getAccessToken={getAccessToken}
-            isActive={isActive}
-            selectedView={selectedView}
-          />
-        </div>
-      </div>
+      <DraftingStatusBar
+        buildStatus={buildStatus}
+        buildMessage={buildMessage}
+        issueStatus={stampText}
+        sheetSize={sheetSize}
+        selectedView={selectedView}
+        scaleLabel={formatDraftingScale(scale)}
+      />
     </div>
   );
 };
@@ -485,7 +527,8 @@ const DraftingCanvas: React.FC<{
   getAccessToken: () => Promise<string>;
   isActive: boolean;
   selectedView: DraftingLayout;
-}> = ({ sheetSize, title, stampText, showRedline, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView }) => {
+  zoom: number;
+}> = ({ sheetSize, title, stampText, showRedline, scale, serverUrl, activeProject, getAccessToken, isActive, selectedView, zoom }) => {
   const formats: Record<string, [number, number]> = {
     "A4": [297, 210], "A3": [420, 297], "A2": [594, 420], "A1": [841, 594], "A0": [1189, 841]
   };
@@ -494,10 +537,36 @@ const DraftingCanvas: React.FC<{
 
   const svgRef = useRef<SVGSVGElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const accessTokenRef = useRef(getAccessToken);
   const modelMtimeRef = useRef<number>(0);
-  
+  const [fittedSheetSize, setFittedSheetSize] = useState({ width: 0, height: 0 });
   const [modelUrl, setModelUrl] = useState<string>('');
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+
+    const resize = () => {
+      const bounds = host.getBoundingClientRect();
+      if (bounds.width <= 0 || bounds.height <= 0) return;
+      const sheetRatio = w / h;
+      const hostRatio = bounds.width / bounds.height;
+      const width = hostRatio > sheetRatio ? bounds.height * sheetRatio : bounds.width;
+      const height = width / sheetRatio;
+      setFittedSheetSize({ width, height });
+    };
+
+    resize();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', resize);
+      return () => window.removeEventListener('resize', resize);
+    }
+
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [h, w]);
 
   useEffect(() => {
     accessTokenRef.current = getAccessToken;
@@ -737,8 +806,16 @@ const DraftingCanvas: React.FC<{
   }, [modelUrl]);
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center">
-      <svg ref={svgRef} viewBox={`0 0 ${w} ${h}`} className="max-w-full max-h-full drop-shadow-2xl bg-white border border-slate-700 z-10" style={{ position: 'relative' }}>
+    <div ref={hostRef} className="flex h-full w-full">
+      <div
+        className="relative m-auto flex-none"
+        style={{
+          width: fittedSheetSize.width * zoom,
+          height: fittedSheetSize.height * zoom,
+          visibility: fittedSheetSize.width > 0 ? 'visible' : 'hidden',
+        }}
+      >
+      <svg ref={svgRef} viewBox={`0 0 ${w} ${h}`} className="relative z-10 h-full w-full border border-slate-700 bg-white drop-shadow-2xl">
         {/* Background Grid - Faint Grid Paper effect */}
         <defs>
           <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse" x="10" y="10">
@@ -859,10 +936,12 @@ const DraftingCanvas: React.FC<{
         ref={canvasRef} 
         style={{
           position: 'absolute',
+          inset: 0,
           pointerEvents: 'none',
           zIndex: 20
         }} 
       />
+      </div>
     </div>
   );
 };

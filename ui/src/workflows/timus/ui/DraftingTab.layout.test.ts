@@ -4,7 +4,7 @@ import {
   buildDraftingPdfUrl,
   formatDraftingScale,
   getDraftingViewLayout,
-} from './DraftingTab';
+} from './draftingLayout';
 
 describe('Timus drafting layout contract', () => {
   it('includes the selected layout in the PDF request', () => {
