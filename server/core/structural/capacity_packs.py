@@ -96,6 +96,32 @@ class ManufacturerWorkingLoadAnchorGroupResistance:
 
 
 @dataclass(frozen=True)
+class BoltedSheetInterfaceResistance:
+    pack_id: str
+    pack_version: str
+    bolt_count: int
+    design_bolt_shear_capacity_kN: float
+    design_sheet_bearing_capacity_kN: float
+    design_sheet_tearout_capacity_kN: float
+    governing_capacity_kN: float
+    governing_utilisation: float
+    required_spacing_mm: float
+    required_edge_distance_mm: float
+    bolt_shear_status: Literal["pass", "fail"]
+    sheet_bearing_status: Literal["pass", "fail"]
+    sheet_tearout_status: Literal["pass", "fail"]
+    hole_status: Literal["pass", "fail"]
+    spacing_status: Literal["pass", "fail"]
+    edge_distance_status: Literal["pass", "fail"]
+    status: Literal["pass", "fail"]
+    standard_reference: str
+    standard_status: str
+    standard_source_sha256: str
+    developments_supplement_sha256: str
+    basis: str
+
+
+@dataclass(frozen=True)
 class MemberCompressionCapacity:
     pack_id: str
     section_record_sha256: str
@@ -307,6 +333,184 @@ def as_nzs_4600_2005_a1_screw_shear_qualification(
             "than 1.25 Vb, where Vb is the Clause 5.4.2.3 nominal single-screw "
             "bearing resistance. Screw shear is a qualification gate, not an "
             "additional factored connection-capacity limit."
+        ),
+    )
+
+
+def as_nzs_4600_2005_a1_bolted_sheet_interface(
+    *,
+    bolt_count: int,
+    resultant_shear_demand_kN: float,
+    nominal_bolt_diameter_mm: float,
+    bolt_tensile_strength_MPa: float,
+    bolt_minor_area_mm2: float,
+    connected_sheet_thickness_mm: float,
+    connected_sheet_yield_strength_MPa: float,
+    connected_sheet_tensile_strength_MPa: float,
+    hole_diameter_mm: float,
+    hole_type: str,
+    minimum_spacing_mm: float,
+    minimum_edge_distance_mm: float,
+    washers_under_head_and_nut: bool,
+) -> BoltedSheetInterfaceResistance:
+    """Check a single-shear bolt group through a sub-3 mm connected sheet.
+
+    Product imports declare only physical product and installed-layout facts.
+    Tertius owns the AS/NZS 4600:2005 Clause 5.3 bolt shear, sheet bearing,
+    sheet tearout, hole-size, spacing, and edge-distance calculations.
+    """
+
+    positive_values = {
+        "nominal bolt diameter": nominal_bolt_diameter_mm,
+        "bolt tensile strength": bolt_tensile_strength_MPa,
+        "bolt minor area": bolt_minor_area_mm2,
+        "connected sheet thickness": connected_sheet_thickness_mm,
+        "connected sheet yield strength": connected_sheet_yield_strength_MPa,
+        "connected sheet tensile strength": connected_sheet_tensile_strength_MPa,
+        "hole diameter": hole_diameter_mm,
+        "minimum spacing": minimum_spacing_mm,
+        "minimum edge distance": minimum_edge_distance_mm,
+    }
+    if bolt_count <= 0:
+        raise CapacityPackError("bolt count must be positive")
+    if resultant_shear_demand_kN < 0:
+        raise CapacityPackError("bolted-sheet demand cannot be negative")
+    for label, value in positive_values.items():
+        if value <= 0:
+            raise CapacityPackError(f"{label} must be positive")
+    if connected_sheet_thickness_mm >= 3.0:
+        raise CapacityPackError(
+            "AS/NZS 4600 Clause 5.3 requires at least one connected part below 3 mm"
+        )
+    normalized_hole_type = hole_type.strip().lower()
+    if normalized_hole_type != "standard_round":
+        raise CapacityPackError(
+            "this verified pack currently requires standard round bolt holes"
+        )
+
+    required_spacing_mm = 3.0 * nominal_bolt_diameter_mm
+    required_edge_distance_mm = 1.5 * nominal_bolt_diameter_mm
+    maximum_standard_hole_mm = nominal_bolt_diameter_mm + (
+        1.0 if nominal_bolt_diameter_mm < 12.0 else 2.0
+    )
+    hole_status: Literal["pass", "fail"] = (
+        "pass" if hole_diameter_mm <= maximum_standard_hole_mm else "fail"
+    )
+    spacing_status: Literal["pass", "fail"] = (
+        "pass" if minimum_spacing_mm >= required_spacing_mm else "fail"
+    )
+    edge_distance_status: Literal["pass", "fail"] = (
+        "pass" if minimum_edge_distance_mm >= required_edge_distance_mm else "fail"
+    )
+
+    phi_bolt_shear = 0.80
+    nominal_bolt_shear_per_bolt_N = (
+        0.62 * bolt_tensile_strength_MPa * bolt_minor_area_mm2
+    )
+    design_bolt_shear_capacity_kN = (
+        bolt_count * phi_bolt_shear * nominal_bolt_shear_per_bolt_N / 1000.0
+    )
+
+    diameter_thickness_ratio = (
+        nominal_bolt_diameter_mm / connected_sheet_thickness_mm
+    )
+    if diameter_thickness_ratio < 10.0:
+        bearing_factor = 3.0
+    elif diameter_thickness_ratio <= 22.0:
+        bearing_factor = 4.0 - 0.1 * diameter_thickness_ratio
+    else:
+        bearing_factor = 1.8
+    bearing_modification = 1.0 if washers_under_head_and_nut else 0.75
+    phi_bearing = 0.60
+    nominal_bearing_per_bolt_N = (
+        bearing_modification
+        * bearing_factor
+        * nominal_bolt_diameter_mm
+        * connected_sheet_thickness_mm
+        * connected_sheet_tensile_strength_MPa
+    )
+    design_sheet_bearing_capacity_kN = (
+        bolt_count * phi_bearing * nominal_bearing_per_bolt_N / 1000.0
+    )
+
+    tearout_phi = (
+        0.70
+        if connected_sheet_tensile_strength_MPa
+        / connected_sheet_yield_strength_MPa
+        >= 1.08
+        else 0.60
+    )
+    nominal_tearout_per_bolt_N = (
+        connected_sheet_thickness_mm
+        * minimum_edge_distance_mm
+        * connected_sheet_tensile_strength_MPa
+    )
+    design_sheet_tearout_capacity_kN = (
+        bolt_count * tearout_phi * nominal_tearout_per_bolt_N / 1000.0
+    )
+    governing_capacity_kN = min(
+        design_bolt_shear_capacity_kN,
+        design_sheet_bearing_capacity_kN,
+        design_sheet_tearout_capacity_kN,
+    )
+    governing_utilisation = resultant_shear_demand_kN / governing_capacity_kN
+    bolt_shear_status: Literal["pass", "fail"] = (
+        "pass"
+        if resultant_shear_demand_kN <= design_bolt_shear_capacity_kN
+        else "fail"
+    )
+    sheet_bearing_status: Literal["pass", "fail"] = (
+        "pass"
+        if resultant_shear_demand_kN <= design_sheet_bearing_capacity_kN
+        else "fail"
+    )
+    sheet_tearout_status: Literal["pass", "fail"] = (
+        "pass"
+        if resultant_shear_demand_kN <= design_sheet_tearout_capacity_kN
+        else "fail"
+    )
+    checks = (
+        bolt_shear_status,
+        sheet_bearing_status,
+        sheet_tearout_status,
+        hole_status,
+        spacing_status,
+        edge_distance_status,
+    )
+    status: Literal["pass", "fail"] = (
+        "pass" if all(value == "pass" for value in checks) else "fail"
+    )
+    return BoltedSheetInterfaceResistance(
+        pack_id="as_nzs_4600_2005_a1_bolted_sheet_interface",
+        pack_version="1",
+        bolt_count=bolt_count,
+        design_bolt_shear_capacity_kN=design_bolt_shear_capacity_kN,
+        design_sheet_bearing_capacity_kN=design_sheet_bearing_capacity_kN,
+        design_sheet_tearout_capacity_kN=design_sheet_tearout_capacity_kN,
+        governing_capacity_kN=governing_capacity_kN,
+        governing_utilisation=governing_utilisation,
+        required_spacing_mm=required_spacing_mm,
+        required_edge_distance_mm=required_edge_distance_mm,
+        bolt_shear_status=bolt_shear_status,
+        sheet_bearing_status=sheet_bearing_status,
+        sheet_tearout_status=sheet_tearout_status,
+        hole_status=hole_status,
+        spacing_status=spacing_status,
+        edge_distance_status=edge_distance_status,
+        status=status,
+        standard_reference=AS_NZS_4600_2005_A1_REFERENCE,
+        standard_status=ACCEPTED_STANDARD_STATUS,
+        standard_source_sha256=AS_NZS_4600_2005_A1_SHA256,
+        developments_supplement_sha256=(
+            AS_NZS_4600_DEVELOPMENTS_SUPPLEMENT_SHA256
+        ),
+        basis=(
+            "AS/NZS 4600:2005 incorporating Amendment No. 1 Clauses 5.3.1, "
+            "5.3.2, 5.3.4.2 and 5.3.5.1: standard-hole geometry, 3df spacing, "
+            "1.5df edge distance, connected-sheet tearout and bearing, and "
+            "Grade-bolt single-shear resistance. Demand is shared equally by "
+            "the declared identical bolt group; fixture-plate and connected-part "
+            "net-section resistance remain separate limit states."
         ),
     )
 

@@ -543,6 +543,42 @@ export type StructuralSnapshot = {
       basis: string
       blockers: string[]
     } | null
+    bolted_sheet_interface?: {
+      status: 'pass' | 'fail' | 'unsupported'
+      evidence_status: 'unverified' | 'candidate' | 'verified'
+      pack_id: string
+      pack_version: string
+      bolt_part_number: string
+      bolt_count: number
+      connected_member_id: string | null
+      connected_sheet_part_number: string | null
+      fixture_part_number: string | null
+      fixture_capacity_status: 'not_checked' | 'candidate' | 'verified'
+      resultant_shear_demand_kN: number
+      design_bolt_shear_capacity_kN: number | null
+      design_sheet_bearing_capacity_kN: number | null
+      design_sheet_tearout_capacity_kN: number | null
+      governing_capacity_kN: number | null
+      governing_utilisation: number | null
+      nominal_bolt_diameter_mm: number | null
+      connected_sheet_thickness_mm: number | null
+      hole_diameter_mm: number | null
+      hole_type: string | null
+      minimum_spacing_mm: number | null
+      required_spacing_mm: number | null
+      minimum_edge_distance_mm: number | null
+      required_edge_distance_mm: number | null
+      bolt_shear_status: 'pass' | 'fail' | 'not_checked'
+      sheet_bearing_status: 'pass' | 'fail' | 'not_checked'
+      sheet_tearout_status: 'pass' | 'fail' | 'not_checked'
+      hole_status: 'pass' | 'fail' | 'not_checked'
+      spacing_status: 'pass' | 'fail' | 'not_checked'
+      edge_distance_status: 'pass' | 'fail' | 'not_checked'
+      source: string | null
+      source_sha256: string | null
+      basis: string
+      blockers: string[]
+    } | null
     basis: string
     assumptions: string[]
   }>

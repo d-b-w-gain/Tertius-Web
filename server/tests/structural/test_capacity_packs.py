@@ -5,6 +5,7 @@ import pytest
 from core.structural.capacity_packs import (
     AS_NZS_4600_2005_A1_SHA256,
     CapacityPackError,
+    as_nzs_4600_2005_a1_bolted_sheet_interface,
     as_nzs_4600_2005_a1_member_capacity,
     as_nzs_4600_2005_a1_screw_shear_qualification,
     as_nzs_4600_2005_a1_tension_capacity,
@@ -222,6 +223,56 @@ def test_screw_shear_qualification_fails_below_125_vb() -> None:
     )
 
     assert qualification.status == "fail"
+
+
+def test_bolted_sheet_pack_checks_grade_88_bolts_and_c10019_web() -> None:
+    resistance = as_nzs_4600_2005_a1_bolted_sheet_interface(
+        bolt_count=4,
+        resultant_shear_demand_kN=12.0,
+        nominal_bolt_diameter_mm=12.0,
+        bolt_tensile_strength_MPa=830.0,
+        bolt_minor_area_mm2=76.2,
+        connected_sheet_thickness_mm=1.9,
+        connected_sheet_yield_strength_MPa=450.0,
+        connected_sheet_tensile_strength_MPa=480.0,
+        hole_diameter_mm=14.0,
+        hole_type="standard_round",
+        minimum_spacing_mm=40.0,
+        minimum_edge_distance_mm=31.0,
+        washers_under_head_and_nut=True,
+    )
+
+    assert resistance.status == "pass"
+    assert resistance.design_bolt_shear_capacity_kN == pytest.approx(125.480064)
+    assert resistance.design_sheet_bearing_capacity_kN == pytest.approx(78.7968)
+    assert resistance.design_sheet_tearout_capacity_kN == pytest.approx(67.8528)
+    assert resistance.governing_capacity_kN == pytest.approx(67.8528)
+    assert resistance.required_spacing_mm == pytest.approx(36.0)
+    assert resistance.required_edge_distance_mm == pytest.approx(18.0)
+    assert resistance.standard_source_sha256 == AS_NZS_4600_2005_A1_SHA256
+
+
+def test_bolted_sheet_pack_fails_noncompliant_hole_and_spacing() -> None:
+    resistance = as_nzs_4600_2005_a1_bolted_sheet_interface(
+        bolt_count=2,
+        resultant_shear_demand_kN=1.0,
+        nominal_bolt_diameter_mm=12.0,
+        bolt_tensile_strength_MPa=830.0,
+        bolt_minor_area_mm2=76.2,
+        connected_sheet_thickness_mm=1.9,
+        connected_sheet_yield_strength_MPa=450.0,
+        connected_sheet_tensile_strength_MPa=480.0,
+        hole_diameter_mm=18.0,
+        hole_type="standard_round",
+        minimum_spacing_mm=30.0,
+        minimum_edge_distance_mm=15.0,
+        washers_under_head_and_nut=True,
+    )
+
+    assert resistance.status == "fail"
+    assert resistance.hole_status == "fail"
+    assert resistance.spacing_status == "fail"
+    assert resistance.edge_distance_status == "fail"
 
 
 def test_anchor_pack_uses_single_anchor_lower_bound_and_linear_interaction() -> None:

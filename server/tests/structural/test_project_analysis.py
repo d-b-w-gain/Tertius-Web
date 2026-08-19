@@ -18,6 +18,7 @@ from core.structural.contracts import (
     DesignConnection,
     MemberStabilityComparison,
     ProjectStructuralCapture,
+    SectionCatalogReference,
     SectionProperties,
     StructuralMaterial,
     TensionMemberCheck,
@@ -558,6 +559,151 @@ def test_ground_connection_resolves_exact_anchor_product_and_signed_uplift(
     assert check.anchor_group.interaction_utilisation == pytest.approx(
         max(0.0, -signed_axial_kN) / 1.15 + sqrt(0.20**2 + 0.20**2) / 2.10
     )
+
+
+def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
+    bolt_properties = {
+        "bolted_sheet_fastener_pack_id": (
+            "as_nzs_4600_2005_a1_bolted_sheet_interface"
+        ),
+        "bolted_sheet_fastener_pack_version": "1",
+        "nominal_diameter_mm": 12.0,
+        "bolt_tensile_strength_MPa": 830.0,
+        "bolt_minor_area_mm2": 76.2,
+        "washers_under_head_and_nut": True,
+        "source": "Lysaght Zeds and Cees guide",
+        "source_sha256": "a" * 64,
+    }
+    components = {
+        "column": DesignComponent(
+            id="column",
+            label="C10019 column",
+            kind="member",
+            visual_node_id="column",
+            part_number="C10019",
+        ),
+        "foundation": DesignComponent(
+            id="foundation",
+            label="Foundation",
+            kind="ground",
+            visual_node_id="foundation",
+            grounded=True,
+        ),
+        "fixture": DesignComponent(
+            id="fixture",
+            label="Fabricated on-slab cleat",
+            kind="connector",
+            visual_node_id="fixture",
+            part_number="SHED-C100-ONS-BASE-6",
+            structural_properties={
+                "base_fixture_capacity_status": "not_checked",
+            },
+        ),
+        **{
+            f"bolt-{index}": DesignComponent(
+                id=f"bolt-{index}",
+                label="PB1230HS bolt kit",
+                kind="connector",
+                visual_node_id=f"bolt-{index}",
+                part_number="PB1230HS",
+                product_key="lysaght:pb1230hs",
+                product_definition_digest="d" * 64,
+                structural_evidence_status="verified",
+                structural_properties=bolt_properties,
+                fabrication={
+                    "sheet_hole_diameter_mm": 14.0,
+                    "sheet_hole_type": "standard_round",
+                    "minimum_bolt_spacing_mm": 40.0,
+                    "minimum_sheet_edge_distance_mm": 31.0,
+                },
+            )
+            for index in range(1, 5)
+        },
+    }
+    declaration = SimpleNamespace(
+        id="column-axis",
+        component_id="column",
+        tension_only=False,
+        analytical_role="physical",
+        section_id="c10019",
+        material_id="g450",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=0.0, y=0.0, z=2.4),
+        start_node_key="joint:base",
+        end_node_key=None,
+    )
+    section = SectionProperties(
+        id="c10019",
+        label="C10019",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+        catalog=SectionCatalogReference(
+            catalog_id="lysaght-zc-v2",
+            catalog_version="2",
+            section_key="C10019",
+            source="Lysaght guide",
+            record_sha256="c" * 64,
+            axis_mapping={"local_y_inertia": "Iy", "local_z_inertia": "Ix"},
+            properties={"validated": True, "t_mm": 1.9},
+        ),
+    )
+    material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=80e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850.0,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=[declaration],
+        sections=[section],
+        materials=[material],
+    )
+    member = SimpleNamespace(
+        axial=lambda _x, _combo: 1.0,
+        shear=lambda _axis, _x, _combo: 0.20,
+    )
+    connection = DesignConnection(
+        id="base",
+        label="Column base",
+        from_component_id="column",
+        to_component_id="foundation",
+        connector_component_ids=[
+            "fixture",
+            "bolt-1",
+            "bolt-2",
+            "bolt-3",
+            "bolt-4",
+        ],
+        transfers=["force", "shear"],
+    )
+
+    check = _connection_checks(
+        SimpleNamespace(members={"column-axis": member}),
+        analysis,
+        [connection],
+        components,
+    )[0]
+
+    assert check.status == "unsupported"
+    assert check.bolted_sheet_interface is not None
+    assert check.bolted_sheet_interface.status == "pass"
+    assert check.bolted_sheet_interface.bolt_count == 4
+    assert check.bolted_sheet_interface.connected_sheet_part_number == "C10019"
+    assert check.bolted_sheet_interface.fixture_capacity_status == "not_checked"
+    assert check.bolted_sheet_interface.resultant_shear_demand_kN == pytest.approx(
+        sqrt(1.0**2 + 0.20**2 + 0.20**2)
+    )
+    assert check.bolted_sheet_interface.sheet_bearing_status == "pass"
+    assert check.bolted_sheet_interface.sheet_tearout_status == "pass"
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():

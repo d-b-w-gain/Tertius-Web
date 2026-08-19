@@ -1485,6 +1485,115 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                                 )}
                               </div>
                             )}
+                            {check.bolted_sheet_interface && (
+                              <div className={`mt-2 rounded border p-2 ${
+                                check.bolted_sheet_interface.status === 'pass'
+                                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                                  : check.bolted_sheet_interface.status === 'fail'
+                                    ? 'border-red-500/40 bg-red-500/10'
+                                    : 'border-amber-500/30 bg-amber-500/5'
+                              }`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[9px] font-bold text-slate-200">
+                                    {check.bolted_sheet_interface.connected_sheet_part_number || 'Cee web'} / {
+                                      check.bolted_sheet_interface.bolt_count
+                                    }x {check.bolted_sheet_interface.bolt_part_number}
+                                  </span>
+                                  <span className={`font-mono text-[8px] uppercase ${
+                                    check.bolted_sheet_interface.status === 'pass'
+                                      ? 'text-emerald-300'
+                                      : check.bolted_sheet_interface.status === 'fail'
+                                        ? 'text-red-300'
+                                        : 'text-amber-300'
+                                  }`}>
+                                    Web interface {check.bolted_sheet_interface.status}
+                                  </span>
+                                </div>
+                                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[8px] text-slate-400">
+                                  <span>
+                                    Resultant {number(
+                                      check.bolted_sheet_interface.resultant_shear_demand_kN,
+                                      3,
+                                    )} kN
+                                  </span>
+                                  <span>
+                                    Governing capacity {
+                                      check.bolted_sheet_interface.governing_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.governing_capacity_kN,
+                                          3,
+                                        )
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Bolt shear {
+                                      check.bolted_sheet_interface.design_bolt_shear_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_bolt_shear_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.bolt_shear_status}
+                                  </span>
+                                  <span>
+                                    Sheet bearing {
+                                      check.bolted_sheet_interface.design_sheet_bearing_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_sheet_bearing_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.sheet_bearing_status}
+                                  </span>
+                                  <span>
+                                    Sheet tearout {
+                                      check.bolted_sheet_interface.design_sheet_tearout_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_sheet_tearout_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.sheet_tearout_status}
+                                  </span>
+                                  <span>
+                                    Utilisation {
+                                      check.bolted_sheet_interface.governing_utilisation === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.governing_utilisation,
+                                          3,
+                                        )
+                                    }
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[8px] text-slate-500">
+                                  Hole {check.bolted_sheet_interface.hole_diameter_mm === null
+                                    ? '—'
+                                    : number(check.bolted_sheet_interface.hole_diameter_mm, 1)} mm · {
+                                    check.bolted_sheet_interface.hole_status
+                                  } · spacing {check.bolted_sheet_interface.spacing_status} · edge {
+                                    check.bolted_sheet_interface.edge_distance_status
+                                  }
+                                </p>
+                                <p className={`mt-1 text-[8px] ${
+                                  check.bolted_sheet_interface.fixture_capacity_status === 'verified'
+                                    ? 'text-emerald-300'
+                                    : 'text-amber-200'
+                                }`}>
+                                  Fixture {
+                                    check.bolted_sheet_interface.fixture_part_number || 'not resolved'
+                                  } · plate {check.bolted_sheet_interface.fixture_capacity_status.replace('_', ' ')}
+                                </p>
+                                {check.bolted_sheet_interface.blockers.length > 0 && (
+                                  <ul className="mt-1 space-y-1 text-[8px] text-amber-200">
+                                    {check.bolted_sheet_interface.blockers.map((blocker) => (
+                                      <li key={blocker}>• {blocker}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </button>

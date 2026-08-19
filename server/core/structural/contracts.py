@@ -504,6 +504,43 @@ class AnchorGroupCheck(StructuralContract):
     blockers: list[str] = Field(default_factory=list)
 
 
+class BoltedSheetInterfaceCheck(StructuralContract):
+    status: Literal["pass", "fail", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    bolt_part_number: str
+    bolt_count: int = Field(gt=0)
+    connected_member_id: str | None = None
+    connected_sheet_part_number: str | None = None
+    fixture_part_number: str | None = None
+    fixture_capacity_status: Literal["not_checked", "candidate", "verified"]
+    resultant_shear_demand_kN: float = Field(ge=0)
+    design_bolt_shear_capacity_kN: float | None = Field(default=None, gt=0)
+    design_sheet_bearing_capacity_kN: float | None = Field(default=None, gt=0)
+    design_sheet_tearout_capacity_kN: float | None = Field(default=None, gt=0)
+    governing_capacity_kN: float | None = Field(default=None, gt=0)
+    governing_utilisation: float | None = Field(default=None, ge=0)
+    nominal_bolt_diameter_mm: float | None = Field(default=None, gt=0)
+    connected_sheet_thickness_mm: float | None = Field(default=None, gt=0)
+    hole_diameter_mm: float | None = Field(default=None, gt=0)
+    hole_type: str | None = None
+    minimum_spacing_mm: float | None = Field(default=None, gt=0)
+    required_spacing_mm: float | None = Field(default=None, gt=0)
+    minimum_edge_distance_mm: float | None = Field(default=None, gt=0)
+    required_edge_distance_mm: float | None = Field(default=None, gt=0)
+    bolt_shear_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    sheet_bearing_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    sheet_tearout_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    hole_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    spacing_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    edge_distance_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    basis: str
+    blockers: list[str] = Field(default_factory=list)
+
+
 class ConnectionCheck(StructuralContract):
     connection_id: str
     label: str
@@ -530,6 +567,7 @@ class ConnectionCheck(StructuralContract):
     source: str | None = None
     source_sha256: str | None = None
     anchor_group: AnchorGroupCheck | None = None
+    bolted_sheet_interface: BoltedSheetInterfaceCheck | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 

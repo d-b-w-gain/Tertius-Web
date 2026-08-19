@@ -524,6 +524,44 @@ const analysis: StructuralSnapshot = {
         basis: 'Verified lower-bound anchor group.',
         blockers: [],
       },
+      bolted_sheet_interface: {
+        status: 'pass',
+        evidence_status: 'verified',
+        pack_id: 'as_nzs_4600_2005_a1_bolted_sheet_interface',
+        pack_version: '1',
+        bolt_part_number: 'PB1230HS',
+        bolt_count: 4,
+        connected_member_id: 'purlin-axis',
+        connected_sheet_part_number: 'C10019',
+        fixture_part_number: 'SHED-C100-ONS-BASE-6-4B',
+        fixture_capacity_status: 'not_checked',
+        resultant_shear_demand_kN: 1.04,
+        design_bolt_shear_capacity_kN: 125.48,
+        design_sheet_bearing_capacity_kN: 78.797,
+        design_sheet_tearout_capacity_kN: 67.853,
+        governing_capacity_kN: 67.853,
+        governing_utilisation: 0.0153,
+        nominal_bolt_diameter_mm: 12,
+        connected_sheet_thickness_mm: 1.9,
+        hole_diameter_mm: 14,
+        hole_type: 'standard_round',
+        minimum_spacing_mm: 40,
+        required_spacing_mm: 36,
+        minimum_edge_distance_mm: 31,
+        required_edge_distance_mm: 18,
+        bolt_shear_status: 'pass',
+        sheet_bearing_status: 'pass',
+        sheet_tearout_status: 'pass',
+        hole_status: 'pass',
+        spacing_status: 'pass',
+        edge_distance_status: 'pass',
+        source: 'Lysaght Zeds and Cees guide',
+        source_sha256: 'a'.repeat(64),
+        basis: 'AS/NZS 4600 Clause 5.3 checks.',
+        blockers: [
+          'Fixture SHED-C100-ONS-BASE-6-4B plate resistance remains a separate check.',
+        ],
+      },
       basis: 'No verified anchor or concrete resistance source is connected.',
       assumptions: ['Demand only.'],
     },
@@ -1052,6 +1090,10 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('2× AS12100WGM')).toBeInTheDocument()
     expect(screen.getByText('Anchor pass')).toBeInTheDocument()
     expect(screen.getByText('Interaction 0.190')).toBeInTheDocument()
+    expect(screen.getByText('C10019 / 4x PB1230HS')).toBeInTheDocument()
+    expect(screen.getByText('Web interface pass')).toBeInTheDocument()
+    expect(screen.getByText(/Sheet bearing 78\.797 kN · pass/)).toBeInTheDocument()
+    expect(screen.getByText(/Fixture SHED-C100-ONS-BASE-6-4B · plate not checked/)).toBeInTheDocument()
     expect(screen.getByText('2 unavailable')).toBeInTheDocument()
     expect(screen.getByRole('option', {
       name: /SLS-G\+WY\+ · unavailable — No longitudinal wind \+Y action/,

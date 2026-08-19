@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 
 from .capacity_packs import (
     CapacityPackError,
+    as_nzs_4600_2005_a1_bolted_sheet_interface,
     as_nzs_4600_2005_a1_screw_shear_qualification,
     cross_section_capacity,
     manufacturer_working_load_anchor_group_resistance,
@@ -17,6 +18,7 @@ from .capacity_packs import (
 from .contracts import (
     AnalyticalMemberDeclaration,
     AnchorGroupCheck,
+    BoltedSheetInterfaceCheck,
     BracingLoadPathTrace,
     CalculationEquation,
     CalculationInput,
@@ -339,6 +341,273 @@ def _anchor_group_check(
     )
 
 
+def _bolted_sheet_interface_check(
+    *,
+    connection: DesignConnection,
+    components: Mapping[str, DesignComponent],
+    analysis,
+    resultant_shear_demand_kN: float,
+) -> BoltedSheetInterfaceCheck | None:
+    fasteners = [
+        components[component_id]
+        for component_id in connection.connector_component_ids
+        if component_id in components
+        and components[component_id].structural_properties.get(
+            "bolted_sheet_fastener_pack_id"
+        )
+        == "as_nzs_4600_2005_a1_bolted_sheet_interface"
+    ]
+    if not fasteners:
+        return None
+
+    first = fasteners[0]
+    properties = first.structural_properties
+    part_number = str(first.part_number or "<missing>")
+    source = str(properties["source"]) if properties.get("source") else None
+    source_sha256 = (
+        str(properties["source_sha256"])
+        if properties.get("source_sha256")
+        else None
+    )
+    fixture_components = [
+        components[component_id]
+        for component_id in connection.connector_component_ids
+        if component_id in components
+        and components[component_id].structural_properties.get(
+            "base_fixture_capacity_status"
+        )
+    ]
+    fixture_part_number = (
+        fixture_components[0].part_number if len(fixture_components) == 1 else None
+    )
+    fixture_capacity_status = cast(
+        Literal["not_checked", "candidate", "verified"],
+        fixture_components[0].structural_properties.get(
+            "base_fixture_capacity_status", "not_checked"
+        )
+        if len(fixture_components) == 1
+        else "not_checked",
+    )
+    blockers: list[str] = []
+    if len(fixture_components) != 1:
+        blockers.append(
+            "Bolted sheet interface must resolve to one rendered fixture component."
+        )
+
+    product_keys = (
+        "bolted_sheet_fastener_pack_id",
+        "bolted_sheet_fastener_pack_version",
+        "nominal_diameter_mm",
+        "bolt_tensile_strength_MPa",
+        "bolt_minor_area_mm2",
+        "washers_under_head_and_nut",
+        "source_sha256",
+    )
+    for fastener in fasteners:
+        if fastener.part_number != part_number:
+            blockers.append("Bolted sheet group mixes fastener part numbers.")
+        if fastener.product_key is None or fastener.product_definition_digest is None:
+            blockers.append(
+                f"Fastener {fastener.id} lacks a managed product identity."
+            )
+        if fastener.structural_evidence_status != "verified":
+            blockers.append(
+                f"Fastener {fastener.id} product evidence is not verified."
+            )
+        for key in product_keys:
+            if fastener.structural_properties.get(key) != properties.get(key):
+                blockers.append(f"Bolted sheet group mixes incompatible {key} facts.")
+                break
+    if source is None or source_sha256 is None or len(source_sha256) != 64:
+        blockers.append("Fastener evidence requires a source and valid SHA-256.")
+        source_sha256 = None
+
+    connected_component_ids = {
+        connection.from_component_id,
+        connection.to_component_id,
+    }
+    connected_declarations = [
+        declaration
+        for declaration in analysis.members
+        if declaration.component_id in connected_component_ids
+        and getattr(declaration, "analytical_role", "physical") == "physical"
+    ]
+    declaration = connected_declarations[0] if len(connected_declarations) == 1 else None
+    if declaration is None:
+        blockers.append(
+            "Bolted sheet interface must resolve to one physical analytical member."
+        )
+    sections = {section.id: section for section in getattr(analysis, "sections", ())}
+    materials = {
+        material.id: material for material in getattr(analysis, "materials", ())
+    }
+    section = sections.get(declaration.section_id) if declaration is not None else None
+    material = materials.get(declaration.material_id) if declaration is not None else None
+    catalogue_properties = (
+        section.catalog.properties
+        if section is not None and section.catalog is not None
+        else {}
+    )
+    sheet_thickness_mm = _numeric_fact(catalogue_properties, "t_mm")
+    sheet_yield_strength_MPa = (
+        material.yield_strength_MPa if material is not None else None
+    )
+    sheet_tensile_strength_MPa = (
+        material.tensile_strength_MPa if material is not None else None
+    )
+    if section is None or section.catalog is None:
+        blockers.append("Connected sheet requires a traceable catalogue section record.")
+    elif not bool(catalogue_properties.get("validated")):
+        blockers.append("Connected sheet catalogue record is not verified.")
+    if sheet_thickness_mm is None or sheet_thickness_mm >= 3.0:
+        blockers.append(
+            "Connected sheet requires a verified thickness below 3 mm for AS/NZS 4600 Clause 5.3."
+        )
+    if sheet_yield_strength_MPa is None or sheet_tensile_strength_MPa is None:
+        blockers.append("Connected sheet yield and tensile strengths are incomplete.")
+
+    def uniform_fabrication_fact(key: str) -> float | None:
+        values = {
+            value
+            for fastener in fasteners
+            if (value := _numeric_fact(fastener.fabrication, key)) is not None
+        }
+        if len(values) != 1 or len(fasteners) != sum(
+            _numeric_fact(fastener.fabrication, key) is not None
+            for fastener in fasteners
+        ):
+            blockers.append(f"Every bolt requires one consistent installed {key} fact.")
+            return None
+        return next(iter(values))
+
+    hole_diameter_mm = uniform_fabrication_fact("sheet_hole_diameter_mm")
+    minimum_spacing_mm = uniform_fabrication_fact("minimum_bolt_spacing_mm")
+    minimum_edge_distance_mm = uniform_fabrication_fact(
+        "minimum_sheet_edge_distance_mm"
+    )
+    hole_types = {
+        str(fastener.fabrication.get("sheet_hole_type") or "")
+        for fastener in fasteners
+    }
+    hole_type = next(iter(hole_types)) if len(hole_types) == 1 else None
+    if hole_type != "standard_round":
+        blockers.append(
+            "The verified base-interface pack currently requires standard round holes."
+        )
+
+    nominal_diameter_mm = _numeric_fact(properties, "nominal_diameter_mm")
+    bolt_tensile_strength_MPa = _numeric_fact(
+        properties, "bolt_tensile_strength_MPa"
+    )
+    bolt_minor_area_mm2 = _numeric_fact(properties, "bolt_minor_area_mm2")
+    washers = properties.get("washers_under_head_and_nut")
+    if any(
+        value is None
+        for value in (
+            nominal_diameter_mm,
+            bolt_tensile_strength_MPa,
+            bolt_minor_area_mm2,
+        )
+    ) or not isinstance(washers, bool):
+        blockers.append("Fastener strength or bearing-washer facts are incomplete.")
+
+    evidence_status: Literal["unverified", "candidate", "verified"] = (
+        "verified"
+        if not any("evidence" in blocker.lower() for blocker in blockers)
+        and all(fastener.structural_evidence_status == "verified" for fastener in fasteners)
+        else "candidate"
+        if source
+        else "unverified"
+    )
+    common = dict(
+        evidence_status=evidence_status,
+        pack_id="as_nzs_4600_2005_a1_bolted_sheet_interface",
+        pack_version=str(properties.get("bolted_sheet_fastener_pack_version") or "1"),
+        bolt_part_number=part_number,
+        bolt_count=len(fasteners),
+        connected_member_id=declaration.id if declaration is not None else None,
+        connected_sheet_part_number=(
+            components[declaration.component_id].part_number
+            if declaration is not None
+            and declaration.component_id in components
+            else None
+        ),
+        fixture_part_number=fixture_part_number,
+        fixture_capacity_status=fixture_capacity_status,
+        resultant_shear_demand_kN=resultant_shear_demand_kN,
+        nominal_bolt_diameter_mm=nominal_diameter_mm,
+        connected_sheet_thickness_mm=sheet_thickness_mm,
+        hole_diameter_mm=hole_diameter_mm,
+        hole_type=hole_type,
+        minimum_spacing_mm=minimum_spacing_mm,
+        minimum_edge_distance_mm=minimum_edge_distance_mm,
+        source=source,
+        source_sha256=source_sha256,
+    )
+    if blockers:
+        return BoltedSheetInterfaceCheck(
+            status="unsupported",
+            basis=(
+                "The rendered bolt group and connected sheet were found, but the "
+                "Tertius AS/NZS 4600 bolted-sheet pack is missing required verified facts."
+            ),
+            blockers=sorted(set(blockers)),
+            **common,
+        )
+
+    assert nominal_diameter_mm is not None
+    assert bolt_tensile_strength_MPa is not None
+    assert bolt_minor_area_mm2 is not None
+    assert sheet_thickness_mm is not None
+    assert sheet_yield_strength_MPa is not None
+    assert sheet_tensile_strength_MPa is not None
+    assert hole_diameter_mm is not None
+    assert minimum_spacing_mm is not None
+    assert minimum_edge_distance_mm is not None
+    assert hole_type is not None
+    assert isinstance(washers, bool)
+    result = as_nzs_4600_2005_a1_bolted_sheet_interface(
+        bolt_count=len(fasteners),
+        resultant_shear_demand_kN=resultant_shear_demand_kN,
+        nominal_bolt_diameter_mm=nominal_diameter_mm,
+        bolt_tensile_strength_MPa=bolt_tensile_strength_MPa,
+        bolt_minor_area_mm2=bolt_minor_area_mm2,
+        connected_sheet_thickness_mm=sheet_thickness_mm,
+        connected_sheet_yield_strength_MPa=sheet_yield_strength_MPa,
+        connected_sheet_tensile_strength_MPa=sheet_tensile_strength_MPa,
+        hole_diameter_mm=hole_diameter_mm,
+        hole_type=hole_type,
+        minimum_spacing_mm=minimum_spacing_mm,
+        minimum_edge_distance_mm=minimum_edge_distance_mm,
+        washers_under_head_and_nut=washers,
+    )
+    return BoltedSheetInterfaceCheck(
+        status=result.status,
+        design_bolt_shear_capacity_kN=result.design_bolt_shear_capacity_kN,
+        design_sheet_bearing_capacity_kN=result.design_sheet_bearing_capacity_kN,
+        design_sheet_tearout_capacity_kN=result.design_sheet_tearout_capacity_kN,
+        governing_capacity_kN=result.governing_capacity_kN,
+        governing_utilisation=result.governing_utilisation,
+        required_spacing_mm=result.required_spacing_mm,
+        required_edge_distance_mm=result.required_edge_distance_mm,
+        bolt_shear_status=result.bolt_shear_status,
+        sheet_bearing_status=result.sheet_bearing_status,
+        sheet_tearout_status=result.sheet_tearout_status,
+        hole_status=result.hole_status,
+        spacing_status=result.spacing_status,
+        edge_distance_status=result.edge_distance_status,
+        basis=result.basis,
+        blockers=(
+            []
+            if fixture_capacity_status == "verified"
+            else [
+                f"Fixture {fixture_part_number or '<missing>'} plate resistance remains a separate check."
+            ]
+        ),
+        **common,
+    )
+
+
 def _connection_checks(
     model,
     analysis,
@@ -441,6 +710,7 @@ def _connection_checks(
         axial_demand = 0.0
         anchor_tension_demand = 0.0
         shear_demand = 0.0
+        bolted_sheet_demand = 0.0
         moment_demand = 0.0
         governing_combination_id: str | None = None
         governing_member_id: str | None = None
@@ -493,6 +763,10 @@ def _connection_checks(
                 )
                 axial_demand = max(axial_demand, endpoint_axial)
                 shear_demand = max(shear_demand, endpoint_shear)
+                bolted_sheet_demand = max(
+                    bolted_sheet_demand,
+                    sqrt(endpoint_axial**2 + endpoint_shear**2),
+                )
                 moment_demand = max(moment_demand, endpoint_moment)
                 endpoint_resultant = sqrt(
                     endpoint_axial**2 + endpoint_shear**2 + endpoint_moment**2
@@ -531,7 +805,15 @@ def _connection_checks(
             tension_demand_kN=anchor_tension_demand,
             shear_demand_kN=shear_demand,
         )
-        if anchor_group is not None and evidence is None and tension_evidence is None:
+        bolted_sheet_interface = _bolted_sheet_interface_check(
+            connection=connection,
+            components=components,
+            analysis=analysis,
+            resultant_shear_demand_kN=bolted_sheet_demand,
+        )
+        if (
+            anchor_group is not None or bolted_sheet_interface is not None
+        ) and evidence is None and tension_evidence is None:
             expected_parts = rendered_parts
             identity_mismatches = []
 
@@ -594,11 +876,18 @@ def _connection_checks(
                 status = "unsupported"
             else:
                 status = "pass" if governing_utilisation <= 1.0 else "fail"
-        elif anchor_group is not None:
+        elif (
+            anchor_group is not None and anchor_group.status == "fail"
+        ) or (
+            bolted_sheet_interface is not None
+            and bolted_sheet_interface.status == "fail"
+        ):
+            status = "fail"
+        elif anchor_group is not None or bolted_sheet_interface is not None:
             # An anchor failure is a real connection failure. A passing anchor
-            # group does not by itself prove the fixture/bracket, connected
-            # sheet bearing/tear-out, or foundation member resistance.
-            status = "fail" if anchor_group.status == "fail" else "unsupported"
+            # or bolted-sheet group does not by itself prove the fixture/bracket
+            # and foundation member resistance.
+            status = "unsupported"
         elif evidence is None:
             status = "unsupported"
         else:
@@ -621,7 +910,18 @@ def _connection_checks(
                 "still requires the rendered fixture/bracket, connected steel "
                 "bearing and tear-out, and foundation member limit states."
             )
-        elif evidence is None and tension_evidence is None:
+        if bolted_sheet_interface is not None:
+            assumptions.extend(bolted_sheet_interface.blockers)
+            assumptions.append(
+                "The Cee web, bolt shear, bearing, tear-out, hole, spacing and edge "
+                "checks are independent of the fabricated fixture plate and foundation."
+            )
+        if (
+            anchor_group is None
+            and bolted_sheet_interface is None
+            and evidence is None
+            and tension_evidence is None
+        ):
             assumptions.append(
                 "The rendered connector identity and joint demand are recorded, but "
                 "no resistance evidence pack is attached."
@@ -647,6 +947,7 @@ def _connection_checks(
                     if evidence is not None
                     else "candidate"
                     if anchor_group is not None
+                    or bolted_sheet_interface is not None
                     else "verified"
                     if tension_evidence is not None
                     and tension_evidence.connection_capacity_status == "verified"
@@ -659,6 +960,8 @@ def _connection_checks(
                     if evidence is not None
                     else anchor_group.pack_id
                     if anchor_group is not None
+                    else bolted_sheet_interface.pack_id
+                    if bolted_sheet_interface is not None
                     else "as_nzs_4600_2005_a1_tension_end_connection"
                     if tension_evidence is not None
                     else "unverified-rendered-connection"
@@ -668,6 +971,8 @@ def _connection_checks(
                     if evidence is not None
                     else anchor_group.pack_version
                     if anchor_group is not None
+                    else bolted_sheet_interface.pack_version
+                    if bolted_sheet_interface is not None
                     else "2005+A1"
                     if tension_evidence is not None
                     else "0"
@@ -679,6 +984,7 @@ def _connection_checks(
                     if evidence is not None
                     or tension_evidence is not None
                     or anchor_group is not None
+                    or bolted_sheet_interface is not None
                     else "not_declared"
                 ),
                 identity_mismatches=identity_mismatches,
@@ -701,6 +1007,8 @@ def _connection_checks(
                     if evidence is not None
                     else anchor_group.source
                     if anchor_group is not None
+                    else bolted_sheet_interface.source
+                    if bolted_sheet_interface is not None
                     else " · ".join(
                         filter(
                             None,
@@ -718,6 +1026,8 @@ def _connection_checks(
                     if evidence is not None
                     else anchor_group.source_sha256
                     if anchor_group is not None
+                    else bolted_sheet_interface.source_sha256
+                    if bolted_sheet_interface is not None
                     else tension_evidence.standard_source_sha256
                     if tension_evidence is not None
                     else None
@@ -727,6 +1037,8 @@ def _connection_checks(
                     if evidence is not None
                     else anchor_group.basis
                     if anchor_group is not None
+                    else bolted_sheet_interface.basis
+                    if bolted_sheet_interface is not None
                     else tension_evidence.basis
                     if tension_evidence is not None
                     else "ULS endpoint forces are enveloped from the compiled physical "
@@ -734,6 +1046,7 @@ def _connection_checks(
                         "anchor, or foundation capacity is inferred."
                 ),
                 anchor_group=anchor_group,
+                bolted_sheet_interface=bolted_sheet_interface,
                 assumptions=assumptions,
             )
         )
