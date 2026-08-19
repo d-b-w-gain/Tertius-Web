@@ -10,9 +10,11 @@ import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import type {
+  ActiveStructuralWorkbenchResponse,
   CapabilityState,
   DesignComponent,
   ProjectStructuralCapture,
+  StructuralAnalysisCacheInfo,
   StructuralSnapshot,
   Vector3,
   VerificationStatus,
@@ -67,6 +69,32 @@ const stabilityStatusRank = {
   pass: 1,
 } as const
 
+function analysisCacheFromHeaders(response: Response): StructuralAnalysisCacheInfo | null {
+  const status = response.headers.get('X-Tertius-Structural-Cache')?.toLowerCase()
+  const keyDigest = response.headers.get('X-Tertius-Structural-Cache-Key')
+  const engineVersion = response.headers.get('X-Tertius-Structural-Engine')
+  const calculatedAt = response.headers.get('X-Tertius-Structural-Calculated-At')
+  const duration = Number(
+    response.headers.get('X-Tertius-Structural-Calculation-Seconds'),
+  )
+  if (
+    (status !== 'hit' && status !== 'calculated')
+    || !keyDigest
+    || !engineVersion
+    || !calculatedAt
+    || !Number.isFinite(duration)
+  ) {
+    return null
+  }
+  return {
+    status,
+    key_digest: keyDigest,
+    engine_version: engineVersion,
+    calculated_at: calculatedAt,
+    calculation_duration_seconds: duration,
+  }
+}
+
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
@@ -85,6 +113,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     'cross_section' | 'member_stability'
   >('member_stability')
   const [isLoading, setIsLoading] = useState(false)
+  const [analysisLoadPhase, setAnalysisLoadPhase] = useState<
+    'idle' | 'checking' | 'calculating'
+  >('idle')
+  const [analysisCache, setAnalysisCache] = useState<StructuralAnalysisCacheInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const captureRequestId = useRef(0)
@@ -95,32 +127,33 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     if (!isActive || authMode !== 'authenticated') return
     const requestId = ++captureRequestId.current
     setIsLoading(true)
+    setAnalysisLoadPhase('checking')
+    setAnalysisCache(null)
     setError(null)
     setAnalysisError(null)
-    try {
-      const [captureResponse, analysisResponse] = await Promise.all([
-        apiFetch(`${serverUrl}/active/capture`, getAccessToken),
-        apiFetch(`${serverUrl}/active/analysis`, getAccessToken),
-      ])
-      const payload = await captureResponse.json().catch(() => null) as
-        | ProjectStructuralCapture
-        | { detail?: string }
-        | null
-      if (!captureResponse.ok) {
-        const detail = payload && 'detail' in payload ? payload.detail : undefined
-        throw new Error(detail || `Structural capture returned ${captureResponse.status}`)
+    const calculationTimer = window.setTimeout(() => {
+      if (requestId === captureRequestId.current) {
+        setAnalysisLoadPhase('calculating')
       }
-      const analysisPayload = await analysisResponse.json().catch(() => null) as
-        | StructuralSnapshot
+    }, 750)
+    try {
+      const response = await apiFetch(`${serverUrl}/active/workbench`, getAccessToken)
+      const payload = await response.json().catch(() => null) as
+        | ActiveStructuralWorkbenchResponse
         | { detail?: string }
         | null
-      const nextCapture = payload as ProjectStructuralCapture
+      if (!response.ok) {
+        const detail = payload && 'detail' in payload ? payload.detail : undefined
+        throw new Error(detail || `Structural workbench returned ${response.status}`)
+      }
+      const workbench = payload as ActiveStructuralWorkbenchResponse
       if (requestId !== captureRequestId.current) return
-      setCapture(nextCapture)
+      setCapture(workbench.capture)
       setSelectedVisualNodeId('')
       setSelectedRestraintTraceId('')
-      if (analysisResponse.ok) {
-        const nextAnalysis = analysisPayload as StructuralSnapshot
+      setAnalysisCache(workbench.cache)
+      if (workbench.analysis) {
+        const nextAnalysis = workbench.analysis
         setAnalysis(nextAnalysis)
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
@@ -129,24 +162,23 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         setMemberEvidenceStage('member_stability')
       } else {
         setAnalysis(null)
-        setAnalysisError(
-          analysisPayload && 'detail' in analysisPayload
-            ? analysisPayload.detail || `Structural analysis returned ${analysisResponse.status}`
-            : `Structural analysis returned ${analysisResponse.status}`,
-        )
+        setAnalysisError(workbench.analysis_error || 'Structural analysis is unavailable')
       }
     } catch (loadError) {
       if (requestId !== captureRequestId.current) return
       setCapture(null)
       setAnalysis(null)
+      setAnalysisCache(null)
       setError(
         loadError instanceof Error
           ? loadError.message
           : 'The active project structural declaration could not be loaded',
       )
     } finally {
+      window.clearTimeout(calculationTimer)
       if (requestId === captureRequestId.current) {
         setIsLoading(false)
+        setAnalysisLoadPhase('idle')
       }
     }
   }, [authMode, getAccessToken, isActive, serverUrl])
@@ -168,6 +200,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectCombination = useCallback(async (combinationId: string) => {
     setSelectedCombinationId(combinationId)
     setAnalysisError(null)
+    setAnalysisLoadPhase('checking')
+    const calculationTimer = window.setTimeout(() => {
+      setAnalysisLoadPhase('calculating')
+    }, 750)
     try {
       const response = await apiFetch(
         `${serverUrl}/active/analysis?combination_id=${encodeURIComponent(combinationId)}`,
@@ -183,6 +219,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
       const nextAnalysis = payload as StructuralSnapshot
       setAnalysis(nextAnalysis)
+      setAnalysisCache(analysisCacheFromHeaders(response))
       setSelectedRestraintTraceId('')
       setSelectedSheetId((current) => (
         nextAnalysis.calculation_sheets?.some((sheet) => sheet.id === current)
@@ -200,6 +237,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           ? loadError.message
           : 'The selected load combination could not be solved',
       )
+    } finally {
+      window.clearTimeout(calculationTimer)
+      setAnalysisLoadPhase('idle')
     }
   }, [getAccessToken, serverUrl])
 
@@ -680,6 +720,27 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 ACTIONS PACK {analysis.action_standard_pack.pack_version}
               </span>
             )}
+            {analysisLoadPhase !== 'idle' && (
+              <span className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] text-amber-200">
+                {analysisLoadPhase === 'checking'
+                  ? 'CHECKING SAVED ANALYSIS'
+                  : 'CALCULATING & SAVING ANALYSIS'}
+              </span>
+            )}
+            {analysisLoadPhase === 'idle' && analysisCache && (
+              <span
+                className={`rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] ${
+                  analysisCache.status === 'hit'
+                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                    : 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300'
+                }`}
+                title={`Structural engine ${analysisCache.engine_version}; cache ${analysisCache.key_digest}; original calculation ${number(analysisCache.calculation_duration_seconds, 1)} seconds`}
+              >
+                {analysisCache.status === 'hit'
+                  ? 'SAVED ANALYSIS'
+                  : `CALCULATED & SAVED ${number(analysisCache.calculation_duration_seconds, 1)}s`}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             {analysis
@@ -695,6 +756,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 aria-label="Load combination"
                 value={selectedCombinationId}
                 onChange={(event) => void selectCombination(event.target.value)}
+                disabled={analysisLoadPhase !== 'idle'}
                 className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs normal-case tracking-normal text-slate-200"
               >
                 {analysis.load_combinations.map((combination) => (
@@ -828,7 +890,21 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
-          {isLoading && <div className="p-5 text-sm text-slate-400">Parsing active design…</div>}
+          {isLoading && (
+            <div className="p-5 text-sm text-slate-400">
+              <div>
+                {analysisLoadPhase === 'calculating'
+                  ? 'Calculating structural analysis…'
+                  : 'Loading saved structural analysis…'}
+              </div>
+              {analysisLoadPhase === 'calculating' && (
+                <div className="mt-2 text-xs leading-relaxed text-slate-500">
+                  This design, site basis, or Tertius structural engine changed. The
+                  result will be stored and reused when the workbench is reopened.
+                </div>
+              )}
+            </div>
+          )}
           {error && (
             <div className="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
               <div className="font-semibold">Structural declaration unavailable</div>

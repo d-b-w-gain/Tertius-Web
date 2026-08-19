@@ -4,6 +4,8 @@ import json
 from math import atan2, degrees, dist, sqrt
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
+from datetime import datetime
+from time import perf_counter
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -70,6 +72,13 @@ from core.structural.project_analysis import (
     StructuralAnalysisError,
     solve_project_structural,
 )
+from core.structural.analysis_cache import (
+    StructuralAnalysisCacheIdentity,
+    acquire_structural_analysis_lock,
+    analysis_cache_identity,
+    get_cached_structural_analysis,
+    store_structural_analysis,
+)
 from core.structural.restraint_evidence import match_restraint_evidence_pack
 from core.structural.site_wind import (
     REGION_SOURCE,
@@ -82,6 +91,7 @@ from core.structural.site_wind import (
 from core.models import (
     Artifact,
     Project,
+    StructuralAnalysisResult,
     StructuralConfigurationRevision,
     UserWorkspaceState,
 )
@@ -109,6 +119,21 @@ class WindSiteRequest(BaseModel):
     shielding_multiplier: float = 1.0
     topographic_multiplier: float = 1.0
     climate_change_multiplier: float | None = None
+
+
+class StructuralAnalysisCacheInfo(BaseModel):
+    status: Literal["hit", "calculated"]
+    key_digest: str
+    engine_version: str
+    calculated_at: datetime
+    calculation_duration_seconds: float
+
+
+class ActiveStructuralWorkbenchResponse(BaseModel):
+    capture: ProjectStructuralCapture
+    analysis: StructuralSnapshot | None = None
+    analysis_error: str | None = None
+    cache: StructuralAnalysisCacheInfo | None = None
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -193,9 +218,7 @@ def _capture_from_structural_projection(
             ),
             role=(str(component["role"]) if component.get("role") else None),
             product_key=(
-                str(component["product_key"])
-                if component.get("product_key")
-                else None
+                str(component["product_key"]) if component.get("product_key") else None
             ),
             product_definition_digest=(
                 str(component["product_definition_digest"])
@@ -1228,9 +1251,7 @@ def _portal_frame_wind_actions(
         existing_load_ids = {load.id for load in analysis_configuration.member_loads}
         for component_id in sorted(roof_imposed_receiver_ids):
             start, end = physical_endpoints(component_id)
-            member_length = dist(
-                start.model_dump().values(), end.model_dump().values()
-            )
+            member_length = dist(start.model_dump().values(), end.model_dump().values())
             case_id = f"roof-concentrated:{component_id}"
             point_load_id = f"tertius:{case_id}:midspan"
             if point_load_id in existing_load_ids:
@@ -1968,20 +1989,17 @@ def _analysis_from_projection(
                 ),
                 tension_holes_in_critical_section=(
                     int(section_data["tension_holes_in_critical_section"])
-                    if section_data.get("tension_holes_in_critical_section")
-                    is not None
+                    if section_data.get("tension_holes_in_critical_section") is not None
                     else None
                 ),
                 tension_force_distribution_factor=(
                     float(section_data["tension_force_distribution_factor"])
-                    if section_data.get("tension_force_distribution_factor")
-                    is not None
+                    if section_data.get("tension_force_distribution_factor") is not None
                     else None
                 ),
                 end_fastener_nominal_diameter_mm=(
                     float(section_data["end_fastener_nominal_diameter_mm"])
-                    if section_data.get("end_fastener_nominal_diameter_mm")
-                    is not None
+                    if section_data.get("end_fastener_nominal_diameter_mm") is not None
                     else None
                 ),
                 end_fastener_spacing_mm=(
@@ -2626,11 +2644,11 @@ def _analysis_from_projection(
     )
 
 
-@app.get("/active/capture", response_model=ProjectStructuralCapture)
-def get_active_capture(
-    ctx: AuthContext = Depends(get_auth_context),
-    db: Session = Depends(get_db),
-) -> ProjectStructuralCapture:
+def _load_active_capture_context(
+    *,
+    ctx: AuthContext,
+    db: Session,
+) -> tuple[Project, ProjectStructuralCapture, dict[str, object] | None]:
     project = get_active_project(db, ctx)
     if project is None:
         raise HTTPException(status_code=404, detail="No active project")
@@ -2658,7 +2676,7 @@ def get_active_capture(
             )
             if site_source is not None:
                 site = parse_site_definition(site_source)
-        return _capture_from_structural_projection(
+        capture = _capture_from_structural_projection(
             projection,
             project_name=project.name,
             configuration=configuration,
@@ -2674,11 +2692,25 @@ def get_active_capture(
             ),
             site=site,
         )
+        return (
+            project,
+            capture,
+            site.model_dump(mode="json") if site is not None else None,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(
             status_code=422,
             detail=f"Compiled structural projection is invalid: {exc}",
         ) from exc
+
+
+@app.get("/active/capture", response_model=ProjectStructuralCapture)
+def get_active_capture(
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> ProjectStructuralCapture:
+    _, capture, _ = _load_active_capture_context(ctx=ctx, db=db)
+    return capture
 
 
 @app.get(
@@ -2742,18 +2774,133 @@ def put_active_configuration(
     )
 
 
+def _analysis_cache_info(
+    identity: StructuralAnalysisCacheIdentity,
+    stored: StructuralAnalysisResult,
+    *,
+    status: Literal["hit", "calculated"],
+) -> StructuralAnalysisCacheInfo:
+    return StructuralAnalysisCacheInfo(
+        status=status,
+        key_digest=identity.key_digest,
+        engine_version=identity.engine_version,
+        calculated_at=stored.created_at,
+        calculation_duration_seconds=stored.calculation_duration_seconds,
+    )
+
+
+def _solve_cached_structural_analysis(
+    *,
+    db: Session,
+    ctx: AuthContext,
+    project: Project,
+    capture: ProjectStructuralCapture,
+    site_definition: dict[str, object] | None,
+    combination_id: str | None,
+) -> tuple[StructuralSnapshot, StructuralAnalysisCacheInfo]:
+    identity = analysis_cache_identity(
+        tenant_id=ctx.tenant_id,
+        project_id=project.id,
+        design_digest=capture.design_hash,
+        configuration_digest=capture.analysis_configuration_digest,
+        site_definition=site_definition,
+        combination_id=combination_id,
+    )
+    cached = get_cached_structural_analysis(db, identity)
+    if cached is not None:
+        stored, snapshot = cached
+        return snapshot, _analysis_cache_info(identity, stored, status="hit")
+
+    acquire_structural_analysis_lock(db, identity)
+    cached = get_cached_structural_analysis(db, identity)
+    if cached is not None:
+        stored, snapshot = cached
+        info = _analysis_cache_info(identity, stored, status="hit")
+        db.commit()
+        return snapshot, info
+
+    started_at = perf_counter()
+    try:
+        snapshot = solve_project_structural(
+            capture,
+            combination_id=combination_id,
+        )
+        stored = store_structural_analysis(
+            db,
+            identity,
+            snapshot,
+            calculation_duration_seconds=perf_counter() - started_at,
+        )
+        info = _analysis_cache_info(identity, stored, status="calculated")
+        db.commit()
+        return snapshot, info
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _apply_analysis_cache_headers(
+    response: Response,
+    cache: StructuralAnalysisCacheInfo,
+) -> None:
+    response.headers["X-Tertius-Structural-Cache"] = cache.status.upper()
+    response.headers["X-Tertius-Structural-Cache-Key"] = cache.key_digest[:12]
+    response.headers["X-Tertius-Structural-Engine"] = cache.engine_version
+    response.headers["X-Tertius-Structural-Calculated-At"] = (
+        cache.calculated_at.isoformat()
+    )
+    response.headers["X-Tertius-Structural-Calculation-Seconds"] = (
+        f"{cache.calculation_duration_seconds:.6f}"
+    )
+
+
+@app.get("/active/workbench", response_model=ActiveStructuralWorkbenchResponse)
+def get_active_workbench(
+    combination_id: str | None = Query(default=None),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> ActiveStructuralWorkbenchResponse:
+    project, capture, site_definition = _load_active_capture_context(ctx=ctx, db=db)
+    try:
+        analysis, cache = _solve_cached_structural_analysis(
+            db=db,
+            ctx=ctx,
+            project=project,
+            capture=capture,
+            site_definition=site_definition,
+            combination_id=combination_id,
+        )
+        return ActiveStructuralWorkbenchResponse(
+            capture=capture,
+            analysis=analysis,
+            cache=cache,
+        )
+    except StructuralAnalysisError as exc:
+        return ActiveStructuralWorkbenchResponse(
+            capture=capture,
+            analysis_error=str(exc),
+        )
+
+
 @app.get("/active/analysis", response_model=StructuralSnapshot)
 def get_active_analysis(
+    response: Response,
     combination_id: str | None = Query(default=None),
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> StructuralSnapshot:
-    capture = get_active_capture(ctx=ctx, db=db)
+    project, capture, site_definition = _load_active_capture_context(ctx=ctx, db=db)
     try:
-        return solve_project_structural(
-            capture,
+        analysis, cache = _solve_cached_structural_analysis(
+            db=db,
+            ctx=ctx,
+            project=project,
+            capture=capture,
+            site_definition=site_definition,
             combination_id=combination_id,
         )
+        _apply_analysis_cache_headers(response, cache)
+        return analysis
     except StructuralAnalysisError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

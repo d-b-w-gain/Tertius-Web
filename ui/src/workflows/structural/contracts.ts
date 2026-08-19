@@ -843,3 +843,18 @@ export type StructuralSnapshot = {
   capabilities: CapabilityState[]
   warnings: string[]
 }
+
+export type StructuralAnalysisCacheInfo = {
+  status: 'hit' | 'calculated'
+  key_digest: string
+  engine_version: string
+  calculated_at: string
+  calculation_duration_seconds: number
+}
+
+export type ActiveStructuralWorkbenchResponse = {
+  capture: ProjectStructuralCapture
+  analysis: StructuralSnapshot | null
+  analysis_error: string | null
+  cache: StructuralAnalysisCacheInfo | null
+}

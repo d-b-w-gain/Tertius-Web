@@ -639,6 +639,17 @@ evidence is ringed red. The demand-arrow direction is labelled schematic while
 its magnitude remains calculated evidence. The overlay contract is reusable by
 the remaining stage-specific visual modes.
 
+Completed persistent Structural analysis-result slice: the compiled design
+digest, Structural configuration digest, canonical site definition, requested
+combination, Structural snapshot schema, and deployed Tertius source revision
+now form one content-addressed cache identity. Completed snapshots are stored
+as PostgreSQL JSONB and protected by a transaction-scoped advisory lock, so
+unchanged workbench visits reuse the same validated result and concurrent
+requests cannot launch duplicate PyNite solves. The initial workbench request
+returns capture and analysis together, while the UI distinguishes saved-result
+loading from a first calculation and shows whether the result was reused or
+calculated and saved.
+
 ### Task 7: Add atomic multi-artifact compile bundles
 
 **Files:** compile messages, worker, result consumer, artifact models/migration,

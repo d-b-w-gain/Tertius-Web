@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.db import Base
@@ -145,6 +147,49 @@ class StructuralConfigurationRevision(Base):
         ForeignKey("app_users.id"),
         nullable=False,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+
+class StructuralAnalysisResult(Base):
+    __tablename__ = "structural_analysis_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "key_digest",
+            name="uq_structural_analysis_result_identity",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    key_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    design_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    site_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    combination_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+    )
+    calculation_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=now_utc,

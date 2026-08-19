@@ -935,16 +935,49 @@ const stage8Analysis: StructuralSnapshot = {
   ],
 }
 
+const analysisCache = {
+  status: 'hit' as const,
+  key_digest: 'a'.repeat(64),
+  engine_version: 'test-engine',
+  calculated_at: '2026-08-19T00:00:00Z',
+  calculation_duration_seconds: 105.5,
+}
+
+function structuralResponse(
+  url: string,
+  captureValue: ProjectStructuralCapture,
+  analysisValue: StructuralSnapshot,
+) {
+  const body = url.includes('/active/workbench')
+    ? {
+        capture: captureValue,
+        analysis: analysisValue,
+        analysis_error: null,
+        cache: analysisCache,
+      }
+    : analysisValue
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Tertius-Structural-Cache': 'HIT',
+      'X-Tertius-Structural-Cache-Key': analysisCache.key_digest.slice(0, 12),
+      'X-Tertius-Structural-Engine': analysisCache.engine_version,
+      'X-Tertius-Structural-Calculated-At': analysisCache.calculated_at,
+      'X-Tertius-Structural-Calculation-Seconds': String(
+        analysisCache.calculation_duration_seconds,
+      ),
+    },
+  })
+}
+
 describe('StructuralWorkbench', () => {
   afterEach(cleanup)
 
   beforeEach(() => {
     mocks.apiFetch.mockReset()
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(url.includes('/active/analysis') ? analysis : capture), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, analysis),
     ))
   })
 
@@ -955,13 +988,11 @@ describe('StructuralWorkbench', () => {
       expect(screen.getByText('structural_test')).toBeInTheDocument()
     })
     expect(mocks.apiFetch).toHaveBeenCalledWith(
-      '/api/structural/active/capture',
+      '/api/structural/active/workbench',
       mocks.getAccessToken,
     )
-    expect(mocks.apiFetch).toHaveBeenCalledWith(
-      '/api/structural/active/analysis',
-      mocks.getAccessToken,
-    )
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('SAVED ANALYSIS')).toBeInTheDocument()
     expect(screen.getAllByText('Custom Orb roofing iron').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Lysaght C10019 purlin').length).toBeGreaterThan(0)
     expect(screen.getByText('Reaches ground')).toBeInTheDocument()
@@ -1038,12 +1069,7 @@ describe('StructuralWorkbench', () => {
 
   it('shows and highlights the authored off-axis action and collector path', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? crossSectionAnalysis : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, crossSectionAnalysis),
     ))
 
     render(<StructuralWorkbench isActive />)
@@ -1101,12 +1127,7 @@ describe('StructuralWorkbench', () => {
       },
     }
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? workingAnalysis : workingCapture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, workingCapture, workingAnalysis),
     ))
 
     render(<StructuralWorkbench isActive />)
@@ -1118,16 +1139,11 @@ describe('StructuralWorkbench', () => {
 
   it('keeps an exceeded renderer reference not-checked until Australian gates pass', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('combination_id=DEMO-OVERLOAD')
-          ? overloadAnalysis
-          : url.includes('/active/analysis')
-            ? analysis
-            : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(
+        url,
+        capture,
+        url.includes('combination_id=DEMO-OVERLOAD') ? overloadAnalysis : analysis,
+      ),
     ))
     render(<StructuralWorkbench isActive />)
     await waitFor(() => {
@@ -1144,12 +1160,7 @@ describe('StructuralWorkbench', () => {
 
   it('opens auditable demand, capacity, and provenance from a selected 3D trace', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? restraintAnalysis : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, restraintAnalysis),
     ))
     render(<StructuralWorkbench isActive />)
 
@@ -1208,12 +1219,7 @@ describe('StructuralWorkbench', () => {
       ],
     }
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? stage8RestraintAnalysis : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, stage8RestraintAnalysis),
     ))
     render(<StructuralWorkbench isActive />)
 
@@ -1249,12 +1255,7 @@ describe('StructuralWorkbench', () => {
       ),
     }
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? locatedOnlyAnalysis : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, locatedOnlyAnalysis),
     ))
     render(<StructuralWorkbench isActive />)
 
@@ -1267,12 +1268,7 @@ describe('StructuralWorkbench', () => {
 
   it('shows Stage 8 strap resistance and the real bracing path blocker', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
-      new Response(JSON.stringify(
-        url.includes('/active/analysis') ? stage8Analysis : capture,
-      ), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      structuralResponse(url, capture, stage8Analysis),
     ))
 
     render(<StructuralWorkbench isActive />)
