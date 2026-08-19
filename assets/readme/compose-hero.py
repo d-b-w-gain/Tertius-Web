@@ -429,9 +429,6 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
             fill=signal_red,
         )
 
-    draw.text((width - 316, height - 44), "RED / AUTHORED GEOMETRY", font=small, fill=signal_red)
-    draw.text((width - 316, height - 24), "BLACK / SYSTEM + OUTPUT", font=small, fill=ink)
-
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(destination, format="PNG", optimize=True)
 
