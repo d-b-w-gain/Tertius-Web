@@ -415,14 +415,14 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
     if brand_font and brand_font.exists():
         footer_from = gorton_wordmark(
             brand_font,
-            "FROM DESIGN INTENT",
+            "TERTIUS CARRIES YOUR CONCEPT FROM LANGUAGE",
             28,
             3,
             signal_red,
         )
         footer_to = gorton_wordmark(
             brand_font,
-            "TO BUILDABLE GEOMETRY",
+            "TO BUILDABLE MODELS",
             28,
             3,
             signal_red,
@@ -435,12 +435,31 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
             footer_to = footer_to.crop(footer_to_box)
         phrase_gap = 42
         footer_width = footer_from.width + phrase_gap + footer_to.width
+        max_footer_width = width - margin * 2
+        if footer_width > max_footer_width:
+            scale_ratio = max_footer_width / footer_width
+            footer_from = footer_from.resize(
+                (
+                    max(1, int(footer_from.width * scale_ratio)),
+                    max(1, int(footer_from.height * scale_ratio)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+            footer_to = footer_to.resize(
+                (
+                    max(1, int(footer_to.width * scale_ratio)),
+                    max(1, int(footer_to.height * scale_ratio)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+            phrase_gap = max(24, int(phrase_gap * scale_ratio))
+            footer_width = footer_from.width + phrase_gap + footer_to.width
         footer_x = (width - footer_width) // 2
         footer_y = height - 76
         image.alpha_composite(footer_from, (footer_x, footer_y))
         image.alpha_composite(footer_to, (footer_x + footer_from.width + phrase_gap, footer_y))
     else:
-        footer_text = "FROM DESIGN INTENT   TO BUILDABLE GEOMETRY"
+        footer_text = "TERTIUS CARRIES YOUR CONCEPT FROM LANGUAGE   TO BUILDABLE MODELS"
         footer_box = draw.textbbox((0, 0), footer_text, font=sans)
         draw.text(
             ((width - (footer_box[2] - footer_box[0])) // 2, height - 74),
