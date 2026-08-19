@@ -8,9 +8,10 @@ not need to be redistributed with the repository.
 from __future__ import annotations
 
 import argparse
+import random
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 
 def load_font(path: Path | None, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -144,63 +145,146 @@ def gorton_wordmark(
     return high_resolution.resize(canvas.size, Image.Resampling.LANCZOS)
 
 
+def paper_background(width: int, height: int) -> Image.Image:
+    """Build a deterministic warm paper stock with restrained print-age texture."""
+    base = Image.new("RGB", (width, height), (241, 233, 218))
+    rng = random.Random(1956)
+    grain_size = (max(1, width // 8), max(1, height // 8))
+    grain = Image.new("L", grain_size)
+    grain.putdata([rng.randrange(106, 151) for _ in range(grain_size[0] * grain_size[1])])
+    grain = grain.resize((width, height), Image.Resampling.BICUBIC)
+    grain_colour = ImageOps.colorize(grain, (207, 193, 171), (255, 251, 241))
+    paper = Image.blend(base, grain_colour, 0.11).convert("RGBA")
+
+    marks = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(marks)
+    for _ in range(360):
+        x = rng.randrange(width)
+        y = rng.randrange(height)
+        opacity = rng.randrange(5, 18)
+        radius = rng.choice((1, 1, 1, 2))
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(74, 65, 51, opacity))
+    draw.line((width // 2, 0, width // 2, height), fill=(113, 96, 73, 12), width=2)
+    draw.line((width // 2 + 3, 0, width // 2 + 3, height), fill=(255, 255, 255, 22), width=1)
+    return Image.alpha_composite(paper, marks)
+
+
+def duotone_product_plate(source: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Turn the authentic dark viewport into cream-paper technical linework."""
+    width, height = source.size
+    crop = source.crop((int(width * 0.15), int(height * 0.13), int(width * 0.88), int(height * 0.98)))
+    crop = crop.resize(size, Image.Resampling.LANCZOS).convert("RGB")
+
+    grey = ImageOps.grayscale(crop)
+    grey = ImageEnhance.Contrast(grey).enhance(1.55)
+    edges = grey.filter(ImageFilter.FIND_EDGES)
+    ink_mask = grey.point(lambda value: 0 if value < 24 else min(218, int((value - 24) * 2.7)))
+    edge_mask = edges.point(lambda value: 0 if value < 10 else min(180, value * 2))
+    ink_mask = ImageChops.lighter(ink_mask, edge_mask)
+
+    plate = Image.new("RGBA", size, (0, 0, 0, 0))
+    ink = Image.new("RGBA", size, (30, 30, 27, 255))
+    ink.putalpha(ink_mask)
+    plate = Image.alpha_composite(plate, ink)
+
+    red_channel, green_channel, blue_channel = crop.split()
+    competing_channels = ImageChops.lighter(green_channel, blue_channel)
+    red_difference = ImageChops.subtract(red_channel, competing_channels)
+    red_mask = red_difference.point(lambda value: 0 if value < 8 else min(232, value * 7))
+    red_ink = Image.new("RGBA", size, (211, 55, 43, 255))
+    red_ink.putalpha(red_mask)
+    return Image.alpha_composite(plate, red_ink)
+
+
 def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
-    image = Image.open(source).convert("RGBA")
-    width, height = image.size
-
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    pixels = overlay.load()
-    for x in range(width):
-        for y in range(height):
-            left_fade = max(0.0, 1.0 - x / (width * 0.48))
-            edge_distance = min(x, width - 1 - x, y, height - 1 - y)
-            edge_fade = max(0.0, 1.0 - edge_distance / (min(width, height) * 0.18))
-            bottom_fade = max(0.0, (y - height * 0.72) / (height * 0.28))
-            alpha = min(
-                228,
-                int(165 * left_fade + 125 * edge_fade**1.8 + 28 * bottom_fade),
-            )
-            pixels[x, y] = (7, 13, 25, alpha)
-    image = Image.alpha_composite(image, overlay)
-
+    source_image = Image.open(source).convert("RGBA")
+    width, height = source_image.size
+    image = paper_background(width, height)
     draw = ImageDraw.Draw(image)
-    brand = load_font(None, max(72, width // 15))
-    sans = load_font(None, max(20, width // 58))
-    detail = load_font(None, max(17, width // 72))
-    mono = load_font(None, max(15, width // 86))
 
-    margin_x = width // 16
-    top = height // 6
-    orange = (255, 142, 31, 255)
-    white = (245, 247, 250, 255)
-    muted = (192, 201, 214, 255)
+    paper = (241, 233, 218, 255)
+    ink = (31, 31, 28, 255)
+    muted_ink = (78, 73, 65, 255)
+    signal_red = (211, 55, 43, 238)
+    sans = load_font(None, max(20, width // 64))
+    detail = load_font(None, max(15, width // 88))
+    small = load_font(None, max(12, width // 112))
+    margin = width // 22
 
-    draw.rectangle((margin_x, top - 10, margin_x + 112, top - 4), fill=orange)
-    draw.text((margin_x, top + 8), "OPEN-SOURCE ENGINEERING WORKBENCH", font=mono, fill=orange)
     if brand_font and brand_font.exists():
-        wordmark = gorton_wordmark(brand_font, "TERTIUS", 78, 7, white)
-        image.alpha_composite(wordmark, (margin_x, top + 48))
+        ghost = gorton_wordmark(brand_font, "TERTIUS", 70, 7, (156, 42, 34, 70))
+        image.alpha_composite(ghost, (margin + 2, 48 + 1))
+        wordmark = gorton_wordmark(brand_font, "TERTIUS", 70, 7, signal_red)
+        image.alpha_composite(wordmark, (margin, 48))
     else:
-        draw.text((margin_x, top + 48), "Tertius", font=brand, fill=white)
-    draw.text((margin_x, top + 184), "From design intent to editable CAD.", font=sans, fill=white)
-    draw.text((margin_x, top + 232), "REAL ENGINEERING OUTPUTS", font=mono, fill=orange)
-    draw.text((margin_x, top + 266), "3D models · bills of materials", font=detail, fill=muted)
-    draw.text((margin_x, top + 298), "Technical drawings · STEP / STL / GLB", font=detail, fill=muted)
+        draw.text((margin, 52), "TERTIUS", font=load_font(None, 92), fill=signal_red)
 
-    footer_y = height - 112
-    draw.rounded_rectangle(
-        (margin_x, footer_y, margin_x + 620, footer_y + 52),
-        radius=12,
-        fill=(7, 13, 25, 190),
-        outline=(255, 255, 255, 42),
-        width=1,
+    draw.text((margin, 166), "OPEN-SOURCE ENGINEERING WORKBENCH", font=detail, fill=ink)
+    draw.line((margin, 204, margin + 456, 204), fill=signal_red, width=7)
+    draw.text((margin, 224), "HOW TERTIUS WORKS / WHAT IT MAKES", font=small, fill=muted_ink)
+
+    rows = (
+        ("DESIGN", "DESCRIBE + REFINE THE IDEA"),
+        ("SOURCE", "KEEP EDITABLE BUILD123D"),
+        ("MODEL", "EXPORT GLB / STL / STEP"),
+        ("PROCURE", "BUILD A VISUAL BOM"),
+        ("DOCUMENT", "CREATE VECTOR PDF DRAWINGS"),
+    )
+    row_y = 270
+    for index, (label, value) in enumerate(rows):
+        jitter = (0, 1, -1, 0, 1)[index]
+        if brand_font and brand_font.exists():
+            label_mark = gorton_wordmark(brand_font, label, 20, 2, ink)
+            image.alpha_composite(label_mark, (margin, row_y + jitter))
+        else:
+            draw.text((margin, row_y), label, font=detail, fill=ink)
+        draw.rectangle((margin + 200, row_y + 13, margin + 255, row_y + 19), fill=signal_red)
+        draw.text((margin + 275, row_y + 3 + jitter), value, font=small, fill=ink)
+        draw.line((margin, row_y + 48, margin + 470, row_y + 48), fill=(96, 87, 75, 45), width=1)
+        row_y += 72
+
+    plate_x, plate_y = int(width * 0.38), 92
+    plate_size = (int(width * 0.575), int(height * 0.69))
+    draw.text((plate_x, plate_y - 26), "FIG. 01 / AUTHENTIC TERTIUS MODEL", font=small, fill=muted_ink)
+    plate = duotone_product_plate(source_image, plate_size)
+    image.alpha_composite(plate, (plate_x, plate_y))
+    draw.rectangle(
+        (plate_x - 1, plate_y - 1, plate_x + plate_size[0] + 1, plate_y + plate_size[1] + 1),
+        outline=ink,
+        width=2,
+    )
+    draw.rectangle((plate_x + 26, plate_y + 26, plate_x + 186, plate_y + 58), fill=ink)
+    draw.text((plate_x + 39, plate_y + 34), "EDITABLE MODEL", font=small, fill=paper)
+    draw.rectangle(
+        (plate_x + plate_size[0] - 222, plate_y + plate_size[1] - 58, plate_x + plate_size[0] - 24, plate_y + plate_size[1] - 26),
+        fill=signal_red,
     )
     draw.text(
-        (margin_x + 20, footer_y + 16),
-        "DESIGN  →  COMPILE  →  INSPECT  →  PROCURE  →  DOCUMENT",
-        font=mono,
-        fill=muted,
+        (plate_x + plate_size[0] - 207, plate_y + plate_size[1] - 50),
+        "REAL PRODUCT CAPTURE",
+        font=small,
+        fill=paper,
     )
+
+    if brand_font and brand_font.exists():
+        footer = gorton_wordmark(
+            brand_font,
+            "FROM DESIGN INTENT TO BUILDABLE GEOMETRY",
+            28,
+            3,
+            signal_red,
+        )
+        image.alpha_composite(footer, (margin, height - 82))
+    else:
+        draw.text(
+            (margin, height - 74),
+            "FROM DESIGN INTENT TO BUILDABLE GEOMETRY",
+            font=sans,
+            fill=signal_red,
+        )
+
+    draw.text((width - 316, height - 44), "RED / AUTHORED GEOMETRY", font=small, fill=signal_red)
+    draw.text((width - 316, height - 24), "BLACK / SYSTEM + OUTPUT", font=small, fill=ink)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(destination, format="PNG", optimize=True)

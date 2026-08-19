@@ -4,18 +4,19 @@ README images must be evidence of the real product. Do not use generated CAD ima
 
 ## Hero
 
-The final hero should be a staged, authenticated Tertius session at a 16:9 aspect ratio:
+The hero is a 16:9 editorial composition based on mid-century military and public-works engineering reports:
 
-- Use a real project with visually legible structural geometry.
-- Open **Generate Design** with two or three genuine design iterations visible.
-- Keep the compiled model prominent in the shared Extus viewport.
-- Include enough application navigation to identify the integrated workbench.
+- Use a real project capture with visually legible structural geometry.
+- Keep the authentic compiled model prominent in the technical plate.
+- Restrict the palette to warm paper, black ink, and signal red.
+- Use genuine stroked Gorton paths for the wordmark and footer statement.
+- Keep the workflow/output table factual and understandable without surrounding prose.
 - Exclude browser chrome, credentials, tenant identifiers, provider details, prompts containing private information, and transient error states.
-- Keep any overlay copy restrained and factual; the README remains the source of truth for the full product description.
+- Preserve slight paper, registration, and lettering imperfections without degrading legibility.
 
-Capture at 1600 × 900 or larger and export the final optimized image as `hero-product.webp` or `hero-product.png`. The current `hero-product.png` is a real authenticated Extus session captured after the shed model finished loading.
+Capture at 1600 × 900 or larger and export the final optimized image as `hero-product.webp` or `hero-product.png`. The source for the current hero is a real authenticated Extus session captured after the shed model finished loading.
 
-The checked-in hero uses a deterministic Pillow composition in [`assets/readme/compose-hero.py`](readme/compose-hero.py): a real Extus capture, a restrained gradient for contrast, and a small amount of editorial type. This keeps the process open-source and repeatable without requiring a design application. A licensed Gorton Classic font can be supplied at capture time with `--font`; the font itself does not need to be redistributed. The script extracts its open glyph geometry with `fontTools` and strokes the paths with round caps and joins—normal filled-text rasterisation does not reproduce this single-stroke engraving font correctly. See [`assets/readme/README.md`](readme/README.md) for the regeneration command.
+The checked-in hero uses a deterministic Pillow composition in [`assets/readme/compose-hero.py`](readme/compose-hero.py). This keeps the process open-source and repeatable without requiring a design application. A licensed Gorton Classic font can be supplied at capture time with `--font`; the font itself does not need to be redistributed. The script extracts its open glyph geometry with `fontTools` and strokes the paths with round caps and joins—normal filled-text rasterisation does not reproduce this single-stroke engraving font correctly. See [`assets/readme/README.md`](readme/README.md) for the regeneration command.
 
 ## Supporting views
 
