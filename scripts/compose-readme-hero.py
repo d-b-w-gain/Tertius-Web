@@ -151,36 +151,56 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     pixels = overlay.load()
     for x in range(width):
-        strength = int(218 * max(0.0, 1.0 - x / (width * 0.52)))
         for y in range(height):
-            vertical = 0.72 if y < height * 0.78 else 0.42
-            pixels[x, y] = (7, 13, 25, int(strength * vertical))
+            left_fade = max(0.0, 1.0 - x / (width * 0.48))
+            edge_distance = min(x, width - 1 - x, y, height - 1 - y)
+            edge_fade = max(0.0, 1.0 - edge_distance / (min(width, height) * 0.18))
+            bottom_fade = max(0.0, (y - height * 0.72) / (height * 0.28))
+            alpha = min(
+                228,
+                int(165 * left_fade + 125 * edge_fade**1.8 + 28 * bottom_fade),
+            )
+            pixels[x, y] = (7, 13, 25, alpha)
     image = Image.alpha_composite(image, overlay)
 
     draw = ImageDraw.Draw(image)
     brand = load_font(None, max(72, width // 15))
     sans = load_font(None, max(20, width // 58))
+    detail = load_font(None, max(17, width // 72))
     mono = load_font(None, max(15, width // 86))
 
     margin_x = width // 16
-    top = height // 7
+    top = height // 6
     orange = (255, 142, 31, 255)
     white = (245, 247, 250, 255)
     muted = (192, 201, 214, 255)
 
-    draw.rectangle((margin_x, top - 28, margin_x + 112, top - 22), fill=orange)
-    draw.text((margin_x, top), "GAIN ENGINEERING / OPEN SOURCE", font=mono, fill=orange)
+    draw.rectangle((margin_x, top - 10, margin_x + 112, top - 4), fill=orange)
+    draw.text((margin_x, top + 8), "OPEN-SOURCE ENGINEERING WORKBENCH", font=mono, fill=orange)
     if brand_font and brand_font.exists():
-        wordmark = gorton_wordmark(brand_font, "TERTIUS", 96, 8, white)
-        image.alpha_composite(wordmark, (margin_x, top + 38))
+        wordmark = gorton_wordmark(brand_font, "TERTIUS", 78, 7, white)
+        image.alpha_composite(wordmark, (margin_x, top + 48))
     else:
-        draw.text((margin_x, top + 40), "Tertius", font=brand, fill=white)
-    draw.text((margin_x, top + 200), "Turn design intent into", font=sans, fill=white)
-    draw.text((margin_x, top + 235), "buildable geometry.", font=sans, fill=white)
+        draw.text((margin_x, top + 48), "Tertius", font=brand, fill=white)
+    draw.text((margin_x, top + 184), "From design intent to editable CAD.", font=sans, fill=white)
+    draw.text((margin_x, top + 232), "REAL ENGINEERING OUTPUTS", font=mono, fill=orange)
+    draw.text((margin_x, top + 266), "3D models · bills of materials", font=detail, fill=muted)
+    draw.text((margin_x, top + 298), "Technical drawings · STEP / STL / GLB", font=detail, fill=muted)
 
-    footer_y = height - height // 9
-    draw.text((margin_x, footer_y), "DESIGN  →  COMPILE  →  INSPECT  →  PROCURE", font=mono, fill=muted)
-    draw.text((width - margin_x - 220, height - height // 15), "TERTIUS / 3D WORKBENCH", font=mono, fill=orange)
+    footer_y = height - 112
+    draw.rounded_rectangle(
+        (margin_x, footer_y, margin_x + 620, footer_y + 52),
+        radius=12,
+        fill=(7, 13, 25, 190),
+        outline=(255, 255, 255, 42),
+        width=1,
+    )
+    draw.text(
+        (margin_x + 20, footer_y + 16),
+        "DESIGN  →  COMPILE  →  INSPECT  →  PROCURE  →  DOCUMENT",
+        font=mono,
+        fill=muted,
+    )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.convert("RGB").save(destination, format="PNG", optimize=True)
