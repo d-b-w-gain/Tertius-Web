@@ -1258,6 +1258,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </ul>
                         )}
                         <p className="mt-1 text-amber-100">{check.anchorage_basis}</p>
+                        {(check.anchorage_blockers?.length ?? 0) > 0 && (
+                          <ul className="mt-1 space-y-1 text-[9px] text-amber-200">
+                            {check.anchorage_blockers?.map((blocker) => (
+                              <li key={blocker}>• {blocker}</li>
+                            ))}
+                          </ul>
+                        )}
                         {check.anchorage_component_ids.length > 0 && (
                           <p className="mt-1 break-all font-mono text-[8px] text-slate-500">
                             Path {check.anchorage_component_ids.join(' → ')}
@@ -1356,6 +1363,21 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               <span>V* {number(check.shear_demand_kN, 3)} kN</span>
                               <span>M* {number(check.moment_demand_kNm, 3)} kN·m</span>
                             </div>
+                            {(check.design_axial_capacity_kN !== null
+                              || check.design_shear_capacity_kN !== null
+                              || check.design_moment_capacity_kNm !== null) && (
+                              <div className="mt-1 grid grid-cols-3 gap-2 font-mono text-[9px] text-emerald-300">
+                                <span>ϕNn {check.design_axial_capacity_kN === null
+                                  ? '—'
+                                  : `${number(check.design_axial_capacity_kN, 3)} kN`}</span>
+                                <span>ϕVn {check.design_shear_capacity_kN === null
+                                  ? '—'
+                                  : `${number(check.design_shear_capacity_kN, 3)} kN`}</span>
+                                <span>ϕMn {check.design_moment_capacity_kNm === null
+                                  ? '—'
+                                  : `${number(check.design_moment_capacity_kNm, 3)} kN·m`}</span>
+                              </div>
+                            )}
                             <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-slate-500">
                               <span>{check.pack_id} v{check.pack_version}</span>
                               <span className={
@@ -1369,10 +1391,20 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               </span>
                             </div>
                             <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
-                              {check.evidence_status === 'verified'
-                                ? `Governing utilisation ${number(check.governing_utilisation ?? 0, 3)}.`
-                                : 'Resistance unavailable—demand is visible but this joint cannot pass.'}
+                              {check.governing_utilisation !== null
+                                ? `Governing utilisation ${number(check.governing_utilisation, 3)}.`
+                                : `Resistance unavailable—demand is visible but this joint cannot pass. ${
+                                  check.assumptions[1] || check.assumptions[0] || ''
+                                }`}
                             </p>
+                            {check.governing_combination_id && (
+                              <p className="mt-1 font-mono text-[8px] text-cyan-300">
+                                Governing {check.governing_combination_id}
+                                {check.governing_member_id
+                                  ? ` · ${check.governing_member_id}`
+                                  : ''}
+                              </p>
+                            )}
                           </div>
                         )}
                       </button>

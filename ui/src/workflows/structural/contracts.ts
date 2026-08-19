@@ -731,6 +731,7 @@ export type StructuralSnapshot = {
     anchorage_connection_ids: string[]
     anchorage_grounded_component_id: string | null
     anchorage_basis: string
+    anchorage_blockers?: string[]
     mechanism: string
     provenance: string
     basis: string

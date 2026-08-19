@@ -12,6 +12,7 @@ from core.structural.authoring_runtime import (
     StructuralModel,
 )
 from core.structural.contracts import (
+    ConnectionCheck,
     DesignComponent,
     DesignConnection,
     MemberStabilityComparison,
@@ -26,6 +27,7 @@ from core.structural.design_capture import (
 )
 from core.structural.project_analysis import (
     _bracing_load_path_traces,
+    _connection_checks,
     _off_axis_load_path,
     _stability_scope_comparisons,
     _tension_member_checks,
@@ -145,7 +147,36 @@ def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
         basis="Typed Stage 8 load-path test fixture.",
     )
 
-    traces = _bracing_load_path_traces(capture, analysis, [tension_check])
+    passing_connections = [
+        ConnectionCheck(
+            connection_id=connection.id,
+            label=connection.label,
+            status="pass",
+            evidence_status="verified",
+            pack_id="typed-load-path-fixture",
+            pack_version="1",
+            identity_status="pass",
+            axial_demand_kN=1.0,
+            shear_demand_kN=1.0,
+            moment_demand_kNm=0.0,
+            basis="Typed passing connection fixture.",
+        )
+        for connection in connections
+    ]
+    unverified_trace = _bracing_load_path_traces(
+        capture,
+        analysis,
+        [tension_check],
+    )[0]
+    assert unverified_trace.status == "candidate"
+    assert any("no demand/resistance check" in item for item in unverified_trace.blockers)
+
+    traces = _bracing_load_path_traces(
+        capture,
+        analysis,
+        [tension_check],
+        passing_connections,
+    )
 
     assert len(traces) == 1
     trace = traces[0]
@@ -229,6 +260,8 @@ def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> No
         assumption="Tension-only physical strap.",
         start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
         end=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+        start_node_key="joint:brace-left",
+        end_node_key="joint:brace-right",
     )
     support_left = SimpleNamespace(
         id="support-left-axis",
@@ -236,6 +269,10 @@ def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> No
         tension_only=False,
         section_id="support",
         material_id="g500",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=0.0, y=0.0, z=1.0),
+        start_node_key=None,
+        end_node_key=None,
     )
     support_right = SimpleNamespace(
         id="support-right-axis",
@@ -243,6 +280,10 @@ def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> No
         tension_only=False,
         section_id="support",
         material_id="g500",
+        start=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=1.0, y=0.0, z=1.0),
+        start_node_key=None,
+        end_node_key=None,
     )
     analysis = SimpleNamespace(
         load_combinations=[
@@ -311,6 +352,24 @@ def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> No
     assert check.fastener_required_single_shear_strength_kN < 5.75
     assert check.end_fastener_part_numbers == ["6-311-0695-5MP"]
     assert check.end_connection_capacity_kN is not None
+
+    connection_checks = _connection_checks(
+        model,
+        analysis,
+        connections,
+        fastener_components,
+        [check],
+    )
+    assert [connection.status for connection in connection_checks] == ["pass", "pass"]
+    assert all(
+        connection.pack_id == "as_nzs_4600_2005_a1_tension_end_connection"
+        for connection in connection_checks
+    )
+    assert all(
+        connection.design_axial_capacity_kN
+        == pytest.approx(check.end_connection_capacity_kN)
+        for connection in connection_checks
+    )
 
 
 def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():

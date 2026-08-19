@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections import deque
 from importlib.metadata import version
 from math import pi, sqrt
@@ -73,8 +73,15 @@ def _connection_checks(
     analysis,
     connections: Sequence[DesignConnection],
     components: dict[str, DesignComponent],
+    tension_checks: Sequence[TensionMemberCheck] = (),
 ) -> list[ConnectionCheck]:
-    """Envelope physical-joint end actions without inventing resistance evidence."""
+    """Envelope joint actions and resolve exact available resistance evidence.
+
+    Explicit reusable connection packs remain authoritative. A tension-only
+    member end may also use the Tertius-owned AS/NZS 4600 screw calculation
+    already produced for its exact rendered strap, support, and fasteners. No
+    other resistance is inferred from geometry or topology.
+    """
 
     ultimate_combinations = [
         combination
@@ -94,11 +101,58 @@ def _connection_checks(
                 member_endpoints_by_connection.setdefault(connection_id, []).append(
                     (declaration, distance_m)
                 )
+    tension_checks_by_member = {check.member_id: check for check in tension_checks}
+    tension_checks_by_component: dict[str, TensionMemberCheck] = {}
+    tension_checks_by_connection: dict[str, TensionMemberCheck] = {}
+    for declaration in analysis.members:
+        if not declaration.tension_only:
+            continue
+        tension_check = tension_checks_by_member.get(declaration.id)
+        if tension_check is None:
+            continue
+        tension_checks_by_component[declaration.component_id] = tension_check
+        for node_key in (declaration.start_node_key, declaration.end_node_key):
+            for connection_id in _node_key_connection_ids(node_key):
+                tension_checks_by_connection[connection_id] = tension_check
+
+    # Project-local component builders are authoritative for physical incidence.
+    # Retain node-key discovery for analytical joint models, then fill any brace
+    # ends whose shared node was authored by component incidence instead.
+    for connection in connections:
+        incident_tension_checks = {
+            tension_checks_by_component[component_id].member_id: (
+                tension_checks_by_component[component_id]
+            )
+            for component_id in {
+                connection.from_component_id,
+                connection.to_component_id,
+            }
+            if component_id in tension_checks_by_component
+        }
+        if len(incident_tension_checks) == 1:
+            tension_checks_by_connection.setdefault(
+                connection.id,
+                next(iter(incident_tension_checks.values())),
+            )
+
     checks: list[ConnectionCheck] = []
     for connection in connections:
         evidence = connection.resistance
+        tension_evidence = (
+            tension_checks_by_connection.get(connection.id)
+            if evidence is None and set(connection.transfers) <= {"force"}
+            else None
+        )
         expected_parts = (
-            sorted(evidence.connector_part_numbers) if evidence is not None else []
+            sorted(evidence.connector_part_numbers)
+            if evidence is not None
+            else sorted(
+                components[component_id].part_number
+                or f"<missing:{component_id}>"
+                for component_id in connection.connector_component_ids
+            )
+            if tension_evidence is not None
+            else []
         )
         rendered_parts = sorted(
             components[component_id].part_number or f"<missing:{component_id}>"
@@ -106,7 +160,8 @@ def _connection_checks(
         )
         identity_mismatches = (
             []
-            if evidence is None or rendered_parts == expected_parts
+            if (evidence is None and tension_evidence is None)
+            or rendered_parts == expected_parts
             else [
                 "connector part-number multiset expected "
                 f"{expected_parts!r}, rendered {rendered_parts!r}"
@@ -167,19 +222,45 @@ def _connection_checks(
                     governing_combination_id = combination.id
                     governing_member_id = declaration.id
 
+        # A tension-only analytical member carries the same axial force to both
+        # rendered end layouts. This also preserves the verified demand when a
+        # project-local builder registered incidence without a joint node key.
+        if tension_evidence is not None:
+            axial_demand = max(axial_demand, tension_evidence.tension_demand_kN)
+            tension_resultant = tension_evidence.tension_demand_kN
+            if tension_resultant >= governing_resultant:
+                governing_resultant = tension_resultant
+                governing_combination_id = (
+                    tension_evidence.governing_combination_id
+                )
+                governing_member_id = tension_evidence.member_id
+
+        design_axial_capacity_kN = (
+            evidence.design_axial_capacity_kN
+            if evidence is not None
+            else tension_evidence.end_connection_capacity_kN
+            if tension_evidence is not None
+            else None
+        )
+        design_shear_capacity_kN = (
+            evidence.design_shear_capacity_kN if evidence is not None else None
+        )
+        design_moment_capacity_kNm = (
+            evidence.design_moment_capacity_kNm if evidence is not None else None
+        )
         axial_utilisation = (
-            axial_demand / evidence.design_axial_capacity_kN
-            if evidence is not None and evidence.design_axial_capacity_kN is not None
+            axial_demand / design_axial_capacity_kN
+            if design_axial_capacity_kN is not None
             else None
         )
         shear_utilisation = (
-            shear_demand / evidence.design_shear_capacity_kN
-            if evidence is not None and evidence.design_shear_capacity_kN is not None
+            shear_demand / design_shear_capacity_kN
+            if design_shear_capacity_kN is not None
             else None
         )
         moment_utilisation = (
-            moment_demand / evidence.design_moment_capacity_kNm
-            if evidence is not None and evidence.design_moment_capacity_kNm is not None
+            moment_demand / design_moment_capacity_kNm
+            if design_moment_capacity_kNm is not None
             else None
         )
         relevant_utilisations = [
@@ -198,7 +279,22 @@ def _connection_checks(
             status: Literal["pass", "fail", "not_checked", "unsupported"] = (
                 "not_checked"
             )
-        elif evidence is None or evidence.status != "verified" or identity_mismatches:
+        elif evidence is not None and (
+            evidence.status != "verified" or identity_mismatches
+        ):
+            status = "unsupported"
+        elif tension_evidence is not None:
+            if tension_evidence.fastener_shear_qualification_status == "fail":
+                status = "fail"
+            elif (
+                tension_evidence.connection_capacity_status != "verified"
+                or identity_mismatches
+                or governing_utilisation is None
+            ):
+                status = "unsupported"
+            else:
+                status = "pass" if governing_utilisation <= 1.0 else "fail"
+        elif evidence is None:
             status = "unsupported"
         else:
             status = (
@@ -206,13 +302,35 @@ def _connection_checks(
                 if governing_utilisation is not None and governing_utilisation <= 1.0
                 else "fail"
             )
-        assumptions = list(evidence.assumptions) if evidence is not None else []
-        if evidence is None:
+        assumptions = (
+            list(evidence.assumptions)
+            if evidence is not None
+            else list(tension_evidence.assumptions)
+            if tension_evidence is not None
+            else []
+        )
+        grounded_component_ids = sorted(
+            component_id
+            for component_id in {
+                connection.from_component_id,
+                connection.to_component_id,
+            }
+            if components.get(component_id) is not None
+            and components[component_id].grounded
+        )
+        if evidence is None and tension_evidence is None:
             assumptions.append(
                 "The rendered connector identity and joint demand are recorded, but "
                 "no resistance evidence pack is attached."
             )
-        elif evidence.status != "verified":
+            if grounded_component_ids:
+                assumptions.append(
+                    "This is a foundation connection. Certification requires exact "
+                    "anchor resistance, substrate strength and condition, edge and "
+                    "spacing checks, combined tension/shear interaction, and the "
+                    "foundation concrete or masonry limit states."
+                )
+        elif evidence is not None and evidence.status != "verified":
             assumptions.append(
                 "Demand is calculated, but resistance is not verified and cannot pass."
             )
@@ -222,19 +340,34 @@ def _connection_checks(
                 label=connection.label,
                 status=status,
                 evidence_status=(
-                    evidence.status if evidence is not None else "unverified"
+                    evidence.status
+                    if evidence is not None
+                    else "verified"
+                    if tension_evidence is not None
+                    and tension_evidence.connection_capacity_status == "verified"
+                    else "candidate"
+                    if tension_evidence is not None
+                    else "unverified"
                 ),
                 pack_id=(
                     evidence.pack_id
                     if evidence is not None
+                    else "as_nzs_4600_2005_a1_tension_end_connection"
+                    if tension_evidence is not None
                     else "unverified-rendered-connection"
                 ),
-                pack_version=(evidence.version if evidence is not None else "0"),
+                pack_version=(
+                    evidence.version
+                    if evidence is not None
+                    else "2005+A1"
+                    if tension_evidence is not None
+                    else "0"
+                ),
                 identity_status=(
                     "fail"
                     if identity_mismatches
                     else "pass"
-                    if evidence is not None
+                    if evidence is not None or tension_evidence is not None
                     else "not_declared"
                 ),
                 identity_mismatches=identity_mismatches,
@@ -243,30 +376,42 @@ def _connection_checks(
                 axial_demand_kN=axial_demand,
                 shear_demand_kN=shear_demand,
                 moment_demand_kNm=moment_demand,
-                design_axial_capacity_kN=(
-                    evidence.design_axial_capacity_kN if evidence is not None else None
-                ),
-                design_shear_capacity_kN=(
-                    evidence.design_shear_capacity_kN if evidence is not None else None
-                ),
-                design_moment_capacity_kNm=(
-                    evidence.design_moment_capacity_kNm
-                    if evidence is not None
-                    else None
-                ),
+                design_axial_capacity_kN=design_axial_capacity_kN,
+                design_shear_capacity_kN=design_shear_capacity_kN,
+                design_moment_capacity_kNm=design_moment_capacity_kNm,
                 axial_utilisation=axial_utilisation,
                 shear_utilisation=shear_utilisation,
                 moment_utilisation=moment_utilisation,
                 governing_utilisation=governing_utilisation,
                 expected_connector_part_numbers=expected_parts,
                 rendered_connector_part_numbers=rendered_parts,
-                source=(evidence.source if evidence is not None else None),
+                source=(
+                    evidence.source
+                    if evidence is not None
+                    else " · ".join(
+                        filter(
+                            None,
+                            (
+                                tension_evidence.fastener_evidence_source,
+                                tension_evidence.standard_reference,
+                            ),
+                        )
+                    )
+                    if tension_evidence is not None
+                    else None
+                ),
                 source_sha256=(
-                    evidence.source_sha256 if evidence is not None else None
+                    evidence.source_sha256
+                    if evidence is not None
+                    else tension_evidence.standard_source_sha256
+                    if tension_evidence is not None
+                    else None
                 ),
                 basis=(
                     evidence.basis
                     if evidence is not None
+                    else tension_evidence.basis
+                    if tension_evidence is not None
                     else "ULS endpoint forces are enveloped from the compiled physical "
                     "joint. No resistance, stiffness, bearing, tear-out, pull-out, "
                     "anchor, or foundation capacity is inferred."
@@ -983,11 +1128,15 @@ def _bracing_load_path_traces(
     capture: ProjectStructuralCapture,
     analysis,
     tension_checks: Sequence[TensionMemberCheck],
+    connection_checks: Sequence[ConnectionCheck] = (),
 ) -> list[BracingLoadPathTrace]:
     """Trace every tension-only brace through both physical ends to ground."""
 
     components = {component.id: component for component in capture.components}
     checks_by_member = {check.member_id: check for check in tension_checks}
+    connection_checks_by_id = {
+        check.connection_id: check for check in connection_checks
+    }
     traces: list[BracingLoadPathTrace] = []
     for declaration in analysis.members:
         if not declaration.tension_only:
@@ -1050,10 +1199,34 @@ def _bracing_load_path_traces(
                 incident[1][0].id,
                 *(connection.id for connection in legs[1][1]),
             ]
+        path_connection_failures: list[ConnectionCheck] = []
+        path_connection_blockers: list[str] = []
+        for connection_id in dict.fromkeys(connection_ids):
+            connection_check = connection_checks_by_id.get(connection_id)
+            if connection_check is None:
+                path_connection_blockers.append(
+                    f"Connection {connection_id!r} has no demand/resistance check."
+                )
+            elif connection_check.status == "fail":
+                path_connection_failures.append(connection_check)
+                path_connection_blockers.append(
+                    f"Connection {connection_id!r} fails at utilisation "
+                    f"{connection_check.governing_utilisation:.3f}."
+                    if connection_check.governing_utilisation is not None
+                    else f"Connection {connection_id!r} fails its resistance check."
+                )
+            elif connection_check.status != "pass":
+                path_connection_blockers.append(
+                    f"Connection {connection_id!r} is {connection_check.status}; "
+                    "verified resistance is required for the path to ground."
+                )
+        blockers.extend(path_connection_blockers)
         if any(ground is None for _path, _connections, ground in legs) or len(legs) < 2:
             status: Literal["pass", "fail", "candidate", "blocked"] = "blocked"
-        elif check is not None and check.status == "fail":
+        elif (check is not None and check.status == "fail") or path_connection_failures:
             status = "fail"
+        elif path_connection_blockers:
+            status = "candidate"
         elif check is not None and check.status == "pass" and not blockers:
             status = "pass"
         else:
@@ -1075,7 +1248,8 @@ def _bracing_load_path_traces(
                 basis=(
                     "The compiled physical connection graph was traversed independently "
                     "from each brace end to grounded components. A pass additionally "
-                    "requires the governing ULS strap and end-connection resistance to pass."
+                    "requires the governing ULS strap and every physical connection "
+                    "on both routes to ground to pass resistance."
                 ),
             )
         )
@@ -1698,6 +1872,7 @@ def _member_restraint_candidate_checks(
     analysis,
     *,
     combination_id: str,
+    connection_checks_by_id: Mapping[str, ConnectionCheck] | None = None,
 ) -> list[MemberRestraintCandidateCheck]:
     definition = analysis.member_stability_verification
     if definition is None:
@@ -1899,6 +2074,43 @@ def _member_restraint_candidate_checks(
             and design_moment_capacity_kNm is not None
             else None
         )
+        anchorage_status = candidate.anchorage_status
+        anchorage_basis = candidate.anchorage_basis
+        anchorage_blockers: list[str] = []
+        if anchorage_status != "verified" and connection_checks_by_id is not None:
+            if candidate.anchorage_grounded_component_id is None:
+                anchorage_blockers.append(
+                    "No compiled physical route from this restraint reaches ground."
+                )
+            elif not candidate.anchorage_connection_ids:
+                anchorage_blockers.append(
+                    "The route reaches a grounded component without a declared "
+                    "connection resistance path."
+                )
+            else:
+                for connection_id in candidate.anchorage_connection_ids:
+                    connection_check = connection_checks_by_id.get(connection_id)
+                    if connection_check is None:
+                        anchorage_blockers.append(
+                            f"Connection {connection_id!r} has no resistance check."
+                        )
+                    elif connection_check.status != "pass":
+                        anchorage_blockers.append(
+                            f"Connection {connection_id!r} is "
+                            f"{connection_check.status}."
+                        )
+            if not anchorage_blockers:
+                anchorage_status = "verified"
+                anchorage_basis = (
+                    "Every compiled physical connection on the longitudinal route to "
+                    f"grounded component {candidate.anchorage_grounded_component_id} "
+                    "passes its governing ULS resistance check."
+                )
+            else:
+                anchorage_basis = (
+                    f"{candidate.anchorage_basis} "
+                    + " ".join(anchorage_blockers)
+                )
         status: Literal["unsupported", "candidate", "pass", "fail"]
         if candidate.evidence_status == "unsupported" or identity_status == "fail":
             status = "unsupported"
@@ -1911,7 +2123,7 @@ def _member_restraint_candidate_checks(
             or stiffness_status != "verified"
             or (
                 candidate.evidence_pack_id is not None
-                and candidate.anchorage_status != "verified"
+                and anchorage_status != "verified"
             )
         ):
             status = "candidate"
@@ -1961,13 +2173,14 @@ def _member_restraint_candidate_checks(
                     if evidence_resolution is not None
                     else []
                 ),
-                anchorage_status=candidate.anchorage_status,
+                anchorage_status=anchorage_status,
                 anchorage_component_ids=candidate.anchorage_component_ids,
                 anchorage_connection_ids=candidate.anchorage_connection_ids,
                 anchorage_grounded_component_id=(
                     candidate.anchorage_grounded_component_id
                 ),
-                anchorage_basis=candidate.anchorage_basis,
+                anchorage_basis=anchorage_basis,
+                anchorage_blockers=anchorage_blockers,
                 mechanism=(
                     "AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3: the restraint "
                     "transfers 2.5% of the maximum critical-flange force, with "
@@ -2103,6 +2316,7 @@ def _member_restraint_traces(
     analysis,
     *,
     combination_id: str,
+    connection_checks_by_id: Mapping[str, ConnectionCheck] | None = None,
 ) -> list[MemberRestraintTrace]:
     definition = analysis.member_stability_verification
     if definition is None:
@@ -2111,6 +2325,7 @@ def _member_restraint_traces(
         model,
         analysis,
         combination_id=combination_id,
+        connection_checks_by_id=connection_checks_by_id,
     )
     candidate_checks_by_id = {check.candidate_id: check for check in candidate_checks}
     members_by_id = {member.id: member for member in analysis.members}
@@ -2237,6 +2452,8 @@ def _member_restraint_traces(
 def _member_stability_checks(
     model,
     analysis,
+    *,
+    connection_checks_by_id: Mapping[str, ConnectionCheck] | None = None,
 ) -> list[MemberStabilityCheck]:
     definition = analysis.member_stability_verification
     if definition is None:
@@ -2251,6 +2468,7 @@ def _member_stability_checks(
                 model,
                 analysis,
                 combination_id=combination_id,
+                connection_checks_by_id=connection_checks_by_id,
             )
         }
         for combination_id in definition.combination_ids
@@ -6021,16 +6239,21 @@ def solve_project_structural(
         capture.connections,
         components,
     )
-    bracing_load_path_traces = _bracing_load_path_traces(
-        capture,
-        analysis,
-        tension_member_checks,
-    )
     connection_checks = _connection_checks(
         model,
         analysis,
         capture.connections,
         components,
+        tension_member_checks,
+    )
+    connection_checks_by_id = {
+        check.connection_id: check for check in connection_checks
+    }
+    bracing_load_path_traces = _bracing_load_path_traces(
+        capture,
+        analysis,
+        tension_member_checks,
+        connection_checks,
     )
     cross_section_checks = _cross_section_checks(
         model,
@@ -6041,7 +6264,11 @@ def solve_project_structural(
     cross_section_checks_by_member = {
         check.member_id: check for check in cross_section_checks
     }
-    member_stability_checks = _member_stability_checks(model, analysis)
+    member_stability_checks = _member_stability_checks(
+        model,
+        analysis,
+        connection_checks_by_id=connection_checks_by_id,
+    )
     member_restraint_candidate_checks = (
         [
             check
@@ -6058,6 +6285,7 @@ def solve_project_structural(
                 model,
                 analysis,
                 combination_id=restraint_combination_id,
+                connection_checks_by_id=connection_checks_by_id,
             )
         ]
         if analysis.member_stability_verification is not None
@@ -6067,6 +6295,7 @@ def solve_project_structural(
         model,
         analysis,
         combination_id=active_combination.id,
+        connection_checks_by_id=connection_checks_by_id,
     )
     member_stability_checks_by_member: dict[str, list[MemberStabilityCheck]] = {}
     for stability_check in member_stability_checks:

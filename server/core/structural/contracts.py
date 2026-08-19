@@ -780,6 +780,7 @@ class MemberRestraintCandidateCheck(StructuralContract):
     anchorage_connection_ids: list[str] = Field(default_factory=list)
     anchorage_grounded_component_id: str | None = None
     anchorage_basis: str = "No longitudinal anchorage evidence is declared."
+    anchorage_blockers: list[str] = Field(default_factory=list)
     mechanism: str
     provenance: str
     basis: str

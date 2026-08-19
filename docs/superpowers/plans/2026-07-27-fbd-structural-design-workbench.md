@@ -200,6 +200,14 @@ and result artifacts consumed by the workbench and calculation reports.
   serviceability checks with the correct responsibility and evidence
   boundaries.
 
+Stage 9 connection evidence (2026-08-19): exact rendered tension-strap ends now
+reuse the Tertius-owned AS/NZS 4600 screw resistance calculation inside the
+general physical-joint register. Stage 8 bracing and restraint paths require
+passing Stage 9 connections all the way to ground. Unsupported brackets,
+anchors, substrate interaction, and foundation limit states stay visibly
+blocked rather than inheriting capacity from geometry, so this work item
+remains open.
+
 Action-pipeline evidence (2026-08-17): the Tertius-owned, source-digested
 AS/NZS 1170.0 pack derives the R2 roof imposed action, distinct 1-in-25 SLS and
 project-ultimate wind actions in both structural directions, the scoped

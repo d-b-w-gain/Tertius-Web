@@ -752,6 +752,15 @@ configuration, Structural workbench UI and tests.
 - [ ] Attach tested screw resistance, complete general connection/base/foundation
   resistance, and close the remaining live-shed serviceability evidence.
 
+Stage 9 connection evidence (2026-08-19): Tertius now promotes each exact
+rendered tension-strap end from the existing AS/NZS 4600 screw qualification
+into the general physical-connection demand/resistance register. Every Stage 8
+brace and restraint route must pass every Stage 9 connection on its path to
+ground; topology alone can no longer verify anchorage. General brackets, base
+anchors, substrate interaction, and concrete/masonry resistance remain
+fail-closed with the missing evidence named in the calculation sheet, so this
+item intentionally remains open.
+
 ### Task 10: Validate the real workflow and release gates
 
 **Files:** unit/integration/e2e tests, harness scripts, runtime parity docs,
