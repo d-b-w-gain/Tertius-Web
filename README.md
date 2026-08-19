@@ -13,6 +13,16 @@
 
 Tertius combines conversational design, Python-based parametric modelling, asynchronous CAD compilation, 3D inspection, visual bills of materials, supplier quote exports, and drawing generation in one browser-based workspace. Build123D source remains editable throughout the workflow rather than being hidden behind a generated model.
 
+## Watch Tertius in action
+
+<table>
+  <tr>
+    <td align="center"><a href="https://youtu.be/_rCYJJal89w"><img src="https://img.youtube.com/vi/_rCYJJal89w/maxresdefault.jpg" alt="Design a garden shed with AI" width="100%" /></a><br /><strong>Design a garden shed with AI</strong></td>
+    <td align="center"><a href="https://youtu.be/XHYL_hoQHuY"><img src="https://img.youtube.com/vi/XHYL_hoQHuY/maxresdefault.jpg" alt="Add windows and doors with AI" width="100%" /></a><br /><strong>Add windows and doors with AI</strong></td>
+    <td align="center"><a href="https://youtu.be/mIWmUKyoQxY"><img src="https://img.youtube.com/vi/mIWmUKyoQxY/maxresdefault.jpg" alt="Turn an idea into a 3D part" width="100%" /></a><br /><strong>Turn an idea into a 3D part</strong></td>
+  </tr>
+</table>
+
 ## Capabilities
 
 - **Design with context:** create and refine a project through a persistent Generate Design conversation.
