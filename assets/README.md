@@ -11,9 +11,11 @@ The final hero should be a staged, authenticated Tertius session at a 16:9 aspec
 - Keep the compiled model prominent in the shared Extus viewport.
 - Include enough application navigation to identify the integrated workbench.
 - Exclude browser chrome, credentials, tenant identifiers, provider details, prompts containing private information, and transient error states.
-- Do not bake marketing copy into the bitmap; the README provides the title and description.
+- Keep any overlay copy restrained and factual; the README remains the source of truth for the full product description.
 
 Capture at 1600 × 900 or larger and export the final optimized image as `hero-product.webp` or `hero-product.png`. The current `hero-product.png` is a real authenticated Extus session captured after the shed model finished loading.
+
+The checked-in hero uses a deterministic Pillow composition in [`scripts/compose-readme-hero.py`](../scripts/compose-readme-hero.py): a real Extus capture, a restrained gradient for contrast, and a small amount of editorial type. This keeps the process open-source and repeatable without requiring a design application. A licensed brand font can be supplied at capture time with `--font`; the font itself does not need to be redistributed.
 
 ## Supporting views
 
