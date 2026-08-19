@@ -6,6 +6,7 @@ This folder contains the deterministic compositor used to build `assets/hero-pro
 
 - `assets/extus-viewer.png`: clean 1600 × 900 product capture.
 - `GortonClassicRegular.otf`: supplied locally when regenerating; the licensed font is not stored in this repository.
+- `GortonClassicTaylorHobson.otf`: when present beside the regular font, the compositor uses its open paths for the engraved equipment labels. It falls back to the regular cut when absent.
 - Python packages: `Pillow` and `fontTools`.
 
 ## Regenerate the hero
@@ -19,7 +20,7 @@ python assets/readme/compose-hero.py `
   --font "W:\ben\ContextUI\default\workflows\gainengineering\GainEngineeringWebsite\fonts\GortonClassicRegular.otf"
 ```
 
-The script reads the Gorton font's open glyph geometry with `fontTools` and strokes it directly. Do not render the wordmark as ordinary filled font text and do not trace a rasterised logo; both lose the single-stroke engraving construction.
+The script reads the Gorton fonts' open glyph geometry with `fontTools` and strokes it directly. Do not render the wordmark as ordinary filled font text and do not trace a rasterised logo; both lose the single-stroke engraving construction. The two product-image captions are rendered as bevelled, two-colour engraved laminate plates with pale core material exposed by the Taylor–Hobson letter strokes.
 
 The paper grain, fold, ink registration, duotone conversion, typography, labels, and layout are deterministic. Re-running the same command with the same inputs produces the same hero.
 
