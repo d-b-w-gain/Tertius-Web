@@ -1009,6 +1009,10 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert service.certification_readiness.ready_for_engineering_review is True
     assert service.certification_readiness.ready_for_certificate is False
     assert service.certification_readiness.document_status == "engineering_review_draft"
+    assert service.certification_readiness.model_coverage.status == "complete"
+    assert service.certification_readiness.model_coverage.compiled_member_count == 2
+    assert service.certification_readiness.model_coverage.solved_member_count == 2
+    assert service.certification_readiness.model_coverage.missing_result_member_ids == []
     assert "DRAFT ENGINEERING REVIEW REPORT" in (
         service.certification_readiness.draft_document_label
     )

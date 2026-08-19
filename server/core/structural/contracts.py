@@ -991,6 +991,32 @@ class CertificationGate(StructuralContract):
     stage_ids: list[str] = Field(default_factory=list)
 
 
+class CertificationModelCoverage(StructuralContract):
+    status: Literal["complete", "incomplete"]
+    compiled_member_count: int = Field(ge=0)
+    solved_member_count: int = Field(ge=0)
+    missing_result_member_ids: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class CertificationIssue(StructuralContract):
+    id: str
+    stage_id: str
+    kind: Literal[
+        "design_failure",
+        "evidence_gap",
+        "provisional_input",
+        "dependent_blocker",
+        "engineering_warning",
+    ]
+    owner: Literal["design", "tertius", "evidence", "mixed"]
+    count: int = Field(gt=0)
+    title: str
+    detail: str
+    next_action: str
+    affected_ids: list[str] = Field(default_factory=list)
+
+
 class CertificationReadiness(StructuralContract):
     scheme_id: Literal["AU-NCC-2022"] = "AU-NCC-2022"
     scheme_label: str = "Australian structural certification readiness"
@@ -1007,6 +1033,8 @@ class CertificationReadiness(StructuralContract):
     blocking_gate_ids: list[str] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     gates: list[CertificationGate] = Field(default_factory=list)
+    model_coverage: CertificationModelCoverage
+    issues: list[CertificationIssue] = Field(default_factory=list)
 
 
 class DesignComponent(StructuralContract):

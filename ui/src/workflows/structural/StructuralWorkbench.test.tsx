@@ -688,6 +688,14 @@ const analysis: StructuralSnapshot = {
         stage_ids: ['stability'],
       },
     ],
+    model_coverage: {
+      status: 'complete',
+      compiled_member_count: 1,
+      solved_member_count: 1,
+      missing_result_member_ids: [],
+      summary: 'PyNite results cover all 1 compiled analytical members.',
+    },
+    issues: [],
   },
   capabilities: [
     {
@@ -1123,6 +1131,41 @@ describe('StructuralWorkbench', () => {
         mocks.getAccessToken,
       )
     })
+  })
+
+  it('distinguishes complete PyNite coverage from a calculated design failure', async () => {
+    const diagnosedAnalysis: StructuralSnapshot = {
+      ...analysis,
+      certification_readiness: {
+        ...analysis.certification_readiness!,
+        issues: [
+          {
+            id: 'cross-section-design-failures',
+            stage_id: 'cross_section',
+            kind: 'design_failure',
+            owner: 'design',
+            count: 12,
+            title: 'Member cross-sections exceed calculated resistance',
+            detail: 'These are numerical failures, not missing PyNite definitions.',
+            next_action: 'Revise the affected members and rerun the capacity pack.',
+            affected_ids: ['purlin-axis'],
+          },
+        ],
+      },
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      structuralResponse(url, capture, diagnosedAnalysis),
+    ))
+
+    render(<StructuralWorkbench isActive />)
+
+    expect(await screen.findByText('PyNite model coverage')).toBeInTheDocument()
+    expect(screen.getByText(/PyNite results cover all 1 compiled analytical members/))
+      .toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: /Member cross-sections exceed calculated resistance/,
+    })).toHaveTextContent('12 · design')
+    expect(screen.getByText(/not missing PyNite definitions/)).toBeInTheDocument()
   })
 
   it('reloads the structural declaration when the shared active project changes', async () => {

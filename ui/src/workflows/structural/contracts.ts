@@ -301,6 +301,31 @@ export type CertificationGate = {
   stage_ids: string[]
 }
 
+export type CertificationModelCoverage = {
+  status: 'complete' | 'incomplete'
+  compiled_member_count: number
+  solved_member_count: number
+  missing_result_member_ids: string[]
+  summary: string
+}
+
+export type CertificationIssue = {
+  id: string
+  stage_id: string
+  kind:
+    | 'design_failure'
+    | 'evidence_gap'
+    | 'provisional_input'
+    | 'dependent_blocker'
+    | 'engineering_warning'
+  owner: 'design' | 'tertius' | 'evidence' | 'mixed'
+  count: number
+  title: string
+  detail: string
+  next_action: string
+  affected_ids: string[]
+}
+
 export type CertificationReadiness = {
   scheme_id: 'AU-NCC-2022'
   scheme_label: string
@@ -316,6 +341,8 @@ export type CertificationReadiness = {
   blocking_gate_ids: string[]
   blocking_reasons: string[]
   gates: CertificationGate[]
+  model_coverage: CertificationModelCoverage
+  issues: CertificationIssue[]
 }
 
 export type UnavailableLoadCombination = {

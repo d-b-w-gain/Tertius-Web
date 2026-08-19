@@ -25,6 +25,8 @@ from .contracts import (
     CalculationSheet,
     CapabilityState,
     CertificationGate,
+    CertificationIssue,
+    CertificationModelCoverage,
     CertificationReadiness,
     ConnectionCheck,
     DesignComponent,
@@ -6036,6 +6038,12 @@ def _australian_certification_readiness(
     sheets: list[CalculationSheet],
     equilibrium_status: Literal["pass", "fail"],
     tension_member_checks: list[TensionMemberCheck],
+    member_results: list[MemberResult],
+    cross_section_checks: list[MemberCrossSectionCheck],
+    member_stability_checks: list[MemberStabilityCheck],
+    member_restraint_candidate_checks: list[MemberRestraintCandidateCheck],
+    connection_checks: list[ConnectionCheck],
+    bracing_load_path_traces: list[BracingLoadPathTrace],
 ) -> tuple[CertificationReadiness, list[VerificationStage], list[CalculationSheet]]:
     """Convert detailed calculations into conservative Australian release gates."""
 
@@ -6232,6 +6240,274 @@ def _australian_certification_readiness(
     blocking_gates = [gate for gate in gates if gate.status != "pass"]
     ready_for_engineering_review = analysis_gate.status == "pass"
     ready_for_certificate = not blocking_gates
+    compiled_member_ids = {member.id for member in analysis.members}
+    solved_member_ids = {result.member_id for result in member_results}
+    missing_result_member_ids = sorted(compiled_member_ids - solved_member_ids)
+    model_coverage = CertificationModelCoverage(
+        status="incomplete" if missing_result_member_ids else "complete",
+        compiled_member_count=len(compiled_member_ids),
+        solved_member_count=len(compiled_member_ids & solved_member_ids),
+        missing_result_member_ids=missing_result_member_ids,
+        summary=(
+            f"PyNite results cover all {len(compiled_member_ids)} compiled analytical "
+            "members; the open certification gates are not missing member definitions."
+            if not missing_result_member_ids
+            else (
+                f"PyNite results are missing for {len(missing_result_member_ids)} of "
+                f"{len(compiled_member_ids)} compiled analytical members."
+            )
+        ),
+    )
+
+    def affected(values: Sequence[str]) -> list[str]:
+        return sorted(set(values))[:12]
+
+    issues: list[CertificationIssue] = []
+    provisional_wind_loads = [
+        load
+        for load in capture.loads
+        if load.case == "wind"
+        and load.coefficient_status in {"assumed", "working_conservative"}
+    ]
+    if provisional_wind_loads:
+        issues.append(
+            CertificationIssue(
+                id="provisional-wind-coefficients",
+                stage_id="actions",
+                kind="provisional_input",
+                owner="tertius",
+                count=len(provisional_wind_loads),
+                title="Wind surface coefficients remain provisional",
+                detail=(
+                    "The Site wind speed and directional cases are calculated, but "
+                    "the AS/NZS 1170.2 surface/opening coefficient envelope is still "
+                    "the working conservative model."
+                ),
+                next_action=(
+                    "Complete the Tertius-owned AS/NZS 1170.2 surface-zone and "
+                    "internal-pressure action pack; do not add formulas to design.py."
+                ),
+                affected_ids=affected([load.id for load in provisional_wind_loads]),
+            )
+        )
+
+    failed_cross_sections = [
+        check for check in cross_section_checks if check.status == "fail"
+    ]
+    if failed_cross_sections:
+        issues.append(
+            CertificationIssue(
+                id="cross-section-design-failures",
+                stage_id="cross_section",
+                kind="design_failure",
+                owner="design",
+                count=len(failed_cross_sections),
+                title="Member cross-sections exceed calculated resistance",
+                detail=(
+                    "These are numerical demand/capacity failures in the current shed, "
+                    "not missing PyNite definitions."
+                ),
+                next_action=(
+                    "Revise the affected member size, span, support, or load path and "
+                    "rerun the unchanged Tertius capacity pack."
+                ),
+                affected_ids=affected(
+                    [check.member_id for check in failed_cross_sections]
+                ),
+            )
+        )
+    unsupported_cross_sections = [
+        check for check in cross_section_checks if check.status == "unsupported"
+    ]
+    if unsupported_cross_sections:
+        issues.append(
+            CertificationIssue(
+                id="cross-section-evidence-gaps",
+                stage_id="cross_section",
+                kind="evidence_gap",
+                owner="evidence",
+                count=len(unsupported_cross_sections),
+                title="Cross-section resistance evidence is incomplete",
+                detail="The solver has members, but the capacity pack cannot verify their section records.",
+                next_action="Add traceable section properties or a supported resistance pack in Tertius.",
+                affected_ids=affected(
+                    [check.member_id for check in unsupported_cross_sections]
+                ),
+            )
+        )
+
+    failed_stability = [
+        check for check in member_stability_checks if check.status == "fail"
+    ]
+    if failed_stability:
+        issues.append(
+            CertificationIssue(
+                id="member-stability-design-failures",
+                stage_id="member_stability",
+                kind="design_failure",
+                owner="mixed",
+                count=len(failed_stability),
+                title="Members fail the current unrestrained stability model",
+                detail=(
+                    "The conservative full-segment calculation exceeds resistance. "
+                    "Verified restraint may reduce the unbraced demand; otherwise the "
+                    "member design must change."
+                ),
+                next_action=(
+                    "Finish restraint verification first, then resize or support only "
+                    "the members that still fail."
+                ),
+                affected_ids=affected([check.member_id for check in failed_stability]),
+            )
+        )
+    unsupported_stability = [
+        check for check in member_stability_checks if check.status == "unsupported"
+    ]
+    if unsupported_stability:
+        issues.append(
+            CertificationIssue(
+                id="member-stability-evidence-gaps",
+                stage_id="member_stability",
+                kind="evidence_gap",
+                owner="evidence",
+                count=len(unsupported_stability),
+                title="Member stability waits on restraint evidence",
+                detail=(
+                    "Demand and unrestrained resistance are calculated below unity, "
+                    "but effective lateral/torsional restraint at the segment boundaries "
+                    "has not been verified."
+                ),
+                next_action=(
+                    "Attach tested restraint force, stiffness, connection, and anchorage "
+                    "evidence to the rendered cladding/brace configurations."
+                ),
+                affected_ids=affected(
+                    [check.member_id for check in unsupported_stability]
+                ),
+            )
+        )
+
+    open_restraint_candidates = {
+        check.candidate_id
+        for check in member_restraint_candidate_checks
+        if check.status in {"unsupported", "candidate", "fail"}
+    }
+    if open_restraint_candidates:
+        issues.append(
+            CertificationIssue(
+                id="restraint-candidate-evidence-gaps",
+                stage_id="bracing",
+                kind="evidence_gap",
+                owner="evidence",
+                count=len(open_restraint_candidates),
+                title="Rendered restraint candidates lack qualifying evidence",
+                detail=(
+                    "Tertius found the physical contacts, but geometry alone cannot "
+                    "prove restraint force, stiffness, twist control, or anchorage."
+                ),
+                next_action=(
+                    "Add product/test evidence packs for the exact cladding, fastener, "
+                    "brace, and connection identities already present in the design."
+                ),
+                affected_ids=affected(list(open_restraint_candidates)),
+            )
+        )
+
+    failed_connections = [
+        check for check in connection_checks if check.status == "fail"
+    ]
+    if failed_connections:
+        issues.append(
+            CertificationIssue(
+                id="connection-design-failures",
+                stage_id="connections",
+                kind="design_failure",
+                owner="mixed",
+                count=len(failed_connections),
+                title="Connections exceed currently verified resistance",
+                detail=(
+                    "These checks have demand and resistance values; some may need a "
+                    "connection change while others need verified group behaviour."
+                ),
+                next_action=(
+                    "Review each governing interaction and either revise the connection "
+                    "or attach evidence that justifies additional resistance."
+                ),
+                affected_ids=affected(
+                    [check.connection_id for check in failed_connections]
+                ),
+            )
+        )
+    unsupported_connections = [
+        check for check in connection_checks if check.status == "unsupported"
+    ]
+    if unsupported_connections:
+        issues.append(
+            CertificationIssue(
+                id="connection-evidence-gaps",
+                stage_id="connections",
+                kind="evidence_gap",
+                owner="evidence",
+                count=len(unsupported_connections),
+                title="Connection resistance packs are missing",
+                detail=(
+                    "The connections and their PyNite forces exist, but Tertius has no "
+                    "verified resistance model for the rendered connector identities."
+                ),
+                next_action=(
+                    "Implement or attach resistance packs for the exact angle, cleat, "
+                    "knee, apex, screw, bolt, and fixture combinations."
+                ),
+                affected_ids=affected(
+                    [check.connection_id for check in unsupported_connections]
+                ),
+            )
+        )
+
+    failed_bracing_paths = [
+        trace
+        for trace in bracing_load_path_traces
+        if trace.status in {"fail", "blocked"}
+    ]
+    if failed_bracing_paths:
+        issues.append(
+            CertificationIssue(
+                id="dependent-bracing-path-blockers",
+                stage_id="bracing",
+                kind="dependent_blocker",
+                owner="mixed",
+                count=len(failed_bracing_paths),
+                title="Bracing paths inherit downstream connection blockers",
+                detail=(
+                    "Brace members are present and analysed; their path cannot pass "
+                    "until every connection and foundation link on the route passes."
+                ),
+                next_action=(
+                    "Resolve the listed connection/foundation checks before changing "
+                    "brace geometry solely to clear this dependent status."
+                ),
+                affected_ids=affected(
+                    [trace.component_id for trace in failed_bracing_paths]
+                ),
+            )
+        )
+
+    if stages_by_id["stability"].status == "warning":
+        issues.append(
+            CertificationIssue(
+                id="system-stability-warning",
+                stage_id="stability",
+                kind="engineering_warning",
+                owner="mixed",
+                count=1,
+                title="Global stability still requires engineering review",
+                detail=stages_by_id["stability"].summary,
+                next_action=(
+                    "Review the reported amplification and assumptions after the "
+                    "action and restraint evidence is final."
+                ),
+            )
+        )
     document_status: Literal[
         "analysis_incomplete", "engineering_review_draft", "certificate_ready"
     ] = (
@@ -6261,6 +6537,8 @@ def _australian_certification_readiness(
         blocking_gate_ids=[gate.id for gate in blocking_gates],
         blocking_reasons=[f"{gate.label}: {gate.summary}" for gate in blocking_gates],
         gates=gates,
+        model_coverage=model_coverage,
+        issues=issues,
     )
 
     decision_status = "pass" if ready_for_certificate else "blocked"
@@ -7510,6 +7788,12 @@ def solve_project_structural(
         sheets=calculation_sheets,
         equilibrium_status=equilibrium_status,
         tension_member_checks=tension_member_checks,
+        member_results=member_results,
+        cross_section_checks=cross_section_checks,
+        member_stability_checks=member_stability_checks,
+        member_restraint_candidate_checks=member_restraint_candidate_checks,
+        connection_checks=connection_checks,
+        bracing_load_path_traces=bracing_load_path_traces,
     )
     cross_section_stage = next(
         stage for stage in verification_stages if stage.id == "cross_section"

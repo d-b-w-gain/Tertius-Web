@@ -12,6 +12,7 @@ import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import type {
   ActiveStructuralWorkbenchResponse,
   CapabilityState,
+  CertificationIssue,
   DesignComponent,
   ProjectStructuralCapture,
   StructuralAnalysisCacheInfo,
@@ -49,6 +50,22 @@ const verificationStyle: Record<VerificationStatus, string> = {
   not_checked: 'border-slate-600 bg-slate-800/70 text-slate-300',
   unsupported: 'border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300',
   blocked: 'border-red-500/40 bg-red-950/40 text-red-300',
+}
+
+const certificationIssueStyle: Record<CertificationIssue['kind'], string> = {
+  design_failure: 'border-red-500/50 bg-red-950/30 text-red-200',
+  evidence_gap: 'border-fuchsia-500/40 bg-fuchsia-950/20 text-fuchsia-200',
+  provisional_input: 'border-amber-500/40 bg-amber-950/20 text-amber-200',
+  dependent_blocker: 'border-orange-500/40 bg-orange-950/20 text-orange-200',
+  engineering_warning: 'border-yellow-500/40 bg-yellow-950/20 text-yellow-200',
+}
+
+const certificationIssueLabel: Record<CertificationIssue['kind'], string> = {
+  design_failure: 'calculated failure',
+  evidence_gap: 'evidence gap',
+  provisional_input: 'Tertius provisional',
+  dependent_blocker: 'downstream blocker',
+  engineering_warning: 'engineering review',
 }
 
 function number(value: number, digits = 3) {
@@ -971,6 +988,55 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   <p className="mt-2 text-[10px] leading-relaxed text-slate-300">
                     {analysis.certification_readiness.conclusion}
                   </p>
+                  <div className={`mt-3 rounded border p-2 ${
+                    analysis.certification_readiness.model_coverage.status === 'complete'
+                      ? verificationStyle.pass
+                      : verificationStyle.fail
+                  }`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-semibold">PyNite model coverage</span>
+                      <span className="font-mono text-[8px] uppercase">
+                        {analysis.certification_readiness.model_coverage.solved_member_count}/
+                        {analysis.certification_readiness.model_coverage.compiled_member_count} members
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[9px] leading-relaxed opacity-80">
+                      {analysis.certification_readiness.model_coverage.summary}
+                    </p>
+                  </div>
+                  {analysis.certification_readiness.issues.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                        What is actually blocking certification
+                      </div>
+                      {analysis.certification_readiness.issues.map((issue) => (
+                        <button
+                          key={issue.id}
+                          type="button"
+                          onClick={() => selectVerificationStage(issue.stage_id)}
+                          className={`w-full rounded border p-2 text-left ${certificationIssueStyle[issue.kind]}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-[9px] font-semibold leading-snug">
+                              {issue.title}
+                            </span>
+                            <span className="shrink-0 font-mono text-[8px] uppercase">
+                              {issue.count} · {issue.owner}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[8px] font-bold uppercase tracking-wide opacity-70">
+                            {certificationIssueLabel[issue.kind]} · Stage {issue.stage_id.replaceAll('_', ' ')}
+                          </div>
+                          <p className="mt-1 text-[9px] leading-relaxed opacity-85">
+                            {issue.detail}
+                          </p>
+                          <p className="mt-1 text-[9px] leading-relaxed text-slate-300">
+                            Next: {issue.next_action}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     {analysis.certification_readiness.gates.map((gate) => (
                       <div
