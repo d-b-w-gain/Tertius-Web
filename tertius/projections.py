@@ -252,6 +252,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                     if selected_product
                     else None
                 ),
+                "fabrication": component.get("fabrication") or {},
                 "ports": component.get("ports") or [],
             }
         )

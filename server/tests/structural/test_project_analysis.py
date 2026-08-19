@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import sqrt
 from types import SimpleNamespace
 
 import pytest
@@ -449,6 +450,114 @@ def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():
         "portal-foundation",
     ]
     assert path["grounded_component_id"] == "foundation"
+
+
+@pytest.mark.parametrize(
+    ("signed_axial_kN", "expected_anchor_status", "expected_connection_status"),
+    [(-0.40, "pass", "unsupported"), (-1.20, "fail", "fail")],
+)
+def test_ground_connection_resolves_exact_anchor_product_and_signed_uplift(
+    signed_axial_kN: float,
+    expected_anchor_status: str,
+    expected_connection_status: str,
+) -> None:
+    anchor_properties = {
+        "anchor_resistance_pack_id": "manufacturer_working_load_anchor_group",
+        "anchor_resistance_pack_version": "1",
+        "anchor_product_part_number": "AS12100WGM",
+        "anchor_source_status": "verified",
+        "anchor_source": "Ramset SARB ANZ Edition 3 brick and block anchoring",
+        "anchor_source_sha256": "b" * 64,
+        "anchor_reference_substrate_type": "concrete_block",
+        "anchor_reference_embedment_mm": 60.0,
+        "anchor_single_tension_capacity_kN": 1.15,
+        "anchor_single_shear_capacity_kN": 2.10,
+        "anchor_required_edge_distance_mm": 35.0,
+        "anchor_required_spacing_mm": 35.0,
+    }
+    components = {
+        "column": DesignComponent(
+            id="column",
+            label="Column",
+            kind="member",
+            visual_node_id="column",
+        ),
+        "foundation": DesignComponent(
+            id="foundation",
+            label="Concrete block foundation",
+            kind="ground",
+            visual_node_id="foundation",
+            grounded=True,
+            structural_properties={
+                "anchor_substrate_type": "concrete_block",
+                "anchor_substrate_status": "verified",
+            },
+        ),
+        **{
+            f"anchor-{index}": DesignComponent(
+                id=f"anchor-{index}",
+                label="Ramset anchor",
+                kind="connector",
+                visual_node_id=f"anchor-{index}",
+                part_number="AS12100WGM",
+                product_key="ramset:wercs-ankascrew:as12100wgm",
+                product_definition_digest="d" * 64,
+                structural_evidence_status="verified",
+                structural_properties=anchor_properties,
+                fabrication={
+                    "anchor_installed_effective_embedment_mm": 88.0,
+                    "anchor_minimum_edge_distance_mm": 50.0,
+                    "anchor_minimum_spacing_mm": 35.0,
+                },
+            )
+            for index in (1, 2)
+        },
+    }
+    declaration = SimpleNamespace(
+        id="column-axis",
+        component_id="column",
+        tension_only=False,
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=0.0, y=0.0, z=2.4),
+        start_node_key="joint:base",
+        end_node_key=None,
+    )
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=[declaration],
+    )
+    member = SimpleNamespace(
+        axial=lambda _x, _combo: signed_axial_kN,
+        shear=lambda _axis, _x, _combo: 0.20,
+    )
+    connection = DesignConnection(
+        id="base",
+        label="Column base",
+        from_component_id="column",
+        to_component_id="foundation",
+        connector_component_ids=["anchor-1", "anchor-2"],
+        transfers=["force", "shear"],
+    )
+
+    check = _connection_checks(
+        SimpleNamespace(members={"column-axis": member}),
+        analysis,
+        [connection],
+        components,
+    )[0]
+
+    assert check.anchor_group is not None
+    assert check.anchor_group.status == expected_anchor_status
+    assert check.status == expected_connection_status
+    assert check.anchor_group.anchor_count == 2
+    assert check.anchor_group.tension_demand_kN == pytest.approx(
+        max(0.0, -signed_axial_kN)
+    )
+    assert check.anchor_group.interaction_utilisation == pytest.approx(
+        max(0.0, -signed_axial_kN) / 1.15 + sqrt(0.20**2 + 0.20**2) / 2.10
+    )
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():

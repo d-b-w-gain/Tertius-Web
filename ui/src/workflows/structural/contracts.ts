@@ -514,6 +514,35 @@ export type StructuralSnapshot = {
     rendered_connector_part_numbers: string[]
     source: string | null
     source_sha256: string | null
+    anchor_group?: {
+      status: 'pass' | 'fail' | 'unsupported'
+      evidence_status: 'unverified' | 'candidate' | 'verified'
+      pack_id: string
+      pack_version: string
+      anchor_part_number: string
+      anchor_count: number
+      effective_anchor_count: number
+      substrate_type: string | null
+      substrate_status: 'unverified' | 'candidate' | 'verified'
+      tension_demand_kN: number
+      shear_demand_kN: number
+      tension_capacity_kN: number | null
+      shear_capacity_kN: number | null
+      interaction_utilisation: number | null
+      installed_effective_embedment_mm: number | null
+      reference_embedment_mm: number | null
+      minimum_edge_distance_mm: number | null
+      required_edge_distance_mm: number | null
+      minimum_spacing_mm: number | null
+      required_spacing_mm: number | null
+      embedment_status: 'pass' | 'fail' | 'not_checked'
+      edge_distance_status: 'pass' | 'fail' | 'not_checked'
+      spacing_status: 'pass' | 'fail' | 'not_required' | 'not_checked'
+      source: string | null
+      source_sha256: string | null
+      basis: string
+      blockers: string[]
+    } | null
     basis: string
     assumptions: string[]
   }>

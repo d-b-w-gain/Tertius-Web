@@ -1405,6 +1405,86 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                                   : ''}
                               </p>
                             )}
+                            {check.anchor_group && (
+                              <div className={`mt-2 rounded border p-2 ${
+                                check.anchor_group.status === 'pass'
+                                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                                  : check.anchor_group.status === 'fail'
+                                    ? 'border-red-500/40 bg-red-500/10'
+                                    : 'border-amber-500/30 bg-amber-500/5'
+                              }`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[9px] font-bold text-slate-200">
+                                    {check.anchor_group.anchor_count}× {check.anchor_group.anchor_part_number}
+                                  </span>
+                                  <span className={`font-mono text-[8px] uppercase ${
+                                    check.anchor_group.status === 'pass'
+                                      ? 'text-emerald-300'
+                                      : check.anchor_group.status === 'fail'
+                                        ? 'text-red-300'
+                                        : 'text-amber-300'
+                                  }`}>
+                                    Anchor {check.anchor_group.status}
+                                  </span>
+                                </div>
+                                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[8px] text-slate-400">
+                                  <span>
+                                    Uplift {number(check.anchor_group.tension_demand_kN, 3)} / {
+                                      check.anchor_group.tension_capacity_kN === null
+                                        ? '—'
+                                        : number(check.anchor_group.tension_capacity_kN, 3)
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Shear {number(check.anchor_group.shear_demand_kN, 3)} / {
+                                      check.anchor_group.shear_capacity_kN === null
+                                        ? '—'
+                                        : number(check.anchor_group.shear_capacity_kN, 3)
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Embed {check.anchor_group.installed_effective_embedment_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.installed_effective_embedment_mm, 1)} mm · {
+                                      check.anchor_group.embedment_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Edge {check.anchor_group.minimum_edge_distance_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.minimum_edge_distance_mm, 1)} mm · {
+                                      check.anchor_group.edge_distance_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Spacing {check.anchor_group.minimum_spacing_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.minimum_spacing_mm, 1)} mm · {
+                                      check.anchor_group.spacing_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Interaction {check.anchor_group.interaction_utilisation === null
+                                      ? '—'
+                                      : number(check.anchor_group.interaction_utilisation, 3)}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[8px] text-slate-500">
+                                  Substrate {check.anchor_group.substrate_type || 'not declared'} · {
+                                    check.anchor_group.substrate_status
+                                  } · effective group count {
+                                    number(check.anchor_group.effective_anchor_count, 1)
+                                  }
+                                </p>
+                                {check.anchor_group.blockers.length > 0 && (
+                                  <ul className="mt-1 space-y-1 text-[8px] text-amber-200">
+                                    {check.anchor_group.blockers.map((blocker) => (
+                                      <li key={blocker}>• {blocker}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </button>

@@ -80,6 +80,22 @@ class ScrewShearQualification:
 
 
 @dataclass(frozen=True)
+class ManufacturerWorkingLoadAnchorGroupResistance:
+    pack_id: str
+    pack_version: str
+    anchor_count: int
+    effective_anchor_count: float
+    design_tension_capacity_kN: float
+    design_shear_capacity_kN: float
+    interaction_utilisation: float
+    embedment_status: Literal["pass", "fail"]
+    edge_distance_status: Literal["pass", "fail"]
+    spacing_status: Literal["pass", "fail", "not_required"]
+    status: Literal["pass", "fail"]
+    basis: str
+
+
+@dataclass(frozen=True)
 class MemberCompressionCapacity:
     pack_id: str
     section_record_sha256: str
@@ -291,6 +307,104 @@ def as_nzs_4600_2005_a1_screw_shear_qualification(
             "than 1.25 Vb, where Vb is the Clause 5.4.2.3 nominal single-screw "
             "bearing resistance. Screw shear is a qualification gate, not an "
             "additional factored connection-capacity limit."
+        ),
+    )
+
+
+def manufacturer_working_load_anchor_group_resistance(
+    *,
+    anchor_count: int,
+    single_anchor_tension_capacity_kN: float,
+    single_anchor_shear_capacity_kN: float,
+    tension_demand_kN: float,
+    shear_demand_kN: float,
+    installed_effective_embedment_mm: float,
+    reference_embedment_mm: float,
+    minimum_edge_distance_mm: float,
+    required_edge_distance_mm: float,
+    minimum_spacing_mm: float | None,
+    required_spacing_mm: float,
+) -> ManufacturerWorkingLoadAnchorGroupResistance:
+    """Evaluate a manufacturer WLL anchor pack without inventing group strength.
+
+    Product imports provide immutable catalogue and installation facts. Tertius
+    owns the geometry gates and the conservative linear tension/shear
+    interaction. Published single-anchor working loads are deliberately not
+    multiplied for a close group unless a separate verified group pack exists.
+    """
+
+    positive_values = {
+        "single-anchor tension capacity": single_anchor_tension_capacity_kN,
+        "single-anchor shear capacity": single_anchor_shear_capacity_kN,
+        "installed effective embedment": installed_effective_embedment_mm,
+        "reference embedment": reference_embedment_mm,
+        "minimum edge distance": minimum_edge_distance_mm,
+        "required edge distance": required_edge_distance_mm,
+        "required spacing": required_spacing_mm,
+    }
+    if anchor_count <= 0:
+        raise CapacityPackError("anchor count must be positive")
+    if tension_demand_kN < 0 or shear_demand_kN < 0:
+        raise CapacityPackError("anchor demands cannot be negative")
+    for label, value in positive_values.items():
+        if value <= 0:
+            raise CapacityPackError(f"{label} must be positive")
+    if minimum_spacing_mm is not None and minimum_spacing_mm <= 0:
+        raise CapacityPackError("minimum anchor spacing must be positive")
+
+    # A single-anchor lower bound is valid for a group because no beneficial
+    # load sharing is claimed. A later evidence pack can replace this with a
+    # manufacturer/standard group reduction calculation.
+    effective_anchor_count = 1.0
+    tension_capacity_kN = single_anchor_tension_capacity_kN
+    shear_capacity_kN = single_anchor_shear_capacity_kN
+    interaction_utilisation = (
+        tension_demand_kN / tension_capacity_kN
+        + shear_demand_kN / shear_capacity_kN
+    )
+    embedment_status: Literal["pass", "fail"] = (
+        "pass"
+        if installed_effective_embedment_mm >= reference_embedment_mm
+        else "fail"
+    )
+    edge_distance_status: Literal["pass", "fail"] = (
+        "pass"
+        if minimum_edge_distance_mm >= required_edge_distance_mm
+        else "fail"
+    )
+    spacing_status: Literal["pass", "fail", "not_required"] = (
+        "not_required"
+        if anchor_count == 1
+        else "pass"
+        if minimum_spacing_mm is not None
+        and minimum_spacing_mm >= required_spacing_mm
+        else "fail"
+    )
+    status: Literal["pass", "fail"] = (
+        "pass"
+        if embedment_status == "pass"
+        and edge_distance_status == "pass"
+        and spacing_status in {"pass", "not_required"}
+        and interaction_utilisation <= 1.0
+        else "fail"
+    )
+    return ManufacturerWorkingLoadAnchorGroupResistance(
+        pack_id="manufacturer_working_load_anchor_group",
+        pack_version="1",
+        anchor_count=anchor_count,
+        effective_anchor_count=effective_anchor_count,
+        design_tension_capacity_kN=tension_capacity_kN,
+        design_shear_capacity_kN=shear_capacity_kN,
+        interaction_utilisation=interaction_utilisation,
+        embedment_status=embedment_status,
+        edge_distance_status=edge_distance_status,
+        spacing_status=spacing_status,
+        status=status,
+        basis=(
+            "Tertius checks installed embedment, edge distance, anchor spacing, "
+            "and N*/Ncap + V*/Vcap <= 1.0. Published single-anchor working "
+            "loads are retained as a conservative one-anchor lower bound for "
+            "the complete group; no unverified group multiplication is used."
         ),
     )
 

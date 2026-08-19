@@ -245,6 +245,7 @@ def _capture_from_structural_projection(
                 )
                 or {}
             ),
+            fabrication=dict(component.get("fabrication") or {}),
         )
         for component in projection.get("components", [])
         if isinstance(component, dict)

@@ -472,6 +472,38 @@ class MemberCheck(StructuralContract):
     basis: str
 
 
+class AnchorGroupCheck(StructuralContract):
+    status: Literal["pass", "fail", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    anchor_part_number: str
+    anchor_count: int = Field(gt=0)
+    effective_anchor_count: float = Field(gt=0)
+    substrate_type: str | None = None
+    substrate_status: Literal["unverified", "candidate", "verified"]
+    tension_demand_kN: float = Field(ge=0)
+    shear_demand_kN: float = Field(ge=0)
+    tension_capacity_kN: float | None = Field(default=None, gt=0)
+    shear_capacity_kN: float | None = Field(default=None, gt=0)
+    interaction_utilisation: float | None = Field(default=None, ge=0)
+    installed_effective_embedment_mm: float | None = Field(default=None, gt=0)
+    reference_embedment_mm: float | None = Field(default=None, gt=0)
+    minimum_edge_distance_mm: float | None = Field(default=None, gt=0)
+    required_edge_distance_mm: float | None = Field(default=None, gt=0)
+    minimum_spacing_mm: float | None = Field(default=None, gt=0)
+    required_spacing_mm: float | None = Field(default=None, gt=0)
+    embedment_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    edge_distance_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    spacing_status: Literal["pass", "fail", "not_required", "not_checked"] = (
+        "not_checked"
+    )
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    basis: str
+    blockers: list[str] = Field(default_factory=list)
+
+
 class ConnectionCheck(StructuralContract):
     connection_id: str
     label: str
@@ -497,6 +529,7 @@ class ConnectionCheck(StructuralContract):
     rendered_connector_part_numbers: list[str] = Field(default_factory=list)
     source: str | None = None
     source_sha256: str | None = None
+    anchor_group: AnchorGroupCheck | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 
@@ -957,6 +990,7 @@ class DesignComponent(StructuralContract):
     ] | None = None
     structural_evidence_basis: str | None = None
     structural_properties: dict[str, Any] = Field(default_factory=dict)
+    fabrication: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionMemberEngagement(StructuralContract):

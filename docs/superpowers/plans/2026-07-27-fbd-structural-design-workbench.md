@@ -208,6 +208,17 @@ anchors, substrate interaction, and foundation limit states stay visibly
 blocked rather than inheriting capacity from geometry, so this work item
 remains open.
 
+Base-anchor evidence slice (2026-08-19): structural projections now preserve
+instance fabrication facts and the generic Tertius anchor pack checks signed
+uplift, shear, embedment, edge distance, group spacing, and conservative linear
+interaction against a SHA-256-pinned manufacturer working-load row. The shed's
+project-local Ramset import owns exact `AS12100WGM` geometry, procurement and
+catalogue facts; the mechanical design now renders and connects the same 34
+managed anchors across all 15 grounded joints. Published single-anchor block
+loads are not multiplied for close groups. The anchor sub-check is visible in
+Stage 9, while 100GPB/web-bolt/connected-sheet and masonry wall/footing/soil
+limit states keep the overall connection item open.
+
 Action-pipeline evidence (2026-08-17): the Tertius-owned, source-digested
 AS/NZS 1170.0 pack derives the R2 roof imposed action, distinct 1-in-25 SLS and
 project-ultimate wind actions in both structural directions, the scoped

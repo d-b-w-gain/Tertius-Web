@@ -8,6 +8,7 @@ from core.structural.capacity_packs import (
     as_nzs_4600_2005_a1_member_capacity,
     as_nzs_4600_2005_a1_screw_shear_qualification,
     as_nzs_4600_2005_a1_tension_capacity,
+    manufacturer_working_load_anchor_group_resistance,
 )
 from core.structural.contracts import (
     SectionCatalogReference,
@@ -221,3 +222,48 @@ def test_screw_shear_qualification_fails_below_125_vb() -> None:
     )
 
     assert qualification.status == "fail"
+
+
+def test_anchor_pack_uses_single_anchor_lower_bound_and_linear_interaction() -> None:
+    resistance = manufacturer_working_load_anchor_group_resistance(
+        anchor_count=2,
+        single_anchor_tension_capacity_kN=1.15,
+        single_anchor_shear_capacity_kN=2.10,
+        tension_demand_kN=0.40,
+        shear_demand_kN=0.30,
+        installed_effective_embedment_mm=88.0,
+        reference_embedment_mm=60.0,
+        minimum_edge_distance_mm=50.0,
+        required_edge_distance_mm=35.0,
+        minimum_spacing_mm=35.0,
+        required_spacing_mm=35.0,
+    )
+
+    assert resistance.status == "pass"
+    assert resistance.effective_anchor_count == pytest.approx(1.0)
+    assert resistance.design_tension_capacity_kN == pytest.approx(1.15)
+    assert resistance.design_shear_capacity_kN == pytest.approx(2.10)
+    assert resistance.interaction_utilisation == pytest.approx(
+        0.40 / 1.15 + 0.30 / 2.10
+    )
+    assert "no unverified group multiplication" in resistance.basis
+
+
+def test_anchor_pack_fails_an_installation_below_minimum_edge_distance() -> None:
+    resistance = manufacturer_working_load_anchor_group_resistance(
+        anchor_count=1,
+        single_anchor_tension_capacity_kN=1.15,
+        single_anchor_shear_capacity_kN=2.10,
+        tension_demand_kN=0.0,
+        shear_demand_kN=0.1,
+        installed_effective_embedment_mm=88.0,
+        reference_embedment_mm=60.0,
+        minimum_edge_distance_mm=30.0,
+        required_edge_distance_mm=35.0,
+        minimum_spacing_mm=None,
+        required_spacing_mm=35.0,
+    )
+
+    assert resistance.status == "fail"
+    assert resistance.edge_distance_status == "fail"
+    assert resistance.spacing_status == "not_required"

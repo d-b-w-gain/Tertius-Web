@@ -10,11 +10,13 @@ from .capacity_packs import (
     CapacityPackError,
     as_nzs_4600_2005_a1_screw_shear_qualification,
     cross_section_capacity,
+    manufacturer_working_load_anchor_group_resistance,
     member_compression_capacity,
     tension_member_capacity,
 )
 from .contracts import (
     AnalyticalMemberDeclaration,
+    AnchorGroupCheck,
     BracingLoadPathTrace,
     CalculationEquation,
     CalculationInput,
@@ -66,6 +68,275 @@ NODE_COORDINATE_DIGITS = 9
 
 class StructuralAnalysisError(ValueError):
     """Raised when the active design cannot be represented by the MVP solver."""
+
+
+def _numeric_fact(mapping: Mapping[str, Any], key: str) -> float | None:
+    value = mapping.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    normalized = float(value)
+    return normalized if normalized > 0 else None
+
+
+def _anchor_group_check(
+    *,
+    connection: DesignConnection,
+    components: Mapping[str, DesignComponent],
+    grounded_component_ids: Sequence[str],
+    tension_demand_kN: float,
+    shear_demand_kN: float,
+) -> AnchorGroupCheck | None:
+    anchor_components = [
+        components[component_id]
+        for component_id in connection.connector_component_ids
+        if component_id in components
+        and components[component_id].structural_properties.get(
+            "anchor_resistance_pack_id"
+        )
+        == "manufacturer_working_load_anchor_group"
+    ]
+    if not anchor_components:
+        return None
+
+    first = anchor_components[0]
+    properties = first.structural_properties
+    part_number = str(
+        properties.get("anchor_product_part_number")
+        or first.part_number
+        or "<missing>"
+    )
+    pack_version = str(properties.get("anchor_resistance_pack_version") or "1")
+    source = (
+        str(properties["anchor_source"])
+        if properties.get("anchor_source")
+        else None
+    )
+    source_sha256 = (
+        str(properties["anchor_source_sha256"])
+        if properties.get("anchor_source_sha256")
+        else None
+    )
+    reference_substrate = (
+        str(properties["anchor_reference_substrate_type"])
+        if properties.get("anchor_reference_substrate_type")
+        else None
+    )
+    blockers: list[str] = []
+    for anchor in anchor_components:
+        anchor_properties = anchor.structural_properties
+        declared_part = str(
+            anchor_properties.get("anchor_product_part_number")
+            or anchor.part_number
+            or "<missing>"
+        )
+        if declared_part != part_number or anchor.part_number != part_number:
+            blockers.append(
+                f"Anchor {anchor.id} product identity does not match {part_number}."
+            )
+        for key in (
+            "anchor_resistance_pack_id",
+            "anchor_resistance_pack_version",
+            "anchor_source_sha256",
+            "anchor_reference_substrate_type",
+            "anchor_reference_embedment_mm",
+            "anchor_single_tension_capacity_kN",
+            "anchor_single_shear_capacity_kN",
+            "anchor_required_edge_distance_mm",
+            "anchor_required_spacing_mm",
+        ):
+            if anchor_properties.get(key) != properties.get(key):
+                blockers.append(
+                    f"Anchor group mixes incompatible product fact {key}."
+                )
+                break
+
+    evidence_verified = all(
+        anchor.structural_evidence_status == "verified"
+        and anchor.structural_properties.get("anchor_source_status") == "verified"
+        for anchor in anchor_components
+    )
+    if not evidence_verified or source is None or source_sha256 is None:
+        blockers.append(
+            "Exact anchor product evidence requires verified status, source, and SHA-256."
+        )
+    if source_sha256 is not None and len(source_sha256) != 64:
+        blockers.append("Anchor evidence SHA-256 is malformed.")
+        source_sha256 = None
+
+    ground = (
+        components.get(grounded_component_ids[0])
+        if len(grounded_component_ids) == 1
+        else None
+    )
+    substrate_type = (
+        str(ground.structural_properties["anchor_substrate_type"])
+        if ground is not None
+        and ground.structural_properties.get("anchor_substrate_type")
+        else None
+    )
+    substrate_status = cast(
+        Literal["unverified", "candidate", "verified"],
+        ground.structural_properties.get("anchor_substrate_status", "unverified")
+        if ground is not None
+        else "unverified",
+    )
+    if len(grounded_component_ids) != 1:
+        blockers.append("Anchor group must resolve to one grounded substrate component.")
+    elif substrate_status != "verified":
+        blockers.append("Foundation substrate identity and condition are not verified.")
+    elif substrate_type != reference_substrate:
+        blockers.append(
+            f"Anchor evidence covers {reference_substrate!r}, not {substrate_type!r}."
+        )
+
+    installed_embedments = [
+        value
+        for anchor in anchor_components
+        if (
+            value := _numeric_fact(
+                anchor.fabrication,
+                "anchor_installed_effective_embedment_mm",
+            )
+        )
+        is not None
+    ]
+    edge_distances = [
+        value
+        for anchor in anchor_components
+        if (
+            value := _numeric_fact(
+                anchor.fabrication,
+                "anchor_minimum_edge_distance_mm",
+            )
+        )
+        is not None
+    ]
+    spacings = [
+        value
+        for anchor in anchor_components
+        if (
+            value := _numeric_fact(
+                anchor.fabrication,
+                "anchor_minimum_spacing_mm",
+            )
+        )
+        is not None
+    ]
+    installed_embedment = min(installed_embedments) if installed_embedments else None
+    minimum_edge_distance = min(edge_distances) if edge_distances else None
+    minimum_spacing = min(spacings) if spacings else None
+    reference_embedment = _numeric_fact(
+        properties, "anchor_reference_embedment_mm"
+    )
+    tension_capacity = _numeric_fact(
+        properties, "anchor_single_tension_capacity_kN"
+    )
+    shear_capacity = _numeric_fact(properties, "anchor_single_shear_capacity_kN")
+    required_edge_distance = _numeric_fact(
+        properties, "anchor_required_edge_distance_mm"
+    )
+    required_spacing = _numeric_fact(
+        properties, "anchor_required_spacing_mm"
+    )
+    if len(installed_embedments) != len(anchor_components):
+        blockers.append("Every rendered anchor requires an installed embedment fact.")
+    if len(edge_distances) != len(anchor_components):
+        blockers.append("Every rendered anchor requires a minimum edge-distance fact.")
+    if len(anchor_components) > 1 and len(spacings) != len(anchor_components):
+        blockers.append("Every grouped anchor requires a minimum spacing fact.")
+    if any(
+        value is None
+        for value in (
+            reference_embedment,
+            tension_capacity,
+            shear_capacity,
+            required_edge_distance,
+            required_spacing,
+        )
+    ):
+        blockers.append("Anchor product capacity or installation limits are incomplete.")
+
+    evidence_status: Literal["unverified", "candidate", "verified"] = (
+        "verified" if evidence_verified else "candidate" if source else "unverified"
+    )
+    if blockers:
+        return AnchorGroupCheck(
+            status="unsupported",
+            evidence_status=evidence_status,
+            pack_id="manufacturer_working_load_anchor_group",
+            pack_version=pack_version,
+            anchor_part_number=part_number,
+            anchor_count=len(anchor_components),
+            effective_anchor_count=1.0,
+            substrate_type=substrate_type,
+            substrate_status=substrate_status,
+            tension_demand_kN=tension_demand_kN,
+            shear_demand_kN=shear_demand_kN,
+            tension_capacity_kN=tension_capacity,
+            shear_capacity_kN=shear_capacity,
+            installed_effective_embedment_mm=installed_embedment,
+            reference_embedment_mm=reference_embedment,
+            minimum_edge_distance_mm=minimum_edge_distance,
+            required_edge_distance_mm=required_edge_distance,
+            minimum_spacing_mm=minimum_spacing,
+            required_spacing_mm=required_spacing,
+            source=source,
+            source_sha256=source_sha256,
+            basis=(
+                "Exact rendered anchor identities were found, but the generic "
+                "Tertius anchor resistance pack is missing required verified facts."
+            ),
+            blockers=sorted(set(blockers)),
+        )
+
+    assert installed_embedment is not None
+    assert minimum_edge_distance is not None
+    assert reference_embedment is not None
+    assert tension_capacity is not None
+    assert shear_capacity is not None
+    assert required_edge_distance is not None
+    assert required_spacing is not None
+    result = manufacturer_working_load_anchor_group_resistance(
+        anchor_count=len(anchor_components),
+        single_anchor_tension_capacity_kN=tension_capacity,
+        single_anchor_shear_capacity_kN=shear_capacity,
+        tension_demand_kN=tension_demand_kN,
+        shear_demand_kN=shear_demand_kN,
+        installed_effective_embedment_mm=installed_embedment,
+        reference_embedment_mm=reference_embedment,
+        minimum_edge_distance_mm=minimum_edge_distance,
+        required_edge_distance_mm=required_edge_distance,
+        minimum_spacing_mm=minimum_spacing,
+        required_spacing_mm=required_spacing,
+    )
+    return AnchorGroupCheck(
+        status=result.status,
+        evidence_status="verified",
+        pack_id=result.pack_id,
+        pack_version=result.pack_version,
+        anchor_part_number=part_number,
+        anchor_count=result.anchor_count,
+        effective_anchor_count=result.effective_anchor_count,
+        substrate_type=substrate_type,
+        substrate_status=substrate_status,
+        tension_demand_kN=tension_demand_kN,
+        shear_demand_kN=shear_demand_kN,
+        tension_capacity_kN=result.design_tension_capacity_kN,
+        shear_capacity_kN=result.design_shear_capacity_kN,
+        interaction_utilisation=result.interaction_utilisation,
+        installed_effective_embedment_mm=installed_embedment,
+        reference_embedment_mm=reference_embedment,
+        minimum_edge_distance_mm=minimum_edge_distance,
+        required_edge_distance_mm=required_edge_distance,
+        minimum_spacing_mm=minimum_spacing,
+        required_spacing_mm=required_spacing,
+        embedment_status=result.embedment_status,
+        edge_distance_status=result.edge_distance_status,
+        spacing_status=result.spacing_status,
+        source=source,
+        source_sha256=source_sha256,
+        basis=result.basis,
+    )
 
 
 def _connection_checks(
@@ -168,6 +439,7 @@ def _connection_checks(
             ]
         )
         axial_demand = 0.0
+        anchor_tension_demand = 0.0
         shear_demand = 0.0
         moment_demand = 0.0
         governing_combination_id: str | None = None
@@ -190,10 +462,18 @@ def _connection_checks(
                 continue
             member = model.members[declaration.id]
             for combination in ultimate_combinations:
-                endpoint_axial = (
-                    abs(member.axial(distance_m, combination.id))
+                signed_endpoint_axial = (
+                    member.axial(distance_m, combination.id)
                     if "force" in connection.transfers
                     else 0.0
+                )
+                endpoint_axial = abs(signed_endpoint_axial)
+                # PyNite reports member compression as positive and tension as
+                # negative. Only uplift/tension is resisted by the anchor
+                # group; foundation bearing carries compression.
+                anchor_tension_demand = max(
+                    anchor_tension_demand,
+                    max(0.0, -signed_endpoint_axial),
                 )
                 endpoint_shear = (
                     sqrt(
@@ -234,6 +514,26 @@ def _connection_checks(
                     tension_evidence.governing_combination_id
                 )
                 governing_member_id = tension_evidence.member_id
+
+        grounded_component_ids = sorted(
+            component_id
+            for component_id in {
+                connection.from_component_id,
+                connection.to_component_id,
+            }
+            if components.get(component_id) is not None
+            and components[component_id].grounded
+        )
+        anchor_group = _anchor_group_check(
+            connection=connection,
+            components=components,
+            grounded_component_ids=grounded_component_ids,
+            tension_demand_kN=anchor_tension_demand,
+            shear_demand_kN=shear_demand,
+        )
+        if anchor_group is not None and evidence is None and tension_evidence is None:
+            expected_parts = rendered_parts
+            identity_mismatches = []
 
         design_axial_capacity_kN = (
             evidence.design_axial_capacity_kN
@@ -294,6 +594,11 @@ def _connection_checks(
                 status = "unsupported"
             else:
                 status = "pass" if governing_utilisation <= 1.0 else "fail"
+        elif anchor_group is not None:
+            # An anchor failure is a real connection failure. A passing anchor
+            # group does not by itself prove the fixture/bracket, connected
+            # sheet bearing/tear-out, or foundation member resistance.
+            status = "fail" if anchor_group.status == "fail" else "unsupported"
         elif evidence is None:
             status = "unsupported"
         else:
@@ -309,16 +614,14 @@ def _connection_checks(
             if tension_evidence is not None
             else []
         )
-        grounded_component_ids = sorted(
-            component_id
-            for component_id in {
-                connection.from_component_id,
-                connection.to_component_id,
-            }
-            if components.get(component_id) is not None
-            and components[component_id].grounded
-        )
-        if evidence is None and tension_evidence is None:
+        if anchor_group is not None:
+            assumptions.extend(anchor_group.blockers)
+            assumptions.append(
+                "Anchor resistance is checked separately. The complete connection "
+                "still requires the rendered fixture/bracket, connected steel "
+                "bearing and tear-out, and foundation member limit states."
+            )
+        elif evidence is None and tension_evidence is None:
             assumptions.append(
                 "The rendered connector identity and joint demand are recorded, but "
                 "no resistance evidence pack is attached."
@@ -342,6 +645,8 @@ def _connection_checks(
                 evidence_status=(
                     evidence.status
                     if evidence is not None
+                    else "candidate"
+                    if anchor_group is not None
                     else "verified"
                     if tension_evidence is not None
                     and tension_evidence.connection_capacity_status == "verified"
@@ -352,6 +657,8 @@ def _connection_checks(
                 pack_id=(
                     evidence.pack_id
                     if evidence is not None
+                    else anchor_group.pack_id
+                    if anchor_group is not None
                     else "as_nzs_4600_2005_a1_tension_end_connection"
                     if tension_evidence is not None
                     else "unverified-rendered-connection"
@@ -359,6 +666,8 @@ def _connection_checks(
                 pack_version=(
                     evidence.version
                     if evidence is not None
+                    else anchor_group.pack_version
+                    if anchor_group is not None
                     else "2005+A1"
                     if tension_evidence is not None
                     else "0"
@@ -367,7 +676,9 @@ def _connection_checks(
                     "fail"
                     if identity_mismatches
                     else "pass"
-                    if evidence is not None or tension_evidence is not None
+                    if evidence is not None
+                    or tension_evidence is not None
+                    or anchor_group is not None
                     else "not_declared"
                 ),
                 identity_mismatches=identity_mismatches,
@@ -388,6 +699,8 @@ def _connection_checks(
                 source=(
                     evidence.source
                     if evidence is not None
+                    else anchor_group.source
+                    if anchor_group is not None
                     else " · ".join(
                         filter(
                             None,
@@ -403,6 +716,8 @@ def _connection_checks(
                 source_sha256=(
                     evidence.source_sha256
                     if evidence is not None
+                    else anchor_group.source_sha256
+                    if anchor_group is not None
                     else tension_evidence.standard_source_sha256
                     if tension_evidence is not None
                     else None
@@ -410,12 +725,15 @@ def _connection_checks(
                 basis=(
                     evidence.basis
                     if evidence is not None
+                    else anchor_group.basis
+                    if anchor_group is not None
                     else tension_evidence.basis
                     if tension_evidence is not None
                     else "ULS endpoint forces are enveloped from the compiled physical "
                     "joint. No resistance, stiffness, bearing, tear-out, pull-out, "
-                    "anchor, or foundation capacity is inferred."
+                        "anchor, or foundation capacity is inferred."
                 ),
+                anchor_group=anchor_group,
                 assumptions=assumptions,
             )
         )

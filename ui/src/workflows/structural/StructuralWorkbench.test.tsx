@@ -495,6 +495,35 @@ const analysis: StructuralSnapshot = {
       rendered_connector_part_numbers: ['M12X100'],
       source: 'Project demonstration detail',
       source_sha256: null,
+      anchor_group: {
+        status: 'pass',
+        evidence_status: 'verified',
+        pack_id: 'manufacturer_working_load_anchor_group',
+        pack_version: '1',
+        anchor_part_number: 'AS12100WGM',
+        anchor_count: 2,
+        effective_anchor_count: 1,
+        substrate_type: 'concrete_block',
+        substrate_status: 'verified',
+        tension_demand_kN: 0.1,
+        shear_demand_kN: 0.216,
+        tension_capacity_kN: 1.15,
+        shear_capacity_kN: 2.1,
+        interaction_utilisation: 0.19,
+        installed_effective_embedment_mm: 88,
+        reference_embedment_mm: 60,
+        minimum_edge_distance_mm: 50,
+        required_edge_distance_mm: 35,
+        minimum_spacing_mm: 35,
+        required_spacing_mm: 35,
+        embedment_status: 'pass',
+        edge_distance_status: 'pass',
+        spacing_status: 'pass',
+        source: 'Ramset SARB ANZ Edition 3',
+        source_sha256: 'b'.repeat(64),
+        basis: 'Verified lower-bound anchor group.',
+        blockers: [],
+      },
       basis: 'No verified anchor or concrete resistance source is connected.',
       assumptions: ['Demand only.'],
     },
@@ -1020,6 +1049,9 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('project-demo-base-v1 v0.1')).toBeInTheDocument()
     expect(screen.getByText('Identity pass')).toBeInTheDocument()
     expect(screen.getByText(/Resistance unavailable/)).toBeInTheDocument()
+    expect(screen.getByText('2× AS12100WGM')).toBeInTheDocument()
+    expect(screen.getByText('Anchor pass')).toBeInTheDocument()
+    expect(screen.getByText('Interaction 0.190')).toBeInTheDocument()
     expect(screen.getByText('2 unavailable')).toBeInTheDocument()
     expect(screen.getByRole('option', {
       name: /SLS-G\+WY\+ · unavailable — No longitudinal wind \+Y action/,
