@@ -632,6 +632,9 @@ def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
         start_node_key="joint:base",
         end_node_key=None,
     )
+    upper_segment = deepcopy(declaration)
+    upper_segment.id = "column-axis-upper"
+    upper_segment.start_node_key = "joint:knee"
     section = SectionProperties(
         id="c10019",
         label="C10019",
@@ -663,7 +666,7 @@ def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
         load_combinations=[
             SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
         ],
-        members=[declaration],
+        members=[declaration, upper_segment],
         sections=[section],
         materials=[material],
     )

@@ -432,10 +432,32 @@ def _bolted_sheet_interface_check(
         if declaration.component_id in connected_component_ids
         and getattr(declaration, "analytical_role", "physical") == "physical"
     ]
-    declaration = connected_declarations[0] if len(connected_declarations) == 1 else None
-    if declaration is None:
+    connected_member_component_ids = {
+        declaration.component_id for declaration in connected_declarations
+    }
+    connected_section_material_pairs = {
+        (declaration.section_id, declaration.material_id)
+        for declaration in connected_declarations
+    }
+    declaration = next(
+        (
+            declaration
+            for declaration in connected_declarations
+            if connection.id
+            in (
+                _node_key_connection_ids(declaration.start_node_key)
+                | _node_key_connection_ids(declaration.end_node_key)
+            )
+        ),
+        connected_declarations[0] if connected_declarations else None,
+    )
+    if (
+        declaration is None
+        or len(connected_member_component_ids) != 1
+        or len(connected_section_material_pairs) != 1
+    ):
         blockers.append(
-            "Bolted sheet interface must resolve to one physical analytical member."
+            "Bolted sheet interface must resolve to one physical member product and section."
         )
     sections = {section.id: section for section in getattr(analysis, "sections", ())}
     materials = {
