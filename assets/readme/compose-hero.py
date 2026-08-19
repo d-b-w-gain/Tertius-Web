@@ -256,8 +256,12 @@ def engraved_plastic_plate(
     colour_field.putalpha(inner_mask)
     face = Image.alpha_composite(face, colour_field)
     face_draw = ImageDraw.Draw(face)
-    face_draw.arc(inner_box, 190, 345, fill=(255, 255, 255, 42), width=scale)
-    face_draw.arc(plate_box, 8, 172, fill=(0, 0, 0, 54), width=scale)
+    face_draw.rounded_rectangle(
+        inner_box,
+        radius=radius - scale,
+        outline=(255, 255, 255, 36),
+        width=scale,
+    )
 
     # Sparse scuffs, pinholes, and tiny edge chips are deterministic. They are
     # physical cues, not a blanket "vintage" noise filter.
