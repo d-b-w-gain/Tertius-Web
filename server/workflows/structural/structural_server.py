@@ -932,12 +932,7 @@ def _portal_frame_wind_actions(
             start, end = physical_endpoints(component_id)
             ridge_elevations.append(max(start.z, end.z))
     geometry_width = max(column_x_positions) - min(column_x_positions)
-    if abs(geometry_width - site.structure.footprint_width_m) > max(
-        0.1, site.structure.footprint_width_m * 0.1
-    ):
-        analysis_configuration.design_basis.standards["wind_actions"] = (
-            f"{site.project_basis.standards.wind} â€” geometry/site footprint mismatch"
-        )
+    if len(frame_positions) < 2:
         return (
             analysis_configuration,
             [],
@@ -945,11 +940,12 @@ def _portal_frame_wind_actions(
             [],
             {},
             [
-                "Portal-frame wind actions were not generated because the compiled "
-                f"frame width ({geometry_width:.3f} m) does not match the Site "
-                f"footprint width ({site.structure.footprint_width_m:.3f} m)."
+                "Portal-frame wind actions require at least two compiled transverse "
+                "frames so the mechanical envelope length and tributary strips can "
+                "be derived without using the Site placement footprint."
             ],
         )
+    geometry_length = frame_positions[-1] - frame_positions[0]
     eave_height = sum(eave_elevations) / len(eave_elevations)
     ridge_height = max(ridge_elevations)
     roof_rise = ridge_height - eave_height
@@ -964,52 +960,26 @@ def _portal_frame_wind_actions(
         transverse_roof_external_coefficients(
             roof_pitch_degrees=roof_pitch_degrees,
             average_roof_height_m=average_roof_height,
-            building_depth_m=site.structure.footprint_width_m,
+            building_depth_m=geometry_width,
         )
     )
     longitudinal_leeward_cpe = longitudinal_leeward_wall_external_coefficient(
-        building_depth_m=site.structure.footprint_length_m,
+        building_depth_m=geometry_length,
         average_roof_height_m=average_roof_height,
     )
 
-    if len(frame_positions) == 1:
-        tributary_widths = {frame_positions[0]: site.structure.footprint_length_m}
-    else:
-        geometry_length = frame_positions[-1] - frame_positions[0]
-        site_length = site.structure.footprint_length_m
-        if abs(geometry_length - site_length) > max(0.1, site_length * 0.1):
-            analysis_configuration.design_basis.standards["wind_actions"] = (
-                f"{site.project_basis.standards.wind} — geometry/site footprint mismatch"
-            )
-            return (
-                analysis_configuration,
-                [],
-                [],
-                [],
-                {},
-                [
-                    "Portal-frame wind actions were not generated because the compiled "
-                    f"frame length ({geometry_length:.3f} m) does not match the Site "
-                    f"footprint length ({site_length:.3f} m)."
-                ],
-            )
-        tributary_widths = {
-            frame_y: (
-                (frame_positions[1] - frame_positions[0]) / 2.0
-                if index == 0
-                else (frame_positions[-1] - frame_positions[-2]) / 2.0
-                if index == len(frame_positions) - 1
-                else (frame_positions[index + 1] - frame_positions[index - 1]) / 2.0
-            )
-            for index, frame_y in enumerate(frame_positions)
-        }
-        end_strip_adjustment = (site_length - geometry_length) / 2.0
-        tributary_widths[frame_positions[0]] += end_strip_adjustment
-        tributary_widths[frame_positions[-1]] += end_strip_adjustment
-        if any(width <= 0 for width in tributary_widths.values()):
-            raise ValueError(
-                "Site footprint produces a non-positive portal-frame tributary width"
-            )
+    tributary_widths = {
+        frame_y: (
+            (frame_positions[1] - frame_positions[0]) / 2.0
+            if index == 0
+            else (frame_positions[-1] - frame_positions[-2]) / 2.0
+            if index == len(frame_positions) - 1
+            else (frame_positions[index + 1] - frame_positions[index - 1]) / 2.0
+        )
+        for index, frame_y in enumerate(frame_positions)
+    }
+    if any(width <= 0 for width in tributary_widths.values()):
+        raise ValueError("compiled portal frames produce a non-positive tributary width")
 
     potential_opening_roles = {
         "door jamb",
@@ -1534,7 +1504,7 @@ def _portal_frame_wind_actions(
                 longitudinal_roof_external_coefficient(
                     distance_from_windward_edge_m=strip_centroid_distance,
                     average_roof_height_m=average_roof_height,
-                    building_depth_m=site.structure.footprint_length_m,
+                    building_depth_m=geometry_length,
                 )
             )
         longitudinal_internal_candidates = internal_pressure_candidates(
@@ -1562,7 +1532,7 @@ def _portal_frame_wind_actions(
                 member_length = dist(
                     start.model_dump().values(), end.model_dump().values()
                 )
-                tributary_width = site.structure.footprint_width_m / 2.0
+                tributary_width = geometry_width / 2.0
                 loaded_area = member_length * tributary_width
                 coefficient = surface_coefficient_envelope(
                     external_coefficient=external_coefficient,
@@ -1573,7 +1543,7 @@ def _portal_frame_wind_actions(
                     detail=(
                         f"longitudinal {'windward' if is_windward else 'leeward'} "
                         f"gable wall; h={average_roof_height:.6g} m; "
-                        f"d/h={site.structure.footprint_length_m / average_roof_height:.6g}; "
+                        f"d/h={geometry_length / average_roof_height:.6g}; "
                         f"loaded area={loaded_area:.6g} m2"
                     ),
                 )

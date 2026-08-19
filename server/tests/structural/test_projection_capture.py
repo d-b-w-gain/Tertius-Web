@@ -387,8 +387,10 @@ def test_site_basis_without_wind_receivers_blocks_actions_stage(tmp_path) -> Non
 
 def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> None:
     site = default_site_definition().model_copy(deep=True)
-    site.structure.footprint_length_m = 5.0
-    site.structure.footprint_width_m = 3.0
+    # The Site footprint is a map-placement aid and deliberately differs from
+    # the compiled 5 m x 3 m mechanical frame envelope.
+    site.structure.footprint_length_m = 5.5
+    site.structure.footprint_width_m = 3.5
     configuration_data = default_structural_configuration()
     configuration_data["portal_frame_wind_actions"] = {
         "coefficient_basis": (
@@ -480,6 +482,12 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     assert len(surface_loads) == 84
     assert len(line_loads) == 84
     assert len(surface_sources) == 84
+    first_frame_wall = next(
+        load
+        for load in surface_loads
+        if load.id == "site:wind-uls-plus-x:F1CL:wall"
+    )
+    assert first_frame_wall.area_m2 == pytest.approx(2.4 * 2.5)
     assert len(effective_configuration.member_loads) == 2
     assert {
         load.case_id for load in effective_configuration.member_loads

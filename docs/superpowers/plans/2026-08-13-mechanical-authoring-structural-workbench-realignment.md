@@ -531,11 +531,11 @@ the demo connection parts.
 Completed Site/action integrity slice: the active Structural capture now reads
 the saved `tertius_site.py` at analysis time, so Site pressure and standards can
 change without recompiling Build123D geometry. A revisioned transverse
-portal-frame strip action model selects compiled mechanical roles, reconciles
-the Site footprint with frame spacing, derives +X/-X wind cases and SLS/ULS
+portal-frame strip action model selects compiled mechanical roles, derives the
+structural envelope and tributary strips from frame spacing, derives +X/-X wind cases and SLS/ULS
 combinations, distributes traceable line actions to every analytical segment,
 and traces each action through physical connections to ground. Missing Site
-data, incomplete roles, footprint mismatch, missing wind receivers, or a broken
+data, incomplete roles, incomplete frame geometry, missing wind receivers, or a broken
 load path blocks the Actions stage instead of allowing self-weight alone to
 pass. The later surface-action-pack slice removes the three provisional
 project coefficients: Tertius now derives low-rise rectangular enclosed gable
