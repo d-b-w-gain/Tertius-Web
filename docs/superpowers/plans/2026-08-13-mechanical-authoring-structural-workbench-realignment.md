@@ -537,8 +537,12 @@ combinations, distributes traceable line actions to every analytical segment,
 and traces each action through physical connections to ground. Missing Site
 data, incomplete roles, footprint mismatch, missing wind receivers, or a broken
 load path blocks the Actions stage instead of allowing self-weight alone to
-pass. The worked coefficients remain an explicit provisional Structural input;
-AS/NZS 1170.2 surface-zone verification is still required for final approval.
+pass. The later surface-action-pack slice removes the three provisional
+project coefficients: Tertius now derives low-rise rectangular enclosed gable
+wall/roof coefficients, area factors, potential-opening internal-pressure
+cases, net coefficients, and pressure directions from Site plus compiled
+mechanical geometry. Unsupported roof pitch, enclosure type, or verified-only
+opening policy fails closed.
 Serviceability criteria are now evaluated once per physical member using its
 full compiled span, while retaining the governing analytical segment for UI
 selection and evidence tracing.
@@ -734,7 +738,10 @@ configuration, Structural workbench UI and tests.
 - [x] Replace the working action combinations with a source-digested AS/NZS
   1170.0 roof/wind pack, separate SLS/ULS wind events, and explicit
   applicability/exclusions.
-- [ ] Verify AS/NZS 1170.2 surface-zone/internal-pressure coefficients.
+- [x] Verify and implement the scoped AS/NZS 1170.2 low-rise rectangular
+  enclosed-gable surface-zone/internal-pressure coefficient envelope, with
+  source hashes, compiled opening locations, explicit factors, and fail-closed
+  applicability boundaries.
 - [x] Add the separate concentrated roof-action check as mutually exclusive
   physical roof-member alternatives owned by the Tertius action pack.
 - [x] Derive member-restraint candidate locations, product identities, and

@@ -17,6 +17,10 @@ from core.structural.contracts import (
     StructuralDesignBasis,
     Vector3,
 )
+from core.structural.wind_surface_action_packs import (
+    PACK_ID as DEFAULT_WIND_SURFACE_ACTION_PACK_ID,
+    WindSurfaceActionPackId,
+)
 
 
 class ConfiguredMemberPointLoad(StructuralContract):
@@ -43,12 +47,13 @@ class ConfiguredMemberDistributedLoad(StructuralContract):
 
 
 class ConfiguredPortalFrameWindActions(StructuralContract):
-    """Working building-envelope action model derived from mechanical member roles.
+    """Building-envelope action receivers derived from mechanical member roles.
 
     The geometry remains owned by ``design.py``.  This revisioned Structural
     input identifies the portal members that receive Site wind and R2 roof
-    imposed actions. Tertius owns the action formulae and uses the compiled
-    geometry to derive tributary areas and solver line actions.
+    imposed actions. Tertius owns the selected surface-action pack and uses the
+    compiled geometry to derive every coefficient, tributary area and solver
+    line action.
     """
 
     model_id: Literal["transverse_portal_frame_strip_v1"] = (
@@ -57,11 +62,35 @@ class ConfiguredPortalFrameWindActions(StructuralContract):
     column_role: str = "portal column"
     rafter_role: str = "portal rafter"
     roof_imposed_receiver_role: str = "roof/ceiling purlin"
-    windward_wall_coefficient: float = Field(default=0.8, gt=0)
-    leeward_wall_coefficient: float = Field(default=-0.5, lt=0)
-    roof_suction_coefficient: float = Field(default=-0.9, lt=0)
-    coefficient_status: Literal["assumed"] = "assumed"
-    coefficient_basis: str = Field(min_length=1)
+    surface_action_pack_id: WindSurfaceActionPackId = (
+        DEFAULT_WIND_SURFACE_ACTION_PACK_ID
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_provisional_coefficients(cls, value: object) -> object:
+        """Normalize the former hand-entered coefficient record in one direction.
+
+        Old revisions remain readable so Tertius can own their data migration,
+        but the normalized model and every subsequent saved revision contain no
+        coefficient values. The removed values are never used by analysis.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        for key in (
+            "windward_wall_coefficient",
+            "leeward_wall_coefficient",
+            "roof_suction_coefficient",
+            "coefficient_status",
+            "coefficient_basis",
+        ):
+            normalized.pop(key, None)
+        normalized.setdefault(
+            "surface_action_pack_id", DEFAULT_WIND_SURFACE_ACTION_PACK_ID
+        )
+        return normalized
 
 
 class ConfiguredMemberCriteria(StructuralContract):

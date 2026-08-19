@@ -1710,10 +1710,45 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         </dd>
                       </div>
                     )}
+                    {firstLoad.external_pressure_coefficient !== null
+                      && firstLoad.external_pressure_coefficient !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">External Cp,e</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.external_pressure_coefficient)}
+                        </dd>
+                      </div>
+                    )}
+                    {firstLoad.internal_pressure_coefficient !== null
+                      && firstLoad.internal_pressure_coefficient !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">Internal Cp,i</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.internal_pressure_coefficient)}
+                        </dd>
+                      </div>
+                    )}
+                    {firstLoad.area_reduction_factor !== null
+                      && firstLoad.area_reduction_factor !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">Area factor Ka</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.area_reduction_factor)}
+                        </dd>
+                      </div>
+                    )}
                     <div className="col-span-2">
                       <dt className="text-slate-500">Direction</dt>
                       <dd className="font-mono">{vector(firstLoad.direction)}</dd>
                     </div>
+                    {firstLoad.surface_action_pack_id && (
+                      <div className="col-span-2">
+                        <dt className="text-slate-500">Tertius surface-action pack</dt>
+                        <dd className="break-all font-mono text-[10px] text-cyan-200">
+                          {firstLoad.surface_action_pack_id}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                   <p className="mt-3 border-t border-indigo-500/20 pt-2 text-[10px] text-slate-400">
                     {firstLoad.provenance}

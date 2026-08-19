@@ -188,6 +188,10 @@ export type DesignSurfaceLoad = {
   wind_basis_id: string | null
   net_pressure_coefficient: number | null
   coefficient_status: 'assumed' | 'working_conservative' | 'verified' | null
+  surface_action_pack_id?: string | null
+  external_pressure_coefficient?: number | null
+  internal_pressure_coefficient?: number | null
+  area_reduction_factor?: number | null
 }
 
 export type DesignLoadPath = {

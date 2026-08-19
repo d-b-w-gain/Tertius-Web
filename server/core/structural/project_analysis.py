@@ -3933,6 +3933,26 @@ def _certification_evidence(
     for load in capture.loads:
         if load.wind_basis_id is not None and load.net_pressure_coefficient is not None:
             wind_basis = wind_bases_by_id[load.wind_basis_id]
+            if (
+                load.surface_action_pack_id is not None
+                and load.external_pressure_coefficient is not None
+                and load.internal_pressure_coefficient is not None
+                and load.area_reduction_factor is not None
+            ):
+                action_equations.append(
+                    CalculationEquation(
+                        label=f"{load.label} surface coefficient",
+                        expression=(
+                            "C_net = C_p,e K_a K_c,e K_l - C_p,i K_c,i"
+                        ),
+                        substitution=(
+                            f"{load.external_pressure_coefficient:g} Ã— "
+                            f"{load.area_reduction_factor:g} Ã— 1 Ã— 1 - "
+                            f"({load.internal_pressure_coefficient:g}) Ã— 1"
+                        ),
+                        result=load.net_pressure_coefficient,
+                    )
+                )
             action_equations.append(
                 CalculationEquation(
                     label=f"{load.label} net surface pressure",

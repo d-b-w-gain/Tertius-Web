@@ -463,6 +463,19 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     )
 
     assert warnings == []
+    assert effective_configuration.portal_frame_wind_actions is not None
+    normalized_wind_configuration = (
+        effective_configuration.portal_frame_wind_actions.model_dump(mode="json")
+    )
+    assert normalized_wind_configuration == {
+        "model_id": "transverse_portal_frame_strip_v1",
+        "column_role": "portal column",
+        "rafter_role": "portal rafter",
+        "roof_imposed_receiver_role": "roof/ceiling purlin",
+        "surface_action_pack_id": (
+            "as_nzs_1170_2_rectangular_enclosed_main_frame_v1"
+        ),
+    }
     assert len(wind_bases) == 8
     assert len(surface_loads) == 84
     assert len(line_loads) == 84
@@ -507,7 +520,12 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     }
     assert {
         load.coefficient_status for load in surface_loads if load.case == "wind"
-    } == {"working_conservative"}
+    } == {"verified"}
+    assert all(
+        "as_nzs_1170_2_rectangular_enclosed_main_frame_v1" in load.provenance
+        for load in surface_loads
+        if load.case == "wind"
+    )
     assert {case.role for case in effective_configuration.action_cases}.issuperset(
         {
             "imposed",

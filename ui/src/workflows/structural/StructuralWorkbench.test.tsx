@@ -1254,6 +1254,35 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('working conservative')).toBeInTheDocument()
   })
 
+  it('shows the Tertius-owned wind surface coefficient trace', async () => {
+    const verifiedCapture: ProjectStructuralCapture = {
+      ...capture,
+      loads: capture.loads.map((load) => ({
+        ...load,
+        net_pressure_coefficient: -1.3,
+        coefficient_status: 'verified',
+        surface_action_pack_id: 'as_nzs_1170_2_rectangular_enclosed_main_frame_v1',
+        external_pressure_coefficient: -0.6,
+        internal_pressure_coefficient: 0.7,
+        area_reduction_factor: 1,
+      })),
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      structuralResponse(url, verifiedCapture, analysis),
+    ))
+
+    render(<StructuralWorkbench isActive />)
+
+    expect(await screen.findByText('Tertius surface-action pack')).toBeInTheDocument()
+    expect(screen.getByText(
+      'as_nzs_1170_2_rectangular_enclosed_main_frame_v1',
+    )).toBeInTheDocument()
+    expect(screen.getByText('External Cp,e')).toBeInTheDocument()
+    expect(screen.getByText('Internal Cp,i')).toBeInTheDocument()
+    expect(screen.getByText('Area factor Ka')).toBeInTheDocument()
+    expect(screen.getByText('verified')).toBeInTheDocument()
+  })
+
   it('keeps an exceeded renderer reference not-checked until Australian gates pass', async () => {
     mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
       structuralResponse(

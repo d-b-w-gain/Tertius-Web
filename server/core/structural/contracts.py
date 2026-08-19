@@ -1181,6 +1181,10 @@ class DesignSurfaceLoad(StructuralContract):
     coefficient_status: (
         Literal["assumed", "working_conservative", "verified"] | None
     ) = None
+    surface_action_pack_id: str | None = None
+    external_pressure_coefficient: float | None = None
+    internal_pressure_coefficient: float | None = None
+    area_reduction_factor: float | None = Field(default=None, gt=0)
 
 
 class DesignLoadPath(StructuralContract):
@@ -1286,6 +1290,17 @@ class ProjectStructuralCapture(StructuralContract):
                 if load.coefficient_status is None:
                     raise ValueError(
                         f"load {load.id!r} must declare its coefficient status"
+                    )
+                if load.surface_action_pack_id is not None and any(
+                    value is None
+                    for value in (
+                        load.external_pressure_coefficient,
+                        load.internal_pressure_coefficient,
+                        load.area_reduction_factor,
+                    )
+                ):
+                    raise ValueError(
+                        f"load {load.id!r} surface action pack evidence is incomplete"
                     )
                 expected_pressure = wind_bases_by_id[load.wind_basis_id].q_z_kPa * abs(
                     load.net_pressure_coefficient

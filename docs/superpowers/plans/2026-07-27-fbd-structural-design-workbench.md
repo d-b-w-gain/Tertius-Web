@@ -227,8 +227,20 @@ SCI P399 EHF/NHF cases from the compiled mechanical graph and Site basis. The
 pipeline resolved 18 action cases and 25 combinations before local roof
 alternatives were added. The live shed now has 12 mutually exclusive 1.4 kN
 midspan cases on its compiled roof/ceiling purlins, producing 30 action cases
-and 49 combinations. AS/NZS 1170.2 surface-zone/internal-pressure coefficient
-verification remains a certification boundary.
+and 49 combinations. The later Tertius-owned rectangular enclosed-gable
+surface-action pack closes the scoped AS/NZS 1170.2 surface/internal-pressure
+boundary while failing closed outside its declared applicability.
+
+Surface-action evidence (2026-08-19):
+`as_nzs_1170_2_rectangular_enclosed_main_frame_v1` replaces the stored
+0.8/-0.5/-0.9 worked coefficients. It derives average roof height, pitch,
+windward/leeward and roof-zone `Cp,e`, 2021 `Ka`, compiled door/window dominant
+opening candidates, `Cp,i`, signed `Cnet`, pressure direction, and solver line
+actions. Each load records the formula, pack version, inputs, and source
+SHA-256 values. The pack does not take optional `Kc` reductions and uses
+`Kl=1` for main portal members. Open-sided buildings, gable pitches outside
+10-25 degrees, and unverified openings under a verified-only Site policy fail
+closed rather than falling back to provisional loads.
 
 ### Task 7: Migrate and reconcile the current shed
 

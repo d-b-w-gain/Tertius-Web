@@ -88,6 +88,15 @@ from core.structural.site_wind import (
     lookup_wind_region,
     wind_region_geojson,
 )
+from core.structural.wind_surface_action_packs import (
+    PACK_ID as WIND_SURFACE_ACTION_PACK_ID,
+    internal_pressure_candidates,
+    longitudinal_leeward_wall_external_coefficient,
+    longitudinal_roof_external_coefficient,
+    surface_coefficient_envelope,
+    transverse_leeward_wall_external_coefficient,
+    transverse_roof_external_coefficients,
+)
 from core.models import (
     Artifact,
     Project,
@@ -905,6 +914,64 @@ def _portal_frame_wind_actions(
         )
 
     frame_positions = sorted(frame_components)
+    if configured.surface_action_pack_id != WIND_SURFACE_ACTION_PACK_ID:
+        raise ValueError(
+            "unsupported portal-frame wind surface action pack "
+            f"{configured.surface_action_pack_id!r}"
+        )
+
+    column_x_positions: list[float] = []
+    eave_elevations: list[float] = []
+    ridge_elevations: list[float] = []
+    for frame in frame_components.values():
+        for component_id in frame["columns"]:
+            start, end = physical_endpoints(component_id)
+            column_x_positions.append((start.x + end.x) / 2.0)
+            eave_elevations.append(max(start.z, end.z))
+        for component_id in frame["rafters"]:
+            start, end = physical_endpoints(component_id)
+            ridge_elevations.append(max(start.z, end.z))
+    geometry_width = max(column_x_positions) - min(column_x_positions)
+    if abs(geometry_width - site.structure.footprint_width_m) > max(
+        0.1, site.structure.footprint_width_m * 0.1
+    ):
+        analysis_configuration.design_basis.standards["wind_actions"] = (
+            f"{site.project_basis.standards.wind} â€” geometry/site footprint mismatch"
+        )
+        return (
+            analysis_configuration,
+            [],
+            [],
+            [],
+            {},
+            [
+                "Portal-frame wind actions were not generated because the compiled "
+                f"frame width ({geometry_width:.3f} m) does not match the Site "
+                f"footprint width ({site.structure.footprint_width_m:.3f} m)."
+            ],
+        )
+    eave_height = sum(eave_elevations) / len(eave_elevations)
+    ridge_height = max(ridge_elevations)
+    roof_rise = ridge_height - eave_height
+    if roof_rise <= 0 or geometry_width <= 0:
+        raise ValueError("portal-frame wind actions require a pitched gable envelope")
+    average_roof_height = (eave_height + ridge_height) / 2.0
+    roof_pitch_degrees = degrees(atan2(roof_rise, geometry_width / 2.0))
+    transverse_leeward_cpe = transverse_leeward_wall_external_coefficient(
+        roof_pitch_degrees
+    )
+    transverse_upwind_roof_cpe, transverse_downwind_roof_cpe = (
+        transverse_roof_external_coefficients(
+            roof_pitch_degrees=roof_pitch_degrees,
+            average_roof_height_m=average_roof_height,
+            building_depth_m=site.structure.footprint_width_m,
+        )
+    )
+    longitudinal_leeward_cpe = longitudinal_leeward_wall_external_coefficient(
+        building_depth_m=site.structure.footprint_length_m,
+        average_roof_height_m=average_roof_height,
+    )
+
     if len(frame_positions) == 1:
         tributary_widths = {frame_positions[0]: site.structure.footprint_length_m}
     else:
@@ -943,6 +1010,87 @@ def _portal_frame_wind_actions(
             raise ValueError(
                 "Site footprint produces a non-positive portal-frame tributary width"
             )
+
+    potential_opening_roles = {
+        "door jamb",
+        "door header",
+        "window header",
+        "window sill",
+        "window left jamb",
+        "window right jamb",
+    }
+    potential_opening_frame_positions = {
+        round(
+            sum(value.y for value in physical_endpoints(component_id)) / 2.0,
+            6,
+        )
+        for component_id, role in role_by_component.items()
+        if role in potential_opening_roles and component_id in members_by_component
+    }
+    envelope = site.wind.action_envelope
+    if envelope.enclosure != "enclosed":
+        return (
+            analysis_configuration,
+            [],
+            [],
+            [],
+            {},
+            [
+                "The selected Tertius wind surface action pack supports enclosed "
+                "rectangular gable buildings only; no open-sided wind actions were "
+                "generated."
+            ],
+        )
+    if (
+        envelope.coefficient_selection_policy == "verified_only"
+        and envelope.opening_capacity_status != "verified"
+    ):
+        return (
+            analysis_configuration,
+            [],
+            [],
+            [],
+            {},
+            [
+                "The Site policy requires verified-only wind coefficients, but the "
+                "potential opening capacity is unverified. Verify the door/window "
+                "envelope or select the worst-available-credible policy."
+            ],
+        )
+    opening_capacity_verified = envelope.opening_capacity_status == "verified"
+    openings_normally_open = envelope.openings_operating_state == "normally_open"
+
+    def relative_opening_surfaces(
+        *, wind_axis: Literal["transverse", "longitudinal"], wind_sign: float
+    ) -> tuple[Literal["windward", "leeward", "side", "roof"], ...]:
+        if opening_capacity_verified and not openings_normally_open:
+            return ()
+        if not potential_opening_frame_positions:
+            # The Site declaration says potential openings cannot be credited as
+            # pressure-resistant, but the compiled projection has no opening
+            # framing. Bound every opening location instead of silently assuming
+            # a sealed envelope.
+            return ("windward", "leeward", "side", "roof")
+        if wind_axis == "transverse":
+            return ("side",)
+        windward_frame = frame_positions[0] if wind_sign > 0 else frame_positions[-1]
+        leeward_frame = frame_positions[-1] if wind_sign > 0 else frame_positions[0]
+        surfaces: list[Literal["windward", "leeward", "side", "roof"]] = []
+        if windward_frame in potential_opening_frame_positions:
+            surfaces.append("windward")
+        if leeward_frame in potential_opening_frame_positions:
+            surfaces.append("leeward")
+        return tuple(surfaces)
+
+    def load_direction_from_surface_normal(
+        outward: Vector3, net_coefficient: float
+    ) -> Vector3:
+        scale = -1.0 if net_coefficient > 0 else 1.0
+        return Vector3(
+            x=outward.x * scale,
+            y=outward.y * scale,
+            z=outward.z * scale,
+        )
 
     dead_case = next(
         (
@@ -1098,6 +1246,10 @@ def _portal_frame_wind_actions(
         provenance: str,
         net_pressure_coefficient: float | None = None,
         coefficient_status: str | None = None,
+        surface_action_pack_id: str | None = None,
+        external_pressure_coefficient: float | None = None,
+        internal_pressure_coefficient: float | None = None,
+        area_reduction_factor: float | None = None,
     ) -> None:
         load: dict[str, object] = {
             "id": load_id,
@@ -1114,6 +1266,14 @@ def _portal_frame_wind_actions(
             load["net_pressure_coefficient"] = net_pressure_coefficient
         if coefficient_status is not None:
             load["coefficient_status"] = coefficient_status
+        if surface_action_pack_id is not None:
+            load["surface_action_pack_id"] = surface_action_pack_id
+        if external_pressure_coefficient is not None:
+            load["external_pressure_coefficient"] = external_pressure_coefficient
+        if internal_pressure_coefficient is not None:
+            load["internal_pressure_coefficient"] = internal_pressure_coefficient
+        if area_reduction_factor is not None:
+            load["area_reduction_factor"] = area_reduction_factor
         raw_loads.append(load)
         load_geometry[load_id] = (
             component_id,
@@ -1146,34 +1306,68 @@ def _portal_frame_wind_actions(
                 for event in ("serviceability", "ultimate")
             ),
         ):
+            transverse_internal_candidates = internal_pressure_candidates(
+                opening_capacity_verified=opening_capacity_verified,
+                openings_normally_open=openings_normally_open,
+                potential_opening_surfaces=relative_opening_surfaces(
+                    wind_axis="transverse", wind_sign=wind_sign
+                ),
+                leeward_external_coefficient=transverse_leeward_cpe,
+                roof_external_coefficient=min(
+                    transverse_upwind_roof_cpe,
+                    transverse_downwind_roof_cpe,
+                ),
+            )
             for column_index, component_id in enumerate(columns):
                 is_windward = (wind_sign > 0 and column_index == 0) or (
                     wind_sign < 0 and column_index == 1
-                )
-                coefficient = (
-                    configured.windward_wall_coefficient
-                    if is_windward
-                    else configured.leeward_wall_coefficient
                 )
                 start, end = physical_endpoints(component_id)
                 member_length = dist(
                     start.model_dump().values(), end.model_dump().values()
                 )
+                loaded_area = member_length * tributary_width
+                coefficient = surface_coefficient_envelope(
+                    external_coefficient=(
+                        0.7 if is_windward else transverse_leeward_cpe
+                    ),
+                    internal_candidates=transverse_internal_candidates,
+                    loaded_area_m2=loaded_area,
+                    surface=("windward_wall" if is_windward else "leeward_wall"),
+                    average_roof_height_m=average_roof_height,
+                    detail=(
+                        f"transverse {'windward' if is_windward else 'leeward'} "
+                        f"wall; h={average_roof_height:.6g} m; "
+                        f"roof pitch={roof_pitch_degrees:.6g} degrees; "
+                        f"loaded area={loaded_area:.6g} m2"
+                    ),
+                )
                 load_id = f"site:{case_id}:{component_id}:wall"
-                direction = Vector3(x=wind_sign, y=0, z=0)
+                outward = Vector3(
+                    x=-1.0 if (start.x + end.x) < 0 else 1.0,
+                    y=0,
+                    z=0,
+                )
+                direction = load_direction_from_surface_normal(
+                    outward, coefficient.net_coefficient
+                )
                 add_surface_action(
                     load_id=load_id,
                     label=f"{case_id} wall action on {component_id}",
                     case="wind",
                     case_id=case_id,
                     component_id=component_id,
-                    pressure_kPa=abs(coefficient),
-                    area_m2=member_length * tributary_width,
+                    pressure_kPa=abs(coefficient.net_coefficient),
+                    area_m2=loaded_area,
                     line_tributary_width_m=tributary_width,
                     direction=direction,
-                    provenance=configured.coefficient_basis,
-                    net_pressure_coefficient=coefficient,
-                    coefficient_status=configured.coefficient_status,
+                    provenance=coefficient.provenance,
+                    net_pressure_coefficient=coefficient.net_coefficient,
+                    coefficient_status=coefficient.status,
+                    surface_action_pack_id=configured.surface_action_pack_id,
+                    external_pressure_coefficient=coefficient.external_coefficient,
+                    internal_pressure_coefficient=coefficient.internal_coefficient,
+                    area_reduction_factor=coefficient.area_reduction_factor,
                 )
             for component_id in rafters:
                 start, end = physical_endpoints(component_id)
@@ -1192,20 +1386,48 @@ def _portal_frame_wind_actions(
                     y=0,
                     z=abs(delta_x) / slope_length,
                 )
+                is_upwind = (wind_sign > 0 and (start.x + end.x) < 0) or (
+                    wind_sign < 0 and (start.x + end.x) > 0
+                )
+                loaded_area = member_length * tributary_width
+                external_coefficient = (
+                    transverse_upwind_roof_cpe
+                    if is_upwind
+                    else transverse_downwind_roof_cpe
+                )
+                coefficient = surface_coefficient_envelope(
+                    external_coefficient=external_coefficient,
+                    internal_candidates=transverse_internal_candidates,
+                    loaded_area_m2=loaded_area,
+                    surface="roof",
+                    average_roof_height_m=average_roof_height,
+                    detail=(
+                        f"transverse {'upwind' if is_upwind else 'downwind'} "
+                        f"roof slope; h/d={average_roof_height / geometry_width:.6g}; "
+                        f"roof pitch={roof_pitch_degrees:.6g} degrees; "
+                        f"loaded area={loaded_area:.6g} m2"
+                    ),
+                )
                 load_id = f"site:{case_id}:{component_id}:roof"
                 add_surface_action(
                     load_id=load_id,
-                    label=f"{case_id} roof suction on {component_id}",
+                    label=f"{case_id} roof action on {component_id}",
                     case="wind",
                     case_id=case_id,
                     component_id=component_id,
-                    pressure_kPa=abs(configured.roof_suction_coefficient),
-                    area_m2=member_length * tributary_width,
+                    pressure_kPa=abs(coefficient.net_coefficient),
+                    area_m2=loaded_area,
                     line_tributary_width_m=tributary_width,
-                    direction=outward,
-                    provenance=configured.coefficient_basis,
-                    net_pressure_coefficient=configured.roof_suction_coefficient,
-                    coefficient_status=configured.coefficient_status,
+                    direction=load_direction_from_surface_normal(
+                        outward, coefficient.net_coefficient
+                    ),
+                    provenance=coefficient.provenance,
+                    net_pressure_coefficient=coefficient.net_coefficient,
+                    coefficient_status=coefficient.status,
+                    surface_action_pack_id=configured.surface_action_pack_id,
+                    external_pressure_coefficient=coefficient.external_coefficient,
+                    internal_pressure_coefficient=coefficient.internal_coefficient,
+                    area_reduction_factor=coefficient.area_reduction_factor,
                 )
 
         for component_id in rafters:
@@ -1300,16 +1522,40 @@ def _portal_frame_wind_actions(
             for event in ("serviceability", "ultimate")
         ),
     ):
+        longitudinal_roof_cpe_by_frame: dict[float, float] = {}
+        for frame_y in frame_positions:
+            strip_centroid_distance = (
+                frame_y - frame_positions[0] + tributary_widths[frame_y] / 2.0
+                if wind_sign > 0
+                else frame_positions[-1] - frame_y
+                + tributary_widths[frame_y] / 2.0
+            )
+            longitudinal_roof_cpe_by_frame[frame_y] = (
+                longitudinal_roof_external_coefficient(
+                    distance_from_windward_edge_m=strip_centroid_distance,
+                    average_roof_height_m=average_roof_height,
+                    building_depth_m=site.structure.footprint_length_m,
+                )
+            )
+        longitudinal_internal_candidates = internal_pressure_candidates(
+            opening_capacity_verified=opening_capacity_verified,
+            openings_normally_open=openings_normally_open,
+            potential_opening_surfaces=relative_opening_surfaces(
+                wind_axis="longitudinal", wind_sign=wind_sign
+            ),
+            leeward_external_coefficient=longitudinal_leeward_cpe,
+            roof_external_coefficient=min(longitudinal_roof_cpe_by_frame.values()),
+        )
         for end_index, frame_y in enumerate(end_frame_positions):
             is_windward = (wind_sign > 0 and end_index == 0) or (
                 wind_sign < 0 and end_index == 1
             )
-            coefficient = (
-                configured.windward_wall_coefficient
-                if is_windward
-                else configured.leeward_wall_coefficient
+            external_coefficient = 0.7 if is_windward else longitudinal_leeward_cpe
+            outward = Vector3(
+                x=0,
+                y=-1.0 if end_index == 0 else 1.0,
+                z=0,
             )
-            direction = Vector3(x=0, y=wind_sign, z=0)
             frame = frame_components[frame_y]
             for component_id in frame["columns"]:
                 start, end = physical_endpoints(component_id)
@@ -1317,6 +1563,20 @@ def _portal_frame_wind_actions(
                     start.model_dump().values(), end.model_dump().values()
                 )
                 tributary_width = site.structure.footprint_width_m / 2.0
+                loaded_area = member_length * tributary_width
+                coefficient = surface_coefficient_envelope(
+                    external_coefficient=external_coefficient,
+                    internal_candidates=longitudinal_internal_candidates,
+                    loaded_area_m2=loaded_area,
+                    surface=("windward_wall" if is_windward else "leeward_wall"),
+                    average_roof_height_m=average_roof_height,
+                    detail=(
+                        f"longitudinal {'windward' if is_windward else 'leeward'} "
+                        f"gable wall; h={average_roof_height:.6g} m; "
+                        f"d/h={site.structure.footprint_length_m / average_roof_height:.6g}; "
+                        f"loaded area={loaded_area:.6g} m2"
+                    ),
+                )
                 load_id = f"site:{case_id}:{component_id}:gable-wall"
                 add_surface_action(
                     load_id=load_id,
@@ -1324,13 +1584,19 @@ def _portal_frame_wind_actions(
                     case="wind",
                     case_id=case_id,
                     component_id=component_id,
-                    pressure_kPa=abs(coefficient),
-                    area_m2=member_length * tributary_width,
+                    pressure_kPa=abs(coefficient.net_coefficient),
+                    area_m2=loaded_area,
                     line_tributary_width_m=tributary_width,
-                    direction=direction,
-                    provenance=configured.coefficient_basis,
-                    net_pressure_coefficient=coefficient,
-                    coefficient_status=configured.coefficient_status,
+                    direction=load_direction_from_surface_normal(
+                        outward, coefficient.net_coefficient
+                    ),
+                    provenance=coefficient.provenance,
+                    net_pressure_coefficient=coefficient.net_coefficient,
+                    coefficient_status=coefficient.status,
+                    surface_action_pack_id=configured.surface_action_pack_id,
+                    external_pressure_coefficient=coefficient.external_coefficient,
+                    internal_pressure_coefficient=coefficient.internal_coefficient,
+                    area_reduction_factor=coefficient.area_reduction_factor,
                 )
             for component_id in frame["rafters"]:
                 start, end = physical_endpoints(component_id)
@@ -1340,6 +1606,18 @@ def _portal_frame_wind_actions(
                 gable_area = abs(end.x - start.x) * abs(end.z - start.z) / 2.0
                 if gable_area <= 1e-9:
                     continue
+                coefficient = surface_coefficient_envelope(
+                    external_coefficient=external_coefficient,
+                    internal_candidates=longitudinal_internal_candidates,
+                    loaded_area_m2=gable_area,
+                    surface=("windward_wall" if is_windward else "leeward_wall"),
+                    average_roof_height_m=average_roof_height,
+                    detail=(
+                        f"longitudinal {'windward' if is_windward else 'leeward'} "
+                        f"gable triangle; h={average_roof_height:.6g} m; "
+                        f"loaded area={gable_area:.6g} m2"
+                    ),
+                )
                 load_id = f"site:{case_id}:{component_id}:gable"
                 add_surface_action(
                     load_id=load_id,
@@ -1347,13 +1625,19 @@ def _portal_frame_wind_actions(
                     case="wind",
                     case_id=case_id,
                     component_id=component_id,
-                    pressure_kPa=abs(coefficient),
+                    pressure_kPa=abs(coefficient.net_coefficient),
                     area_m2=gable_area,
                     line_tributary_width_m=gable_area / member_length,
-                    direction=direction,
-                    provenance=configured.coefficient_basis,
-                    net_pressure_coefficient=coefficient,
-                    coefficient_status=configured.coefficient_status,
+                    direction=load_direction_from_surface_normal(
+                        outward, coefficient.net_coefficient
+                    ),
+                    provenance=coefficient.provenance,
+                    net_pressure_coefficient=coefficient.net_coefficient,
+                    coefficient_status=coefficient.status,
+                    surface_action_pack_id=configured.surface_action_pack_id,
+                    external_pressure_coefficient=coefficient.external_coefficient,
+                    internal_pressure_coefficient=coefficient.internal_coefficient,
+                    area_reduction_factor=coefficient.area_reduction_factor,
                 )
 
         for frame_y in frame_positions:
@@ -1375,20 +1659,40 @@ def _portal_frame_wind_actions(
                     y=0,
                     z=abs(delta_x) / slope_length,
                 )
+                loaded_area = member_length * tributary_width
+                external_coefficient = longitudinal_roof_cpe_by_frame[frame_y]
+                coefficient = surface_coefficient_envelope(
+                    external_coefficient=external_coefficient,
+                    internal_candidates=longitudinal_internal_candidates,
+                    loaded_area_m2=loaded_area,
+                    surface="roof",
+                    average_roof_height_m=average_roof_height,
+                    detail=(
+                        "longitudinal crosswind roof strip; "
+                        f"Cp,e={external_coefficient:.6g}; "
+                        f"loaded area={loaded_area:.6g} m2"
+                    ),
+                )
                 load_id = f"site:{case_id}:{component_id}:roof"
                 add_surface_action(
                     load_id=load_id,
-                    label=f"{case_id} roof suction on {component_id}",
+                    label=f"{case_id} roof action on {component_id}",
                     case="wind",
                     case_id=case_id,
                     component_id=component_id,
-                    pressure_kPa=abs(configured.roof_suction_coefficient),
-                    area_m2=member_length * tributary_width,
+                    pressure_kPa=abs(coefficient.net_coefficient),
+                    area_m2=loaded_area,
                     line_tributary_width_m=tributary_width,
-                    direction=outward,
-                    provenance=configured.coefficient_basis,
-                    net_pressure_coefficient=configured.roof_suction_coefficient,
-                    coefficient_status=configured.coefficient_status,
+                    direction=load_direction_from_surface_normal(
+                        outward, coefficient.net_coefficient
+                    ),
+                    provenance=coefficient.provenance,
+                    net_pressure_coefficient=coefficient.net_coefficient,
+                    coefficient_status=coefficient.status,
+                    surface_action_pack_id=configured.surface_action_pack_id,
+                    external_pressure_coefficient=coefficient.external_coefficient,
+                    internal_pressure_coefficient=coefficient.internal_coefficient,
+                    area_reduction_factor=coefficient.area_reduction_factor,
                 )
 
     ultimate_overlaid = apply_site_definition(
@@ -1429,6 +1733,13 @@ def _portal_frame_wind_actions(
     analysis_configuration.design_basis = type(
         configuration.design_basis
     ).model_validate(ultimate_overlaid["design_basis"])
+    wind_reference = analysis_configuration.design_basis.standards.get(
+        "wind_actions", site.project_basis.standards.wind
+    )
+    analysis_configuration.design_basis.standards["wind_actions"] = (
+        f"{wind_reference}; Tertius surface action pack "
+        f"{configured.surface_action_pack_id}"
+    )
     wind_bases = [
         StructuralWindActionBasis.model_validate(value)
         for value in (
