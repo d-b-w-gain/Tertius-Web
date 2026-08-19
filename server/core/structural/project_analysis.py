@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from collections import deque
 from importlib.metadata import version
 from math import pi, sqrt
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypedDict, cast
 
 from .capacity_packs import (
     CapacityPackError,
@@ -66,6 +66,27 @@ RESIDUAL_TOLERANCE = 1e-8
 PDELTA_RESIDUAL_RELATIVE_TOLERANCE = 1e-3
 STANDARD_GRAVITY_M_S2 = 9.80665
 NODE_COORDINATE_DIGITS = 9
+
+
+class _BoltedSheetInterfaceCommon(TypedDict):
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    bolt_part_number: str
+    bolt_count: int
+    connected_member_id: str | None
+    connected_sheet_part_number: str | None
+    fixture_part_number: str | None
+    fixture_capacity_status: Literal["not_checked", "candidate", "verified"]
+    resultant_shear_demand_kN: float
+    nominal_bolt_diameter_mm: float | None
+    connected_sheet_thickness_mm: float | None
+    hole_diameter_mm: float | None
+    hole_type: str | None
+    minimum_spacing_mm: float | None
+    minimum_edge_distance_mm: float | None
+    source: str | None
+    source_sha256: str | None
 
 
 class StructuralAnalysisError(ValueError):
@@ -541,7 +562,7 @@ def _bolted_sheet_interface_check(
         if source
         else "unverified"
     )
-    common = dict(
+    common: _BoltedSheetInterfaceCommon = dict(
         evidence_status=evidence_status,
         pack_id="as_nzs_4600_2005_a1_bolted_sheet_interface",
         pack_version=str(properties.get("bolted_sheet_fastener_pack_version") or "1"),
