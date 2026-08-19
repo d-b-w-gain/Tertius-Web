@@ -326,6 +326,7 @@ class TimusSettings(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     stamp_text: Mapped[str] = mapped_column(String(32), nullable=False)
     show_redline: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    show_hidden_lines: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_hidden_lines: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     scale: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, default=1.0)
     sheet_size: Mapped[str] = mapped_column(String(8), nullable=False, default="A4")
+    layout: Mapped[str] = mapped_column(String(16), nullable=False, default="combined")
