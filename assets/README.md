@@ -15,7 +15,7 @@ The final hero should be a staged, authenticated Tertius session at a 16:9 aspec
 
 Capture at 1600 × 900 or larger and export the final optimized image as `hero-product.webp` or `hero-product.png`. The current `hero-product.png` is a real authenticated Extus session captured after the shed model finished loading.
 
-The checked-in hero uses a deterministic Pillow composition in [`scripts/compose-readme-hero.py`](../scripts/compose-readme-hero.py): a real Extus capture, a restrained gradient for contrast, and a small amount of editorial type. This keeps the process open-source and repeatable without requiring a design application. A licensed Gorton Classic font can be supplied at capture time with `--font`; the font itself does not need to be redistributed. The script extracts its open glyph geometry with `fontTools` and strokes the paths with round caps and joins—normal filled-text rasterisation does not reproduce this single-stroke engraving font correctly.
+The checked-in hero uses a deterministic Pillow composition in [`assets/readme/compose-hero.py`](readme/compose-hero.py): a real Extus capture, a restrained gradient for contrast, and a small amount of editorial type. This keeps the process open-source and repeatable without requiring a design application. A licensed Gorton Classic font can be supplied at capture time with `--font`; the font itself does not need to be redistributed. The script extracts its open glyph geometry with `fontTools` and strokes the paths with round caps and joins—normal filled-text rasterisation does not reproduce this single-stroke engraving font correctly. See [`assets/readme/README.md`](readme/README.md) for the regeneration command.
 
 ## Supporting views
 
