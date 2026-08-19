@@ -196,6 +196,119 @@ def duotone_product_plate(source: Image.Image, size: tuple[int, int]) -> Image.I
     return Image.alpha_composite(plate, red_ink)
 
 
+def engraved_plastic_plate(
+    font_path: Path,
+    text: str,
+    size: tuple[int, int],
+    face_colour: tuple[int, int, int],
+    core_colour: tuple[int, int, int],
+    seed: int,
+) -> Image.Image:
+    """Render a small, two-colour engraved laminate equipment nameplate."""
+    scale = 4
+    padding = 10
+    plate_width, plate_height = size
+    full_size = ((plate_width + padding * 2) * scale, (plate_height + padding * 2) * scale)
+    plate_box = (
+        padding * scale,
+        padding * scale,
+        (padding + plate_width) * scale,
+        (padding + plate_height) * scale,
+    )
+    radius = 5 * scale
+    rng = random.Random(seed)
+    canvas = Image.new("RGBA", full_size, (0, 0, 0, 0))
+
+    # A soft, slightly uneven adhesive shadow keeps the plate attached to the
+    # printed product image rather than reading as a flat graphic overlay.
+    shadow = Image.new("RGBA", full_size, (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle(
+        tuple(value + offset for value, offset in zip(plate_box, (2 * scale, 3 * scale, 2 * scale, 3 * scale))),
+        radius=radius,
+        fill=(20, 16, 12, 125),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(2.2 * scale))
+    canvas = Image.alpha_composite(canvas, shadow)
+
+    # Build the exposed dark edge and the very shallow bevel of laminated
+    # engraving stock. The face has a minute vertical colour shift, like aged
+    # phenolic/Traffolyte rather than a digitally perfect solid fill.
+    edge_colour = tuple(max(0, channel - 24) for channel in face_colour)
+    face = Image.new("RGBA", full_size, (0, 0, 0, 0))
+    face_draw = ImageDraw.Draw(face)
+    face_draw.rounded_rectangle(plate_box, radius=radius, fill=(*edge_colour, 255))
+    inner_box = (
+        plate_box[0] + scale,
+        plate_box[1] + scale,
+        plate_box[2] - scale,
+        plate_box[3] - 2 * scale,
+    )
+    inner_mask = Image.new("L", full_size, 0)
+    ImageDraw.Draw(inner_mask).rounded_rectangle(inner_box, radius=radius - scale, fill=255)
+    colour_field = Image.new("RGBA", full_size, (0, 0, 0, 0))
+    colour_draw = ImageDraw.Draw(colour_field)
+    for y in range(inner_box[1], inner_box[3] + 1):
+        progress = (y - inner_box[1]) / max(1, inner_box[3] - inner_box[1])
+        adjustment = int(7 - progress * 13)
+        row_colour = tuple(max(0, min(255, channel + adjustment)) for channel in face_colour)
+        colour_draw.line((inner_box[0], y, inner_box[2], y), fill=(*row_colour, 255), width=1)
+    colour_field.putalpha(inner_mask)
+    face = Image.alpha_composite(face, colour_field)
+    face_draw = ImageDraw.Draw(face)
+    face_draw.arc(inner_box, 190, 345, fill=(255, 255, 255, 42), width=scale)
+    face_draw.arc(plate_box, 8, 172, fill=(0, 0, 0, 54), width=scale)
+
+    # Sparse scuffs, pinholes, and tiny edge chips are deterministic. They are
+    # physical cues, not a blanket "vintage" noise filter.
+    for _ in range(max(8, plate_width // 12)):
+        x = rng.randrange(inner_box[0] + 2 * scale, inner_box[2] - 2 * scale)
+        y = rng.randrange(inner_box[1] + 2 * scale, inner_box[3] - 2 * scale)
+        length = rng.randrange(scale, 5 * scale)
+        opacity = rng.randrange(10, 34)
+        face_draw.line((x, y, min(inner_box[2], x + length), y + rng.choice((-1, 0, 1)) * scale), fill=(245, 239, 221, opacity), width=1)
+    for _ in range(3):
+        x = rng.randrange(plate_box[0] + 4 * scale, plate_box[2] - 4 * scale)
+        y = rng.choice((plate_box[1] + scale, plate_box[3] - 2 * scale))
+        face_draw.ellipse((x - scale, y - scale // 2, x + scale, y + scale // 2), fill=(*core_colour, 105))
+    canvas = Image.alpha_composite(canvas, face)
+
+    # Taylor-Hobson/Gorton open paths behave like letters cut with a single-line
+    # pantograph engraver. A dark lower edge plus a pale exposed core gives each
+    # stroke the shallow depth of an actual routed groove.
+    lettering = gorton_wordmark(
+        font_path,
+        text,
+        height=19 * scale,
+        stroke_width=2 * scale,
+        colour=(*core_colour, 255),
+    )
+    content_box = lettering.getbbox()
+    if content_box:
+        lettering = lettering.crop(content_box)
+    max_width = (plate_width - 24) * scale
+    max_height = (plate_height - 13) * scale
+    ratio = min(1.0, max_width / lettering.width, max_height / lettering.height)
+    if ratio < 1.0:
+        lettering = lettering.resize(
+            (max(1, int(lettering.width * ratio)), max(1, int(lettering.height * ratio))),
+            Image.Resampling.LANCZOS,
+        )
+    letter_x = (full_size[0] - lettering.width) // 2
+    letter_y = plate_box[1] + (plate_height * scale - lettering.height) // 2 - scale // 2
+    groove = Image.new("RGBA", full_size, (0, 0, 0, 0))
+    dark_lettering = Image.new("RGBA", lettering.size, (28, 22, 18, 0))
+    dark_lettering.putalpha(lettering.getchannel("A").filter(ImageFilter.GaussianBlur(0.45 * scale)))
+    groove.alpha_composite(dark_lettering, (letter_x + scale, letter_y + scale))
+    groove.alpha_composite(lettering, (letter_x, letter_y))
+    canvas = Image.alpha_composite(canvas, groove)
+
+    return canvas.resize(
+        (plate_width + padding * 2, plate_height + padding * 2),
+        Image.Resampling.LANCZOS,
+    )
+
+
 def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
     source_image = Image.open(source).convert("RGBA")
     width, height = source_image.size
@@ -253,18 +366,47 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
         outline=ink,
         width=2,
     )
-    draw.rectangle((plate_x + 26, plate_y + 26, plate_x + 186, plate_y + 58), fill=ink)
-    draw.text((plate_x + 39, plate_y + 34), "EDITABLE MODEL", font=small, fill=paper)
-    draw.rectangle(
-        (plate_x + plate_size[0] - 222, plate_y + plate_size[1] - 58, plate_x + plate_size[0] - 24, plate_y + plate_size[1] - 26),
-        fill=signal_red,
-    )
-    draw.text(
-        (plate_x + plate_size[0] - 207, plate_y + plate_size[1] - 50),
-        "REAL PRODUCT CAPTURE",
-        font=small,
-        fill=paper,
-    )
+    if brand_font and brand_font.exists():
+        plate_font = brand_font.with_name("GortonClassicTaylorHobson.otf")
+        if not plate_font.exists():
+            plate_font = brand_font
+        editable_plate = engraved_plastic_plate(
+            plate_font,
+            "EDITABLE MODEL",
+            (186, 44),
+            (34, 36, 34),
+            (226, 218, 198),
+            seed=33558,
+        )
+        image.alpha_composite(editable_plate, (plate_x + 16, plate_y + 14))
+        capture_plate = engraved_plastic_plate(
+            plate_font,
+            "REAL PRODUCT CAPTURE",
+            (242, 44),
+            (177, 42, 34),
+            (238, 224, 199),
+            seed=1958,
+        )
+        image.alpha_composite(
+            capture_plate,
+            (
+                plate_x + plate_size[0] - capture_plate.width - 12,
+                plate_y + plate_size[1] - capture_plate.height - 10,
+            ),
+        )
+    else:
+        draw.rectangle((plate_x + 26, plate_y + 26, plate_x + 186, plate_y + 58), fill=ink)
+        draw.text((plate_x + 39, plate_y + 34), "EDITABLE MODEL", font=small, fill=paper)
+        draw.rectangle(
+            (plate_x + plate_size[0] - 222, plate_y + plate_size[1] - 58, plate_x + plate_size[0] - 24, plate_y + plate_size[1] - 26),
+            fill=signal_red,
+        )
+        draw.text(
+            (plate_x + plate_size[0] - 207, plate_y + plate_size[1] - 50),
+            "REAL PRODUCT CAPTURE",
+            font=small,
+            fill=paper,
+        )
 
     if brand_font and brand_font.exists():
         footer = gorton_wordmark(
