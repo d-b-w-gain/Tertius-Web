@@ -413,18 +413,38 @@ def compose(source: Path, destination: Path, brand_font: Path | None) -> None:
         )
 
     if brand_font and brand_font.exists():
-        footer = gorton_wordmark(
+        footer_from = gorton_wordmark(
             brand_font,
-            "FROM DESIGN INTENT TO BUILDABLE GEOMETRY",
+            "FROM DESIGN INTENT",
             28,
             3,
             signal_red,
         )
-        image.alpha_composite(footer, (margin, height - 82))
+        footer_to = gorton_wordmark(
+            brand_font,
+            "TO BUILDABLE GEOMETRY",
+            28,
+            3,
+            signal_red,
+        )
+        footer_from_box = footer_from.getbbox()
+        footer_to_box = footer_to.getbbox()
+        if footer_from_box:
+            footer_from = footer_from.crop(footer_from_box)
+        if footer_to_box:
+            footer_to = footer_to.crop(footer_to_box)
+        phrase_gap = 42
+        footer_width = footer_from.width + phrase_gap + footer_to.width
+        footer_x = (width - footer_width) // 2
+        footer_y = height - 76
+        image.alpha_composite(footer_from, (footer_x, footer_y))
+        image.alpha_composite(footer_to, (footer_x + footer_from.width + phrase_gap, footer_y))
     else:
+        footer_text = "FROM DESIGN INTENT   TO BUILDABLE GEOMETRY"
+        footer_box = draw.textbbox((0, 0), footer_text, font=sans)
         draw.text(
-            (margin, height - 74),
-            "FROM DESIGN INTENT TO BUILDABLE GEOMETRY",
+            ((width - (footer_box[2] - footer_box[0])) // 2, height - 74),
+            footer_text,
             font=sans,
             fill=signal_red,
         )
