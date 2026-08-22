@@ -81,9 +81,10 @@
 - Modify: `ui/src/workflows/extus/ui/ViewerTab.materials.test.ts`
 - Modify: `ui/src/workflows/extus/ui/ViewerTab.active.test.tsx`
 
-- [ ] Change material tests to import a not-yet-created `scene/materials` module and confirm the focused test fails.
-- [ ] Move material inspection, cloning, variants, and disposal helpers to `scene/materials.ts` while keeping existing exports re-exported from `ViewerTab` for compatibility.
-- [ ] Move batch construction and hidden-object selection helpers to `scene/batching.ts` with existing behavior intact.
-- [ ] Extract the toolbar/quality/grid/rotation controls into `ViewerControls.tsx`; keep Three.js lifecycle, refs, observers, and animation ownership in `ModelViewerCanvas`.
-- [ ] Run focused Extus tests, lint, typecheck, full tests, build, and the compile-only live-flow if the local harness is available.
-- [ ] Commit, review, push, and open draft PR 4 against PR 3's branch.
+- [x] Change material tests to import a not-yet-created `scene/materials` module and confirm the focused test fails.
+- [x] Move material inspection, cloning, variants, and disposal helpers to `scene/materials.ts` while keeping existing exports re-exported from `ViewerTab` for compatibility.
+- [x] Move batch construction and hidden-object selection helpers to `scene/batching.ts` with existing behavior intact.
+- [x] Extract the toolbar/quality/grid/rotation controls into `ViewerControls.tsx`; keep Three.js lifecycle, refs, observers, and animation ownership in `ModelViewerCanvas`.
+- [x] Run focused Extus tests, lint, typecheck, full tests, build, and the compile-only live-flow if the local harness is available.
+- [x] Commit and review Task 4.
+- [ ] Push and open draft PR 4 against PR 3's branch.
