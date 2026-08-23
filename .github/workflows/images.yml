@@ -263,13 +263,27 @@ jobs:
                 --body "Promotes the API, GIS cache, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
             )"
             pr_number="${pr_url##*/}"
+          else
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "chore: promote ${IMAGE_TAG}" \
+              --body "Promotes the API, GIS cache, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
           fi
 
-          head_sha="$(gh pr view "${pr_number}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json headRefOid \
-            --jq '.headRefOid')"
           local_head="$(git rev-parse HEAD)"
+          head_deadline=$((SECONDS + 60))
+          head_sha=""
+          while [ "$SECONDS" -lt "$head_deadline" ]; do
+            head_sha="$(gh pr view "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json headRefOid \
+              --jq '.headRefOid')"
+            if [ "${head_sha}" = "${local_head}" ]; then
+              break
+            fi
+            echo "Waiting for promotion PR head to advance from ${head_sha} to ${local_head}."
+            sleep 2
+          done
           if [ "${head_sha}" != "${local_head}" ]; then
             echo "::error::Promotion PR head ${head_sha} does not match pushed commit ${local_head}."
             exit 1
