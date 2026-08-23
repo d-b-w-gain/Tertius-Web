@@ -96,7 +96,7 @@ With the API and supporting services running:
 ```bash
 cd ui
 npm install
-npm run dev
+VITE_API_URL=/api npm run dev
 ```
 
 ## Architecture

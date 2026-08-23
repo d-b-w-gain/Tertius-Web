@@ -8,6 +8,17 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 local_tool_prefix='r''tk'
 
+extract_workflow_trigger() {
+  local workflow="$1"
+  local trigger="$2"
+
+  awk -v trigger="$trigger" '
+    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
+    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
+    in_trigger { print }
+  ' "$workflow"
+}
+
 if rg -q "(^|[[:space:]])${local_tool_prefix}[[:space:]]" "${ROOT_DIR}/scripts" --glob '*.sh'; then
   echo "Repository scripts must not depend on the local ${local_tool_prefix} command wrapper." >&2
   exit 1
@@ -160,6 +171,17 @@ if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfi
   echo "UI image build must not bake browser Keycloak/OIDC client settings; auth is handled by the API BFF." >&2
   exit 1
 fi
+
+chart_workflow="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+chart_pull_request_trigger="$(extract_workflow_trigger "$chart_workflow" pull_request)"
+chart_push_trigger="$(extract_workflow_trigger "$chart_workflow" push)"
+for chart_trigger in "$chart_pull_request_trigger" "$chart_push_trigger"; do
+  if ! rg -F -q -- "- 'README.md'" <<<"$chart_trigger" ||
+     ! rg -F -q -- "- 'ui/.env.example'" <<<"$chart_trigger"; then
+    echo ".github/workflows/chart-tests.yml must watch frontend API documentation sources." >&2
+    exit 1
+  fi
+done
 
 if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
   echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
@@ -1358,17 +1380,6 @@ extract_workflow_job() {
   ' "$workflow"
 }
 
-extract_workflow_trigger() {
-  local workflow="$1"
-  local trigger="$2"
-
-  awk -v trigger="$trigger" '
-    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
-    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
-    in_trigger { print }
-  ' "$workflow"
-}
-
 extract_job_if() {
   awk '
     /^    if:/ { in_if = 1 }
@@ -1519,6 +1530,17 @@ promote_job="$(extract_workflow_job "$IMAGE_WORKFLOW" promote | sed '/^[[:space:
 app_token_count="$( (rg -c 'actions/create-github-app-token@v3' <<<"$promote_job" || true) | tr -d ' ' )"
 client_id_count="$( (rg -F -c 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" || true) | tr -d ' ' )"
 private_key_count="$( (rg -F -c 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job" || true) | tr -d ' ' )"
+
+if ! rg -q '^[[:space:]]*gh pr edit([[:space:]]|$)' <<<"$promote_job"; then
+  echo "Build Images promotion must refresh reused PR metadata for the staged image tag." >&2
+  exit 1
+fi
+
+if ! rg -F -q 'while [ "$SECONDS" -lt "$head_deadline" ]' <<<"$promote_job" ||
+   ! rg -F -q '"${head_sha}" = "${local_head}"' <<<"$promote_job"; then
+  echo "Build Images promotion must wait for the reused PR to report its pushed head." >&2
+  exit 1
+fi
 
 if [ "$app_token_count" -lt 2 ] || [ "$client_id_count" -lt 2 ] || [ "$private_key_count" -lt 2 ] ||
    [ "$( (rg -c 'permission-checks:[[:space:]]*read' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
