@@ -79,7 +79,7 @@
 - Modify: `server/tests/test_compile_result_consumer.py`
 - Modify: `server/tests/test_repositories.py`
 
-- [ ] **Step 1: Write failing tests for the desired public API and no-fallback behavior**
+- [x] **Step 1: Write failing tests for the desired public API and no-fallback behavior**
 
 Use the wished-for API:
 
@@ -100,7 +100,7 @@ assets = await materialize_job_binary_assets(
 
 Cover CI-001 through CI-008. The deleted-snapshot consumer test must include a valid `CompileJobFile`, a durable `source_3mf`, no job input row, and assertions that neither uploader nor publisher ran.
 
-- [ ] **Step 2: Run the new focused tests and verify RED**
+- [x] **Step 2: Run the new focused tests and verify RED**
 
 Run:
 
@@ -116,7 +116,7 @@ Expected: failure because `core.compile_inputs` and the format-neutral repositor
 - Create: `server/core/compile_inputs.py`
 - Modify: `server/core/repositories.py`
 
-- [ ] **Step 1: Implement the centralized definitions and helpers**
+- [x] **Step 1: Implement the centralized definitions and helpers**
 
 Use this interface:
 
@@ -151,6 +151,11 @@ class CompileInputRepository(Protocol):
     def project_input_artifacts(
         self, project_id: UUID, artifact_kinds: tuple[str, ...]
     ) -> list[Artifact]:
+        raise NotImplementedError
+
+    def project_input_kinds(
+        self, project_id: UUID, artifact_kinds: tuple[str, ...]
+    ) -> set[str]:
         raise NotImplementedError
 
     def job_input_artifacts(
@@ -218,10 +223,7 @@ async def materialize_job_binary_assets(
     definitions: tuple[CompileInputKind, ...] = COMPILE_INPUT_KINDS,
 ) -> list[CompileBinaryAsset]:
     kinds = _artifact_kinds(definitions)
-    expected_kinds = {
-        artifact.kind
-        for artifact in repo.project_input_artifacts(project_id, kinds)
-    }
+    expected_kinds = repo.project_input_kinds(project_id, kinds)
     job_inputs = {
         artifact.kind: artifact
         for artifact in repo.job_input_artifacts(job_id, kinds)
@@ -246,7 +248,7 @@ async def materialize_job_binary_assets(
 
 The snapshot helper reads durable project inputs, rejects missing content, and records job-level copies. Materialization compares expected project kinds with job kinds, rejects absent/empty snapshots, and passes only job bytes to `store`.
 
-- [ ] **Step 2: Replace the repository methods**
+- [x] **Step 2: Replace the repository methods**
 
 Provide tenant-scoped methods:
 
@@ -267,6 +269,25 @@ def project_input_artifacts(
                 Artifact.kind.in_(normalized),
             )
             .order_by(Artifact.created_at, Artifact.id)
+        ).all()
+    )
+
+def project_input_kinds(
+    self, project_id: UUID, artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS
+) -> set[str]:
+    normalized = tuple(kind.lower() for kind in artifact_kinds)
+    if not normalized:
+        return set()
+    return set(
+        self.db.scalars(
+            select(Artifact.kind)
+            .where(
+                Artifact.tenant_id == self.tenant_id,
+                Artifact.project_id == project_id,
+                Artifact.compile_job_id.is_(None),
+                Artifact.kind.in_(normalized),
+            )
+            .distinct()
         ).all()
     )
 
@@ -306,7 +327,7 @@ def delete_job_input_artifacts(
 
 Update all terminal cleanup call sites to use `delete_job_input_artifacts`. Keep the kind filter; do not delete all artifacts for the job.
 
-- [ ] **Step 3: Run helper/repository tests and verify GREEN**
+- [x] **Step 3: Run helper/repository tests and verify GREEN**
 
 Run:
 
@@ -324,7 +345,7 @@ Expected: all selected tests pass.
 - Modify: `server/tests/test_lean_3mf_import_api.py`
 - Modify: `server/tests/test_compile_result_consumer.py`
 
-- [ ] **Step 1: Replace initial compile's inline 3MF block**
+- [x] **Step 1: Replace initial compile's inline 3MF block**
 
 After text file snapshotting, call:
 
@@ -337,7 +358,7 @@ assets = await materialize_job_binary_assets(
 
 Keep this before the existing transaction commit so object-store failures retain rollback behavior.
 
-- [ ] **Step 2: Replace republish's inline 3MF block**
+- [x] **Step 2: Replace republish's inline 3MF block**
 
 Use the same materializer with a settings-bound callback:
 
@@ -364,7 +385,7 @@ except MissingCompileInputError as exc:
 
 Do not catch uploader errors; preserve existing republish retry behavior.
 
-- [ ] **Step 3: Run route/consumer tests and verify GREEN**
+- [x] **Step 3: Run route/consumer tests and verify GREEN**
 
 Run:
 
