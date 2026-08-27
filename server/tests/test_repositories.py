@@ -273,9 +273,18 @@ def test_compile_repository_lists_project_inputs_with_tenant_isolation(db_sessio
     input_b = repo_b.record_artifact(
         seeded["project_b"], None, "source_3mf", b"tenant-b"
     )
+    custom_input = repo_a.record_artifact(
+        seeded["project_a"], None, "custom_input", b"custom"
+    )
     db_session.commit()
 
     assert [artifact.id for artifact in repo_a.project_input_artifacts(seeded["project_a"])] == [input_a.id]
+    assert [
+        artifact.id
+        for artifact in repo_a.project_input_artifacts(
+            seeded["project_a"], ("custom_input",)
+        )
+    ] == [custom_input.id]
     assert repo_a.project_input_artifacts(seeded["project_b"]) == []
     assert [artifact.id for artifact in repo_b.project_input_artifacts(seeded["project_b"])] == [input_b.id]
     assert repo_b.project_input_artifacts(seeded["project_a"]) == []
@@ -297,9 +306,18 @@ def test_compile_repository_lists_job_inputs_with_tenant_isolation(db_session):
     input_b = repo_b.record_artifact(
         seeded["project_b"], job_b.id, "source_3mf", b"tenant-b"
     )
+    custom_input = repo_a.record_artifact(
+        seeded["project_a"], job_a.id, "custom_input", b"custom"
+    )
     db_session.commit()
 
     assert [artifact.id for artifact in repo_a.job_input_artifacts(job_a.id)] == [input_a.id]
+    assert [
+        artifact.id
+        for artifact in repo_a.job_input_artifacts(
+            job_a.id, ("custom_input",)
+        )
+    ] == [custom_input.id]
     assert repo_a.job_input_artifacts(job_b.id) == []
     assert [artifact.id for artifact in repo_b.job_input_artifacts(job_b.id)] == [input_b.id]
     assert repo_b.job_input_artifacts(job_a.id) == []
@@ -315,10 +333,14 @@ def test_compile_repository_exposes_configured_job_input_cleanup(
     job_input = repo.record_artifact(
         seeded_tenant.project_id, job.id, "source_3mf", b"job-input"
     )
+    output = repo.record_artifact(
+        seeded_tenant.project_id, job.id, "glb", b"output"
+    )
 
     repo.delete_job_input_artifacts(job.id)
 
     assert db_session.get(Artifact, job_input.id) is None
+    assert db_session.get(Artifact, output.id) is not None
 
 
 def test_compile_repository_persists_originating_llm_edit_job_id(db_session, seeded_tenant):

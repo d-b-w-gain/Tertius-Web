@@ -69,6 +69,24 @@ def input_artifact(project_id, kind, content, *, content_type="application/octet
     )
 
 
+def job_input_artifact(
+    project_id,
+    job_id,
+    kind,
+    content,
+    *,
+    content_type="application/octet-stream",
+):
+    return SimpleNamespace(
+        id=uuid4(),
+        project_id=project_id,
+        compile_job_id=job_id,
+        kind=kind,
+        content=content,
+        content_type=content_type,
+    )
+
+
 def stored_object(content):
     return ObjectRef(
         bucket="TERTIUS_COMPILE_SIDECARS",
@@ -186,3 +204,66 @@ def test_snapshot_iterates_over_multiple_compile_input_definitions():
         ("test_input_b", b"input-b"),
     ]
     assert all(snapshot.compile_job_id == job_id for snapshot in snapshots)
+
+
+def test_materialization_iterates_over_test_only_compile_input_definition():
+    project_id = uuid4()
+    job_id = uuid4()
+    definitions = (
+        CompileInputKind("test_custom_input", "source.3mf"),
+    )
+    repo = FakeCompileInputRepository(
+        [input_artifact(project_id, "test_custom_input", b"custom-input")]
+    )
+    snapshot_project_compile_inputs(
+        repo,
+        project_id,
+        job_id,
+        definitions=definitions,
+    )
+    uploaded = []
+
+    async def upload(content):
+        uploaded.append(content)
+        return stored_object(content)
+
+    assets = asyncio.run(
+        materialize_job_binary_assets(
+            repo,
+            project_id,
+            job_id,
+            upload,
+            definitions=definitions,
+        )
+    )
+
+    assert uploaded == [b"custom-input"]
+    assert [asset.logical_filename for asset in assets] == ["source.3mf"]
+
+
+def test_materialization_rejects_job_input_without_content_before_upload():
+    project_id = uuid4()
+    job_id = uuid4()
+    repo = FakeCompileInputRepository(
+        [input_artifact(project_id, "source_3mf", b"durable-input")]
+    )
+    repo.job_inputs.append(
+        job_input_artifact(project_id, job_id, "source_3mf", None)
+    )
+    uploaded = []
+
+    async def upload(content):
+        uploaded.append(content)
+        return stored_object(content)
+
+    with pytest.raises(MissingCompileInputError, match="source.3mf"):
+        asyncio.run(
+            materialize_job_binary_assets(
+                repo,
+                project_id,
+                job_id,
+                upload,
+            )
+        )
+
+    assert uploaded == []
