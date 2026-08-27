@@ -984,7 +984,7 @@ def test_compile_repository_stale_reconciliation_deletes_job_source(
 
     assert reconciled is not None
     assert reconciled.status == "failed"
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_compile_repository_claimed_terminal_finish_deletes_job_source(
@@ -1016,7 +1016,7 @@ def test_compile_repository_claimed_terminal_finish_deletes_job_source(
     )
 
     assert finished is not None
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):
