@@ -397,13 +397,13 @@ Expected: all selected tests pass, including A-vs-B and deleted-snapshot no-fall
 
 ### Task 4: Verify the complete focused change
 
-- [ ] **Step 1: Run the handoff's focused backend suite**
+- [x] **Step 1: Run the handoff's focused backend suite**
 
 ```bash
 uv run pytest server/tests/test_compile_inputs.py server/tests/test_compile_flow.py server/tests/test_lean_3mf_import_api.py server/tests/test_compile_result_consumer.py server/tests/test_repositories.py server/tests/test_object_store_connection.py server/tests/test_tertius_imports_runtime.py server/tests/test_three_mf_archive.py
 ```
 
-- [ ] **Step 2: Run static and repository checks**
+- [x] **Step 2: Run static and repository checks**
 
 ```bash
 uv run mypy
@@ -411,14 +411,16 @@ uv run ruff check server
 git diff --check
 ```
 
-- [ ] **Step 3: Run runtime parity checks**
+Result: full mypy passed across 139 files and `git diff --check` passed. Ruff passed for every changed Python file. Repository-wide `ruff check server` remains blocked by 29 pre-existing errors in unrelated files; none of those files are in this branch diff.
+
+- [x] **Step 3: Run runtime parity checks**
 
 ```bash
 bash scripts/check-runtime-parity.sh
 helm lint infra/charts/tertius
 ```
 
-- [ ] **Step 4: Confirm scope boundaries in the final diff**
+- [x] **Step 4: Confirm scope boundaries in the final diff**
 
 The diff must not modify `pi_agent_rpc.py`, AI edit models/routing, provider abstractions, the 3MF sandbox loader contract, or UI source. If PR #357's head changes, report that PR #358 still targets its predecessor and requires restacking; do not rewrite PR branches without explicit authorization.
 
