@@ -691,7 +691,9 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
     assert db_session.get(Artifact, durable_source.id) is not None
 
 
-def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_fails_when_binary_input_snapshot_is_missing(
+    db_session, seeded_tenant, monkeypatch
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -704,8 +706,42 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
         created_at=now_utc() - timedelta(minutes=5),
     )
     db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        CompileJobFile(
+            compile_job_id=job.id,
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="design.py",
+            content="model = imported.compound\n",
+        )
+    )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
+    uploaded = []
     published = []
+
+    async def fake_put(content, _settings):
+        uploaded.append(content)
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'c' * 64}",
+            sha256="c" * 64,
+            byte_size=len(content),
+        )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
 
     class FakePublisher:
         async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
@@ -718,10 +754,12 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     persisted = db_session.get(CompileJob, job.id)
     assert persisted is not None
     assert republished == 0
+    assert uploaded == []
     assert published == []
     assert persisted.status == "failed"
     assert persisted.error_code == "missing_snapshot"
-    assert persisted.retryable is True
+    assert persisted.retryable is False
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_result_consumer_retries_when_initial_nats_setup_fails(monkeypatch):
