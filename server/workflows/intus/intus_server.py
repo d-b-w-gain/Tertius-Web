@@ -401,12 +401,13 @@ async def compile_project(
         if files is None:
             return JSONResponse(status_code=404, content={"error": "Project not found"})
         compile_repo.snapshot_job_files(job, files)
-        snapshot_project_compile_inputs(compile_repo, project_id, job.id)
+        job_inputs = snapshot_project_compile_inputs(compile_repo, project_id, job.id)
         assets = await materialize_job_binary_assets(
             compile_repo,
             project_id,
             job.id,
             store_compile_sidecar,
+            job_inputs=job_inputs,
         )
 
         request_id = f"compile-request:{job.id}"

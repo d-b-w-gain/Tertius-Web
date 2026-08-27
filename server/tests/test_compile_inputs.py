@@ -20,6 +20,7 @@ class FakeCompileInputRepository:
         self.job_inputs = []
         self.recorded = []
         self.project_input_kind_calls = []
+        self.job_input_artifact_calls = []
 
     def project_input_artifacts(self, project_id, artifact_kinds):
         return [
@@ -41,6 +42,7 @@ class FakeCompileInputRepository:
         }
 
     def job_input_artifacts(self, job_id, artifact_kinds):
+        self.job_input_artifact_calls.append((job_id, artifact_kinds))
         return [
             artifact
             for artifact in self.job_inputs
@@ -161,6 +163,50 @@ def test_materialization_uploads_pinned_job_input_after_durable_input_changes():
         ("source_3mf", b"durable-a")
     ]
     assert uploaded == [b"durable-a"]
+    assert repo.job_input_artifact_calls == [(job_id, ("source_3mf",))]
+    assert [asset.logical_filename for asset in assets] == ["source.3mf"]
+
+
+def test_materialization_uses_preloaded_job_inputs_without_repository_reread():
+    project_id = uuid4()
+    job_id = uuid4()
+    repo = FakeCompileInputRepository(
+        [input_artifact(project_id, "source_3mf", b"durable-input")]
+    )
+    preloaded_snapshots = [
+        job_input_artifact(project_id, job_id, "source_3mf", b"preloaded-snapshot"),
+        job_input_artifact(
+            project_id,
+            uuid4(),
+            "source_3mf",
+            b"other-job-snapshot",
+        ),
+        job_input_artifact(project_id, job_id, "ignored_kind", b"ignored-snapshot"),
+    ]
+
+    def reject_job_input_artifact_read(requested_job_id, artifact_kinds):
+        repo.job_input_artifact_calls.append((requested_job_id, artifact_kinds))
+        raise AssertionError("materialization reloaded job input bytes")
+
+    repo.job_input_artifacts = reject_job_input_artifact_read
+    uploaded = []
+
+    async def upload(content):
+        uploaded.append(content)
+        return stored_object(content)
+
+    assets = asyncio.run(
+        materialize_job_binary_assets(
+            repo,
+            project_id,
+            job_id,
+            upload,
+            job_inputs=preloaded_snapshots,
+        )
+    )
+
+    assert repo.job_input_artifact_calls == []
+    assert uploaded == [b"preloaded-snapshot"]
     assert [asset.logical_filename for asset in assets] == ["source.3mf"]
 
 

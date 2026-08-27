@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 from uuid import UUID
@@ -101,6 +101,7 @@ async def materialize_job_binary_assets(
     job_id: UUID,
     store: Callable[[bytes], Awaitable[ObjectRef]],
     *,
+    job_inputs: Collection[Artifact] | None = None,
     definitions: tuple[CompileInputKind, ...] = COMPILE_INPUT_KINDS,
 ) -> list[CompileBinaryAsset]:
     artifact_kinds = _artifact_kinds(definitions)
@@ -108,15 +109,18 @@ async def materialize_job_binary_assets(
     if not expected_kinds:
         return []
 
-    job_inputs = {
+    if job_inputs is None:
+        job_inputs = repo.job_input_artifacts(job_id, artifact_kinds)
+    job_inputs_by_kind = {
         artifact.kind: artifact
-        for artifact in repo.job_input_artifacts(job_id, artifact_kinds)
+        for artifact in job_inputs
+        if artifact.compile_job_id == job_id and artifact.kind in artifact_kinds
     }
     inputs_to_materialize: list[tuple[CompileInputKind, bytes]] = []
     for definition in definitions:
         if definition.artifact_kind not in expected_kinds:
             continue
-        snapshot = job_inputs.get(definition.artifact_kind)
+        snapshot = job_inputs_by_kind.get(definition.artifact_kind)
         if snapshot is None or snapshot.content is None:
             raise MissingCompileInputError(
                 f"Compile input snapshot {definition.logical_filename} is missing"
