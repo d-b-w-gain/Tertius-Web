@@ -1,10 +1,11 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ModelViewerCanvas,
   ViewerTab,
   structuralCheckColor,
 } from './ViewerTab'
+import { ViewerControls } from './ViewerControls'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -152,6 +153,41 @@ describe('ViewerTab active state', () => {
     expect(structuralCheckColor('pass')).toBe(0x22c55e)
     expect(structuralCheckColor('fail')).toBe(0xef4444)
     expect(structuralCheckColor('not_checked')).toBe(0x94a3b8)
+  })
+
+  it('renders viewer status and delegates toolbar controls through props', () => {
+    const onFit = vi.fn()
+    const onToggleRenderQuality = vi.fn()
+    const onToggleGrid = vi.fn()
+    const onToggleAutoRotate = vi.fn()
+
+    render(
+      <ViewerControls
+        projectName="demo"
+        renderQuality="high"
+        showGrid
+        autoRotate={false}
+        loadErrorText={null}
+        isModelLoading={false}
+        statusText="Model ready"
+        onFit={onFit}
+        onToggleRenderQuality={onToggleRenderQuality}
+        onToggleGrid={onToggleGrid}
+        onToggleAutoRotate={onToggleAutoRotate}
+      />,
+    )
+
+    expect(screen.getByText('demo')).toBeInTheDocument()
+    expect(screen.getByText('Model ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Frame the whole model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Visuals: High' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Grid: ON' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate: OFF' }))
+
+    expect(onFit).toHaveBeenCalledOnce()
+    expect(onToggleRenderQuality).toHaveBeenCalledOnce()
+    expect(onToggleGrid).toHaveBeenCalledOnce()
+    expect(onToggleAutoRotate).toHaveBeenCalledOnce()
   })
 
   afterEach(() => {

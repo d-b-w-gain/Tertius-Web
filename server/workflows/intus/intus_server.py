@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
-from core.compile_messages import CompileBinaryAsset, CompileCommand, CompileSourceFile, assert_message_size
+from core.compile_inputs import (
+    materialize_job_binary_assets,
+    snapshot_project_compile_inputs,
+)
+from core.compile_messages import CompileCommand, CompileSourceFile, assert_message_size
 from core.config import get_settings
 from core.db import get_db
 from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
@@ -397,27 +401,14 @@ async def compile_project(
         if files is None:
             return JSONResponse(status_code=404, content={"error": "Project not found"})
         compile_repo.snapshot_job_files(job, files)
-
-        assets: list[CompileBinaryAsset] = []
-        source_artifact = compile_repo.project_source_artifact(project_id)
-        if source_artifact is not None:
-            if source_artifact.content is None:
-                raise RuntimeError("Project source 3MF content is missing")
-            source_snapshot = compile_repo.record_artifact(
-                project_id,
-                job.id,
-                "source_3mf",
-                source_artifact.content,
-                content_type=source_artifact.content_type,
-            )
-            if source_snapshot.content is None:
-                raise RuntimeError("Compile source 3MF snapshot is missing")
-            assets.append(
-                CompileBinaryAsset(
-                    logical_filename="source.3mf",
-                    object_ref=await store_compile_sidecar(source_snapshot.content),
-                )
-            )
+        job_inputs = snapshot_project_compile_inputs(compile_repo, project_id, job.id)
+        assets = await materialize_job_binary_assets(
+            compile_repo,
+            project_id,
+            job.id,
+            store_compile_sidecar,
+            job_inputs=job_inputs,
+        )
 
         request_id = f"compile-request:{job.id}"
         command = CompileCommand(

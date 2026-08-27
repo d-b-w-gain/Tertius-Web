@@ -263,6 +263,119 @@ def test_compile_repository_gets_job_and_artifact_by_scope(db_session, seeded_te
     assert fetched_artifact.id == artifact.id
 
 
+def test_compile_repository_lists_project_inputs_with_tenant_isolation(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo_a = CompileRepository(db_session, seeded["tenant_a"])
+    repo_b = CompileRepository(db_session, seeded["tenant_b"])
+    input_a = repo_a.record_artifact(
+        seeded["project_a"], None, "source_3mf", b"tenant-a"
+    )
+    input_b = repo_b.record_artifact(
+        seeded["project_b"], None, "source_3mf", b"tenant-b"
+    )
+    custom_input = repo_a.record_artifact(
+        seeded["project_a"], None, "custom_input", b"custom"
+    )
+    db_session.commit()
+
+    assert [artifact.id for artifact in repo_a.project_input_artifacts(seeded["project_a"])] == [input_a.id]
+    assert [
+        artifact.id
+        for artifact in repo_a.project_input_artifacts(
+            seeded["project_a"], ("custom_input",)
+        )
+    ] == [custom_input.id]
+    assert repo_a.project_input_artifacts(seeded["project_b"]) == []
+    assert [artifact.id for artifact in repo_b.project_input_artifacts(seeded["project_b"])] == [input_b.id]
+    assert repo_b.project_input_artifacts(seeded["project_a"]) == []
+
+
+def test_compile_repository_lists_project_input_kinds_without_loading_artifacts(
+    db_session,
+):
+    seeded = seed_two_tenants(db_session)
+    repo_a = CompileRepository(db_session, seeded["tenant_a"])
+    repo_b = CompileRepository(db_session, seeded["tenant_b"])
+    repo_a.record_artifact(
+        seeded["project_a"], None, "source_3mf", b"tenant-a"
+    )
+    repo_a.record_artifact(
+        seeded["project_a"], None, "custom_input", b"custom"
+    )
+    repo_b.record_artifact(
+        seeded["project_b"], None, "source_3mf", b"tenant-b"
+    )
+    db_session.commit()
+
+    assert repo_a.project_input_kinds(seeded["project_a"]) == {
+        "source_3mf"
+    }
+    assert repo_a.project_input_kinds(
+        seeded["project_a"], ("CUSTOM_INPUT",)
+    ) == {"custom_input"}
+    assert repo_a.project_input_kinds(seeded["project_b"]) == set()
+    assert repo_b.project_input_kinds(seeded["project_b"]) == {
+        "source_3mf"
+    }
+    assert repo_b.project_input_kinds(seeded["project_a"]) == set()
+    assert repo_a.project_input_kinds(
+        seeded["project_a"], ()
+    ) == set()
+
+
+def test_compile_repository_lists_job_inputs_with_tenant_isolation(db_session):
+    seeded = seed_two_tenants(db_session)
+    repo_a = CompileRepository(db_session, seeded["tenant_a"])
+    repo_b = CompileRepository(db_session, seeded["tenant_b"])
+    job_a = repo_a.start_job(
+        seeded["project_a"], seeded["user_a"], "glb", status="queued"
+    )
+    job_b = repo_b.start_job(
+        seeded["project_b"], seeded["user_b"], "glb", status="queued"
+    )
+    input_a = repo_a.record_artifact(
+        seeded["project_a"], job_a.id, "source_3mf", b"tenant-a"
+    )
+    input_b = repo_b.record_artifact(
+        seeded["project_b"], job_b.id, "source_3mf", b"tenant-b"
+    )
+    custom_input = repo_a.record_artifact(
+        seeded["project_a"], job_a.id, "custom_input", b"custom"
+    )
+    db_session.commit()
+
+    assert [artifact.id for artifact in repo_a.job_input_artifacts(job_a.id)] == [input_a.id]
+    assert [
+        artifact.id
+        for artifact in repo_a.job_input_artifacts(
+            job_a.id, ("custom_input",)
+        )
+    ] == [custom_input.id]
+    assert repo_a.job_input_artifacts(job_b.id) == []
+    assert [artifact.id for artifact in repo_b.job_input_artifacts(job_b.id)] == [input_b.id]
+    assert repo_b.job_input_artifacts(job_a.id) == []
+
+
+def test_compile_repository_exposes_configured_job_input_cleanup(
+    db_session, seeded_tenant
+):
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    job = repo.start_job(
+        seeded_tenant.project_id, seeded_tenant.user_id, "glb", status="running"
+    )
+    job_input = repo.record_artifact(
+        seeded_tenant.project_id, job.id, "source_3mf", b"job-input"
+    )
+    output = repo.record_artifact(
+        seeded_tenant.project_id, job.id, "glb", b"output"
+    )
+
+    repo.delete_job_input_artifacts(job.id)
+
+    assert db_session.get(Artifact, job_input.id) is None
+    assert db_session.get(Artifact, output.id) is not None
+
+
 def test_compile_repository_persists_originating_llm_edit_job_id(db_session, seeded_tenant):
     llm_repo = LlmEditRepository(db_session, seeded_tenant.tenant_id)
     llm_job = llm_repo.start_job(
@@ -818,7 +931,7 @@ def test_compile_repository_finishes_only_current_claim(db_session, seeded_tenan
 
 
 @pytest.mark.parametrize("terminal_status", ["succeeded", "failed"])
-def test_compile_repository_terminal_finish_deletes_only_target_job_source(
+def test_compile_repository_terminal_finish_deletes_only_target_job_input(
     db_session, seeded_tenant, terminal_status
 ):
     repo = CompileRepository(db_session, seeded_tenant.tenant_id)
@@ -837,13 +950,16 @@ def test_compile_repository_terminal_finish_deletes_only_target_job_source(
     other_source = repo.record_artifact(
         seeded_tenant.project_id, other.id, "source_3mf", b"other"
     )
+    target_output = repo.record_artifact(
+        seeded_tenant.project_id, target.id, "glb", b"target-output"
+    )
 
     repo.finish_job(target, terminal_status)
     db_session.commit()
 
     remaining_ids = set(db_session.scalars(select(Artifact.id)).all())
     assert target_source.id not in remaining_ids
-    assert {durable.id, other_source.id} <= remaining_ids
+    assert {durable.id, other_source.id, target_output.id} <= remaining_ids
 
 
 def test_repeated_terminal_compiles_retain_only_durable_project_source(
@@ -901,7 +1017,7 @@ def test_compile_repository_stale_reconciliation_deletes_job_source(
 
     assert reconciled is not None
     assert reconciled.status == "failed"
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_compile_repository_claimed_terminal_finish_deletes_job_source(
@@ -933,7 +1049,7 @@ def test_compile_repository_claimed_terminal_finish_deletes_job_source(
     )
 
     assert finished is not None
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_compile_repository_snapshots_job_files(db_session, seeded_tenant):

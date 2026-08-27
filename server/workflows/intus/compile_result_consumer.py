@@ -11,8 +11,8 @@ from time import perf_counter
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
+from core.compile_inputs import MissingCompileInputError, materialize_job_binary_assets
 from core.compile_messages import (
-    CompileBinaryAsset,
     CompileCommand,
     CompileResultPayload,
     CompileSourceFile,
@@ -284,7 +284,12 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
             .limit(50)
         ).all()
         republished = 0
+
+        async def store_snapshot(content: bytes):
+            return await put_compile_sidecar(content, settings)
+
         for job in jobs:
+            compile_repo = CompileRepository(db, job.tenant_id)
             files = db.scalars(
                 select(CompileJobFile)
                 .where(
@@ -295,7 +300,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 .order_by(CompileJobFile.filename)
             ).all()
             if not files:
-                CompileRepository(db, job.tenant_id).finish_job(
+                compile_repo.finish_job(
                     job,
                     "failed",
                     error="Compile job source snapshot is missing",
@@ -308,30 +313,27 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 logger.warning("Marked stale queued compile job %s failed because it has no source snapshot", job.id)
                 continue
 
-            assets: list[CompileBinaryAsset] = []
-            source_artifact = CompileRepository(
-                db, job.tenant_id
-            ).source_artifact_for_job(job.id)
-            if source_artifact is not None:
-                if source_artifact.content is None:
-                    CompileRepository(db, job.tenant_id).finish_job(
-                        job,
-                        "failed",
-                        error="Project source 3MF content is missing",
-                        error_code="missing_snapshot",
-                        user_message="Compile failed because the source 3MF is missing.",
-                        retryable=False,
-                    )
-                    db.commit()
-                    continue
-                assets.append(
-                    CompileBinaryAsset(
-                        logical_filename="source.3mf",
-                        object_ref=await put_compile_sidecar(
-                            source_artifact.content, settings
-                        ),
-                    )
+            try:
+                assets = await materialize_job_binary_assets(
+                    compile_repo,
+                    job.project_id,
+                    job.id,
+                    store_snapshot,
                 )
+            except MissingCompileInputError as exc:
+                compile_repo.finish_job(
+                    job,
+                    "failed",
+                    error=str(exc),
+                    error_code="missing_snapshot",
+                    user_message=(
+                        "Compile failed because a submitted binary input snapshot is missing. "
+                        "Try again."
+                    ),
+                    retryable=False,
+                )
+                db.commit()
+                continue
 
             request_id = f"compile-request:{job.id}"
             command = CompileCommand(
@@ -349,7 +351,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
             try:
                 assert_message_size(command, settings.compile_request_max_bytes, "request")
             except ValueError as exc:
-                CompileRepository(db, job.tenant_id).finish_job(
+                compile_repo.finish_job(
                     job,
                     "failed",
                     error=str(exc),

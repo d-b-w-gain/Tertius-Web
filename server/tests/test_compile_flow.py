@@ -42,6 +42,7 @@ def test_compile_enqueues_job_and_returns_immediately(authenticated_intus_client
     assert published[0].export_format == "stl"
     assert published[0].request_id == f"compile-request:{job.id}"
     assert [(file.filename, file.content) for file in published[0].files] == [("design.py", "shape = 'queued'\n")]
+    assert published[0].assets == []
     assert saved_file.content == "shape = 'queued'\n"
     assert snapshot["design.py"] == "shape = 'queued'\n"
 

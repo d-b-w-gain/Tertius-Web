@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from uuid import UUID
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
+from core.compile_inputs import COMPILE_INPUT_ARTIFACT_KINDS
 from core.compile_messages import CompileCommand, CompileResultPayload
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
 from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
@@ -467,7 +469,7 @@ class CompileRepository:
         job.retryable = retryable
         job.finished_at = now_utc()
         if status in {"succeeded", "failed"}:
-            self.delete_job_source_artifacts(job.id)
+            self.delete_job_input_artifacts(job.id)
 
     def claim_job_for_command(self, command: CompileCommand, lease_seconds: int) -> CompileJob | None:
         now = now_utc()
@@ -612,7 +614,7 @@ class CompileRepository:
         )
         reconciled_id = self.db.scalar(stmt)
         if reconciled_id is not None:
-            self.delete_job_source_artifacts(reconciled_id)
+            self.delete_job_input_artifacts(reconciled_id)
             self.db.flush()
         return self.get_job(project_id, job_id)
 
@@ -649,7 +651,7 @@ class CompileRepository:
         if finished_id is None:
             return None
         if status in {"succeeded", "failed"}:
-            self.delete_job_source_artifacts(finished_id)
+            self.delete_job_input_artifacts(finished_id)
         return self.db.get(CompileJob, finished_id)
 
     def record_artifact(
@@ -676,29 +678,81 @@ class CompileRepository:
         self.db.flush()
         return artifact
 
-    def project_source_artifact(
-        self, project_id: UUID, kind: str = "source_3mf"
-    ) -> Artifact | None:
-        return self.db.scalar(
-            select(Artifact).where(
-                Artifact.tenant_id == self.tenant_id,
-                Artifact.project_id == project_id,
-                Artifact.compile_job_id.is_(None),
-                Artifact.kind == kind.lower(),
-            )
+    def project_input_artifacts(
+        self,
+        project_id: UUID,
+        artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS,
+    ) -> list[Artifact]:
+        normalized = tuple(kind.lower() for kind in artifact_kinds)
+        if not normalized:
+            return []
+        return list(
+            self.db.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.project_id == project_id,
+                    Artifact.compile_job_id.is_(None),
+                    Artifact.kind.in_(normalized),
+                )
+                .order_by(Artifact.created_at, Artifact.id)
+            ).all()
         )
 
-    def source_artifact_for_job(
-        self, job_id: UUID, kind: str = "source_3mf"
-    ) -> Artifact | None:
-        return self.artifact_for_job(job_id, kind)
+    def project_input_kinds(
+        self,
+        project_id: UUID,
+        artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS,
+    ) -> set[str]:
+        normalized = tuple(kind.lower() for kind in artifact_kinds)
+        if not normalized:
+            return set()
+        return set(
+            self.db.scalars(
+                select(Artifact.kind)
+                .distinct()
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.project_id == project_id,
+                    Artifact.compile_job_id.is_(None),
+                    Artifact.kind.in_(normalized),
+                )
+            ).all()
+        )
 
-    def delete_job_source_artifacts(self, job_id: UUID) -> None:
+    def job_input_artifacts(
+        self,
+        job_id: UUID,
+        artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS,
+    ) -> list[Artifact]:
+        normalized = tuple(kind.lower() for kind in artifact_kinds)
+        if not normalized:
+            return []
+        return list(
+            self.db.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.compile_job_id == job_id,
+                    Artifact.kind.in_(normalized),
+                )
+                .order_by(Artifact.created_at, Artifact.id)
+            ).all()
+        )
+
+    def delete_job_input_artifacts(
+        self,
+        job_id: UUID,
+        artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS,
+    ) -> None:
+        normalized = tuple(kind.lower() for kind in artifact_kinds)
+        if not normalized:
+            return
         self.db.execute(
             delete(Artifact).where(
                 Artifact.tenant_id == self.tenant_id,
                 Artifact.compile_job_id == job_id,
-                Artifact.kind == "source_3mf",
+                Artifact.kind.in_(normalized),
             )
         )
         self.db.flush()

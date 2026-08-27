@@ -291,7 +291,7 @@ def test_import_rolls_back_project_when_source_artifact_creation_fails(
     ) is None
 
 
-def test_project_source_lookup_is_tenant_scoped(db_session, seeded_tenant):
+def test_project_input_lookup_is_tenant_scoped(db_session, seeded_tenant):
     other_tenant = Tenant(id=uuid4(), name="Other Tenant")
     db_session.add(other_tenant)
     db_session.flush()
@@ -313,21 +313,24 @@ def test_project_source_lookup_is_tenant_scoped(db_session, seeded_tenant):
 
     assert CompileRepository(
         db_session, seeded_tenant.tenant_id
-    ).project_source_artifact(foreign_source.project_id) is None
+    ).project_input_artifacts(foreign_source.project_id) == []
 
 
-def test_compile_submission_uses_project_source_artifact_as_object_reference(
+def test_compile_submission_uses_project_input_as_object_reference(
     authenticated_intus_client, db_session, seeded_tenant, monkeypatch
 ):
+    source_bytes = make_box_3mf()
     imported = authenticated_intus_client.post(
         "/projects/imports/3mf",
         data={"name": "compile_import"},
-        files={"file": ("source.3mf", io.BytesIO(make_box_3mf()), SOURCE_3MF_MEDIA_TYPE)},
+        files={"file": ("source.3mf", io.BytesIO(source_bytes), SOURCE_3MF_MEDIA_TYPE)},
     )
     assert imported.status_code == 201
+    uploaded = []
     published = []
 
     async def fake_store(content):
+        uploaded.append(content)
         return ObjectRef(
             bucket="TERTIUS_COMPILE_SIDECARS",
             key=f"sha256/{'a' * 64}",
@@ -351,6 +354,7 @@ def test_compile_submission_uses_project_source_artifact_as_object_reference(
     )
 
     assert response.status_code == 202
+    assert uploaded == [source_bytes]
     assert published[0].assets == [
         CompileBinaryAsset(
             logical_filename="source.3mf",
@@ -358,16 +362,16 @@ def test_compile_submission_uses_project_source_artifact_as_object_reference(
                 bucket="TERTIUS_COMPILE_SIDECARS",
                 key=f"sha256/{'a' * 64}",
                 sha256="a" * 64,
-                byte_size=len(make_box_3mf()),
+                byte_size=len(source_bytes),
             ),
         )
     ]
     job = db_session.get(CompileJob, published[0].job_id)
-    snapshot = CompileRepository(
+    snapshots = CompileRepository(
         db_session, seeded_tenant.tenant_id
-    ).source_artifact_for_job(job.id)
-    assert snapshot is not None
-    assert snapshot.content == make_box_3mf()
+    ).job_input_artifacts(job.id)
+    assert len(snapshots) == 1
+    assert snapshots[0].content == source_bytes
     assert "PK" not in published[0].model_dump_json()
 
 
