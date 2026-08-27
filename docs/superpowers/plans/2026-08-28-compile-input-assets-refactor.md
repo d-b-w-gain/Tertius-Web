@@ -18,6 +18,7 @@
 |---|---|
 | Keep one production definition: `source_3mf -> source.3mf` | No speculative STEP, OBJ, STL, plugin, worker, BREP, or manifest support is added. |
 | Inject a bytes-to-object-reference callback into materialization | Both compile paths share asset construction without moving settings, NATS, HTTP, or transactions into `core`. |
+| Reuse returned job snapshots during initial compile | Initial compile avoids re-selecting a binary job artifact; stale republish still loads its persisted job snapshot. |
 | Treat durable input kinds as the expected-kind inventory during materialization | A deleted job snapshot is detectable without a schema migration. Durable bytes are never used for republish. This is valid because the current import API atomically creates inputs and exposes no add/remove input API. |
 | Keep the current `CompileBinaryAsset` wire allowlist and one-asset limit | The helper/repository APIs iterate over definitions, but product support remains exactly one 3MF input until a future feature intentionally expands the wire contract. |
 | Rename source-specific repository APIs and cleanup | Compile lifecycle code no longer repeats `source_3mf`; cleanup still targets only configured input kinds and never deletes output artifacts. |
@@ -121,7 +122,7 @@ Expected: failure because `core.compile_inputs` and the format-neutral repositor
 Use this interface:
 
 ```python
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 from uuid import UUID
@@ -220,19 +221,23 @@ async def materialize_job_binary_assets(
     job_id: UUID,
     store: Callable[[bytes], Awaitable[ObjectRef]],
     *,
+    job_inputs: Collection[Artifact] | None = None,
     definitions: tuple[CompileInputKind, ...] = COMPILE_INPUT_KINDS,
 ) -> list[CompileBinaryAsset]:
     kinds = _artifact_kinds(definitions)
     expected_kinds = repo.project_input_kinds(project_id, kinds)
-    job_inputs = {
+    if job_inputs is None:
+        job_inputs = repo.job_input_artifacts(job_id, kinds)
+    job_inputs_by_kind = {
         artifact.kind: artifact
-        for artifact in repo.job_input_artifacts(job_id, kinds)
+        for artifact in job_inputs
+        if artifact.compile_job_id == job_id and artifact.kind in kinds
     }
     assets = []
     for definition in definitions:
         if definition.artifact_kind not in expected_kinds:
             continue
-        snapshot = job_inputs.get(definition.artifact_kind)
+        snapshot = job_inputs_by_kind.get(definition.artifact_kind)
         if snapshot is None or snapshot.content is None:
             raise MissingCompileInputError(
                 f"Compile input snapshot {definition.logical_filename} is missing"
@@ -350,9 +355,13 @@ Expected: all selected tests pass.
 After text file snapshotting, call:
 
 ```python
-snapshot_project_compile_inputs(compile_repo, project_id, job.id)
+job_inputs = snapshot_project_compile_inputs(compile_repo, project_id, job.id)
 assets = await materialize_job_binary_assets(
-    compile_repo, project_id, job.id, store_compile_sidecar
+    compile_repo,
+    project_id,
+    job.id,
+    store_compile_sidecar,
+    job_inputs=job_inputs,
 )
 ```
 
