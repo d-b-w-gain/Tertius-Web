@@ -691,6 +691,48 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
     assert db_session.get(Artifact, durable_source.id) is not None
 
 
+def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(
+    db_session, seeded_tenant
+):
+    from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="queued",
+        export_format="stl",
+        error_code="publish_pending",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.commit()
+    published = []
+
+    class FakePublisher:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
+            published.append((subject, command, message_id))
+
+    republished = asyncio.run(
+        republish_stale_queued_jobs(
+            db_session,
+            FakePublisher(),
+            consumer_settings(),
+            older_than_seconds=60,
+        )
+    )
+
+    persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
+    assert republished == 0
+    assert published == []
+    assert persisted.status == "failed"
+    assert persisted.error_code == "missing_snapshot"
+    assert persisted.retryable is True
+
+
 def test_republish_stale_queued_jobs_fails_when_binary_input_snapshot_is_missing(
     db_session, seeded_tenant, monkeypatch
 ):
