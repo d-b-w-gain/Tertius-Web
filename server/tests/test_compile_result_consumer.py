@@ -184,7 +184,7 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
     assert artifact.content_type == "model/stl"
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
     assert db_session.get(Artifact, durable_source.id) is not None
 
 
@@ -568,7 +568,9 @@ def test_republish_stale_queued_job_uses_job_pinned_3mf_snapshot(
     assert republished == 1
     assert stored == [original]
     assert len(published[0].assets) == 1
-    assert repo.source_artifact_for_job(job.id) is not None
+    snapshots = repo.job_input_artifacts(job.id)
+    assert len(snapshots) == 1
+    assert snapshots[0].content == original
 
 
 def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_session, seeded_tenant):
@@ -687,7 +689,7 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
     assert persisted.status == "failed"
     assert persisted.error_code == "source_bundle_too_large"
     assert persisted.retryable is False
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
     assert db_session.get(Artifact, durable_source.id) is not None
 
 
@@ -800,6 +802,9 @@ def test_republish_stale_queued_jobs_fails_when_binary_input_snapshot_is_missing
     assert published == []
     assert persisted.status == "failed"
     assert persisted.error_code == "missing_snapshot"
+    assert persisted.user_message == (
+        "Compile failed because a submitted binary input snapshot is missing. Try again."
+    )
     assert persisted.retryable is False
     assert db_session.get(Artifact, durable_source.id) is not None
 
@@ -874,7 +879,7 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     assert persisted.status == "failed"
     assert persisted.error_code == "worker_lost"
     assert persisted.retryable is True
-    assert repo.source_artifact_for_job(job.id) is None
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded_tenant):
