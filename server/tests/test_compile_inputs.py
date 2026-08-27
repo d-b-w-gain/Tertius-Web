@@ -19,6 +19,7 @@ class FakeCompileInputRepository:
         self.project_inputs = list(project_inputs or [])
         self.job_inputs = []
         self.recorded = []
+        self.project_input_kind_calls = []
 
     def project_input_artifacts(self, project_id, artifact_kinds):
         return [
@@ -28,6 +29,16 @@ class FakeCompileInputRepository:
             and artifact.compile_job_id is None
             and artifact.kind in artifact_kinds
         ]
+
+    def project_input_kinds(self, project_id, artifact_kinds):
+        self.project_input_kind_calls.append((project_id, artifact_kinds))
+        return {
+            artifact.kind
+            for artifact in self.project_inputs
+            if artifact.project_id == project_id
+            and artifact.compile_job_id is None
+            and artifact.kind in artifact_kinds
+        }
 
     def job_input_artifacts(self, job_id, artifact_kinds):
         return [
@@ -150,6 +161,37 @@ def test_materialization_uploads_pinned_job_input_after_durable_input_changes():
         ("source_3mf", b"durable-a")
     ]
     assert uploaded == [b"durable-a"]
+    assert [asset.logical_filename for asset in assets] == ["source.3mf"]
+
+
+def test_materialization_reads_durable_input_kinds_without_loading_project_bytes():
+    project_id = uuid4()
+    job_id = uuid4()
+    repo = FakeCompileInputRepository(
+        [input_artifact(project_id, "source_3mf", b"durable-input")]
+    )
+    repo.job_inputs.append(
+        job_input_artifact(project_id, job_id, "source_3mf", b"job-snapshot")
+    )
+
+    def reject_project_input_artifact_read(project_id, artifact_kinds):
+        raise AssertionError("materialization loaded durable project bytes")
+
+    repo.project_input_artifacts = reject_project_input_artifact_read
+    uploaded = []
+
+    async def upload(content):
+        uploaded.append(content)
+        return stored_object(content)
+
+    assets = asyncio.run(
+        materialize_job_binary_assets(repo, project_id, job_id, upload)
+    )
+
+    assert repo.project_input_kind_calls == [
+        (project_id, ("source_3mf",))
+    ]
+    assert uploaded == [b"job-snapshot"]
     assert [asset.logical_filename for asset in assets] == ["source.3mf"]
 
 

@@ -699,6 +699,27 @@ class CompileRepository:
             ).all()
         )
 
+    def project_input_kinds(
+        self,
+        project_id: UUID,
+        artifact_kinds: Collection[str] = COMPILE_INPUT_ARTIFACT_KINDS,
+    ) -> set[str]:
+        normalized = tuple(kind.lower() for kind in artifact_kinds)
+        if not normalized:
+            return set()
+        return set(
+            self.db.scalars(
+                select(Artifact.kind)
+                .distinct()
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.project_id == project_id,
+                    Artifact.compile_job_id.is_(None),
+                    Artifact.kind.in_(normalized),
+                )
+            ).all()
+        )
+
     def job_input_artifacts(
         self,
         job_id: UUID,

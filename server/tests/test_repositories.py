@@ -290,6 +290,39 @@ def test_compile_repository_lists_project_inputs_with_tenant_isolation(db_sessio
     assert repo_b.project_input_artifacts(seeded["project_a"]) == []
 
 
+def test_compile_repository_lists_project_input_kinds_without_loading_artifacts(
+    db_session,
+):
+    seeded = seed_two_tenants(db_session)
+    repo_a = CompileRepository(db_session, seeded["tenant_a"])
+    repo_b = CompileRepository(db_session, seeded["tenant_b"])
+    repo_a.record_artifact(
+        seeded["project_a"], None, "source_3mf", b"tenant-a"
+    )
+    repo_a.record_artifact(
+        seeded["project_a"], None, "custom_input", b"custom"
+    )
+    repo_b.record_artifact(
+        seeded["project_b"], None, "source_3mf", b"tenant-b"
+    )
+    db_session.commit()
+
+    assert repo_a.project_input_kinds(seeded["project_a"]) == {
+        "source_3mf"
+    }
+    assert repo_a.project_input_kinds(
+        seeded["project_a"], ("CUSTOM_INPUT",)
+    ) == {"custom_input"}
+    assert repo_a.project_input_kinds(seeded["project_b"]) == set()
+    assert repo_b.project_input_kinds(seeded["project_b"]) == {
+        "source_3mf"
+    }
+    assert repo_b.project_input_kinds(seeded["project_a"]) == set()
+    assert repo_a.project_input_kinds(
+        seeded["project_a"], ()
+    ) == set()
+
+
 def test_compile_repository_lists_job_inputs_with_tenant_isolation(db_session):
     seeded = seed_two_tenants(db_session)
     repo_a = CompileRepository(db_session, seeded["tenant_a"])

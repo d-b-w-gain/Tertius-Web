@@ -33,6 +33,12 @@ class CompileInputRepository(Protocol):
         artifact_kinds: tuple[str, ...],
     ) -> list[Artifact]: ...
 
+    def project_input_kinds(
+        self,
+        project_id: UUID,
+        artifact_kinds: tuple[str, ...],
+    ) -> set[str]: ...
+
     def job_input_artifacts(
         self,
         job_id: UUID,
@@ -98,10 +104,7 @@ async def materialize_job_binary_assets(
     definitions: tuple[CompileInputKind, ...] = COMPILE_INPUT_KINDS,
 ) -> list[CompileBinaryAsset]:
     artifact_kinds = _artifact_kinds(definitions)
-    expected_kinds = {
-        artifact.kind
-        for artifact in repo.project_input_artifacts(project_id, artifact_kinds)
-    }
+    expected_kinds = repo.project_input_kinds(project_id, artifact_kinds)
     if not expected_kinds:
         return []
 
