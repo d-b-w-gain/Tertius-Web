@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - 'README.md'
+      - 'ui/.env.example'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
@@ -37,6 +39,8 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - 'README.md'
+      - 'ui/.env.example'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
