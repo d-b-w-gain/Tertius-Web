@@ -87,6 +87,19 @@ describe('createProjectStorage', () => {
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects', getAccessToken)
   })
 
+  it('surfaces authenticated project list failures', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'project list unavailable' }), { status: 503 }),
+    )
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.listProjects()).rejects.toThrow('project list unavailable')
+  })
+
   it('throws server error messages when authenticated writes fail', async () => {
     mocks.apiFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: false, error: 'bad file' }), { status: 400 }))
     const storage = createProjectStorage({

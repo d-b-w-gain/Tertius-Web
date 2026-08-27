@@ -256,7 +256,7 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
   return {
     async listProjects() {
       const res = await apiFetch(`${serverUrl}/projects`, getAccessToken)
-      if (!res.ok) return []
+      await requireOk(res, 'Failed to list projects')
       const data = await res.json()
       return data.projects || []
     },

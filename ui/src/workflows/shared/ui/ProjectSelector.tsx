@@ -229,7 +229,11 @@ export const ProjectSelector: React.FC = () => {
               <button
                 type="button"
                 disabled={importPending}
-                onClick={() => setIsImporting(false)}
+                onClick={() => {
+                  setIsImporting(false)
+                  setImportFile(null)
+                  setImportProjectName('')
+                }}
                 className="px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
               >
                 Cancel
