@@ -11,6 +11,7 @@ from time import perf_counter
 from opentelemetry.trace import SpanKind
 from sqlalchemy import select
 
+from core.compile_inputs import MissingCompileInputError, materialize_job_binary_assets
 from core.compile_messages import (
     CompileCommand,
     CompileResultPayload,
@@ -28,6 +29,7 @@ from core.nats_client import (
     extract_nats_context,
     pull_compile_result_subscription,
 )
+from core.object_store import put_compile_sidecar
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
 from core.repositories import CompileRepository
 from core.billing import compute_cost_cents, get_format_multiplier
@@ -282,7 +284,12 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
             .limit(50)
         ).all()
         republished = 0
+
+        async def store_snapshot(content: bytes):
+            return await put_compile_sidecar(content, settings)
+
         for job in jobs:
+            compile_repo = CompileRepository(db, job.tenant_id)
             files = db.scalars(
                 select(CompileJobFile)
                 .where(
@@ -293,7 +300,7 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 .order_by(CompileJobFile.filename)
             ).all()
             if not files:
-                CompileRepository(db, job.tenant_id).finish_job(
+                compile_repo.finish_job(
                     job,
                     "failed",
                     error="Compile job source snapshot is missing",
@@ -306,6 +313,28 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 logger.warning("Marked stale queued compile job %s failed because it has no source snapshot", job.id)
                 continue
 
+            try:
+                assets = await materialize_job_binary_assets(
+                    compile_repo,
+                    job.project_id,
+                    job.id,
+                    store_snapshot,
+                )
+            except MissingCompileInputError as exc:
+                compile_repo.finish_job(
+                    job,
+                    "failed",
+                    error=str(exc),
+                    error_code="missing_snapshot",
+                    user_message=(
+                        "Compile failed because a submitted binary input snapshot is missing. "
+                        "Try again."
+                    ),
+                    retryable=False,
+                )
+                db.commit()
+                continue
+
             request_id = f"compile-request:{job.id}"
             command = CompileCommand(
                 job_id=job.id,
@@ -315,13 +344,14 @@ async def republish_stale_queued_jobs(db, publisher: Publisher, settings, older_
                 export_format=job.export_format,
                 created_at=job.created_at,
                 files=[CompileSourceFile(filename=file.filename, content=file.content) for file in files],
+                assets=assets,
                 request_id=request_id,
                 originating_llm_edit_job_id=job.originating_llm_edit_job_id,
             )
             try:
                 assert_message_size(command, settings.compile_request_max_bytes, "request")
             except ValueError as exc:
-                CompileRepository(db, job.tenant_id).finish_job(
+                compile_repo.finish_job(
                     job,
                     "failed",
                     error=str(exc),

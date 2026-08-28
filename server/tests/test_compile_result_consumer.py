@@ -8,6 +8,9 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from core.compile_messages import CompileResultPayload
+from core.project_assets import SOURCE_3MF_MEDIA_TYPE
+from core.repositories import CompileRepository
+from tests.fixtures.three_mf import make_box_3mf
 from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord
 from core.models import now_utc
 from core.structural.contracts import CompiledStructuralManifest
@@ -151,16 +154,38 @@ def test_apply_compile_result_records_artifact_and_marks_success(db_session, see
         export_format="stl",
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     applied = apply_compile_result(db_session, result_payload(job, seeded_tenant), consumer_settings())
 
-    artifact = db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id))
+    artifact = db_session.scalar(
+        select(Artifact).where(
+            Artifact.compile_job_id == job.id,
+            Artifact.kind == "stl",
+        )
+    )
     persisted = db_session.get(CompileJob, job.id)
     assert applied is True
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
     assert artifact.content_type == "model/stl"
+    assert repo.job_input_artifacts(job.id) == []
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_apply_compile_result_records_structural_manifest_sidecar(
@@ -271,6 +296,21 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
         export_format="stl",
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     payload = result_payload(
@@ -294,6 +334,7 @@ def test_apply_compile_result_records_failure(db_session, seeded_tenant):
     assert persisted.error_code == "timeout"
     assert persisted.retryable is True
     assert db_session.scalar(select(Artifact).where(Artifact.compile_job_id == job.id)) is None
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_apply_compile_result_acks_duplicate_terminal_without_changes(db_session, seeded_tenant):
@@ -453,6 +494,85 @@ def test_republish_stale_queued_jobs_uses_snapshot_files_without_claiming(db_ses
     assert persisted.claim_token is None
 
 
+def test_republish_stale_queued_job_uses_job_pinned_3mf_snapshot(
+    db_session, seeded_tenant, monkeypatch
+):
+    from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
+
+    original = make_box_3mf(size=1)
+    replacement = make_box_3mf(size=2)
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="queued",
+        export_format="glb",
+        error_code="publish_pending",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        CompileJobFile(
+            compile_job_id=job.id,
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="design.py",
+            content="model = imported.compound\n",
+        )
+    )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        original,
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        replacement,
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    db_session.commit()
+    stored = []
+    published = []
+
+    async def fake_put(content, _settings):
+        stored.append(content)
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'a' * 64}",
+            sha256="a" * 64,
+            byte_size=len(content),
+        )
+
+    class FakePublisher:
+        async def publish_json(self, subject, command, message_id=None):
+            published.append(command)
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
+
+    republished = asyncio.run(
+        republish_stale_queued_jobs(
+            db_session, FakePublisher(), consumer_settings(), older_than_seconds=60
+        )
+    )
+
+    assert republished == 1
+    assert stored == [original]
+    assert len(published[0].assets) == 1
+    snapshots = repo.job_input_artifacts(job.id)
+    assert len(snapshots) == 1
+    assert snapshots[0].content == original
+
+
 def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_session, seeded_tenant):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
@@ -494,7 +614,9 @@ def test_republish_stale_queued_jobs_does_not_duplicate_unmarked_queued_jobs(db_
     assert persisted.error_code is None
 
 
-def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(
+    db_session, seeded_tenant, monkeypatch
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -517,8 +639,37 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
             content="shape = 'too large'\n",
         )
     )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(size=1),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
     published = []
+
+    async def fake_put(content, _settings):
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'b' * 64}",
+            sha256="b" * 64,
+            byte_size=len(content),
+        )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
 
     class FakePublisher:
         async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
@@ -538,9 +689,13 @@ def test_republish_stale_queued_jobs_marks_oversized_snapshot_failed(db_session,
     assert persisted.status == "failed"
     assert persisted.error_code == "source_bundle_too_large"
     assert persisted.retryable is False
+    assert repo.job_input_artifacts(job.id) == []
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
-def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, seeded_tenant):
+def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(
+    db_session, seeded_tenant
+):
     from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
 
     job = CompileJob(
@@ -557,6 +712,82 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     published = []
 
     class FakePublisher:
+        async def publish_json(
+            self, subject: str, command, message_id: str | None = None
+        ) -> None:
+            published.append((subject, command, message_id))
+
+    republished = asyncio.run(
+        republish_stale_queued_jobs(
+            db_session,
+            FakePublisher(),
+            consumer_settings(),
+            older_than_seconds=60,
+        )
+    )
+
+    persisted = db_session.get(CompileJob, job.id)
+    assert persisted is not None
+    assert republished == 0
+    assert published == []
+    assert persisted.status == "failed"
+    assert persisted.error_code == "missing_snapshot"
+    assert persisted.retryable is True
+
+
+def test_republish_stale_queued_jobs_fails_when_binary_input_snapshot_is_missing(
+    db_session, seeded_tenant, monkeypatch
+):
+    from workflows.intus.compile_result_consumer import republish_stale_queued_jobs
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="queued",
+        export_format="stl",
+        error_code="publish_pending",
+        created_at=now_utc() - timedelta(minutes=5),
+    )
+    db_session.add(job)
+    db_session.flush()
+    db_session.add(
+        CompileJobFile(
+            compile_job_id=job.id,
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            filename="design.py",
+            content="model = imported.compound\n",
+        )
+    )
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    durable_source = repo.record_artifact(
+        seeded_tenant.project_id,
+        None,
+        "source_3mf",
+        make_box_3mf(size=2),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
+    db_session.commit()
+    uploaded = []
+    published = []
+
+    async def fake_put(content, _settings):
+        uploaded.append(content)
+        from core.object_store import ObjectRef
+
+        return ObjectRef(
+            bucket="TERTIUS_COMPILE_SIDECARS",
+            key=f"sha256/{'c' * 64}",
+            sha256="c" * 64,
+            byte_size=len(content),
+        )
+
+    monkeypatch.setattr(
+        "workflows.intus.compile_result_consumer.put_compile_sidecar", fake_put
+    )
+
+    class FakePublisher:
         async def publish_json(self, subject: str, command, message_id: str | None = None) -> None:
             published.append((subject, command, message_id))
 
@@ -567,10 +798,15 @@ def test_republish_stale_queued_jobs_marks_missing_snapshot_failed(db_session, s
     persisted = db_session.get(CompileJob, job.id)
     assert persisted is not None
     assert republished == 0
+    assert uploaded == []
     assert published == []
     assert persisted.status == "failed"
     assert persisted.error_code == "missing_snapshot"
-    assert persisted.retryable is True
+    assert persisted.user_message == (
+        "Compile failed because a submitted binary input snapshot is missing. Try again."
+    )
+    assert persisted.retryable is False
+    assert db_session.get(Artifact, durable_source.id) is not None
 
 
 def test_result_consumer_retries_when_initial_nats_setup_fails(monkeypatch):
@@ -626,6 +862,14 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
         lease_expires_at=now_utc() - timedelta(minutes=5),
     )
     db_session.add(job)
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    repo.record_artifact(
+        seeded_tenant.project_id,
+        job.id,
+        "source_3mf",
+        make_box_3mf(),
+        content_type=SOURCE_3MF_MEDIA_TYPE,
+    )
     db_session.commit()
 
     failed = fail_stale_running_jobs(db_session)
@@ -635,6 +879,7 @@ def test_fail_stale_running_jobs_marks_expired_leases_retryable(db_session, seed
     assert persisted.status == "failed"
     assert persisted.error_code == "worker_lost"
     assert persisted.retryable is True
+    assert repo.job_input_artifacts(job.id) == []
 
 
 def test_apply_compile_result_creates_usage_record_on_success(db_session, seeded_tenant):

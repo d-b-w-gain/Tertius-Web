@@ -197,6 +197,19 @@ async def open_compile_sidecar_store(jetstream, settings) -> CompileSidecarStore
     return CompileSidecarStore(store, bucket)
 
 
+async def put_compile_sidecar(content: bytes, settings) -> ObjectRef:
+    from core.nats_client import connect_nats
+
+    nc = await connect_nats(settings.nats_url)
+    try:
+        store = await open_compile_sidecar_store(nc.jetstream(), settings)
+        ref = await store.put(content)
+        await nc.flush()
+        return ref
+    finally:
+        await nc.close()
+
+
 def _is_not_found(exc: Exception) -> bool:
     from nats.js.errors import KeyNotFoundError, ObjectDeletedError
     from nats.js.errors import ObjectNotFoundError as NatsObjectNotFoundError
