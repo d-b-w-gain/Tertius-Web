@@ -101,7 +101,7 @@ rtk git commit -m "fix: align local nats storage with sidecars"
 - No source edits.
 - Rewrite only the descendant branch ancestry.
 
-- [ ] **Step 1: Record the updated #355 head**
+- [x] **Step 1: Record the updated #355 head**
 
 ```bash
 rtk git rev-parse codex/3mf-lean-sidecars
@@ -109,7 +109,7 @@ rtk git rev-parse codex/3mf-lean-sidecars
 
 Expected: a new SHA containing the spec, plan, and storage fix.
 
-- [ ] **Step 2: Replay #356 onto the updated #355 head**
+- [x] **Step 2: Replay #356 onto the updated #355 head**
 
 ```bash
 rtk git rebase --onto codex/3mf-lean-sidecars fcdf42a77c89ea3af18666acc858fb0ec219895d codex/3mf-lean-loader
@@ -117,7 +117,7 @@ rtk git rebase --onto codex/3mf-lean-sidecars fcdf42a77c89ea3af18666acc858fb0ec2
 
 Expected: the three #356 commits replay without conflicts.
 
-- [ ] **Step 3: Replay #357 onto the updated #356 head**
+- [x] **Step 3: Replay #357 onto the updated #356 head**
 
 Before rebasing, retain `84864e2f0b4fca533335cf882bc29e0e0e4cc694` as the old API tip and `2c17997f44880aaace9cc237801fdaa2f7a4a25a` as its old loader boundary. Run:
 
@@ -127,7 +127,7 @@ rtk git rebase --onto codex/3mf-lean-loader 2c17997f44880aaace9cc237801fdaa2f7a4
 
 Expected: the five #357 commits replay without conflicts.
 
-- [ ] **Step 4: Replay the temporary #358 branch onto the updated #357 head**
+- [x] **Step 4: Replay the temporary #358 branch onto the updated #357 head**
 
 ```bash
 rtk git rebase --onto codex/3mf-lean-api 84864e2f0b4fca533335cf882bc29e0e0e4cc694 codex/3mf-lean-ui-rereview
@@ -142,7 +142,7 @@ Expected: the three existing #358 commits replay without the unrelated PDF commi
 - Modify: `ui/src/workflows/shared/ui/ProjectSelector.tsx`
 - Modify: `docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md`
 
-- [ ] **Step 1: Add a controllable pending-import regression**
+- [x] **Step 1: Add a controllable pending-import regression**
 
 Add this test after the normal successful import case:
 
@@ -173,7 +173,7 @@ it('disables Cancel while import is pending and completes normally', async () =>
 })
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 ```bash
 rtk npm --prefix ui test -- ProjectSelector.test.tsx
@@ -181,7 +181,7 @@ rtk npm --prefix ui test -- ProjectSelector.test.tsx
 
 Expected: the new test fails because the visible Cancel button is enabled while `import3mf` remains pending.
 
-- [ ] **Step 3: Bind Cancel availability to the existing state**
+- [x] **Step 3: Bind Cancel availability to the existing state**
 
 Replace the Cancel button with:
 
@@ -196,7 +196,7 @@ Replace the Cancel button with:
 </button>
 ```
 
-- [ ] **Step 4: Verify GREEN and inherited recovery behavior**
+- [x] **Step 4: Verify GREEN and inherited recovery behavior**
 
 ```bash
 rtk npm --prefix ui test -- ProjectSelector.test.tsx projectStorage.test.ts
@@ -207,7 +207,7 @@ rtk git diff --check
 
 Expected: all focused tests pass, TypeScript reports no errors, and the production build completes. The existing activation-failure recovery test remains green.
 
-- [ ] **Step 5: Commit the #358 fix**
+- [x] **Step 5: Commit the #358 fix**
 
 ```bash
 rtk git add ui/src/workflows/shared/ui/ProjectSelector.test.tsx ui/src/workflows/shared/ui/ProjectSelector.tsx docs/superpowers/plans/2026-08-17-final-3mf-review-fixes.md
@@ -219,7 +219,7 @@ rtk git commit -m "fix: disable cancel during 3mf import"
 **Files:**
 - No intended source edits.
 
-- [ ] **Step 1: Run inherited backend and deployment checks**
+- [x] **Step 1: Run inherited backend and deployment checks**
 
 ```bash
 rtk .venv/bin/pytest server/tests/test_config.py server/tests/test_object_store.py server/tests/test_compile_job.py server/tests/test_tertius_imports_runtime.py server/tests/test_three_mf_archive.py server/tests/test_project_assets.py -q
@@ -231,7 +231,7 @@ rtk env PATH=/opt/homebrew/bin:/Users/johnsonyuen/.local/bin:/usr/bin:/bin:/usr/
 
 Expected: focused tests, mypy, scoped Ruff, and Helm lint pass. Runtime parity either passes or explicitly skips Docker-only checks when Docker is unavailable.
 
-- [ ] **Step 2: Run frontend checks**
+- [x] **Step 2: Run frontend checks**
 
 ```bash
 rtk npm --prefix ui test -- ProjectSelector.test.tsx projectStorage.test.ts
@@ -241,7 +241,7 @@ rtk npm --prefix ui run build
 
 Expected: focused tests, typecheck, and build all pass.
 
-- [ ] **Step 3: Attempt full live-flow**
+- [x] **Step 3: Attempt full live-flow**
 
 ```bash
 rtk scripts/harness-k3s.sh live-flow
@@ -249,7 +249,7 @@ rtk scripts/harness-k3s.sh live-flow
 
 Expected: full authenticated live-flow passes when the isolated k3s release and compile worker exist. If unavailable, report the exact missing runtime prerequisite; do not substitute compile-only validation.
 
-- [ ] **Step 4: Verify topology, scope, and cleanliness**
+- [x] **Step 4: Verify topology, scope, and cleanliness**
 
 ```bash
 rtk git merge-base --is-ancestor origin/master codex/3mf-lean-sidecars
@@ -261,6 +261,10 @@ rtk git status --short
 ```
 
 Expected: all ancestry and whitespace checks pass and the worktree is clean.
+
+The full local live-flow attempt is blocked because no k3s compile worker is
+deployed for `tertius/tertius`; the harness requires a validation release with
+`KEDA_ENABLED=true`. Focused validation and GitHub k3s smoke remain mandatory.
 
 ### Task 5: Update the four existing PRs safely
 

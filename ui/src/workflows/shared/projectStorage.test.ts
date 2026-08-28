@@ -13,7 +13,45 @@ vi.mock('../../api/client', () => ({
   apiFetch: mocks.apiFetch,
 }))
 
-describe('projectStorage', () => {
+describe('createProjectStorage', () => {
+  it('uploads a 3MF as browser multipart without overriding its content type', async () => {
+    mocks.apiFetch.mockResolvedValue(
+      new Response(JSON.stringify({ success: true, project: 'falcon9' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api',
+      getAccessToken: vi.fn(),
+    })
+    const file = new File(['3mf'], 'falcon9.3mf', {
+      type: 'application/vnd.ms-package.3dmanufacturing-3dmodel+xml',
+    })
+
+    const result = await storage.import3mf(file, 'falcon9')
+
+    expect(result).toEqual({ success: true, project: 'falcon9' })
+    const init = mocks.apiFetch.mock.calls[0]?.[2] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(init.headers).toBeUndefined()
+    expect(init.body).toBeInstanceOf(FormData)
+    expect((init.body as FormData).get('name')).toBe('falcon9')
+    expect((init.body as FormData).get('file')).toBe(file)
+  })
+
+  it('rejects 3MF import for guest storage', async () => {
+    const storage = createProjectStorage({
+      authMode: 'guest',
+      serverUrl: '/api',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.import3mf(new File(['3mf'], 'source.3mf'), 'guest')).rejects.toThrow(
+      'Log in to import 3MF models',
+    )
+  })
   beforeEach(() => {
     localStorage.clear()
     vi.clearAllMocks()
@@ -47,6 +85,19 @@ describe('projectStorage', () => {
     expect(await storage.listProjects()).toEqual(['demo'])
 
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/projects', getAccessToken)
+  })
+
+  it('surfaces authenticated project list failures', async () => {
+    mocks.apiFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'project list unavailable' }), { status: 503 }),
+    )
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.listProjects()).rejects.toThrow('project list unavailable')
   })
 
   it('throws server error messages when authenticated writes fail', async () => {

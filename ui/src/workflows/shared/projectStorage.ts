@@ -114,10 +114,16 @@ export type LlmModelsResponse = {
   models: LlmModelOption[]
 }
 
+export type Import3mfResult = {
+  success: true
+  project: string
+}
+
 export type ProjectStorage = {
   listProjects: () => Promise<string[]>
   getActiveProject: () => Promise<string>
   createProject: (name: string) => Promise<void>
+  import3mf: (file: File, projectName: string) => Promise<Import3mfResult>
   activateProject: (name: string) => Promise<void>
   listFiles: (projectName: string) => Promise<string[]>
   listFileMetadata: (projectName: string) => Promise<ProjectFileMetadata[]>
@@ -163,6 +169,9 @@ function createGuestStorage(): ProjectStorage {
     },
     async createProject(name) {
       updateGuestWorkspace((workspace) => createGuestProject(workspace, name))
+    },
+    async import3mf() {
+      throw new Error('Log in to import 3MF models')
     },
     async activateProject(name) {
       updateGuestWorkspace((workspace) => setGuestActiveProject(workspace, name))
@@ -247,7 +256,7 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
   return {
     async listProjects() {
       const res = await apiFetch(`${serverUrl}/projects`, getAccessToken)
-      if (!res.ok) return []
+      await requireOk(res, 'Failed to list projects')
       const data = await res.json()
       return data.projects || []
     },
@@ -262,6 +271,17 @@ function createAuthenticatedStorage(serverUrl: string, getAccessToken: () => Pro
         await apiFetch(`${serverUrl}/projects/${name}/new`, getAccessToken, { method: 'POST' }),
         `Failed to create project ${name}`,
       )
+    },
+    async import3mf(file, projectName) {
+      const form = new FormData()
+      form.append('name', projectName)
+      form.append('file', file)
+      const res = await apiFetch(`${serverUrl}/projects/imports/3mf`, getAccessToken, {
+        method: 'POST',
+        body: form,
+      })
+      await requireOk(res, `Failed to import ${file.name}`)
+      return (await res.json()) as Import3mfResult
     },
     async activateProject(name) {
       await requireOk(
