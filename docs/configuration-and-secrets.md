@@ -71,20 +71,6 @@ the non-retryable `invalid_binary_asset` result. If publishing the result fails,
 the worker NAKs because no outcome reached the API. Increasing
 `compileMaxDeliver` requires a separate, explicit redelivery and backoff policy.
 
-## Persistent 3MF Source Capacity
-
-Each imported project retains one 128 MiB durable original 3MF at the maximum
-accepted upload size. The default and local Helm values therefore request a
-32 GiB application PostgreSQL volume. This is a deployment baseline, not a
-tenant quota: operators must size the volume for the expected number and size
-of imported projects plus normal tables, indexes, WAL, temporary space, and backups.
-
-The Keycloak database keeps its separate 2 GiB default because it does not
-store project sources. Existing installations must verify that their storage
-class supports volume expansion and apply their platform's PostgreSQL PVC
-resize procedure; changing the chart default alone does not guarantee that an
-already-provisioned volume grows.
-
 ## Secrets
 
 | Helm value | Environment variable or secret key | Used by | Purpose |
