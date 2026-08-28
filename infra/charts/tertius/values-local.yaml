@@ -122,7 +122,7 @@ postgres:
     create: true
     password: tertius-local-password
   storage:
-    size: 32Gi
+    size: 2Gi
     storageClass: local-path
 
 keycloak:

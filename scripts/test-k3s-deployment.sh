@@ -1620,13 +1620,6 @@ delete_with_preconditions() {
   if [ -z "$live_object" ]; then
     return 0
   fi
-  if [ "$resource_kind" = pvc ] && printf '%s' "$live_object" | jq -e --arg uid "$uid" '
-    .metadata.uid == $uid and
-    (.metadata.deletionTimestamp | type == "string" and length > 0)
-  ' >/dev/null; then
-    echo "${resource_kind}/${resource_name} is already terminating with the captured UID; deferring to final absence verification." >&2
-    return 0
-  fi
   echo "Refusing to treat failed deletion of ${resource_kind}/${resource_name} as absent." >&2
   return 1
 }

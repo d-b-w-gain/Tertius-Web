@@ -1,9 +1,7 @@
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-import yaml
 
 from core.project_assets import (
     BREP_MEDIA_TYPE,
@@ -82,28 +80,6 @@ def test_resource_constants_are_centralized_at_exact_values():
     assert BREP_MEDIA_TYPE == DERIVED_BREP_MEDIA_TYPE
     assert IMPORT_MANIFEST_MEDIA_TYPE == "application/json"
     assert MANIFEST_MEDIA_TYPE == IMPORT_MANIFEST_MEDIA_TYPE
-
-
-def test_postgres_defaults_cover_durable_3mf_source_contract():
-    root = Path(__file__).parents[2]
-    default_values = yaml.safe_load(
-        (root / "infra/charts/tertius/values.yaml").read_text(encoding="utf-8")
-    )
-    local_values = yaml.safe_load(
-        (root / "infra/charts/tertius/values-local.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    documentation = (root / "docs/configuration-and-secrets.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert MAX_3MF_UPLOAD_BYTES == 128 * 1024 * 1024
-    assert default_values["postgres"]["storage"]["size"] == "32Gi"
-    assert local_values["postgres"]["storage"]["size"] == "32Gi"
-    assert default_values["keycloak"]["database"]["storage"]["size"] == "2Gi"
-    assert "128 MiB durable original 3MF" in documentation
-    assert "WAL, temporary space, and backups" in documentation
 
 
 def test_import_manifest_rejects_shell_marked_boolean_capable():

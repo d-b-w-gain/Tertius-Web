@@ -76,20 +76,6 @@ case "${1:-}" in
   uninstall)
     [ "${MOCK_MUTATION_FAILURE:-}" != helm-uninstall ] || exit 9
     rm -f "$STATE_DIR/helm"
-    [ "${MOCK_APP_SECRET_DELETE_RACE:-}" != terminating ] || \
-      touch "$STATE_DIR/app-secret-terminating"
-    case "${MOCK_DATA_PVC_DELETE_RACE:-}" in
-      terminating)
-        touch "$STATE_DIR/data-pvc-terminating"
-        ;;
-      resource-version-changed)
-        touch "$STATE_DIR/data-pvc-resource-version-changed"
-        ;;
-      replacement)
-        printf 'replacement-data-uid\n' >"$STATE_DIR/data-pvc-uid"
-        touch "$STATE_DIR/data-pvc-terminating"
-        ;;
-    esac
     ;;
   status)
     [ -f "$STATE_DIR/helm" ] || exit 1
@@ -233,13 +219,7 @@ fi
 if [ "${1:-}" = get ] && [[ "$joined" == *" secret "*"${APP_SECRET_NAME}"* ]]; then
   [ -f "$STATE_DIR/secret" ] || exit 0
   if [ "$output" = json ]; then
-    secret_rv=secret-rv
-    secret_deletion_timestamp=""
-    if [ -f "$STATE_DIR/app-secret-terminating" ]; then
-      secret_rv=secret-rv-updated
-      secret_deletion_timestamp=',"deletionTimestamp":"2099-01-01T00:00:00Z"'
-    fi
-    printf '{"metadata":{"name":"%s","namespace":"%s","uid":"secret-uid","resourceVersion":"%s"%s,"annotations":{"tertius.io/lease-id":"%s"}}}\n' "$APP_SECRET_NAME" "$NAMESPACE" "$secret_rv" "$secret_deletion_timestamp" "${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
+    printf '{"metadata":{"name":"%s","namespace":"%s","uid":"secret-uid","resourceVersion":"secret-rv","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$APP_SECRET_NAME" "$NAMESPACE" "${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
   else
     printf '%s\n' "$APP_SECRET_NAME"
   fi
@@ -346,19 +326,7 @@ if [ "${1:-}" = get ] && [[ "$joined" == *" pvc "* || "$joined" == *" persistent
         *) exit 0 ;;
       esac
       [ -f "$STATE_DIR/$state_file" ] || exit 0
-      deletion_timestamp=""
-      if [ "$state_file" = data-pvc ] && [ -f "$STATE_DIR/data-pvc-resource-version-changed" ]; then
-        rv=data-rv-updated
-      fi
-      if [ "$state_file" = data-pvc ] && [ -f "$STATE_DIR/data-pvc-terminating" ]; then
-        rv=data-rv-updated
-        deletion_timestamp=',"deletionTimestamp":"2099-01-01T00:00:00Z"'
-      fi
-      printf '{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s","uid":"%s","resourceVersion":"%s"%s,"annotations":{"tertius.io/lease-id":"%s"}}}\n' "$pvc_name" "$uid" "$rv" "$deletion_timestamp" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
-      if [ "$state_file" = data-pvc ] && [ -f "$STATE_DIR/data-pvc-terminating" ] &&
-         [ "${MOCK_TERMINATING_DATA_PVC_STUCK:-false}" != true ]; then
-        rm -f "$STATE_DIR/data-pvc" "$STATE_DIR/data-pvc-terminating"
-      fi
+      printf '{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"%s","uid":"%s","resourceVersion":"%s","annotations":{"tertius.io/lease-id":"%s"}}}\n' "$pvc_name" "$uid" "$rv" "${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}"
       exit 0
     fi
     printf '{"items":['
@@ -476,16 +444,6 @@ if [ "${1:-}" = delete ] && [ "${2:-}" = --raw ]; then
     esac
     exit 11
   fi
-  if [[ "${3:-}" == */persistentvolumeclaims/*data ]] &&
-     { [ -f "$STATE_DIR/data-pvc-terminating" ] || [ -f "$STATE_DIR/data-pvc-resource-version-changed" ]; }; then
-    cat >/dev/null
-    exit 11
-  fi
-  if [[ "${3:-}" == */secrets/"${APP_SECRET_NAME}" ]] &&
-     [ -f "$STATE_DIR/app-secret-terminating" ]; then
-    cat >/dev/null
-    exit 11
-  fi
   [ "${MOCK_MUTATION_FAILURE:-}" != raw-delete ] || exit 11
   delete_options=$(cat)
   printf '%s\n' "$delete_options" >>"${COMMAND_LOG}.stdin"
@@ -555,9 +513,6 @@ run_deploy_cleanup() {
   MOCK_FLUX_GET_FAILURE="${MOCK_FLUX_GET_FAILURE:-false}" \
   MOCK_FLUX_DISCOVERY_FAILURE="${MOCK_FLUX_DISCOVERY_FAILURE:-false}" \
   MOCK_MUTATION_FAILURE="${MOCK_MUTATION_FAILURE:-}" \
-  MOCK_APP_SECRET_DELETE_RACE="${MOCK_APP_SECRET_DELETE_RACE:-}" \
-  MOCK_DATA_PVC_DELETE_RACE="${MOCK_DATA_PVC_DELETE_RACE:-}" \
-  MOCK_TERMINATING_DATA_PVC_STUCK="${MOCK_TERMINATING_DATA_PVC_STUCK:-false}" \
   MOCK_MARKER_LEASE_ID="${MOCK_MARKER_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
   MOCK_SECRET_LEASE_ID="${MOCK_SECRET_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
   MOCK_DATA_LEASE_ID="${MOCK_DATA_LEASE_ID:-11111111-1111-4111-8111-111111111111}" \
@@ -1147,50 +1102,6 @@ assert_not_log '/persistentvolumeclaims/|/secrets/|kubectl delete configmap' \
 reset_state
 : >"$COMMAND_LOG"
 MOCK_MUTATION_FAILURE=raw-delete-absent run_deploy_cleanup
-
-reset_state
-: >"$COMMAND_LOG"
-MOCK_DATA_PVC_DELETE_RACE=terminating run_deploy_cleanup
-assert_log 'kubectl get pvc test-release-data .*--ignore-not-found=true -o json' \
-  "cleanup must verify a PVC whose Helm deletion raced the preconditioned delete"
-[ "$(grep -Ec 'kubectl delete --raw /api/v1/namespaces/test-ns/persistentvolumeclaims/test-release-data -f -' "$COMMAND_LOG")" -eq 1 ] || \
-  fail "cleanup must not retry a terminating PVC delete with refreshed preconditions"
-[ ! -e "$STATE_DIR/data-pvc" ] || \
-  fail "cleanup must finish after the same Helm-owned PVC enters termination and disappears"
-
-reset_state
-: >"$COMMAND_LOG"
-if MOCK_DATA_PVC_DELETE_RACE=resource-version-changed run_deploy_cleanup; then
-  fail "cleanup must refuse a PVC resourceVersion change without active deletion"
-fi
-assert_not_log '/persistentvolumeclaims/test-release-pi-agent-auth|/secrets/' \
-  "a live changed PVC must stop later cleanup deletes"
-
-reset_state
-: >"$COMMAND_LOG"
-if MOCK_DATA_PVC_DELETE_RACE=replacement run_deploy_cleanup; then
-  fail "cleanup must refuse a replacement PVC UID after Helm uninstall"
-fi
-assert_not_log '/persistentvolumeclaims/test-release-pi-agent-auth|/secrets/' \
-  "a replacement PVC must stop later cleanup deletes"
-
-reset_state
-: >"$COMMAND_LOG"
-if MOCK_DATA_PVC_DELETE_RACE=terminating MOCK_TERMINATING_DATA_PVC_STUCK=true run_deploy_cleanup; then
-  fail "cleanup must fail when a terminating PVC never becomes absent"
-fi
-assert_log 'kubectl get pvc -n test-ns -l app.kubernetes.io/instance=test-release -o name' \
-  "a stuck terminating PVC must be rejected by final absence verification"
-[ -e "$STATE_DIR/marker" ] || \
-  fail "a stuck terminating PVC must preserve the lifecycle marker for safe retry"
-
-reset_state
-: >"$COMMAND_LOG"
-if MOCK_APP_SECRET_DELETE_RACE=terminating run_deploy_cleanup; then
-  fail "cleanup must not accept a terminating app Secret that final absence verification cannot see"
-fi
-[ -e "$STATE_DIR/secret" ] && [ -e "$STATE_DIR/marker" ] || \
-  fail "a terminating app Secret refusal must preserve both the Secret and lifecycle marker"
 
 reset_state
 : >"$COMMAND_LOG"

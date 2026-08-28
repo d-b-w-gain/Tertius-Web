@@ -285,7 +285,7 @@ test: complete supported 3mf graph matrix
 - Modify: `server/tests/test_lean_3mf_import_api.py`
 - Reuse: `server/tests/fixtures/three_mf.py`
 
-- [x] **Step 1: Restack the API branch**
+- [ ] **Step 1: Restack the API branch**
 
 Run:
 
@@ -296,7 +296,7 @@ rtk git rebase --onto codex/3mf-lean-loader 3c44915
 
 Expected: the three API commits follow the updated loader branch.
 
-- [x] **Step 2: Add failing supported-subset preflight tests**
+- [ ] **Step 2: Add failing supported-subset preflight tests**
 
 Parameterize the same common matrix through `validate_3mf_archive_bytes()`.
 Assert valid one- and two-mesh identity builds pass, while every unsupported
@@ -307,7 +307,7 @@ with pytest.raises(Unsupported3mfBuildGraphError, match="unsupported 3MF build g
     validate_3mf_archive_bytes(content)
 ```
 
-- [x] **Step 3: Add failing streaming resource-limit tests**
+- [ ] **Step 3: Add failing streaming resource-limit tests**
 
 Cover a reader that returns more than the configured XML limit, a document over
 the depth limit, large irrelevant metadata/vertex content, malformed XML, and
@@ -315,7 +315,7 @@ DTD/entity payloads. Instrument element clearing or the retained semantic state
 so the large irrelevant document test proves the parser does not construct a
 full retained DOM.
 
-- [x] **Step 4: Run validator tests and verify RED**
+- [ ] **Step 4: Run validator tests and verify RED**
 
 Run:
 
@@ -325,7 +325,7 @@ rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_three_mf_archive.
 
 Expected: unsupported graphs are accepted and resource-bound tests fail against `fromstring()`.
 
-- [x] **Step 5: Implement the capped streaming parser**
+- [ ] **Step 5: Implement the capped streaming parser**
 
 Add:
 
@@ -347,14 +347,14 @@ model, retain only object IDs, whether each object has a direct mesh or
 components, and each direct build item object ID/transform. Apply the exact
 set-equality and uniqueness rules from the injected loader.
 
-- [x] **Step 6: Add endpoint rollback regression**
+- [ ] **Step 6: Add endpoint rollback regression**
 
 POST one unsupported fixture through the authenticated endpoint and assert
 HTTP 400. Query both `Project` and `Artifact` by tenant/name and assert no rows
 were created. Ensure the endpoint preserves the stable unsupported-graph error
 body rather than replacing it with a generic 500.
 
-- [x] **Step 7: Verify GREEN and commit**
+- [ ] **Step 7: Verify GREEN and commit**
 
 Run:
 
@@ -369,36 +369,32 @@ Commit the validator, endpoint test, and common fixtures with message:
 fix: reject unsupported 3mf imports during preflight
 ```
 
-Local validator/runtime/unit-endpoint coverage is green. The DB-backed rollback
-case remains scheduled for the final suite because Docker is unavailable in the
-current host environment; CI provides the PostgreSQL testcontainer.
-
 ### Task 6: Encode the 32 GiB PostgreSQL source-capacity contract on #357
 
 **Files:**
 - Modify: `infra/charts/tertius/values.yaml`
 - Modify: `infra/charts/tertius/values-local.yaml`
-- Modify: `server/tests/test_project_assets.py`
+- Modify: `scripts/test-deployment-config.sh`
 - Modify: `docs/configuration-and-secrets.md`
 
-- [x] **Step 1: Add a failing deployment contract assertion**
+- [ ] **Step 1: Add a failing deployment contract assertion**
 
 Parse both values files and assert the application PostgreSQL storage size is
 `32Gi`, while leaving the Keycloak database size unchanged. Also assert the
 operator documentation connects the 128 MiB per-project durable source limit
 to PostgreSQL sizing overhead.
 
-- [x] **Step 2: Verify RED**
+- [ ] **Step 2: Verify RED**
 
 Run:
 
 ```bash
-rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_project_assets.py::test_postgres_defaults_cover_durable_3mf_source_contract -q
+rtk bash scripts/test-deployment-config.sh
 ```
 
 Expected: failure reports the current 2 GiB application database default.
 
-- [x] **Step 3: Update values and documentation**
+- [ ] **Step 3: Update values and documentation**
 
 Set only:
 
@@ -411,14 +407,13 @@ postgres:
 in default and local values. Document durable originals, project-count
 planning, normal database data, indexes, WAL, temporary space, and backups.
 
-- [x] **Step 4: Verify GREEN and commit**
+- [ ] **Step 4: Verify GREEN and commit**
 
 Run:
 
 ```bash
-rtk env UV_CACHE_DIR=.uv-cache uv run pytest server/tests/test_project_assets.py::test_postgres_defaults_cover_durable_3mf_source_contract -q
+rtk bash scripts/test-deployment-config.sh
 rtk bash scripts/check-runtime-parity.sh
-rtk helm lint infra/charts/tertius
 rtk git diff --check
 ```
 
@@ -427,10 +422,6 @@ Commit the four listed files with message:
 ```text
 docs: align postgres capacity with 3mf sources
 ```
-
-The focused capacity contract, runtime parity, and Helm lint are green. The
-broader deployment script remains scheduled for CI because its unrelated
-pseudo-TTY fixture is not portable to this macOS host.
 
 ### Task 7: Restack #358 and make activation failure recoverable
 

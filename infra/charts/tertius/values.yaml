@@ -314,7 +314,7 @@ postgres:
     username: tertius
     password: ""
   storage:
-    size: 32Gi
+    size: 2Gi
     storageClass: local-path
   backup:
     enabled: false
