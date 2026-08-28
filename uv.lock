@@ -1704,7 +1704,6 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "build123d" },
-    { name = "defusedxml" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },
@@ -1742,7 +1741,6 @@ dev = [
 requires-dist = [
     { name = "alembic" },
     { name = "build123d" },
-    { name = "defusedxml", specifier = "==0.7.1" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },
