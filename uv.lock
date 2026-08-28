@@ -1812,7 +1812,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic" },
-    { name = "build123d", specifier = ">=0.11.1" },
+    { name = "build123d", specifier = ">=0.11.1,<0.12" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },
