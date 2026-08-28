@@ -131,8 +131,10 @@ def _collect_shapes(env: dict[str, Any]) -> bd.Compound:
         elif hasattr(val, "part") and isinstance(getattr(val, "part"), bd.Shape):
             shapes.append(val.part)
 
-    if not shapes and hasattr(bd.BuildPart, "_get_context") and bd.BuildPart._get_context():
-        shapes.append(bd.BuildPart._get_context().part)
+    if not shapes and hasattr(bd.BuildPart, "_get_context"):
+        ctx = bd.BuildPart._get_context()
+        if ctx is not None and ctx.part is not None:
+            shapes.append(ctx.part)
     if not shapes:
         raise ValueError("No 3D shapes found in script.")
 
