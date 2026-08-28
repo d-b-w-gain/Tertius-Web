@@ -439,7 +439,7 @@ pseudo-TTY fixture is not portable to this macOS host.
 - Modify: `ui/src/workflows/shared/ui/ProjectSelector.tsx`
 - Remove from branch diff: `ui/src/workflows/site/SiteWorkbench.test.tsx`
 
-- [x] **Step 1: Restack #358 without the unrelated PDF commit**
+- [ ] **Step 1: Restack #358 without the unrelated PDF commit**
 
 The published UI branch is checked out in a pre-existing external worktree, so
 leave that checkout untouched. Create a temporary local implementation branch
@@ -454,7 +454,7 @@ Expected: only `e372b46` and `ffcbbe5` are replayed. The unrelated `484176f`
 commit and `SiteWorkbench.test.tsx` diff are absent. The temporary branch will
 be pushed explicitly to the existing remote PR branch in Task 8.
 
-- [x] **Step 2: Replace the old failure test with a failing recovery test**
+- [ ] **Step 2: Replace the old failure test with a failing recovery test**
 
 Set `listProjects` to return `['default']` initially and
 `['default', 'falcon9']` after import. Make `activateProject` reject once and
@@ -471,7 +471,7 @@ expect(listener).not.toHaveBeenCalled()
 Select `falcon9`, then assert activation succeeds, import remains called once,
 the selector changes, and the event fires exactly once.
 
-- [x] **Step 3: Run the test and verify RED**
+- [ ] **Step 3: Run the test and verify RED**
 
 Run:
 
@@ -481,7 +481,7 @@ rtk npm --prefix ui test -- ProjectSelector.test.tsx
 
 Expected: the dialog remains open and the imported option is unavailable.
 
-- [x] **Step 4: Implement persistence-first UI state**
+- [ ] **Step 4: Implement persistence-first UI state**
 
 After `import3mf()` resolves, call and await a project-list refresh that does
 not auto-activate. Close and reset the import dialog before attempting
@@ -489,7 +489,7 @@ not auto-activate. Close and reset the import dialog before attempting
 updates `activeProject` and broadcasts the event. Do not retain a code path that
 can call `import3mf()` again for the same completed dialog submission.
 
-- [x] **Step 5: Verify GREEN and commit**
+- [ ] **Step 5: Verify GREEN and commit**
 
 Run:
 
