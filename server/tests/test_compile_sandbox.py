@@ -4,6 +4,14 @@ import time
 from core.compile_sandbox import run_compile_sandbox
 
 
+def _srgb_to_gltf_linear_float32(component):
+    if component <= 0.04045:
+        linear = component / 12.92
+    else:
+        linear = ((component + 0.055) / 1.055) ** 2.4
+    return struct.unpack("<f", struct.pack("<f", linear))[0]
+
+
 def test_compile_sandbox_rejects_unsupported_export_format_before_spawn(tmp_path):
     (tmp_path / "design.py").write_text(
         """
@@ -391,9 +399,9 @@ model = bd.Compound(
         material
         for material in gltf_json.get("materials", [])
         if material.get("pbrMetallicRoughness", {}).get("baseColorFactor") == [
-            0.3686000108718872,
-            0.1607999950647354,
-            0.15690000355243683,
+            _srgb_to_gltf_linear_float32(0.3686),
+            _srgb_to_gltf_linear_float32(0.1608),
+            _srgb_to_gltf_linear_float32(0.1569),
             1.0,
         ]
     ]
