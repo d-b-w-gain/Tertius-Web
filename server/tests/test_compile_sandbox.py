@@ -274,35 +274,10 @@ building = bd.Compound(children=[part], label="Alpha colour test assembly")
     assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in blended_materials)
 
 
-def test_compile_sandbox_remaps_iterable_build123d_color_to_linear_glb(tmp_path):
+def test_compile_sandbox_preserves_factory_local_build123d_color_in_glb(tmp_path):
     (tmp_path / "design.py").write_text(
-        r'''
-import json
-import struct
-
+        '''
 import build123d as bd
-
-
-def write_tagged_glb(_shape, path, **_kwargs):
-    gltf = {
-        "asset": {"version": "2.0"},
-        "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"name": "=>[0:1:1:3]", "mesh": 0}],
-        "meshes": [{"primitives": [{"material": 0}]}],
-        "materials": [
-            {"pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0]}}
-        ],
-    }
-    encoded = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
-    encoded += b" " * ((4 - len(encoded) % 4) % 4)
-    data = struct.pack("<4sII", b"glTF", 2, 20 + len(encoded))
-    data += struct.pack("<I4s", len(encoded), b"JSON") + encoded
-    with open(path, "wb") as output:
-        output.write(data)
-
-
-bd.export_gltf = write_tagged_glb
 
 
 def make_building():
@@ -324,14 +299,22 @@ building = make_building()
     chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
     assert chunk_type == b"JSON"
     gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
-    material = gltf_json["materials"][0]
-    assert material["pbrMetallicRoughness"]["baseColorFactor"] == [
+    expected_color = [
         _srgb_to_gltf_linear_float32(0.2),
         _srgb_to_gltf_linear_float32(0.3),
         _srgb_to_gltf_linear_float32(0.4),
         0.5,
-    ], gltf_json
-    assert material["alphaMode"] == "BLEND"
+    ]
+    authored_materials = [
+        material
+        for material in gltf_json.get("materials", [])
+        if material.get("extras", {}).get("tertiusAuthoredColor") is True
+    ]
+    assert any(
+        material.get("pbrMetallicRoughness", {}).get("baseColorFactor") == expected_color
+        and material.get("alphaMode") == "BLEND"
+        for material in authored_materials
+    ), gltf_json
 
 
 def test_compile_sandbox_exports_bom_item_metadata_in_glb_node_extras(tmp_path):
