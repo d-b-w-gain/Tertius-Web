@@ -117,10 +117,20 @@ try:
                 tag_to_name = {}
                 tag_to_color = {}
 
+                def srgb_to_linear_float32(component):
+                    if component <= 0.04045:
+                        linear = component / 12.92
+                    else:
+                        linear = ((component + 0.055) / 1.055) ** 2.4
+                    return struct.unpack("<f", struct.pack("<f", linear))[0]
+
                 def color_factor(color):
                     rgba = None
                     try:
-                        if hasattr(color, "to_tuple"):
+                        if isinstance(color, bd.Color):
+                            rgba = list(color)
+                            rgba[:3] = [srgb_to_linear_float32(float(component)) for component in rgba[:3]]
+                        elif hasattr(color, "to_tuple"):
                             rgba = list(color.to_tuple())
                         elif all(hasattr(color, attr) for attr in ("r", "g", "b")):
                             rgba = [color.r, color.g, color.b, getattr(color, "a", 1.0)]

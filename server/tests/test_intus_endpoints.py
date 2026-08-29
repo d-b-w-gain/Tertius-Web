@@ -6,6 +6,15 @@ from sqlalchemy import select
 from core.models import AppUser, LlmEditJob, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership
 from core.project_templates import default_project_files
 from core.pi_agent_messages import PiAgentProgressEvent, PiAgentProgressSnapshot
+from workflows.intus import intus_server
+
+
+def test_health_reports_build123d_version():
+    assert intus_server.health() == {
+        "status": "ok",
+        "build123d_installed": True,
+        "build123d_version": "0.11.1",
+    }
 
 
 def test_projects_are_scoped_to_authenticated_tenant(db_session, authenticated_intus_client, seeded_tenant):

@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version
 import logging
 from typing import Any, Optional, cast
 from uuid import UUID
@@ -104,7 +105,15 @@ async def publish_compile_command(command: CompileCommand) -> None:
 @app.get("/health")
 def health():
     has_b3d = importlib.util.find_spec("build123d") is not None
-    return {"status": "ok", "build123d_installed": has_b3d}
+    try:
+        build123d_version = version("build123d") if has_b3d else None
+    except PackageNotFoundError:
+        build123d_version = None
+    return {
+        "status": "ok",
+        "build123d_installed": has_b3d,
+        "build123d_version": build123d_version,
+    }
 
 @app.get("/project_name")
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
