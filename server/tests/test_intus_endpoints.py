@@ -1,10 +1,20 @@
 from datetime import datetime, timezone
+from importlib.metadata import version
 from uuid import uuid4
 
 from sqlalchemy import select
 
 from core.models import AppUser, LlmEditJob, Project, ProjectFile, SourceSnapshot, Tenant, TenantMembership
 from core.pi_agent_messages import PiAgentProgressEvent, PiAgentProgressSnapshot
+from workflows.intus.intus_server import health
+
+
+def test_health_reports_build123d_version():
+    assert health() == {
+        "status": "ok",
+        "build123d_installed": True,
+        "build123d_version": version("build123d"),
+    }
 
 
 def test_projects_are_scoped_to_authenticated_tenant(db_session, authenticated_intus_client, seeded_tenant):
