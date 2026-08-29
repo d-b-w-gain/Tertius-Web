@@ -78,6 +78,27 @@ part = bd.Box(WIDTH, 20, 10)
     assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
 
 
+def test_compile_sandbox_rejects_empty_builder_context_as_no_shape(tmp_path):
+    (tmp_path / "design.py").write_text(
+        """
+import build123d as bd
+
+class EmptyContext:
+    part = None
+
+bd.BuildPart._get_context = classmethod(
+    lambda cls, caller=None, log=True: EmptyContext()
+)
+""",
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is False
+    assert "No 3D shapes (Solid/Part) were generated" in result.error
+
+
 def test_compile_sandbox_exports_a_generated_structural_assembly(tmp_path):
     (tmp_path / "design.py").write_text(
         """
@@ -251,6 +272,105 @@ building = bd.Compound(children=[part], label="Alpha colour test assembly")
     assert blended_materials
     assert all(material.get("alphaMode") == "BLEND" for material in blended_materials)
     assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in blended_materials)
+
+
+def test_compile_sandbox_preserves_factory_local_build123d_color_in_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        '''
+import build123d as bd
+
+
+def make_building():
+    part = bd.Solid.make_box(20, 20, 20)
+    part.label = "Iterable colour"
+    part.color = bd.Color(0.2, 0.3, 0.4, 0.5)
+    return bd.Compound(children=[part], label="Colour mapping assembly")
+
+
+building = make_building()
+''',
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    data = result.output_path.read_bytes()
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+    expected_color = [
+        _srgb_to_gltf_linear_float32(0.2),
+        _srgb_to_gltf_linear_float32(0.3),
+        _srgb_to_gltf_linear_float32(0.4),
+        0.5,
+    ]
+    authored_materials = [
+        material
+        for material in gltf_json.get("materials", [])
+        if material.get("extras", {}).get("tertiusAuthoredColor") is True
+    ]
+    assert any(
+        material.get("pbrMetallicRoughness", {}).get("baseColorFactor") == expected_color
+        and material.get("alphaMode") == "BLEND"
+        for material in authored_materials
+    ), gltf_json
+
+
+def test_compile_sandbox_remaps_iterable_build123d_color_to_tagged_glb(tmp_path):
+    (tmp_path / "design.py").write_text(
+        r'''
+import json
+import struct
+
+import build123d as bd
+
+
+def write_tagged_glb(_shape, path, **_kwargs):
+    gltf = {
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "=>[0:1:1:3]", "mesh": 0}],
+        "meshes": [{"primitives": [{"material": 0}]}],
+        "materials": [
+            {"pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0]}}
+        ],
+    }
+    encoded = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    encoded += b" " * ((4 - len(encoded) % 4) % 4)
+    data = struct.pack("<4sII", b"glTF", 2, 20 + len(encoded))
+    data += struct.pack("<I4s", len(encoded), b"JSON") + encoded
+    with open(path, "wb") as output:
+        output.write(data)
+
+
+bd.export_gltf = write_tagged_glb
+
+part = bd.Solid.make_box(20, 20, 20)
+part.label = "Iterable colour"
+part.color = bd.Color(0.2, 0.3, 0.4, 0.5)
+building = bd.Compound(children=[part], label="Colour mapping assembly")
+''',
+        encoding="utf-8",
+    )
+
+    result = run_compile_sandbox(tmp_path, "glb", timeout_seconds=30)
+
+    assert result.success is True, result.error
+    data = result.output_path.read_bytes()
+    chunk_len, chunk_type = struct.unpack("<I4s", data[12:20])
+    assert chunk_type == b"JSON"
+    gltf_json = json.loads(data[20 : 20 + chunk_len].decode("utf-8"))
+    material = gltf_json["materials"][0]
+    assert material["pbrMetallicRoughness"]["baseColorFactor"] == [
+        _srgb_to_gltf_linear_float32(0.2),
+        _srgb_to_gltf_linear_float32(0.3),
+        _srgb_to_gltf_linear_float32(0.4),
+        0.5,
+    ], gltf_json
+    assert material["alphaMode"] == "BLEND"
+    assert material["extras"]["tertiusAuthoredColor"] is True
 
 
 def test_compile_sandbox_exports_bom_item_metadata_in_glb_node_extras(tmp_path):
