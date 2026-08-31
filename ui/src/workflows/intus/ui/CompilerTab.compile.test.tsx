@@ -184,6 +184,44 @@ describe('CompilerTab compile jobs', () => {
     expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps polling a compile job through a temporary backend recovery response', async () => {
+    mocks.apiFetch
+      .mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-1', status: 'queued' }))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: new Headers({ 'Retry-After': '1' }),
+        json: vi.fn().mockResolvedValue({ error: 'Backend is recovering; polling paused briefly.' }),
+      })
+      .mockResolvedValueOnce(jsonResponse({
+        job_id: 'job-1',
+        status: 'succeeded',
+        format: 'glb',
+        artifact_id: 'artifact-after-recovery',
+      }))
+
+    await renderCompiler()
+    vi.useFakeTimers()
+
+    fireEvent.click(screen.getByRole('button', { name: /Compile & Export/i }))
+    await act(async () => {})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect(screen.getByText(/Backend is recovering/)).toBeInTheDocument()
+    expect(screen.getByText(/Retrying compile job job-1/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Compiling/i })).toBeDisabled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000)
+    })
+
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(3)
+    expect(screen.getByText(/Compiled glb artifact artifact-after-recovery/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Compile & Export/i })).toBeEnabled()
+  })
+
   it('shows retry affordance when queueing returns a retryable failure job', async () => {
     mocks.apiFetch.mockResolvedValueOnce(jsonResponse({
       success: false,
