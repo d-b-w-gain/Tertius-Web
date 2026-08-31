@@ -341,6 +341,8 @@ def _local_profile(product: ProductDefinition, length_mm: float) -> bd.Shape:
                 if bend_vertices:
                     bd.fillet(bend_vertices, radius=inside_radius)
         bd.extrude(amount=length_mm)
+    if member.part is None:
+        raise RuntimeError("Lysaght member profile did not produce a solid")
     return member.part
 
 
