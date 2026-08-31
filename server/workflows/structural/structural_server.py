@@ -428,6 +428,12 @@ def _member_length(member: dict) -> float:
 
 
 _PRIMARY_RESTRAINT_ROLE_PAIRS: dict[str, frozenset[str]] = {
+    "roof/ceiling purlin": frozenset(
+        {
+            "left roof-plane tension cross brace",
+            "right roof-plane tension cross brace",
+        }
+    ),
     "portal rafter": frozenset(
         {
             "roof/ceiling purlin",

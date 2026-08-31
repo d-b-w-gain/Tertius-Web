@@ -224,6 +224,117 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
     )
 
 
+def test_roof_brace_crossing_is_a_purlin_restraint_candidate() -> None:
+    components = [
+        DesignComponent(
+            id="P1",
+            label="Roof purlin",
+            kind="member",
+            visual_node_id="P1",
+            part_number="C10012",
+            role="roof/ceiling purlin",
+        ),
+        DesignComponent(
+            id="B1",
+            label="Roof-plane cross brace",
+            kind="member",
+            visual_node_id="B1",
+            part_number="DESIGN-TBD-BRACE-STRAP-30X1.0",
+            role="left roof-plane tension cross brace",
+        ),
+        *[
+            DesignComponent(
+                id=f"S{index}",
+                label=f"Crossing screw {index}",
+                kind="connector",
+                visual_node_id=f"S{index}",
+                part_number="6-311-0695-5MP",
+                role="cross-brace connection fastener",
+            )
+            for index in (1, 2)
+        ],
+    ]
+    declarations = [
+        AnalyticalMemberDeclaration(
+            id="member:P1:segment:01",
+            label="Purlin segment 1",
+            component_id="P1",
+            start=Vector3(x=0, y=0, z=2),
+            end=Vector3(x=0, y=1, z=2),
+            start_node_key="PURLIN-START",
+            end_node_key="joint:STRAP-PURLIN",
+            section_id="C10012",
+            material_id="G450",
+            assumption="Compiled physical purlin segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:P1:segment:02",
+            label="Purlin segment 2",
+            component_id="P1",
+            start=Vector3(x=0, y=1, z=2),
+            end=Vector3(x=0, y=2, z=2),
+            start_node_key="joint:STRAP-PURLIN",
+            end_node_key="PURLIN-END",
+            section_id="C10012",
+            material_id="G450",
+            assumption="Compiled physical purlin segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:B1:segment:01",
+            label="Brace segment 1",
+            component_id="B1",
+            start=Vector3(x=-1, y=0, z=2),
+            end=Vector3(x=0, y=1, z=2),
+            start_node_key="BRACE-START",
+            end_node_key="joint:STRAP-PURLIN",
+            section_id="STRAP30X1",
+            material_id="G450",
+            assumption="Compiled physical brace segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:B1:segment:02",
+            label="Brace segment 2",
+            component_id="B1",
+            start=Vector3(x=0, y=1, z=2),
+            end=Vector3(x=1, y=2, z=2),
+            start_node_key="joint:STRAP-PURLIN",
+            end_node_key="BRACE-END",
+            section_id="STRAP30X1",
+            material_id="G450",
+            assumption="Compiled physical brace segment.",
+        ),
+    ]
+    projection = {
+        "joints": [
+            {
+                "connection_id": "STRAP-PURLIN",
+                "ports": [
+                    {"component_id": "P1", "port": "roof-brace:A"},
+                    {"component_id": "B1", "port": "purlin:2"},
+                ],
+                "connector_component_ids": ["S1", "S2"],
+                "transfers": ["force", "shear"],
+            }
+        ]
+    }
+
+    candidates = _derive_member_restraint_candidates(
+        projection,
+        components=components,
+        declarations=declarations,
+    )
+
+    assert len(candidates) == 2
+    assert {candidate.member_id for candidate in candidates} == {
+        "member:P1:segment:01",
+        "member:P1:segment:02",
+    }
+    assert all(candidate.bracing_component_id == "B1" for candidate in candidates)
+    assert all(candidate.restrains_lateral_translation for candidate in candidates)
+    assert all(not candidate.restrains_twist for candidate in candidates)
+    assert all(candidate.evidence_status == "candidate" for candidate in candidates)
+
+
 def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     tmp_path,
 ) -> None:
