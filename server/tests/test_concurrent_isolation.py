@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from uuid import uuid4
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -200,6 +200,8 @@ def test_concurrent_artifact_prune_and_create_do_not_conflict(postgres_url, db_s
                 "stl",
                 max(1, settings_retention),
             )
+            assert prunable
+            assert all("content" in inspect(artifact).unloaded for artifact in prunable)
             barrier.wait(timeout=10)
             prune_repo.delete_artifacts(prunable)
             session.commit()
