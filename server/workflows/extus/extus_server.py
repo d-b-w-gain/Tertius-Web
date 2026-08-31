@@ -273,6 +273,21 @@ def get_procurement(ctx: AuthContext = Depends(get_auth_context), db: Session = 
     }
 
 
+@app.get("/procurement_analysis")
+def get_procurement_analysis(
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    """Serve the deterministic compile projection under the newer UI route.
+
+    The structural-enabled runtime emits ``tertius.procurement.v1`` directly
+    from the compile.  Newer clients request ``/procurement_analysis``; keep
+    that route compatible without replacing the authoritative compile artifact
+    with a GLTF-derived approximation.
+    """
+    return get_procurement(ctx=ctx, db=db)
+
+
 @app.get("/artifacts/{artifact_id}/model")
 def get_model_by_artifact_id(
     artifact_id: UUID,

@@ -734,6 +734,42 @@ def test_physical_load_stations_are_mapped_onto_trimmed_solver_axis(tmp_path) ->
     assert mapped.end_distance_m == pytest.approx(analytical_length)
 
 
+def test_capture_accepts_machine_precision_load_endpoint_roundoff(tmp_path) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    configuration = StructuralProjectConfiguration.model_validate(
+        default_structural_configuration()
+    )
+    capture_data = _capture_from_structural_projection(
+        execution.projections["structural"],
+        project_name="load-endpoint-roundoff",
+        configuration=configuration,
+    ).model_dump(mode="python")
+    analysis = capture_data["analysis"]
+    assert analysis is not None
+    self_weight = next(
+        load
+        for load in analysis["member_distributed_loads"]
+        if load["source_kind"] == "self_weight"
+    )
+    member = next(
+        item for item in analysis["members"] if item["id"] == self_weight["member_id"]
+    )
+    member_length = dist(member["start"].values(), member["end"].values())
+    self_weight["end_distance_m"] = member_length + 5e-10
+
+    validated = ProjectStructuralCapture.model_validate(capture_data)
+
+    assert validated.analysis is not None
+    validated_load = next(
+        load
+        for load in validated.analysis.member_distributed_loads
+        if load.id == self_weight["id"]
+    )
+    assert validated_load.end_distance_m == pytest.approx(member_length, abs=1e-9)
+
+
 def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> None:
     for filename, content in default_project_files().items():
         (tmp_path / filename).write_text(content, encoding="utf-8")

@@ -376,11 +376,16 @@ def test_extus_procurement_reports_ready_artifact(
     )
 
     response = authenticated_extus_client.get("/procurement")
+    compatibility_response = authenticated_extus_client.get(
+        "/procurement_analysis"
+    )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["artifact_state"] == "ready"
     assert payload["manifest_counts"]["requirements"] == 1
+    assert compatibility_response.status_code == 200
+    assert compatibility_response.json() == payload
 
 
 def test_extus_procurement_reports_stale_artifact_for_model_mismatch(

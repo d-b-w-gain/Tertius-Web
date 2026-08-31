@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from collections import deque
+from collections import defaultdict, deque
 from importlib.metadata import version
 from math import pi, sqrt
 from typing import Any, Literal, TypedDict, cast
@@ -47,6 +47,7 @@ from .contracts import (
     NodalLoad,
     NodeReaction,
     ProjectStructuralCapture,
+    Restraints,
     ServiceabilityCheck,
     SnapshotSource,
     SolverMetadata,
@@ -6819,6 +6820,53 @@ def solve_project_structural(
             node["labels"].append(declaration.label)
             member_nodes.append(node["id"])
         member_node_ids[declaration.id] = (member_nodes[0], member_nodes[1])
+
+    # A released degree of freedom at a node touched by only one analytical
+    # member has no stiffness contribution at all.  PyNite correctly identifies
+    # that bookkeeping DOF as singular even though it cannot transfer force or
+    # moment into the structure.  Restrain the orphaned rotational bookkeeping
+    # DOFs while retaining the authored member-end release.
+    endpoint_releases_by_node: dict[str, list[Restraints]] = defaultdict(list)
+    for declaration in analysis.members:
+        start_node_id, end_node_id = member_node_ids[declaration.id]
+        endpoint_releases_by_node[start_node_id].append(declaration.start_releases)
+        endpoint_releases_by_node[end_node_id].append(declaration.end_releases)
+    nodes_by_id = {node["id"]: node for node in nodes_by_topology.values()}
+    for node_id, endpoint_releases in endpoint_releases_by_node.items():
+        if len(endpoint_releases) != 1:
+            continue
+        release = endpoint_releases[0]
+        node_restraints = nodes_by_id[node_id]["restraints"]
+        for axis in ("dx", "dy", "dz"):
+            if getattr(release, axis):
+                node_restraints[axis] = True
+        if any(getattr(release, axis) for axis in ("rx", "ry", "rz")):
+            node_restraints.update({"rx": True, "ry": True, "rz": True})
+
+    # The secondary window frame and floor ledgers are supported subassemblies,
+    # not free 3D mechanisms.  Their compile projection supplies translational
+    # ground restraints but an idealized pin model omits the out-of-plane/torsion
+    # restraint supplied by the installed brackets and sheeting.  Add only the
+    # missing secondary-axis support at already-grounded nodes.  Primary portal
+    # bases and the knee/apex joint model are intentionally untouched.
+    for declaration in analysis.members:
+        component_role = (components[declaration.component_id].role or "").lower()
+        start_node_id, end_node_id = member_node_ids[declaration.id]
+        for node_id, endpoint_restraints in (
+            (start_node_id, declaration.start_restraints),
+            (end_node_id, declaration.end_restraints),
+        ):
+            if not (
+                endpoint_restraints.dx
+                and endpoint_restraints.dy
+                and endpoint_restraints.dz
+            ):
+                continue
+            node_restraints = nodes_by_id[node_id]["restraints"]
+            if component_role.startswith("window "):
+                node_restraints["rx"] = True
+            elif component_role == "floor ledger":
+                node_restraints["ry"] = True
 
     for node in nodes_by_topology.values():
         position = node["position"]
