@@ -23,6 +23,7 @@ from core.structural.contracts import (
     SectionProperties,
     StructuralMaterial,
     TensionMemberCheck,
+    Vector3,
 )
 from core.structural.design_capture import (
     capture_project_structural_declaration,
@@ -1054,6 +1055,33 @@ def test_orphaned_released_node_dofs_do_not_make_solver_singular():
 
     assert len(snapshot.member_results) == 2
     assert snapshot.equilibrium.status == "pass"
+
+
+def test_axial_only_tie_is_not_checked_as_a_bending_member():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="axial_tie_serviceability",
+    )
+    assert capture.analysis is not None
+    beam = next(member for member in capture.analysis.members if member.id == "beam-axis")
+    beam.tension_only = True
+    beam_load = next(
+        load
+        for load in capture.analysis.member_distributed_loads
+        if load.id == "beam-service-load"
+    )
+    beam_load.start_force_kN_m = Vector3(x=1, y=0, z=0)
+    beam_load.end_force_kN_m = Vector3(x=1, y=0, z=0)
+
+    snapshot = solve_project_structural(capture, combination_id="SLS-G+Q")
+    check = next(
+        item for item in snapshot.serviceability_checks if item.member_id == "beam-axis"
+    )
+
+    assert check.status == "not_checked"
+    assert check.utilisation is None
+    assert check.displacement_mm == 0
+    assert "axial-only" in check.basis
 
 
 def test_site_policy_auto_selects_governing_credible_service_combination():

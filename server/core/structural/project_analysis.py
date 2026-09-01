@@ -7478,15 +7478,16 @@ def solve_project_structural(
                 max_displacement,
                 sqrt(sum(value**2 for value in local_displacement)),
             )
-            max_relative_deflection = max(
-                max_relative_deflection,
-                _relative_transverse_deflection_mm(
-                    local_displacement,
-                    start_local_displacement,
-                    end_local_displacement,
-                    ratio,
-                ),
-            )
+            if not (declaration.tension_only or declaration.compression_only):
+                max_relative_deflection = max(
+                    max_relative_deflection,
+                    _relative_transverse_deflection_mm(
+                        local_displacement,
+                        start_local_displacement,
+                        end_local_displacement,
+                        ratio,
+                    ),
+                )
             stations.append(
                 MemberDiagramStation(
                     distance_m=distance,
@@ -7712,6 +7713,9 @@ def solve_project_structural(
                 "displacement_mm": max_relative_deflection,
                 "limits_mm": [],
                 "bases": [],
+                "axial_only": (
+                    declaration.tension_only or declaration.compression_only
+                ),
             },
         )
         group["member_ids"].append(declaration.id)
@@ -7723,6 +7727,9 @@ def solve_project_structural(
             group["limits_mm"].append(limit_mm)
         if declaration.deflection_limit_basis:
             group["bases"].append(declaration.deflection_limit_basis)
+        group["axial_only"] = bool(group["axial_only"]) or (
+            declaration.tension_only or declaration.compression_only
+        )
 
     for group in serviceability_groups.values():
         group_limits = [float(value) for value in group["limits_mm"]]
@@ -7731,7 +7738,9 @@ def solve_project_structural(
         basis = "; ".join(bases)
         displacement_mm = float(group["displacement_mm"])
         checked = (
-            active_combination.limit_state == "serviceability" and limit_mm is not None
+            active_combination.limit_state == "serviceability"
+            and limit_mm is not None
+            and not bool(group["axial_only"])
         )
         utilisation = displacement_mm / limit_mm if checked and limit_mm else None
         serviceability_checks.append(
@@ -7754,14 +7763,20 @@ def solve_project_structural(
                 ),
                 basis=(
                     (
-                        basis
-                        if basis
-                        else "Deflection checks require a serviceability combination "
-                        "and an authored project criterion."
+                        "Transverse L/n deflection is not applicable to an axial-only "
+                        "tension/compression member. Axial deformation and resistance "
+                        "remain in the member and bracing checks."
+                        if bool(group["axial_only"])
+                        else (
+                            basis
+                            if basis
+                            else "Deflection checks require a serviceability "
+                            "combination and an authored project criterion."
+                        )
+                        + " Member deflection is measured relative to the displaced "
+                        "straight chord between its ends; overall frame drift is a "
+                        "separate serviceability check."
                     )
-                    + " Member deflection is measured relative to the displaced "
-                    "straight chord between its ends; overall frame drift is a "
-                    "separate serviceability check."
                 ),
             )
         )
