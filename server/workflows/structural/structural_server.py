@@ -449,6 +449,10 @@ _PRIMARY_RESTRAINT_ROLE_PAIRS: dict[str, frozenset[str]] = {
             "long-wall tension cross brace",
         }
     ),
+    # A solid bridge is itself a flexural member.  Its two bolted web joints
+    # must therefore be available as end-restraint candidates, not only as
+    # intermediate restraints for the roof purlins that it crosses.
+    "roof purlin solid bridging": frozenset({"roof/ceiling purlin"}),
 }
 
 

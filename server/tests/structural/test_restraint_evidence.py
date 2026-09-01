@@ -6,6 +6,9 @@ from core.structural.restraint_evidence import (
 
 
 PACK_ID = "lysaght-zc-2026-08-c10012-100ac-pb1230hs"
+SOLID_BRIDGE_PACK_ID = (
+    "lysaght-zc-2026-09-c10012-solid-bridge-100ac-pb1230hs"
+)
 
 
 def test_restraint_evidence_pack_matches_exact_rendered_configuration() -> None:
@@ -41,6 +44,32 @@ def test_restraint_evidence_pack_is_selected_from_exact_rendered_parts() -> None
     assert resolution is not None
     assert resolution.pack_id == PACK_ID
     assert resolution.identity_status == "pass"
+
+
+def test_solid_bridge_pack_matches_four_bolt_web_connection() -> None:
+    resolution = match_restraint_evidence_pack(
+        RestraintConfigurationIdentity(
+            primary_part_number="C10012",
+            bracing_part_number="C10012",
+            connector_part_numbers=[
+                "PB1230HS",
+                "100AC",
+                "PB1230HS",
+                "PB1230HS",
+                "PB1230HS",
+            ],
+        )
+    )
+
+    assert resolution is not None
+    assert resolution.pack_id == SOLID_BRIDGE_PACK_ID
+    assert resolution.identity_status == "pass"
+    assert resolution.restrains_lateral_translation is True
+    assert resolution.restrains_twist is True
+    assert resolution.restrained_flange == "both"
+    assert resolution.design_force_capacity_kN is None
+    assert resolution.design_moment_capacity_kNm is None
+    assert resolution.stiffness_status == "unverified"
 
 
 def test_restraint_evidence_pack_fails_closed_on_generic_short_bolts() -> None:

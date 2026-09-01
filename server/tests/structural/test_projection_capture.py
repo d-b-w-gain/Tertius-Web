@@ -345,6 +345,123 @@ def test_roof_bracing_connection_is_a_purlin_restraint_candidate(
     assert all(candidate.evidence_status == "candidate" for candidate in candidates)
 
 
+def test_solid_bridge_joint_restraints_are_derived_in_both_directions() -> None:
+    components = [
+        DesignComponent(
+            id="P1",
+            label="Roof purlin",
+            kind="member",
+            visual_node_id="P1",
+            part_number="C10012",
+            role="roof/ceiling purlin",
+        ),
+        DesignComponent(
+            id="B1",
+            label="Full-depth solid bridge",
+            kind="member",
+            visual_node_id="B1",
+            part_number="C10012",
+            role="roof purlin solid bridging",
+        ),
+        DesignComponent(
+            id="AC1",
+            label="100AC angle",
+            kind="connector",
+            visual_node_id="AC1",
+            part_number="100AC",
+            role="roof purlin solid bridging connection",
+        ),
+        *[
+            DesignComponent(
+                id=f"PB{index}",
+                label=f"PB1230HS bolt {index}",
+                kind="connector",
+                visual_node_id=f"PB{index}",
+                part_number="PB1230HS",
+                role="roof purlin solid bridging connection",
+            )
+            for index in range(1, 5)
+        ],
+    ]
+    declarations = [
+        AnalyticalMemberDeclaration(
+            id="member:P1:left",
+            label="Purlin left segment",
+            component_id="P1",
+            start=Vector3(x=0, y=0, z=0),
+            end=Vector3(x=1, y=0, z=0),
+            start_node_key="PURLIN-START",
+            end_node_key="joint:BRIDGE-JOINT",
+            section_id="C10012",
+            material_id="G500",
+            assumption="Compiled physical purlin segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:P1:right",
+            label="Purlin right segment",
+            component_id="P1",
+            start=Vector3(x=1, y=0, z=0),
+            end=Vector3(x=2, y=0, z=0),
+            start_node_key="joint:BRIDGE-JOINT",
+            end_node_key="PURLIN-END",
+            section_id="C10012",
+            material_id="G500",
+            assumption="Compiled physical purlin segment.",
+        ),
+        AnalyticalMemberDeclaration(
+            id="member:B1",
+            label="Solid bridge",
+            component_id="B1",
+            start=Vector3(x=1, y=-1, z=0),
+            end=Vector3(x=1, y=0, z=0),
+            start_node_key="BRIDGE-START",
+            end_node_key="joint:BRIDGE-JOINT",
+            section_id="C10012",
+            material_id="G500",
+            assumption="Compiled full-depth bridge.",
+        ),
+    ]
+    projection = {
+        "joints": [
+            {
+                "connection_id": "BRIDGE-JOINT",
+                "ports": [
+                    {"component_id": "P1", "port": "solid-bridge"},
+                    {"component_id": "B1", "port": "end"},
+                ],
+                "connector_component_ids": [
+                    "AC1",
+                    "PB1",
+                    "PB2",
+                    "PB3",
+                    "PB4",
+                ],
+                "transfers": ["force", "shear", "moment"],
+            }
+        ]
+    }
+
+    candidates = _derive_member_restraint_candidates(
+        projection,
+        components=components,
+        declarations=declarations,
+    )
+
+    assert {candidate.member_id for candidate in candidates} == {
+        "member:P1:left",
+        "member:P1:right",
+        "member:B1",
+    }
+    assert all(candidate.restrains_lateral_translation for candidate in candidates)
+    assert all(candidate.restrains_twist for candidate in candidates)
+    assert all(candidate.restrained_flange == "both" for candidate in candidates)
+    assert all(
+        candidate.evidence_pack_id
+        == "lysaght-zc-2026-09-c10012-solid-bridge-100ac-pb1230hs"
+        for candidate in candidates
+    )
+
+
 def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     tmp_path,
 ) -> None:
