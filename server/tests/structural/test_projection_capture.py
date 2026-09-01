@@ -224,7 +224,17 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
     )
 
 
-def test_roof_brace_crossing_is_a_purlin_restraint_candidate() -> None:
+@pytest.mark.parametrize(
+    "bracing_role",
+    (
+        "left roof-plane tension cross brace",
+        "right roof-plane tension cross brace",
+        "roof purlin solid bridging",
+    ),
+)
+def test_roof_bracing_connection_is_a_purlin_restraint_candidate(
+    bracing_role: str,
+) -> None:
     components = [
         DesignComponent(
             id="P1",
@@ -240,7 +250,7 @@ def test_roof_brace_crossing_is_a_purlin_restraint_candidate() -> None:
             kind="member",
             visual_node_id="B1",
             part_number="DESIGN-TBD-BRACE-STRAP-30X1.0",
-            role="left roof-plane tension cross brace",
+            role=bracing_role,
         ),
         *[
             DesignComponent(

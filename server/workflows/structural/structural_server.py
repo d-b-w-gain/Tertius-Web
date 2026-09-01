@@ -432,6 +432,7 @@ _PRIMARY_RESTRAINT_ROLE_PAIRS: dict[str, frozenset[str]] = {
         {
             "left roof-plane tension cross brace",
             "right roof-plane tension cross brace",
+            "roof purlin solid bridging",
         }
     ),
     "portal rafter": frozenset(
