@@ -18,6 +18,7 @@ from core.structural.contracts import (
     DesignConnection,
     MemberStabilityComparison,
     ProjectStructuralCapture,
+    Restraints,
     SectionCatalogReference,
     SectionProperties,
     StructuralMaterial,
@@ -1038,6 +1039,21 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     )
     assert actions_sheet.equations
     assert actions_sheet.related_member_ids == ["column-axis", "beam-axis"]
+
+
+def test_orphaned_released_node_dofs_do_not_make_solver_singular():
+    capture = parse_project_structural_capture(
+        GRAVITY_FRAME_DESIGN,
+        project_name="released_free_end",
+    )
+    assert capture.analysis is not None
+    beam = next(member for member in capture.analysis.members if member.id == "beam-axis")
+    beam.end_releases = Restraints(ry=True, rz=True)
+
+    snapshot = solve_project_structural(capture, combination_id="SLS-G+Q")
+
+    assert len(snapshot.member_results) == 2
+    assert snapshot.equilibrium.status == "pass"
 
 
 def test_site_policy_auto_selects_governing_credible_service_combination():
