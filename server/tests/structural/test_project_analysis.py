@@ -36,8 +36,10 @@ from core.structural.project_analysis import (
     _calculated_anchored_fixture_resistance,
     _connection_checks,
     _off_axis_load_path,
+    _released_rotational_datum_restraints,
     _released_node_rotational_axes,
     _relative_transverse_deflection_mm,
+    _select_calculated_connection_resistance,
     _stability_scope_comparisons,
     _tension_member_checks,
     solve_project_structural,
@@ -87,6 +89,30 @@ def test_shared_pin_stabilizes_only_rotations_with_zero_member_stiffness() -> No
     )
     assert _released_node_rotational_axes(
         [(identity, Restraints())]
+    ) == ()
+
+
+def test_axis_aligned_torsion_chain_gets_one_zero_energy_rotation_datum() -> None:
+    identity = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    pinned_bending = Restraints(ry=True, rz=True)
+    free = {
+        "left": {axis: False for axis in ("dx", "dy", "dz", "rx", "ry", "rz")},
+        "right": {axis: False for axis in ("dx", "dy", "dz", "rx", "ry", "rz")},
+    }
+
+    assert _released_rotational_datum_restraints(
+        [("left", "right", identity, pinned_bending, pinned_bending)],
+        free,
+    ) == (("left", "rx"),)
+
+    free["right"]["rx"] = True
+    assert _released_rotational_datum_restraints(
+        [("left", "right", identity, pinned_bending, pinned_bending)],
+        free,
     ) == ()
 
 
@@ -435,12 +461,14 @@ def test_tension_segment_uses_its_two_node_connections_not_every_component_joint
         iy_m4=5.472e-12,
         iz_m4=5.4872e-9,
         torsion_j_m4=2.1888e-11,
-        tension_gross_area_mm2=45.6,
-        tension_net_area_mm2=33.6,
+        tension_width_mm=38.0,
         tension_thickness_mm=1.2,
-        end_fastener_nominal_diameter_mm=5.0,
-        end_fastener_spacing_mm=15.0,
-        end_fastener_edge_distance_mm=20.0,
+        tension_hole_diameter_mm=6.3,
+        tension_holes_in_critical_section=2,
+        tension_force_distribution_factor=1.0,
+        end_fastener_nominal_diameter_mm=6.3,
+        end_fastener_spacing_mm=19.0,
+        end_fastener_edge_distance_mm=30.0,
     )
     support_section = SectionProperties(
         id="support",
@@ -519,20 +547,23 @@ def test_tension_segment_uses_its_two_node_connections_not_every_component_joint
     fasteners = {
         fastener_id: DesignComponent(
             id=fastener_id,
-            label="Buildex Smooth Top Tek",
+            label="Buildex 14-20x22 Metal Tek",
             kind="connector",
             visual_node_id=fastener_id,
-            part_number="6-311-0695-5MP",
-            product_key="buildex:smooth-top-tek:6-311-0695-5mp",
+            part_number="6-311-3038-5C4",
+            product_key="buildex:metal-tek:6-311-3038-5c4",
             product_definition_digest="d" * 64,
             structural_evidence_status="verified",
-            structural_evidence_basis="Buildex PDS 31195-PDS Issue 2.",
+            structural_evidence_basis="Buildex 31293-PDS.",
             structural_properties={
-                "nominal_diameter_mm": 5.0,
-                "tested_single_shear_strength_kN": 5.75,
-                "test_evidence_source": "Buildex PDS 31195-PDS, Issue 2",
-                "test_evidence_revision": "Issue 2, 5 July 2017",
-                "test_evidence_url": "https://example.test/buildex-pds.pdf",
+                "nominal_diameter_mm": 6.3,
+                "tested_single_shear_strength_kN": 11.2,
+                "test_evidence_source": "Buildex 31293-PDS",
+                "test_evidence_revision": "31293-PDS",
+                "test_evidence_url": (
+                    "https://www.buildex.com.au/products/roofing-cladding/"
+                    "24-fixing-to-metal-teks/110-metal-teks-cladding"
+                ),
             },
         )
         for _connection_id, _support_id, fastener_ids in connection_specs
@@ -546,7 +577,7 @@ def test_tension_segment_uses_its_two_node_connections_not_every_component_joint
         fasteners,
     )[0]
 
-    assert check.status == "pass"
+    assert check.status == "pass", check.model_dump()
     assert check.rendered_end_connection_count == 2
     assert check.rendered_end_fastener_counts == [2, 2]
 
@@ -873,7 +904,9 @@ def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
             visual_node_id="fixture",
             part_number="SHED-C100-ONS-BASE-6",
             structural_properties={
-                "base_fixture_capacity_status": "not_checked",
+                "anchored_fixture_capacity_pack_id": (
+                    "specified_grade_pinned_steel_fixture"
+                ),
             },
         ),
         **{
@@ -1174,21 +1207,24 @@ def test_exact_self_drilling_screw_group_calculates_connected_sheet_bearing() ->
             *(
                 DesignComponent(
                     id=f"screw-{index}",
-                    label="Buildex Smooth Top Tek",
+                    label="Buildex 14-20x22 Metal Tek",
                     kind="connector",
                     visual_node_id=f"screw-{index}",
-                    part_number="6-311-0695-5MP",
-                    product_key="buildex:smooth-top-tek:6-311-0695-5mp",
+                    part_number="6-311-3038-5C4",
+                    product_key="buildex:metal-tek:6-311-3038-5c4",
                     product_definition_digest="b" * 64,
                     structural_evidence_status="verified",
-                    structural_evidence_basis="Buildex PDS 31195-PDS Issue 2.",
+                    structural_evidence_basis="Buildex 31293-PDS.",
                     structural_properties={
                         "fastener_type": "self_drilling_screw",
-                        "nominal_diameter_mm": 5.0,
-                        "tested_single_shear_strength_kN": 5.75,
-                        "test_evidence_source": "Buildex 31195-PDS Issue 2",
-                        "test_evidence_revision": "Issue 2, 5 July 2017",
-                        "test_evidence_url": "https://example.test/31195-PDS.pdf",
+                        "nominal_diameter_mm": 6.3,
+                        "tested_single_shear_strength_kN": 11.2,
+                        "test_evidence_source": "Buildex 31293-PDS",
+                        "test_evidence_revision": "31293-PDS",
+                        "test_evidence_url": (
+                            "https://www.buildex.com.au/products/roofing-cladding/"
+                            "24-fixing-to-metal-teks/110-metal-teks-cladding"
+                        ),
                     },
                 )
                 for index in range(2)
@@ -1266,6 +1302,62 @@ def test_exact_self_drilling_screw_group_calculates_connected_sheet_bearing() ->
     assert check.governing_utilisation is not None
     assert check.governing_utilisation < 1.0
     assert check.stiffness_status == "unverified"
+
+
+def _calculated_connection_result(
+    status: str,
+    *,
+    pack_id: str,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "evidence_status": "verified" if status != "unsupported" else "candidate",
+        "pack_id": pack_id,
+        "pack_version": "test",
+        "design_force_capacity_kN": 1.0 if status != "unsupported" else None,
+        "design_moment_capacity_kNm": 1.0 if status != "unsupported" else None,
+        "governing_utilisation": 0.5 if status != "unsupported" else None,
+        "stiffness_status": "verified" if status != "unsupported" else "unverified",
+        "stiffness_basis": "test",
+        "source": "test",
+        "source_sha256": None,
+        "basis": "test",
+        "blockers": [],
+    }
+
+
+def test_non_ground_connection_uses_complete_cleat_instead_of_partial_fixture() -> None:
+    partial_fixture = _calculated_connection_result(
+        "unsupported", pack_id="partial-fixture"
+    )
+    verified_cleat = _calculated_connection_result("pass", pack_id="verified-cleat")
+
+    selected = _select_calculated_connection_resistance(
+        grounded=False,
+        anchored_fixture=partial_fixture,  # type: ignore[arg-type]
+        cleat=verified_cleat,  # type: ignore[arg-type]
+        screw=None,
+        gusset=None,
+    )
+
+    assert selected is verified_cleat
+
+
+def test_ground_connection_does_not_drop_incomplete_foundation_path() -> None:
+    partial_fixture = _calculated_connection_result(
+        "unsupported", pack_id="partial-fixture"
+    )
+    verified_cleat = _calculated_connection_result("pass", pack_id="verified-cleat")
+
+    selected = _select_calculated_connection_resistance(
+        grounded=True,
+        anchored_fixture=partial_fixture,  # type: ignore[arg-type]
+        cleat=verified_cleat,  # type: ignore[arg-type]
+        screw=None,
+        gusset=None,
+    )
+
+    assert selected is partial_fixture
 
 
 @pytest.mark.parametrize(
@@ -1361,18 +1453,22 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness(
     )
     declarations = [
         SimpleNamespace(
-            id=f"{component_id}-axis",
+            id=f"{component_id}-axis-{segment_index}",
             component_id=component_id,
             section_id="c10019",
             material_id="g450",
             tension_only=False,
             analytical_role="physical",
-            start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
-            end=SimpleNamespace(x=0.0, y=0.0, z=2.4),
-            start_node_key="joint:knee",
+            start=SimpleNamespace(x=0.0, y=0.0, z=start_z),
+            end=SimpleNamespace(x=0.0, y=0.0, z=end_z),
+            start_node_key="joint:knee" if segment_index == 1 else None,
             end_node_key=None,
         )
         for component_id in ("column", "rafter")
+        for segment_index, (start_z, end_z) in enumerate(
+            ((0.0, 0.15), (0.15, 2.4)),
+            start=1,
+        )
     ]
     analysis = SimpleNamespace(
         load_combinations=[

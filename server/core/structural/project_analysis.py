@@ -109,6 +109,36 @@ class _CalculatedConnectionResistance(TypedDict):
     blockers: list[str]
 
 
+def _select_calculated_connection_resistance(
+    *,
+    grounded: bool,
+    anchored_fixture: _CalculatedConnectionResistance | None,
+    cleat: _CalculatedConnectionResistance | None,
+    screw: _CalculatedConnectionResistance | None,
+    gusset: _CalculatedConnectionResistance | None,
+) -> _CalculatedConnectionResistance | None:
+    """Choose the complete applicable resistance model for a rendered joint.
+
+    Several calculators deliberately return an ``unsupported`` candidate when
+    they recognise only part of a joint. That partial candidate must not mask a
+    later calculator that can verify the complete joint. Grounded joints still
+    give the anchored-fixture model first refusal because a cleat-only result
+    cannot establish the foundation load path.
+    """
+
+    if grounded and anchored_fixture is not None:
+        return anchored_fixture
+    candidates = (cleat, screw, gusset, anchored_fixture)
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate is not None and candidate["status"] != "unsupported"
+        ),
+        next((candidate for candidate in candidates if candidate is not None), None),
+    )
+
+
 class StructuralAnalysisError(ValueError):
     """Raised when the active design cannot be represented by the MVP solver."""
 
@@ -414,8 +444,14 @@ def _bolted_sheet_interface_check(
         components[component_id]
         for component_id in connection.connector_component_ids
         if component_id in components
-        and components[component_id].structural_properties.get(
-            "base_fixture_capacity_status"
+        and (
+            components[component_id].structural_properties.get(
+                "base_fixture_capacity_status"
+            )
+            or components[component_id].structural_properties.get(
+                "anchored_fixture_capacity_pack_id"
+            )
+            == "specified_grade_pinned_steel_fixture"
         )
     ]
     fixture_part_number = (
@@ -1122,12 +1158,11 @@ def _calculated_screw_connection_resistance(
     sections = {section.id: section for section in analysis.sections}
     materials = {material.id: material for material in analysis.materials}
     sheet_facts: list[tuple[Any, Any, float]] = []
-    seen_section_material: set[tuple[str, str]] = set()
+    seen_component_ids: set[str] = set()
     for declaration in analysis.members:
-        identity = (declaration.section_id, declaration.material_id)
         if (
             declaration.component_id not in connected_component_ids
-            or identity in seen_section_material
+            or declaration.component_id in seen_component_ids
         ):
             continue
         section = sections[declaration.section_id]
@@ -1143,7 +1178,7 @@ def _calculated_screw_connection_resistance(
             )
             continue
         sheet_facts.append((declaration, material, thickness_mm))
-        seen_section_material.add(identity)
+        seen_component_ids.add(declaration.component_id)
     if len(sheet_facts) < 2:
         blockers.append(
             "Self-drilling-screw calculation requires two connected steel sheet facts."
@@ -1390,6 +1425,7 @@ def _calculated_fabricated_gusset_resistance(
     sections = {section.id: section for section in analysis.sections}
     materials = {material.id: material for material in analysis.materials}
     sheet_facts_by_component: dict[str, tuple[Any, Any, float]] = {}
+    physical_length_by_component_m: dict[str, float] = defaultdict(float)
     for declaration in analysis.members:
         if (
             declaration.component_id not in connected_component_ids
@@ -1410,6 +1446,10 @@ def _calculated_fabricated_gusset_resistance(
                 f"Connected member {declaration.component_id!r} lacks verified sheet/material facts."
             )
             continue
+        physical_length_by_component_m[declaration.component_id] += _length(
+            declaration.start,
+            declaration.end,
+        )
         sheet_facts_by_component.setdefault(
             declaration.component_id,
             (declaration, material, thickness_mm),
@@ -1614,7 +1654,7 @@ def _calculated_fabricated_gusset_resistance(
             sections[declaration.section_id].iy_m4,
             sections[declaration.section_id].iz_m4,
         )
-        / _length(declaration.start, declaration.end)
+        / physical_length_by_component_m[declaration.component_id]
         for declaration, material, _thickness_mm in sheet_facts
     ]
     required_rotational_stiffness_kNm_rad = max(
@@ -2063,11 +2103,12 @@ def _connection_checks(
             resultant_force_demand_kN=bolted_sheet_demand,
             moment_demand_kNm=moment_demand,
         )
-        calculated_connection = (
-            calculated_anchored_fixture
-            or calculated_cleat
-            or calculated_screw
-            or calculated_gusset
+        calculated_connection = _select_calculated_connection_resistance(
+            grounded=bool(grounded_component_ids),
+            anchored_fixture=calculated_anchored_fixture,
+            cleat=calculated_cleat,
+            screw=calculated_screw,
+            gusset=calculated_gusset,
         )
         if (
             anchor_group is not None
@@ -4948,6 +4989,88 @@ def _released_node_rotational_axes(
         if not has_member_stiffness:
             released_global_axes.append(global_axis_name)
     return tuple(released_global_axes)
+
+
+def _released_rotational_datum_restraints(
+    members: Sequence[
+        tuple[
+            str,
+            str,
+            tuple[tuple[float, float, float], ...],
+            Restraints,
+            Restraints,
+        ]
+    ],
+    node_restraints: Mapping[str, Mapping[str, bool]],
+    *,
+    tolerance: float = 1e-9,
+) -> tuple[tuple[str, Literal["rx", "ry", "rz"]], ...]:
+    """Choose one datum for an otherwise free, axis-aligned torsion chain.
+
+    A member with both bending rotations released still couples the torsional
+    rotations at its two ends.  If neither end has an absolute rotational datum,
+    equal rotation at both ends is a zero-energy bookkeeping mode: it creates no
+    member strain or moment, but PyNite retains it in the global matrix.  This
+    helper fixes one arbitrary rotation only when the torsion axis is aligned to
+    one global axis and no incident member supplies bending stiffness in that
+    direction.  Translational mechanisms and genuine bending mechanisms are
+    intentionally outside this rule.
+    """
+
+    restraints: list[tuple[str, Literal["rx", "ry", "rz"]]] = []
+    axis_names: tuple[Literal["rx", "ry", "rz"], ...] = ("rx", "ry", "rz")
+    for global_axis_index, global_axis_name in enumerate(axis_names):
+        adjacency: dict[str, set[str]] = defaultdict(set)
+        bending_stiffness_nodes: set[str] = set()
+        for start_node_id, end_node_id, rotation, start_releases, end_releases in members:
+            for node_id, releases in (
+                (start_node_id, start_releases),
+                (end_node_id, end_releases),
+            ):
+                if any(
+                    not getattr(releases, local_axis_name)
+                    and abs(rotation[local_axis_index][global_axis_index]) > tolerance
+                    for local_axis_index, local_axis_name in ((1, "ry"), (2, "rz"))
+                ):
+                    bending_stiffness_nodes.add(node_id)
+
+            torsion_axis_aligned = (
+                abs(rotation[0][global_axis_index]) >= 1.0 - tolerance
+                and all(
+                    abs(rotation[0][other_axis_index]) <= tolerance
+                    for other_axis_index in range(3)
+                    if other_axis_index != global_axis_index
+                )
+            )
+            if (
+                torsion_axis_aligned
+                and not start_releases.rx
+                and not end_releases.rx
+            ):
+                adjacency[start_node_id].add(end_node_id)
+                adjacency[end_node_id].add(start_node_id)
+
+        visited: set[str] = set()
+        for root_node_id in sorted(adjacency):
+            if root_node_id in visited:
+                continue
+            component: set[str] = set()
+            pending = [root_node_id]
+            while pending:
+                node_id = pending.pop()
+                if node_id in component:
+                    continue
+                component.add(node_id)
+                pending.extend(adjacency[node_id] - component)
+            visited.update(component)
+            if any(
+                node_id in bending_stiffness_nodes
+                or bool(node_restraints[node_id][global_axis_name])
+                for node_id in component
+            ):
+                continue
+            restraints.append((min(component), global_axis_name))
+    return tuple(restraints)
 
 
 def _combination_list(analysis) -> list[LoadCombination]:
@@ -8317,6 +8440,33 @@ def solve_project_structural(
             if not node_restraints[axis]:
                 node_restraints[axis] = True
                 supports_changed = True
+    rotational_member_details = []
+    for declaration in analysis.members:
+        start_node_id, end_node_id = member_node_ids[declaration.id]
+        rotation = model.members[declaration.id].T()[:3, :3]
+        rotational_member_details.append(
+            (
+                start_node_id,
+                end_node_id,
+                tuple(
+                    tuple(float(rotation[row, column]) for column in range(3))
+                    for row in range(3)
+                ),
+                declaration.start_releases,
+                declaration.end_releases,
+            )
+        )
+    for node_id, axis in _released_rotational_datum_restraints(
+        rotational_member_details,
+        {
+            node_id: node["restraints"]
+            for node_id, node in nodes_by_id.items()
+        },
+    ):
+        node_restraints = nodes_by_id[node_id]["restraints"]
+        if not node_restraints[axis]:
+            node_restraints[axis] = True
+            supports_changed = True
     if supports_changed:
         for node in nodes_by_topology.values():
             restraints = node["restraints"]

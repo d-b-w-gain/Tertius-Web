@@ -82,6 +82,60 @@ The graph traversal must retain this fail-closed rule while exposing the first
 blocking joint, and it must accept a route once every joint on that route has a
 passing calculation.
 
+### E. Solver mechanisms exposed by the corrected pin model
+
+The first live solve with exact pins reached PyNite but produced eleven
+null-space modes. A scaled SVD of the free-DOF stiffness matrix identified two
+physical projection errors rather than overloaded members:
+
+- Six modes were independent out-of-plane translations at the intermediate
+  long-wall stud/bottom-track joints. The rendered long-wall X straps were only
+  connected at portal-column endpoints even though the reusable strap component
+  already supports two-screw intermediate connections. Add the actual two-screw
+  strap-to-stud connections at every crossing and pass those ports into both X
+  straps.
+- The remaining dominant modes rocked each 2.4 m floor-ledger segment about one
+  analytical midspan support. The CAD and BoM contain three masonry anchors per
+  segment, but the structural graph collapsed them to one point. Project three
+  distinct support ports and three pinned ground connections at the rendered
+  anchor coordinates, preserving the same anchor quantity.
+
+After recompilation, rerun the scaled null-space diagnostic before accepting
+any result. A non-finite displacement, force, reaction, utilisation, or stored
+JSON number is a solver failure, never a pass.
+
+### F. False connection failures caused by result selection
+
+One rendered joint can legitimately expose several calculation packs. The
+resolver was returning the first pack, so a partial anchored-fixture result
+masked a passing 100AC cleat result at non-ground joints. Select the first
+applicable complete calculation for ordinary joints while keeping the
+anchored-fixture path authoritative at genuinely grounded joints. Also identify
+portal base fixtures by their pinned product capacity pack, rather than an old
+project-authored status property.
+
+### G. False gusset stiffness failures caused by analytical fragmentation
+
+The knee/apex calculation used the first analytical fragment of each physical
+Cee as its full length. A 150 mm fragment therefore produced an artificially
+large `EI/L` stiffness demand. Sum every fragment belonging to the physical
+component before calculating the required joint rotational stiffness. The
+unchanged 3 mm plates then provide `134.207 kNm/rad` against a correctly derived
+`86.422 kNm/rad` requirement and pass at `0.644` governing utilisation.
+
+### H. Real screw qualification and floor-ledger detailing defects
+
+The screw resolver deduplicated connected members by section/material identity,
+so two different C10012 parts disappeared into one sheet and were reported as
+unsupported. Deduplicate by physical component identity. Once calculated,
+the existing 10g framing screw genuinely fails the AS/NZS 4600 Clause 5.4.2.5
+tested-shear qualification for the C10012/C10019 joints. Replace those framing
+joints with exact Buildex `6-311-3038-5C4` 14-20 x 22 Metal Teks backed by the
+manufacturer's `11.2 kN` average single-shear result. Remove the two C10019
+ledger splices entirely by ordering one 5.1 m ledger per side. The five
+secondary 100AC bases must describe the Cee's round 14 mm holes; the separate
+100AC product definition continues to describe the catalogue slots.
+
 ## Implementation checklist
 
 ### 1. Evidence contracts and reusable calculations
@@ -111,7 +165,13 @@ passing calculation.
   bolt coordinates, edge distances, and connected-member thicknesses.
 - [x] Ensure every structural connection lists the exact rendered fasteners and
   fixture components once, with no orphan or duplicate connector identities.
-- [ ] Correct any joint whose installed layout fails the calculation.
+- [x] Correct every currently identified joint whose installed layout or exact
+  hardware fails the calculation: qualified 14g framing screws, one-piece side
+  ledgers, and correct secondary-base Cee hole geometry.
+- [x] Connect every rendered long-wall X strap to the crossed C100 stud with the
+  two managed screws already supported by the reusable strap component.
+- [x] Project each of the three rendered floor-ledger anchors as a distinct
+  analytical support instead of collapsing the group to one midspan node.
 
 ### 3. Result integration
 
@@ -134,11 +194,13 @@ passing calculation.
   deterministic compiled-design fixture.
 - [ ] Assert that no calculation uses a project-authored `verified` flag or
   unreferenced numeric capacity as authority.
-- [ ] Run the structural test suite and the authenticated full-stack live flow.
+- [x] Run the focused structural calculation suite in the deployed image
+  environment (`30 passed`).
+- [ ] Run the authenticated full-stack live flow after deploying this patch.
 
 ### 5. Live acceptance
 
-- [ ] Deploy the API/worker image containing the calculation changes.
+- [x] Deploy the API/worker image containing the calculation changes.
 - [x] Update the demo `shed` project imports/details without replacing unrelated
   user source.
 - [ ] Compile a fresh GLB plus BoM, procurement, and structural artifacts.
@@ -171,5 +233,21 @@ passing calculation.
   calculation is the blocking prerequisite.
 - [x] Calculation implementation complete.
 - [x] Project-detail migration complete.
-- [ ] Local validation complete.
+- [x] Diagnosed the post-pin singular matrix by scaled SVD: six long-wall
+  stud/bottom-track sway modes plus floor-ledger rocking caused by collapsed
+  physical connections.
+- [x] Updated live `shed/design.py` with strap-to-stud fasteners and distinct
+  floor-ledger anchor support nodes; source snapshot SHA-256 changed from
+  `fe94c095...` to `c8b4f1b5...` and retained the existing source bundle.
+- [x] Removed the residual released-rotation datum mechanism; the patched live
+  stiffness matrix now has a zero-dimensional null space and the full solve has
+  finite equilibrium residuals.
+- [x] Corrected multi-pack connection selection, portal-base fixture detection,
+  gusset physical-length stiffness, and same-section screw joint discovery.
+- [x] Updated the live source bundle to SHA-256 `0acdc874...` for `design.py`,
+  `83fb8768...` for `lysaght_zc.py`, and `835aa718...` for
+  `shed_base_bracket.py`; the corrected source is compiling now.
+- [x] Focused local/deployed-image validation complete: 30 structural tests pass.
+- [ ] Fresh compile, null-space check, structural result counts, BoM digest, and
+  viewer validation pending.
 - [ ] Live deployment and acceptance complete.
