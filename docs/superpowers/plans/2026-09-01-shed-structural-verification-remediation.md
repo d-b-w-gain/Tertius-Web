@@ -136,6 +136,31 @@ ledger splices entirely by ordering one 5.1 m ledger per side. The five
 secondary 100AC bases must describe the Cee's round 14 mm holes; the separate
 100AC product definition continues to describe the catalogue slots.
 
+### I. False member-stability gating and the remaining direct anchors
+
+The member-stability pack calculated buckling and biaxial interaction on each
+short solver fragment, then refused every sub-unity result unless both fragment
+ends also had a verified external restraint. Solver fragmentation is not a
+physical brace, and a member that passes with its complete physical component
+treated as unbraced does not require external restraint credit. Sum all physical
+fragments by component, use that full length for global/LTB resistance, and pass
+the result when the conservative unbraced interaction is below unity. Only a
+physical member that fails that full-length check may rely on verified bridging
+to reduce its unbraced length.
+
+The final six unsupported connections are the three direct masonry anchors in
+each one-piece side ledger. Render their 14 mm round Cee-web holes and carry the
+50 mm web-edge and 2.15 m spacing facts on each exact anchor. Check the Ramset
+anchor interaction and AS/NZS 4600 Clause 5.3 web bearing/tear-out as separate
+limit states. The floor-ledger demand is about `0.177 kN`; the conservative
+single-anchor `2.1 kN` manufacturer shear resistance governs.
+
+The two apparent door-jamb base failures are a direction-mapping bug: compressive
+jamb force was compared with anchor pull-out resistance even though the anchor
+tension demand is zero. Keep substrate-normal tension/in-plane anchor shear in
+the anchor interaction and compare the member-to-fixture resultant only with the
+bolt, sheet and fixture-plate limit states.
+
 ## Implementation checklist
 
 ### 1. Evidence contracts and reusable calculations
@@ -183,6 +208,9 @@ secondary 100AC bases must describe the Cee's round 14 mm holes; the separate
   verified route exists.
 - [ ] Re-run stability segmentation using the now-creditable restraint
   boundaries.
+- [x] Treat each complete physical component as unbraced before requiring any
+  external restraint credit; solver fragments no longer create false support
+  requirements.
 - [ ] Keep genuinely non-applicable serviceability rows distinct from missing
   implementation/evidence.
 
@@ -247,7 +275,7 @@ secondary 100AC bases must describe the Cee's round 14 mm holes; the separate
 - [x] Updated the live source bundle to SHA-256 `0acdc874...` for `design.py`,
   `83fb8768...` for `lysaght_zc.py`, and `835aa718...` for
   `shed_base_bracket.py`; the corrected source is compiling now.
-- [x] Focused local/deployed-image validation complete: 30 structural tests pass.
+- [x] Focused local/deployed-image validation complete: 31 structural tests pass.
 - [ ] Fresh compile, null-space check, structural result counts, BoM digest, and
   viewer validation pending.
 - [ ] Live deployment and acceptance complete.

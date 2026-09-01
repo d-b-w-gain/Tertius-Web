@@ -34,6 +34,7 @@ from core.structural.design_capture import (
 from core.structural.project_analysis import (
     _bracing_load_path_traces,
     _calculated_anchored_fixture_resistance,
+    _calculated_direct_anchored_sheet_resistance,
     _connection_checks,
     _off_axis_load_path,
     _released_rotational_datum_restraints,
@@ -854,7 +855,8 @@ def test_complete_pinned_anchored_fixture_closes_verified_force_path() -> None:
     assert result["status"] == "pass"
     assert result["evidence_status"] == "verified"
     assert result["stiffness_status"] == "verified"
-    assert result["design_force_capacity_kN"] == pytest.approx(1.15)
+    assert result["design_force_capacity_kN"] == pytest.approx(6.0)
+    assert result["governing_utilisation"] == pytest.approx(0.45)
 
     moment_result = _calculated_anchored_fixture_resistance(
         connection=connection,
@@ -867,6 +869,119 @@ def test_complete_pinned_anchored_fixture_closes_verified_force_path() -> None:
     assert moment_result is not None
     assert moment_result["status"] == "unsupported"
     assert any("cannot be credited with moment" in item for item in moment_result["blockers"])
+
+
+def test_direct_anchor_checks_cold_formed_web_and_anchor_path() -> None:
+    anchor = DesignComponent(
+        id="anchor",
+        label="Ramset AS12100WGM",
+        kind="connector",
+        visual_node_id="anchor",
+        part_number="AS12100WGM",
+        product_key="ramset:wercs-ankascrew:as12100wgm",
+        product_definition_digest="d" * 64,
+        structural_evidence_status="verified",
+        structural_properties={
+            "anchor_resistance_pack_id": "manufacturer_working_load_anchor_group",
+            "anchor_nominal_diameter_mm": 12.0,
+            "anchor_source": "Ramset verified anchor source",
+            "anchor_source_sha256": "b" * 64,
+        },
+        fabrication={
+            "sheet_hole_type": "standard_round",
+            "sheet_hole_diameter_mm": 14.0,
+            "minimum_sheet_edge_distance_mm": 50.0,
+            "minimum_sheet_spacing_mm": 2000.0,
+        },
+    )
+    components = {
+        "ledger": DesignComponent(
+            id="ledger",
+            label="C10019 ledger",
+            kind="member",
+            visual_node_id="ledger",
+        ),
+        "ground": DesignComponent(
+            id="ground",
+            label="Block foundation",
+            kind="ground",
+            visual_node_id="ground",
+            grounded=True,
+        ),
+        "anchor": anchor,
+    }
+    connection = DesignConnection(
+        id="ledger-ground",
+        label="Direct floor-ledger anchor",
+        from_component_id="ledger",
+        to_component_id="ground",
+        connector_component_ids=["anchor"],
+        transfers=["force", "shear"],
+    )
+    section = SectionProperties(
+        id="c10019",
+        label="C10019",
+        area_m2=409e-6,
+        iy_m4=1.0e-7,
+        iz_m4=1.0e-6,
+        torsion_j_m4=4.92e-10,
+        tension_thickness_mm=1.9,
+    )
+    material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=80e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    analysis = SimpleNamespace(
+        members=[
+            SimpleNamespace(
+                component_id="ledger",
+                section_id="c10019",
+                material_id="g450",
+                analytical_role="physical",
+            )
+        ],
+        sections=[section],
+        materials=[material],
+    )
+    anchor_group = AnchorGroupCheck(
+        status="pass",
+        evidence_status="verified",
+        pack_id="manufacturer_working_load_anchor_group",
+        pack_version="1",
+        anchor_part_number="AS12100WGM",
+        anchor_count=1,
+        effective_anchor_count=1.0,
+        substrate_type="concrete_block",
+        substrate_status="verified",
+        tension_demand_kN=0.0,
+        shear_demand_kN=0.2,
+        tension_capacity_kN=1.15,
+        shear_capacity_kN=2.1,
+        interaction_utilisation=0.2 / 2.1,
+        source="Ramset verified anchor source",
+        source_sha256="b" * 64,
+        basis="Exact anchor interaction passes.",
+    )
+
+    result = _calculated_direct_anchored_sheet_resistance(
+        connection=connection,
+        components=components,
+        analysis=analysis,
+        anchor_group=anchor_group,
+        resultant_force_demand_kN=0.2,
+        moment_demand_kNm=0.0,
+    )
+
+    assert result is not None
+    assert result["status"] == "pass"
+    assert result["design_force_capacity_kN"] == pytest.approx(2.1)
+    assert result["stiffness_status"] == "verified"
 
 
 def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
@@ -1335,6 +1450,7 @@ def test_non_ground_connection_uses_complete_cleat_instead_of_partial_fixture() 
     selected = _select_calculated_connection_resistance(
         grounded=False,
         anchored_fixture=partial_fixture,  # type: ignore[arg-type]
+        direct_anchor=None,
         cleat=verified_cleat,  # type: ignore[arg-type]
         screw=None,
         gusset=None,
@@ -1352,6 +1468,7 @@ def test_ground_connection_does_not_drop_incomplete_foundation_path() -> None:
     selected = _select_calculated_connection_resistance(
         grounded=True,
         anchored_fixture=partial_fixture,  # type: ignore[arg-type]
+        direct_anchor=None,
         cleat=verified_cleat,  # type: ignore[arg-type]
         screw=None,
         gusset=None,
@@ -2409,9 +2526,13 @@ structural_assembly = structure.assembly""",
     unrestrained_stages = {
         stage.id: stage for stage in unrestrained_snapshot.verification_stages
     }
-    assert unrestrained_stages["member_stability"].status == "unsupported"
+    assert unrestrained_stages["member_stability"].status == "pass"
     assert all(
-        check.status == "unsupported"
+        check.status == "pass"
+        for check in unrestrained_snapshot.member_stability_checks
+    )
+    assert all(
+        any("complete physical component" in item for item in check.assumptions)
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert all(
@@ -2425,9 +2546,7 @@ structural_assembly = structure.assembly""",
         == "AS/NZS 4600:2005 incorporating Amendment No. 1"
         for check in unrestrained_snapshot.member_stability_checks
     )
-    assert {check.status for check in unrestrained_snapshot.member_checks} == {
-        "not_checked"
-    }
+    assert {check.status for check in unrestrained_snapshot.member_checks} == {"pass"}
 
     overloaded_data = deepcopy(capture_data)
     overloaded_properties = overloaded_data["analysis"]["sections"][0]["catalog"][
