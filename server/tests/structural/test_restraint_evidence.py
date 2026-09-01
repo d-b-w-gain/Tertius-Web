@@ -72,6 +72,31 @@ def test_solid_bridge_pack_matches_four_bolt_web_connection() -> None:
     assert resolution.stiffness_status == "unverified"
 
 
+def test_c10019_solid_bridge_pack_matches_four_bolt_web_connection() -> None:
+    resolution = match_restraint_evidence_pack(
+        RestraintConfigurationIdentity(
+            primary_part_number="C10012",
+            bracing_part_number="C10019",
+            connector_part_numbers=[
+                "PB1230HS",
+                "100AC",
+                "PB1230HS",
+                "PB1230HS",
+                "PB1230HS",
+            ],
+        )
+    )
+
+    assert resolution is not None
+    assert resolution.pack_id == (
+        "lysaght-zc-2026-09-c10019-solid-bridge-100ac-pb1230hs"
+    )
+    assert resolution.identity_status == "pass"
+    assert resolution.restrained_flange == "both"
+    assert resolution.stiffness_status == "unverified"
+    assert resolution.design_force_capacity_kN is None
+
+
 def test_restraint_evidence_pack_fails_closed_on_generic_short_bolts() -> None:
     resolution = resolve_restraint_evidence(
         PACK_ID,

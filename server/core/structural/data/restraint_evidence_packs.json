@@ -153,6 +153,58 @@
         "No bracket rotational stiffness or plate resistance is inferred from rendered geometry.",
         "No longitudinal anchorage is inferred from topology alone."
       ]
+    },
+    {
+      "id": "lysaght-zc-2026-09-c10019-solid-bridge-100ac-pb1230hs",
+      "version": "2026.09.01.1",
+      "label": "C10019 full-depth solid bridge / 100AC / PB1230HS candidate",
+      "source": {
+        "title": "LYSAGHT Zeds and Cees Design and Installation Guide",
+        "url": "https://cdn.dcs.lysaght.com/download/lysaght-zeds-cees-purlins-and-girts-user-guide",
+        "sha256": "8202f3c759be2ce929964d6feaee39e0d28a5f756045fefc65b663698e279c57",
+        "pages": [
+          "9: solid bridging secured to purlin webs resists tension, compression and bending and controls lateral deflection and twist",
+          "13: PB1230HS M12 x 30 grade 8.8 purlin-bolt catalogue identity and 100AC catalogue geometry",
+          "17-18: Cee bridging holes, cleat holes and M12 hole geometry"
+        ]
+      },
+      "references": [
+        "AS/NZS 4600:2005 incorporating Amendment No. 1, clauses 4.3.2.1-4.3.2.3 and 5.3; SHA-256 9af589ce2bfee5a156c7f6600a738fcc158683bd27bea9d22adb559f172fc2d1"
+      ],
+      "applicability": {
+        "primary_part_number": "C10012",
+        "bracing_part_number": "C10019",
+        "connector_part_numbers": [
+          "100AC",
+          "PB1230HS",
+          "PB1230HS",
+          "PB1230HS",
+          "PB1230HS"
+        ]
+      },
+      "mechanism": {
+        "restrains_lateral_translation": true,
+        "restrains_twist": true,
+        "restrained_flange": "both",
+        "demand_model": "as_nzs_4600_2005_4_3_2_flange_force"
+      },
+      "resistance": {
+        "design_force_capacity_kN": null,
+        "design_moment_capacity_kNm": null,
+        "stiffness_status": "unverified",
+        "basis": "The exact rendered C10019 full-depth bridge, one 100AC angle and four PB1230HS bolts establish a two-sided web restraint candidate. The manufacturer guide verifies the solid-bridging mechanism, but publishes system capacities for approved HOOK-LOK II end hardware rather than this substituted 100AC joint. A project connection calculation or test is still required before resistance and stiffness can be credited."
+      },
+      "assumptions": [
+        "The bridge Cee web lies parallel to the roof plane and spans between adjacent purlin webs.",
+        "Two PB1230HS bolts connect the 100AC to the bridge web and two separate PB1230HS bolts connect its support leg to the purlin web.",
+        "The four bolts and 100AC are registered in one physical connection identity.",
+        "The continuous bridging run is connected into a separately verified longitudinal roof-bracing path."
+      ],
+      "exclusions": [
+        "The LYSAGHT capacity tables do not verify a 100AC substitution for HOOK-LOK II end hardware.",
+        "No bracket rotational stiffness or plate resistance is inferred from rendered geometry.",
+        "No longitudinal anchorage is inferred from topology alone."
+      ]
     }
   ]
 }
