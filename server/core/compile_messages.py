@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import gzip
 from typing import Literal
 from uuid import UUID
 
@@ -50,12 +51,27 @@ class CompileResultPayload(BaseModel):
     worker_finished_at: datetime
 
 
-def serialized_message_size(message: BaseModel) -> int:
-    return len(message.model_dump_json().encode("utf-8"))
+def serialized_message_bytes(
+    message: BaseModel,
+    *,
+    compress: bool = False,
+) -> bytes:
+    encoded = message.model_dump_json().encode("utf-8")
+    return gzip.compress(encoded, mtime=0) if compress else encoded
 
 
-def assert_message_size(message: BaseModel, max_bytes: int, label: str) -> None:
-    size = serialized_message_size(message)
+def serialized_message_size(message: BaseModel, *, compress: bool = False) -> int:
+    return len(serialized_message_bytes(message, compress=compress))
+
+
+def assert_message_size(
+    message: BaseModel,
+    max_bytes: int,
+    label: str,
+    *,
+    compress: bool = False,
+) -> None:
+    size = serialized_message_size(message, compress=compress)
     if size > max_bytes:
         raise ValueError(f"{label} message is {size} bytes, above {max_bytes} byte limit")
 

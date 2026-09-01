@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import logging
 from datetime import timedelta
 from time import perf_counter
@@ -149,7 +150,11 @@ async def handle_compile_result_message(msg, db, settings) -> None:
         attributes=attributes,
     ) as span:
         try:
-            result = CompileResultPayload.model_validate_json(msg.data)
+            result_data = msg.data
+            headers = getattr(msg, "headers", None) or {}
+            if str(headers.get("Content-Encoding", "")).lower() == "gzip":
+                result_data = gzip.decompress(result_data)
+            result = CompileResultPayload.model_validate_json(result_data)
         except Exception as exc:
             logger.exception("Invalid compile result JSON")
             record_exception(span, exc)

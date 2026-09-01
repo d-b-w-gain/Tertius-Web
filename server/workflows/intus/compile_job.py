@@ -99,11 +99,17 @@ async def handle_compile_request_message(msg, publisher: Publisher, settings) ->
             # subprocess. Otherwise a long Build123D compile prevents client
             # keepalives and the result publish loses its connection.
             result = await asyncio.to_thread(execute_compile_command, command, settings)
-            assert_message_size(result, settings.compile_result_max_bytes, "result")
+            assert_message_size(
+                result,
+                settings.compile_result_max_bytes,
+                "result",
+                compress=True,
+            )
             await publisher.publish_json(
                 settings.compile_result_subject,
                 result,
                 message_id=compile_result_message_id(result),
+                compress=True,
             )
             await msg.ack()
             span.set_attribute("messaging.nats.ack_action", "ack")
@@ -258,7 +264,12 @@ def execute_compile_command(command: CompileCommand, settings) -> CompileResultP
     )
 
     try:
-        assert_message_size(success, settings.compile_result_max_bytes, "result")
+        assert_message_size(
+            success,
+            settings.compile_result_max_bytes,
+            "result",
+            compress=True,
+        )
         return success
     except ValueError as exc:
         return _failed_result(

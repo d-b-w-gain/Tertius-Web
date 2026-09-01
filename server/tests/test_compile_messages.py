@@ -80,6 +80,23 @@ def test_assert_message_size_rejects_oversized_payload():
         assert_message_size(command, 20, "request")
 
 
+def test_compressed_message_size_measures_transport_bytes():
+    command = CompileCommand(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        project_id=uuid4(),
+        requested_by=uuid4(),
+        export_format="glb",
+        created_at=datetime(2026, 6, 14, tzinfo=timezone.utc),
+        files=[CompileSourceFile(filename="design.py", content="x" * 10_000)],
+    )
+
+    assert serialized_message_size(command, compress=True) < serialized_message_size(
+        command
+    )
+    assert_message_size(command, 1_000, "request", compress=True)
+
+
 def test_compile_command_round_trips_originating_llm_edit_job_id():
     llm_job_id = uuid4()
     command = CompileCommand(

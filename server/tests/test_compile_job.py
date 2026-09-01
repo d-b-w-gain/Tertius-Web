@@ -114,11 +114,20 @@ class FakePublisher:
     def __init__(self, fail=False):
         self.fail = fail
         self.published = []
+        self.compress_flags = []
 
-    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None) -> None:
+    async def publish_json(
+        self,
+        subject: str,
+        message: BaseModel,
+        message_id: str | None = None,
+        *,
+        compress: bool = False,
+    ) -> None:
         if self.fail:
             raise RuntimeError("publish failed")
         self.published.append((subject, message, message_id))
+        self.compress_flags.append(compress)
 
 
 def test_compile_job_module_does_not_import_db_bound_executor():
@@ -172,6 +181,7 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
         "bounds",
     }
     assert message_id == f"compile-result:{result.job_id}:succeeded"
+    assert publisher.compress_flags == [True]
 
 
 def test_compile_job_attaches_hashed_compiled_design_graph(

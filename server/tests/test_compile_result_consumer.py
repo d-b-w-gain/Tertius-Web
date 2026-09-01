@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -488,6 +489,44 @@ def test_result_consumer_acks_after_successful_db_commit(db_session, seeded_tena
 
         async def term(self):
             raise AssertionError("valid result should not be termed")
+
+    msg = FakeMsg()
+    asyncio.run(handle_compile_result_message(msg, db_session, consumer_settings()))
+
+    assert msg.acked is True
+    assert msg.naked is False
+
+
+def test_result_consumer_decodes_gzip_envelope(db_session, seeded_tenant):
+    from workflows.intus.compile_result_consumer import handle_compile_result_message
+
+    job = CompileJob(
+        tenant_id=seeded_tenant.tenant_id,
+        project_id=seeded_tenant.project_id,
+        requested_by=seeded_tenant.user_id,
+        status="running",
+        export_format="stl",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    class FakeMsg:
+        data = gzip.compress(
+            result_payload(job, seeded_tenant).model_dump_json().encode("utf-8"),
+            mtime=0,
+        )
+        headers = {"Content-Encoding": "gzip"}
+        acked = False
+        naked = False
+
+        async def ack(self):
+            self.acked = True
+
+        async def nak(self):
+            self.naked = True
+
+        async def term(self):
+            raise AssertionError("valid compressed result should not be termed")
 
     msg = FakeMsg()
     asyncio.run(handle_compile_result_message(msg, db_session, consumer_settings()))
