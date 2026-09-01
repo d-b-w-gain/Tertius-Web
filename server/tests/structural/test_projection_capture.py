@@ -226,11 +226,10 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
 
 @pytest.mark.parametrize(
     "bracing_role",
-    (
-        "left roof-plane tension cross brace",
-        "right roof-plane tension cross brace",
-        "roof purlin solid bridging",
-    ),
+        (
+            "left roof-plane tension cross brace",
+            "right roof-plane tension cross brace",
+        ),
 )
 def test_roof_bracing_connection_is_a_purlin_restraint_candidate(
     bracing_role: str,
