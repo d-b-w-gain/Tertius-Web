@@ -7,6 +7,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+# Structural distances are authored and projected through several independent
+# floating-point calculations. A nanometre tolerance rejects materially
+# out-of-range loads while accepting round-off at a member endpoint.
+MEMBER_LOAD_DISTANCE_TOLERANCE_M = 1e-9
+
+
 class StructuralContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1392,10 +1398,11 @@ class ProjectStructuralCapture(StructuralContract):
                         member_point_load.source_load_id,
                         surface_load_ids,
                     )
-                if (
-                    not 0
+                if not (
+                    -MEMBER_LOAD_DISTANCE_TOLERANCE_M
                     <= member_point_load.distance_m
                     <= member_lengths[member_point_load.member_id]
+                    + MEMBER_LOAD_DISTANCE_TOLERANCE_M
                 ):
                     raise ValueError(
                         f"analysis load {member_point_load.id!r} lies outside its member"
@@ -1419,10 +1426,10 @@ class ProjectStructuralCapture(StructuralContract):
                     )
                 member_length = member_lengths[member_line_load.member_id]
                 if not (
-                    0
+                    -MEMBER_LOAD_DISTANCE_TOLERANCE_M
                     <= member_line_load.start_distance_m
                     < member_line_load.end_distance_m
-                    <= member_length
+                    <= member_length + MEMBER_LOAD_DISTANCE_TOLERANCE_M
                 ):
                     raise ValueError(
                         f"analysis distributed load {member_line_load.id!r} lies "

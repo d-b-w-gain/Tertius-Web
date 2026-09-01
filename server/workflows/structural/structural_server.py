@@ -2550,10 +2550,11 @@ def _analysis_from_projection(
             or (point_member_start + _member_length(point_member))
         )
         station_span = point_member_end - point_member_start
+        analytical_length = _member_length(point_member)
         local_distance = (
             (point_config.distance_m - point_member_start)
             / station_span
-            * _member_length(point_member)
+            * analytical_length
         )
         point_loads.append(
             MemberPointLoad(
@@ -2561,7 +2562,7 @@ def _analysis_from_projection(
                 label=point_config.label,
                 member_id=str(point_member["id"]),
                 case_id=point_config.case_id,
-                distance_m=max(0.0, local_distance),
+                distance_m=min(analytical_length, max(0.0, local_distance)),
                 force=point_config.force,
                 moment=point_config.moment,
                 source_load_id=None,
@@ -2632,7 +2633,8 @@ def _analysis_from_projection(
             station_span = member_end - member_start
 
             def solver_distance(station: float) -> float:
-                return (station - member_start) / station_span * analytical_length
+                mapped = (station - member_start) / station_span * analytical_length
+                return min(analytical_length, max(0.0, mapped))
 
             distributed_loads.append(
                 MemberDistributedLoad(

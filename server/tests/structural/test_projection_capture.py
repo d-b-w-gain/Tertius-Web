@@ -972,6 +972,79 @@ def test_physical_load_stations_are_mapped_onto_trimmed_solver_axis(tmp_path) ->
     assert mapped.end_distance_m == pytest.approx(analytical_length)
 
 
+def test_split_member_boundary_load_is_clamped_to_solver_axis(tmp_path) -> None:
+    for filename, content in default_project_files().items():
+        (tmp_path / filename).write_text(content, encoding="utf-8")
+    execution = execute_design(tmp_path)
+    projection = deepcopy(execution.projections["structural"])
+    projected_purlin = next(
+        member
+        for member in projection["analytical_members"]
+        if member["component_id"] == "P1"
+    )
+    analytical_length = dist(projected_purlin["start_m"], projected_purlin["end_m"])
+    midpoint_distance = analytical_length / 2.0
+    midpoint = [
+        (start + end) / 2.0
+        for start, end in zip(
+            projected_purlin["start_m"], projected_purlin["end_m"], strict=True
+        )
+    ]
+    first = deepcopy(projected_purlin)
+    second = deepcopy(projected_purlin)
+    first.update(
+        {
+            "id": "member:P1:segment:01",
+            "end_m": midpoint,
+            "physical_start_distance_m": 0.0,
+            # Reproduce independent station calculations straddling a shared
+            # endpoint by less than the declared numerical tolerance.
+            "physical_end_distance_m": midpoint_distance - 5e-10,
+        }
+    )
+    second.update(
+        {
+            "id": "member:P1:segment:02",
+            "start_m": midpoint,
+            "physical_start_distance_m": midpoint_distance,
+            "physical_end_distance_m": analytical_length,
+        }
+    )
+    projection["analytical_members"] = [
+        member
+        for member in projection["analytical_members"]
+        if member["component_id"] != "P1"
+    ] + [first, second]
+    configuration_data = default_structural_configuration()
+    configuration_data["member_loads"] = [
+        {
+            "id": "split-boundary-load",
+            "label": "Split-boundary point action",
+            "component_id": "P1",
+            "case_id": "dead",
+            "distance_m": midpoint_distance,
+            "force": {"x": 0, "y": 0, "z": -0.1},
+            "provenance": "Floating-point endpoint mapping regression.",
+        }
+    ]
+
+    capture = _capture_from_structural_projection(
+        projection,
+        project_name="split-boundary-load",
+        configuration=StructuralProjectConfiguration.model_validate(configuration_data),
+    )
+    assert capture.analysis is not None
+    mapped = next(
+        load
+        for load in capture.analysis.member_loads
+        if load.id == "split-boundary-load"
+    )
+    first_length = dist(first["start_m"], first["end_m"])
+
+    assert mapped.member_id == first["id"]
+    assert mapped.distance_m == first_length
+
+
 def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> None:
     for filename, content in default_project_files().items():
         (tmp_path / filename).write_text(content, encoding="utf-8")
