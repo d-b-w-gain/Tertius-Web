@@ -1268,7 +1268,14 @@ def test_exact_self_drilling_screw_group_calculates_connected_sheet_bearing() ->
     assert check.stiffness_status == "unverified"
 
 
-def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness() -> None:
+@pytest.mark.parametrize(
+    ("sheet_thickness_mm", "expected_status"),
+    [(1.9, "pass"), (3.0, "unsupported")],
+)
+def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness(
+    sheet_thickness_mm: float,
+    expected_status: str,
+) -> None:
     bolt_properties = {
         "bolted_sheet_fastener_pack_id": (
             "as_nzs_4600_2005_a1_bolted_sheet_interface"
@@ -1340,7 +1347,7 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness() -> 
         iy_m4=142000e-12,
         iz_m4=673000e-12,
         torsion_j_m4=492e-12,
-        tension_thickness_mm=1.9,
+        tension_thickness_mm=sheet_thickness_mm,
     )
     material = StructuralMaterial(
         id="g450",
@@ -1398,8 +1405,11 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness() -> 
         components,
     )[0]
 
-    assert check.status == "pass"
+    assert check.status == expected_status
     assert check.pack_id == "as_nzs_4600_2005_a1_fabricated_gusset"
+    if expected_status == "unsupported":
+        assert "could not be evaluated" in check.basis
+        return
     assert check.design_moment_capacity_kNm is not None
     assert check.design_moment_capacity_kNm > 0.6
     assert check.stiffness_status == "verified"

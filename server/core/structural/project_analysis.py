@@ -1449,44 +1449,150 @@ def _calculated_fabricated_gusset_resistance(
     maximum_connection_slip_mm = cast(
         float, numeric_fixture_facts["maximum_connection_slip_mm"]
     )
-    interface_inputs = [
-        (material.yield_strength_MPa, material.tensile_strength_MPa, thickness_mm)
-        for _declaration, material, thickness_mm in sheet_facts
-    ]
-    interface_inputs.append(
-        (
-            cast(float, numeric_fixture_facts["fixture_yield_strength_MPa"]),
-            cast(float, numeric_fixture_facts["fixture_tensile_strength_MPa"]),
-            cast(float, numeric_fixture_facts["fixture_thickness_mm"]),
+    try:
+        interface_results = [
+            as_nzs_4600_2005_a1_bolted_sheet_interface(
+                bolt_count=fasteners_per_interface,
+                resultant_shear_demand_kN=0.0,
+                nominal_bolt_diameter_mm=cast(
+                    float, numeric_fastener_facts["nominal_diameter_mm"]
+                ),
+                bolt_tensile_strength_MPa=cast(
+                    float, numeric_fastener_facts["bolt_tensile_strength_MPa"]
+                ),
+                bolt_minor_area_mm2=cast(
+                    float, numeric_fastener_facts["bolt_minor_area_mm2"]
+                ),
+                connected_sheet_thickness_mm=thickness_mm,
+                connected_sheet_yield_strength_MPa=fy_MPa,
+                connected_sheet_tensile_strength_MPa=fu_MPa,
+                hole_diameter_mm=hole_diameter_mm,
+                hole_type="standard_round",
+                minimum_spacing_mm=minimum_spacing_mm,
+                minimum_edge_distance_mm=minimum_edge_distance_mm,
+                washers_under_head_and_nut=washers,
+            )
+            for _declaration, material, thickness_mm in sheet_facts
+            for fy_MPa, fu_MPa in (
+                (material.yield_strength_MPa, material.tensile_strength_MPa),
+            )
+        ]
+    except CapacityPackError as exc:
+        common.update(
+            basis=f"A connected Cee-sheet interface could not be evaluated: {exc}",
+            blockers=[
+                "No resistance was inferred after the connected-sheet capacity pack rejected its inputs."
+            ],
+        )
+        return common
+    fixture_thickness_mm = cast(
+        float, numeric_fixture_facts["fixture_thickness_mm"]
+    )
+    fixture_yield_strength_MPa = cast(
+        float, numeric_fixture_facts["fixture_yield_strength_MPa"]
+    )
+    fixture_tensile_strength_MPa = cast(
+        float, numeric_fixture_facts["fixture_tensile_strength_MPa"]
+    )
+    nominal_bolt_diameter_mm = cast(
+        float, numeric_fastener_facts["nominal_diameter_mm"]
+    )
+    maximum_standard_hole_mm = nominal_bolt_diameter_mm + (
+        1.0 if nominal_bolt_diameter_mm < 12.0 else 2.0
+    )
+    required_spacing_mm = 3.0 * nominal_bolt_diameter_mm
+    required_edge_distance_mm = 1.5 * nominal_bolt_diameter_mm
+    fixture_geometry_status: Literal["pass", "fail"] = (
+        "pass"
+        if hole_diameter_mm <= maximum_standard_hole_mm
+        and minimum_spacing_mm >= required_spacing_mm
+        and minimum_edge_distance_mm >= required_edge_distance_mm
+        else "fail"
+    )
+    fixture_bearing_factor = (
+        3.0
+        if nominal_bolt_diameter_mm / fixture_thickness_mm < 10.0
+        else max(
+            1.8,
+            4.0 - 0.1 * nominal_bolt_diameter_mm / fixture_thickness_mm,
         )
     )
-    interface_results = [
-        as_nzs_4600_2005_a1_bolted_sheet_interface(
-            bolt_count=fasteners_per_interface,
-            resultant_shear_demand_kN=0.0,
-            nominal_bolt_diameter_mm=cast(
-                float, numeric_fastener_facts["nominal_diameter_mm"]
-            ),
-            bolt_tensile_strength_MPa=cast(
-                float, numeric_fastener_facts["bolt_tensile_strength_MPa"]
-            ),
-            bolt_minor_area_mm2=cast(
-                float, numeric_fastener_facts["bolt_minor_area_mm2"]
-            ),
-            connected_sheet_thickness_mm=thickness_mm,
-            connected_sheet_yield_strength_MPa=fy_MPa,
-            connected_sheet_tensile_strength_MPa=fu_MPa,
-            hole_diameter_mm=hole_diameter_mm,
-            hole_type="standard_round",
-            minimum_spacing_mm=minimum_spacing_mm,
-            minimum_edge_distance_mm=minimum_edge_distance_mm,
-            washers_under_head_and_nut=washers,
+    fixture_bearing_capacity_kN = (
+        fasteners_per_interface
+        * 0.60
+        * fixture_bearing_factor
+        * nominal_bolt_diameter_mm
+        * fixture_thickness_mm
+        * fixture_tensile_strength_MPa
+        / 1000.0
+    )
+    fixture_tearout_phi = (
+        0.70
+        if fixture_tensile_strength_MPa / fixture_yield_strength_MPa >= 1.08
+        else 0.60
+    )
+    fixture_tearout_capacity_kN = (
+        fasteners_per_interface
+        * fixture_tearout_phi
+        * fixture_thickness_mm
+        * minimum_edge_distance_mm
+        * fixture_tensile_strength_MPa
+        / 1000.0
+    )
+    # The exact four-bolt interface has two columns.  Reconstruct the minimum
+    # effective transverse strip from two authored edge distances plus the
+    # minimum bolt pitch, then remove the two holes for net-section fracture.
+    fixture_gross_width_mm = 2.0 * minimum_edge_distance_mm + minimum_spacing_mm
+    fixture_net_width_mm = fixture_gross_width_mm - 2.0 * hole_diameter_mm
+    if fixture_net_width_mm <= 0.0:
+        common.update(
+            basis="The specified gusset layout leaves no positive net plate width.",
+            blockers=[
+                "Increase the plate width/edge distances or reduce the hole layout before assigning resistance."
+            ],
         )
-        for fy_MPa, fu_MPa, thickness_mm in interface_inputs
-    ]
+        return common
+    fixture_gross_yield_capacity_kN = (
+        0.90
+        * fixture_yield_strength_MPa
+        * fixture_thickness_mm
+        * fixture_gross_width_mm
+        / 1000.0
+    )
+    fixture_net_fracture_capacity_kN = (
+        0.75
+        * fixture_tensile_strength_MPa
+        * fixture_thickness_mm
+        * fixture_net_width_mm
+        / 1000.0
+    )
+    fixture_shear_capacity_kN = (
+        0.90
+        * 0.60
+        * fixture_yield_strength_MPa
+        * fixture_thickness_mm
+        * fixture_gross_width_mm
+        / 1000.0
+    )
+    fixture_group_capacity_kN = min(
+        fixture_bearing_capacity_kN,
+        fixture_tearout_capacity_kN,
+        fixture_gross_yield_capacity_kN,
+        fixture_net_fracture_capacity_kN,
+        fixture_shear_capacity_kN,
+    )
+    fixture_utilisation = resultant_force_demand_kN / fixture_group_capacity_kN
+    fixture_status: Literal["pass", "fail"] = (
+        "pass"
+        if fixture_geometry_status == "pass" and fixture_utilisation <= 1.0
+        else "fail"
+    )
     single_fastener_capacity_kN = min(
-        result.governing_capacity_kN / result.bolt_count
-        for result in interface_results
+        *[
+            result.governing_capacity_kN / result.bolt_count
+            for result in interface_results
+        ],
+        fixture_group_capacity_kN / fasteners_per_interface,
     )
     group = as_nzs_4600_2005_a1_eccentric_fastener_group(
         fastener_coordinates_mm=coordinates,
@@ -1517,11 +1623,27 @@ def _calculated_fabricated_gusset_resistance(
     stiffness_verified = (
         rotational_stiffness_kNm_rad >= required_rotational_stiffness_kNm_rad
         and all(result.status == "pass" for result in interface_results)
+        and fixture_status == "pass"
     )
+    result_blockers: list[str] = []
+    if group.status != "pass":
+        result_blockers.append(
+            "The eccentric bolt group demand exceeds its calculated design resistance."
+        )
+    if fixture_status != "pass":
+        result_blockers.append(
+            "The 3 mm plate fails its hole/spacing/edge geometry or calculated plate resistance check."
+        )
+    if not stiffness_verified:
+        result_blockers.append(
+            "Calculated bearing-engaged rotational stiffness is below the connected-member EI/L characteristic stiffness."
+        )
     common.update(
         status=(
             "pass"
-            if group.status == "pass" and stiffness_verified
+            if group.status == "pass"
+            and fixture_status == "pass"
+            and stiffness_verified
             else "fail"
         ),
         evidence_status="verified",
@@ -1529,6 +1651,7 @@ def _calculated_fabricated_gusset_resistance(
         design_moment_capacity_kNm=group.design_moment_capacity_kNm,
         governing_utilisation=max(
             group.interaction_utilisation,
+            fixture_utilisation,
             required_rotational_stiffness_kNm_rad / rotational_stiffness_kNm_rad,
         ),
         stiffness_status="verified" if stiffness_verified else "unverified",
@@ -1540,17 +1663,13 @@ def _calculated_fabricated_gusset_resistance(
             f"{required_rotational_stiffness_kNm_rad:.3f} kNm/rad."
         ),
         basis=(
-            f"{group.basis} Each four-bolt Cee interface and the 3 mm specified-grade "
-            "plate are checked separately for bolt shear, bearing, tear-out, hole, "
-            "spacing and edge distance; the weakest single-fastener resistance governs."
+            f"{group.basis} Each four-bolt Cee interface is checked to AS/NZS 4600 "
+            "for bolt shear, sheet bearing, tear-out, holes, spacing and edges. The "
+            "specified 3 mm plate is checked separately for bearing, tear-out, gross "
+            "yield, net fracture and shear using its exact two-column layout; the "
+            "weakest per-fastener-equivalent resistance governs the eccentric group."
         ),
-        blockers=(
-            []
-            if stiffness_verified
-            else [
-                "Calculated bearing-engaged rotational stiffness is below the connected-member EI/L characteristic stiffness."
-            ]
-        ),
+        blockers=result_blockers,
     )
     return common
 
