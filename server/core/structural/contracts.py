@@ -568,6 +568,8 @@ class ConnectionCheck(StructuralContract):
     shear_utilisation: float | None = None
     moment_utilisation: float | None = None
     governing_utilisation: float | None = None
+    stiffness_status: Literal["unverified", "verified"] = "unverified"
+    stiffness_basis: str = "Connection stiffness has not been verified."
     expected_connector_part_numbers: list[str] = Field(default_factory=list)
     rendered_connector_part_numbers: list[str] = Field(default_factory=list)
     source: str | None = None

@@ -6,6 +6,7 @@ from core.structural.capacity_packs import (
     AS_NZS_4600_2005_A1_SHA256,
     CapacityPackError,
     as_nzs_4600_2005_a1_bolted_sheet_interface,
+    as_nzs_4600_2005_a1_eccentric_fastener_group,
     as_nzs_4600_2005_a1_member_capacity,
     as_nzs_4600_2005_a1_screw_shear_qualification,
     as_nzs_4600_2005_a1_tension_capacity,
@@ -272,6 +273,43 @@ def test_bolted_sheet_pack_fails_noncompliant_hole_and_spacing() -> None:
     assert resistance.status == "fail"
     assert resistance.hole_status == "fail"
     assert resistance.spacing_status == "fail"
+
+
+def test_eccentric_fastener_group_distributes_direct_force_and_moment() -> None:
+    resistance = as_nzs_4600_2005_a1_eccentric_fastener_group(
+        fastener_coordinates_mm=((-20.0, 0.0), (20.0, 0.0)),
+        design_single_fastener_capacity_kN=10.0,
+        resultant_force_demand_kN=4.0,
+        moment_demand_kNm=0.20,
+    )
+
+    assert resistance.design_force_capacity_kN == pytest.approx(20.0)
+    assert resistance.design_moment_capacity_kNm == pytest.approx(0.40)
+    assert resistance.maximum_fastener_demand_kN == pytest.approx(7.0)
+    assert resistance.interaction_utilisation == pytest.approx(0.70)
+    assert resistance.status == "pass"
+
+
+def test_eccentric_fastener_group_fails_governing_fastener_interaction() -> None:
+    resistance = as_nzs_4600_2005_a1_eccentric_fastener_group(
+        fastener_coordinates_mm=((-20.0, 0.0), (20.0, 0.0)),
+        design_single_fastener_capacity_kN=10.0,
+        resultant_force_demand_kN=10.0,
+        moment_demand_kNm=0.30,
+    )
+
+    assert resistance.interaction_utilisation == pytest.approx(1.25)
+    assert resistance.status == "fail"
+
+
+def test_eccentric_fastener_group_rejects_coincident_coordinates() -> None:
+    with pytest.raises(CapacityPackError, match="coordinates are coincident"):
+        as_nzs_4600_2005_a1_eccentric_fastener_group(
+            fastener_coordinates_mm=((0.0, 0.0), (0.0, 0.0)),
+            design_single_fastener_capacity_kN=10.0,
+            resultant_force_demand_kN=1.0,
+            moment_demand_kNm=0.01,
+        )
     assert resistance.edge_distance_status == "fail"
 
 

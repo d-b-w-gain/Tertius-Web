@@ -13,6 +13,8 @@ from core.structural.authoring_runtime import (
     StructuralModel,
 )
 from core.structural.contracts import (
+    AnchorGroupCheck,
+    BoltedSheetInterfaceCheck,
     ConnectionCheck,
     DesignComponent,
     DesignConnection,
@@ -31,6 +33,7 @@ from core.structural.design_capture import (
 )
 from core.structural.project_analysis import (
     _bracing_load_path_traces,
+    _calculated_anchored_fixture_resistance,
     _connection_checks,
     _off_axis_load_path,
     _relative_transverse_deflection_mm,
@@ -393,6 +396,130 @@ def test_tension_connection_uses_rendered_fastener_product_test_evidence() -> No
     )
 
 
+def test_tension_segment_uses_its_two_node_connections_not_every_component_joint():
+    brace_section = SectionProperties(
+        id="strap",
+        label="38 x 1.2 strap",
+        area_m2=45.6e-6,
+        iy_m4=5.472e-12,
+        iz_m4=5.4872e-9,
+        torsion_j_m4=2.1888e-11,
+        tension_gross_area_mm2=45.6,
+        tension_net_area_mm2=33.6,
+        tension_thickness_mm=1.2,
+        end_fastener_nominal_diameter_mm=5.0,
+        end_fastener_spacing_mm=15.0,
+        end_fastener_edge_distance_mm=20.0,
+    )
+    support_section = SectionProperties(
+        id="support",
+        label="1.2 mm support sheet",
+        area_m2=258e-6,
+        iy_m4=4.32e-7,
+        iz_m4=8.92e-8,
+        torsion_j_m4=1.24e-10,
+        tension_thickness_mm=1.2,
+    )
+    material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=76.923e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    declaration = SimpleNamespace(
+        id="brace-segment",
+        label="Brace segment",
+        component_id="brace",
+        tension_only=True,
+        section_id="strap",
+        material_id="g450",
+        end_fastener_count=2,
+        assumption="Tension-only physical strap segment.",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=0.5, y=0.0, z=0.0),
+        start_node_key="joint:brace-left",
+        end_node_key="joint:brace-web",
+    )
+    supports = [
+        SimpleNamespace(
+            id=f"support-{name}-axis",
+            component_id=f"support-{name}",
+            tension_only=False,
+            section_id="support",
+            material_id="g450",
+            start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            end=SimpleNamespace(x=0.0, y=0.0, z=1.0),
+            start_node_key=None,
+            end_node_key=None,
+        )
+        for name in ("left", "web", "right")
+    ]
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=[declaration, *supports],
+        sections=[brace_section, support_section],
+        materials=[material],
+    )
+    model = SimpleNamespace(
+        members={"brace-segment": SimpleNamespace(axial=lambda _x, _combo: -0.4)}
+    )
+    connection_specs = (
+        ("brace-left", "support-left", ("l1", "l2")),
+        ("brace-web", "support-web", ("w1", "w2")),
+        ("brace-right", "support-right", ("r1", "r2")),
+    )
+    connections = [
+        DesignConnection(
+            id=connection_id,
+            label=connection_id,
+            from_component_id="brace",
+            to_component_id=support_id,
+            connector_component_ids=list(fastener_ids),
+            transfers=["force"],
+        )
+        for connection_id, support_id, fastener_ids in connection_specs
+    ]
+    fasteners = {
+        fastener_id: DesignComponent(
+            id=fastener_id,
+            label="Buildex Smooth Top Tek",
+            kind="connector",
+            visual_node_id=fastener_id,
+            part_number="6-311-0695-5MP",
+            product_key="buildex:smooth-top-tek:6-311-0695-5mp",
+            product_definition_digest="d" * 64,
+            structural_evidence_status="verified",
+            structural_evidence_basis="Buildex PDS 31195-PDS Issue 2.",
+            structural_properties={
+                "nominal_diameter_mm": 5.0,
+                "tested_single_shear_strength_kN": 5.75,
+                "test_evidence_source": "Buildex PDS 31195-PDS, Issue 2",
+                "test_evidence_revision": "Issue 2, 5 July 2017",
+                "test_evidence_url": "https://example.test/buildex-pds.pdf",
+            },
+        )
+        for _connection_id, _support_id, fastener_ids in connection_specs
+        for fastener_id in fastener_ids
+    }
+
+    check = _tension_member_checks(
+        model,
+        analysis,
+        connections,
+        fasteners,
+    )[0]
+
+    assert check.status == "pass"
+    assert check.rendered_end_connection_count == 2
+    assert check.rendered_end_fastener_counts == [2, 2]
+
+
 def test_off_axis_load_path_traces_surface_fasteners_and_collector_to_ground():
     components = {
         component.id: component
@@ -580,6 +707,106 @@ def test_ground_connection_resolves_exact_anchor_product_and_signed_uplift(
     )
 
 
+def test_complete_pinned_anchored_fixture_closes_verified_force_path() -> None:
+    fixture = DesignComponent(
+        id="fixture",
+        label="Specified-grade steel base fixture",
+        kind="connector",
+        visual_node_id="fixture",
+        part_number="SHED-C100-ONS-BASE-6",
+        product_key="shed:base-fixture",
+        product_definition_digest="f" * 64,
+        structural_evidence_status="verified",
+        structural_properties={
+            "anchored_fixture_capacity_pack_id": (
+                "specified_grade_pinned_steel_fixture"
+            ),
+            "anchored_fixture_capacity_pack_version": "1",
+            "anchored_fixture_thickness_mm": 6.0,
+            "anchored_fixture_effective_width_mm": 40.0,
+            "anchored_fixture_yield_strength_MPa": 250.0,
+            "anchored_fixture_tensile_strength_MPa": 410.0,
+            "source": "Specified-grade fabricated base fixture source",
+            "source_sha256": "a" * 64,
+        },
+    )
+    connection = DesignConnection(
+        id="base",
+        label="Pinned column base",
+        from_component_id="column",
+        to_component_id="foundation",
+        connector_component_ids=["fixture"],
+        transfers=["force", "shear"],
+    )
+    anchor_group = AnchorGroupCheck(
+        status="pass",
+        evidence_status="verified",
+        pack_id="manufacturer_working_load_anchor_group",
+        pack_version="1",
+        anchor_part_number="AS12100WGM",
+        anchor_count=2,
+        effective_anchor_count=1.0,
+        substrate_type="concrete_block",
+        substrate_status="verified",
+        tension_demand_kN=0.4,
+        shear_demand_kN=0.2,
+        tension_capacity_kN=1.15,
+        shear_capacity_kN=2.1,
+        interaction_utilisation=0.45,
+        source="Ramset verified product data",
+        source_sha256="b" * 64,
+        basis="Exact installed anchor group passes.",
+    )
+    bolted_sheet_interface = BoltedSheetInterfaceCheck(
+        status="pass",
+        evidence_status="verified",
+        pack_id="as_nzs_4600_2005_a1_bolted_sheet_interface",
+        pack_version="1",
+        bolt_part_number="PB1230HS",
+        bolt_count=4,
+        connected_member_id="column",
+        connected_sheet_part_number="C10019",
+        fixture_part_number="SHED-C100-ONS-BASE-6",
+        fixture_capacity_status="verified",
+        resultant_shear_demand_kN=0.5,
+        design_bolt_shear_capacity_kN=12.0,
+        design_sheet_bearing_capacity_kN=8.0,
+        design_sheet_tearout_capacity_kN=6.0,
+        governing_capacity_kN=6.0,
+        governing_utilisation=0.5 / 6.0,
+        source="AS/NZS 4600 bolted-sheet calculation",
+        source_sha256="c" * 64,
+        basis="Exact PB1230HS connected-sheet interface passes.",
+    )
+
+    result = _calculated_anchored_fixture_resistance(
+        connection=connection,
+        components={"fixture": fixture},
+        anchor_group=anchor_group,
+        bolted_sheet_interface=bolted_sheet_interface,
+        resultant_force_demand_kN=0.5,
+        moment_demand_kNm=0.0,
+    )
+
+    assert result is not None
+    assert result["status"] == "pass"
+    assert result["evidence_status"] == "verified"
+    assert result["stiffness_status"] == "verified"
+    assert result["design_force_capacity_kN"] == pytest.approx(1.15)
+
+    moment_result = _calculated_anchored_fixture_resistance(
+        connection=connection,
+        components={"fixture": fixture},
+        anchor_group=anchor_group,
+        bolted_sheet_interface=bolted_sheet_interface,
+        resultant_force_demand_kN=0.5,
+        moment_demand_kNm=0.1,
+    )
+    assert moment_result is not None
+    assert moment_result["status"] == "unsupported"
+    assert any("cannot be credited with moment" in item for item in moment_result["blockers"])
+
+
 def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
     bolt_properties = {
         "bolted_sheet_fastener_pack_id": (
@@ -726,6 +953,425 @@ def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
     )
     assert check.bolted_sheet_interface.sheet_bearing_status == "pass"
     assert check.bolted_sheet_interface.sheet_tearout_status == "pass"
+
+
+def test_complete_bolted_cleat_calculates_eccentric_group_and_stiffness() -> None:
+    bolt_properties = {
+        "bolted_sheet_fastener_pack_id": (
+            "as_nzs_4600_2005_a1_bolted_sheet_interface"
+        ),
+        "bolted_sheet_fastener_pack_version": "1",
+        "nominal_diameter_mm": 12.0,
+        "bolt_tensile_strength_MPa": 830.0,
+        "bolt_minor_area_mm2": 76.2,
+        "washers_under_head_and_nut": False,
+        "source": "Lysaght Zeds and Cees guide",
+        "source_sha256": "a" * 64,
+    }
+    components = {
+        "column": DesignComponent(
+            id="column",
+            label="C10019 column",
+            kind="member",
+            visual_node_id="column",
+            part_number="C10019",
+        ),
+        "support": DesignComponent(
+            id="support",
+            label="C10019 support",
+            kind="member",
+            visual_node_id="support",
+            part_number="C10019",
+        ),
+        "fixture": DesignComponent(
+            id="fixture",
+            label="100AC",
+            kind="connector",
+            visual_node_id="fixture",
+            part_number="100AC",
+            product_key="lysaght:100ac",
+            product_definition_digest="f" * 64,
+            structural_evidence_status="verified",
+            structural_properties={
+                "connection_capacity_pack_id": (
+                    "as_nzs_4600_2005_a1_bolted_cleat"
+                ),
+                "connection_capacity_pack_version": "1",
+                "source": "Lysaght Zeds and Cees guide, pages 17-20",
+                "source_sha256": "a" * 64,
+                "fasteners_per_interface": 2,
+                "fastener_coordinates_mm": [[-20.0, 0.0], [20.0, 0.0]],
+                "connected_sheet_hole_diameter_mm": 14.0,
+                "connected_sheet_hole_type": "standard_round",
+                "minimum_bolt_spacing_mm": 40.0,
+                "minimum_sheet_edge_distance_mm": 35.0,
+                "maximum_connection_slip_mm": 2.0,
+                "fixture_thickness_mm": 8.0,
+                "fixture_yield_strength_MPa": 250.0,
+                "fixture_tensile_strength_MPa": 410.0,
+            },
+        ),
+        **{
+            f"bolt-{index}": DesignComponent(
+                id=f"bolt-{index}",
+                label="PB1230HS bolt kit",
+                kind="connector",
+                visual_node_id=f"bolt-{index}",
+                part_number="PB1230HS",
+                product_key="lysaght:pb1230hs",
+                product_definition_digest="d" * 64,
+                structural_evidence_status="verified",
+                structural_properties=bolt_properties,
+            )
+            for index in range(1, 5)
+        },
+    }
+    declaration = SimpleNamespace(
+        id="column-axis",
+        component_id="column",
+        tension_only=False,
+        analytical_role="physical",
+        section_id="c10019",
+        material_id="g450",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=0.0, y=0.0, z=2.4),
+        start_node_key="joint:cleat",
+        end_node_key=None,
+    )
+    support_declaration = SimpleNamespace(
+        id="support-axis",
+        component_id="support",
+        tension_only=False,
+        analytical_role="physical",
+        section_id="c10019",
+        material_id="g450",
+        start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        end=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+        start_node_key="joint:cleat",
+        end_node_key=None,
+    )
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=[declaration, support_declaration],
+        sections=[
+            SectionProperties(
+                id="c10019",
+                label="C10019",
+                area_m2=409e-6,
+                iy_m4=142000e-12,
+                iz_m4=673000e-12,
+                torsion_j_m4=492e-12,
+                catalog=SectionCatalogReference(
+                    catalog_id="lysaght-zc-v2",
+                    catalog_version="2",
+                    section_key="C10019",
+                    source="Lysaght guide",
+                    record_sha256="c" * 64,
+                    axis_mapping={"local_y_inertia": "Iy", "local_z_inertia": "Ix"},
+                    properties={"validated": True, "t_mm": 1.9},
+                ),
+            )
+        ],
+        materials=[
+            StructuralMaterial(
+                id="g450",
+                label="G450",
+                elastic_modulus_kN_m2=200e6,
+                shear_modulus_kN_m2=80e6,
+                poisson_ratio=0.3,
+                density_kg_m3=7850.0,
+                yield_strength_MPa=450.0,
+                tensile_strength_MPa=480.0,
+            )
+        ],
+    )
+    member = SimpleNamespace(
+        axial=lambda _x, _combo: 1.0,
+        shear=lambda _axis, _x, _combo: 0.20,
+        moment=lambda _axis, _x, _combo: 0.10,
+    )
+    connection = DesignConnection(
+        id="cleat",
+        label="Calculated 100AC cleat",
+        from_component_id="column",
+        to_component_id="support",
+        connector_component_ids=[
+            "fixture",
+            "bolt-1",
+            "bolt-2",
+            "bolt-3",
+            "bolt-4",
+        ],
+        transfers=["force", "shear", "moment"],
+    )
+
+    check = _connection_checks(
+        SimpleNamespace(members={"column-axis": member, "support-axis": member}),
+        analysis,
+        [connection],
+        components,
+    )[0]
+
+    assert check.status == "pass"
+    assert check.evidence_status == "verified"
+    assert check.pack_id == "as_nzs_4600_2005_a1_bolted_cleat"
+    assert check.design_shear_capacity_kN is not None
+    assert check.design_moment_capacity_kNm is not None
+    assert check.governing_utilisation is not None
+    assert check.governing_utilisation < 1.0
+    assert check.stiffness_status == "verified"
+
+
+def test_exact_self_drilling_screw_group_calculates_connected_sheet_bearing() -> None:
+    components = {
+        component.id: component
+        for component in (
+            DesignComponent(
+                id="stud",
+                label="C10012 stud",
+                kind="member",
+                visual_node_id="stud",
+            ),
+            DesignComponent(
+                id="track",
+                label="C10012 track",
+                kind="member",
+                visual_node_id="track",
+            ),
+            *(
+                DesignComponent(
+                    id=f"screw-{index}",
+                    label="Buildex Smooth Top Tek",
+                    kind="connector",
+                    visual_node_id=f"screw-{index}",
+                    part_number="6-311-0695-5MP",
+                    product_key="buildex:smooth-top-tek:6-311-0695-5mp",
+                    product_definition_digest="b" * 64,
+                    structural_evidence_status="verified",
+                    structural_evidence_basis="Buildex PDS 31195-PDS Issue 2.",
+                    structural_properties={
+                        "fastener_type": "self_drilling_screw",
+                        "nominal_diameter_mm": 5.0,
+                        "tested_single_shear_strength_kN": 5.75,
+                        "test_evidence_source": "Buildex 31195-PDS Issue 2",
+                        "test_evidence_revision": "Issue 2, 5 July 2017",
+                        "test_evidence_url": "https://example.test/31195-PDS.pdf",
+                    },
+                )
+                for index in range(2)
+            ),
+        )
+    }
+    section = SectionProperties(
+        id="c10012",
+        label="C10012",
+        area_m2=258e-6,
+        iy_m4=4.32e-7,
+        iz_m4=8.92e-8,
+        torsion_j_m4=1.24e-10,
+        tension_thickness_mm=1.2,
+    )
+    material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=76.923e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    declarations = [
+        SimpleNamespace(
+            id=f"{component_id}-axis",
+            component_id=component_id,
+            section_id="c10012",
+            material_id="g450",
+            tension_only=False,
+            start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            end=SimpleNamespace(x=1.0, y=0.0, z=0.0),
+            start_node_key="joint:screw-joint",
+            end_node_key=None,
+        )
+        for component_id in ("stud", "track")
+    ]
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=declarations,
+        sections=[section],
+        materials=[material],
+    )
+    member = SimpleNamespace(
+        axial=lambda _x, _combo: -0.4,
+        shear=lambda _axis, _x, _combo: 0.2,
+        moment=lambda _axis, _x, _combo: 0.0,
+    )
+    connection = DesignConnection(
+        id="screw-joint",
+        label="Two-screw sheet connection",
+        from_component_id="stud",
+        to_component_id="track",
+        connector_component_ids=["screw-0", "screw-1"],
+        transfers=["force", "shear"],
+    )
+
+    check = _connection_checks(
+        SimpleNamespace(
+            members={declaration.id: member for declaration in declarations}
+        ),
+        analysis,
+        [connection],
+        components,
+    )[0]
+
+    assert check.status == "pass"
+    assert check.evidence_status == "verified"
+    assert check.pack_id == "as_nzs_4600_2005_a1_screwed_sheet_connection"
+    assert check.design_shear_capacity_kN is not None
+    assert check.governing_utilisation is not None
+    assert check.governing_utilisation < 1.0
+    assert check.stiffness_status == "unverified"
+
+
+def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness() -> None:
+    bolt_properties = {
+        "bolted_sheet_fastener_pack_id": (
+            "as_nzs_4600_2005_a1_bolted_sheet_interface"
+        ),
+        "nominal_diameter_mm": 12.0,
+        "bolt_tensile_strength_MPa": 830.0,
+        "bolt_minor_area_mm2": 76.2,
+        "washers_under_head_and_nut": False,
+    }
+    components = {
+        "column": DesignComponent(
+            id="column", label="column", kind="member", visual_node_id="column"
+        ),
+        "rafter": DesignComponent(
+            id="rafter", label="rafter", kind="member", visual_node_id="rafter"
+        ),
+        "plate": DesignComponent(
+            id="plate",
+            label="3 mm knee gusset",
+            kind="connector",
+            visual_node_id="plate",
+            part_number="SHED-KNEE-BRACKET-3MM",
+            product_key="shed:knee",
+            product_definition_digest="f" * 64,
+            structural_evidence_status="verified",
+            structural_properties={
+                "connection_capacity_pack_id": (
+                    "as_nzs_4600_2005_a1_fabricated_gusset"
+                ),
+                "connection_capacity_pack_version": "1",
+                "source": "AS/NZS 4600:2005+A1 project calculation",
+                "source_sha256": "a" * 64,
+                "fasteners_per_interface": 4,
+                "fastener_coordinates_mm": [
+                    [-20.0, -75.0],
+                    [20.0, -75.0],
+                    [-20.0, 75.0],
+                    [20.0, 75.0],
+                ],
+                "connected_sheet_hole_diameter_mm": 14.0,
+                "connected_sheet_hole_type": "standard_round",
+                "minimum_bolt_spacing_mm": 40.0,
+                "minimum_sheet_edge_distance_mm": 35.0,
+                "maximum_connection_slip_mm": 2.0,
+                "fixture_thickness_mm": 3.0,
+                "fixture_yield_strength_MPa": 250.0,
+                "fixture_tensile_strength_MPa": 410.0,
+            },
+        ),
+        **{
+            f"bolt-{index}": DesignComponent(
+                id=f"bolt-{index}",
+                label="PB1230HS",
+                kind="connector",
+                visual_node_id=f"bolt-{index}",
+                part_number="PB1230HS",
+                product_key="lysaght:pb1230hs",
+                product_definition_digest="b" * 64,
+                structural_evidence_status="verified",
+                structural_properties=bolt_properties,
+            )
+            for index in range(8)
+        },
+    }
+    section = SectionProperties(
+        id="c10019",
+        label="C10019",
+        area_m2=409e-6,
+        iy_m4=142000e-12,
+        iz_m4=673000e-12,
+        torsion_j_m4=492e-12,
+        tension_thickness_mm=1.9,
+    )
+    material = StructuralMaterial(
+        id="g450",
+        label="G450",
+        elastic_modulus_kN_m2=200e6,
+        shear_modulus_kN_m2=80e6,
+        poisson_ratio=0.3,
+        density_kg_m3=7850,
+        yield_strength_MPa=450.0,
+        tensile_strength_MPa=480.0,
+    )
+    declarations = [
+        SimpleNamespace(
+            id=f"{component_id}-axis",
+            component_id=component_id,
+            section_id="c10019",
+            material_id="g450",
+            tension_only=False,
+            analytical_role="physical",
+            start=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            end=SimpleNamespace(x=0.0, y=0.0, z=2.4),
+            start_node_key="joint:knee",
+            end_node_key=None,
+        )
+        for component_id in ("column", "rafter")
+    ]
+    analysis = SimpleNamespace(
+        load_combinations=[
+            SimpleNamespace(id="ULS-WIND", limit_state="ultimate", purpose="design")
+        ],
+        members=declarations,
+        sections=[section],
+        materials=[material],
+    )
+    member = SimpleNamespace(
+        axial=lambda _x, _combo: 4.0,
+        shear=lambda _axis, _x, _combo: 2.0,
+        moment=lambda _axis, _x, _combo: 0.6,
+    )
+    connection = DesignConnection(
+        id="knee",
+        label="Portal knee",
+        from_component_id="column",
+        to_component_id="rafter",
+        connector_component_ids=["plate", *[f"bolt-{index}" for index in range(8)]],
+        transfers=["force", "shear", "moment"],
+    )
+
+    check = _connection_checks(
+        SimpleNamespace(
+            members={declaration.id: member for declaration in declarations}
+        ),
+        analysis,
+        [connection],
+        components,
+    )[0]
+
+    assert check.status == "pass"
+    assert check.pack_id == "as_nzs_4600_2005_a1_fabricated_gusset"
+    assert check.design_moment_capacity_kNm is not None
+    assert check.design_moment_capacity_kNm > 0.6
+    assert check.stiffness_status == "verified"
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():

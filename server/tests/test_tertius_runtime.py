@@ -252,6 +252,79 @@ def test_component_and_physical_connection_build_one_linked_graph() -> None:
     assert [item["mark"] for item in drawing["items"]] == ["C1", "R1", "KB1"]
 
 
+def test_explicit_shared_connector_can_span_multiple_physical_joints() -> None:
+    shared_bolt_product = ProductDefinition(
+        key="test-connections:shared-bolt",
+        label="Shared bolt",
+        geometry={"kind": "bolt"},
+        procurement=ProcurementFacet(part_number="TEST-BOLT", manufacturer="Test"),
+        structural=StructuralFacet(
+            kind="connector",
+            evidence_status="verified",
+            evidence_basis="One exact bolt passes through three connected sheets.",
+            properties={"shared_connection_component": True},
+        ),
+        drawing=DrawingFacet(name="TEST-BOLT"),
+    )
+    with compile_session() as session:
+        first = managed_member(
+            product=member_product("TEST-M1"),
+            mark="M1",
+            start=(0, 0, 0),
+            end=(0, 0, 100),
+        )
+        second = managed_member(
+            product=member_product("TEST-M2"),
+            mark="M2",
+            start=(0, 0, 100),
+            end=(0, 0, 200),
+            extra_ports={"shared": PortPlacement((0, 0, 100), (0, 0, 1))},
+        )
+        third = managed_member(
+            product=member_product("TEST-M3"),
+            mark="M3",
+            start=(0, 0, 100),
+            end=(100, 0, 100),
+        )
+        bolt = managed_component(
+            bd.Cylinder(2, 10),
+            product=shared_bolt_product,
+            mark="B1",
+        )
+        definition = ConnectionDefinition(
+            key="shared-bolted",
+            label="Shared bolted",
+            family="test-bolted",
+            transfers=("force", "shear"),
+            analysis_model="pinned",
+        )
+        first_joint = physical_connection(
+            bd.Compound(children=[bolt]),  # type: ignore[call-overload]
+            definition=definition,
+            ports=(first.ports.end, second.ports.start),
+            connector_components=(bolt,),
+            mark="J1",
+        )
+        second_joint = physical_connection(
+            bd.Compound(children=[bolt]),  # type: ignore[call-overload]
+            definition=definition,
+            ports=(second.ports.shared, third.ports.start),
+            connector_components=(bolt,),
+            mark="J2",
+        )
+        model = bd.Compound(
+            children=[first, second, third, first_joint, second_joint],
+            label="shared-bolt-frame",
+        )
+        graph = session.finalize(model)
+
+    assert [connection["connector_component_ids"] for connection in graph["connections"]] == [
+        ["B1"],
+        ["B1"],
+    ]
+    assert sum(component["id"] == "B1" for component in graph["components"]) == 1
+
+
 def test_connected_fabricated_port_splits_the_analytical_member() -> None:
     with compile_session() as session:
         host = managed_member(

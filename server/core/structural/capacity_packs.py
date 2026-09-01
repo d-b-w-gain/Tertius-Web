@@ -122,6 +122,29 @@ class BoltedSheetInterfaceResistance:
 
 
 @dataclass(frozen=True)
+class EccentricFastenerGroupResistance:
+    """Elastic fastener-group distribution for in-plane force and moment."""
+
+    pack_id: str
+    pack_version: str
+    fastener_count: int
+    design_force_capacity_kN: float
+    design_moment_capacity_kNm: float
+    direct_force_utilisation: float
+    moment_utilisation: float
+    interaction_utilisation: float
+    maximum_fastener_demand_kN: float
+    design_single_fastener_capacity_kN: float
+    group_radius_mm: float
+    status: Literal["pass", "fail"]
+    standard_reference: str
+    standard_status: str
+    standard_source_sha256: str
+    developments_supplement_sha256: str
+    basis: str
+
+
+@dataclass(frozen=True)
 class MemberCompressionCapacity:
     pack_id: str
     section_record_sha256: str
@@ -511,6 +534,105 @@ def as_nzs_4600_2005_a1_bolted_sheet_interface(
             "Grade-bolt single-shear resistance. Demand is shared equally by "
             "the declared identical bolt group; fixture-plate and connected-part "
             "net-section resistance remain separate limit states."
+        ),
+    )
+
+
+def as_nzs_4600_2005_a1_eccentric_fastener_group(
+    *,
+    fastener_coordinates_mm: tuple[tuple[float, float], ...],
+    design_single_fastener_capacity_kN: float,
+    resultant_force_demand_kN: float,
+    moment_demand_kNm: float,
+) -> EccentricFastenerGroupResistance:
+    """Distribute direct force and in-plane moment to an exact fastener group.
+
+    The direct force is shared equally.  The moment component follows the
+    conventional elastic fastener-group distribution ``M r / sum(r^2)`` about
+    the group centroid.  Adding the two magnitudes is deliberately conservative
+    because the solved connection envelope does not retain their relative
+    direction.  The per-fastener resistance must already be the governing
+    factored bolt/screw, connected-sheet bearing, and tear-out resistance.
+    """
+
+    if len(fastener_coordinates_mm) < 2:
+        raise CapacityPackError(
+            "eccentric fastener group requires at least two fasteners"
+        )
+    if design_single_fastener_capacity_kN <= 0:
+        raise CapacityPackError("single-fastener capacity must be positive")
+    if resultant_force_demand_kN < 0 or moment_demand_kNm < 0:
+        raise CapacityPackError("fastener-group demands cannot be negative")
+
+    centroid_x = sum(point[0] for point in fastener_coordinates_mm) / len(
+        fastener_coordinates_mm
+    )
+    centroid_y = sum(point[1] for point in fastener_coordinates_mm) / len(
+        fastener_coordinates_mm
+    )
+    radii_squared_mm2 = tuple(
+        (point[0] - centroid_x) ** 2 + (point[1] - centroid_y) ** 2
+        for point in fastener_coordinates_mm
+    )
+    polar_sum_mm2 = sum(radii_squared_mm2)
+    if polar_sum_mm2 <= 1e-9:
+        raise CapacityPackError(
+            "eccentric fastener group coordinates are coincident"
+        )
+    group_radius_mm = sqrt(max(radii_squared_mm2))
+    direct_per_fastener_kN = resultant_force_demand_kN / len(
+        fastener_coordinates_mm
+    )
+    moment_kN_mm = moment_demand_kNm * 1000.0
+    maximum_moment_fastener_kN = (
+        moment_kN_mm * group_radius_mm / polar_sum_mm2
+    )
+    maximum_fastener_demand_kN = (
+        direct_per_fastener_kN + maximum_moment_fastener_kN
+    )
+    design_force_capacity_kN = (
+        len(fastener_coordinates_mm) * design_single_fastener_capacity_kN
+    )
+    design_moment_capacity_kNm = (
+        design_single_fastener_capacity_kN
+        * polar_sum_mm2
+        / group_radius_mm
+        / 1000.0
+    )
+    direct_force_utilisation = (
+        resultant_force_demand_kN / design_force_capacity_kN
+    )
+    moment_utilisation = moment_demand_kNm / design_moment_capacity_kNm
+    interaction_utilisation = (
+        maximum_fastener_demand_kN / design_single_fastener_capacity_kN
+    )
+    return EccentricFastenerGroupResistance(
+        pack_id="as_nzs_4600_2005_a1_eccentric_fastener_group",
+        pack_version="1",
+        fastener_count=len(fastener_coordinates_mm),
+        design_force_capacity_kN=design_force_capacity_kN,
+        design_moment_capacity_kNm=design_moment_capacity_kNm,
+        direct_force_utilisation=direct_force_utilisation,
+        moment_utilisation=moment_utilisation,
+        interaction_utilisation=interaction_utilisation,
+        maximum_fastener_demand_kN=maximum_fastener_demand_kN,
+        design_single_fastener_capacity_kN=design_single_fastener_capacity_kN,
+        group_radius_mm=group_radius_mm,
+        status="pass" if interaction_utilisation <= 1.0 else "fail",
+        standard_reference=AS_NZS_4600_2005_A1_REFERENCE,
+        standard_status=ACCEPTED_STANDARD_STATUS,
+        standard_source_sha256=AS_NZS_4600_2005_A1_SHA256,
+        developments_supplement_sha256=(
+            AS_NZS_4600_DEVELOPMENTS_SUPPLEMENT_SHA256
+        ),
+        basis=(
+            "AS/NZS 4600:2005+A1 Clauses 4.3.2.1-4.3.2.3 require the "
+            "restraint and its connections to transfer the calculated lateral "
+            "and twist-restraint force. The governing factored fastener/sheet "
+            "resistance is combined with elastic fastener-group distribution: "
+            "direct force is shared equally and moment is distributed as "
+            "M r / sum(r^2). Magnitudes are added conservatively because the "
+            "connection demand envelope does not preserve their relative angle."
         ),
     )
 

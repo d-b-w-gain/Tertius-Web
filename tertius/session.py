@@ -208,12 +208,21 @@ class CompileSession:
                 raise TertiusRuntimeError(
                     "connection connector geometry must be a managed component from this session"
                 )
-            if connector_registration.token in self._used_connector_tokens:
+            structural = connector_registration.product.structural
+            shared_connection_component = bool(
+                structural is not None
+                and structural.properties.get("shared_connection_component") is True
+            )
+            if (
+                connector_registration.token in self._used_connector_tokens
+                and not shared_connection_component
+            ):
                 raise TertiusRuntimeError(
                     f"connection component {connector_registration.instance_id!r} is already "
-                    "used by another physical connection"
+                    "used by another physical connection; the managed connector product "
+                    "must explicitly declare shared_connection_component=true when one "
+                    "physical item spans multiple authored joints"
                 )
-            structural = connector_registration.product.structural
             if structural is not None and structural.kind != "connector":
                 raise TertiusRuntimeError(
                     f"connection component {connector_registration.instance_id!r} is not a structural connector"
