@@ -7356,13 +7356,15 @@ def solve_project_structural(
         max_axial = 0.0
         max_displacement = 0.0
         max_relative_deflection = 0.0
-        start_local_displacement = tuple(
-            member.deflection(axis, 0.0, active_combination.id) * 1000.0
-            for axis in ("dx", "dy", "dz")
+        start_local_displacement = (
+            member.deflection("dx", 0.0, active_combination.id) * 1000.0,
+            member.deflection("dy", 0.0, active_combination.id) * 1000.0,
+            member.deflection("dz", 0.0, active_combination.id) * 1000.0,
         )
-        end_local_displacement = tuple(
-            member.deflection(axis, member_length, active_combination.id) * 1000.0
-            for axis in ("dx", "dy", "dz")
+        end_local_displacement = (
+            member.deflection("dx", member_length, active_combination.id) * 1000.0,
+            member.deflection("dy", member_length, active_combination.id) * 1000.0,
+            member.deflection("dz", member_length, active_combination.id) * 1000.0,
         )
         for distance in sorted(station_distances):
             ratio = distance / member_length
