@@ -3567,6 +3567,33 @@ def _local_to_global(rotation, values: tuple[float, float, float]) -> Vector3:
     )
 
 
+def _relative_transverse_deflection_mm(
+    local_displacement_mm: tuple[float, float, float],
+    start_displacement_mm: tuple[float, float, float],
+    end_displacement_mm: tuple[float, float, float],
+    ratio: float,
+) -> float:
+    """Return member bending deflection relative to its displaced end chord.
+
+    PyNite's member deflections include rigid-body translation and rotation of
+    the member ends. Those movements belong in the frame drift result, but an
+    L/n member-deflection check must compare the member curve with the straight
+    chord between its displaced supports. Counting absolute frame sway against
+    a short bridge's L/250 limit creates severe false failures.
+    """
+
+    chord_y = start_displacement_mm[1] + (
+        end_displacement_mm[1] - start_displacement_mm[1]
+    ) * ratio
+    chord_z = start_displacement_mm[2] + (
+        end_displacement_mm[2] - start_displacement_mm[2]
+    ) * ratio
+    return sqrt(
+        (local_displacement_mm[1] - chord_y) ** 2
+        + (local_displacement_mm[2] - chord_z) ** 2
+    )
+
+
 def _coordinate_key(position: Vector3) -> tuple[float, float, float]:
     return tuple(
         round(getattr(position, axis), NODE_COORDINATE_DIGITS)
@@ -7328,6 +7355,15 @@ def solve_project_structural(
         max_shear = 0.0
         max_axial = 0.0
         max_displacement = 0.0
+        max_relative_deflection = 0.0
+        start_local_displacement = tuple(
+            member.deflection(axis, 0.0, active_combination.id) * 1000.0
+            for axis in ("dx", "dy", "dz")
+        )
+        end_local_displacement = tuple(
+            member.deflection(axis, member_length, active_combination.id) * 1000.0
+            for axis in ("dx", "dy", "dz")
+        )
         for distance in sorted(station_distances):
             ratio = distance / member_length
             position = Vector3(
@@ -7391,6 +7427,15 @@ def solve_project_structural(
             max_displacement = max(
                 max_displacement,
                 sqrt(sum(value**2 for value in local_displacement)),
+            )
+            max_relative_deflection = max(
+                max_relative_deflection,
+                _relative_transverse_deflection_mm(
+                    local_displacement,
+                    start_local_displacement,
+                    end_local_displacement,
+                    ratio,
+                ),
             )
             stations.append(
                 MemberDiagramStation(
@@ -7614,15 +7659,15 @@ def solve_project_structural(
                 "span_m": serviceability_span_m,
                 "member_ids": [],
                 "governing_member_id": declaration.id,
-                "displacement_mm": max_displacement,
+                "displacement_mm": max_relative_deflection,
                 "limits_mm": [],
                 "bases": [],
             },
         )
         group["member_ids"].append(declaration.id)
         group["span_m"] = max(float(group["span_m"]), serviceability_span_m)
-        if max_displacement > float(group["displacement_mm"]):
-            group["displacement_mm"] = max_displacement
+        if max_relative_deflection > float(group["displacement_mm"]):
+            group["displacement_mm"] = max_relative_deflection
             group["governing_member_id"] = declaration.id
         if limit_mm is not None:
             group["limits_mm"].append(limit_mm)
@@ -7658,10 +7703,15 @@ def solve_project_structural(
                     else "fail"
                 ),
                 basis=(
-                    basis
-                    if basis
-                    else "Deflection checks require a serviceability combination "
-                    "and an authored project criterion."
+                    (
+                        basis
+                        if basis
+                        else "Deflection checks require a serviceability combination "
+                        "and an authored project criterion."
+                    )
+                    + " Member deflection is measured relative to the displaced "
+                    "straight chord between its ends; overall frame drift is a "
+                    "separate serviceability check."
                 ),
             )
         )

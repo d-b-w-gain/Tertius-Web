@@ -31,10 +31,27 @@ from core.structural.project_analysis import (
     _bracing_load_path_traces,
     _connection_checks,
     _off_axis_load_path,
+    _relative_transverse_deflection_mm,
     _stability_scope_comparisons,
     _tension_member_checks,
     solve_project_structural,
 )
+
+
+def test_relative_transverse_deflection_removes_rigid_body_chord_motion() -> None:
+    assert _relative_transverse_deflection_mm(
+        (3.0, 6.0, -2.0),
+        (1.0, 5.0, -3.0),
+        (5.0, 7.0, -1.0),
+        0.5,
+    ) == pytest.approx(0.0)
+
+    assert _relative_transverse_deflection_mm(
+        (3.0, 8.0, 2.0),
+        (1.0, 5.0, -3.0),
+        (5.0, 7.0, -1.0),
+        0.5,
+    ) == pytest.approx(sqrt(20.0))
 
 
 def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
