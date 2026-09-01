@@ -1133,6 +1133,22 @@ describe('StructuralWorkbench', () => {
     })
   })
 
+  it('retries a gateway timeout after the backend stores a fresh analysis', async () => {
+    mocks.apiFetch
+      .mockResolvedValueOnce(new Response(null, { status: 524 }))
+      .mockImplementation((url: string) => Promise.resolve(
+        structuralResponse(url, capture, analysis),
+      ))
+
+    render(<StructuralWorkbench isActive />)
+
+    await waitFor(() => {
+      expect(screen.getByText('structural_test')).toBeInTheDocument()
+    })
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(2)
+    expect(screen.getByText('SAVED ANALYSIS')).toBeInTheDocument()
+  })
+
   it('distinguishes complete PyNite coverage from a calculated design failure', async () => {
     const diagnosedAnalysis: StructuralSnapshot = {
       ...analysis,

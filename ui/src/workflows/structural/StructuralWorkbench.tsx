@@ -86,6 +86,21 @@ const stabilityStatusRank = {
   pass: 1,
 } as const
 
+const recoverableStructuralGatewayStatuses = new Set([502, 503, 504, 524])
+
+async function fetchStructuralResponse(
+  url: string,
+  getAccessToken: () => Promise<string>,
+) {
+  const response = await apiFetch(url, getAccessToken)
+  if (!recoverableStructuralGatewayStatuses.has(response.status)) return response
+
+  // A fresh structural solve can outlive the public gateway request while the
+  // API still completes and stores its content-addressed result. Retry once so
+  // the UI picks up that saved result instead of leaving a 524 error on screen.
+  return apiFetch(url, getAccessToken)
+}
+
 function analysisCacheFromHeaders(response: Response): StructuralAnalysisCacheInfo | null {
   const status = response.headers.get('X-Tertius-Structural-Cache')?.toLowerCase()
   const keyDigest = response.headers.get('X-Tertius-Structural-Cache-Key')
@@ -154,7 +169,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
     }, 750)
     try {
-      const response = await apiFetch(`${serverUrl}/active/workbench`, getAccessToken)
+      const response = await fetchStructuralResponse(
+        `${serverUrl}/active/workbench`,
+        getAccessToken,
+      )
       const payload = await response.json().catch(() => null) as
         | ActiveStructuralWorkbenchResponse
         | { detail?: string }
@@ -222,7 +240,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setAnalysisLoadPhase('calculating')
     }, 750)
     try {
-      const response = await apiFetch(
+      const response = await fetchStructuralResponse(
         `${serverUrl}/active/analysis?combination_id=${encodeURIComponent(combinationId)}`,
         getAccessToken,
       )
