@@ -36,6 +36,7 @@ from core.structural.project_analysis import (
     _calculated_anchored_fixture_resistance,
     _connection_checks,
     _off_axis_load_path,
+    _released_node_rotational_axes,
     _relative_transverse_deflection_mm,
     _stability_scope_comparisons,
     _tension_member_checks,
@@ -57,6 +58,36 @@ def test_relative_transverse_deflection_removes_rigid_body_chord_motion() -> Non
         (5.0, 7.0, -1.0),
         0.5,
     ) == pytest.approx(sqrt(20.0))
+
+
+def test_shared_pin_stabilizes_only_rotations_with_zero_member_stiffness() -> None:
+    pinned = Restraints(ry=True, rz=True)
+    local_x_along_global_z = (
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+    )
+    local_x_along_global_y = (
+        (0.0, 1.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 0.0, -1.0),
+    )
+
+    assert _released_node_rotational_axes(
+        [
+            (local_x_along_global_z, pinned),
+            (local_x_along_global_y, pinned),
+        ]
+    ) == ("rx",)
+
+    identity = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    assert _released_node_rotational_axes(
+        [(identity, Restraints())]
+    ) == ()
 
 
 def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:

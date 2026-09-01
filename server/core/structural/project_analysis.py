@@ -4797,6 +4797,40 @@ def _merge_restraints(
         current[axis] = current[axis] or bool(getattr(incoming, axis))
 
 
+def _released_node_rotational_axes(
+    incident_endpoints: Sequence[
+        tuple[tuple[tuple[float, float, float], ...], Restraints]
+    ],
+    *,
+    tolerance: float = 1e-9,
+) -> tuple[Literal["rx", "ry", "rz"], ...]:
+    """Return global node rotations with no member-end stiffness contribution.
+
+    PyNite retains the global rotational degrees of freedom at a shared node
+    even when every incident member end releases the local rotation that could
+    resist one of those global directions.  Such a degree of freedom is only
+    release bookkeeping: restraining it cannot attract moment because no
+    connected member contributes stiffness in that direction.  Member local
+    axes are projected into the global system so differently oriented pinned
+    members are handled without assuming their axes are parallel.
+    """
+
+    if not incident_endpoints:
+        return ()
+    released_global_axes: list[Literal["rx", "ry", "rz"]] = []
+    local_axis_names = ("rx", "ry", "rz")
+    for global_axis_index, global_axis_name in enumerate(local_axis_names):
+        has_member_stiffness = any(
+            not getattr(releases, local_axis_name)
+            and abs(rotation[local_axis_index][global_axis_index]) > tolerance
+            for rotation, releases in incident_endpoints
+            for local_axis_index, local_axis_name in enumerate(local_axis_names)
+        )
+        if not has_member_stiffness:
+            released_global_axes.append(global_axis_name)
+    return tuple(released_global_axes)
+
+
 def _combination_list(analysis) -> list[LoadCombination]:
     if analysis.load_combinations:
         return list(analysis.load_combinations)
@@ -8040,16 +8074,22 @@ def solve_project_structural(
     # that bookkeeping DOF as singular even though it cannot transfer force or
     # moment into the structure.  Restrain the orphaned rotational bookkeeping
     # DOFs while retaining the authored member-end release.
-    endpoint_releases_by_node: dict[str, list[Restraints]] = defaultdict(list)
+    endpoint_releases_by_node: dict[
+        str, list[tuple[str, Restraints]]
+    ] = defaultdict(list)
     for declaration in analysis.members:
         start_node_id, end_node_id = member_node_ids[declaration.id]
-        endpoint_releases_by_node[start_node_id].append(declaration.start_releases)
-        endpoint_releases_by_node[end_node_id].append(declaration.end_releases)
+        endpoint_releases_by_node[start_node_id].append(
+            (declaration.id, declaration.start_releases)
+        )
+        endpoint_releases_by_node[end_node_id].append(
+            (declaration.id, declaration.end_releases)
+        )
     nodes_by_id = {node["id"]: node for node in nodes_by_topology.values()}
-    for node_id, endpoint_releases in endpoint_releases_by_node.items():
-        if len(endpoint_releases) != 1:
+    for node_id, endpoint_details in endpoint_releases_by_node.items():
+        if len(endpoint_details) != 1:
             continue
-        release = endpoint_releases[0]
+        _member_id, release = endpoint_details[0]
         node_restraints = nodes_by_id[node_id]["restraints"]
         for axis in ("dx", "dy", "dz"):
             if getattr(release, axis):
@@ -8131,6 +8171,44 @@ def solve_project_structural(
                 Rxj=end_releases.rx,
                 Ryj=end_releases.ry,
                 Rzj=end_releases.rz,
+            )
+
+    # A pin shared by multiple members can leave one global node rotation with
+    # exactly zero stiffness when all incident local member axes release that
+    # direction.  PyNite reports the unused bookkeeping DOF as an unstable
+    # mechanism.  Restrain only directions proven to receive no member-end
+    # stiffness; the authored releases remain in place, so this cannot create
+    # moment transfer or turn the physical pin into a fixed joint.
+    supports_changed = False
+    for node_id, endpoint_details in endpoint_releases_by_node.items():
+        incident_endpoints = []
+        for member_id, releases in endpoint_details:
+            rotation = model.members[member_id].T()[:3, :3]
+            incident_endpoints.append(
+                (
+                    tuple(
+                        tuple(float(rotation[row, column]) for column in range(3))
+                        for row in range(3)
+                    ),
+                    releases,
+                )
+            )
+        node_restraints = nodes_by_id[node_id]["restraints"]
+        for axis in _released_node_rotational_axes(incident_endpoints):
+            if not node_restraints[axis]:
+                node_restraints[axis] = True
+                supports_changed = True
+    if supports_changed:
+        for node in nodes_by_topology.values():
+            restraints = node["restraints"]
+            model.def_support(
+                node["id"],
+                support_DX=restraints["dx"],
+                support_DY=restraints["dy"],
+                support_DZ=restraints["dz"],
+                support_RX=restraints["rx"],
+                support_RY=restraints["ry"],
+                support_RZ=restraints["rz"],
             )
 
     direction_names = (
