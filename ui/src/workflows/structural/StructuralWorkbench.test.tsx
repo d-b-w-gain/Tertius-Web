@@ -1046,6 +1046,16 @@ function structuralResponse(
   })
 }
 
+async function openDetailedAnalysis() {
+  const toggle = await screen.findByRole('button', { name: 'Show detailed analysis' })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(toggle)
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'Hide detailed analysis' }))
+      .toHaveAttribute('aria-expanded', 'true')
+  })
+}
+
 describe('StructuralWorkbench', () => {
   afterEach(cleanup)
 
@@ -1068,6 +1078,12 @@ describe('StructuralWorkbench', () => {
     )
     expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
     expect(screen.getByText('SAVED ANALYSIS')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Structural verification summary' }))
+      .toBeInTheDocument()
+    expect(screen.queryByText('Custom Orb roofing iron')).not.toBeInTheDocument()
+
+    await openDetailedAnalysis()
+
     expect(screen.getAllByText('Custom Orb roofing iron').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Lysaght C10019 purlin').length).toBeGreaterThan(0)
     expect(screen.getByText('Reaches ground')).toBeInTheDocument()
@@ -1175,6 +1191,8 @@ describe('StructuralWorkbench', () => {
 
     render(<StructuralWorkbench isActive />)
 
+    await openDetailedAnalysis()
+
     expect(await screen.findByText('PyNite model coverage')).toBeInTheDocument()
     expect(screen.getByText(/PyNite results cover all 1 compiled analytical members/))
       .toBeInTheDocument()
@@ -1206,6 +1224,8 @@ describe('StructuralWorkbench', () => {
     ))
 
     render(<StructuralWorkbench isActive />)
+
+    await openDetailedAnalysis()
 
     await waitFor(() => {
       expect(screen.getByText('AS/NZS 4600 Stage 7 member stability')).toBeInTheDocument()
@@ -1265,6 +1285,8 @@ describe('StructuralWorkbench', () => {
 
     render(<StructuralWorkbench isActive />)
 
+    await openDetailedAnalysis()
+
     expect(await screen.findByText('Governing working envelope')).toBeInTheDocument()
     expect(screen.getByText('Net coefficient Cnet')).toBeInTheDocument()
     expect(screen.getByText('working conservative')).toBeInTheDocument()
@@ -1289,6 +1311,8 @@ describe('StructuralWorkbench', () => {
 
     render(<StructuralWorkbench isActive />)
 
+    await openDetailedAnalysis()
+
     expect(await screen.findByText('Tertius surface-action pack')).toBeInTheDocument()
     expect(screen.getByText(
       'as_nzs_1170_2_rectangular_enclosed_main_frame_v1',
@@ -1311,6 +1335,7 @@ describe('StructuralWorkbench', () => {
     await waitFor(() => {
       expect(screen.getAllByText('structural_test').length).toBeGreaterThan(0)
     })
+    await openDetailedAnalysis()
 
     fireEvent.change(screen.getByLabelText('Load combination'), {
       target: { value: 'DEMO-OVERLOAD' },
@@ -1385,6 +1410,8 @@ describe('StructuralWorkbench', () => {
     ))
     render(<StructuralWorkbench isActive />)
 
+    await openDetailedAnalysis()
+
     fireEvent.click(await screen.findByRole('button', { name: /8\. Bracing\/restraint/ }))
 
     expect(screen.getByText('Selected 3D restraint trace')).toBeInTheDocument()
@@ -1434,6 +1461,8 @@ describe('StructuralWorkbench', () => {
     ))
 
     render(<StructuralWorkbench isActive />)
+
+    await openDetailedAnalysis()
 
     expect(await screen.findByText('Stage 8 strap check')).toBeInTheDocument()
     expect(screen.getByText('Strap design capacity')).toBeInTheDocument()

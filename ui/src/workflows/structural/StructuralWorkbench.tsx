@@ -87,6 +87,49 @@ const stabilityStatusRank = {
   pass: 1,
 } as const
 
+type CompactVerificationGroup = {
+  id: string
+  label: string
+  status: VerificationStatus
+  total: number
+  passed: number
+  failed: number
+  unsupported: number
+  open: number
+}
+
+function compactVerificationGroup(
+  id: string,
+  label: string,
+  statuses: readonly string[],
+): CompactVerificationGroup {
+  const passed = statuses.filter((status) => status === 'pass').length
+  const failed = statuses.filter(
+    (status) => status === 'fail' || status === 'blocked',
+  ).length
+  const unsupported = statuses.filter((status) => status === 'unsupported').length
+  const open = Math.max(0, statuses.length - passed - failed - unsupported)
+  const status: VerificationStatus = failed > 0
+    ? 'fail'
+    : unsupported > 0
+      ? 'unsupported'
+      : statuses.some((candidate) => candidate === 'warning' || candidate === 'candidate')
+        ? 'warning'
+        : passed > 0
+          ? 'pass'
+          : 'not_checked'
+  return {
+    id,
+    label,
+    status,
+    total: statuses.length,
+    passed,
+    failed,
+    unsupported,
+    open,
+  }
+}
+
 const recoverableStructuralGatewayStatuses = new Set([502, 503, 504, 524])
 
 async function fetchStructuralResponse(
@@ -145,6 +188,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [memberEvidenceStage, setMemberEvidenceStage] = useState<
     'cross_section' | 'member_stability'
   >('member_stability')
+  const [showDetailedEvidence, setShowDetailedEvidence] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [analysisLoadPhase, setAnalysisLoadPhase] = useState<
     'idle' | 'checking' | 'calculating'
@@ -386,6 +430,58 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const memberStabilityStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'member_stability',
   )
+  const compactVerificationGroups = useMemo(() => {
+    if (!analysis) return []
+    return [
+      compactVerificationGroup(
+        'cross-sections',
+        'Cross-sections',
+        (analysis.cross_section_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'member-stability',
+        'Member stability',
+        (analysis.member_stability_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'connections',
+        'Connections',
+        (analysis.connection_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'tension-members',
+        'Tension members',
+        (analysis.tension_member_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'bracing',
+        'Bracing paths',
+        (analysis.bracing_load_path_traces ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'serviceability',
+        'Serviceability',
+        analysis.serviceability_checks.map((check) => check.status),
+      ),
+    ]
+  }, [analysis])
+  const compactFailureCount = compactVerificationGroups.reduce(
+    (total, group) => total + group.failed,
+    0,
+  )
+  const compactUnsupportedCount = compactVerificationGroups.reduce(
+    (total, group) => total + group.unsupported,
+    0,
+  )
+  const compactOverallStatus: VerificationStatus = !analysis
+    ? 'not_checked'
+    : compactFailureCount > 0
+      ? 'fail'
+      : compactUnsupportedCount > 0
+        ? 'unsupported'
+        : analysis.certification_readiness?.ready_for_engineering_review
+          ? 'pass'
+          : 'warning'
   const selectedServiceability = analysis?.serviceability_checks.find(
     (check) => (
       check.member_id === selectedMember?.id
@@ -449,6 +545,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!trace || !currentAnalysis) return
     setSelectedRestraintTraceId(trace.id)
+    setShowDetailedEvidence(true)
     setActiveStageId('bracing')
     setSelectedMemberId(trace.member_id)
     setSelectedVisualNodeId(
@@ -824,7 +921,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               : 'Active-project compiled mechanical topology; analysis context required'}
           </p>
         </div>
-        {analysis && (
+        {analysis && showDetailedEvidence && (
           <div className="ml-auto flex items-center gap-2">
             <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
               Combination
@@ -937,17 +1034,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             )}
           </div>
         )}
-        <div className="hidden items-center gap-2 xl:flex">
-          {capabilities.map((capability) => (
-            <span
-              key={capability.id}
-              title={capability.detail}
-              className={`rounded border px-2 py-1 text-[10px] font-semibold ${capabilityStyle[capability.status]}`}
-            >
-              {capability.label}
-            </span>
-          ))}
-        </div>
+        {showDetailedEvidence && (
+          <div className="hidden items-center gap-2 xl:flex">
+            {capabilities.map((capability) => (
+              <span
+                key={capability.id}
+                title={capability.detail}
+                className={`rounded border px-2 py-1 text-[10px] font-semibold ${capabilityStyle[capability.status]}`}
+              >
+                {capability.label}
+              </span>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className={`shrink-0 border-b px-5 py-2 text-xs font-semibold ${
@@ -962,7 +1061,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
-      <StructuralWindBasisPanel bases={windActionBases} />
+      {showDetailedEvidence && <StructuralWindBasisPanel bases={windActionBases} />}
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
@@ -1025,7 +1124,89 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             </div>
           )}
           {capture && (
-            <div className="space-y-5 p-4">
+            <>
+              <div className="p-4">
+                <section
+                  aria-label="Structural verification summary"
+                  className={`rounded border p-4 ${verificationStyle[compactOverallStatus]}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] opacity-75">
+                        Structural verification summary
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-100">
+                        {!analysis
+                          ? 'No calculated result available'
+                          : compactFailureCount > 0
+                          ? `${compactFailureCount} calculated failure${compactFailureCount === 1 ? '' : 's'}`
+                          : compactUnsupportedCount > 0
+                            ? `${compactUnsupportedCount} unsupported check${compactUnsupportedCount === 1 ? '' : 's'}`
+                            : 'No calculated structural failures'}
+                      </div>
+                    </div>
+                    <span className="rounded border border-current/30 px-2 py-1 font-mono text-[9px] font-bold uppercase">
+                      {compactOverallStatus.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2" role="list">
+                    {compactVerificationGroups.map((group) => (
+                      <div
+                        key={group.id}
+                        role="listitem"
+                        className={`rounded border p-2 ${verificationStyle[group.status]}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold text-slate-100">
+                            {group.label}
+                          </span>
+                          <span className="font-mono text-[8px] font-bold uppercase">
+                            {group.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-1 font-mono text-[10px]">
+                          {group.passed}/{group.total} pass
+                        </div>
+                        {(group.failed > 0 || group.unsupported > 0 || group.open > 0) && (
+                          <div className="mt-1 text-[8px] opacity-80">
+                            {[
+                              group.failed > 0 ? `${group.failed} fail` : '',
+                              group.unsupported > 0 ? `${group.unsupported} unsupported` : '',
+                              group.open > 0 ? `${group.open} not checked` : '',
+                            ].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {analysis?.certification_readiness && (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-[9px] text-slate-300">
+                      <span>
+                        {analysis.certification_readiness.ready_for_engineering_review
+                          ? 'Engineering review evidence is available.'
+                          : `${analysis.certification_readiness.blocking_gate_ids.length} engineering gate(s) remain open.`}
+                      </span>
+                      <span className="shrink-0 font-mono uppercase text-slate-400">
+                        {analysis.certification_readiness.document_status.replaceAll('_', ' ')}
+                      </span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    aria-expanded={showDetailedEvidence}
+                    aria-controls="structural-detailed-evidence"
+                    onClick={() => setShowDetailedEvidence((current) => !current)}
+                    className="mt-4 w-full rounded border border-slate-600 bg-slate-950/50 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-400 hover:text-cyan-200"
+                  >
+                    {showDetailedEvidence ? 'Hide detailed analysis' : 'Show detailed analysis'}
+                  </button>
+                </section>
+              </div>
+              {showDetailedEvidence && (
+                <div
+                  id="structural-detailed-evidence"
+                  className="space-y-5 border-t border-slate-800 p-4"
+                >
               {analysis?.design_basis && (
                 <section className="rounded border border-cyan-500/40 bg-cyan-950/20 p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -3111,7 +3292,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   buckling resistance are verified.
                 </p>
               </section>
-            </div>
+                </div>
+              )}
+            </>
           )}
         </aside>
 
