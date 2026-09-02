@@ -5,6 +5,7 @@ from math import atan2, degrees, dist, sqrt
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from datetime import datetime
+from threading import Lock
 from time import perf_counter
 from typing import Literal
 
@@ -113,6 +114,8 @@ app = FastAPI(
 
 
 _ALL_OTHER_ROOFS_CONCENTRATED_ACTION_KN = 1.4
+_STRUCTURAL_PROGRESS_LOCK = Lock()
+_STRUCTURAL_PROGRESS: dict[tuple[str, str, str], dict[str, object]] = {}
 
 
 class WindSiteRequest(BaseModel):
@@ -138,11 +141,111 @@ class StructuralAnalysisCacheInfo(BaseModel):
     calculation_duration_seconds: float
 
 
+class StructuralAnalysisProgress(BaseModel):
+    state: Literal["idle", "running", "complete", "failed"]
+    stage_id: str = "idle"
+    stage_label: str = "Waiting for a structural calculation"
+    completed_units: int | None = None
+    total_units: int | None = None
+    elapsed_seconds: float = 0.0
+    engine_version: str | None = None
+    key_digest: str | None = None
+
+
 class ActiveStructuralWorkbenchResponse(BaseModel):
     capture: ProjectStructuralCapture
     analysis: StructuralSnapshot | None = None
     analysis_error: str | None = None
     cache: StructuralAnalysisCacheInfo | None = None
+
+
+def _structural_progress_scope(
+    ctx: AuthContext,
+    project: Project,
+    combination_id: str | None,
+) -> tuple[str, str, str]:
+    return (str(ctx.tenant_id), str(project.id), combination_id or "")
+
+
+def _begin_structural_progress(
+    scope: tuple[str, str, str],
+    identity: StructuralAnalysisCacheIdentity,
+) -> None:
+    with _STRUCTURAL_PROGRESS_LOCK:
+        if scope not in _STRUCTURAL_PROGRESS and len(_STRUCTURAL_PROGRESS) >= 128:
+            _STRUCTURAL_PROGRESS.pop(next(iter(_STRUCTURAL_PROGRESS)))
+        _STRUCTURAL_PROGRESS[scope] = {
+            "state": "running",
+            "stage_id": "preparing",
+            "stage_label": "Preparing the structural calculation",
+            "completed_units": None,
+            "total_units": None,
+            "started_monotonic": perf_counter(),
+            "elapsed_seconds": 0.0,
+            "engine_version": identity.engine_version,
+            "key_digest": identity.key_digest[:12],
+        }
+
+
+def _update_structural_progress(
+    scope: tuple[str, str, str],
+    stage_id: str,
+    stage_label: str,
+    completed_units: int | None = None,
+    total_units: int | None = None,
+) -> None:
+    with _STRUCTURAL_PROGRESS_LOCK:
+        progress = _STRUCTURAL_PROGRESS.get(scope)
+        if progress is None or progress.get("state") != "running":
+            return
+        progress.update(
+            {
+                "stage_id": stage_id,
+                "stage_label": stage_label,
+                "completed_units": completed_units,
+                "total_units": total_units,
+            }
+        )
+
+
+def _finish_structural_progress(
+    scope: tuple[str, str, str],
+    *,
+    state: Literal["complete", "failed"],
+    duration_seconds: float,
+) -> None:
+    with _STRUCTURAL_PROGRESS_LOCK:
+        progress = _STRUCTURAL_PROGRESS.get(scope)
+        if progress is None:
+            return
+        progress.update(
+            {
+                "state": state,
+                "stage_id": state,
+                "stage_label": (
+                    "Structural calculation saved"
+                    if state == "complete"
+                    else "Structural calculation failed"
+                ),
+                "completed_units": None,
+                "total_units": None,
+                "elapsed_seconds": duration_seconds,
+            }
+        )
+
+
+def _read_structural_progress(
+    scope: tuple[str, str, str],
+) -> StructuralAnalysisProgress:
+    with _STRUCTURAL_PROGRESS_LOCK:
+        stored = _STRUCTURAL_PROGRESS.get(scope)
+        if stored is None:
+            return StructuralAnalysisProgress(state="idle")
+        progress = dict(stored)
+    started_monotonic = progress.pop("started_monotonic", None)
+    if progress["state"] == "running" and isinstance(started_monotonic, float):
+        progress["elapsed_seconds"] = max(0.0, perf_counter() - started_monotonic)
+    return StructuralAnalysisProgress.model_validate(progress)
 
 
 def get_active_project(db: Session, ctx: AuthContext) -> Project | None:
@@ -3114,23 +3217,50 @@ def _solve_cached_structural_analysis(
         db.commit()
         return snapshot, info
 
+    progress_scope = _structural_progress_scope(ctx, project, combination_id)
+    _begin_structural_progress(progress_scope, identity)
     started_at = perf_counter()
     try:
         snapshot = solve_project_structural(
             capture,
             combination_id=combination_id,
+            progress_callback=lambda stage_id, stage_label, completed, total: (
+                _update_structural_progress(
+                    progress_scope,
+                    stage_id,
+                    stage_label,
+                    completed,
+                    total,
+                )
+            ),
         )
+        _update_structural_progress(
+            progress_scope,
+            "saving",
+            "Saving the reusable structural result",
+        )
+        calculation_duration_seconds = perf_counter() - started_at
         stored = store_structural_analysis(
             db,
             identity,
             snapshot,
-            calculation_duration_seconds=perf_counter() - started_at,
+            calculation_duration_seconds=calculation_duration_seconds,
         )
         info = _analysis_cache_info(identity, stored, status="calculated")
         db.commit()
+        _finish_structural_progress(
+            progress_scope,
+            state="complete",
+            duration_seconds=calculation_duration_seconds,
+        )
         return snapshot, info
     except Exception:
         db.rollback()
+        _finish_structural_progress(
+            progress_scope,
+            state="failed",
+            duration_seconds=perf_counter() - started_at,
+        )
         raise
 
 
@@ -3146,6 +3276,23 @@ def _apply_analysis_cache_headers(
     )
     response.headers["X-Tertius-Structural-Calculation-Seconds"] = (
         f"{cache.calculation_duration_seconds:.6f}"
+    )
+
+
+@app.get(
+    "/active/analysis/progress",
+    response_model=StructuralAnalysisProgress,
+)
+def get_active_analysis_progress(
+    combination_id: str | None = Query(default=None),
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> StructuralAnalysisProgress:
+    project = get_active_project(db, ctx)
+    if project is None:
+        raise HTTPException(status_code=404, detail="No active project selected")
+    return _read_structural_progress(
+        _structural_progress_scope(ctx, project, combination_id)
     )
 
 

@@ -16,6 +16,7 @@ import type {
   DesignComponent,
   ProjectStructuralCapture,
   StructuralAnalysisCacheInfo,
+  StructuralAnalysisProgress,
   StructuralSnapshot,
   Vector3,
   VerificationStatus,
@@ -149,6 +150,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     'idle' | 'checking' | 'calculating'
   >('idle')
   const [analysisCache, setAnalysisCache] = useState<StructuralAnalysisCacheInfo | null>(null)
+  const [analysisProgress, setAnalysisProgress] = useState<StructuralAnalysisProgress | null>(
+    null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const captureRequestId = useRef(0)
@@ -161,11 +165,28 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     setIsLoading(true)
     setAnalysisLoadPhase('checking')
     setAnalysisCache(null)
+    setAnalysisProgress(null)
     setError(null)
     setAnalysisError(null)
+    let progressPollTimer: number | undefined
+    const pollProgress = async () => {
+      try {
+        const response = await apiFetch(
+          `${serverUrl}/active/analysis/progress`,
+          getAccessToken,
+        )
+        if (!response.ok || requestId !== captureRequestId.current) return
+        const progress = (await response.json()) as StructuralAnalysisProgress
+        if (requestId === captureRequestId.current) setAnalysisProgress(progress)
+      } catch {
+        // Progress is advisory. The workbench request remains authoritative.
+      }
+    }
     const calculationTimer = window.setTimeout(() => {
       if (requestId === captureRequestId.current) {
         setAnalysisLoadPhase('calculating')
+        void pollProgress()
+        progressPollTimer = window.setInterval(() => void pollProgress(), 1000)
       }
     }, 750)
     try {
@@ -211,6 +232,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       )
     } finally {
       window.clearTimeout(calculationTimer)
+      if (progressPollTimer !== undefined) window.clearInterval(progressPollTimer)
       if (requestId === captureRequestId.current) {
         setIsLoading(false)
         setAnalysisLoadPhase('idle')
@@ -236,8 +258,22 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     setSelectedCombinationId(combinationId)
     setAnalysisError(null)
     setAnalysisLoadPhase('checking')
+    setAnalysisProgress(null)
+    let progressPollTimer: number | undefined
+    const progressUrl = `${serverUrl}/active/analysis/progress?combination_id=${encodeURIComponent(combinationId)}`
+    const pollProgress = async () => {
+      try {
+        const response = await apiFetch(progressUrl, getAccessToken)
+        if (!response.ok) return
+        setAnalysisProgress((await response.json()) as StructuralAnalysisProgress)
+      } catch {
+        // Progress is advisory. The selected-combination request remains authoritative.
+      }
+    }
     const calculationTimer = window.setTimeout(() => {
       setAnalysisLoadPhase('calculating')
+      void pollProgress()
+      progressPollTimer = window.setInterval(() => void pollProgress(), 1000)
     }, 750)
     try {
       const response = await fetchStructuralResponse(
@@ -274,6 +310,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       )
     } finally {
       window.clearTimeout(calculationTimer)
+      if (progressPollTimer !== undefined) window.clearInterval(progressPollTimer)
       setAnalysisLoadPhase('idle')
     }
   }, [getAccessToken, serverUrl])
@@ -759,7 +796,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               <span className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] text-amber-200">
                 {analysisLoadPhase === 'checking'
                   ? 'CHECKING SAVED ANALYSIS'
-                  : 'CALCULATING & SAVING ANALYSIS'}
+                  : `CALCULATING & SAVING ANALYSIS${
+                      analysisProgress?.state === 'running'
+                        ? ` · ${number(analysisProgress.elapsed_seconds, 0)}s`
+                        : ''
+                    }`}
               </span>
             )}
             {analysisLoadPhase === 'idle' && analysisCache && (
@@ -933,9 +974,40 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   : 'Loading saved structural analysis…'}
               </div>
               {analysisLoadPhase === 'calculating' && (
-                <div className="mt-2 text-xs leading-relaxed text-slate-500">
-                  This design, site basis, or Tertius structural engine changed. The
-                  result will be stored and reused when the workbench is reopened.
+                <div className="mt-2 space-y-2 text-xs leading-relaxed text-slate-500">
+                  <div className="font-semibold text-amber-200">
+                    {analysisProgress?.state === 'running'
+                      ? analysisProgress.stage_label
+                      : 'Starting the structural calculation'}
+                  </div>
+                  <div>
+                    Elapsed:{' '}
+                    {number(analysisProgress?.elapsed_seconds ?? 0, 0)} seconds
+                    {analysisProgress?.completed_units != null &&
+                    analysisProgress.total_units != null
+                      ? ` · ${analysisProgress.completed_units}/${analysisProgress.total_units}`
+                      : ''}
+                  </div>
+                  {analysisProgress?.completed_units != null &&
+                    analysisProgress.total_units != null &&
+                    analysisProgress.total_units > 0 && (
+                      <div className="h-1.5 overflow-hidden rounded bg-slate-800">
+                        <div
+                          className="h-full bg-amber-400 transition-[width] duration-300"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              (analysisProgress.completed_units /
+                                analysisProgress.total_units) *
+                                100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  <div>
+                    The result will be stored and reused when the workbench is reopened.
+                  </div>
                 </div>
               )}
             </div>

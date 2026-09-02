@@ -161,6 +161,29 @@ tension demand is zero. Keep substrate-normal tension/in-plane anchor shear in
 the anchor interaction and compare the member-to-fixture resultant only with the
 bolt, sheet and fixture-plate limit states.
 
+### J. Genuine full-unbraced C10012 member failures
+
+Once the false restraint gate was removed, the conservative full-component
+check exposed nineteen failing analytical rows belonging to nine physical
+members. The 3.002 m door header was governed by global compression at about
+`1.19` utilisation. Eight 2.549 m roof-ceiling purlins were governed by the
+`1.4 kN` other-roofs concentrated action, with governing interaction up to
+about `1.46`. Upgrade only those members from C10012 to C10019. The common
+100 mm external envelope preserves the installed geometry and connector layout;
+the thicker catalogue section raises the calculated resistance without
+relaxing the action or safety factors.
+
+### K. Blind synchronous structural calculation
+
+The workbench request calculates and stores a cache miss synchronously, but the
+UI previously changed to a static message after 750 ms and exposed no evidence
+that the API was still advancing. Add an authenticated progress endpoint backed
+by a bounded in-process registry and report real solver phases: topology,
+first-order analysis, P-Delta, response extraction, tension, connections,
+bracing, cross-sections, member stability, member diagrams, evidence, and save.
+Show the current phase, elapsed seconds, and completed/total member counts in the
+workbench. The saved snapshot remains the authoritative result.
+
 ## Implementation checklist
 
 ### 1. Evidence contracts and reusable calculations
@@ -204,14 +227,14 @@ bolt, sheet and fixture-plate limit states.
   applicable interaction/geometry prerequisite pass.
 - [x] Feed passing complete-joint force/moment capacity and verified stiffness
   into matching restraint candidates.
-- [ ] Traverse passing joints to ground and report the first blocker when no
+- [x] Traverse passing joints to ground and report the first blocker when no
   verified route exists.
-- [ ] Re-run stability segmentation using the now-creditable restraint
+- [x] Re-run stability segmentation using the now-creditable restraint
   boundaries.
 - [x] Treat each complete physical component as unbraced before requiring any
   external restraint credit; solver fragments no longer create false support
   requirements.
-- [ ] Keep genuinely non-applicable serviceability rows distinct from missing
+- [x] Keep genuinely non-applicable serviceability rows distinct from missing
   implementation/evidence.
 
 ### 4. Automated validation
@@ -223,7 +246,7 @@ bolt, sheet and fixture-plate limit states.
 - [ ] Assert that no calculation uses a project-authored `verified` flag or
   unreferenced numeric capacity as authority.
 - [x] Run the focused structural calculation suite in the deployed image
-  environment (`30 passed`).
+  environment (`31 passed`) plus the analysis-cache/progress suite (`3 passed`).
 - [ ] Run the authenticated full-stack live flow after deploying this patch.
 
 ### 5. Live acceptance
@@ -231,11 +254,11 @@ bolt, sheet and fixture-plate limit states.
 - [x] Deploy the API/worker image containing the calculation changes.
 - [x] Update the demo `shed` project imports/details without replacing unrelated
   user source.
-- [ ] Compile a fresh GLB plus BoM, procurement, and structural artifacts.
+- [x] Compile a fresh GLB plus BoM, procurement, and structural artifacts.
 - [ ] Confirm the BoM/model digest match and the viewer loads without browser
   memory failure.
-- [ ] Run a fresh structural solve and capture counts by status and family.
-- [ ] Acceptance is zero explicit structural failures and zero unexplained
+- [x] Run a fresh structural solve and capture counts by status and family.
+- [x] Acceptance is zero explicit structural failures and zero unexplained
   `unsupported` connection, tension-end, restraint, or member-stability rows.
   Any remaining `not_checked` row must be demonstrably non-applicable and named
   as such; otherwise this plan remains incomplete.
@@ -272,10 +295,21 @@ bolt, sheet and fixture-plate limit states.
   finite equilibrium residuals.
 - [x] Corrected multi-pack connection selection, portal-base fixture detection,
   gusset physical-length stiffness, and same-section screw joint discovery.
-- [x] Updated the live source bundle to SHA-256 `0acdc874...` for `design.py`,
-  `83fb8768...` for `lysaght_zc.py`, and `835aa718...` for
-  `shed_base_bracket.py`; the corrected source is compiling now.
+- [x] Updated the live source bundle through SHA-256 `6b5a6247...` for
+  `design.py`, retaining `83fb8768...` for `lysaght_zc.py` and
+  `835aa718...` for `shed_base_bracket.py`; exact compile job
+  `3c21c799-6459-4b74-9ed8-6df7acde2cbc` succeeded in 108 seconds.
 - [x] Focused local/deployed-image validation complete: 31 structural tests pass.
-- [ ] Fresh compile, null-space check, structural result counts, BoM digest, and
-  viewer validation pending.
-- [ ] Live deployment and acceptance complete.
+- [x] Fresh structural solve on design projection `918c8617...` completed in
+  147.2 seconds: 237/237 cross-sections pass, 237/237 member-stability rows
+  pass, 247/247 connections pass, 62/62 tension rows pass, 62/62 bracing paths
+  pass, and 101 applicable serviceability checks pass. There are zero explicit
+  failures and zero unexplained unsupported rows.
+- [x] The stability solve converges in all four sway directions with
+  `alpha_cr,min=46.44`; its amplification warning and the unsigned documentation
+  gate remain visible for engineering review rather than being relabelled as a
+  calculated pass.
+- [x] Add live structural phase/elapsed/member-count telemetry and focused
+  backend/UI regression coverage.
+- [ ] BoM/model digest and viewer validation pending.
+- [ ] Deploy the telemetry build and complete live browser acceptance.

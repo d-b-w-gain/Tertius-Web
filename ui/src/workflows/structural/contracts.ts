@@ -949,6 +949,17 @@ export type StructuralAnalysisCacheInfo = {
   calculation_duration_seconds: number
 }
 
+export type StructuralAnalysisProgress = {
+  state: 'idle' | 'running' | 'complete' | 'failed'
+  stage_id: string
+  stage_label: string
+  completed_units: number | null
+  total_units: number | null
+  elapsed_seconds: number
+  engine_version: string | null
+  key_digest: string | null
+}
+
 export type ActiveStructuralWorkbenchResponse = {
   capture: ProjectStructuralCapture
   analysis: StructuralSnapshot | null

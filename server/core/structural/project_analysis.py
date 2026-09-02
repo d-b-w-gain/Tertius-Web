@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from collections import defaultdict, deque
 from importlib.metadata import version
 from math import pi, sqrt
@@ -8402,7 +8402,19 @@ def solve_project_structural(
     capture: ProjectStructuralCapture,
     *,
     combination_id: str | None = None,
+    progress_callback: Callable[[str, str, int | None, int | None], None]
+    | None = None,
 ) -> StructuralSnapshot:
+    def report_progress(
+        stage_id: str,
+        stage_label: str,
+        completed_units: int | None = None,
+        total_units: int | None = None,
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(stage_id, stage_label, completed_units, total_units)
+
+    report_progress("preparing", "Validating the compiled structural declaration")
     analysis = capture.analysis
     if analysis is None or not analysis.members:
         raise StructuralAnalysisError("Active design has no analytical member axes")
@@ -8452,6 +8464,12 @@ def solve_project_structural(
     ] = "requested" if combination_id is not None else "default"
     components = {component.id: component for component in capture.components}
 
+    report_progress(
+        "topology",
+        "Building analytical nodes, members, restraints, and loads",
+        0,
+        len(analysis.members),
+    )
     model = FEModel3D()
     for material in analysis.materials:
         model.add_material(
@@ -8738,6 +8756,12 @@ def solve_project_structural(
 
     for combination in combinations:
         model.add_load_combo(combination.id, dict(combination.factors))
+    report_progress(
+        "topology",
+        "Building analytical nodes, members, restraints, and loads",
+        len(analysis.members),
+        len(analysis.members),
+    )
     stability_directions: list[dict[str, Any]] = []
     if analysis.stability is not None:
         stability_directions = [
@@ -8760,6 +8784,7 @@ def solve_project_structural(
     generated_nodal_loads: list[NodalLoad] = []
     try:
         if analysis.stability is None:
+            report_progress("linear_solve", "Solving the structural load cases")
             model.analyze(check_statics=False, log=False)
         else:
             generated_nodal_loads = _generate_p399_nodal_loads(
@@ -8768,6 +8793,7 @@ def solve_project_structural(
                 member_node_ids=member_node_ids,
                 nodes_by_topology=nodes_by_topology,
             )
+            report_progress("linear_solve", "Solving first-order load cases")
             model.analyze_linear(check_statics=False, log=False)
             members_by_id = {
                 declaration.id: declaration for declaration in analysis.members
@@ -8828,6 +8854,10 @@ def solve_project_structural(
                             for member_id in analysis.stability.eaves_member_ids
                         )
                     )
+            report_progress(
+                "second_order_solve",
+                "Solving second-order P-Delta stability response",
+            )
             model.analyze_PDelta(log=False)
     except Exception as exc:
         raise StructuralAnalysisError(
@@ -9011,6 +9041,7 @@ def solve_project_structural(
             ),
         )
 
+    report_progress("response", "Evaluating solved stability response")
     structural_nodes = [
         StructuralNode(
             id=node["id"],
@@ -9025,12 +9056,14 @@ def solve_project_structural(
     member_results: list[MemberResult] = []
     member_diagrams: list[MemberDiagram] = []
     member_checks: list[MemberCheck] = []
+    report_progress("tension_members", "Checking tension-only members")
     tension_member_checks = _tension_member_checks(
         model,
         analysis,
         capture.connections,
         components,
     )
+    report_progress("connections", "Checking physical connections and anchors")
     connection_checks = _connection_checks(
         model,
         analysis,
@@ -9041,12 +9074,14 @@ def solve_project_structural(
     connection_checks_by_id = {
         check.connection_id: check for check in connection_checks
     }
+    report_progress("bracing", "Tracing the bracing load paths")
     bracing_load_path_traces = _bracing_load_path_traces(
         capture,
         analysis,
         tension_member_checks,
         connection_checks,
     )
+    report_progress("cross_sections", "Checking member cross-sections")
     cross_section_checks = _cross_section_checks(
         model,
         analysis,
@@ -9056,6 +9091,7 @@ def solve_project_structural(
     cross_section_checks_by_member = {
         check.member_id: check for check in cross_section_checks
     }
+    report_progress("member_stability", "Checking buckling and member stability")
     member_stability_checks = _member_stability_checks(
         model,
         analysis,
@@ -9133,7 +9169,13 @@ def solve_project_structural(
     serviceability_groups: dict[str, dict[str, Any]] = {}
     sections_by_id = {section.id: section for section in analysis.sections}
 
-    for declaration in analysis.members:
+    report_progress(
+        "member_diagrams",
+        "Building member diagrams and serviceability results",
+        0,
+        len(analysis.members),
+    )
+    for declaration_index, declaration in enumerate(analysis.members, start=1):
         component = components[declaration.component_id]
         start_node_id, end_node_id = member_node_ids[declaration.id]
         structural_members.append(
@@ -9509,6 +9551,13 @@ def solve_project_structural(
         group["axial_only"] = bool(group["axial_only"]) or (
             declaration.tension_only or declaration.compression_only
         )
+        if declaration_index % 10 == 0 or declaration_index == len(analysis.members):
+            report_progress(
+                "member_diagrams",
+                "Building member diagrams and serviceability results",
+                declaration_index,
+                len(analysis.members),
+            )
 
     for group in serviceability_groups.values():
         group_limits = [float(value) for value in group["limits_mm"]]
@@ -9731,6 +9780,7 @@ def solve_project_structural(
             for check in member_checks
         ]
 
+    report_progress("evidence", "Assembling verification evidence and decision gates")
     return StructuralSnapshot(
         mode="design",
         title=capture.title,

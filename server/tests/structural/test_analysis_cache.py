@@ -78,9 +78,11 @@ def test_structural_solver_result_is_persisted_and_reused(
     expected = cantilever_snapshot()
     solve_calls = 0
 
-    def solve_once(_capture, *, combination_id=None):
+    def solve_once(_capture, *, combination_id=None, progress_callback=None):
         nonlocal solve_calls
         solve_calls += 1
+        if progress_callback is not None:
+            progress_callback("linear_solve", "Solving test model", None, None)
         return expected
 
     monkeypatch.setattr(structural_server, "solve_project_structural", solve_once)
@@ -109,6 +111,11 @@ def test_structural_solver_result_is_persisted_and_reused(
     assert first_cache.key_digest == second_cache.key_digest
     assert solve_calls == 1
     assert cache_db.scalar(select(func.count(StructuralAnalysisResult.id))) == 1
+    progress = structural_server._read_structural_progress(
+        structural_server._structural_progress_scope(context, project, None)
+    )
+    assert progress.state == "complete"
+    assert progress.stage_label == "Structural calculation saved"
 
 
 def test_changed_site_and_combination_create_new_results(
@@ -133,7 +140,7 @@ def test_changed_site_and_combination_create_new_results(
     expected = cantilever_snapshot()
     solve_calls = 0
 
-    def solve(_capture, *, combination_id=None):
+    def solve(_capture, *, combination_id=None, progress_callback=None):
         nonlocal solve_calls
         solve_calls += 1
         return expected
