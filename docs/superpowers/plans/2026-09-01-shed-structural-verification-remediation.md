@@ -255,7 +255,7 @@ workbench. The saved snapshot remains the authoritative result.
 - [x] Update the demo `shed` project imports/details without replacing unrelated
   user source.
 - [x] Compile a fresh GLB plus BoM, procurement, and structural artifacts.
-- [ ] Confirm the BoM/model digest match and the viewer loads without browser
+- [x] Confirm the BoM/model digest match and the viewer loads without browser
   memory failure.
 - [x] Run a fresh structural solve and capture counts by status and family.
 - [x] Acceptance is zero explicit structural failures and zero unexplained
@@ -311,5 +311,11 @@ workbench. The saved snapshot remains the authoritative result.
   calculated pass.
 - [x] Add live structural phase/elapsed/member-count telemetry and focused
   backend/UI regression coverage.
-- [ ] BoM/model digest and viewer validation pending.
-- [ ] Deploy the telemetry build and complete live browser acceptance.
+- [x] Live Procurement reports `Verified: model and BoM manifest match`; the
+  C10019 rows and the knee/apex plate identities are present, and both the
+  Procurement 3D preview and Extus viewer load without console errors or a
+  browser-memory failure.
+- [x] Deployed telemetry build `5a81d5a` to both API and UI. Live browser
+  acceptance observed topology `299/299`, first-order solve, P-Delta,
+  connection, cross-section, and member-stability phases before the result was
+  saved in 167.2 seconds. Reopening reports `SAVED ANALYSIS` and reuses it.
