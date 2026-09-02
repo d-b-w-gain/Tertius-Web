@@ -29,6 +29,8 @@ type StructuralWorkbenchProps = {
   isActive?: boolean
 }
 
+type EvidenceLevel = 'overview' | 'investigate' | 'audit'
+
 const capabilityStyle: Record<CapabilityState['status'], string> = {
   online: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
   fixture: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
@@ -98,6 +100,13 @@ type CompactVerificationGroup = {
   open: number
 }
 
+type GoverningAnalysisState = {
+  solver: Pick<StructuralSnapshot['solver'], 'combination_id'>
+  certification_readiness: StructuralSnapshot['certification_readiness']
+  verification_stages: StructuralSnapshot['verification_stages']
+  compactVerificationGroups: CompactVerificationGroup[]
+}
+
 function compactVerificationGroup(
   id: string,
   label: string,
@@ -127,6 +136,46 @@ function compactVerificationGroup(
     failed,
     unsupported,
     open,
+  }
+}
+
+function governingAnalysisState(snapshot: StructuralSnapshot): GoverningAnalysisState {
+  return {
+    solver: { combination_id: snapshot.solver.combination_id },
+    certification_readiness: snapshot.certification_readiness,
+    verification_stages: snapshot.verification_stages,
+    compactVerificationGroups: [
+      compactVerificationGroup(
+        'cross-sections',
+        'Cross-sections',
+        (snapshot.cross_section_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'member-stability',
+        'Member stability',
+        (snapshot.member_stability_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'connections',
+        'Connections',
+        (snapshot.connection_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'tension-members',
+        'Tension members',
+        (snapshot.tension_member_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'bracing',
+        'Bracing paths',
+        (snapshot.bracing_load_path_traces ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'serviceability',
+        'Serviceability',
+        snapshot.serviceability_checks.map((check) => check.status),
+      ),
+    ],
   }
 }
 
@@ -174,6 +223,9 @@ function analysisCacheFromHeaders(response: Response): StructuralAnalysisCacheIn
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
+  const [governingAnalysis, setGoverningAnalysis] = useState<GoverningAnalysisState | null>(
+    null,
+  )
   const [analysis, setAnalysis] = useState<StructuralSnapshot | null>(null)
   const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
   const [selectedMemberId, setSelectedMemberId] = useState('')
@@ -188,7 +240,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [memberEvidenceStage, setMemberEvidenceStage] = useState<
     'cross_section' | 'member_stability'
   >('member_stability')
-  const [showDetailedEvidence, setShowDetailedEvidence] = useState(false)
+  const [evidenceLevel, setEvidenceLevel] = useState<EvidenceLevel>('overview')
   const [isLoading, setIsLoading] = useState(false)
   const [analysisLoadPhase, setAnalysisLoadPhase] = useState<
     'idle' | 'checking' | 'calculating'
@@ -200,12 +252,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const captureRequestId = useRef(0)
+  const combinationRequestId = useRef(0)
   const serverUrl = resolveWorkflowServerUrl('structural', import.meta.env?.VITE_API_URL)
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
 
   const loadCapture = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
     const requestId = ++captureRequestId.current
+    combinationRequestId.current += 1
     setIsLoading(true)
     setAnalysisLoadPhase('checking')
     setAnalysisCache(null)
@@ -254,6 +308,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setAnalysisCache(workbench.cache)
       if (workbench.analysis) {
         const nextAnalysis = workbench.analysis
+        setGoverningAnalysis(governingAnalysisState(nextAnalysis))
         setAnalysis(nextAnalysis)
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
@@ -261,12 +316,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         setActiveStageId(nextAnalysis.calculation_sheets?.[0]?.stage_id || '')
         setMemberEvidenceStage('member_stability')
       } else {
+        setGoverningAnalysis(null)
         setAnalysis(null)
         setAnalysisError(workbench.analysis_error || 'Structural analysis is unavailable')
       }
     } catch (loadError) {
       if (requestId !== captureRequestId.current) return
       setCapture(null)
+      setGoverningAnalysis(null)
       setAnalysis(null)
       setAnalysisCache(null)
       setError(
@@ -299,6 +356,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   }, [loadCapture])
 
   const selectCombination = useCallback(async (combinationId: string) => {
+    const requestId = ++combinationRequestId.current
     setSelectedCombinationId(combinationId)
     setAnalysisError(null)
     setAnalysisLoadPhase('checking')
@@ -308,13 +366,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     const pollProgress = async () => {
       try {
         const response = await apiFetch(progressUrl, getAccessToken)
-        if (!response.ok) return
+        if (!response.ok || requestId !== combinationRequestId.current) return
         setAnalysisProgress((await response.json()) as StructuralAnalysisProgress)
       } catch {
         // Progress is advisory. The selected-combination request remains authoritative.
       }
     }
     const calculationTimer = window.setTimeout(() => {
+      if (requestId !== combinationRequestId.current) return
       setAnalysisLoadPhase('calculating')
       void pollProgress()
       progressPollTimer = window.setInterval(() => void pollProgress(), 1000)
@@ -332,6 +391,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         const detail = payload && 'detail' in payload ? payload.detail : undefined
         throw new Error(detail || `Structural analysis returned ${response.status}`)
       }
+      if (requestId !== combinationRequestId.current) return
       const nextAnalysis = payload as StructuralSnapshot
       setAnalysis(nextAnalysis)
       setAnalysisCache(analysisCacheFromHeaders(response))
@@ -347,6 +407,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           : nextAnalysis.members[0]?.id || ''
       ))
     } catch (loadError) {
+      if (requestId !== combinationRequestId.current) return
       setAnalysisError(
         loadError instanceof Error
           ? loadError.message
@@ -355,7 +416,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     } finally {
       window.clearTimeout(calculationTimer)
       if (progressPollTimer !== undefined) window.clearInterval(progressPollTimer)
-      setAnalysisLoadPhase('idle')
+      if (requestId === combinationRequestId.current) setAnalysisLoadPhase('idle')
     }
   }, [getAccessToken, serverUrl])
 
@@ -430,41 +491,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const memberStabilityStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'member_stability',
   )
-  const compactVerificationGroups = useMemo(() => {
-    if (!analysis) return []
-    return [
-      compactVerificationGroup(
-        'cross-sections',
-        'Cross-sections',
-        (analysis.cross_section_checks ?? []).map((check) => check.status),
-      ),
-      compactVerificationGroup(
-        'member-stability',
-        'Member stability',
-        (analysis.member_stability_checks ?? []).map((check) => check.status),
-      ),
-      compactVerificationGroup(
-        'connections',
-        'Connections',
-        (analysis.connection_checks ?? []).map((check) => check.status),
-      ),
-      compactVerificationGroup(
-        'tension-members',
-        'Tension members',
-        (analysis.tension_member_checks ?? []).map((check) => check.status),
-      ),
-      compactVerificationGroup(
-        'bracing',
-        'Bracing paths',
-        (analysis.bracing_load_path_traces ?? []).map((check) => check.status),
-      ),
-      compactVerificationGroup(
-        'serviceability',
-        'Serviceability',
-        analysis.serviceability_checks.map((check) => check.status),
-      ),
-    ]
-  }, [analysis])
+  const compactVerificationGroups = governingAnalysis?.compactVerificationGroups ?? []
   const compactFailureCount = compactVerificationGroups.reduce(
     (total, group) => total + group.failed,
     0,
@@ -473,15 +500,23 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     (total, group) => total + group.unsupported,
     0,
   )
-  const compactOverallStatus: VerificationStatus = !analysis
+  const compactOverallStatus: VerificationStatus = !governingAnalysis
     ? 'not_checked'
     : compactFailureCount > 0
       ? 'fail'
       : compactUnsupportedCount > 0
         ? 'unsupported'
-        : analysis.certification_readiness?.ready_for_engineering_review
+        : governingAnalysis.certification_readiness?.ready_for_engineering_review
           ? 'pass'
           : 'warning'
+  const openCertificationGates = governingAnalysis?.certification_readiness?.gates.filter(
+    (gate) => gate.status !== 'pass',
+  ) ?? []
+  const investigationIssues = governingAnalysis?.certification_readiness?.issues ?? []
+  const governingCertificationReadiness = governingAnalysis?.certification_readiness ?? null
+  const attentionStageCount = governingAnalysis?.verification_stages.filter(
+    (stage) => stage.status !== 'pass',
+  ).length ?? 0
   const selectedServiceability = analysis?.serviceability_checks.find(
     (check) => (
       check.member_id === selectedMember?.id
@@ -545,7 +580,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!trace || !currentAnalysis) return
     setSelectedRestraintTraceId(trace.id)
-    setShowDetailedEvidence(true)
+    setEvidenceLevel('audit')
     setActiveStageId('bracing')
     setSelectedMemberId(trace.member_id)
     setSelectedVisualNodeId(
@@ -825,14 +860,17 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       source: analysis.source,
       design_basis: analysis.design_basis,
       wind_action_bases: analysis.wind_action_bases,
-      active_combination: analysis.solver.combination_id,
+      governing_combination: governingAnalysis?.solver.combination_id ?? null,
+      rendered_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
       connection_checks: analysis.connection_checks ?? [],
       member_restraint_traces: analysis.member_restraint_traces ?? [],
       member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
-      certification_readiness: analysis.certification_readiness,
-      verification_stages: analysis.verification_stages ?? [],
+      certification_readiness: governingAnalysis?.certification_readiness ?? null,
+      verification_stages: governingAnalysis?.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
+      rendered_verification_stages: analysis.verification_stages ?? [],
+      rendered_calculation_sheets: analysis.calculation_sheets ?? [],
     }
     const url = URL.createObjectURL(new Blob(
       [JSON.stringify(payload, null, 2)],
@@ -921,12 +959,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               : 'Active-project compiled mechanical topology; analysis context required'}
           </p>
         </div>
-        {analysis && showDetailedEvidence && (
+        {analysis && evidenceLevel !== 'overview' && (
           <div className="ml-auto flex items-center gap-2">
-            <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
-              Combination
+            <label
+              className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500"
+              title="Selects the loads, reactions, restraints, and ribbons rendered in 3D. Verification continues to use its governing combinations."
+            >
+              Rendered combination
               <select
-                aria-label="Load combination"
+                aria-label="Rendered load combination"
                 value={selectedCombinationId}
                 onChange={(event) => void selectCombination(event.target.value)}
                 disabled={analysisLoadPhase !== 'idle'}
@@ -1034,7 +1075,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             )}
           </div>
         )}
-        {showDetailedEvidence && (
+        {evidenceLevel === 'audit' && (
           <div className="hidden items-center gap-2 xl:flex">
             {capabilities.map((capability) => (
               <span
@@ -1050,18 +1091,18 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       </header>
 
       <div className={`shrink-0 border-b px-5 py-2 text-xs font-semibold ${
-        analysis?.certification_readiness?.ready_for_certificate
+        governingAnalysis?.certification_readiness?.ready_for_certificate
           ? 'border-emerald-500/30 bg-emerald-950/40 text-emerald-200'
           : 'border-amber-500/30 bg-amber-950/40 text-amber-200'
       }`}>
-        {analysis?.certification_readiness
-          ? analysis.certification_readiness.ready_for_certificate
+        {governingAnalysis?.certification_readiness
+          ? governingAnalysis.certification_readiness.ready_for_certificate
             ? 'AUSTRALIAN TECHNICAL GATES PASS — CONTROLLED CERTIFICATE DRAFT REQUIRES ENGINEER REVIEW AND SIGNATURE'
-            : `AUSTRALIAN VERIFICATION ACTIVE — ${analysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${analysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
+            : `AUSTRALIAN VERIFICATION ACTIVE — ${governingAnalysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${governingAnalysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
-      {showDetailedEvidence && <StructuralWindBasisPanel bases={windActionBases} />}
+      {evidenceLevel === 'audit' && <StructuralWindBasisPanel bases={windActionBases} />}
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
@@ -1179,34 +1220,172 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       </div>
                     ))}
                   </div>
-                  {analysis?.certification_readiness && (
+                  {governingAnalysis?.certification_readiness && (
                     <div className="mt-3 flex items-center justify-between gap-3 text-[9px] text-slate-300">
                       <span>
-                        {analysis.certification_readiness.ready_for_engineering_review
+                        {governingAnalysis.certification_readiness.ready_for_engineering_review
                           ? 'Engineering review evidence is available.'
-                          : `${analysis.certification_readiness.blocking_gate_ids.length} engineering gate(s) remain open.`}
+                          : `${governingAnalysis.certification_readiness.blocking_gate_ids.length} engineering gate(s) remain open.`}
                       </span>
                       <span className="shrink-0 font-mono uppercase text-slate-400">
-                        {analysis.certification_readiness.document_status.replaceAll('_', ' ')}
+                        {governingAnalysis.certification_readiness.document_status.replaceAll('_', ' ')}
                       </span>
                     </div>
                   )}
-                  <button
-                    type="button"
-                    aria-expanded={showDetailedEvidence}
-                    aria-controls="structural-detailed-evidence"
-                    onClick={() => setShowDetailedEvidence((current) => !current)}
-                    className="mt-4 w-full rounded border border-slate-600 bg-slate-950/50 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-cyan-400 hover:text-cyan-200"
+                  <div
+                    role="group"
+                    aria-label="Evidence detail level"
+                    className="mt-4 grid grid-cols-3 gap-1 rounded border border-slate-700 bg-slate-950/60 p-1"
                   >
-                    {showDetailedEvidence ? 'Hide detailed analysis' : 'Show detailed analysis'}
-                  </button>
+                    {([
+                      ['overview', 'Overview', 'High-level governing pass/fail only'],
+                      ['investigate', 'Investigate', 'Open gates and actionable issues'],
+                      ['audit', 'Audit', 'Complete calculation evidence'],
+                    ] as const).map(([level, label, title]) => (
+                      <button
+                        key={level}
+                        type="button"
+                        aria-pressed={evidenceLevel === level}
+                        aria-controls={level === 'overview' ? undefined : 'structural-detailed-evidence'}
+                        title={title}
+                        onClick={() => setEvidenceLevel(level)}
+                        className={`rounded px-2 py-2 text-[10px] font-semibold transition ${
+                          evidenceLevel === level
+                            ? 'bg-cyan-500/20 text-cyan-100'
+                            : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </section>
               </div>
-              {showDetailedEvidence && (
+              {evidenceLevel === 'investigate' && governingAnalysis && (
+                <div
+                  id="structural-detailed-evidence"
+                  className="space-y-3 border-t border-slate-800 p-4"
+                >
+                  <section className="rounded border border-cyan-500/30 bg-cyan-950/20 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                          Investigation view
+                        </div>
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-300">
+                          Only governing gates and issues needing attention are mounted here.
+                          The rendered combination above changes the 3D telemetry, not this summary.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded border border-cyan-500/30 px-2 py-1 font-mono text-[9px] text-cyan-200">
+                        {openCertificationGates.length + investigationIssues.length} items
+                      </span>
+                    </div>
+                  </section>
+
+                  {openCertificationGates.length === 0 && investigationIssues.length === 0 ? (
+                    <section className={`rounded border p-3 ${verificationStyle.pass}`}>
+                      <div className="text-xs font-semibold">No open verification items</div>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        The governing calculation has no open gates or recorded issues. Use Audit
+                        only when the complete calculation trail is required.
+                      </p>
+                    </section>
+                  ) : (
+                    <>
+                      {openCertificationGates.length > 0 && (
+                        <section className="space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                            Open gates · {openCertificationGates.length}
+                          </div>
+                          {openCertificationGates.map((gate) => (
+                            <button
+                              key={gate.id}
+                              type="button"
+                              onClick={() => selectVerificationStage(gate.stage_ids[0] || '')}
+                              className={`w-full rounded border p-3 text-left ${verificationStyle[gate.status]}`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-semibold text-slate-100">
+                                  {gate.order}. {gate.label}
+                                </span>
+                                <span className="font-mono text-[9px] font-bold uppercase">
+                                  {gate.status.replace('_', ' ')}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[10px] leading-relaxed opacity-80">
+                                {gate.summary}
+                              </p>
+                            </button>
+                          ))}
+                        </section>
+                      )}
+
+                      {investigationIssues.length > 0 && (
+                        <section className="space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                            Actionable issues · {investigationIssues.length}
+                          </div>
+                          {investigationIssues.map((issue) => (
+                            <button
+                              key={issue.id}
+                              type="button"
+                              onClick={() => selectVerificationStage(issue.stage_id)}
+                              className={`w-full rounded border p-3 text-left ${certificationIssueStyle[issue.kind]}`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-semibold text-slate-100">
+                                  {issue.title}
+                                </span>
+                                <span className="font-mono text-[9px] font-bold uppercase">
+                                  {issue.count} · {certificationIssueLabel[issue.kind]}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[10px] leading-relaxed opacity-85">
+                                {issue.detail}
+                              </p>
+                              <p className="mt-2 text-[10px] font-semibold text-slate-100">
+                                Next: {issue.next_action}
+                              </p>
+                              {issue.affected_ids.length > 0 && (
+                                <p className="mt-1 truncate font-mono text-[9px] opacity-70">
+                                  {issue.affected_ids.join(', ')}
+                                </p>
+                              )}
+                            </button>
+                          ))}
+                        </section>
+                      )}
+                    </>
+                  )}
+
+                  {attentionStageCount > openCertificationGates.length && (
+                    <p className="text-[9px] leading-relaxed text-slate-500">
+                      {attentionStageCount} verification stages contain non-pass evidence. Open Audit
+                      for the complete stage and calculation-sheet trail.
+                    </p>
+                  )}
+                </div>
+              )}
+              {evidenceLevel === 'audit' && (
                 <div
                   id="structural-detailed-evidence"
                   className="space-y-5 border-t border-slate-800 p-4"
                 >
+              {analysis && (
+                <section className="rounded border border-violet-500/30 bg-violet-950/20 p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-violet-300">
+                    Complete audit · rendered combination
+                  </div>
+                  <p className="mt-1 break-all font-mono text-[10px] text-slate-200">
+                    {analysis.solver.combination_id}
+                  </p>
+                  <p className="mt-1 text-[9px] leading-relaxed text-slate-400">
+                    Diagrams and combination-specific sheets below follow this rendered case.
+                    Governing certification status remains fixed to the automatic verification result.
+                  </p>
+                </section>
+              )}
               {analysis?.design_basis && (
                 <section className="rounded border border-cyan-500/40 bg-cyan-950/20 p-3">
                   <div className="flex items-start justify-between gap-3">
@@ -1237,9 +1416,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </section>
               )}
 
-              {analysis?.certification_readiness && (
+              {governingCertificationReadiness && (
                 <section className={`rounded border p-3 ${
-                  analysis.certification_readiness.ready_for_certificate
+                  governingCertificationReadiness.ready_for_certificate
                     ? verificationStyle.pass
                     : verificationStyle.blocked
                 }`}>
@@ -1249,38 +1428,38 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         Australian certification readiness
                       </div>
                       <div className="mt-1 text-xs font-semibold text-slate-100">
-                        {analysis.certification_readiness.draft_document_label}
+                        {governingCertificationReadiness.draft_document_label}
                       </div>
                     </div>
                     <span className="font-mono text-[9px] uppercase">
-                      {analysis.certification_readiness.document_status.replaceAll('_', ' ')}
+                      {governingCertificationReadiness.document_status.replaceAll('_', ' ')}
                     </span>
                   </div>
                   <p className="mt-2 text-[10px] leading-relaxed text-slate-300">
-                    {analysis.certification_readiness.conclusion}
+                    {governingCertificationReadiness.conclusion}
                   </p>
                   <div className={`mt-3 rounded border p-2 ${
-                    analysis.certification_readiness.model_coverage.status === 'complete'
+                    governingCertificationReadiness.model_coverage.status === 'complete'
                       ? verificationStyle.pass
                       : verificationStyle.fail
                   }`}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[9px] font-semibold">PyNite model coverage</span>
                       <span className="font-mono text-[8px] uppercase">
-                        {analysis.certification_readiness.model_coverage.solved_member_count}/
-                        {analysis.certification_readiness.model_coverage.compiled_member_count} members
+                        {governingCertificationReadiness.model_coverage.solved_member_count}/
+                        {governingCertificationReadiness.model_coverage.compiled_member_count} members
                       </span>
                     </div>
                     <p className="mt-1 text-[9px] leading-relaxed opacity-80">
-                      {analysis.certification_readiness.model_coverage.summary}
+                      {governingCertificationReadiness.model_coverage.summary}
                     </p>
                   </div>
-                  {analysis.certification_readiness.issues.length > 0 && (
+                  {governingCertificationReadiness.issues.length > 0 && (
                     <div className="mt-3 space-y-2">
                       <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">
                         What is actually blocking certification
                       </div>
-                      {analysis.certification_readiness.issues.map((issue) => (
+                      {governingCertificationReadiness.issues.map((issue) => (
                         <button
                           key={issue.id}
                           type="button"
@@ -1309,7 +1488,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     </div>
                   )}
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    {analysis.certification_readiness.gates.map((gate) => (
+                    {governingCertificationReadiness.gates.map((gate) => (
                       <div
                         key={gate.id}
                         title={gate.summary}

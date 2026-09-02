@@ -1047,12 +1047,13 @@ function structuralResponse(
 }
 
 async function openDetailedAnalysis() {
-  const toggle = await screen.findByRole('button', { name: 'Show detailed analysis' })
-  expect(toggle).toHaveAttribute('aria-expanded', 'false')
-  fireEvent.click(toggle)
+  const selector = await screen.findByRole('group', { name: 'Evidence detail level' })
+  const audit = within(selector).getByRole('button', { name: 'Audit' })
+  expect(audit).toHaveAttribute('aria-pressed', 'false')
+  fireEvent.click(audit)
   await waitFor(() => {
-    expect(screen.getByRole('button', { name: 'Hide detailed analysis' }))
-      .toHaveAttribute('aria-expanded', 'true')
+    expect(within(selector).getByRole('button', { name: 'Audit' }))
+      .toHaveAttribute('aria-pressed', 'true')
   })
 }
 
@@ -1081,6 +1082,10 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByRole('region', { name: 'Structural verification summary' }))
       .toBeInTheDocument()
     expect(screen.queryByText('Custom Orb roofing iron')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Rendered load combination')).not.toBeInTheDocument()
+    const detailLevel = screen.getByRole('group', { name: 'Evidence detail level' })
+    expect(within(detailLevel).getByRole('button', { name: 'Overview' }))
+      .toHaveAttribute('aria-pressed', 'true')
 
     await openDetailedAnalysis()
 
@@ -1138,7 +1143,7 @@ describe('StructuralWorkbench', () => {
     fireEvent.click(screen.getByRole('button', { name: 'moment' }))
     expect(screen.getByText(/Ribbon mode: moment/)).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Load combination'), {
+    fireEvent.change(screen.getByLabelText('Rendered load combination'), {
       target: { value: 'SLS-G' },
     })
     await waitFor(() => {
@@ -1147,7 +1152,7 @@ describe('StructuralWorkbench', () => {
         mocks.getAccessToken,
       )
     })
-  })
+  }, 15_000)
 
   it('retries a gateway timeout after the backend stores a fresh analysis', async () => {
     mocks.apiFetch
@@ -1190,6 +1195,15 @@ describe('StructuralWorkbench', () => {
     ))
 
     render(<StructuralWorkbench isActive />)
+
+    const detailLevel = await screen.findByRole('group', { name: 'Evidence detail level' })
+    fireEvent.click(within(detailLevel).getByRole('button', { name: 'Investigate' }))
+    expect(await screen.findByText('Investigation view')).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: /Member cross-sections exceed calculated resistance/,
+    })).toBeInTheDocument()
+    expect(screen.queryByText('PyNite model coverage')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Rendered load combination')).toBeInTheDocument()
 
     await openDetailedAnalysis()
 
@@ -1337,12 +1351,55 @@ describe('StructuralWorkbench', () => {
     })
     await openDetailedAnalysis()
 
-    fireEvent.change(screen.getByLabelText('Load combination'), {
+    fireEvent.change(screen.getByLabelText('Rendered load combination'), {
       target: { value: 'DEMO-OVERLOAD' },
     })
 
     expect(await screen.findByText(/Ribbon status: not_checked/)).toBeInTheDocument()
     expect(screen.getByText('126.9% reference utilisation')).toBeInTheDocument()
+  })
+
+  it('keeps the governing summary stable while a ULS combination drives the render', async () => {
+    const ulsInspection: StructuralSnapshot = {
+      ...overloadAnalysis,
+      serviceability_checks: overloadAnalysis.serviceability_checks.map((check) => ({
+        ...check,
+        combination_id: 'DEMO-OVERLOAD',
+        utilisation: null,
+        status: 'not_checked',
+      })),
+      certification_readiness: {
+        ...overloadAnalysis.certification_readiness!,
+        document_status: 'analysis_incomplete',
+        ready_for_engineering_review: false,
+        blocking_gate_ids: ['analysis', 'stability', 'serviceability', 'documentation'],
+      },
+    }
+    mocks.apiFetch.mockImplementation((url: string) => Promise.resolve(
+      structuralResponse(
+        url,
+        capture,
+        url.includes('combination_id=DEMO-OVERLOAD') ? ulsInspection : analysis,
+      ),
+    ))
+    render(<StructuralWorkbench isActive />)
+
+    await openDetailedAnalysis()
+    const summary = screen.getByRole('region', { name: 'Structural verification summary' })
+    const serviceability = within(summary).getByText('Serviceability').closest('[role="listitem"]')
+    expect(serviceability).toHaveTextContent('1/1 pass')
+
+    fireEvent.change(screen.getByLabelText('Rendered load combination'), {
+      target: { value: 'DEMO-OVERLOAD' },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Complete audit · rendered combination').parentElement)
+        .toHaveTextContent('DEMO-OVERLOAD')
+    })
+    expect(serviceability).toHaveTextContent('1/1 pass')
+    expect(screen.getByText(/AUSTRALIAN VERIFICATION ACTIVE — 1 CERTIFICATION GATE/))
+      .toBeInTheDocument()
   })
 
   it('opens auditable demand, capacity, and provenance from a selected 3D trace', async () => {
