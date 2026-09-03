@@ -364,70 +364,70 @@ Failure behaviour:
 
 ### Contract and gate tests
 
-- [ ] Axial-only brace/tie transverse deflection becomes `not_applicable` with a
+- [x] Axial-only brace/tie transverse deflection becomes `not_applicable` with a
   reason and covering-stage references.
-- [ ] Missing SLS criterion remains `not_checked` and blocks certificate draft.
-- [ ] One failed, unsupported, blocked, stale, or unchecked item blocks export.
-- [ ] Reasoned `not_applicable` items do not block when every applicable check
+- [x] Missing SLS criterion remains `not_checked` and blocks certificate draft.
+- [x] One failed, unsupported, blocked, stale, or unchecked item blocks export.
+- [x] Reasoned `not_applicable` items do not block when every applicable check
   passes.
-- [ ] Demo fixture reports 101 pass, 22 not applicable, 0 fail, and 0 not checked.
+- [x] Demo fixture reports 101 pass, 22 not applicable, 0 fail, and 0 not checked.
 
 ### PDF and pack tests
 
-- [ ] PDF begins with `%PDF-`, ends with `%%EOF`, has multiple pages, and contains
+- [x] PDF begins with `%PDF-`, ends with `%%EOF`, has multiple pages, and contains
   the project/design identity, draft watermark, standards, gate table,
   applicability schedule, evidence hashes, and blank signature block.
-- [ ] Fixed snapshot and fixed export time produce byte-identical PDF, JSON,
+- [x] Fixed snapshot and fixed export time produce byte-identical PDF, JSON,
   manifest, and ZIP outputs.
 - [ ] Long IDs, Unicode, newlines, very long assumptions, and many table rows are
   bounded and paginated safely.
-- [ ] Manifest hashes match the actual PDF and evidence JSON bytes.
-- [ ] PDF never contains an engineer name/signature that was not supplied by a
+- [x] Manifest hashes match the actual PDF and evidence JSON bytes.
+- [x] PDF never contains an engineer name/signature that was not supplied by a
   future authorised signing workflow.
 
 ### API, persistence and isolation tests
 
 - [ ] Unauthenticated and wrong-role requests are rejected.
 - [ ] A tenant cannot request or infer another tenant's analysis/export.
-- [ ] Stale cache key returns `409`; non-ready result returns `422`.
-- [ ] Ready exact result returns the documented PDF/ZIP headers and bytes.
-- [ ] Repeated requests reuse one export record and identical bytes.
+- [x] Stale cache key returns `409`; non-ready result returns `422`.
+- [x] Ready exact result returns the documented PDF/ZIP headers and bytes.
+- [x] Repeated requests reuse one export record and identical bytes.
 - [ ] Concurrent requests produce one export record.
 - [ ] Migration upgrade/downgrade and repository-wide tenant-integrity tests pass.
 
 ### UI tests
 
-- [ ] Buttons appear only for the exact saved draft-ready analysis.
-- [ ] Confirmation, busy, success, stale and blocked states are covered.
-- [ ] PDF and ZIP downloads use server-provided safe filenames and revoke object
+- [x] Buttons appear only for the exact saved draft-ready analysis.
+- [x] Confirmation, busy, success, stale and blocked states are covered.
+- [x] PDF and ZIP downloads use server-provided safe filenames and revoke object
   URLs.
-- [ ] Overview remains compact; export does not expand the detailed evidence UI.
-- [ ] `22 not applicable` is displayed separately from `0 not checked`.
+- [x] Overview remains compact; export does not expand the detailed evidence UI.
+- [x] `22 not applicable` is displayed separately from `0 not checked`.
 
 ## Visual and live validation
 
-- [ ] Render every generated PDF page to PNG with Poppler and inspect cover,
+- [x] Render every generated PDF page to PNG with Poppler and inspect cover,
   headers/footers, tables, page breaks, annexes, signature block, and legibility
   at 100% zoom.
-- [ ] Run focused Python, TypeScript, lint, migration and report tests.
-- [ ] Run the full Structural test suite, recording any proven baseline failures
+- [x] Run focused Python, TypeScript, lint, migration and report tests.
+- [x] Run the full Structural test suite, recording any proven baseline failures
   separately rather than silently deselecting them.
-- [ ] Run UI type-check, tests and production build.
+- [x] Run UI type-check, tests and production build.
 - [ ] Run runtime-parity validation if configuration changes.
-- [ ] Build matched API/UI images and deploy them to the isolated k3s smoke
+- [x] Build matched API/UI images and deploy them to the isolated k3s smoke
   release before touching the public demo release.
 - [ ] Run authenticated k3s live-flow and browser validation against the demo
   `shed` project.
-- [ ] Confirm the first report export does not trigger a structural recalculation
+- [x] Confirm the first report export does not trigger a structural recalculation
   and completes within 3 seconds on the saved result; confirm a second export
   reuses identical persisted bytes.
-- [ ] Download and inspect both PDF and ZIP from
+- [x] Download and inspect both PDF and ZIP from
   `https://tertius.gainengineering.com.au/`.
-- [ ] Confirm the PDF says 101 applicable serviceability checks pass, 22 are not
+- [x] Confirm the PDF says 101 applicable serviceability checks pass, 22 are not
   applicable for the recorded reason, and zero remain genuinely unchecked.
 - [ ] Change one harmless design/configuration/Site input and prove the old
   browser result can no longer be exported.
-- [ ] Confirm API and UI pods remain ready with zero new restarts and that report
+- [x] Confirm API and UI pods remain ready with zero new restarts and that report
   telemetry contains no raw identifiers.
 
 ## Rollout sequence

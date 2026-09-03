@@ -193,6 +193,7 @@ def test_certificate_report_is_deterministic_and_discloses_applicability():
     assert first == second
     assert first.startswith(b"%PDF-")
     assert first.rstrip().endswith(b"%%EOF")
+    assert b"/CreationDate (D:20260903020000Z)" in first
     assert b"CONTROLLED DRAFT" in first
     assert b"Reviewing engineer declaration" in first
     assert b"1 NOT APPLICABLE / 0 NOT CHECKED" in first

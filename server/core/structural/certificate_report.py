@@ -17,7 +17,7 @@ from .analysis_cache import canonical_digest
 from .contracts import StructuralSnapshot
 
 
-REPORT_SCHEMA_VERSION = "1"
+REPORT_SCHEMA_VERSION = "2"
 EVIDENCE_SCHEMA_VERSION = "tertius.structural.evidence.v1"
 DOCUMENT_KIND = "structural_certificate_draft"
 MAX_REPORT_BYTES = 32 * 1024 * 1024
@@ -353,6 +353,10 @@ def build_structural_certificate_pdf(
         raise ValueError("structural result is not ready for a certificate draft")
 
     pdf = StructuralCertificatePDF(project_name=project_name, report_id=report_id)
+    # Keep the document metadata inside the same immutable identity as the body.
+    # fpdf2 otherwise inserts the current wall-clock time, making a later rebuild
+    # of identical evidence produce different bytes and a different SHA-256.
+    pdf.set_creation_date(generated_at.astimezone(UTC))
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 8)
     pdf.set_text_color(8, 145, 178)
