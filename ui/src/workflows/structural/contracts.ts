@@ -336,10 +336,10 @@ export type CertificationReadiness = {
   document_status:
     | 'analysis_incomplete'
     | 'engineering_review_draft'
-    | 'certificate_ready'
+    | 'certificate_draft_ready'
   draft_document_label: string
   ready_for_engineering_review: boolean
-  ready_for_certificate: boolean
+  ready_for_certificate_draft: boolean
   ready_for_order: boolean
   conclusion: string
   blocking_gate_ids: string[]
@@ -861,7 +861,7 @@ export type StructuralSnapshot = {
     displacement_mm: number
     limit_mm: number | null
     utilisation: number | null
-    status: 'pass' | 'fail' | 'not_checked'
+    status: 'pass' | 'fail' | 'not_checked' | 'not_applicable'
     basis: string
   }>
   load_summary: {

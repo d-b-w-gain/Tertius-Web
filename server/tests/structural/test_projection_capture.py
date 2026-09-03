@@ -548,9 +548,7 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
         and check.section_record_sha256
         for check in snapshot.cross_section_checks
     )
-    assert {check.status for check in snapshot.member_stability_checks} == {
-        "unsupported"
-    }
+    assert {check.status for check in snapshot.member_stability_checks} == {"pass"}
     assert all(
         check.distortional_buckling_status == "verified"
         and check.design_lateral_torsional_bending_capacity_kNm is not None
@@ -570,7 +568,7 @@ def test_default_mechanical_graph_and_workbench_state_produce_solver_results(
     )
     stages = {stage.id: stage.status for stage in snapshot.verification_stages}
     assert stages["cross_section"] == "pass"
-    assert stages["member_stability"] == "unsupported"
+    assert stages["member_stability"] == "pass"
     assert stages["connections"] == "unsupported"
     assert stages["decision"] == "blocked"
 

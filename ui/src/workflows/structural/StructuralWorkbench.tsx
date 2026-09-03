@@ -97,6 +97,7 @@ type CompactVerificationGroup = {
   passed: number
   failed: number
   unsupported: number
+  notApplicable: number
   open: number
 }
 
@@ -117,7 +118,11 @@ function compactVerificationGroup(
     (status) => status === 'fail' || status === 'blocked',
   ).length
   const unsupported = statuses.filter((status) => status === 'unsupported').length
-  const open = Math.max(0, statuses.length - passed - failed - unsupported)
+  const notApplicable = statuses.filter((status) => status === 'not_applicable').length
+  const open = Math.max(
+    0,
+    statuses.length - passed - failed - unsupported - notApplicable,
+  )
   const status: VerificationStatus = failed > 0
     ? 'fail'
     : unsupported > 0
@@ -135,6 +140,7 @@ function compactVerificationGroup(
     passed,
     failed,
     unsupported,
+    notApplicable,
     open,
   }
 }
@@ -246,6 +252,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     'idle' | 'checking' | 'calculating'
   >('idle')
   const [analysisCache, setAnalysisCache] = useState<StructuralAnalysisCacheInfo | null>(null)
+  const [governingAnalysisKey, setGoverningAnalysisKey] = useState('')
+  const [reportBusy, setReportBusy] = useState<'pdf' | 'zip' | null>(null)
+  const [reportStatus, setReportStatus] = useState<string | null>(null)
+  const [reportError, setReportError] = useState<string | null>(null)
   const [analysisProgress, setAnalysisProgress] = useState<StructuralAnalysisProgress | null>(
     null,
   )
@@ -306,6 +316,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setSelectedVisualNodeId('')
       setSelectedRestraintTraceId('')
       setAnalysisCache(workbench.cache)
+      setGoverningAnalysisKey(workbench.cache?.key_digest || '')
+      setReportStatus(null)
+      setReportError(null)
       if (workbench.analysis) {
         const nextAnalysis = workbench.analysis
         setGoverningAnalysis(governingAnalysisState(nextAnalysis))
@@ -326,6 +339,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setGoverningAnalysis(null)
       setAnalysis(null)
       setAnalysisCache(null)
+      setGoverningAnalysisKey('')
       setError(
         loadError instanceof Error
           ? loadError.message
@@ -882,6 +896,86 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     anchor.click()
     URL.revokeObjectURL(url)
   }
+  const downloadStructuralReport = useCallback(async (kind: 'pdf' | 'zip') => {
+    if (!governingAnalysisKey || !capture) return
+    const confirmed = window.confirm(
+      'This export is a controlled unsigned draft. It requires review and signature '
+      + 'by an appropriately qualified engineer and is not authority approval. Continue?',
+    )
+    if (!confirmed) return
+    setReportBusy(kind)
+    setReportError(null)
+    setReportStatus(kind === 'pdf' ? 'Building certificate draft...' : 'Building review pack...')
+    try {
+      const path = kind === 'pdf'
+        ? '/active/report/certificate-draft.pdf'
+        : '/active/report/review-pack.zip'
+      const response = await apiFetch(`${serverUrl}${path}`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis_key_digest: governingAnalysisKey }),
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as
+          | { detail?: string | { message?: string; blockers?: string[] } }
+          | null
+        const detail = payload?.detail
+        const message = typeof detail === 'string'
+          ? detail
+          : detail?.message
+            ? `${detail.message}${detail.blockers?.length ? ` ${detail.blockers.join(' ')}` : ''}`
+            : `Structural report returned ${response.status}`
+        if (response.status === 409) {
+          setGoverningAnalysisKey('')
+          void loadCapture()
+        }
+        if (response.status === 422) {
+          setEvidenceLevel('investigate')
+          const blockingStageId = governingAnalysis?.certification_readiness?.gates
+            .find((gate) => gate.status !== 'pass')?.stage_ids[0]
+          if (blockingStageId) setActiveStageId(blockingStageId)
+        }
+        throw new Error(message)
+      }
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const disposition = response.headers.get('Content-Disposition') || ''
+      const serverFilename = disposition.match(/filename="([^"]+)"/i)?.[1]
+      const fallbackFilename = `${capture.project_name}-structural-${
+        kind === 'pdf' ? 'certificate-draft.pdf' : 'review-pack.zip'
+      }`
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = serverFilename || fallbackFilename
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+      const reportId = response.headers.get('X-Tertius-Structural-Report-Id')
+      setReportStatus(
+        `${kind === 'pdf' ? 'Certificate draft' : 'Review pack'} downloaded as ${
+          serverFilename || fallbackFilename
+        }${
+          reportId ? ` - report ${reportId.slice(0, 16)}` : ''
+        }${analysisCache ? ` - ${analysisCache.engine_version}, analysed ${analysisCache.calculated_at}` : ''}`,
+      )
+    } catch (reportFailure) {
+      setReportStatus(null)
+      setReportError(
+        reportFailure instanceof Error
+          ? reportFailure.message
+          : 'The structural report could not be downloaded',
+      )
+    } finally {
+      setReportBusy(null)
+    }
+  }, [
+    analysisCache,
+    capture,
+    getAccessToken,
+    governingAnalysis,
+    governingAnalysisKey,
+    loadCapture,
+    serverUrl,
+  ])
 
   if (authMode === 'guest') {
     return (
@@ -1091,13 +1185,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       </header>
 
       <div className={`shrink-0 border-b px-5 py-2 text-xs font-semibold ${
-        governingAnalysis?.certification_readiness?.ready_for_certificate
+        governingAnalysis?.certification_readiness?.ready_for_certificate_draft
           ? 'border-emerald-500/30 bg-emerald-950/40 text-emerald-200'
           : 'border-amber-500/30 bg-amber-950/40 text-amber-200'
       }`}>
         {governingAnalysis?.certification_readiness
-          ? governingAnalysis.certification_readiness.ready_for_certificate
-            ? 'AUSTRALIAN TECHNICAL GATES PASS — CONTROLLED CERTIFICATE DRAFT REQUIRES ENGINEER REVIEW AND SIGNATURE'
+          ? governingAnalysis.certification_readiness.ready_for_certificate_draft
+            ? 'AUSTRALIAN TECHNICAL GATES PASS — READY FOR CONTROLLED CERTIFICATE DRAFT AND ENGINEER REVIEW'
             : `AUSTRALIAN VERIFICATION ACTIVE — ${governingAnalysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${governingAnalysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
@@ -1206,13 +1300,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </span>
                         </div>
                         <div className="mt-1 font-mono text-[10px]">
-                          {group.passed}/{group.total} pass
+                          {group.passed} pass
                         </div>
-                        {(group.failed > 0 || group.unsupported > 0 || group.open > 0) && (
+                        {(group.failed > 0 || group.unsupported > 0 || group.notApplicable > 0 || group.open > 0) && (
                           <div className="mt-1 text-[8px] opacity-80">
                             {[
                               group.failed > 0 ? `${group.failed} fail` : '',
                               group.unsupported > 0 ? `${group.unsupported} unsupported` : '',
+                              group.notApplicable > 0 ? `${group.notApplicable} not applicable` : '',
                               group.open > 0 ? `${group.open} not checked` : '',
                             ].filter(Boolean).join(' · ')}
                           </div>
@@ -1230,6 +1325,39 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       <span className="shrink-0 font-mono uppercase text-slate-400">
                         {governingAnalysis.certification_readiness.document_status.replaceAll('_', ' ')}
                       </span>
+                    </div>
+                  )}
+                  {governingAnalysis?.certification_readiness?.ready_for_certificate_draft && (
+                    <div className="mt-3 rounded border border-emerald-500/30 bg-slate-950/50 p-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-200">
+                        Controlled document export
+                      </div>
+                      <p className="mt-1 text-[9px] leading-relaxed text-slate-400">
+                        Unsigned drafts tied to this exact saved analysis; engineer review and signature are required.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={isLoading || reportBusy !== null || !governingAnalysisKey}
+                          onClick={() => void downloadStructuralReport('pdf')}
+                          className="rounded border border-emerald-500/50 bg-emerald-950/30 px-2 py-1.5 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-950/60 disabled:opacity-50"
+                        >
+                          {reportBusy === 'pdf' ? 'Building PDF...' : 'Download certificate draft PDF'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoading || reportBusy !== null || !governingAnalysisKey}
+                          onClick={() => void downloadStructuralReport('zip')}
+                          className="rounded border border-cyan-500/50 bg-cyan-950/30 px-2 py-1.5 text-[9px] font-semibold text-cyan-100 hover:bg-cyan-950/60 disabled:opacity-50"
+                        >
+                          {reportBusy === 'zip' ? 'Building pack...' : 'Download full review pack'}
+                        </button>
+                      </div>
+                      {(reportStatus || reportError) && (
+                        <div className={`mt-2 text-[9px] ${reportError ? 'text-red-300' : 'text-cyan-200'}`}>
+                          {reportError || reportStatus}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div
@@ -1418,7 +1546,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
 
               {governingCertificationReadiness && (
                 <section className={`rounded border p-3 ${
-                  governingCertificationReadiness.ready_for_certificate
+                  governingCertificationReadiness.ready_for_certificate_draft
                     ? verificationStyle.pass
                     : verificationStyle.blocked
                 }`}>

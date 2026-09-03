@@ -163,6 +163,12 @@ class StructuralAnalysisResult(Base):
             "key_digest",
             name="uq_structural_analysis_result_identity",
         ),
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "tenant_id",
+            name="uq_structural_analysis_result_project_tenant",
+        ),
         ForeignKeyConstraint(
             ["project_id", "tenant_id"],
             ["projects.id", "projects.tenant_id"],
@@ -190,6 +196,72 @@ class StructuralAnalysisResult(Base):
         nullable=False,
     )
     calculation_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+
+class StructuralReportExport(Base):
+    __tablename__ = "structural_report_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "structural_analysis_result_id",
+            "document_kind",
+            "report_schema_version",
+            name="uq_structural_report_export_identity",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["structural_analysis_result_id", "project_id", "tenant_id"],
+            [
+                "structural_analysis_results.id",
+                "structural_analysis_results.project_id",
+                "structural_analysis_results.tenant_id",
+            ],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    structural_analysis_result_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        nullable=False,
+        index=True,
+    )
+    requested_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    document_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    pdf_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    pdf_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    pdf_byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_json_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=now_utc,

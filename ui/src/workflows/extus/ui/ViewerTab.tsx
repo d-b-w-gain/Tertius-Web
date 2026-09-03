@@ -49,7 +49,7 @@ export type StructuralViewerOverlay = {
   id: string;
   label: string;
   mode?: 'moment' | 'displacement';
-  status?: 'pass' | 'fail' | 'not_checked';
+  status?: 'pass' | 'fail' | 'not_checked' | 'not_applicable';
   utilisation?: number | null;
   diagramColor?: number;
   stations: Array<{

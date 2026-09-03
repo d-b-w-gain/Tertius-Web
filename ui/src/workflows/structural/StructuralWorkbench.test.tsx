@@ -663,7 +663,7 @@ const analysis: StructuralSnapshot = {
     document_status: 'engineering_review_draft',
     draft_document_label: 'DRAFT ENGINEERING REVIEW REPORT — NOT A STRUCTURAL CERTIFICATE',
     ready_for_engineering_review: true,
-    ready_for_certificate: false,
+    ready_for_certificate_draft: false,
     ready_for_order: false,
     conclusion: 'Analysis evidence is available, but certification remains blocked.',
     blocking_gate_ids: ['stability'],
@@ -1170,6 +1170,95 @@ describe('StructuralWorkbench', () => {
     expect(screen.getByText('SAVED ANALYSIS')).toBeInTheDocument()
   })
 
+  it('separates non-applicable checks and downloads the exact saved report', async () => {
+    const readyAnalysis: StructuralSnapshot = {
+      ...analysis,
+      serviceability_checks: [
+        ...analysis.serviceability_checks,
+        {
+          member_id: 'brace-axis',
+          physical_member_id: 'brace-01',
+          analytical_member_ids: ['brace-axis'],
+          span_m: 1.6,
+          label: 'Brace transverse deflection',
+          combination_id: 'SLS-1.0',
+          displacement_mm: 0,
+          limit_mm: null,
+          utilisation: null,
+          status: 'not_applicable',
+          basis: 'Axial-only brace; axial deformation and bracing load path are verified.',
+        },
+      ],
+      certification_readiness: {
+        ...analysis.certification_readiness!,
+        document_status: 'certificate_draft_ready',
+        draft_document_label: 'DRAFT STRUCTURAL CERTIFICATE - ENGINEER REVIEW REQUIRED',
+        ready_for_certificate_draft: true,
+        ready_for_order: false,
+        conclusion: 'Australian technical gates pass.',
+        blocking_gate_ids: [],
+        blocking_reasons: [],
+        gates: analysis.certification_readiness!.gates.map((gate) => ({
+          ...gate,
+          status: 'pass',
+          summary: `${gate.label} passes.`,
+        })),
+      },
+    }
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:structural-report'),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    mocks.apiFetch.mockImplementation((url: string) => {
+      if (url.endsWith('/active/report/certificate-draft.pdf')) {
+        return Promise.resolve(new Response(new Blob(['%PDF-1.4']), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': 'attachment; filename="shed-structural-certificate-draft.pdf"',
+            'X-Tertius-Structural-Report-Id': 'b'.repeat(64),
+          },
+        }))
+      }
+      return Promise.resolve(structuralResponse(url, capture, readyAnalysis))
+    })
+
+    render(<StructuralWorkbench isActive />)
+
+    const summary = await screen.findByRole('region', {
+      name: 'Structural verification summary',
+    })
+    const serviceability = within(summary).getByText('Serviceability')
+      .closest('[role="listitem"]')
+    expect(serviceability).toHaveTextContent('1 pass')
+    expect(serviceability).toHaveTextContent('1 not applicable')
+    expect(serviceability).not.toHaveTextContent('not checked')
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Download certificate draft PDF',
+    }))
+
+    await waitFor(() => {
+      expect(mocks.apiFetch).toHaveBeenCalledWith(
+        '/api/structural/active/report/certificate-draft.pdf',
+        mocks.getAccessToken,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ analysis_key_digest: analysisCache.key_digest }),
+        }),
+      )
+    })
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:structural-report')
+    expect(await screen.findByText(/Certificate draft downloaded as shed-structural-certificate-draft\.pdf - report b{16}/))
+      .toBeInTheDocument()
+  })
+
   it('distinguishes complete PyNite coverage from a calculated design failure', async () => {
     const diagnosedAnalysis: StructuralSnapshot = {
       ...analysis,
@@ -1387,7 +1476,7 @@ describe('StructuralWorkbench', () => {
     await openDetailedAnalysis()
     const summary = screen.getByRole('region', { name: 'Structural verification summary' })
     const serviceability = within(summary).getByText('Serviceability').closest('[role="listitem"]')
-    expect(serviceability).toHaveTextContent('1/1 pass')
+    expect(serviceability).toHaveTextContent('1 pass')
 
     fireEvent.change(screen.getByLabelText('Rendered load combination'), {
       target: { value: 'DEMO-OVERLOAD' },
@@ -1397,7 +1486,7 @@ describe('StructuralWorkbench', () => {
       expect(screen.getByText('Complete audit · rendered combination').parentElement)
         .toHaveTextContent('DEMO-OVERLOAD')
     })
-    expect(serviceability).toHaveTextContent('1/1 pass')
+    expect(serviceability).toHaveTextContent('1 pass')
     expect(screen.getByText(/AUSTRALIAN VERIFICATION ACTIVE — 1 CERTIFICATION GATE/))
       .toBeInTheDocument()
   })

@@ -889,8 +889,22 @@ class ServiceabilityCheck(StructuralContract):
     displacement_mm: float
     limit_mm: float | None
     utilisation: float | None
-    status: Literal["pass", "fail", "not_checked"]
+    status: Literal["pass", "fail", "not_checked", "not_applicable"]
     basis: str
+
+    @model_validator(mode="after")
+    def validate_non_applicable_reason(self) -> ServiceabilityCheck:
+        if self.status != "not_applicable":
+            return self
+        if not (self.physical_member_id or "").strip():
+            raise ValueError(
+                "a non-applicable serviceability check requires a physical member identity"
+            )
+        if not self.basis.strip():
+            raise ValueError(
+                "a non-applicable serviceability check requires an applicability reason"
+            )
+        return self
 
 
 class LoadSummary(StructuralContract):
@@ -1045,11 +1059,11 @@ class CertificationReadiness(StructuralContract):
     document_status: Literal[
         "analysis_incomplete",
         "engineering_review_draft",
-        "certificate_ready",
+        "certificate_draft_ready",
     ]
     draft_document_label: str
     ready_for_engineering_review: bool
-    ready_for_certificate: bool
+    ready_for_certificate_draft: bool
     ready_for_order: bool
     conclusion: str
     blocking_gate_ids: list[str] = Field(default_factory=list)

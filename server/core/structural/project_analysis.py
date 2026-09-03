@@ -5840,13 +5840,18 @@ def _certification_evidence(
         for check in member_checks
     ]
     checked_serviceability = [
-        check for check in serviceability_checks if check.status != "not_checked"
+        check
+        for check in serviceability_checks
+        if check.status in {"pass", "fail"}
+    ]
+    unchecked_serviceability = [
+        check for check in serviceability_checks if check.status == "not_checked"
     ]
     serviceability_status: Literal["pass", "fail", "not_checked"] = (
-        "not_checked"
-        if not checked_serviceability
-        else "fail"
+        "fail"
         if any(check.status == "fail" for check in checked_serviceability)
+        else "not_checked"
+        if unchecked_serviceability or not checked_serviceability
         else "pass"
     )
     basis_status: Literal["pass", "blocked"] = (
@@ -8338,9 +8343,9 @@ def _australian_certification_readiness(
             )
         )
     document_status: Literal[
-        "analysis_incomplete", "engineering_review_draft", "certificate_ready"
+        "analysis_incomplete", "engineering_review_draft", "certificate_draft_ready"
     ] = (
-        "certificate_ready"
+        "certificate_draft_ready"
         if ready_for_certificate
         else "engineering_review_draft"
         if ready_for_engineering_review
@@ -8354,8 +8359,8 @@ def _australian_certification_readiness(
             else "DRAFT ENGINEERING REVIEW REPORT — NOT A STRUCTURAL CERTIFICATE"
         ),
         ready_for_engineering_review=ready_for_engineering_review,
-        ready_for_certificate=ready_for_certificate,
-        ready_for_order=ready_for_certificate,
+        ready_for_certificate_draft=ready_for_certificate,
+        ready_for_order=False,
         conclusion=(
             "Australian technical gates pass; prepare the controlled certificate draft for engineer review."
             if ready_for_certificate
@@ -9693,7 +9698,8 @@ def solve_project_structural(
         group = serviceability_groups.setdefault(
             group_id,
             {
-                "physical_member_id": declaration.serviceability_group_id,
+                    "physical_member_id": declaration.serviceability_group_id
+                    or declaration.id,
                 "label": declaration.serviceability_group_label or declaration.label,
                 "span_m": serviceability_span_m,
                 "member_ids": [],
@@ -9750,7 +9756,9 @@ def solve_project_structural(
                 limit_mm=limit_mm,
                 utilisation=utilisation,
                 status=(
-                    "not_checked"
+                    "not_applicable"
+                    if bool(group["axial_only"])
+                    else "not_checked"
                     if not checked
                     else "pass"
                     if utilisation is not None and utilisation <= 1.0
@@ -9885,7 +9893,9 @@ def solve_project_structural(
     )
     summary = _load_summary(analysis, active_combination)
     checked_serviceability = [
-        check for check in serviceability_checks if check.status != "not_checked"
+        check
+        for check in serviceability_checks
+        if check.status in {"pass", "fail"}
     ]
     verification_stages, calculation_sheets = _certification_evidence(
         capture=capture,
@@ -9928,6 +9938,7 @@ def solve_project_structural(
     cross_section_stage = next(
         stage for stage in verification_stages if stage.id == "cross_section"
     )
+    stages_by_id = {stage.id: stage for stage in verification_stages}
     if (
         analysis.cross_section_verification is not None
         and cross_section_stage.status not in {"pass", "fail"}
@@ -10112,15 +10123,28 @@ def solve_project_structural(
             CapabilityState(
                 id="connections",
                 label="Connections",
-                status="pending",
-                detail="Screws, bolts, brackets, anchors, and concrete are not checked.",
+                status=(
+                    "online"
+                    if stages_by_id["connections"].status == "pass"
+                    else "blocked"
+                    if stages_by_id["connections"].status in {"fail", "blocked"}
+                    else "pending"
+                ),
+                detail=(
+                    f"{sum(check.status == 'pass' for check in connection_checks)}/"
+                    f"{len(connection_checks)} rendered connection checks pass."
+                    if stages_by_id["connections"].status == "pass"
+                    else stages_by_id["connections"].summary
+                ),
             ),
         ],
         warnings=[
             (
-                "CROSS-SECTION EVIDENCE ONLY — NOT FOR CERTIFICATION OR ORDERING. "
-                "MEMBER STABILITY, RESTRAINT, BRACING, AND CONNECTIONS REMAIN "
-                "INCOMPLETE."
+                "TECHNICAL GATES PASS - CONTROLLED CERTIFICATE DRAFT REQUIRES "
+                "ENGINEER REVIEW AND SIGNATURE AND IS NOT AUTHORITY APPROVAL."
+                if certification_readiness.ready_for_certificate_draft
+                else "CROSS-SECTION EVIDENCE ONLY — NOT FOR CERTIFICATION OR ORDERING. "
+                "MEMBER STABILITY, RESTRAINT, BRACING, AND CONNECTIONS REMAIN INCOMPLETE."
                 if analysis.cross_section_verification is not None
                 else "ELASTIC MEMBER DEMAND ONLY — NOT FOR DESIGN, CERTIFICATION, "
                 "OR ORDERING."
@@ -10131,12 +10155,16 @@ def solve_project_structural(
                 "workbench state authors a traceable distributed or point load."
             ),
             (
-                "Stages 6 and 7 use catalogue effective properties and the "
-                "accepted AS/NZS 4600:2005+A1 project-basis pack. Global, "
-                "distortional, and unbraced lateral-torsional member resistance "
-                "are calculated; off-axis member resistance, restraint systems, "
-                "connections, anchors, concrete, impact, and progressive collapse "
-                "remain separate or incomplete checks."
+                "The saved result records the implemented Australian technical gates "
+                "as passing; applicability, assumptions and limitations remain subject "
+                "to the reviewing engineer's decision."
+                if certification_readiness.ready_for_certificate_draft
+                else "Stages 6 and 7 use catalogue effective properties and the "
+                "accepted AS/NZS 4600:2005+A1 project-basis pack. Global, distortional, "
+                "and unbraced lateral-torsional member resistance are calculated; "
+                "off-axis member resistance, restraint systems, connections, anchors, "
+                "concrete, impact, and progressive collapse remain separate or "
+                "incomplete checks."
                 if analysis.cross_section_verification is not None
                 else "The displayed bending threshold is an effective-section "
                 "yield reference only. AS/NZS 4600 member capacity, "

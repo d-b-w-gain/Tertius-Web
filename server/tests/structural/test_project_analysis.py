@@ -2054,7 +2054,7 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert len(service.calculation_sheets) == 11
     assert service.certification_readiness is not None
     assert service.certification_readiness.ready_for_engineering_review is True
-    assert service.certification_readiness.ready_for_certificate is False
+    assert service.certification_readiness.ready_for_certificate_draft is False
     assert service.certification_readiness.document_status == "engineering_review_draft"
     assert service.certification_readiness.model_coverage.status == "complete"
     assert service.certification_readiness.model_coverage.compiled_member_count == 2
@@ -2085,7 +2085,7 @@ def test_orphaned_released_node_dofs_do_not_make_solver_singular():
     assert snapshot.equilibrium.status == "pass"
 
 
-def test_axial_only_tie_is_not_checked_as_a_bending_member():
+def test_axial_only_tie_is_not_applicable_as_a_bending_member():
     capture = parse_project_structural_capture(
         GRAVITY_FRAME_DESIGN,
         project_name="axial_tie_serviceability",
@@ -2106,7 +2106,7 @@ def test_axial_only_tie_is_not_checked_as_a_bending_member():
         item for item in snapshot.serviceability_checks if item.member_id == "beam-axis"
     )
 
-    assert check.status == "not_checked"
+    assert check.status == "not_applicable"
     assert check.utilisation is None
     assert check.displacement_mm == 0
     assert "axial-only" in check.basis

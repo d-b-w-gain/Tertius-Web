@@ -15,7 +15,7 @@ from core.models import StructuralAnalysisResult
 from .contracts import StructuralSnapshot
 
 
-STRUCTURAL_ANALYSIS_CACHE_SCHEMA_VERSION = "1"
+STRUCTURAL_ANALYSIS_CACHE_SCHEMA_VERSION = "2"
 DEFAULT_COMBINATION_KEY = "__governing_default__"
 EMPTY_INPUT_DIGEST = sha256(b"").hexdigest()
 _SOURCE_COMMIT_PATH = Path("/app/.source-commit")

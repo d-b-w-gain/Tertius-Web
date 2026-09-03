@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from math import atan2, degrees, dist, sqrt
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
@@ -11,7 +12,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -81,6 +82,12 @@ from core.structural.analysis_cache import (
     store_structural_analysis,
 )
 from core.structural.restraint_evidence import match_restraint_evidence_pack
+from core.structural.certificate_report import review_pack_filename
+from core.structural.report_exports import (
+    StructuralReportNotReady,
+    get_or_create_structural_report_export,
+    report_review_pack,
+)
 from core.structural.site_wind import (
     REGION_SOURCE,
     REGION_VERIFY_AGAINST,
@@ -157,6 +164,10 @@ class ActiveStructuralWorkbenchResponse(BaseModel):
     analysis: StructuralSnapshot | None = None
     analysis_error: str | None = None
     cache: StructuralAnalysisCacheInfo | None = None
+
+
+class StructuralReportRequest(BaseModel):
+    analysis_key_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def _structural_progress_scope(
@@ -3359,6 +3370,114 @@ def get_active_analysis(
         return analysis
     except StructuralAnalysisError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _active_report_export(
+    *,
+    request: StructuralReportRequest,
+    ctx: AuthContext,
+    db: Session,
+):
+    project, capture, site_definition = _load_active_capture_context(ctx=ctx, db=db)
+    identity = analysis_cache_identity(
+        tenant_id=ctx.tenant_id,
+        project_id=project.id,
+        design_digest=capture.design_hash,
+        configuration_digest=capture.analysis_configuration_digest,
+        site_definition=site_definition,
+        combination_id=None,
+    )
+    if request.analysis_key_digest != identity.key_digest:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The reviewed structural result is stale. Reopen Structural and "
+                "review the current saved analysis before exporting."
+            ),
+        )
+    stored = db.scalar(
+        select(StructuralAnalysisResult)
+        .where(
+            StructuralAnalysisResult.tenant_id == ctx.tenant_id,
+            StructuralAnalysisResult.project_id == project.id,
+            StructuralAnalysisResult.key_digest == identity.key_digest,
+        )
+        .with_for_update()
+    )
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail="The reviewed structural result is not saved. Reopen Structural first.",
+        )
+    try:
+        report, reused = get_or_create_structural_report_export(
+            db,
+            stored=stored,
+            project_name=project.name,
+            requested_by=ctx.user_id,
+        )
+        db.commit()
+    except StructuralReportNotReady as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "The structural result is not ready for a certificate draft.",
+                "blockers": exc.blockers[:20],
+            },
+        ) from exc
+    return project, report, reused
+
+
+def _report_headers(*, report, reused: bool, filename: str) -> dict[str, str]:
+    return {
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Content-Type-Options": "nosniff",
+        "X-Tertius-Structural-Report": "REUSED" if reused else "CREATED",
+        "X-Tertius-Structural-Report-Id": report.report_identity_digest,
+    }
+
+
+@app.post("/active/report/certificate-draft.pdf")
+def download_active_certificate_draft(
+    request: StructuralReportRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    _, report, reused = _active_report_export(request=request, ctx=ctx, db=db)
+    headers = _report_headers(
+        report=report,
+        reused=reused,
+        filename=report.filename,
+    )
+    headers["X-Tertius-Artifact-SHA256"] = report.pdf_sha256
+    return Response(
+        content=report.pdf_content,
+        media_type="application/pdf",
+        headers=headers,
+    )
+
+
+@app.post("/active/report/review-pack.zip")
+def download_active_review_pack(
+    request: StructuralReportRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+):
+    project, report, reused = _active_report_export(request=request, ctx=ctx, db=db)
+    content = report_review_pack(report, project_name=project.name)
+    headers = _report_headers(
+        report=report,
+        reused=reused,
+        filename=review_pack_filename(project.name),
+    )
+    headers["X-Tertius-Artifact-SHA256"] = sha256(content).hexdigest()
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers=headers,
+    )
 
 
 @app.get("/wind/region")

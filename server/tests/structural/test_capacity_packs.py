@@ -310,7 +310,6 @@ def test_eccentric_fastener_group_rejects_coincident_coordinates() -> None:
             resultant_force_demand_kN=1.0,
             moment_demand_kNm=0.01,
         )
-    assert resistance.edge_distance_status == "fail"
 
 
 def test_anchor_pack_uses_single_anchor_lower_bound_and_linear_interaction() -> None:
