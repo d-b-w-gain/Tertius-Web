@@ -57,6 +57,12 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     }
     assert llm_edit_job_columns["progress_payload"]["nullable"] is False
     assert llm_edit_job_columns["progress_payload"]["default"] is None
+    timus_settings_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("timus_settings")
+    }
+    assert timus_settings_columns["layout"]["nullable"] is False
+    assert timus_settings_columns["layout"]["default"] is None
 
     assert "compile_job_files" in table_names
     snapshot_columns = {

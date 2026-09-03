@@ -151,7 +151,21 @@ def _collect_shapes(env: dict[str, Any]) -> bd.Compound:
 
 
 
-def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redline: bool, w: float, h: float):
+def _format_drafting_scale(scale: float) -> str:
+    if scale >= 1:
+        return f"{scale:g}:1"
+    return f"1:{1 / scale:g}"
+
+
+def _draw_drafting_sheet_background(
+    pdf,
+    title: str,
+    stamp_text: str,
+    show_redline: bool,
+    scale: float,
+    w: float,
+    h: float,
+):
     # 1. Main outer border frame
     pdf.set_draw_color(15, 15, 17)
     pdf.set_line_width(0.55)
@@ -227,7 +241,7 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 52, tb_y + 3, "DOCUMENT NO.")
     pdf.set_font("Helvetica", "B", 7.2)
-    pdf.text(tb_x + 52, tb_y + 7, "TERTIUS-DWG-001")
+    pdf.text(tb_x + 52, tb_y + 7, "DRAFT-001")
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 82, tb_y + 3, "SHEET NO.")
@@ -236,47 +250,36 @@ def _draw_drafting_sheet_background(pdf, title: str, stamp_text: str, show_redli
     
     # Row 2: Status
     pdf.set_font("Courier", "B", 5.2)
-    pdf.text(tb_x + 2, tb_y + 11, "CHECKED BY")
+    pdf.text(tb_x + 2, tb_y + 11, "ISSUE STATUS")
     pdf.set_font("Helvetica", "B", 7)
-    pdf.text(tb_x + 2, tb_y + 15, "TERTIUS SYSTEMS ENG")
+    pdf.text(tb_x + 2, tb_y + 15, stamp_text.upper())
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 52, tb_y + 11, "REVISION STATUS")
     pdf.set_font("Helvetica", "", 7.2)
-    pdf.text(tb_x + 52, tb_y + 15, "REV 1.0")
+    pdf.text(tb_x + 52, tb_y + 15, "P01")
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 82, tb_y + 11, "SCALE")
     pdf.set_font("Helvetica", "B", 7.5)
-    pdf.text(tb_x + 82, tb_y + 15, "NTS")
+    pdf.text(tb_x + 82, tb_y + 15, _format_drafting_scale(scale))
     
-    # Row 3: Name
+    # Row 3: Document status
     pdf.set_font("Courier", "B", 5.2)
-    pdf.text(tb_x + 2, tb_y + 19, "APPLICANT NAME")
-    pdf.set_font("Helvetica", "B", 7.5)
-    pdf.text(tb_x + 2, tb_y + 23, "PLACEHOLDER NAME")
+    pdf.text(tb_x + 2, tb_y + 19, "DOCUMENT STATUS")
+    pdf.set_font("Helvetica", "B", 6.5)
+    pdf.text(tb_x + 2, tb_y + 23, "NOT FOR CONSTRUCTION")
     
     pdf.set_font("Courier", "B", 5.2)
     pdf.text(tb_x + 37, tb_y + 19, "SYSTEM")
     pdf.set_font("Helvetica", "B", 6.8)
-    pdf.text(tb_x + 37, tb_y + 23, "TERTIUS CAD COMPILER")
+    pdf.text(tb_x + 37, tb_y + 23, "TERTIUS DRAFTING WORKBENCH")
     
-    # Redline Revision Markup
+    # Optional issue-status markup. Do not imply checking or approval.
     if show_redline:
         pdf.set_draw_color(255, 82, 82)
         pdf.set_line_width(0.3)
-        # Redline strikethrough over REV 1.0
-        pdf.line(tb_x + 52, tb_y + 14.0, tb_x + 63, tb_y + 14.0)
-        
-        pdf.set_font("Helvetica", "B", 7.5)
-        pdf.set_text_color(255, 82, 82)
-        pdf.text(tb_x + 64, tb_y + 15, stamp_text)
-        
-        with pdf.rotation(angle=-3, x=tb_x + 40, y=tb_y + 14):
-            pdf.set_font("Helvetica", "B", 5.8)
-            pdf.rect(tb_x + 38, tb_y + 9, 10, 4)
-            pdf.text(tb_x + 39, tb_y + 12, "QTD OK")
-            
+        pdf.rect(tb_x + 1, tb_y + 9.5, 48, 7.5)
         pdf.set_draw_color(15, 15, 17)
         pdf.set_text_color(15, 15, 17)
 
@@ -372,6 +375,7 @@ class TimusSettingsRequest(BaseModel):
     show_hidden_lines: bool
     scale: Annotated[float, Field(gt=0, le=1000)]
     sheet_size: Literal["A4", "A3", "A2", "A1", "A0"]
+    layout: Literal["combined", "top", "front", "side", "iso"] = "combined"
 
 
 def serialize_timus_settings(settings: TimusSettings):
@@ -382,6 +386,7 @@ def serialize_timus_settings(settings: TimusSettings):
         "show_hidden_lines": settings.show_hidden_lines,
         "scale": float(settings.scale),
         "sheet_size": settings.sheet_size,
+        "layout": settings.layout,
     }
 
 
@@ -464,11 +469,12 @@ def get_projected_views(cache_key: str, compound: bd.Compound, mtime: float):
 def _default_timus_settings(name: str) -> dict[str, Any]:
     return {
         "title": name.upper(),
-        "stamp_text": "APPROVED",
+        "stamp_text": "PRELIMINARY",
         "show_redline": True,
-        "show_hidden_lines": True,
+        "show_hidden_lines": False,
         "scale": 1.0,
         "sheet_size": "A4",
+        "layout": "combined",
     }
 
 
@@ -727,6 +733,30 @@ def _draw_compound_view(pdf, segments, ox: float, oy: float, w: float, h: float,
                 
         pdf.set_dash_pattern()
 
+
+VIEW_LABELS = {
+    "top": "TOP VIEW",
+    "front": "FRONT ELEVATION",
+    "side": "SIDE ELEVATION",
+    "iso": "ISOMETRIC VIEW",
+}
+
+
+def _drafting_view_layout(
+    layout: str, w: float, h: float
+) -> dict[str, tuple[float, float, float, float]]:
+    if layout != "combined":
+        return {layout: (20, 30, w - 40, h - 75)}
+
+    view_w = (w - 60) / 2
+    view_h = (h - 60) / 2
+    return {
+        "top": (20, 30, view_w, view_h),
+        "iso": (40 + view_w, 30, view_w, view_h),
+        "front": (20, 30 + view_h, view_w, view_h),
+        "side": (40 + view_w, 30 + view_h, view_w, view_h),
+    }
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -797,14 +827,7 @@ def get_timus_settings(
         )
     )
     if settings is None:
-        return {
-            "title": name.upper(),
-            "stamp_text": "APPROVED",
-            "show_redline": True,
-            "show_hidden_lines": True,
-            "scale": 1.0,
-            "sheet_size": "A4",
-        }
+        return _default_timus_settings(name)
     return serialize_timus_settings(settings)
 
 
@@ -837,6 +860,7 @@ def put_timus_settings(
             show_hidden_lines=req.show_hidden_lines,
             scale=req.scale,
             sheet_size=req.sheet_size,
+            layout=req.layout,
         )
         db.add(settings)
     else:
@@ -846,6 +870,7 @@ def put_timus_settings(
         settings.show_hidden_lines = req.show_hidden_lines
         settings.scale = req.scale
         settings.sheet_size = req.sheet_size
+        settings.layout = req.layout
     db.commit()
     return {"success": True}
 
@@ -871,11 +896,12 @@ def get_project_bounds(
 def get_drafting_pdf(
     name: str, 
     title: str = Query("UNTITLED PART"),
-    stamp: str = Query("APPROVED"),
+    stamp: str = Query("PRELIMINARY"),
     redline: bool = Query(True),
-    hidden_lines: bool = Query(True),
-    scale: float = Query(1.0),
+    hidden_lines: bool = Query(False),
+    scale: float = Query(1.0, gt=0, le=1000),
     size: str = Query("A4"),
+    layout: Literal["combined", "top", "front", "side", "iso"] = Query("combined"),
     ctx: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ):
@@ -927,35 +953,33 @@ def get_drafting_pdf(
         pdf.add_page()
         
         # Draw Background and Title Block
-        _draw_drafting_sheet_background(pdf, title=title, stamp_text=stamp, show_redline=redline, w=w, h=h)
+        _draw_drafting_sheet_background(
+            pdf,
+            title=title,
+            stamp_text=stamp,
+            show_redline=redline,
+            scale=scale,
+            w=w,
+            h=h,
+        )
         _draw_gorton_text(pdf, "TERTIUS ENGINEERING", 15, 15, size=20)
-        
-        # View Layout Grid
-        pdf.set_font("Helvetica", "B", 10)
-        view_w = (w - 60) / 2
-        view_h = (h - 60) / 2
-        top_ox = 20
-        top_oy = 30
-        iso_ox = 40 + view_w
-        iso_oy = 30
-        front_ox = 20
-        front_oy = 30 + view_h
-        side_ox = 40 + view_w
-        side_oy = 30 + view_h
-        
-        # Draw Direct OCCT Edges to PDF
-        _draw_compound_view(pdf, views.get("top", []), ox=top_ox, oy=top_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views.get("front", []), ox=front_ox, oy=front_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views.get("side", []), ox=side_ox, oy=side_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        _draw_compound_view(pdf, views.get("iso", []), ox=iso_ox, oy=iso_oy, w=view_w, h=view_h, scale=scale, show_hidden=hidden_lines)
-        
-        # Labels
+
+        # Draw the saved layout using direct OCCT edges.
+        view_layout = _drafting_view_layout(layout, w, h)
         pdf.set_font("Helvetica", "B", 6)
         pdf.set_text_color(150, 150, 150)
-        pdf.text(top_ox, top_oy + view_h - 2, "PLAN VIEW")
-        pdf.text(front_ox, front_oy + view_h - 2, "FRONT ELEVATION")
-        pdf.text(side_ox, side_oy + view_h - 2, "SIDE ELEVATION")
-        pdf.text(iso_ox, iso_oy + view_h - 2, "ISOMETRIC VIEW")
+        for view_name, (ox, oy, view_w, view_h) in view_layout.items():
+            _draw_compound_view(
+                pdf,
+                views.get(view_name, []),
+                ox=ox,
+                oy=oy,
+                w=view_w,
+                h=view_h,
+                scale=scale,
+                show_hidden=hidden_lines,
+            )
+            pdf.text(ox, oy + view_h - 2, VIEW_LABELS[view_name])
             
         pdf_bytes = bytes(pdf.output())
         

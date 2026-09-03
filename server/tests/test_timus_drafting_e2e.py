@@ -223,6 +223,84 @@ def test_drafting_pdf_respects_sheet_size(
     assert a4_response.content.startswith(b"%PDF-")
 
 
+def test_drafting_pdf_honors_selected_single_view_layout(
+    authenticated_timus_client, db_session, seeded_tenant, monkeypatch
+):
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design.content = BOX_CODE
+    db_session.commit()
+    views = {
+        "top": [[[0, 0], [10, 0], False]],
+        "front": [[[0, 0], [0, 10], False]],
+        "side": [[[0, 0], [8, 0], False]],
+        "iso": [[[0, 0], [6, 6], False]],
+    }
+    _persist_timus_views_artifact(db_session, seeded_tenant, views)
+    drawn_segments: list[list] = []
+
+    def capture_view(_pdf, segments, **_kwargs):
+        drawn_segments.append(segments)
+
+    monkeypatch.setattr(timus_server, "_draw_compound_view", capture_view)
+
+    response = authenticated_timus_client.get(
+        "/projects/default_purlin/drafting.pdf",
+        params={"layout": "top", "scale": "0.1"},
+    )
+
+    assert response.status_code == 200
+    assert drawn_segments == [views["top"]]
+
+
+def test_drafting_pdf_rejects_unknown_layout(authenticated_timus_client):
+    response = authenticated_timus_client.get(
+        "/projects/default_purlin/drafting.pdf",
+        params={"layout": "floor-plan"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("scale", "expected"),
+    [(2.0, "2:1"), (1.0, "1:1"), (0.2, "1:5"), (0.01, "1:100")],
+)
+def test_format_drafting_scale(scale, expected):
+    assert timus_server._format_drafting_scale(scale) == expected
+
+
+def test_drafting_view_layout_fills_single_view_sheet_area():
+    assert timus_server._drafting_view_layout("front", 297, 210) == {
+        "front": (20, 30, 257, 135)
+    }
+
+
+def test_drafting_view_layout_preserves_combined_quadrants():
+    assert timus_server._drafting_view_layout("combined", 297, 210) == {
+        "top": (20, 30, 118.5, 75),
+        "iso": (158.5, 30, 118.5, 75),
+        "front": (20, 105, 118.5, 75),
+        "side": (158.5, 105, 118.5, 75),
+    }
+
+
+def test_default_drafting_settings_are_safe_for_review():
+    assert timus_server._default_timus_settings("shed") == {
+        "title": "SHED",
+        "stamp_text": "PRELIMINARY",
+        "show_redline": True,
+        "show_hidden_lines": False,
+        "scale": 1.0,
+        "sheet_size": "A4",
+        "layout": "combined",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Background build flow: trigger -> poll -> retrieve
 # ---------------------------------------------------------------------------
@@ -466,6 +544,7 @@ def test_timus_settings_full_round_trip(
         "show_hidden_lines": True,
         "scale": 2.5,
         "sheet_size": "A2",
+        "layout": "side",
     }
 
     save = authenticated_timus_client.put(
@@ -483,6 +562,7 @@ def test_timus_settings_full_round_trip(
     assert data["show_hidden_lines"] is True
     assert data["scale"] == 2.5
     assert data["sheet_size"] == "A2"
+    assert data["layout"] == "side"
 
 
 def test_timus_settings_defaults_when_none_saved(
@@ -502,6 +582,9 @@ def test_timus_settings_defaults_when_none_saved(
     assert data["title"] == "DEFAULT_PURLIN"  # name.upper()
     assert data["sheet_size"] == "A4"
     assert data["show_redline"] is True
+    assert data["show_hidden_lines"] is False
+    assert data["stamp_text"] == "PRELIMINARY"
+    assert data["layout"] == "combined"
 
 
 def test_timus_settings_rejects_invalid_sheet_size(authenticated_timus_client):
