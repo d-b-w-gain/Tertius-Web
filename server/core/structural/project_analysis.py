@@ -8929,12 +8929,14 @@ def solve_project_structural(
     ] = defaultdict(list)
     if analysis.stability is not None:
         for member_id in analysis.stability.rafter_member_ids:
-            declaration = members_by_id.get(member_id)
-            if declaration is None:
+            rafter_declaration = members_by_id.get(member_id)
+            if rafter_declaration is None:
                 raise StructuralAnalysisError(
                     f"global stability references missing rafter member {member_id!r}"
                 )
-            rafter_members_by_component[declaration.component_id].append(declaration)
+            rafter_members_by_component[rafter_declaration.component_id].append(
+                rafter_declaration
+            )
     stability_result: StabilityResult | None = None
     generated_nodal_loads: list[NodalLoad] = []
     try:
