@@ -7,10 +7,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from core.object_store import ObjectRef
+
 
 class CompileSourceFile(BaseModel):
     filename: str
     content: str
+
+
+class CompileBinaryAsset(BaseModel):
+    logical_filename: Literal["source.3mf"]
+    object_ref: ObjectRef
 
 
 class CompileCommand(BaseModel):
@@ -21,7 +28,8 @@ class CompileCommand(BaseModel):
     export_format: str
     quality: str | None = None
     created_at: datetime
-    files: list[CompileSourceFile] = []
+    files: list[CompileSourceFile] = Field(default_factory=list)
+    assets: list[CompileBinaryAsset] = Field(default_factory=list, max_length=1)
     request_id: str | None = None
     originating_llm_edit_job_id: UUID | None = None
 
@@ -73,7 +81,9 @@ def assert_message_size(
 ) -> None:
     size = serialized_message_size(message, compress=compress)
     if size > max_bytes:
-        raise ValueError(f"{label} message is {size} bytes, above {max_bytes} byte limit")
+        raise ValueError(
+            f"{label} message is {size} bytes, above {max_bytes} byte limit"
+        )
 
 
 def compile_result_message_id(result: CompileResultPayload) -> str:

@@ -28,6 +28,12 @@ app.kubernetes.io/name: {{ include "tertius.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{- define "tertius.harnessLeaseAnnotation" -}}
+{{- with .Values.harnessLifecycle.leaseId }}
+tertius.io/lease-id: {{ . | quote }}
+{{- end }}
+{{- end -}}
+
 {{- define "tertius.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "tertius.fullname" .) .Values.serviceAccount.name -}}

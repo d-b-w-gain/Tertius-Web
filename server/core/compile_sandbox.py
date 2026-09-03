@@ -537,7 +537,12 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
     os.killpg(process.pid, signal.SIGKILL)
 
 
-def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | None = None, timeout_seconds: int = 30) -> CompileSandboxResult:
+def run_compile_sandbox(
+    project_dir: Path,
+    export_format: str,
+    quality: str | None = None,
+    timeout_seconds: int = 30,
+) -> CompileSandboxResult:
     ext = export_format.lower()
     if ext not in SUPPORTED_EXPORT_FORMATS:
         return CompileSandboxResult(
@@ -550,7 +555,9 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
 
     output_path = project_dir / f"output.{ext}"
     provenance_helper_path = project_dir / "tertius_provenance.py"
-    provenance_helper_path.write_text(TERTIUS_PROVENANCE_HELPER_SOURCE, encoding="utf-8")
+    provenance_helper_path.write_text(
+        TERTIUS_PROVENANCE_HELPER_SOURCE, encoding="utf-8"
+    )
     model_geometry_helper_path = project_dir / "tertius_model_geometry.py"
     model_geometry_helper_path.write_text(
         TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE,
@@ -588,8 +595,10 @@ def run_compile_sandbox(project_dir: Path, export_format: str, quality: str | No
         return CompileSandboxResult(
             success=False,
             output_path=None,
-            stdout=_subprocess_output_text(exc.stdout) or _subprocess_output_text(stdout),
-            stderr=_subprocess_output_text(exc.stderr) or _subprocess_output_text(stderr),
+            stdout=_subprocess_output_text(exc.stdout)
+            or _subprocess_output_text(stdout),
+            stderr=_subprocess_output_text(exc.stderr)
+            or _subprocess_output_text(stderr),
             error=f"Compile timed out after {timeout_seconds} seconds",
         )
 

@@ -174,7 +174,10 @@ scripts/harness-k3s.sh smoke
 It delegates deploy and cleanup to `scripts/test-k3s-deployment.sh`, which
 remains the CI-compatible implementation used by the GitHub k3s smoke workflow.
 See `docs/harness/local-harness.md` for runtime choices and
-`docs/harness/runtime-parity.md` for Compose/Helm drift policy.
+`docs/harness/runtime-parity.md` for Compose/Helm drift policy. Non-Flux harness
+releases carry a lifecycle marker with a six-hour default expiry; configure
+`HARNESS_TTL_SECONDS` from 900 through 86400 seconds. Kubernetes does not act on
+the annotation itself—the host janitor performs the audited cleanup.
 
 ```bash
 scripts/test-k3s-deployment.sh
@@ -231,7 +234,7 @@ Reset the local k3s container when you want a clean cluster:
 powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -Reset -InstallOperators
 ```
 
-Clean up the Tertius release but keep persistent data:
+Clean up the Tertius release and its persistent data:
 
 ```bash
 export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
@@ -239,7 +242,7 @@ export K3S_CONTAINER=tertius-k3s
 scripts/test-k3s-deployment.sh --cleanup
 ```
 
-Delete the local release, database clusters, and PVC data:
+The legacy `--delete-data` spelling is an alias for the same full cleanup:
 
 ```bash
 scripts/test-k3s-deployment.sh --cleanup --delete-data
@@ -266,13 +269,27 @@ Useful overrides include:
 - `TUNNEL_HOSTNAME`
 - `KEYCLOAK_REALM`
 
-Cleanup keeps persistent data by default:
+Cleanup deletes persistent data by default and verifies release-scoped objects
+are absent:
 
 ```bash
 scripts/test-k3s-deployment.sh --cleanup
 ```
 
-Use `--delete-data` only when PVCs and CloudNativePG database clusters should also be removed.
+Use `--retain-data` to keep CNPG clusters and all release PVCs, or
+`--retain-auth` to keep only the Pi-agent auth PVC. Both choices preserve a
+lifecycle tombstone containing the retained object identities. Production and
+Flux-managed releases are always refused by destructive paths.
+
+The wrapper resolves cleanup from explicit `NAMESPACE`/`RELEASE_NAME`, or from
+its saved status file when neither is supplied. Preview or execute expired
+leases with `scripts/cleanup-expired-k3s-harness.sh --dry-run` or the same
+command without the flag. Install the 15-minute user timer explicitly with
+`scripts/install-k3s-harness-cleanup-timer.sh install`; use `uninstall` to
+remove it. Legacy development releases require
+`scripts/harness-k3s.sh adopt <namespace>/<release>` before cleanup. The exact
+ownership contract is in
+`docs/superpowers/specs/2026-08-14-k3s-harness-lifecycle-cleanup-design.md`.
 
 ## Manual Chart Checks
 

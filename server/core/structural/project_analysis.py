@@ -178,15 +178,11 @@ def _anchor_group_check(
     first = anchor_components[0]
     properties = first.structural_properties
     part_number = str(
-        properties.get("anchor_product_part_number")
-        or first.part_number
-        or "<missing>"
+        properties.get("anchor_product_part_number") or first.part_number or "<missing>"
     )
     pack_version = str(properties.get("anchor_resistance_pack_version") or "1")
     source = (
-        str(properties["anchor_source"])
-        if properties.get("anchor_source")
-        else None
+        str(properties["anchor_source"]) if properties.get("anchor_source") else None
     )
     source_sha256 = (
         str(properties["anchor_source_sha256"])
@@ -222,9 +218,7 @@ def _anchor_group_check(
             "anchor_required_spacing_mm",
         ):
             if anchor_properties.get(key) != properties.get(key):
-                blockers.append(
-                    f"Anchor group mixes incompatible product fact {key}."
-                )
+                blockers.append(f"Anchor group mixes incompatible product fact {key}.")
                 break
 
     evidence_verified = all(
@@ -258,7 +252,9 @@ def _anchor_group_check(
         else "unverified",
     )
     if len(grounded_component_ids) != 1:
-        blockers.append("Anchor group must resolve to one grounded substrate component.")
+        blockers.append(
+            "Anchor group must resolve to one grounded substrate component."
+        )
     elif substrate_status != "verified":
         blockers.append("Foundation substrate identity and condition are not verified.")
     elif substrate_type != reference_substrate:
@@ -302,19 +298,13 @@ def _anchor_group_check(
     installed_embedment = min(installed_embedments) if installed_embedments else None
     minimum_edge_distance = min(edge_distances) if edge_distances else None
     minimum_spacing = min(spacings) if spacings else None
-    reference_embedment = _numeric_fact(
-        properties, "anchor_reference_embedment_mm"
-    )
-    tension_capacity = _numeric_fact(
-        properties, "anchor_single_tension_capacity_kN"
-    )
+    reference_embedment = _numeric_fact(properties, "anchor_reference_embedment_mm")
+    tension_capacity = _numeric_fact(properties, "anchor_single_tension_capacity_kN")
     shear_capacity = _numeric_fact(properties, "anchor_single_shear_capacity_kN")
     required_edge_distance = _numeric_fact(
         properties, "anchor_required_edge_distance_mm"
     )
-    required_spacing = _numeric_fact(
-        properties, "anchor_required_spacing_mm"
-    )
+    required_spacing = _numeric_fact(properties, "anchor_required_spacing_mm")
     if len(installed_embedments) != len(anchor_components):
         blockers.append("Every rendered anchor requires an installed embedment fact.")
     if len(edge_distances) != len(anchor_components):
@@ -331,7 +321,9 @@ def _anchor_group_check(
             required_spacing,
         )
     ):
-        blockers.append("Anchor product capacity or installation limits are incomplete.")
+        blockers.append(
+            "Anchor product capacity or installation limits are incomplete."
+        )
 
     evidence_status: Literal["unverified", "candidate", "verified"] = (
         "verified" if evidence_verified else "candidate" if source else "unverified"
@@ -440,9 +432,7 @@ def _bolted_sheet_interface_check(
     part_number = str(first.part_number or "<missing>")
     source = str(properties["source"]) if properties.get("source") else None
     source_sha256 = (
-        str(properties["source_sha256"])
-        if properties.get("source_sha256")
-        else None
+        str(properties["source_sha256"]) if properties.get("source_sha256") else None
     )
     fixture_components = [
         components[component_id]
@@ -488,13 +478,9 @@ def _bolted_sheet_interface_check(
         if fastener.part_number != part_number:
             blockers.append("Bolted sheet group mixes fastener part numbers.")
         if fastener.product_key is None or fastener.product_definition_digest is None:
-            blockers.append(
-                f"Fastener {fastener.id} lacks a managed product identity."
-            )
+            blockers.append(f"Fastener {fastener.id} lacks a managed product identity.")
         if fastener.structural_evidence_status != "verified":
-            blockers.append(
-                f"Fastener {fastener.id} product evidence is not verified."
-            )
+            blockers.append(f"Fastener {fastener.id} product evidence is not verified.")
         for key in product_keys:
             if fastener.structural_properties.get(key) != properties.get(key):
                 blockers.append(f"Bolted sheet group mixes incompatible {key} facts.")
@@ -545,7 +531,9 @@ def _bolted_sheet_interface_check(
         material.id: material for material in getattr(analysis, "materials", ())
     }
     section = sections.get(declaration.section_id) if declaration is not None else None
-    material = materials.get(declaration.material_id) if declaration is not None else None
+    material = (
+        materials.get(declaration.material_id) if declaration is not None else None
+    )
     catalogue_properties = (
         section.catalog.properties
         if section is not None and section.catalog is not None
@@ -559,7 +547,9 @@ def _bolted_sheet_interface_check(
         material.tensile_strength_MPa if material is not None else None
     )
     if section is None or section.catalog is None:
-        blockers.append("Connected sheet requires a traceable catalogue section record.")
+        blockers.append(
+            "Connected sheet requires a traceable catalogue section record."
+        )
     elif not bool(catalogue_properties.get("validated")):
         blockers.append("Connected sheet catalogue record is not verified.")
     if sheet_thickness_mm is None or sheet_thickness_mm >= 3.0:
@@ -589,8 +579,7 @@ def _bolted_sheet_interface_check(
         "minimum_sheet_edge_distance_mm"
     )
     hole_types = {
-        str(fastener.fabrication.get("sheet_hole_type") or "")
-        for fastener in fasteners
+        str(fastener.fabrication.get("sheet_hole_type") or "") for fastener in fasteners
     }
     hole_type = next(iter(hole_types)) if len(hole_types) == 1 else None
     if hole_type != "standard_round":
@@ -599,9 +588,7 @@ def _bolted_sheet_interface_check(
         )
 
     nominal_diameter_mm = _numeric_fact(properties, "nominal_diameter_mm")
-    bolt_tensile_strength_MPa = _numeric_fact(
-        properties, "bolt_tensile_strength_MPa"
-    )
+    bolt_tensile_strength_MPa = _numeric_fact(properties, "bolt_tensile_strength_MPa")
     bolt_minor_area_mm2 = _numeric_fact(properties, "bolt_minor_area_mm2")
     washers = properties.get("washers_under_head_and_nut")
     if any(
@@ -617,7 +604,9 @@ def _bolted_sheet_interface_check(
     evidence_status: Literal["unverified", "candidate", "verified"] = (
         "verified"
         if not any("evidence" in blocker.lower() for blocker in blockers)
-        and all(fastener.structural_evidence_status == "verified" for fastener in fasteners)
+        and all(
+            fastener.structural_evidence_status == "verified" for fastener in fasteners
+        )
         else "candidate"
         if source
         else "unverified"
@@ -631,8 +620,7 @@ def _bolted_sheet_interface_check(
         connected_member_id=declaration.id if declaration is not None else None,
         connected_sheet_part_number=(
             components[declaration.component_id].part_number
-            if declaration is not None
-            and declaration.component_id in components
+            if declaration is not None and declaration.component_id in components
             else None
         ),
         fixture_part_number=fixture_part_number,
@@ -735,12 +723,12 @@ def _calculated_bolted_cleat_resistance(
     blockers: list[str] = []
     fixture = fixtures[0]
     if len(fixtures) != 1:
-        blockers.append("Complete bolted-cleat pack requires exactly one cleat fixture.")
+        blockers.append(
+            "Complete bolted-cleat pack requires exactly one cleat fixture."
+        )
     fixture_properties = fixture.structural_properties
     source = (
-        str(fixture_properties["source"])
-        if fixture_properties.get("source")
-        else None
+        str(fixture_properties["source"]) if fixture_properties.get("source") else None
     )
     source_sha256 = (
         str(fixture_properties["source_sha256"])
@@ -766,9 +754,7 @@ def _calculated_bolted_cleat_resistance(
         )
         == "as_nzs_4600_2005_a1_bolted_sheet_interface"
     ]
-    fasteners_per_interface_raw = fixture_properties.get(
-        "fasteners_per_interface"
-    )
+    fasteners_per_interface_raw = fixture_properties.get("fasteners_per_interface")
     fasteners_per_interface = (
         int(fasteners_per_interface_raw)
         if isinstance(fasteners_per_interface_raw, int)
@@ -803,11 +789,12 @@ def _calculated_bolted_cleat_resistance(
                 )
                 break
             if any(
-                item.structural_properties.get(key)
-                != fastener_properties.get(key)
+                item.structural_properties.get(key) != fastener_properties.get(key)
                 for key in product_fact_keys
             ):
-                blockers.append("Cleat fastener group mixes incompatible product facts.")
+                blockers.append(
+                    "Cleat fastener group mixes incompatible product facts."
+                )
                 break
 
     raw_coordinates = fixture_properties.get("fastener_coordinates_mm")
@@ -825,7 +812,10 @@ def _calculated_bolted_cleat_resistance(
             ):
                 parsed_coordinates.append((float(raw_point[0]), float(raw_point[1])))
         coordinates = tuple(parsed_coordinates)
-    if fasteners_per_interface is not None and len(coordinates) != fasteners_per_interface:
+    if (
+        fasteners_per_interface is not None
+        and len(coordinates) != fasteners_per_interface
+    ):
         blockers.append(
             "Cleat fixture fastener coordinates must describe one complete interface."
         )
@@ -847,9 +837,7 @@ def _calculated_bolted_cleat_resistance(
     hole_diameter_mm = _numeric_fact(
         fixture_properties, "connected_sheet_hole_diameter_mm"
     )
-    minimum_spacing_mm = _numeric_fact(
-        fixture_properties, "minimum_bolt_spacing_mm"
-    )
+    minimum_spacing_mm = _numeric_fact(fixture_properties, "minimum_bolt_spacing_mm")
     minimum_edge_distance_mm = _numeric_fact(
         fixture_properties, "minimum_sheet_edge_distance_mm"
     )
@@ -857,15 +845,18 @@ def _calculated_bolted_cleat_resistance(
     maximum_connection_slip_mm = _numeric_fact(
         fixture_properties, "maximum_connection_slip_mm"
     )
-    if any(
-        value is None
-        for value in (
-            hole_diameter_mm,
-            minimum_spacing_mm,
-            minimum_edge_distance_mm,
-            maximum_connection_slip_mm,
+    if (
+        any(
+            value is None
+            for value in (
+                hole_diameter_mm,
+                minimum_spacing_mm,
+                minimum_edge_distance_mm,
+                maximum_connection_slip_mm,
+            )
         )
-    ) or hole_type != "standard_round":
+        or hole_type != "standard_round"
+    ):
         blockers.append(
             "Cleat installation requires verified round-hole, spacing, edge and slip facts."
         )
@@ -880,9 +871,7 @@ def _calculated_bolted_cleat_resistance(
         if declaration.component_id in connected_component_ids
         and getattr(declaration, "analytical_role", "physical") == "physical"
     ]
-    sections = {
-        section.id: section for section in getattr(analysis, "sections", ())
-    }
+    sections = {section.id: section for section in getattr(analysis, "sections", ())}
     materials = {
         material.id: material for material in getattr(analysis, "materials", ())
     }
@@ -927,9 +916,7 @@ def _calculated_bolted_cleat_resistance(
             "Rendered two-legged cleat has fewer verified fasteners than its two interfaces."
         )
 
-    fixture_thickness_mm = _numeric_fact(
-        fixture_properties, "fixture_thickness_mm"
-    )
+    fixture_thickness_mm = _numeric_fact(fixture_properties, "fixture_thickness_mm")
     fixture_yield_strength_MPa = _numeric_fact(
         fixture_properties, "fixture_yield_strength_MPa"
     )
@@ -988,9 +975,7 @@ def _calculated_bolted_cleat_resistance(
         as_nzs_4600_2005_a1_bolted_sheet_interface(
             bolt_count=fasteners_per_interface,
             resultant_shear_demand_kN=0.0,
-            nominal_bolt_diameter_mm=numeric_product_facts[
-                "nominal_diameter_mm"
-            ],
+            nominal_bolt_diameter_mm=numeric_product_facts["nominal_diameter_mm"],
             bolt_tensile_strength_MPa=numeric_product_facts[
                 "bolt_tensile_strength_MPa"
             ],
@@ -1007,8 +992,7 @@ def _calculated_bolted_cleat_resistance(
         for _declaration, material, thickness_mm in sheet_facts
     ]
     single_fastener_capacity_kN = min(
-        result.governing_capacity_kN / result.bolt_count
-        for result in interface_results
+        result.governing_capacity_kN / result.bolt_count for result in interface_results
     )
     fixture_strength_product = fixture_thickness_mm * fixture_tensile_strength_MPa
     connected_strength_product = max(
@@ -1038,33 +1022,31 @@ def _calculated_bolted_cleat_resistance(
         and geometry_status == "pass"
         and len(coordinates) >= 2
     )
-    common.update(
-        status=(
-            "pass"
-            if group.status == fixture_status == geometry_status == "pass"
-            and stiffness_verified
-            else "fail"
-        ),
-        evidence_status="verified",
-        design_force_capacity_kN=group.design_force_capacity_kN,
-        design_moment_capacity_kNm=group.design_moment_capacity_kNm,
-        governing_utilisation=group.interaction_utilisation,
-        stiffness_status="verified" if stiffness_verified else "unverified",
-        stiffness_basis=(
-            "The exact two-leg cleat has at least two separated bearing fasteners "
-            "per interface; published/installed clearance is no more than one tenth "
-            "of the fastener pitch, and both connected-sheet geometry and the thicker "
-            "cleat strength hierarchy pass. This verifies the local restraint force "
-            "path, not an unmodelled portal-frame rigid joint."
-        ),
-        basis=(
-            f"{group.basis} Every connected Cee interface was checked separately; "
-            "the weakest bolt/shear/bearing/tear-out result governs. The cleat is "
-            "also required to be thicker and to have at least the connected-sheet "
-            "t*fu strength product."
-        ),
-        blockers=[],
+    common["status"] = (
+        "pass"
+        if group.status == fixture_status == geometry_status == "pass"
+        and stiffness_verified
+        else "fail"
     )
+    common["evidence_status"] = "verified"
+    common["design_force_capacity_kN"] = group.design_force_capacity_kN
+    common["design_moment_capacity_kNm"] = group.design_moment_capacity_kNm
+    common["governing_utilisation"] = group.interaction_utilisation
+    common["stiffness_status"] = "verified" if stiffness_verified else "unverified"
+    common["stiffness_basis"] = (
+        "The exact two-leg cleat has at least two separated bearing fasteners "
+        "per interface; published/installed clearance is no more than one tenth "
+        "of the fastener pitch, and both connected-sheet geometry and the thicker "
+        "cleat strength hierarchy pass. This verifies the local restraint force "
+        "path, not an unmodelled portal-frame rigid joint."
+    )
+    common["basis"] = (
+        f"{group.basis} Every connected Cee interface was checked separately; "
+        "the weakest bolt/shear/bearing/tear-out result governs. The cleat is "
+        "also required to be thicker and to have at least the connected-sheet "
+        "t*fu strength product."
+    )
+    common["blockers"] = []
     return common
 
 
@@ -1116,8 +1098,7 @@ def _calculated_screw_connection_resistance(
             )
             break
         if any(
-            fastener.structural_properties.get(key)
-            != first_properties.get(key)
+            fastener.structural_properties.get(key) != first_properties.get(key)
             for key in product_fact_keys
         ):
             blockers.append(
@@ -1137,9 +1118,7 @@ def _calculated_screw_connection_resistance(
         return converted
 
     diameter_mm = positive_number("nominal_diameter_mm")
-    tested_single_shear_strength_kN = positive_number(
-        "tested_single_shear_strength_kN"
-    )
+    tested_single_shear_strength_kN = positive_number("tested_single_shear_strength_kN")
     source = (
         str(first_properties["test_evidence_source"])
         if first_properties.get("test_evidence_source")
@@ -1241,9 +1220,11 @@ def _calculated_screw_connection_resistance(
                 diameter_mm=diameter_mm,
             ),
         )
-        for head_index, (_head_declaration, head_material, head_thickness_mm) in enumerate(
-            sheet_facts
-        )
+        for head_index, (
+            _head_declaration,
+            head_material,
+            head_thickness_mm,
+        ) in enumerate(sheet_facts)
         for _other_declaration, other_material, other_thickness_mm in sheet_facts[
             head_index + 1 :
         ]
@@ -1258,34 +1239,28 @@ def _calculated_screw_connection_resistance(
         tested_single_shear_strength_kN=tested_single_shear_strength_kN,
         nominal_bearing_capacity_kN=max(nominal_bearing_capacities),
     )
-    design_force_capacity_kN = (
-        len(fasteners) * 0.50 * weakest_nominal_bearing_kN
-    )
+    design_force_capacity_kN = len(fasteners) * 0.50 * weakest_nominal_bearing_kN
     utilisation = resultant_force_demand_kN / design_force_capacity_kN
-    common.update(
-        status=(
-            "pass"
-            if qualification.status == "pass" and utilisation <= 1.0
-            else "fail"
-        ),
-        evidence_status="verified",
-        design_force_capacity_kN=design_force_capacity_kN,
-        governing_utilisation=utilisation,
-        basis=(
-            "AS/NZS 4600:2005+A1 Clauses 5.4.2.3 and 5.4.2.5: the weakest "
-            "orientation and connected-sheet pair governs phi=0.50 bearing, and the "
-            "exact manufacturer-tested screw must satisfy the 1.25 Vb Section 8 "
-            f"qualification. {len(fasteners)} rendered screw(s) are included; "
-            f"manufacturer evidence: {source}."
-        ),
-        blockers=(
-            []
-            if qualification.status == "pass"
-            else [
-                "Manufacturer-tested screw shear is below the Clause 5.4.2.5 "
-                "qualification threshold for the connected sheets."
-            ]
-        ),
+    common["status"] = (
+        "pass" if qualification.status == "pass" and utilisation <= 1.0 else "fail"
+    )
+    common["evidence_status"] = "verified"
+    common["design_force_capacity_kN"] = design_force_capacity_kN
+    common["governing_utilisation"] = utilisation
+    common["basis"] = (
+        "AS/NZS 4600:2005+A1 Clauses 5.4.2.3 and 5.4.2.5: the weakest "
+        "orientation and connected-sheet pair governs phi=0.50 bearing, and the "
+        "exact manufacturer-tested screw must satisfy the 1.25 Vb Section 8 "
+        f"qualification. {len(fasteners)} rendered screw(s) are included; "
+        f"manufacturer evidence: {source}."
+    )
+    common["blockers"] = (
+        []
+        if qualification.status == "pass"
+        else [
+            "Manufacturer-tested screw shear is below the Clause 5.4.2.5 "
+            "qualification threshold for the connected sheets."
+        ]
     )
     return common
 
@@ -1325,9 +1300,7 @@ def _calculated_fabricated_gusset_resistance(
 
     source = str(properties["source"]) if properties.get("source") else None
     source_sha256 = (
-        str(properties["source_sha256"])
-        if properties.get("source_sha256")
-        else None
+        str(properties["source_sha256"]) if properties.get("source_sha256") else None
     )
     if source is None or source_sha256 is None or len(source_sha256) != 64:
         blockers.append("Gusset calculation requires a source and valid SHA-256.")
@@ -1390,7 +1363,10 @@ def _calculated_fabricated_gusset_resistance(
             ):
                 parsed.append((float(raw_point[0]), float(raw_point[1])))
         coordinates = tuple(parsed)
-    if fasteners_per_interface is not None and len(coordinates) != fasteners_per_interface:
+    if (
+        fasteners_per_interface is not None
+        and len(coordinates) != fasteners_per_interface
+    ):
         blockers.append(
             "Gusset fastener coordinates must describe one complete member interface."
         )
@@ -1408,7 +1384,9 @@ def _calculated_fabricated_gusset_resistance(
         )
     }
     if any(value is None for value in numeric_fixture_facts.values()):
-        blockers.append("Gusset plate, hole, spacing, edge, and slip facts are incomplete.")
+        blockers.append(
+            "Gusset plate, hole, spacing, edge, and slip facts are incomplete."
+        )
     if properties.get("connected_sheet_hole_type") != "standard_round":
         blockers.append("Gusset calculation requires standard round holes.")
 
@@ -1421,9 +1399,9 @@ def _calculated_fabricated_gusset_resistance(
         )
     }
     washers = fastener_properties.get("washers_under_head_and_nut")
-    if any(value is None for value in numeric_fastener_facts.values()) or not isinstance(
-        washers, bool
-    ):
+    if any(
+        value is None for value in numeric_fastener_facts.values()
+    ) or not isinstance(washers, bool):
         blockers.append("Gusset bolt strength and washer facts are incomplete.")
 
     connected_component_ids = {
@@ -1464,7 +1442,9 @@ def _calculated_fabricated_gusset_resistance(
         )
     sheet_facts = list(sheet_facts_by_component.values())
     if len(sheet_facts) != 2:
-        blockers.append("Two-sided gusset requires exactly two connected member sheets.")
+        blockers.append(
+            "Two-sided gusset requires exactly two connected member sheets."
+        )
 
     common: _CalculatedConnectionResistance = {
         "status": "unsupported",
@@ -1489,7 +1469,9 @@ def _calculated_fabricated_gusset_resistance(
     assert isinstance(washers, bool)
     assert all(value is not None for value in numeric_fixture_facts.values())
     assert all(value is not None for value in numeric_fastener_facts.values())
-    hole_diameter_mm = cast(float, numeric_fixture_facts["connected_sheet_hole_diameter_mm"])
+    hole_diameter_mm = cast(
+        float, numeric_fixture_facts["connected_sheet_hole_diameter_mm"]
+    )
     minimum_spacing_mm = cast(float, numeric_fixture_facts["minimum_bolt_spacing_mm"])
     minimum_edge_distance_mm = cast(
         float, numeric_fixture_facts["minimum_sheet_edge_distance_mm"]
@@ -1526,16 +1508,14 @@ def _calculated_fabricated_gusset_resistance(
             )
         ]
     except CapacityPackError as exc:
-        common.update(
-            basis=f"A connected Cee-sheet interface could not be evaluated: {exc}",
-            blockers=[
-                "No resistance was inferred after the connected-sheet capacity pack rejected its inputs."
-            ],
+        common["basis"] = (
+            f"A connected Cee-sheet interface could not be evaluated: {exc}"
         )
+        common["blockers"] = [
+            "No resistance was inferred after the connected-sheet capacity pack rejected its inputs."
+        ]
         return common
-    fixture_thickness_mm = cast(
-        float, numeric_fixture_facts["fixture_thickness_mm"]
-    )
+    fixture_thickness_mm = cast(float, numeric_fixture_facts["fixture_thickness_mm"])
     fixture_yield_strength_MPa = cast(
         float, numeric_fixture_facts["fixture_yield_strength_MPa"]
     )
@@ -1593,12 +1573,12 @@ def _calculated_fabricated_gusset_resistance(
     fixture_gross_width_mm = 2.0 * minimum_edge_distance_mm + minimum_spacing_mm
     fixture_net_width_mm = fixture_gross_width_mm - 2.0 * hole_diameter_mm
     if fixture_net_width_mm <= 0.0:
-        common.update(
-            basis="The specified gusset layout leaves no positive net plate width.",
-            blockers=[
-                "Increase the plate width/edge distances or reduce the hole layout before assigning resistance."
-            ],
+        common["basis"] = (
+            "The specified gusset layout leaves no positive net plate width."
         )
+        common["blockers"] = [
+            "Increase the plate width/edge distances or reduce the hole layout before assigning resistance."
+        ]
         return common
     fixture_gross_yield_capacity_kN = (
         0.90
@@ -1665,9 +1645,7 @@ def _calculated_fabricated_gusset_resistance(
         / physical_length_by_component_m[declaration.component_id]
         for declaration, material, _thickness_mm in sheet_facts
     ]
-    required_rotational_stiffness_kNm_rad = max(
-        member_characteristic_stiffnesses
-    )
+    required_rotational_stiffness_kNm_rad = max(member_characteristic_stiffnesses)
     stiffness_verified = (
         rotational_stiffness_kNm_rad >= required_rotational_stiffness_kNm_rad
         and all(result.status == "pass" for result in interface_results)
@@ -1686,39 +1664,35 @@ def _calculated_fabricated_gusset_resistance(
         result_blockers.append(
             "Calculated bearing-engaged rotational stiffness is below the connected-member EI/L characteristic stiffness."
         )
-    common.update(
-        status=(
-            "pass"
-            if group.status == "pass"
-            and fixture_status == "pass"
-            and stiffness_verified
-            else "fail"
-        ),
-        evidence_status="verified",
-        design_force_capacity_kN=group.design_force_capacity_kN,
-        design_moment_capacity_kNm=group.design_moment_capacity_kNm,
-        governing_utilisation=max(
-            group.interaction_utilisation,
-            fixture_utilisation,
-            required_rotational_stiffness_kNm_rad / rotational_stiffness_kNm_rad,
-        ),
-        stiffness_status="verified" if stiffness_verified else "unverified",
-        stiffness_basis=(
-            "Bearing-engaged secant rotational stiffness is calculated from the "
-            "weakest fastener/interface resistance, declared maximum slip, and exact "
-            f"bolt radii: {rotational_stiffness_kNm_rad:.3f} kNm/rad versus the "
-            "largest connected-member EI/L characteristic stiffness of "
-            f"{required_rotational_stiffness_kNm_rad:.3f} kNm/rad."
-        ),
-        basis=(
-            f"{group.basis} Each four-bolt Cee interface is checked to AS/NZS 4600 "
-            "for bolt shear, sheet bearing, tear-out, holes, spacing and edges. The "
-            "specified 3 mm plate is checked separately for bearing, tear-out, gross "
-            "yield, net fracture and shear using its exact two-column layout; the "
-            "weakest per-fastener-equivalent resistance governs the eccentric group."
-        ),
-        blockers=result_blockers,
+    common["status"] = (
+        "pass"
+        if group.status == "pass" and fixture_status == "pass" and stiffness_verified
+        else "fail"
     )
+    common["evidence_status"] = "verified"
+    common["design_force_capacity_kN"] = group.design_force_capacity_kN
+    common["design_moment_capacity_kNm"] = group.design_moment_capacity_kNm
+    common["governing_utilisation"] = max(
+        group.interaction_utilisation,
+        fixture_utilisation,
+        required_rotational_stiffness_kNm_rad / rotational_stiffness_kNm_rad,
+    )
+    common["stiffness_status"] = "verified" if stiffness_verified else "unverified"
+    common["stiffness_basis"] = (
+        "Bearing-engaged secant rotational stiffness is calculated from the "
+        "weakest fastener/interface resistance, declared maximum slip, and exact "
+        f"bolt radii: {rotational_stiffness_kNm_rad:.3f} kNm/rad versus the "
+        "largest connected-member EI/L characteristic stiffness of "
+        f"{required_rotational_stiffness_kNm_rad:.3f} kNm/rad."
+    )
+    common["basis"] = (
+        f"{group.basis} Each four-bolt Cee interface is checked to AS/NZS 4600 "
+        "for bolt shear, sheet bearing, tear-out, holes, spacing and edges. The "
+        "specified 3 mm plate is checked separately for bearing, tear-out, gross "
+        "yield, net fracture and shear using its exact two-column layout; the "
+        "weakest per-fastener-equivalent resistance governs the eccentric group."
+    )
+    common["blockers"] = result_blockers
     return common
 
 
@@ -1754,7 +1728,9 @@ def _calculated_anchored_fixture_resistance(
         or fixture.product_key is None
         or fixture.product_definition_digest is None
     ):
-        blockers.append("Anchored fixture requires a verified managed product identity.")
+        blockers.append(
+            "Anchored fixture requires a verified managed product identity."
+        )
     if anchor_group is None:
         blockers.append("Anchored fixture has no exact anchor-group calculation.")
     elif any(
@@ -1767,7 +1743,9 @@ def _calculated_anchored_fixture_resistance(
     ):
         blockers.append("Anchored fixture anchor-group resistance is incomplete.")
     if bolted_sheet_interface is None:
-        blockers.append("Anchored fixture has no exact connected-sheet bolt calculation.")
+        blockers.append(
+            "Anchored fixture has no exact connected-sheet bolt calculation."
+        )
     elif any(
         value is None
         for value in (
@@ -1777,7 +1755,9 @@ def _calculated_anchored_fixture_resistance(
     ):
         blockers.append("Anchored fixture connected-sheet resistance is incomplete.")
     if moment_demand_kNm > 1e-9:
-        blockers.append("Pinned anchored fixture cannot be credited with moment transfer.")
+        blockers.append(
+            "Pinned anchored fixture cannot be credited with moment transfer."
+        )
 
     numeric_facts = {
         key: _numeric_fact(properties, key)
@@ -1792,9 +1772,7 @@ def _calculated_anchored_fixture_resistance(
         blockers.append("Anchored fixture specified-grade plate facts are incomplete.")
     source = str(properties["source"]) if properties.get("source") else None
     source_sha256 = (
-        str(properties["source_sha256"])
-        if properties.get("source_sha256")
-        else None
+        str(properties["source_sha256"]) if properties.get("source_sha256") else None
     )
     if source is None or source_sha256 is None or len(source_sha256) != 64:
         blockers.append("Anchored fixture requires a source and valid SHA-256.")
@@ -1855,27 +1833,25 @@ def _calculated_anchored_fixture_resistance(
         and bolted_sheet_interface.evidence_status == "verified"
         and governing_utilisation <= 1.0
     )
-    common.update(
-        status="pass" if path_passes else "fail",
-        evidence_status="verified",
-        design_force_capacity_kN=design_force_capacity_kN,
-        governing_utilisation=governing_utilisation,
-        stiffness_status="verified" if path_passes else "unverified",
-        stiffness_basis=(
-            "The joint is deliberately pinned. Its translational path is verified "
-            "through the rendered Cee bolts, specified-grade steel fixture, and the "
-            "existing exact anchor-group result; no rotational fixity is claimed."
-        ),
-        basis=(
-            "Complete pinned fixture: the manufacturer anchor interaction is checked "
-            "in its actual substrate-normal tension and in-plane shear directions. "
-            "The member-to-fixture force path is checked separately using the AS/NZS "
-            "4600 connected-sheet bolt result plus gross specified-grade plate yield, "
-            "0.6fy shear yield, and gross fracture resistance. Compressive member force "
-            "is not incorrectly compared with anchor pull-out resistance."
-        ),
-        blockers=[],
+    common["status"] = "pass" if path_passes else "fail"
+    common["evidence_status"] = "verified"
+    common["design_force_capacity_kN"] = design_force_capacity_kN
+    common["governing_utilisation"] = governing_utilisation
+    common["stiffness_status"] = "verified" if path_passes else "unverified"
+    common["stiffness_basis"] = (
+        "The joint is deliberately pinned. Its translational path is verified "
+        "through the rendered Cee bolts, specified-grade steel fixture, and the "
+        "existing exact anchor-group result; no rotational fixity is claimed."
     )
+    common["basis"] = (
+        "Complete pinned fixture: the manufacturer anchor interaction is checked "
+        "in its actual substrate-normal tension and in-plane shear directions. "
+        "The member-to-fixture force path is checked separately using the AS/NZS "
+        "4600 connected-sheet bolt result plus gross specified-grade plate yield, "
+        "0.6fy shear yield, and gross fracture resistance. Compressive member force "
+        "is not incorrectly compared with anchor pull-out resistance."
+    )
+    common["blockers"] = []
     return common
 
 
@@ -1899,10 +1875,7 @@ def _calculated_direct_anchored_sheet_resistance(
         )
         == "manufacturer_working_load_anchor_group"
     ]
-    if (
-        len(anchors) != 1
-        or len(anchors) != len(connection.connector_component_ids)
-    ):
+    if len(anchors) != 1 or len(anchors) != len(connection.connector_component_ids):
         return None
     blockers: list[str] = []
     anchor = anchors[0]
@@ -1923,9 +1896,7 @@ def _calculated_direct_anchored_sheet_resistance(
         blockers.append(
             "Direct anchored-sheet pack requires one connected physical steel member."
         )
-    sections = {
-        section.id: section for section in getattr(analysis, "sections", ())
-    }
+    sections = {section.id: section for section in getattr(analysis, "sections", ())}
     materials = {
         material.id: material for material in getattr(analysis, "materials", ())
     }
@@ -1970,7 +1941,9 @@ def _calculated_direct_anchored_sheet_resistance(
     if anchor_group is None:
         blockers.append("Direct anchored-sheet pack has no anchor-group result.")
     if moment_demand_kNm > 1e-9:
-        blockers.append("A single direct anchor cannot be credited with moment transfer.")
+        blockers.append(
+            "A single direct anchor cannot be credited with moment transfer."
+        )
     source = str(properties.get("anchor_source") or "") or None
     source_sha256 = str(properties.get("anchor_source_sha256") or "") or None
     if source is None or source_sha256 is None or len(source_sha256) != 64:
@@ -2048,19 +2021,17 @@ def _calculated_direct_anchored_sheet_resistance(
         and geometry_passes
         and governing_utilisation <= 1.0
     )
-    common.update(
-        status="pass" if path_passes else "fail",
-        evidence_status="verified",
-        design_force_capacity_kN=design_force_capacity_kN,
-        governing_utilisation=governing_utilisation,
-        stiffness_status="verified" if path_passes else "unverified",
-        stiffness_basis=(
-            "The deliberately pinned translational path is verified through the "
-            "rendered anchor, round Cee web hole, sheet bearing/tear-out, and the "
-            "manufacturer anchor-group result; no rotational fixity is claimed."
-        ),
-        blockers=[],
+    common["status"] = "pass" if path_passes else "fail"
+    common["evidence_status"] = "verified"
+    common["design_force_capacity_kN"] = design_force_capacity_kN
+    common["governing_utilisation"] = governing_utilisation
+    common["stiffness_status"] = "verified" if path_passes else "unverified"
+    common["stiffness_basis"] = (
+        "The deliberately pinned translational path is verified through the "
+        "rendered anchor, round Cee web hole, sheet bearing/tear-out, and the "
+        "manufacturer anchor-group result; no rotational fixity is claimed."
     )
+    common["blockers"] = []
     return common
 
 
@@ -2143,8 +2114,7 @@ def _connection_checks(
             sorted(evidence.connector_part_numbers)
             if evidence is not None
             else sorted(
-                components[component_id].part_number
-                or f"<missing:{component_id}>"
+                components[component_id].part_number or f"<missing:{component_id}>"
                 for component_id in connection.connector_component_ids
             )
             if tension_evidence is not None
@@ -2240,9 +2210,7 @@ def _connection_checks(
             tension_resultant = tension_evidence.tension_demand_kN
             if tension_resultant >= governing_resultant:
                 governing_resultant = tension_resultant
-                governing_combination_id = (
-                    tension_evidence.governing_combination_id
-                )
+                governing_combination_id = tension_evidence.governing_combination_id
                 governing_member_id = tension_evidence.member_id
 
         grounded_component_ids = sorted(
@@ -2313,10 +2281,14 @@ def _connection_checks(
             gusset=calculated_gusset,
         )
         if (
-            anchor_group is not None
-            or bolted_sheet_interface is not None
-            or calculated_connection is not None
-        ) and evidence is None and tension_evidence is None:
+            (
+                anchor_group is not None
+                or bolted_sheet_interface is not None
+                or calculated_connection is not None
+            )
+            and evidence is None
+            and tension_evidence is None
+        ):
             expected_parts = rendered_parts
             identity_mismatches = []
 
@@ -2393,9 +2365,7 @@ def _connection_checks(
                 status = "pass" if governing_utilisation <= 1.0 else "fail"
         elif calculated_connection is not None:
             status = calculated_connection["status"]
-        elif (
-            anchor_group is not None and anchor_group.status == "fail"
-        ) or (
+        elif (anchor_group is not None and anchor_group.status == "fail") or (
             bolted_sheet_interface is not None
             and bolted_sheet_interface.status == "fail"
         ):
@@ -2468,8 +2438,7 @@ def _connection_checks(
                     else calculated_connection["evidence_status"]
                     if calculated_connection is not None
                     else "candidate"
-                    if anchor_group is not None
-                    or bolted_sheet_interface is not None
+                    if anchor_group is not None or bolted_sheet_interface is not None
                     else "verified"
                     if tension_evidence is not None
                     and tension_evidence.connection_capacity_status == "verified"
@@ -2591,7 +2560,7 @@ def _connection_checks(
                     if tension_evidence is not None
                     else "ULS endpoint forces are enveloped from the compiled physical "
                     "joint. No resistance, stiffness, bearing, tear-out, pull-out, "
-                        "anchor, or foundation capacity is inferred."
+                    "anchor, or foundation capacity is inferred."
                 ),
                 anchor_group=anchor_group,
                 bolted_sheet_interface=bolted_sheet_interface,
@@ -2694,9 +2663,7 @@ def _tension_member_supports(
         if not support_declarations:
             continue
         support = support_declarations[0]
-        supports.append(
-            (sections[support.section_id], materials[support.material_id])
-        )
+        supports.append((sections[support.section_id], materials[support.material_id]))
     return supports
 
 
@@ -2747,9 +2714,9 @@ def _tension_member_checks(
             pack_error = str(exc)
 
         if pack is not None:
-            member_capacity_status: Literal[
-                "not_checked", "candidate", "verified"
-            ] = "verified"
+            member_capacity_status: Literal["not_checked", "candidate", "verified"] = (
+                "verified"
+            )
             tension_capacity = pack.design_tension_capacity_kN
         else:
             member_capacity_status = "not_checked"
@@ -2770,8 +2737,7 @@ def _tension_member_checks(
             and declaration.component_id
             in {connection.from_component_id, connection.to_component_id}
             and (
-                not endpoint_connection_ids
-                or connection.id in endpoint_connection_ids
+                not endpoint_connection_ids or connection.id in endpoint_connection_ids
             )
         ]
         rendered_end_fastener_counts = [
@@ -2830,64 +2796,63 @@ def _tension_member_checks(
         fastener_tested_single_shear_strength_kN = (
             next(iter(tested_strength_values))
             if len(tested_strength_values) == 1
-            and len(rendered_fasteners)
-            == sum(rendered_end_fastener_counts)
+            and len(rendered_fasteners) == sum(rendered_end_fastener_counts)
             else None
         )
         evidence_sources = {
             str(value)
             for component in rendered_fasteners
-            if (
-                value := component.structural_properties.get("test_evidence_source")
-            )
+            if (value := component.structural_properties.get("test_evidence_source"))
         }
         evidence_revisions = {
             str(value)
             for component in rendered_fasteners
-            if (
-                value := component.structural_properties.get("test_evidence_revision")
-            )
+            if (value := component.structural_properties.get("test_evidence_revision"))
         }
         evidence_urls = {
             str(value)
             for component in rendered_fasteners
             if (value := component.structural_properties.get("test_evidence_url"))
         }
-        fastener_identity_matches = bool(rendered_fasteners) and all(
-            (
-                component.kind == "connector"
-                and component.part_number is not None
-                and component.product_key is not None
-                and component.product_definition_digest is not None
-                and isinstance(
-                    component.structural_properties.get(
-                        "tested_single_shear_strength_kN"
-                    ),
-                    (int, float),
+        fastener_identity_matches = (
+            bool(rendered_fasteners)
+            and all(
+                (
+                    component.kind == "connector"
+                    and component.part_number is not None
+                    and component.product_key is not None
+                    and component.product_definition_digest is not None
+                    and isinstance(
+                        component.structural_properties.get(
+                            "tested_single_shear_strength_kN"
+                        ),
+                        (int, float),
+                    )
+                    and not isinstance(
+                        component.structural_properties.get(
+                            "tested_single_shear_strength_kN"
+                        ),
+                        bool,
+                    )
+                    and component.structural_properties.get("test_evidence_source")
                 )
-                and not isinstance(
-                    component.structural_properties.get(
-                        "tested_single_shear_strength_kN"
-                    ),
-                    bool,
-                )
-                and component.structural_properties.get("test_evidence_source")
+                for component in rendered_fasteners
             )
-            for component in rendered_fasteners
-        ) and all(
-            len(values) == 1
-            for values in (
-                fastener_part_numbers,
-                fastener_product_keys,
-                fastener_product_definition_digests,
-                tested_strength_values,
-                evidence_sources,
+            and all(
+                len(values) == 1
+                for values in (
+                    fastener_part_numbers,
+                    fastener_product_keys,
+                    fastener_product_definition_digests,
+                    tested_strength_values,
+                    evidence_sources,
+                )
             )
         )
         if not rendered_fasteners:
-            fastener_evidence_status: Literal[
-                "unverified", "candidate", "verified"
-            ] | None = None
+            fastener_evidence_status: (
+                Literal["unverified", "candidate", "verified"] | None
+            ) = None
         elif fastener_identity_matches and all(
             component.structural_evidence_status == "verified"
             for component in rendered_fasteners
@@ -2903,14 +2868,10 @@ def _tension_member_checks(
         rendered_layout_matches = (
             fastener_count is not None
             and len(rendered_end_connections) == 2
-            and all(
-                count == fastener_count for count in rendered_end_fastener_counts
-            )
+            and all(count == fastener_count for count in rendered_end_fastener_counts)
         )
         spacing_status: Literal["not_checked", "pass", "fail"] = "not_checked"
-        edge_distance_status: Literal["not_checked", "pass", "fail"] = (
-            "not_checked"
-        )
+        edge_distance_status: Literal["not_checked", "pass", "fail"] = "not_checked"
         connected_part_net_capacity_kN: float | None = None
         end_bearing_capacity_kN: float | None = None
         end_tearout_capacity_kN: float | None = None
@@ -2932,9 +2893,7 @@ def _tension_member_checks(
             and material.yield_strength_MPa is not None
         ):
             spacing_status = "pass" if spacing_mm >= 3.0 * diameter_mm else "fail"
-            transverse_edge_distance_mm = (
-                section.tension_width_mm - spacing_mm
-            ) / 2.0
+            transverse_edge_distance_mm = (section.tension_width_mm - spacing_mm) / 2.0
             edge_distance_status = (
                 "pass"
                 if min(end_distance_mm, transverse_edge_distance_mm)
@@ -2951,8 +2910,7 @@ def _tension_member_checks(
             )
             tearout_phi = (
                 0.70
-                if material.tensile_strength_MPa / material.yield_strength_MPa
-                >= 1.08
+                if material.tensile_strength_MPa / material.yield_strength_MPa >= 1.08
                 else 0.60
             )
             end_tearout_capacity_kN = (
@@ -2995,15 +2953,11 @@ def _tension_member_checks(
                     fastener_count * 0.50 * min(nominal_bearing_capacities)
                 )
                 if fastener_tested_single_shear_strength_kN is not None:
-                    qualification = (
-                        as_nzs_4600_2005_a1_screw_shear_qualification(
-                            tested_single_shear_strength_kN=(
-                                fastener_tested_single_shear_strength_kN
-                            ),
-                            nominal_bearing_capacity_kN=max(
-                                nominal_bearing_capacities
-                            ),
-                        )
+                    qualification = as_nzs_4600_2005_a1_screw_shear_qualification(
+                        tested_single_shear_strength_kN=(
+                            fastener_tested_single_shear_strength_kN
+                        ),
+                        nominal_bearing_capacity_kN=max(nominal_bearing_capacities),
                     )
                     fastener_required_single_shear_strength_kN = (
                         qualification.required_single_shear_strength_kN
@@ -3120,7 +3074,10 @@ def _tension_member_checks(
                 "No Tertius-owned ULS design combination is available for the "
                 "tension envelope."
             )
-        if fastener_count is not None and fastener_tested_single_shear_strength_kN is None:
+        if (
+            fastener_count is not None
+            and fastener_tested_single_shear_strength_kN is None
+        ):
             missing_assumptions.append(
                 "The rendered fastener product has no single, positive manufacturer "
                 "single-shear test strength for the Clause 5.4.2.5 qualification."
@@ -3162,9 +3119,7 @@ def _tension_member_checks(
                 capacity_status=capacity_status,
                 member_capacity_status=member_capacity_status,
                 connection_capacity_status=connection_capacity_status,
-                pack_id=(
-                    "as_nzs_4600_2005_a1_tension" if pack is not None else None
-                ),
+                pack_id=("as_nzs_4600_2005_a1_tension" if pack is not None else None),
                 governing_combination_id=governing_combination_id,
                 tension_demand_kN=tension_demand_kN,
                 tension_capacity_kN=tension_capacity,
@@ -3208,9 +3163,7 @@ def _tension_member_checks(
                 ),
                 fastener_evidence_status=fastener_evidence_status,
                 fastener_evidence_source=(
-                    next(iter(evidence_sources))
-                    if len(evidence_sources) == 1
-                    else None
+                    next(iter(evidence_sources)) if len(evidence_sources) == 1 else None
                 ),
                 fastener_evidence_revision=(
                     next(iter(evidence_revisions))
@@ -3222,7 +3175,9 @@ def _tension_member_checks(
                 ),
                 spacing_status=spacing_status,
                 edge_distance_status=edge_distance_status,
-                standard_reference=(pack.standard_reference if pack is not None else None),
+                standard_reference=(
+                    pack.standard_reference if pack is not None else None
+                ),
                 standard_status=(pack.standard_status if pack is not None else None),
                 standard_source_sha256=(
                     pack.standard_source_sha256 if pack is not None else None
@@ -3366,9 +3321,7 @@ def _bracing_load_path_traces(
         component_ids: list[str] = [declaration.component_id]
         connection_ids: list[str] = []
         grounded_ids: list[str] = [
-            ground
-            for _path, _connections, ground in legs
-            if ground is not None
+            ground for _path, _connections, ground in legs if ground is not None
         ]
         if len(legs) == 2 and len(incident) >= 2:
             first_components = _expanded_component_path(legs[0][0], legs[0][1])
@@ -3562,9 +3515,7 @@ def _analysis_base_model_matches(analysis) -> bool:
             endpoints = [
                 (member.start.z, member.start_restraints)
                 for member in component_members
-            ] + [
-                (member.end.z, member.end_restraints) for member in component_members
-            ]
+            ] + [(member.end.z, member.end_restraints) for member in component_members]
             base_restraints.append(min(endpoints, key=lambda item: item[0])[1])
     else:
         # Backwards-compatible authored models may identify an unsplit column by
@@ -3632,7 +3583,9 @@ def _rafter_stability_applicability_checks(
     materials_by_id = {material.id: material for material in analysis.materials}
     checks: list[RafterStabilityApplicabilityCheck] = []
     for component_id, component_members in sorted(members_by_component.items()):
-        length_m = sum(_length(member.start, member.end) for member in component_members)
+        length_m = sum(
+            _length(member.start, member.end) for member in component_members
+        )
         minimum_ei_kNm2 = min(
             materials_by_id[member.material_id].elastic_modulus_kN_m2
             * max(
@@ -3645,7 +3598,10 @@ def _rafter_stability_applicability_checks(
         axial_limit_kN = 0.09 * elastic_critical_load_kN
         component_axial_demands = [
             axial_kN
-            for (_, demand_component_id), axial_kN in first_order_rafter_axial_kN.items()
+            for (
+                _,
+                demand_component_id,
+            ), axial_kN in first_order_rafter_axial_kN.items()
             if demand_component_id == component_id
         ]
         if not component_axial_demands:
@@ -3930,28 +3886,19 @@ def _cross_section_checks(
                 )
                 biaxial_axial_bending = (
                     axial_bending
-                    + minor_moment_kNm
-                    / capacity.design_minor_bending_capacity_kNm
+                    + minor_moment_kNm / capacity.design_minor_bending_capacity_kNm
                 )
                 bending_shear = sqrt(
                     (major_moment_kNm / capacity.design_major_bending_capacity_kNm) ** 2
                     + (web_shear_kN / capacity.design_web_shear_capacity_kN) ** 2
                 )
                 minor_bending_shear = sqrt(
-                    (
-                        minor_moment_kNm
-                        / capacity.design_minor_bending_capacity_kNm
-                    )
-                    ** 2
-                    + (
-                        off_axis_shear_kN
-                        / capacity.design_off_axis_shear_capacity_kN
-                    )
+                    (minor_moment_kNm / capacity.design_minor_bending_capacity_kNm) ** 2
+                    + (off_axis_shear_kN / capacity.design_off_axis_shear_capacity_kN)
                     ** 2
                 )
                 torsion_utilisation = (
-                    torsion_kNm
-                    / capacity.design_st_venant_torsion_capacity_kNm
+                    torsion_kNm / capacity.design_st_venant_torsion_capacity_kNm
                 )
                 utilization = (
                     max(
@@ -4027,9 +3974,7 @@ def _cross_section_checks(
                     governing["biaxial_axial_bending"]
                 ),
                 bending_shear_utilisation=float(governing["bending_shear"]),
-                minor_bending_shear_utilisation=float(
-                    governing["minor_bending_shear"]
-                ),
+                minor_bending_shear_utilisation=float(governing["minor_bending_shear"]),
                 torsion_utilisation=float(governing["torsion_utilisation"]),
                 governing_utilisation=float(governing["utilization"]),
                 section_record_sha256=capacity.section_record_sha256,
@@ -4353,8 +4298,7 @@ def _member_restraint_candidate_checks(
             )
             required_moment_kNm = required_force_kN * depth_value
         elif (
-            candidate.demand_model
-            == "as_nzs_4600_2005_4_3_2_flange_force"
+            candidate.demand_model == "as_nzs_4600_2005_4_3_2_flange_force"
             and depth_value is not None
         ):
             member = model.members[candidate.member_id]
@@ -4367,8 +4311,7 @@ def _member_restraint_candidate_checks(
             critical_flange_force_kN = max(
                 (
                     abs(member.axial(distance_m, combination_id)) / 2.0
-                    + abs(member.moment("Mz", distance_m, combination_id))
-                    / depth_value
+                    + abs(member.moment("Mz", distance_m, combination_id)) / depth_value
                 )
                 for distance_m in station_distances
                 if -1e-9 <= distance_m <= member_length + 1e-9
@@ -4421,9 +4364,8 @@ def _member_restraint_candidate_checks(
                     "passes its governing ULS resistance check."
                 )
             else:
-                anchorage_basis = (
-                    f"{candidate.anchorage_basis} "
-                    + " ".join(anchorage_blockers)
+                anchorage_basis = f"{candidate.anchorage_basis} " + " ".join(
+                    anchorage_blockers
                 )
         status: Literal["unsupported", "candidate", "pass", "fail"]
         if evidence_status == "unsupported" or identity_status == "fail":
@@ -4500,10 +4442,8 @@ def _member_restraint_candidate_checks(
                     "transfers 2.5% of the maximum critical-flange force, with "
                     "flange force conservatively taken as |N*|/2 + |M*z|/d over "
                     "the adjacent analytical segment."
-                    if candidate.demand_model
-                    == "as_nzs_4600_2005_4_3_2_flange_force"
-                    else
-                    "Flange-brace force couple generated by the factored point-load "
+                    if candidate.demand_model == "as_nzs_4600_2005_4_3_2_flange_force"
+                    else "Flange-brace force couple generated by the factored point-load "
                     "and distributed-load resultant within the candidate's midpoint "
                     "tributary interval, acting at the connected secondary-member axis."
                     if candidate.demand_model
@@ -4516,10 +4456,8 @@ def _member_restraint_candidate_checks(
                     "4.3.2.1-4.3.2.3 require restraint strength and stiffness and "
                     "a design force equal to 0.025 times the maximum critical-flange "
                     f"force. {capacity_basis}"
-                    if candidate.demand_model
-                    == "as_nzs_4600_2005_4_3_2_flange_force"
-                    else
-                    "P_L = 1.5(e/d)W from the AISI Cold-Formed Steel Framing "
+                    if candidate.demand_model == "as_nzs_4600_2005_4_3_2_flange_force"
+                    else "P_L = 1.5(e/d)W from the AISI Cold-Formed Steel Framing "
                     "Design Guide, Second Edition, Example 2 Step 2(a), adapting "
                     "Supplement D3.2.2 to expose a working eccentric-load brace "
                     "demand. This does not replace an AS/NZS 4600 verification. "
@@ -4868,24 +4806,20 @@ def _member_stability_checks(
                     web_shear_kN / capacity.design_web_shear_capacity_kN
                 )
                 off_axis_shear_utilisation = (
-                    off_axis_shear_kN
-                    / capacity.design_off_axis_shear_capacity_kN
+                    off_axis_shear_kN / capacity.design_off_axis_shear_capacity_kN
                 )
                 torsion_utilisation = (
-                    torsion_kNm
-                    / capacity.design_st_venant_torsion_capacity_kNm
+                    torsion_kNm / capacity.design_st_venant_torsion_capacity_kNm
                 )
                 major_axis_amplification_factor = 1.0 / max(
                     1e-9,
                     1.0
-                    - axial_kN
-                    / capacity.elastic_major_axis_flexural_buckling_load_kN,
+                    - axial_kN / capacity.elastic_major_axis_flexural_buckling_load_kN,
                 )
                 minor_axis_amplification_factor = 1.0 / max(
                     1e-9,
                     1.0
-                    - axial_kN
-                    / capacity.elastic_minor_axis_flexural_buckling_load_kN,
+                    - axial_kN / capacity.elastic_minor_axis_flexural_buckling_load_kN,
                 )
                 compression_flange = _compression_flange(
                     signed_major_moment_kNm,
@@ -4904,17 +4838,14 @@ def _member_stability_checks(
                 )
                 biaxial_member_interaction_utilisation = (
                     axial_utilisation
-                    + major_bending_utilisation
-                    * major_axis_amplification_factor
-                    + minor_bending_utilisation
-                    * minor_axis_amplification_factor
+                    + major_bending_utilisation * major_axis_amplification_factor
+                    + minor_bending_utilisation * minor_axis_amplification_factor
                 )
                 major_bending_shear_utilisation = sqrt(
                     major_bending_utilisation**2 + web_shear_utilisation**2
                 )
                 minor_bending_shear_utilisation = sqrt(
-                    minor_bending_utilisation**2
-                    + off_axis_shear_utilisation**2
+                    minor_bending_utilisation**2 + off_axis_shear_utilisation**2
                 )
                 utilisation = (
                     max(
@@ -5066,9 +4997,7 @@ def _member_stability_checks(
                 design_minor_lateral_torsional_bending_capacity_kNm=(
                     capacity.design_minor_lateral_torsional_bending_capacity_kNm
                 ),
-                design_web_shear_capacity_kN=(
-                    capacity.design_web_shear_capacity_kN
-                ),
+                design_web_shear_capacity_kN=(capacity.design_web_shear_capacity_kN),
                 design_off_axis_shear_capacity_kN=(
                     capacity.design_off_axis_shear_capacity_kN
                 ),
@@ -5077,19 +5006,13 @@ def _member_stability_checks(
                 ),
                 governing_compression_mode=capacity.governing_compression_mode,
                 governing_bending_mode=capacity.governing_bending_mode,
-                governing_minor_bending_mode=(
-                    capacity.governing_minor_bending_mode
-                ),
+                governing_minor_bending_mode=(capacity.governing_minor_bending_mode),
                 axial_utilisation=float(governing["axial_utilisation"]),
                 axial_bending_utilisation=float(
                     governing["biaxial_member_interaction_utilisation"]
                 ),
-                major_bending_utilisation=float(
-                    governing["major_bending_utilisation"]
-                ),
-                minor_bending_utilisation=float(
-                    governing["minor_bending_utilisation"]
-                ),
+                major_bending_utilisation=float(governing["major_bending_utilisation"]),
+                minor_bending_utilisation=float(governing["minor_bending_utilisation"]),
                 web_shear_utilisation=float(governing["web_shear_utilisation"]),
                 off_axis_shear_utilisation=float(
                     governing["off_axis_shear_utilisation"]
@@ -5229,12 +5152,14 @@ def _relative_transverse_deflection_mm(
     a short bridge's L/250 limit creates severe false failures.
     """
 
-    chord_y = start_displacement_mm[1] + (
-        end_displacement_mm[1] - start_displacement_mm[1]
-    ) * ratio
-    chord_z = start_displacement_mm[2] + (
-        end_displacement_mm[2] - start_displacement_mm[2]
-    ) * ratio
+    chord_y = (
+        start_displacement_mm[1]
+        + (end_displacement_mm[1] - start_displacement_mm[1]) * ratio
+    )
+    chord_z = (
+        start_displacement_mm[2]
+        + (end_displacement_mm[2] - start_displacement_mm[2]) * ratio
+    )
     return sqrt(
         (local_displacement_mm[1] - chord_y) ** 2
         + (local_displacement_mm[2] - chord_z) ** 2
@@ -5277,7 +5202,11 @@ def _released_node_rotational_axes(
     if not incident_endpoints:
         return ()
     released_global_axes: list[Literal["rx", "ry", "rz"]] = []
-    local_axis_names = ("rx", "ry", "rz")
+    local_axis_names: tuple[Literal["rx", "ry", "rz"], ...] = (
+        "rx",
+        "ry",
+        "rz",
+    )
     for global_axis_index, global_axis_name in enumerate(local_axis_names):
         has_member_stiffness = any(
             not getattr(releases, local_axis_name)
@@ -5321,7 +5250,13 @@ def _released_rotational_datum_restraints(
     for global_axis_index, global_axis_name in enumerate(axis_names):
         adjacency: dict[str, set[str]] = defaultdict(set)
         bending_stiffness_nodes: set[str] = set()
-        for start_node_id, end_node_id, rotation, start_releases, end_releases in members:
+        for (
+            start_node_id,
+            end_node_id,
+            rotation,
+            start_releases,
+            end_releases,
+        ) in members:
             for node_id, releases in (
                 (start_node_id, start_releases),
                 (end_node_id, end_releases),
@@ -5333,19 +5268,14 @@ def _released_rotational_datum_restraints(
                 ):
                     bending_stiffness_nodes.add(node_id)
 
-            torsion_axis_aligned = (
-                abs(rotation[0][global_axis_index]) >= 1.0 - tolerance
-                and all(
-                    abs(rotation[0][other_axis_index]) <= tolerance
-                    for other_axis_index in range(3)
-                    if other_axis_index != global_axis_index
-                )
+            torsion_axis_aligned = abs(
+                rotation[0][global_axis_index]
+            ) >= 1.0 - tolerance and all(
+                abs(rotation[0][other_axis_index]) <= tolerance
+                for other_axis_index in range(3)
+                if other_axis_index != global_axis_index
             )
-            if (
-                torsion_axis_aligned
-                and not start_releases.rx
-                and not end_releases.rx
-            ):
+            if torsion_axis_aligned and not start_releases.rx and not end_releases.rx:
                 adjacency[start_node_id].add(end_node_id)
                 adjacency[end_node_id].add(start_node_id)
 
@@ -5732,9 +5662,7 @@ def _certification_evidence(
                 action_equations.append(
                     CalculationEquation(
                         label=f"{load.label} surface coefficient",
-                        expression=(
-                            "C_net = C_p,e K_a K_c,e K_l - C_p,i K_c,i"
-                        ),
+                        expression=("C_net = C_p,e K_a K_c,e K_l - C_p,i K_c,i"),
                         substitution=(
                             f"{load.external_pressure_coefficient:g} Ã— "
                             f"{load.area_reduction_factor:g} Ã— 1 Ã— 1 - "
@@ -5840,9 +5768,7 @@ def _certification_evidence(
         for check in member_checks
     ]
     checked_serviceability = [
-        check
-        for check in serviceability_checks
-        if check.status in {"pass", "fail"}
+        check for check in serviceability_checks if check.status in {"pass", "fail"}
     ]
     unchecked_serviceability = [
         check for check in serviceability_checks if check.status == "not_checked"
@@ -6095,8 +6021,7 @@ def _certification_evidence(
             CalculationEquation(
                 label=f"{check.member_id} biaxial axial + bending interaction",
                 expression=(
-                    "u_NMM = N*/(phi_c N_s) + Mz*/(phi_b M_sz) "
-                    "+ My*/(phi_b M_sy)"
+                    "u_NMM = N*/(phi_c N_s) + Mz*/(phi_b M_sz) + My*/(phi_b M_sy)"
                 ),
                 substitution=(
                     f"{check.axial_kN:g}/{check.design_compression_capacity_kN:g} "
@@ -6120,10 +6045,7 @@ def _certification_evidence(
             ),
             CalculationEquation(
                 label=f"{check.member_id} minor bending + off-axis shear interaction",
-                expression=(
-                    "u_MyVz = sqrt[(My*/(phi_b M_sy))² + "
-                    "(Vz*/(phi_v V_vz))²]"
-                ),
+                expression=("u_MyVz = sqrt[(My*/(phi_b M_sy))² + (Vz*/(phi_v V_vz))²]"),
                 substitution=(
                     f"sqrt[({check.minor_moment_kNm:g}/"
                     f"{check.design_minor_bending_capacity_kNm:g})² + "
@@ -6143,9 +6065,7 @@ def _certification_evidence(
             ),
             CalculationEquation(
                 label=f"{check.member_id} governing off-axis section envelope",
-                expression=(
-                    "u_gov=max(u_NMM, u_MzVy, u_MyVz) + u_T"
-                ),
+                expression=("u_gov=max(u_NMM, u_MzVy, u_MyVz) + u_T"),
                 substitution=(
                     f"max({check.biaxial_axial_bending_utilisation:g}, "
                     f"{check.bending_shear_utilisation:g}, "
@@ -6351,8 +6271,7 @@ def _certification_evidence(
         any(check.status == "unsupported" for check in tension_member_checks)
         or any(trace.status == "candidate" for trace in bracing_load_path_traces)
         or any(
-            check.status == "unsupported"
-            for check in member_restraint_candidate_checks
+            check.status == "unsupported" for check in member_restraint_candidate_checks
         )
     ):
         bracing_status = "unsupported"
@@ -6362,11 +6281,13 @@ def _certification_evidence(
         and not bracing_load_path_traces
     ):
         bracing_status = "not_checked"
-    elif all(
-        check.status in {"pass", "not_required"}
-        for check in member_restraint_candidate_checks
-    ) and all(check.status == "pass" for check in tension_member_checks) and all(
-        trace.status == "pass" for trace in bracing_load_path_traces
+    elif (
+        all(
+            check.status in {"pass", "not_required"}
+            for check in member_restraint_candidate_checks
+        )
+        and all(check.status == "pass" for check in tension_member_checks)
+        and all(trace.status == "pass" for trace in bracing_load_path_traces)
     ):
         bracing_status = "pass"
     else:
@@ -6413,8 +6334,7 @@ def _certification_evidence(
             CalculationEquation(
                 label=f"{check.segment_id} distortional compression capacity",
                 expression=(
-                    "lambda_d=sqrt(Ny/Nod); "
-                    "Ncd=[1-0.25(Nod/Ny)^0.6](Nod/Ny)^0.6 Ny"
+                    "lambda_d=sqrt(Ny/Nod); Ncd=[1-0.25(Nod/Ny)^0.6](Nod/Ny)^0.6 Ny"
                 ),
                 substitution=(
                     f"fod={check.elastic_distortional_compression_stress_MPa:g} "
@@ -6426,26 +6346,18 @@ def _certification_evidence(
             ),
             CalculationEquation(
                 label=f"{check.segment_id} unbraced lateral-torsional capacity",
-                expression=(
-                    "Mo=A r0 sqrt(foy foz), Cb=1; "
-                    "phi_b Mb=phi_b (Zxe/Zx) Mc"
-                ),
+                expression=("Mo=A r0 sqrt(foy foz), Cb=1; phi_b Mb=phi_b (Zxe/Zx) Mc"),
                 substitution=(
                     f"Lb={check.unbraced_length_m:g} m; "
                     f"Mo={check.elastic_lateral_torsional_buckling_moment_kNm:g}; "
                     f"phi_b Mb={check.design_lateral_torsional_bending_capacity_kNm:g}"
                 ),
-                result=(
-                    check.design_lateral_torsional_bending_capacity_kNm or 0.0
-                ),
+                result=(check.design_lateral_torsional_bending_capacity_kNm or 0.0),
                 unit="kN.m",
             ),
             CalculationEquation(
                 label=f"{check.segment_id} distortional bending capacity",
-                expression=(
-                    "lambda_d=sqrt(My/Mod); "
-                    "Mc=(My/lambda_d)(1-0.22/lambda_d)"
-                ),
+                expression=("lambda_d=sqrt(My/Mod); Mc=(My/lambda_d)(1-0.22/lambda_d)"),
                 substitution=(
                     f"fod={check.elastic_distortional_bending_stress_MPa:g} MPa; "
                     f"phi_b Mc={check.design_distortional_bending_capacity_kNm:g}"
@@ -6489,8 +6401,7 @@ def _certification_evidence(
             CalculationEquation(
                 label=f"{check.segment_id} conservative off-axis envelope",
                 expression=(
-                    "u_gov=max(u_NMM, u_MzVy, u_MyVz) + "
-                    "T*/[phi_v (0.60 fy J/t)]"
+                    "u_gov=max(u_NMM, u_MzVy, u_MyVz) + T*/[phi_v (0.60 fy J/t)]"
                 ),
                 substitution=(
                     f"max({check.biaxial_member_interaction_utilisation:g}, "
@@ -6767,9 +6678,7 @@ def _certification_evidence(
         )
         stability_equations.extend(
             CalculationEquation(
-                label=(
-                    f"{check.component_id} rafter axial-force applicability"
-                ),
+                label=(f"{check.component_id} rafter axial-force applicability"),
                 expression="NEd ≤ 0.09 Ncr",
                 substitution=(
                     f"{check.design_axial_kN:g} ≤ 0.09 × "
@@ -6954,9 +6863,7 @@ def _certification_evidence(
             stage_id="stability",
             title="Imperfections and global stability",
             status=stability_status,
-            primary_reference=(
-                "AS/NZS 4600:2005 incorporating Amendment No. 1"
-            ),
+            primary_reference=("AS/NZS 4600:2005 incorporating Amendment No. 1"),
             supplemental_references=["SCI P399 Sections 7.2–7.8"],
             purpose=(
                 "Compare tension-aware first-order and iterative P-Delta response "
@@ -7148,9 +7055,7 @@ def _certification_evidence(
             stage_id="cross_section",
             title="Cross-section verification",
             status=cross_section_status,
-            primary_reference=(
-                "AS/NZS 4600:2005 incorporating Amendment No. 1"
-            ),
+            primary_reference=("AS/NZS 4600:2005 incorporating Amendment No. 1"),
             supplemental_references=["SCI P399 Section 8.1"],
             purpose="Check classification/effective properties and governing force interactions.",
             inputs=(
@@ -7199,9 +7104,7 @@ def _certification_evidence(
             stage_id="member_stability",
             title="Member stability",
             status=member_stability_status,
-            primary_reference=(
-                "AS/NZS 4600:2005 incorporating Amendment No. 1"
-            ),
+            primary_reference=("AS/NZS 4600:2005 incorporating Amendment No. 1"),
             supplemental_references=["SCI P399 Sections 8.2–8.4"],
             purpose="Verify buckling and axial-bending interaction on restraint-defined segments.",
             inputs=(
@@ -7250,9 +7153,7 @@ def _certification_evidence(
             stage_id="bracing",
             title="Bracing and restraint",
             status=bracing_status,
-            primary_reference=(
-                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
-            ),
+            primary_reference=("NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"),
             supplemental_references=["SCI P399 Section 9"],
             purpose=(
                 "Verify tension-only braces, both end connections, and complete "
@@ -7358,9 +7259,7 @@ def _certification_evidence(
                 CalculationEquation(
                     label=f"{check.label} gross-section yielding",
                     expression="phi Nt,gross = 0.90 Ag fy",
-                    substitution=(
-                        f"Ag={check.gross_area_mm2} mm2"
-                    ),
+                    substitution=(f"Ag={check.gross_area_mm2} mm2"),
                     result=check.gross_yield_capacity_kN or 0.0,
                     unit="kN",
                 )
@@ -7371,9 +7270,7 @@ def _certification_evidence(
                 CalculationEquation(
                     label=f"{check.label} net-section fracture",
                     expression="phi Nt,net = 0.90(0.85 kt An fu)",
-                    substitution=(
-                        f"An={check.net_area_mm2} mm2"
-                    ),
+                    substitution=(f"An={check.net_area_mm2} mm2"),
                     result=check.net_fracture_capacity_kN or 0.0,
                     unit="kN",
                 )
@@ -7435,9 +7332,7 @@ def _certification_evidence(
             stage_id="connections",
             title="Connections and bases",
             status=connection_status,
-            primary_reference=(
-                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
-            ),
+            primary_reference=("NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"),
             supplemental_references=["SCI P399 Section 11"],
             purpose="Verify brackets, fasteners, anchors, concrete, and base behaviour.",
             assumptions=[
@@ -7790,9 +7685,7 @@ def _certification_evidence(
             id="bracing",
             order=8,
             label="Bracing/restraint",
-            primary_reference=(
-                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
-            ),
+            primary_reference=("NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"),
             supplemental_references=["SCI P399 §9"],
             status=bracing_status,
             summary=(
@@ -7811,9 +7704,7 @@ def _certification_evidence(
             id="connections",
             order=9,
             label="Connections/bases",
-            primary_reference=(
-                "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
-            ),
+            primary_reference=("NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"),
             supplemental_references=["SCI P399 §11"],
             status=connection_status,
             summary=(
@@ -7928,9 +7819,7 @@ def _australian_certification_readiness(
         order=1,
         label="Project and NCC basis",
         status="pass" if not basis_missing else "blocked",
-        primary_reference=(
-            "NCC 2022 Amendment 2, A6, H1 and Housing Provisions 2.2"
-        ),
+        primary_reference=("NCC 2022 Amendment 2, A6, H1 and Housing Provisions 2.2"),
         summary=(
             "NCC classification, importance, design life and project standards are recorded."
             if not basis_missing
@@ -8020,9 +7909,7 @@ def _australian_certification_readiness(
             if load_path_status == "fail"
             else "blocked"
         ),
-        primary_reference=(
-            "NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"
-        ),
+        primary_reference=("NCC Housing Provisions 2.2; AS/NZS 4600:2005+A1"),
         summary=(
             "Bracing and connection resistance form a verified load path to ground."
             if load_path_status == "pass" and tension_ready
@@ -8060,9 +7947,7 @@ def _australian_certification_readiness(
         order=8,
         label="Evidence and engineering decision",
         status="pass" if technical_ready else "blocked",
-        primary_reference=(
-            "NCC 2022 Amendment 2, A5G3 evidence of suitability"
-        ),
+        primary_reference=("NCC 2022 Amendment 2, A5G3 evidence of suitability"),
         summary=(
             "The technical gates support preparation of a certificate for engineer sign-off."
             if technical_ready
@@ -8521,8 +8406,7 @@ def solve_project_structural(
     capture: ProjectStructuralCapture,
     *,
     combination_id: str | None = None,
-    progress_callback: Callable[[str, str, int | None, int | None], None]
-    | None = None,
+    progress_callback: Callable[[str, str, int | None, int | None], None] | None = None,
 ) -> StructuralSnapshot:
     def report_progress(
         stage_id: str,
@@ -8664,9 +8548,9 @@ def solve_project_structural(
     # that bookkeeping DOF as singular even though it cannot transfer force or
     # moment into the structure.  Restrain the orphaned rotational bookkeeping
     # DOFs while retaining the authored member-end release.
-    endpoint_releases_by_node: dict[
-        str, list[tuple[str, Restraints]]
-    ] = defaultdict(list)
+    endpoint_releases_by_node: dict[str, list[tuple[str, Restraints]]] = defaultdict(
+        list
+    )
     for declaration in analysis.members:
         start_node_id, end_node_id = member_node_ids[declaration.id]
         endpoint_releases_by_node[start_node_id].append(
@@ -8771,13 +8655,19 @@ def solve_project_structural(
     # moment transfer or turn the physical pin into a fixed joint.
     supports_changed = False
     for node_id, endpoint_details in endpoint_releases_by_node.items():
-        incident_endpoints = []
+        incident_endpoints: list[
+            tuple[tuple[tuple[float, float, float], ...], Restraints]
+        ] = []
         for member_id, releases in endpoint_details:
             rotation = model.members[member_id].T()[:3, :3]
             incident_endpoints.append(
                 (
                     tuple(
-                        tuple(float(rotation[row, column]) for column in range(3))
+                        (
+                            float(rotation[row, 0]),
+                            float(rotation[row, 1]),
+                            float(rotation[row, 2]),
+                        )
                         for row in range(3)
                     ),
                     releases,
@@ -8788,7 +8678,15 @@ def solve_project_structural(
             if not node_restraints[axis]:
                 node_restraints[axis] = True
                 supports_changed = True
-    rotational_member_details = []
+    rotational_member_details: list[
+        tuple[
+            str,
+            str,
+            tuple[tuple[float, float, float], ...],
+            Restraints,
+            Restraints,
+        ]
+    ] = []
     for declaration in analysis.members:
         start_node_id, end_node_id = member_node_ids[declaration.id]
         rotation = model.members[declaration.id].T()[:3, :3]
@@ -8797,7 +8695,11 @@ def solve_project_structural(
                 start_node_id,
                 end_node_id,
                 tuple(
-                    tuple(float(rotation[row, column]) for column in range(3))
+                    (
+                        float(rotation[row, 0]),
+                        float(rotation[row, 1]),
+                        float(rotation[row, 2]),
+                    )
                     for row in range(3)
                 ),
                 declaration.start_releases,
@@ -8806,10 +8708,7 @@ def solve_project_structural(
         )
     for node_id, axis in _released_rotational_datum_restraints(
         rotational_member_details,
-        {
-            node_id: node["restraints"]
-            for node_id, node in nodes_by_id.items()
-        },
+        {node_id: node["restraints"] for node_id, node in nodes_by_id.items()},
     ):
         node_restraints = nodes_by_id[node_id]["restraints"]
         if not node_restraints[axis]:
@@ -8875,22 +8774,26 @@ def solve_project_structural(
 
     p399_base_combination_ids = {
         direction.base_combination_id
-        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+        for direction in (
+            analysis.stability.direction_cases if analysis.stability else []
+        )
         if direction.base_combination_id is not None
     }
     p399_stability_combination_ids = {
         direction.stability_combination_id
-        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+        for direction in (
+            analysis.stability.direction_cases if analysis.stability else []
+        )
     }
     p399_nhf_combination_ids = {
         direction.nhf_combination_id
-        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+        for direction in (
+            analysis.stability.direction_cases if analysis.stability else []
+        )
         if direction.nhf_combination_id
     }
     if analysis.stability is not None and not analysis.stability.direction_cases:
-        p399_stability_combination_ids.add(
-            analysis.stability.stability_combination_id
-        )
+        p399_stability_combination_ids.add(analysis.stability.stability_combination_id)
     for combination in combinations:
         combo_tags: list[str] = []
         if combination.id in p399_base_combination_ids:
@@ -8929,9 +8832,9 @@ def solve_project_structural(
     first_order_nhf_eaves_displacement_mm: dict[str, float] = {}
     first_order_rafter_axial_kN: dict[tuple[str, str], float] = {}
     members_by_id = {declaration.id: declaration for declaration in analysis.members}
-    rafter_members_by_component: dict[
-        str, list[AnalyticalMemberDeclaration]
-    ] = defaultdict(list)
+    rafter_members_by_component: dict[str, list[AnalyticalMemberDeclaration]] = (
+        defaultdict(list)
+    )
     if analysis.stability is not None:
         for member_id in analysis.stability.rafter_member_ids:
             rafter_declaration = members_by_id.get(member_id)
@@ -9698,8 +9601,8 @@ def solve_project_structural(
         group = serviceability_groups.setdefault(
             group_id,
             {
-                    "physical_member_id": declaration.serviceability_group_id
-                    or declaration.id,
+                "physical_member_id": declaration.serviceability_group_id
+                or declaration.id,
                 "label": declaration.serviceability_group_label or declaration.label,
                 "span_m": serviceability_span_m,
                 "member_ids": [],
@@ -9765,21 +9668,19 @@ def solve_project_structural(
                     else "fail"
                 ),
                 basis=(
-                    (
-                        "Transverse L/n deflection is not applicable to an axial-only "
-                        "tension/compression member. Axial deformation and resistance "
-                        "remain in the member and bracing checks."
-                        if bool(group["axial_only"])
-                        else (
-                            basis
-                            if basis
-                            else "Deflection checks require a serviceability "
-                            "combination and an authored project criterion."
-                        )
-                        + " Member deflection is measured relative to the displaced "
-                        "straight chord between its ends; overall frame drift is a "
-                        "separate serviceability check."
+                    "Transverse L/n deflection is not applicable to an axial-only "
+                    "tension/compression member. Axial deformation and resistance "
+                    "remain in the member and bracing checks."
+                    if bool(group["axial_only"])
+                    else (
+                        basis
+                        if basis
+                        else "Deflection checks require a serviceability "
+                        "combination and an authored project criterion."
                     )
+                    + " Member deflection is measured relative to the displaced "
+                    "straight chord between its ends; overall frame drift is a "
+                    "separate serviceability check."
                 ),
             )
         )
@@ -9893,9 +9794,7 @@ def solve_project_structural(
     )
     summary = _load_summary(analysis, active_combination)
     checked_serviceability = [
-        check
-        for check in serviceability_checks
-        if check.status in {"pass", "fail"}
+        check for check in serviceability_checks if check.status in {"pass", "fail"}
     ]
     verification_stages, calculation_sheets = _certification_evidence(
         capture=capture,

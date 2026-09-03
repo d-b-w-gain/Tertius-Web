@@ -40,7 +40,9 @@ def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
             (tmp_path / "output.timus_views").write_text("{}", encoding="utf-8")
             return "", ""
 
-    monkeypatch.setattr("core.compile_sandbox.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(
+        "core.compile_sandbox.subprocess.Popen", lambda *args, **kwargs: FakeProcess()
+    )
 
     result = run_compile_sandbox(tmp_path, "timus_views", timeout_seconds=5)
 
@@ -69,7 +71,9 @@ model = bd.Box(WIDTH, 20, 10)
 
     assert result.success is True, result.error
     assert result.output_path == tmp_path / "output.timus_bounds"
-    assert json.loads(result.output_path.read_text(encoding="utf-8")) == {"max_dim": 30.0}
+    assert json.loads(result.output_path.read_text(encoding="utf-8")) == {
+        "max_dim": 30.0
+    }
     assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
 
 
@@ -197,7 +201,10 @@ model = bd.Compound(children=[part], label="Colour test assembly")
         for material in gltf_json.get("materials", [])
     ]
     assert [1.0, 0.0, 0.0, 1.0] in base_colors
-    assert any(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in gltf_json["materials"])
+    assert any(
+        material.get("extras", {}).get("tertiusAuthoredColor") is True
+        for material in gltf_json["materials"]
+    )
     geometry = gltf_json["extras"]["tertiusModelGeometry"]
     assert geometry["schema_version"] == "tertius.model-site-dimensions.v1"
     assert geometry["footprint_length_m"] == 0.02
@@ -235,16 +242,23 @@ model = bd.Compound(children=[part], label="Alpha colour test assembly")
     blended_materials = []
     for material in gltf_json.get("materials", []):
         base_color = material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
-        if isinstance(base_color, list) and len(base_color) >= 4 and abs(base_color[3] - 0.35) < 1e-6:
+        if (
+            isinstance(base_color, list)
+            and len(base_color) >= 4
+            and abs(base_color[3] - 0.35) < 1e-6
+        ):
             blended_materials.append(material)
     assert blended_materials
     assert all(material.get("alphaMode") == "BLEND" for material in blended_materials)
-    assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in blended_materials)
+    assert all(
+        material.get("extras", {}).get("tertiusAuthoredColor") is True
+        for material in blended_materials
+    )
 
 
 def test_compile_sandbox_remaps_iterable_build123d_color_to_linear_glb(tmp_path):
     (tmp_path / "design.py").write_text(
-        r'''
+        r"""
 import json
 import struct
 
@@ -281,7 +295,7 @@ def make_building():
 
 
 model = make_building()
-''',
+""",
         encoding="utf-8",
     )
 
@@ -458,7 +472,8 @@ model = bd.Compound(
     coloured_materials = [
         material
         for material in gltf_json.get("materials", [])
-        if material.get("pbrMetallicRoughness", {}).get("baseColorFactor") == [
+        if material.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+        == [
             _srgb_to_gltf_linear_float32(0.3686),
             _srgb_to_gltf_linear_float32(0.1608),
             _srgb_to_gltf_linear_float32(0.1569),
@@ -466,7 +481,10 @@ model = bd.Compound(
         ]
     ]
     assert coloured_materials
-    assert all(material.get("extras", {}).get("tertiusAuthoredColor") is True for material in coloured_materials)
+    assert all(
+        material.get("extras", {}).get("tertiusAuthoredColor") is True
+        for material in coloured_materials
+    )
 
 
 def test_compile_sandbox_compiles_default_purlin_to_glb(tmp_path):
@@ -497,7 +515,7 @@ raise RuntimeError("stop after leak attempt")
         encoding="utf-8",
     )
 
-    run_compile_sandbox(tmp_path, "stl", timeout_seconds=5)
+    run_compile_sandbox(tmp_path, "stl", timeout_seconds=30)
 
     assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
 

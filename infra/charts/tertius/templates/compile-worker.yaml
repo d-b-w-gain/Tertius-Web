@@ -87,6 +87,10 @@ spec:
                 value: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
               - name: COMPILE_RESULT_MAX_BYTES
                 value: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+              - name: COMPILE_SIDECAR_TTL_SECONDS
+                value: {{ printf "%d" (.Values.app.config.compileSidecarTtlSeconds | int64) | quote }}
+              - name: COMPILE_SIDECAR_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.compileSidecarMaxBytes | int64) | quote }}
               - name: OTEL_ENABLED
                 value: {{ .Values.app.observability.enabled | quote }}
               - name: OTEL_SERVICE_NAME

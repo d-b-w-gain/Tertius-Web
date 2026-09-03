@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 import {
   DEFAULT_MODEL_COLOR,
-  buildViewerBatch,
   createViewerMeshMaterials,
   hasAuthoredMaterialColor,
+} from '../scene/materials'
+import {
+  buildViewerBatch,
   isViewerObjectHidden,
-} from './ViewerTab'
+} from '../scene/batching'
 
 function meshWithPositions(material: THREE.Material) {
   const geometry = new THREE.BufferGeometry()

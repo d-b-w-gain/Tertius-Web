@@ -122,7 +122,7 @@ postgres:
     create: true
     password: tertius-local-password
   storage:
-    size: 2Gi
+    size: 32Gi
     storageClass: local-path
 
 keycloak:
@@ -168,7 +168,7 @@ nats:
     jetstream:
       fileStore:
         pvc:
-          size: 1Gi
+          size: 10Gi
           storageClassName: local-path
   container:
     resources:

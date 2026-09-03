@@ -8,6 +8,17 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 local_tool_prefix='r''tk'
 
+extract_workflow_trigger() {
+  local workflow="$1"
+  local trigger="$2"
+
+  awk -v trigger="$trigger" '
+    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
+    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
+    in_trigger { print }
+  ' "$workflow"
+}
+
 if rg -q "(^|[[:space:]])${local_tool_prefix}[[:space:]]" "${ROOT_DIR}/scripts" --glob '*.sh'; then
   echo "Repository scripts must not depend on the local ${local_tool_prefix} command wrapper." >&2
   exit 1
@@ -160,6 +171,17 @@ if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfi
   echo "UI image build must not bake browser Keycloak/OIDC client settings; auth is handled by the API BFF." >&2
   exit 1
 fi
+
+chart_workflow="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+chart_pull_request_trigger="$(extract_workflow_trigger "$chart_workflow" pull_request)"
+chart_push_trigger="$(extract_workflow_trigger "$chart_workflow" push)"
+for chart_trigger in "$chart_pull_request_trigger" "$chart_push_trigger"; do
+  if ! rg -F -q -- "- 'README.md'" <<<"$chart_trigger" ||
+     ! rg -F -q -- "- 'ui/.env.example'" <<<"$chart_trigger"; then
+    echo ".github/workflows/chart-tests.yml must watch frontend API documentation sources." >&2
+    exit 1
+  fi
+done
 
 if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
   echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
@@ -529,6 +551,8 @@ if ! rg -q 'endpoint: 0.0.0.0:4317' "${ROOT_DIR}/infra/otel/otel-collector-local
 fi
 
 rendered="$(render_local)"
+leased_secret_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES" \
+  --set-string harnessLifecycle.leaseId=11111111-1111-4111-8111-111111111111)"
 default_rendered="$(render_default)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
@@ -541,6 +565,14 @@ external_observability_rendered="$(render_external_observability_collector)"
 pi_worker_rendered="$(render_pi_worker)"
 pi_disabled_rendered="$(render_pi_disabled)"
 pi_existing_claim_rendered="$(render_pi_existing_claim)"
+
+for leased_secret_name in tertius-app-db tertius-keycloak-db; do
+  leased_secret_doc="$(extract_render_doc "$leased_secret_rendered" 'kind: Secret' "name: ${leased_secret_name}")"
+  if ! rg -q 'tertius.io/lease-id: "11111111-1111-4111-8111-111111111111"' <<<"$leased_secret_doc"; then
+    echo "Local chart Secret ${leased_secret_name} must inherit the harness lifecycle lease." >&2
+    exit 1
+  fi
+done
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
@@ -1137,8 +1169,18 @@ if ! rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' <<<"$rendered" || ! rg -q 'COM
   exit 1
 fi
 
+if ! rg -q 'COMPILE_SIDECAR_TTL_SECONDS: "86400"' <<<"$rendered" || ! rg -q 'COMPILE_SIDECAR_MAX_BYTES: "8589934592"' <<<"$rendered"; then
+  echo "ConfigMap compile sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
+  exit 1
+fi
+
 if ! rg -q 'name: COMPILE_REQUEST_MAX_BYTES' <<<"$scaled_job" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
   echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_TTL_SECONDS' | rg -q 'value: "86400"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_MAX_BYTES' | rg -q 'value: "8589934592"'; then
+  echo "Compile ScaledJob sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
   exit 1
 fi
 
@@ -1338,17 +1380,6 @@ extract_workflow_job() {
   ' "$workflow"
 }
 
-extract_workflow_trigger() {
-  local workflow="$1"
-  local trigger="$2"
-
-  awk -v trigger="$trigger" '
-    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
-    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
-    in_trigger { print }
-  ' "$workflow"
-}
-
 extract_job_if() {
   awk '
     /^    if:/ { in_if = 1 }
@@ -1500,6 +1531,17 @@ app_token_count="$( (rg -c 'actions/create-github-app-token@v3' <<<"$promote_job
 client_id_count="$( (rg -F -c 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" || true) | tr -d ' ' )"
 private_key_count="$( (rg -F -c 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job" || true) | tr -d ' ' )"
 
+if ! rg -q '^[[:space:]]*gh pr edit([[:space:]]|$)' <<<"$promote_job"; then
+  echo "Build Images promotion must refresh reused PR metadata for the staged image tag." >&2
+  exit 1
+fi
+
+if ! rg -F -q 'while [ "$SECONDS" -lt "$head_deadline" ]' <<<"$promote_job" ||
+   ! rg -F -q '"${head_sha}" = "${local_head}"' <<<"$promote_job"; then
+  echo "Build Images promotion must wait for the reused PR to report its pushed head." >&2
+  exit 1
+fi
+
 if [ "$app_token_count" -lt 2 ] || [ "$client_id_count" -lt 2 ] || [ "$private_key_count" -lt 2 ] ||
    [ "$( (rg -c 'permission-checks:[[:space:]]*read' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
    [ "$( (rg -c 'permission-contents:[[:space:]]*write' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
@@ -1598,6 +1640,29 @@ if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/
   exit 1
 fi
 
+if ! rg -U -q 'name: Cleanup k3s chart test\n[[:space:]]+if: \$\{\{ always\(\) \}\}' "$CHART_WORKFLOW"; then
+  echo ".github/workflows/chart-tests.yml must run k3s cleanup as a distinct always() step." >&2
+  exit 1
+fi
+cleanup_step="$(sed -n '/- name: Cleanup k3s chart test/,/- name: Report chart test duration/p' "$CHART_WORKFLOW")"
+if [ -z "$cleanup_step" ] || ! rg -q 'test-k3s-deployment\.sh --cleanup' <<<"$cleanup_step" || rg -q '\|\|[[:space:]]+true' <<<"$cleanup_step"; then
+  echo ".github/workflows/chart-tests.yml cleanup must run full teardown and propagate failure." >&2
+  exit 1
+fi
+for lifecycle_path in \
+  scripts/cleanup-expired-k3s-harness.sh \
+  scripts/install-k3s-harness-cleanup-timer.sh \
+  scripts/diagnose-k3s-networkpolicy.sh \
+  scripts/install-gvisor-k3s.sh \
+  scripts/test-k3s-harness-lifecycle.sh \
+  scripts/test-k3s-harness-janitor.sh \
+  scripts/test-k3s-harness-process-cleanup.sh; do
+  if [ "$(rg -F -c -- "- '${lifecycle_path}'" "$CHART_WORKFLOW")" -lt 2 ]; then
+    echo ".github/workflows/chart-tests.yml must include ${lifecycle_path} in pull and push path filters." >&2
+    exit 1
+  fi
+done
+
 if ! python3 - "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml" <<'PY'
 from pathlib import Path
 import sys
@@ -1612,3 +1677,7 @@ then
   echo "Production HelmRelease must explicitly enable the GIS cache after image promotion." >&2
   exit 1
 fi
+
+"${ROOT_DIR}/scripts/test-k3s-harness-lifecycle.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-janitor.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-process-cleanup.sh"

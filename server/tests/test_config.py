@@ -1,8 +1,10 @@
 import core.config as config
 from core.config import Settings
 from core.pi_agent_models import DEFAULT_PI_AGENT_MODELS_JSON
+from pathlib import Path
 from pydantic import ValidationError
 import pytest
+import yaml
 
 
 def test_server_env_example_matches_settings_fields():
@@ -100,6 +102,8 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
         "COMPILE_TIMEOUT_SECONDS",
         "COMPILE_REQUEST_MAX_BYTES",
         "COMPILE_RESULT_MAX_BYTES",
+        "COMPILE_SIDECAR_TTL_SECONDS",
+        "COMPILE_SIDECAR_MAX_BYTES",
     ):
         monkeypatch.delenv(env_var, raising=False)
 
@@ -117,6 +121,46 @@ def test_settings_exposes_compile_nats_defaults(monkeypatch):
     assert settings.compile_timeout_seconds == 600
     assert settings.compile_request_max_bytes == 8 * 1024 * 1024
     assert settings.compile_result_max_bytes == 90 * 1024 * 1024
+    assert settings.compile_sidecar_ttl_seconds == 24 * 60 * 60
+    assert settings.compile_sidecar_max_bytes == 8 * 1024 * 1024 * 1024
+
+
+def test_compile_max_deliver_one_documents_result_driven_retry_policy():
+    root = Path(__file__).parents[2]
+    values = yaml.safe_load(
+        (root / "infra/charts/tertius/values.yaml").read_text(encoding="utf-8")
+    )
+    documentation = (root / "docs/configuration-and-secrets.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["app"]["config"]["compileMaxDeliver"] == 1
+    assert "`compileMaxDeliver: 1` is intentional" in documentation
+    assert "`binary_asset_unavailable`" in documentation
+
+
+@pytest.mark.parametrize(
+    "values_name",
+    ["values.yaml", "values-local.yaml"],
+)
+def test_nats_storage_has_headroom_for_compile_sidecars(values_name: str):
+    root = Path(__file__).parents[2]
+    chart_dir = root / "infra/charts/tertius"
+    defaults = yaml.safe_load(
+        (chart_dir / "values.yaml").read_text(encoding="utf-8")
+    )
+    values = yaml.safe_load(
+        (chart_dir / values_name).read_text(encoding="utf-8")
+    )
+
+    sidecar_max_bytes = defaults["app"]["config"]["compileSidecarMaxBytes"]
+    nats_pvc_size = values["nats"]["config"]["jetstream"]["fileStore"]["pvc"][
+        "size"
+    ]
+
+    assert sidecar_max_bytes == 8 * 1024**3
+    assert nats_pvc_size == "10Gi"
+    assert int(nats_pvc_size.removesuffix("Gi")) * 1024**3 >= sidecar_max_bytes
 
 
 def test_settings_allows_compile_nats_overrides(monkeypatch):
@@ -131,6 +175,8 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     monkeypatch.setenv("COMPILE_TIMEOUT_SECONDS", "840")
     monkeypatch.setenv("COMPILE_REQUEST_MAX_BYTES", "1048576")
     monkeypatch.setenv("COMPILE_RESULT_MAX_BYTES", "2097152")
+    monkeypatch.setenv("COMPILE_SIDECAR_TTL_SECONDS", "7200")
+    monkeypatch.setenv("COMPILE_SIDECAR_MAX_BYTES", "17179869184")
 
     settings = Settings()
 
@@ -145,6 +191,17 @@ def test_settings_allows_compile_nats_overrides(monkeypatch):
     assert settings.compile_timeout_seconds == 840
     assert settings.compile_request_max_bytes == 1048576
     assert settings.compile_result_max_bytes == 2097152
+    assert settings.compile_sidecar_ttl_seconds == 7200
+    assert settings.compile_sidecar_max_bytes == 17179869184
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["compile_sidecar_ttl_seconds", "compile_sidecar_max_bytes"],
+)
+def test_settings_rejects_nonpositive_compile_sidecar_limits(field):
+    with pytest.raises(ValidationError):
+        Settings(**{field: 0})
 
 
 def test_settings_exposes_otel_defaults(monkeypatch):

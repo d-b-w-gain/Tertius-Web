@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 import importlib.util
 from importlib.metadata import PackageNotFoundError, version
 import logging

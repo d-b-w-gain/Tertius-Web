@@ -22,6 +22,35 @@ import {
   resolveSceneNodeSelection,
 } from '../../shared/sceneNodeSelection';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
+import type { StructuralViewerOverlay } from '../model/viewer';
+import {
+  createViewerMeshMaterials,
+  DEFAULT_MODEL_COLOR,
+  disposeMesh,
+  disposeObjectTree,
+  hasAuthoredMaterialColor,
+  hasSourceMaterialTransparency,
+  type ViewerMeshMaterials,
+} from '../scene/materials';
+import {
+  buildViewerBatch,
+  closestSelectableSceneNode,
+  getRenderableObjectBounds,
+  isViewerBatchMesh,
+  isViewerObjectHidden,
+  matchesExternalSelection,
+  normalizeExternalSelectionId,
+  resolveExternalSelectionMeshes,
+} from '../scene/batching';
+import { ViewerControls } from './ViewerControls';
+
+export {
+  DEFAULT_MODEL_COLOR,
+  createViewerMeshMaterials,
+  hasAuthoredMaterialColor,
+} from '../scene/materials';
+export { buildViewerBatch, isViewerObjectHidden } from '../scene/batching';
+export type { StructuralViewerOverlay } from '../model/viewer';
 
 interface ViewerProps {
   serverUrl: string;
@@ -44,74 +73,6 @@ interface ModelViewerCanvasProps {
   onStructuralRestraintSelect?: (restraintId: string) => void;
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
-
-export type StructuralViewerOverlay = {
-  id: string;
-  label: string;
-  mode?: 'moment' | 'displacement';
-  status?: 'pass' | 'fail' | 'not_checked' | 'not_applicable';
-  utilisation?: number | null;
-  diagramColor?: number;
-  stations: Array<{
-    position: { x: number; y: number; z: number };
-    moment_kNm?: { x: number; y: number; z: number };
-    displacement_mm?: { x: number; y: number; z: number };
-  }>;
-  loadArrows?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    force_kN: { x: number; y: number; z: number };
-  }>;
-  nodes?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    restrained: boolean;
-  }>;
-  reactions?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    force_kN: { x: number; y: number; z: number };
-    moment_kNm: { x: number; y: number; z: number };
-  }>;
-  restraintSegments?: Array<{
-    id: string;
-    label: string;
-    start: { x: number; y: number; z: number };
-    end: { x: number; y: number; z: number };
-    compressionFlange: 'positive_local_y' | 'negative_local_y' | 'none';
-    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
-    selected?: boolean;
-  }>;
-  restraintMarkers?: Array<{
-    id: string;
-    traceId: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    direction: { x: number; y: number; z: number };
-    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
-    evidenceStatus: 'verified' | 'missing' | 'mismatch' | 'not_checked';
-    requiredForceKN?: number | null;
-    selected?: boolean;
-  }>;
-  stageFocus?: {
-    id: string;
-    order: number;
-    label: string;
-    status: 'pass' | 'fail' | 'warning' | 'not_checked' | 'unsupported' | 'blocked';
-    summary: string;
-    visualDescription: string;
-    combinationLabel?: string;
-    metrics: Array<{ label: string; value: string }>;
-    legend: Array<{
-      label: string;
-      tone: 'verified' | 'candidate' | 'missing' | 'demand' | 'neutral';
-    }>;
-  };
-  maxOffsetMm?: number;
-};
 
 export function structuralCheckColor(
   status: StructuralViewerOverlay['status'],
@@ -138,34 +99,8 @@ export function structuralEvidenceColor(
   return 0x94a3b8;
 }
 
-const stageFocusStatusStyle: Record<
-  NonNullable<StructuralViewerOverlay['stageFocus']>['status'],
-  string
-> = {
-  pass: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200',
-  fail: 'border-red-500/60 bg-red-500/15 text-red-200',
-  warning: 'border-amber-500/50 bg-amber-500/10 text-amber-200',
-  not_checked: 'border-slate-600 bg-slate-800/70 text-slate-300',
-  unsupported: 'border-fuchsia-500/50 bg-fuchsia-500/10 text-fuchsia-200',
-  blocked: 'border-red-500/50 bg-red-950/50 text-red-200',
-};
-
-const stageLegendToneStyle: Record<
-  NonNullable<StructuralViewerOverlay['stageFocus']>['legend'][number]['tone'],
-  string
-> = {
-  verified: 'bg-emerald-400',
-  candidate: 'bg-amber-400',
-  missing: 'bg-red-400',
-  demand: 'bg-cyan-400',
-  neutral: 'bg-slate-400',
-};
-
-export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
 const COMPONENT_PREVIEW_SIZE = 512;
 const STRUCTURAL_OVERLAY_NAME = 'TertiusStructuralMomentOverlay';
-
-const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 type GltfNodeJson = {
   children?: unknown;
@@ -224,289 +159,6 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
   sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
 }
 
-const matchesExternalSelection = (
-  object: THREE.Object3D,
-  selectedIds: Set<string>,
-  normalizedSelectedIds: Set<string>,
-) => (
-  selectedIds.has(object.uuid)
-  || Boolean(object.userData?.tertiusGltfNodeId && selectedIds.has(String(object.userData.tertiusGltfNodeId)))
-  || Boolean(object.name && selectedIds.has(object.name))
-  || Boolean(object.name && normalizedSelectedIds.has(normalizeExternalSelectionId(object.name)))
-);
-
-const getRenderableObjectBounds = (object: THREE.Object3D) => {
-  const bounds = new THREE.Box3();
-
-  object.traverse((child) => {
-    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
-    const meshBox = new THREE.Box3().setFromObject(child);
-    if (!meshBox.isEmpty()) bounds.union(meshBox);
-  });
-
-  if (bounds.isEmpty()) {
-    const objectBox = new THREE.Box3().setFromObject(object);
-    if (!objectBox.isEmpty()) bounds.union(objectBox);
-  }
-
-  return bounds;
-};
-
-const resolveExternalSelectionMeshes = (model: THREE.Object3D, selectedIds: Set<string>) => {
-  const normalizedSelectedIds = new Set([...selectedIds].map(normalizeExternalSelectionId).filter(Boolean));
-  const bounds = new THREE.Box3();
-  const meshes = new Set<THREE.Mesh>();
-  let focusObject: THREE.Object3D | null = null;
-
-  model.traverse((child) => {
-    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
-    const mesh = child as THREE.Mesh;
-    let current: THREE.Object3D | null = mesh;
-    while (current && current !== model) {
-      if (matchesExternalSelection(current, selectedIds, normalizedSelectedIds)) {
-        focusObject = focusObject || current;
-        const meshBox = new THREE.Box3().setFromObject(mesh);
-        if (!meshBox.isEmpty()) {
-          bounds.union(meshBox);
-          meshes.add(mesh);
-        }
-        return;
-      }
-      current = current.parent;
-    }
-  });
-
-  const focusBounds = focusObject ? getRenderableObjectBounds(focusObject) : new THREE.Box3();
-
-  return {
-    bounds,
-    focusBounds: focusBounds.isEmpty() ? bounds : focusBounds,
-    focusObject,
-    meshes,
-    hasSelection: meshes.size > 0 && !bounds.isEmpty(),
-  };
-};
-
-type ViewerBatchOptions = {
-  createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
-  useAuthoredColors?: boolean;
-};
-
-type ViewerBatch = {
-  mesh: THREE.Mesh;
-  usesAuthoredColors: boolean;
-};
-
-type ViewerMeshMaterials = {
-  base: THREE.Material | THREE.Material[];
-  highlight: THREE.Material | THREE.Material[];
-  transparent: THREE.Material | THREE.Material[];
-  transparentHighlight: THREE.Material | THREE.Material[];
-};
-
-function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
-  return Array.isArray(material) ? material : [material];
-}
-
-export function hasAuthoredMaterialColor(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
-  if (!material) return false;
-  return materialList(material).some((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
-}
-
-function hasSourceMaterialTransparency(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
-  if (!material) return false;
-  return materialList(material).some((mat) => mat.transparent === true && 'opacity' in mat && mat.opacity < 1);
-}
-
-function colorFromMaterial(material: THREE.Material | THREE.Material[] | null | undefined): THREE.Color | null {
-  if (!material) return null;
-  const authored = materialList(material).find((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
-  const color = authored && 'color' in authored ? (authored as THREE.MeshStandardMaterial).color : null;
-  return color ? color.clone() : null;
-}
-
-function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
-  if (geometry.getAttribute('color')) return geometry;
-  const position = geometry.getAttribute('position');
-  if (!position) return geometry;
-  const colors = new Float32Array(position.count * 3);
-  for (let i = 0; i < position.count; i += 1) {
-    colors[i * 3] = color.r;
-    colors[i * 3 + 1] = color.g;
-    colors[i * 3 + 2] = color.b;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  return geometry;
-}
-
-function cloneViewerMaterial(
-  material: THREE.Material,
-  fallback: THREE.MeshStandardMaterial,
-  configure?: (clone: THREE.Material) => void,
-): THREE.Material {
-  const clone = material.clone();
-  clone.side = THREE.FrontSide;
-  if ('metalness' in clone && 'metalness' in fallback) {
-    (clone as THREE.MeshStandardMaterial).metalness = fallback.metalness;
-  }
-  if ('roughness' in clone && 'roughness' in fallback) {
-    (clone as THREE.MeshStandardMaterial).roughness = fallback.roughness;
-  }
-  configure?.(clone);
-  return clone;
-}
-
-function createViewerMaterialVariant(
-  material: THREE.Material | THREE.Material[],
-  fallback: THREE.MeshStandardMaterial,
-  configure?: (clone: THREE.Material) => void,
-): THREE.Material | THREE.Material[] {
-  return Array.isArray(material)
-    ? material.map(mat => cloneViewerMaterial(mat, fallback, configure))
-    : cloneViewerMaterial(material, fallback, configure);
-}
-
-export function createViewerMeshMaterials(
-  sourceMaterial: THREE.Material | THREE.Material[] | null | undefined,
-  fallbackMaterial: THREE.MeshStandardMaterial,
-): ViewerMeshMaterials {
-  const baseSource = sourceMaterial ?? fallbackMaterial;
-  const base = createViewerMaterialVariant(baseSource, fallbackMaterial);
-  const highlight = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    if ('emissive' in mat) {
-      (mat as THREE.MeshStandardMaterial).emissive.setHex(0x3b82f6);
-      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
-    }
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = -1;
-    mat.polygonOffsetUnits = -1;
-  });
-  const transparent = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    mat.transparent = true;
-    mat.opacity = 0.28;
-    mat.depthWrite = false;
-  });
-  const transparentHighlight = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    mat.transparent = true;
-    mat.opacity = 0.45;
-    mat.depthWrite = false;
-    if ('emissive' in mat) {
-      (mat as THREE.MeshStandardMaterial).emissive.setHex(0x3b82f6);
-      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
-    }
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = -1;
-    mat.polygonOffsetUnits = -1;
-  });
-
-  return { base, highlight, transparent, transparentHighlight };
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[] | null | undefined): void {
-  if (!material) return;
-  if (Array.isArray(material)) material.forEach(mat => mat.dispose());
-  else material.dispose();
-}
-
-function disposeViewerMeshMaterials(materials: ViewerMeshMaterials | undefined): void {
-  if (!materials) return;
-  disposeMaterial(materials.base);
-  disposeMaterial(materials.highlight);
-  disposeMaterial(materials.transparent);
-  disposeMaterial(materials.transparentHighlight);
-}
-
-function disposeMesh(mesh: THREE.Mesh): void {
-  mesh.geometry.dispose();
-  disposeMaterial(mesh.material);
-}
-
-function disposeObjectTree(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    if ((child as THREE.Mesh).isMesh) {
-      const mesh = child as THREE.Mesh;
-      disposeMesh(mesh);
-      disposeMaterial(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
-      disposeViewerMeshMaterials(mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined);
-      (mesh.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined)?.dispose();
-    } else if ((child as THREE.Line).isLine || (child as THREE.LineSegments).isLineSegments) {
-      const line = child as THREE.Line;
-      line.geometry.dispose();
-      disposeMaterial(line.material);
-    }
-  });
-}
-
-function closestSelectableSceneNode(object: THREE.Object3D, root: THREE.Object3D): THREE.Object3D {
-  let current: THREE.Object3D | null = object;
-  let fallback: THREE.Object3D = object;
-
-  while (current && current !== root) {
-    const isMesh = (current as THREE.Mesh).isMesh;
-    const isAssemblyNode = current.type === 'Group' || current.type === 'Object3D';
-    if (current.name && current.name !== 'TertiusBatchedMesh' && isAssemblyNode) return current;
-    if (current.name && current.name !== 'TertiusBatchedMesh') fallback = current;
-    if ((isMesh || isAssemblyNode) && !fallback.name) fallback = current;
-    current = current.parent;
-  }
-
-  return fallback;
-}
-
-function isViewerBatchMesh(object: THREE.Object3D): boolean {
-  return object.name === "TertiusBatchedMesh" || object.name === "TertiusAppearanceBatchMesh";
-}
-
-export function isViewerObjectHidden(
-  root: THREE.Object3D,
-  object: THREE.Object3D,
-  appearanceByPath: SceneNodeAppearanceMap,
-): boolean {
-  let current: THREE.Object3D | null = object;
-  while (current && current !== root) {
-    if (appearanceByPath[getSceneNodePathKey(root, current)]?.hidden) return true;
-    current = current.parent;
-  }
-  return false;
-}
-
-export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
-  if (meshes.length === 0) return null;
-
-  const usesAuthoredColors = options.useAuthoredColors ?? meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
-  const defaultColor = new THREE.Color(DEFAULT_MODEL_COLOR);
-  const geometries = meshes.map((mesh) => {
-    const geometry = mesh.geometry.clone();
-    if (usesAuthoredColors) {
-      geometryWithVertexColor(geometry, colorFromMaterial(mesh.material) ?? defaultColor);
-    }
-    return geometry;
-  });
-
-  const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
-  geometries.forEach((geometry) => geometry.dispose());
-  if (!mergedGeometry) return null;
-
-  const material = usesAuthoredColors
-    ? new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        vertexColors: true,
-        metalness: 0.6,
-        roughness: 0.4,
-        side: THREE.FrontSide,
-      })
-    : new THREE.MeshStandardMaterial({
-        color: DEFAULT_MODEL_COLOR,
-        metalness: 0.6,
-        roughness: 0.4,
-        side: THREE.FrontSide,
-      });
-
-  return {
-    mesh: (options.createMesh ?? ((geometry, meshMaterial) => new THREE.Mesh(geometry, meshMaterial)))(mergedGeometry, material),
-    usesAuthoredColors,
-  };
-}
 
 export const ViewerTab: React.FC<ViewerProps> = (props) => {
   const { authMode, login } = useAuth();
@@ -2024,135 +1676,22 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     return () => window.clearTimeout(timer);
   }, [captureExternalSelectionPreview, externalSelectionKey, onExternalSelectionPreviewChange, sceneGraph]);
 
-  const stageFocus = structuralOverlays?.find((overlay) => overlay.stageFocus)?.stageFocus;
-
   return (
     <div className="flex-1 relative bg-slate-900 flex overflow-hidden">
-      
-      {/* Overlay Status */}
-      <div className="absolute top-4 left-4 z-10 bg-slate-950/80 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl pointer-events-none flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-4">
-          <div className="text-xs font-mono font-medium text-sky-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-sky-500 animate-pulse" />
-            Extus Viewer
-          </div>
-          {projectName && (
-            <div className="text-xs font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
-              {projectName}
-            </div>
-          )}
-          {stageFocus ? (
-            <div
-              className={`rounded border px-2 py-0.5 text-xs font-bold ${stageFocusStatusStyle[stageFocus.status]}`}
-              title={stageFocus.summary}
-            >
-              Stage {stageFocus.order} focus · {stageFocus.status.replace('_', ' ')}
-            </div>
-          ) : structuralOverlays?.length ? (
-            <div
-              className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
-              title={structuralOverlays.map((overlay) => overlay.label).join('\n')}
-            >
-              {structuralOverlays.length} analytical {
-                structuralOverlays[0]?.mode === 'displacement' ? 'deflection' : 'moment'
-              } ribbon{structuralOverlays.length === 1 ? '' : 's'} ·{' '}
-              {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.loadArrows?.length ?? 0),
-                0,
-              )} loads · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.nodes?.length ?? 0),
-                0,
-              )} nodes · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.reactions?.length ?? 0),
-                0,
-              )} reactions · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.restraintSegments?.length ?? 0),
-                0,
-              )} restraint traces
-            </div>
-          ) : null}
-          <button
-            onClick={() => frameModelRoot(1.5)}
-            className="pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-slate-300 transition-colors hover:border-sky-500 hover:text-sky-300"
-            title="Frame the whole model"
-            aria-label="Frame the whole model"
-          >
-            Fit
-          </button>
-          <button 
-            onClick={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${renderQuality === 'high' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Visuals: {renderQuality === 'high' ? 'High' : 'Low'}
-          </button>
-          <button 
-            onClick={() => setShowGrid(!showGrid)}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${showGrid ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Grid: {showGrid ? 'ON' : 'OFF'}
-          </button>
-          <button 
-            onClick={() => setAutoRotate(!autoRotate)}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${autoRotate ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Rotate: {autoRotate ? 'ON' : 'OFF'}
-          </button>
-        </div>
-        {stageFocus && (
-          <div
-            className={`max-w-4xl rounded border px-3 py-2 ${stageFocusStatusStyle[stageFocus.status]}`}
-            data-testid="structural-stage-focus"
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-75">
-                  Stage {stageFocus.order} visual check
-                </div>
-                <div className="mt-0.5 text-sm font-semibold text-slate-100">
-                  {stageFocus.label}
-                </div>
-                <p className="mt-1 text-[10px] leading-relaxed text-slate-300">
-                  {stageFocus.visualDescription}
-                </p>
-              </div>
-              {stageFocus.combinationLabel && (
-                <span className="rounded border border-current/30 bg-slate-950/50 px-2 py-1 font-mono text-[9px]">
-                  {stageFocus.combinationLabel}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-[10px] leading-relaxed opacity-85">
-              {stageFocus.summary}
-            </p>
-            {stageFocus.metrics.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {stageFocus.metrics.map((metric) => (
-                  <span
-                    key={`${metric.label}-${metric.value}`}
-                    className="rounded border border-current/20 bg-slate-950/45 px-2 py-1 text-[9px]"
-                  >
-                    <span className="opacity-65">{metric.label}</span>{' '}
-                    <span className="font-mono font-semibold text-slate-100">{metric.value}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-            {stageFocus.legend.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-slate-300">
-                {stageFocus.legend.map((item) => (
-                  <span key={item.label} className="flex items-center gap-1.5">
-                    <span className={`h-2 w-2 rounded-full ${stageLegendToneStyle[item.tone]}`} />
-                    {item.label}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-        <div className="text-xs text-slate-400" aria-live="polite">
-          {loadErrorText || (isModelLoading ? 'Loading model...' : statusText)}
-        </div>
-      </div>
+      <ViewerControls
+        projectName={projectName}
+        structuralOverlays={structuralOverlays}
+        renderQuality={renderQuality}
+        showGrid={showGrid}
+        autoRotate={autoRotate}
+        loadErrorText={loadErrorText}
+        isModelLoading={isModelLoading}
+        statusText={statusText}
+        onFit={() => frameModelRoot(1.5)}
+        onToggleRenderQuality={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
+        onToggleGrid={() => setShowGrid(!showGrid)}
+        onToggleAutoRotate={() => setAutoRotate(!autoRotate)}
+      />
       
       {/* 3D Canvas */}
       <div className="flex-1 relative" ref={containerRef}>

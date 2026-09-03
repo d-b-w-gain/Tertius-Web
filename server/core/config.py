@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     compile_timeout_seconds: int = Field(default=600)
     compile_request_max_bytes: int = Field(default=8 * 1024 * 1024)
     compile_result_max_bytes: int = Field(default=90 * 1024 * 1024)
+    compile_sidecar_ttl_seconds: int = Field(default=24 * 60 * 60, gt=0, le=7 * 24 * 60 * 60)
+    compile_sidecar_max_bytes: int = Field(
+        default=8 * 1024 * 1024 * 1024,
+        ge=128 * 1024 * 1024,
+        le=1024 * 1024 * 1024 * 1024,
+    )
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)

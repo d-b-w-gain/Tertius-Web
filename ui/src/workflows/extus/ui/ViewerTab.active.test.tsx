@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   detectModelArtifactFormat,
@@ -8,6 +8,7 @@ import {
   structuralEvidenceColor,
   structuralRestraintColor,
 } from './ViewerTab'
+import { ViewerControls } from './ViewerControls'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -225,6 +226,41 @@ describe('ViewerTab active state', () => {
     expect(screen.getByText('Compression-flange restraint and physical evidence.')).toBeInTheDocument()
     expect(screen.getByText('0.268 kN')).toBeInTheDocument()
     expect(screen.getByText('Missing stiffness / anchorage ring')).toBeInTheDocument()
+  })
+
+  it('renders viewer status and delegates toolbar controls through props', () => {
+    const onFit = vi.fn()
+    const onToggleRenderQuality = vi.fn()
+    const onToggleGrid = vi.fn()
+    const onToggleAutoRotate = vi.fn()
+
+    render(
+      <ViewerControls
+        projectName="demo"
+        renderQuality="high"
+        showGrid
+        autoRotate={false}
+        loadErrorText={null}
+        isModelLoading={false}
+        statusText="Model ready"
+        onFit={onFit}
+        onToggleRenderQuality={onToggleRenderQuality}
+        onToggleGrid={onToggleGrid}
+        onToggleAutoRotate={onToggleAutoRotate}
+      />,
+    )
+
+    expect(screen.getByText('demo')).toBeInTheDocument()
+    expect(screen.getByText('Model ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Frame the whole model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Visuals: High' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Grid: ON' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate: OFF' }))
+
+    expect(onFit).toHaveBeenCalledOnce()
+    expect(onToggleRenderQuality).toHaveBeenCalledOnce()
+    expect(onToggleGrid).toHaveBeenCalledOnce()
+    expect(onToggleAutoRotate).toHaveBeenCalledOnce()
   })
 
   afterEach(() => {

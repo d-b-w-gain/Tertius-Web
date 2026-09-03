@@ -533,7 +533,7 @@ describe('SiteWorkbench', () => {
         })
       }
       if (url.endsWith('/report/site-wind.pdf')) {
-        return new Response(new Blob(['%PDF-1.4']), {
+        return new Response('%PDF-1.4', {
           status: 200,
           headers: { 'Content-Type': 'application/pdf' },
         })

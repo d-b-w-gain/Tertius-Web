@@ -5,12 +5,21 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - 'README.md'
+      - 'ui/.env.example'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/promote_images.py'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/test-k3s-harness-lifecycle.sh'
+      - 'scripts/test-k3s-harness-janitor.sh'
+      - 'scripts/test-k3s-harness-process-cleanup.sh'
+      - 'scripts/cleanup-expired-k3s-harness.sh'
+      - 'scripts/install-k3s-harness-cleanup-timer.sh'
+      - 'scripts/diagnose-k3s-networkpolicy.sh'
+      - 'scripts/install-gvisor-k3s.sh'
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
@@ -30,12 +39,21 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - 'README.md'
+      - 'ui/.env.example'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
       - 'scripts/promote_images.py'
       - 'scripts/test-deployment-config.sh'
       - 'scripts/test-k3s-deployment.sh'
+      - 'scripts/test-k3s-harness-lifecycle.sh'
+      - 'scripts/test-k3s-harness-janitor.sh'
+      - 'scripts/test-k3s-harness-process-cleanup.sh'
+      - 'scripts/cleanup-expired-k3s-harness.sh'
+      - 'scripts/install-k3s-harness-cleanup-timer.sh'
+      - 'scripts/diagnose-k3s-networkpolicy.sh'
+      - 'scripts/install-gvisor-k3s.sh'
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
@@ -78,7 +96,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Make scripts executable
-        run: chmod +x scripts/test-deployment-config.sh scripts/test-k3s-deployment.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/smoke-live-flow.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
+        run: chmod +x scripts/test-deployment-config.sh scripts/test-k3s-deployment.sh scripts/test-k3s-harness-lifecycle.sh scripts/test-k3s-harness-janitor.sh scripts/test-k3s-harness-process-cleanup.sh scripts/cleanup-expired-k3s-harness.sh scripts/install-k3s-harness-cleanup-timer.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/smoke-live-flow.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
       - name: Run config test script
         run: ./scripts/test-deployment-config.sh
 
@@ -304,20 +322,20 @@ jobs:
       # ---- Chart test ----
 
       - name: Make scripts executable
-        run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/smoke-live-flow.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
+        run: chmod +x scripts/test-k3s-deployment.sh scripts/test-deployment-config.sh scripts/test-k3s-harness-lifecycle.sh scripts/test-k3s-harness-janitor.sh scripts/test-k3s-harness-process-cleanup.sh scripts/cleanup-expired-k3s-harness.sh scripts/install-k3s-harness-cleanup-timer.sh scripts/check-runtime-parity.sh scripts/harness-k3s.sh scripts/harness-compose.sh scripts/smoke-http.sh scripts/smoke-live-flow.sh scripts/harness-query-metrics.sh scripts/install-tertius-harness-skill.sh
 
       - name: Start chart test timer
         shell: bash
         run: echo "CHART_TEST_START=$(date +%s)" >> "$GITHUB_ENV"
 
-      - name: Run k3s chart test with cleanup
+      - name: Run k3s chart test
         shell: bash
-        run: |
-          set +e
-          ./scripts/test-k3s-deployment.sh
-          result=$?
-          ./scripts/test-k3s-deployment.sh --cleanup --delete-data || true
-          exit $result
+        run: ./scripts/test-k3s-deployment.sh
+
+      - name: Cleanup k3s chart test
+        if: ${{ always() }}
+        shell: bash
+        run: ./scripts/test-k3s-deployment.sh --cleanup
 
       - name: Report chart test duration
         shell: bash

@@ -2,6 +2,10 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NAMESPACE_EXPLICIT=false
+RELEASE_NAME_EXPLICIT=false
+[ "${NAMESPACE+x}" = x ] && NAMESPACE_EXPLICIT=true
+[ "${RELEASE_NAME+x}" = x ] && RELEASE_NAME_EXPLICIT=true
 NAMESPACE="${NAMESPACE:-tertius}"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
 UI_LOCAL_PORT="${UI_LOCAL_PORT:-18080}"
@@ -11,12 +15,16 @@ TRACES_LOCAL_PORT="${TRACES_LOCAL_PORT:-10428}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-tertius}"
 KEYCLOAK_LOCAL_PORT="${KEYCLOAK_LOCAL_PORT:-0}"
 PORT_FORWARD_ADDRESS="${PORT_FORWARD_ADDRESS:-127.0.0.1}"
-STATUS_FILE="${ROOT_DIR}/.tmp/harness/k3s.env"
-PID_FILE="${ROOT_DIR}/.tmp/harness/k3s-port-forwards.env"
+HARNESS_STATE_DIR="${HARNESS_STATE_DIR:-${ROOT_DIR}/.tmp/harness}"
+STATUS_FILE="${HARNESS_STATE_DIR}/k3s.env"
+PID_FILE=""
+PORT_FORWARD_ATTEMPTS="${PORT_FORWARD_ATTEMPTS:-10}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data>
+Usage: $(basename "$0") <up|ports|smoke|live-flow|status|stop-ports|down|delete-data|adopt|adopt-secret> [options]
+
+Cleanup options: --retain-data, --retain-auth. delete-data is a compatibility alias for full cleanup.
 EOF
 }
 
@@ -88,15 +96,261 @@ wait_for_ports_free() {
   return 1
 }
 
+prepare_port_forward_session() {
+  stop_port_forwards
+  preflight_ports
+}
+
+flux_effective_release_name() {
+  local target_namespace source_namespace source_name explicit_name base_name digest
+  target_namespace=$1
+  source_namespace=$2
+  source_name=$3
+  explicit_name=$4
+  if [ -n "$explicit_name" ]; then printf '%s\n' "$explicit_name"; return; fi
+  if [ "$target_namespace" = "$source_namespace" ]; then base_name=$source_name; else base_name="${target_namespace}-${source_name}"; fi
+  if [ "${#base_name}" -le 53 ]; then printf '%s\n' "$base_name"; return; fi
+  digest=$(printf '%s' "$base_name" | sha256sum) || return 1
+  printf '%.40s-%.12s\n' "$base_name" "$digest"
+}
+
+matching_flux_release() {
+  local flux_json flux_records target source_namespace source_name explicit_name effective
+  flux_json=$(kubectl get helmreleases.helm.toolkit.fluxcd.io --all-namespaces -o json 2>/dev/null) || return 2
+  printf '%s' "$flux_json" | jq -e 'type == "object" and (.items | type == "array")' >/dev/null || return 2
+  flux_records=$(printf '%s' "$flux_json" | jq -r '.items[]? |
+    [(.spec.targetNamespace // .metadata.namespace),.metadata.namespace,.metadata.name,(.spec.releaseName // "")] | @tsv') || return 2
+  while IFS=$'\t' read -r target source_namespace source_name explicit_name; do
+    [ -n "$target" ] || continue
+    effective=$(flux_effective_release_name "$target" "$source_namespace" "$source_name" "$explicit_name") || return 2
+    [ "$target" != "$NAMESPACE" ] || [ "$effective" != "$RELEASE_NAME" ] || return 0
+  done <<<"$flux_records"
+  return 1
+}
+
 require_not_flux_managed() {
-  if [ "${ALLOW_FLUX_MANAGED_RELEASE:-false}" = "true" ]; then
+  allow_override=${1:-false}
+  if [ "$allow_override" = true ] && [ "${ALLOW_FLUX_MANAGED_RELEASE:-false}" = "true" ]; then
     return
   fi
-  if command -v kubectl >/dev/null 2>&1 && kubectl get helmrelease "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-    echo "Refusing to operate on Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
-    echo "Set ALLOW_FLUX_MANAGED_RELEASE=true only when intentional." >&2
+  if command -v kubectl >/dev/null 2>&1; then
+    if matching_flux_release; then
+      echo "Refusing to operate on Flux-managed HelmRelease ${NAMESPACE}/${RELEASE_NAME}." >&2
+      exit 1
+    else
+      flux_status=$?
+      if [ "$allow_override" = false ] && [ "$flux_status" -eq 2 ]; then
+        echo "Unable to inspect Flux HelmRelease ownership; refusing ${NAMESPACE}/${RELEASE_NAME}." >&2
+        exit 1
+      fi
+    fi
+  fi
+}
+
+resolve_saved_cleanup_target() {
+  if [ "$NAMESPACE_EXPLICIT" = false ] && [ "$RELEASE_NAME_EXPLICIT" = false ] && [ -f "$STATUS_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$STATUS_FILE"
+  fi
+}
+
+new_lease_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    sed -n '1p' /proc/sys/kernel/random/uuid
+  fi
+}
+
+lease_secret_from_json() {
+  secret_json=$1
+  lease_id=$2
+  secret_name=$(printf '%s' "$secret_json" | jq -er '.metadata.name') || return 1
+  secret_uid=$(printf '%s' "$secret_json" | jq -er '.metadata.uid') || return 1
+  secret_rv=$(printf '%s' "$secret_json" | jq -er '.metadata.resourceVersion') || return 1
+  if printf '%s' "$secret_json" | jq -e '.metadata.annotations | type == "object"' >/dev/null; then
+    secret_patch=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" --arg lease "$lease_id" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$rv},
+      {op:"add",path:"/metadata/annotations/tertius.io~1lease-id",value:$lease}
+    ]') || return 1
+  else
+    secret_patch=$(jq -cn --arg uid "$secret_uid" --arg rv "$secret_rv" --arg lease "$lease_id" '[
+      {op:"test",path:"/metadata/uid",value:$uid},
+      {op:"test",path:"/metadata/resourceVersion",value:$rv},
+      {op:"add",path:"/metadata/annotations",value:{"tertius.io/lease-id":$lease}}
+    ]') || return 1
+  fi
+  kubectl patch secret "$secret_name" -n "$NAMESPACE" --type=json -p "$secret_patch" >/dev/null
+}
+
+adopt_release() {
+  target=${1:-}
+  command -v jq >/dev/null 2>&1 || { echo "Missing required command: jq" >&2; exit 1; }
+  case "$target" in
+    */*) ;;
+    *) echo "Usage: $(basename "$0") adopt <namespace>/<release>" >&2; exit 2 ;;
+  esac
+  NAMESPACE=${target%%/*}
+  RELEASE_NAME=${target#*/}
+  if [ -z "$NAMESPACE" ] || [ -z "$RELEASE_NAME" ] || [ "$target" != "${NAMESPACE}/${RELEASE_NAME}" ]; then
+    echo "Adoption target must be exactly <namespace>/<release>." >&2
+    exit 2
+  fi
+  if [ "$RELEASE_NAME" = tertius ]; then
+    echo "Refusing to adopt protected release ${NAMESPACE}/tertius." >&2
     exit 1
   fi
+  require_not_flux_managed false
+  if ! helm status "$RELEASE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+    echo "Refusing adoption: Helm release ${NAMESPACE}/${RELEASE_NAME} does not exist." >&2
+    exit 1
+  fi
+  if ! existing_marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" \
+    --ignore-not-found=true -o name 2>/dev/null); then
+    echo "Unable to inspect lifecycle marker for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if [ -n "$existing_marker" ]; then
+    echo "Refusing adoption: lifecycle marker ${NAMESPACE}/${RELEASE_NAME}-harness-lifecycle already exists." >&2
+    exit 1
+  fi
+  app_secret_name=${APP_SECRET_NAME:-${RELEASE_NAME}-app}
+  if ! existing_secret=$(kubectl get secret "$app_secret_name" -n "$NAMESPACE" \
+    --ignore-not-found=true -o json 2>/dev/null); then
+    echo "Unable to inspect external Secret ${NAMESPACE}/${app_secret_name}; refusing adoption." >&2
+    exit 1
+  fi
+  if [ -z "$existing_secret" ]; then
+    echo "External Secret ${NAMESPACE}/${app_secret_name} does not exist; refusing adoption." >&2
+    exit 1
+  fi
+  if ! clusters=$(kubectl get clusters.postgresql.cnpg.io -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+    echo "Unable to inventory CNPG clusters for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! pvcs=$(kubectl get pvc -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o name 2>/dev/null); then
+    echo "Unable to inventory PVCs for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! external_secrets=$(kubectl get secret -n "$NAMESPACE" \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME}" -o json 2>/dev/null); then
+    echo "Unable to inventory release-labelled Secrets for ${NAMESPACE}/${RELEASE_NAME}; refusing adoption." >&2
+    exit 1
+  fi
+  if ! adoption_secrets=$(
+    { printf '%s\n' "$existing_secret"; printf '%s\n' "$external_secrets"; } |
+      jq -s '{items: ([.[] | if has("items") then .items[] else . end] | unique_by(.metadata.uid))}'
+  ) || ! printf '%s' "$adoption_secrets" | jq -e '
+    all(.items[]?;
+      (.metadata.name | type == "string" and length > 0) and
+      (.metadata.uid | type == "string" and length > 0) and
+      (.metadata.resourceVersion | type == "string" and length > 0))
+  ' >/dev/null; then
+    echo "Release Secret identities are incomplete; refusing adoption." >&2
+    exit 1
+  fi
+  printf 'Type %s to adopt this existing release: ' "$target" >&2
+  read -r confirmation
+  if [ "$confirmation" != "$target" ]; then
+    echo "Adoption confirmation did not match ${target}." >&2
+    exit 1
+  fi
+  lease_id=$(new_lease_id)
+  ttl_seconds=${HARNESS_TTL_SECONDS:-21600}
+  case "$ttl_seconds" in
+    ""|*[!0-9]*) echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2; exit 1 ;;
+  esac
+  if [ "$ttl_seconds" -lt 900 ] || [ "$ttl_seconds" -gt 86400 ]; then
+    echo "HARNESS_TTL_SECONDS must be an integer from 900 to 86400." >&2
+    exit 1
+  fi
+  expires_at=$(date -u -d "+${ttl_seconds} seconds" '+%Y-%m-%dT%H:%M:%SZ')
+  while IFS= read -r adoption_secret; do
+    [ -n "$adoption_secret" ] || continue
+    lease_secret_from_json "$adoption_secret" "$lease_id" || {
+      echo "A release Secret changed during adoption; refusing to create the lifecycle marker." >&2
+      exit 1
+    }
+  done < <(printf '%s' "$adoption_secrets" | jq -c '.items[]?')
+  [ -z "$clusters" ] || kubectl annotate -n "$NAMESPACE" $clusters "tertius.io/lease-id=${lease_id}" --overwrite
+  [ -z "$pvcs" ] || kubectl annotate -n "$NAMESPACE" $pvcs "tertius.io/lease-id=${lease_id}" --overwrite
+  kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${RELEASE_NAME}-harness-lifecycle
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/managed-by: tertius-harness
+    app.kubernetes.io/instance: ${RELEASE_NAME}
+    tertius.io/harness-managed: "true"
+  annotations:
+    tertius.io/lease-id: ${lease_id}
+    tertius.io/release-name: ${RELEASE_NAME}
+    tertius.io/app-secret-name: ${app_secret_name}
+    tertius.io/expires-at: ${expires_at}
+    tertius.io/cleanup-policy: delete
+EOF
+}
+
+adopt_external_secret() {
+  target=${1:-}
+  secret_name=${2:-}
+  case "$target" in
+    */*) ;;
+    *) echo "Usage: $(basename "$0") adopt-secret <namespace>/<release> <secret>" >&2; exit 2 ;;
+  esac
+  NAMESPACE=${target%%/*}
+  RELEASE_NAME=${target#*/}
+  if [ -z "$NAMESPACE" ] || [ -z "$RELEASE_NAME" ] || [ "$target" != "${NAMESPACE}/${RELEASE_NAME}" ] ||
+     [ -z "$secret_name" ]; then
+    echo "Usage: $(basename "$0") adopt-secret <namespace>/<release> <secret>" >&2
+    exit 2
+  fi
+  if [ "$RELEASE_NAME" = tertius ]; then
+    echo "Refusing to attach a Secret to protected release ${NAMESPACE}/tertius." >&2
+    exit 1
+  fi
+  require_not_flux_managed false
+  marker=$(kubectl get configmap "${RELEASE_NAME}-harness-lifecycle" -n "$NAMESPACE" -o json 2>/dev/null) || {
+    echo "A lifecycle marker is required before attaching an external Secret." >&2
+    exit 1
+  }
+  lease_id=$(printf '%s' "$marker" | jq -er --arg release "$RELEASE_NAME" '
+    select(.metadata.labels["tertius.io/harness-managed"] == "true") |
+    select(.metadata.labels["app.kubernetes.io/instance"] == $release) |
+    select(.metadata.annotations["tertius.io/release-name"] == $release) |
+    .metadata.annotations["tertius.io/lease-id"] |
+    select(type == "string" and length > 0)
+  ') || { echo "Lifecycle marker is invalid; refusing Secret adoption." >&2; exit 1; }
+  secret=$(kubectl get secret "$secret_name" -n "$NAMESPACE" -o json 2>/dev/null) || {
+    echo "Secret ${NAMESPACE}/${secret_name} does not exist." >&2
+    exit 1
+  }
+  if ! printf '%s' "$secret" | jq -e --arg release "$RELEASE_NAME" --arg expected "$lease_id" '
+    .metadata.labels["app.kubernetes.io/instance"] == $release and
+    (.metadata.uid | type == "string" and length > 0) and
+    (.metadata.resourceVersion | type == "string" and length > 0) and
+    ((.metadata.annotations["tertius.io/lease-id"] // "") as $lease | $lease == "" or $lease == $expected)
+  ' >/dev/null; then
+    echo "Secret ${NAMESPACE}/${secret_name} is not safely attributable to ${RELEASE_NAME}." >&2
+    exit 1
+  fi
+  secret_uid=$(printf '%s' "$secret" | jq -er '.metadata.uid')
+  secret_rv=$(printf '%s' "$secret" | jq -er '.metadata.resourceVersion')
+  printf 'Type %s/%s to attach this Secret to the cleanup lease: ' "$target" "$secret_name" >&2
+  read -r confirmation
+  if [ "$confirmation" != "${target}/${secret_name}" ]; then
+    echo "Secret adoption confirmation did not match ${target}/${secret_name}." >&2
+    exit 1
+  fi
+  lease_secret_from_json "$secret" "$lease_id" || {
+    echo "Secret changed before its cleanup lease could be attached; no cleanup was performed." >&2
+    exit 1
+  }
 }
 
 status() {
@@ -143,13 +397,74 @@ keycloak_service() {
   printf '%s\n' "$svc"
 }
 
+configure_pid_file() {
+  context=$(kubectl config current-context 2>/dev/null) || {
+    echo "Unable to resolve current Kubernetes context for port-forward ownership." >&2
+    return 1
+  }
+  safe_context=$(printf '%s' "$context" | tr -c '[:alnum:]._-' '_')
+  safe_namespace=$(printf '%s' "$NAMESPACE" | tr -c '[:alnum:]._-' '_')
+  safe_release=$(printf '%s' "$RELEASE_NAME" | tr -c '[:alnum:]._-' '_')
+  PID_FILE="${HARNESS_STATE_DIR}/port-forwards/${safe_context}__${safe_namespace}__${safe_release}.env"
+}
+
+process_start_token() {
+  awk '{print $22}' "/proc/$1/stat" 2>/dev/null
+}
+
+process_exact_command() {
+  tr '\0' ' ' 2>/dev/null <"/proc/$1/cmdline" | sed 's/[[:space:]]*$//'
+}
+
+record_port_forward_identity() {
+  pid=$1
+  start_token=$2
+  exact_command=$3
+  mkdir -p "$(dirname "$PID_FILE")"
+  state_tmp=$(mktemp "${PID_FILE}.XXXXXX")
+  [ ! -f "$PID_FILE" ] || cp "$PID_FILE" "$state_tmp"
+  printf '%s\t%s\t%s\n' "$pid" "$start_token" "$exact_command" >>"$state_tmp"
+  mv "$state_tmp" "$PID_FILE"
+}
+
+terminate_if_owned() {
+  pid=$1
+  expected_start=$2
+  expected_command=$3
+  live_start=$(process_start_token "$pid" || true)
+  live_command=$(process_exact_command "$pid" || true)
+  if [ -n "$live_start" ] && [ "$live_start" = "$expected_start" ] && [ "$live_command" = "$expected_command" ]; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+port_forward_exit() {
+  status=$1
+  trap - EXIT INT TERM
+  stop_port_forwards
+  exit "$status"
+}
+
+begin_port_forward_session() {
+  configure_pid_file
+  stop_port_forwards
+  mkdir -p "$(dirname "$PID_FILE")"
+  state_tmp=$(mktemp "${PID_FILE}.XXXXXX")
+  : >"$state_tmp"
+  mv "$state_tmp" "$PID_FILE"
+  trap 'port_forward_exit $?' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+
 start_one_port_forward() {
-  name=$1
-  svc=$2
-  local_port=$3
-  remote_port=$4
-  result_var=${5:-}
-  log_file="${ROOT_DIR}/.tmp/harness/${name}.log"
+  result_var=$1
+  name=$2
+  svc=$3
+  local_port=$4
+  remote_port=$5
+  log_file="${HARNESS_STATE_DIR}/${name}.log"
 
   if [ "$local_port" = "0" ]; then
     port_spec=":${remote_port}"
@@ -159,9 +474,34 @@ start_one_port_forward() {
 
   nohup kubectl port-forward --address "$PORT_FORWARD_ADDRESS" -n "$NAMESPACE" "svc/${svc}" "$port_spec" >"$log_file" 2>&1 < /dev/null &
   pid=$!
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  start_token=""
+  exact_command=""
+  for _ in $(seq 1 100); do
+    start_token=$(process_start_token "$pid" || true)
+    exact_command=$(process_exact_command "$pid" || true)
+    case " $exact_command " in
+      *" port-forward "*" svc/${svc} "*)
+        [ -z "$start_token" ] || break
+        ;;
+    esac
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.01
+  done
+  case " $exact_command " in
+    *" port-forward "*" svc/${svc} "*) identity_ready=true ;;
+    *) identity_ready=false ;;
+  esac
+  if [ -z "$start_token" ] || [ "$identity_ready" != "true" ]; then
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+    echo "Unable to record ${name} port-forward process identity." >&2
+    exit 1
+  fi
+  record_port_forward_identity "$pid" "$start_token" "$exact_command"
+  for _ in $(seq 1 "$PORT_FORWARD_ATTEMPTS"); do
     if grep -q 'Forwarding from' "$log_file"; then
-      printf '%s_PID=%s\n' "$name" "$pid" >>"$PID_FILE"
       if [ "$local_port" = "0" ]; then
         selected_port=$(awk '
           /^Forwarding from [^:]+:[0-9][0-9]* -> / {
@@ -174,7 +514,7 @@ start_one_port_forward() {
       else
         selected_port="$local_port"
       fi
-      [ -n "$result_var" ] && printf -v "$result_var" '%s' "$selected_port"
+      printf -v "$result_var" '%s' "$selected_port"
       return
     fi
     if ! kill -0 "$pid" >/dev/null 2>&1; then
@@ -183,6 +523,7 @@ start_one_port_forward() {
     fi
     sleep 1
   done
+  terminate_if_owned "$pid" "$start_token" "$exact_command"
   cat "$log_file" >&2
   echo "Timed out waiting for ${name} port-forward." >&2
   exit 1
@@ -193,6 +534,7 @@ write_status_file() {
   {
     printf 'NAMESPACE=%q\n' "$NAMESPACE"
     printf 'RELEASE_NAME=%q\n' "$RELEASE_NAME"
+    printf 'APP_SECRET_NAME=%q\n' "${APP_SECRET_NAME:-${RELEASE_NAME}-app}"
     printf 'UI_BASE_URL=%q\n' "http://127.0.0.1:${UI_LOCAL_PORT}"
     printf 'API_BASE_URL=%q\n' "http://127.0.0.1:${API_LOCAL_PORT}"
     printf 'METRICS_BASE_URL=%q\n' "http://127.0.0.1:${METRICS_LOCAL_PORT}"
@@ -204,8 +546,7 @@ write_status_file() {
 }
 
 start_port_forwards() {
-  mkdir -p "${ROOT_DIR}/.tmp/harness"
-  : >"$PID_FILE"
+  begin_port_forward_session
   ui_svc=$(first_service_by_component ui)
   api_svc=$(first_service_by_component api)
   metrics_svc=$(first_service_by_component metrics-backend)
@@ -216,16 +557,16 @@ start_port_forwards() {
   [ -n "$traces_svc" ] || traces_svc="${RELEASE_NAME}-victoriatraces"
   keycloak_svc=$(keycloak_service)
 
-  start_one_port_forward UI "$ui_svc" "$UI_LOCAL_PORT" "$(service_port "$ui_svc" http)" UI_LOCAL_PORT
-  start_one_port_forward API "$api_svc" "$API_LOCAL_PORT" "$(service_port "$api_svc" http)" API_LOCAL_PORT
+  start_one_port_forward UI_LOCAL_PORT UI "$ui_svc" "$UI_LOCAL_PORT" "$(service_port "$ui_svc" http)"
+  start_one_port_forward API_LOCAL_PORT API "$api_svc" "$API_LOCAL_PORT" "$(service_port "$api_svc" http)"
   if kubectl get svc "$metrics_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward METRICS "$metrics_svc" "$METRICS_LOCAL_PORT" "$(service_port "$metrics_svc" http)" METRICS_LOCAL_PORT
+    start_one_port_forward METRICS_LOCAL_PORT METRICS "$metrics_svc" "$METRICS_LOCAL_PORT" "$(service_port "$metrics_svc" http)"
   fi
   if kubectl get svc "$traces_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward TRACES "$traces_svc" "$TRACES_LOCAL_PORT" "$(service_port "$traces_svc" http)" TRACES_LOCAL_PORT
+    start_one_port_forward TRACES_LOCAL_PORT TRACES "$traces_svc" "$TRACES_LOCAL_PORT" "$(service_port "$traces_svc" http)"
   fi
   if [ -n "$keycloak_svc" ] && kubectl get svc "$keycloak_svc" -n "$NAMESPACE" >/dev/null 2>&1; then
-    start_one_port_forward KEYCLOAK "$keycloak_svc" "$KEYCLOAK_LOCAL_PORT" "$(service_port "$keycloak_svc" http)" KEYCLOAK_LOCAL_PORT
+    start_one_port_forward KEYCLOAK_LOCAL_PORT KEYCLOAK "$keycloak_svc" "$KEYCLOAK_LOCAL_PORT" "$(service_port "$keycloak_svc" http)"
   fi
   write_status_file
   echo "UI URL: http://127.0.0.1:${UI_LOCAL_PORT}"
@@ -239,10 +580,11 @@ start_port_forwards() {
 }
 
 stop_port_forwards() {
+  [ -n "$PID_FILE" ] || configure_pid_file || return 1
   [ -f "$PID_FILE" ] || return 0
-  while IFS='=' read -r _ pid; do
+  while IFS=$'\t' read -r pid start_token exact_command; do
     [ -n "${pid:-}" ] || continue
-    kill "$pid" >/dev/null 2>&1 || true
+    terminate_if_owned "$pid" "$start_token" "$exact_command"
   done <"$PID_FILE"
   rm -f "$PID_FILE"
 }
@@ -297,11 +639,15 @@ require_pi_agent_worker() {
   exit 1
 }
 
+if [ "${HARNESS_K3S_LIB_ONLY:-false}" = "true" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
 case "${1:-}" in
   up)
     stop_port_forwards
     preflight_ports
-    require_not_flux_managed
+    require_not_flux_managed true
     UI_LOCAL_PORT="$UI_LOCAL_PORT" API_LOCAL_PORT="$API_LOCAL_PORT" NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" \
       "${ROOT_DIR}/scripts/test-k3s-deployment.sh"
     stop_port_forwards
@@ -313,7 +659,7 @@ case "${1:-}" in
     fi
     ;;
   ports)
-    preflight_ports
+    prepare_port_forward_session
     start_port_forwards
     ;;
   smoke)
@@ -359,19 +705,36 @@ case "${1:-}" in
     stop_port_forwards
     ;;
   down)
-    require_not_flux_managed
+    shift
+    cleanup_args=(--cleanup)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --retain-data|--retain-auth) cleanup_args+=("$1") ;;
+        --delete-data) ;;
+        *) echo "Unknown down option: $1" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    resolve_saved_cleanup_target
+    require_not_flux_managed false
     stop_port_forwards
-    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup
+    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}" \
+      "${ROOT_DIR}/scripts/test-k3s-deployment.sh" "${cleanup_args[@]}"
     ;;
   delete-data)
-    require_not_flux_managed
-    if [ "${HARNESS_ASSUME_YES:-false}" != "true" ]; then
-      printf 'Delete release data for %s/%s? Type yes to continue: ' "$NAMESPACE" "$RELEASE_NAME"
-      read -r answer
-      [ "$answer" = "yes" ] || exit 1
-    fi
+    resolve_saved_cleanup_target
+    require_not_flux_managed false
     stop_port_forwards
-    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup --delete-data
+    NAMESPACE="$NAMESPACE" RELEASE_NAME="$RELEASE_NAME" APP_SECRET_NAME="${APP_SECRET_NAME:-${RELEASE_NAME}-app}" \
+      "${ROOT_DIR}/scripts/test-k3s-deployment.sh" --cleanup
+    ;;
+  adopt)
+    shift
+    adopt_release "${1:-}"
+    ;;
+  adopt-secret)
+    shift
+    adopt_external_secret "${1:-}" "${2:-}"
     ;;
   --help|-h)
     usage

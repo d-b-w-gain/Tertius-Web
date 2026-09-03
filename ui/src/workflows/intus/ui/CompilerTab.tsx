@@ -20,6 +20,7 @@ const COMPILE_STATUS_POLL_MS = 2_000;
 const COMPILE_STATUS_RETRY_MS = 3_000;
 const AI_EDIT_FILE_LIMIT = 20;
 const AI_EDIT_STATUS_MAX_CONSECUTIVE_FAILURES = 3;
+const TRANSIENT_COMPILE_STATUS_CODES = new Set([502, 503, 504]);
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -123,6 +124,16 @@ export const CompilerTab: React.FC<{ serverUrl: string, isActive?: boolean }> = 
 
         if (!res.ok) {
           const message = data.user_message || data.short || data.error || 'Compile job status could not be loaded.';
+          if (TRANSIENT_COMPILE_STATUS_CODES.has(res.status)) {
+            const elapsed = formatElapsed(Date.now() - pollStartedAt);
+            const retryAfterSeconds = Number(res.headers?.get('Retry-After'));
+            const retryDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+              ? Math.max(COMPILE_STATUS_RETRY_MS, retryAfterSeconds * 1000)
+              : COMPILE_STATUS_RETRY_MS;
+            setLog(`[WARN] Waiting ${elapsed}; ${message} Retrying compile job ${jobId}...`);
+            pollTimerRef.current = window.setTimeout(tick, retryDelay);
+            return;
+          }
           setLog(prev => `${prev}\n[ERROR] ${message}`);
           setFailedCompileRetry(data.retryable ? { code: codeRef.current } : null);
           if (mode === 'auto') setAutoCompile(false);

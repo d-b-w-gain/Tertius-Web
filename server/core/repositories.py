@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
@@ -711,6 +711,10 @@ class CompileRepository:
         keep_latest = max(0, keep_latest)
         query = (
             select(Artifact)
+            # Artifact.content can be hundreds of megabytes. Pruning only
+            # needs primary keys; hydrating every old blob here can exhaust
+            # the API pod while it is ingesting a new compile result.
+            .options(load_only(Artifact.id))
             .where(
                 Artifact.tenant_id == self.tenant_id,
                 Artifact.project_id == project_id,

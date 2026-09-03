@@ -94,11 +94,59 @@ Cleanup commands:
 
 ```bash
 scripts/harness-k3s.sh down
-scripts/harness-k3s.sh delete-data
+scripts/harness-k3s.sh down --retain-data
+scripts/harness-k3s.sh down --retain-auth
 ```
 
-`delete-data` prompts before removing database clusters and PVCs unless
-`HARNESS_ASSUME_YES=true`.
+`down` is full cleanup: it removes the Helm release, leased release-labelled Secrets,
+CNPG clusters, PVCs, and lifecycle marker, then verifies scoped resources are
+absent. `delete-data` remains an alias for full cleanup. Persistence is always
+explicit: `--retain-data` keeps CNPG clusters and all release PVCs, while
+`--retain-auth` keeps only the Pi-agent authentication PVC. Either retention
+mode leaves an identity-bearing lifecycle tombstone that records each retained
+object's kind, name, and UID. A later plain `down` validates every surviving
+object against those recorded UIDs before removing the exact retained objects
+and the tombstone; it refuses cleanup if an object has been replaced or
+unexpected release data is present.
+
+Each non-Flux `up` creates a release lifecycle marker with a six-hour expiry.
+Override the lease from 15 minutes through 24 hours with
+`HARNESS_TTL_SECONDS`; an expiry annotation is metadata, so cleanup is performed
+by the janitor rather than Kubernetes itself. The wrapper uses the explicit
+`NAMESPACE` and `RELEASE_NAME`, or the last target recorded in
+`.tmp/harness/k3s.env` for `down`. Destructive commands always refuse the
+production release `tertius` and any Flux-managed target.
+
+Legacy development releases must be adopted before cleanup:
+
+```bash
+scripts/harness-k3s.sh adopt <namespace>/<release>
+```
+
+The command verifies that exact Helm release and requires typing the exact
+target before it adds lifecycle ownership, including all existing
+release-labelled Secrets. If a new external Secret is added after adoption,
+attach it explicitly before cleanup:
+
+```bash
+scripts/harness-k3s.sh adopt-secret <namespace>/<release> <secret-name>
+```
+
+This requires the exact release label, the existing lifecycle marker, and a
+typed confirmation, then uses UID/resourceVersion preconditions to attach the
+lease. See the
+[lifecycle cleanup design](../superpowers/specs/2026-08-14-k3s-harness-lifecycle-cleanup-design.md)
+for the ownership and failure matrix.
+
+Preview or execute expired-release cleanup, and optionally enable it every 15
+minutes as a user service:
+
+```bash
+scripts/cleanup-expired-k3s-harness.sh --dry-run
+scripts/cleanup-expired-k3s-harness.sh
+scripts/install-k3s-harness-cleanup-timer.sh install
+scripts/install-k3s-harness-cleanup-timer.sh uninstall
+```
 
 After `up` completes, the wrapper starts local port-forwards when the deploy
 smoke forwards have fully released their ports, and writes `.tmp/harness/k3s.env`
@@ -204,15 +252,15 @@ METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
 scripts/harness-k3s.sh stop-ports
 ```
 
-Remove the disposable release after review. Use `delete-data` when the PR
-runtime should leave no database, NATS, Valkey, or telemetry PVCs behind:
+Remove the disposable release after review. Full cleanup leaves no release
+database, NATS, Valkey, or telemetry PVCs behind:
 
 ```bash
 KUBECONFIG=/home/johnson/.kube/config \
 NAMESPACE=tertius RELEASE_NAME=tertius-live-flow-smoke \
 UI_LOCAL_PORT=18083 API_LOCAL_PORT=18003 \
 METRICS_LOCAL_PORT=8430 TRACES_LOCAL_PORT=10431 \
-HARNESS_ASSUME_YES=true scripts/harness-k3s.sh delete-data
+scripts/harness-k3s.sh down
 ```
 
 ## Compose Parity
