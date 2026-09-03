@@ -330,6 +330,17 @@ class StabilityDirectionResult(StructuralContract):
     member_comparisons: list[MemberStabilityComparison]
 
 
+class RafterStabilityApplicabilityCheck(StructuralContract):
+    component_id: str
+    member_ids: list[str]
+    length_m: float = Field(gt=0)
+    design_axial_kN: float = Field(ge=0)
+    elastic_critical_load_kN: float = Field(gt=0)
+    axial_limit_kN: float = Field(gt=0)
+    utilisation: float = Field(ge=0)
+    applicable: bool
+
+
 class StabilityResult(StructuralContract):
     method: Literal["p_delta"]
     combination_id: str
@@ -348,6 +359,9 @@ class StabilityResult(StructuralContract):
     rafter_axial_limit_kN: float | None = None
     rafter_axial_force_significant: bool | None = None
     simplified_alpha_cr_applicable: bool | None = None
+    rafter_applicability_checks: list[RafterStabilityApplicabilityCheck] = Field(
+        default_factory=list
+    )
 
 
 class CrossSectionVerificationDefinition(StructuralContract):

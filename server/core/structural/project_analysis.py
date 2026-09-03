@@ -48,6 +48,7 @@ from .contracts import (
     NodalLoad,
     NodeReaction,
     ProjectStructuralCapture,
+    RafterStabilityApplicabilityCheck,
     Restraints,
     ServiceabilityCheck,
     SnapshotSource,
@@ -3547,15 +3548,38 @@ def _analysis_base_model_matches(analysis) -> bool:
     stability = analysis.stability
     if stability is None or stability.analysis_base_model == "unspecified":
         return True
-    members_by_id = {member.id: member for member in analysis.members}
-    if not stability.eaves_member_ids:
-        return False
-    base_restraints = [
-        members_by_id[member_id].start_restraints
-        for member_id in stability.eaves_member_ids
-        if member_id in members_by_id
-    ]
-    if len(base_restraints) != len(stability.eaves_member_ids):
+    members_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(
+        list
+    )
+    for member in analysis.members:
+        members_by_component[member.component_id].append(member)
+    base_restraints: list[Restraints] = []
+    if stability.column_component_ids:
+        for component_id in stability.column_component_ids:
+            component_members = members_by_component.get(component_id, [])
+            if not component_members:
+                return False
+            endpoints = [
+                (member.start.z, member.start_restraints)
+                for member in component_members
+            ] + [
+                (member.end.z, member.end_restraints) for member in component_members
+            ]
+            base_restraints.append(min(endpoints, key=lambda item: item[0])[1])
+    else:
+        # Backwards-compatible authored models may identify an unsplit column by
+        # its eaves member. In that case the member's lowest endpoint is its base.
+        members_by_id = {member.id: member for member in analysis.members}
+        for member_id in stability.eaves_member_ids:
+            member = members_by_id.get(member_id)
+            if member is None:
+                return False
+            base_restraints.append(
+                member.start_restraints
+                if member.start.z <= member.end.z
+                else member.end_restraints
+            )
+    if not base_restraints:
         return False
     if stability.analysis_base_model == "perfectly_pinned":
         return all(
@@ -3578,6 +3602,71 @@ def _analysis_base_model_matches(analysis) -> bool:
             for restraints in base_restraints
         )
     return False
+
+
+def _rafter_stability_applicability_checks(
+    analysis,
+    first_order_rafter_axial_kN: Mapping[tuple[str, str], float],
+) -> list[RafterStabilityApplicabilityCheck]:
+    """Evaluate the simplified rafter axial limit per physical component.
+
+    Analytical joints can split one physical rafter into several solver members.
+    Separate portal rafters must never be concatenated into one Euler length.
+    """
+
+    stability = analysis.stability
+    if stability is None:
+        return []
+    members_by_id = {member.id: member for member in analysis.members}
+    members_by_component: dict[str, list[AnalyticalMemberDeclaration]] = defaultdict(
+        list
+    )
+    for member_id in stability.rafter_member_ids:
+        member = members_by_id.get(member_id)
+        if member is None:
+            raise StructuralAnalysisError(
+                f"global stability references missing rafter member {member_id!r}"
+            )
+        members_by_component[member.component_id].append(member)
+    sections_by_id = {section.id: section for section in analysis.sections}
+    materials_by_id = {material.id: material for material in analysis.materials}
+    checks: list[RafterStabilityApplicabilityCheck] = []
+    for component_id, component_members in sorted(members_by_component.items()):
+        length_m = sum(_length(member.start, member.end) for member in component_members)
+        minimum_ei_kNm2 = min(
+            materials_by_id[member.material_id].elastic_modulus_kN_m2
+            * max(
+                sections_by_id[member.section_id].iy_m4,
+                sections_by_id[member.section_id].iz_m4,
+            )
+            for member in component_members
+        )
+        elastic_critical_load_kN = pi**2 * minimum_ei_kNm2 / length_m**2
+        axial_limit_kN = 0.09 * elastic_critical_load_kN
+        component_axial_demands = [
+            axial_kN
+            for (_, demand_component_id), axial_kN in first_order_rafter_axial_kN.items()
+            if demand_component_id == component_id
+        ]
+        if not component_axial_demands:
+            raise StructuralAnalysisError(
+                f"no first-order axial result for rafter component {component_id!r}"
+            )
+        design_axial_kN = max(component_axial_demands)
+        utilisation = design_axial_kN / axial_limit_kN
+        checks.append(
+            RafterStabilityApplicabilityCheck(
+                component_id=component_id,
+                member_ids=[member.id for member in component_members],
+                length_m=length_m,
+                design_axial_kN=design_axial_kN,
+                elastic_critical_load_kN=elastic_critical_load_kN,
+                axial_limit_kN=axial_limit_kN,
+                utilisation=utilisation,
+                applicable=utilisation <= 1.0,
+            )
+        )
+    return checks
 
 
 def _member_extrema(
@@ -6598,7 +6687,8 @@ def _certification_evidence(
             ),
             *(
                 [
-                    "The linear/P-Delta amplification ratio exceeds the authored "
+                    "The tension-aware first-order/P-Delta amplification ratio "
+                    "exceeds the authored "
                     "review threshold. P399 does not define this ratio as a failure "
                     "criterion; the converged second-order design effects remain "
                     "visible for downstream resistance and serviceability checks."
@@ -6670,11 +6760,28 @@ def _certification_evidence(
             )
             for direction in stability_result.direction_results
         )
-        if (
+        stability_equations.extend(
+            CalculationEquation(
+                label=(
+                    f"{check.component_id} rafter axial-force applicability"
+                ),
+                expression="NEd ≤ 0.09 Ncr",
+                substitution=(
+                    f"{check.design_axial_kN:g} ≤ 0.09 × "
+                    f"{check.elastic_critical_load_kN:g}; "
+                    f"continuous physical length {check.length_m:g} m"
+                ),
+                result=check.utilisation,
+            )
+            for check in stability_result.rafter_applicability_checks
+        )
+        if not stability_result.rafter_applicability_checks and (
             stability_result.rafter_design_axial_kN is not None
             and stability_result.rafter_elastic_critical_load_kN is not None
             and stability_result.rafter_axial_limit_kN is not None
         ):
+            # Backwards compatibility for stored/fixture snapshots created
+            # before per-physical-rafter applicability evidence was added.
             stability_equations.append(
                 CalculationEquation(
                     label="Rafter axial-force applicability",
@@ -6847,8 +6954,8 @@ def _certification_evidence(
             ),
             supplemental_references=["SCI P399 Sections 7.2–7.8"],
             purpose=(
-                "Compare first-order elastic and iterative P-Delta response for the "
-                "Tertius-resolved imperfection combination."
+                "Compare tension-aware first-order and iterative P-Delta response "
+                "for the same Tertius-resolved imperfection combination."
             ),
             assumptions=stability_assumptions,
             inputs=(
@@ -6945,7 +7052,7 @@ def _certification_evidence(
                         label="Governing moment amplification",
                         value=stability_result.governing_moment_amplification,
                         source=(
-                            f"PyNite linear/P-Delta comparison for "
+                            f"PyNite tension-aware first-order/P-Delta comparison for "
                             f"{stability_result.combination_id}"
                         ),
                     ),
@@ -6954,7 +7061,7 @@ def _certification_evidence(
                         label="Governing displacement amplification",
                         value=stability_result.governing_displacement_amplification,
                         source=(
-                            f"PyNite linear/P-Delta comparison for "
+                            f"PyNite tension-aware first-order/P-Delta comparison for "
                             f"{stability_result.combination_id}"
                         ),
                     ),
@@ -8314,7 +8421,14 @@ def _generate_p399_nodal_loads(
     if not generated_directions:
         return []
 
-    model.analyze_linear(check_statics=False, log=False)
+    # The reaction basis can include tension-only bracing. PyNite's linear
+    # shortcut explicitly does not resolve tension/compression-only members, so
+    # use its iterative first-order solver for the tagged source combinations.
+    model.analyze(
+        check_statics=False,
+        log=False,
+        combo_tags=["p399-reaction-basis"],
+    )
     topology_nodes = {str(node["id"]): node for node in nodes_by_topology.values()}
     members_by_component: dict[str, list[Any]] = {}
     for declaration in analysis.members:
@@ -8754,8 +8868,37 @@ def solve_project_structural(
                     case=line_load.case_id,
                 )
 
+    p399_base_combination_ids = {
+        direction.base_combination_id
+        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+        if direction.base_combination_id is not None
+    }
+    p399_stability_combination_ids = {
+        direction.stability_combination_id
+        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+    }
+    p399_nhf_combination_ids = {
+        direction.nhf_combination_id
+        for direction in (analysis.stability.direction_cases if analysis.stability else [])
+        if direction.nhf_combination_id
+    }
+    if analysis.stability is not None and not analysis.stability.direction_cases:
+        p399_stability_combination_ids.add(
+            analysis.stability.stability_combination_id
+        )
     for combination in combinations:
-        model.add_load_combo(combination.id, dict(combination.factors))
+        combo_tags: list[str] = []
+        if combination.id in p399_base_combination_ids:
+            combo_tags.append("p399-reaction-basis")
+        if combination.id in p399_stability_combination_ids:
+            combo_tags.append("p399-stability")
+        if combination.id in p399_nhf_combination_ids:
+            combo_tags.append("p399-nhf")
+        model.add_load_combo(
+            combination.id,
+            dict(combination.factors),
+            combo_tags=combo_tags or None,
+        )
     report_progress(
         "topology",
         "Building analytical nodes, members, restraints, and loads",
@@ -8779,7 +8922,19 @@ def solve_project_structural(
         ]
     first_order_stability: dict[tuple[str, str], tuple[float, float]] = {}
     first_order_nhf_eaves_displacement_mm: dict[str, float] = {}
-    first_order_rafter_axial_kN: dict[str, float] = {}
+    first_order_rafter_axial_kN: dict[tuple[str, str], float] = {}
+    members_by_id = {declaration.id: declaration for declaration in analysis.members}
+    rafter_members_by_component: dict[
+        str, list[AnalyticalMemberDeclaration]
+    ] = defaultdict(list)
+    if analysis.stability is not None:
+        for member_id in analysis.stability.rafter_member_ids:
+            declaration = members_by_id.get(member_id)
+            if declaration is None:
+                raise StructuralAnalysisError(
+                    f"global stability references missing rafter member {member_id!r}"
+                )
+            rafter_members_by_component[declaration.component_id].append(declaration)
     stability_result: StabilityResult | None = None
     generated_nodal_loads: list[NodalLoad] = []
     try:
@@ -8793,11 +8948,15 @@ def solve_project_structural(
                 member_node_ids=member_node_ids,
                 nodes_by_topology=nodes_by_topology,
             )
-            report_progress("linear_solve", "Solving first-order load cases")
-            model.analyze_linear(check_statics=False, log=False)
-            members_by_id = {
-                declaration.id: declaration for declaration in analysis.members
-            }
+            report_progress(
+                "linear_solve",
+                "Solving tension-aware first-order stability cases",
+            )
+            model.analyze(
+                check_statics=False,
+                log=False,
+                combo_tags=["p399-stability", "p399-nhf"],
+            )
             for stability_direction in stability_directions:
                 stability_combination_id = stability_direction[
                     "stability_combination_id"
@@ -8820,17 +8979,20 @@ def solve_project_structural(
                             if load.member_id == declaration.id
                         ],
                     )
-                first_order_rafter_axial_kN[stability_direction["id"]] = max(
-                    (
+                for (
+                    component_id,
+                    component_members,
+                ) in rafter_members_by_component.items():
+                    first_order_rafter_axial_kN[
+                        (stability_direction["id"], component_id)
+                    ] = max(
                         _member_max_axial(
                             model,
-                            members_by_id[member_id],
+                            member,
                             combination_id=stability_combination_id,
                         )
-                        for member_id in analysis.stability.rafter_member_ids
-                    ),
-                    default=0.0,
-                )
+                        for member in component_members
+                    )
                 nhf_combination_id = stability_direction["nhf_combination_id"]
                 if nhf_combination_id and analysis.stability.eaves_member_ids:
                     axis_name = stability_direction["horizontal_axis"]
@@ -8941,13 +9103,28 @@ def solve_project_structural(
                         "x" if stability_direction["horizontal_axis"] == "x" else "y"
                     ),
                     converged=True,
-                    governing_moment_amplification=max(
-                        comparison.moment_amplification
-                        for comparison in governing_comparisons
+                    # Compare the primary-frame response envelopes, rather than
+                    # allowing a near-zero response in one short segment to
+                    # manufacture an arbitrarily large governing ratio.
+                    governing_moment_amplification=_amplification(
+                        max(
+                            comparison.second_order_max_moment_kNm
+                            for comparison in governing_comparisons
+                        ),
+                        max(
+                            comparison.first_order_max_moment_kNm
+                            for comparison in governing_comparisons
+                        ),
                     ),
-                    governing_displacement_amplification=max(
-                        comparison.displacement_amplification
-                        for comparison in governing_comparisons
+                    governing_displacement_amplification=_amplification(
+                        max(
+                            comparison.second_order_max_displacement_mm
+                            for comparison in governing_comparisons
+                        ),
+                        max(
+                            comparison.first_order_max_displacement_mm
+                            for comparison in governing_comparisons
+                        ),
                     ),
                     nhf_eaves_displacement_mm=nhf_displacement_mm,
                     alpha_cr=alpha_cr,
@@ -8966,46 +9143,33 @@ def solve_project_structural(
             for result in direction_results
             if result.alpha_cr is not None
         ]
-        rafter_design_axial_kN = (
-            max(first_order_rafter_axial_kN.values())
-            if analysis.stability.rafter_member_ids
+        rafter_applicability_checks = _rafter_stability_applicability_checks(
+            analysis,
+            first_order_rafter_axial_kN,
+        )
+        governing_rafter_check = (
+            max(rafter_applicability_checks, key=lambda check: check.utilisation)
+            if rafter_applicability_checks
             else None
         )
-        rafter_elastic_critical_load_kN: float | None = None
-        if analysis.stability.rafter_member_ids:
-            declarations_by_id = {
-                declaration.id: declaration for declaration in analysis.members
-            }
-            sections_by_id = {section.id: section for section in analysis.sections}
-            materials_by_id = {material.id: material for material in analysis.materials}
-            rafter_length_m = sum(
-                _length(
-                    declarations_by_id[member_id].start,
-                    declarations_by_id[member_id].end,
-                )
-                for member_id in analysis.stability.rafter_member_ids
-            )
-            minimum_ei_kNm2 = min(
-                materials_by_id[
-                    declarations_by_id[member_id].material_id
-                ].elastic_modulus_kN_m2
-                * max(
-                    sections_by_id[declarations_by_id[member_id].section_id].iy_m4,
-                    sections_by_id[declarations_by_id[member_id].section_id].iz_m4,
-                )
-                for member_id in analysis.stability.rafter_member_ids
-            )
-            rafter_elastic_critical_load_kN = (
-                pi**2 * minimum_ei_kNm2 / rafter_length_m**2
-            )
+        rafter_design_axial_kN = (
+            governing_rafter_check.design_axial_kN
+            if governing_rafter_check is not None
+            else None
+        )
+        rafter_elastic_critical_load_kN = (
+            governing_rafter_check.elastic_critical_load_kN
+            if governing_rafter_check is not None
+            else None
+        )
         rafter_axial_limit_kN = (
-            0.09 * rafter_elastic_critical_load_kN
-            if rafter_elastic_critical_load_kN is not None
+            governing_rafter_check.axial_limit_kN
+            if governing_rafter_check is not None
             else None
         )
         rafter_axial_force_significant = (
-            rafter_design_axial_kN > rafter_axial_limit_kN
-            if rafter_design_axial_kN is not None and rafter_axial_limit_kN is not None
+            not all(check.applicable for check in rafter_applicability_checks)
+            if rafter_applicability_checks
             else None
         )
         stability_result = StabilityResult(
@@ -9039,6 +9203,7 @@ def solve_project_structural(
                 if rafter_axial_force_significant is not None
                 else None
             ),
+            rafter_applicability_checks=rafter_applicability_checks,
         )
 
     report_progress("response", "Evaluating solved stability response")

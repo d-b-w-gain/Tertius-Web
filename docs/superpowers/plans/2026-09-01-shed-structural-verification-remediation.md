@@ -305,10 +305,11 @@ workbench. The saved snapshot remains the authoritative result.
   pass, 247/247 connections pass, 62/62 tension rows pass, 62/62 bracing paths
   pass, and 101 applicable serviceability checks pass. There are zero explicit
   failures and zero unexplained unsupported rows.
-- [x] The stability solve converges in all four sway directions with
-  `alpha_cr,min=46.44`; its amplification warning and the unsigned documentation
-  gate remain visible for engineering review rather than being relabelled as a
-  calculated pass.
+- [x] The initial stability solve converged in all four sway directions with
+  `alpha_cr,min=46.44`, but retained an amplification warning and unsigned
+  documentation gate. The follow-up audit below found that this result compared
+  unlike brace states and concatenated independent rafters, so it was not used
+  as the final acceptance result.
 - [x] Add live structural phase/elapsed/member-count telemetry and focused
   backend/UI regression coverage.
 - [x] Live Procurement reports `Verified: model and BoM manifest match`; the
@@ -319,3 +320,13 @@ workbench. The saved snapshot remains the authoritative result.
   acceptance observed topology `299/299`, first-order solve, P-Delta,
   connection, cross-section, and member-stability phases before the result was
   saved in 167.2 seconds. Reopening reports `SAVED ANALYSIS` and reuses it.
+- [x] Correct the residual false global-stability gate: match base restraints to
+  the lowest endpoint of each physical column, keep each physical rafter's
+  Euler length independent, and compare tension-aware first-order and P-Delta
+  response on the same active structural system.
+- [x] Re-run the corrected engine against the actual demo `shed` capture (299
+  analytical members). The complete solve finished in 141.1 seconds with zero
+  blocking gates: all four sway directions converged, the governing moment and
+  displacement amplification ratios were 1.002 and 1.001, and
+  `alpha_cr,min=28.29`. All six 1.557 m physical rafters satisfy the P399
+  axial-force applicability check; governing utilisation is 0.047.

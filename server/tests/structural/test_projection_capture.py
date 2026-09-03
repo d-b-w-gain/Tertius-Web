@@ -856,8 +856,32 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
         "F2CL",
         "F2CR",
     ]
+    assert p399_stability.analysis_base_model == "fixed"
+    assert p399_stability.analysis_basis_status == "assumed"
     assert p399_unavailable == []
     assert p399_warnings == []
+
+    pinned_members = [
+        member.model_copy(
+            update={
+                "start_restraints": Restraints(dx=True, dy=True, dz=True)
+                if member.component_id.endswith(("CL", "CR"))
+                else member.start_restraints
+            }
+        )
+        for member in p399_members
+    ]
+    _, _, pinned_stability, _, _ = _p399_stability_actions(
+        effective_configuration,
+        components=components,
+        members=pinned_members,
+        load_combinations=resolved.load_combinations,
+    )
+    assert pinned_stability is not None
+    assert pinned_stability.analysis_base_model == "perfectly_pinned"
+    assert pinned_stability.base_stiffness_status == "verified"
+    assert pinned_stability.analysis_basis_status == "verified_conservative"
+    assert pinned_stability.physical_connection_stiffness_status == "not_relied_upon"
 
 
 def test_split_analytical_segments_share_one_physical_serviceability_check(

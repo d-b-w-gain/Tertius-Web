@@ -933,6 +933,16 @@ export type StructuralSnapshot = {
     rafter_axial_limit_kN?: number | null
     rafter_axial_force_significant?: boolean | null
     simplified_alpha_cr_applicable?: boolean | null
+    rafter_applicability_checks?: Array<{
+      component_id: string
+      member_ids: string[]
+      length_m: number
+      design_axial_kN: number
+      elastic_critical_load_kN: number
+      axial_limit_kN: number
+      utilisation: number
+      applicable: boolean
+    }>
   } | null
   verification_stages: VerificationStage[]
   calculation_sheets: CalculationSheet[]

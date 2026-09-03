@@ -2213,11 +2213,15 @@ def _p399_stability_actions(
         ] + [(member.end.z, member.end_restraints) for member in component_members]
         base_restraints.append(min(endpoint_restraints, key=lambda item: item[0])[1])
     base_model: Literal["unspecified", "perfectly_pinned", "rotational_spring", "fixed"]
-    if all(
+    translations_restrained = all(
+        restraint.dx and restraint.dy and restraint.dz
+        for restraint in base_restraints
+    )
+    if translations_restrained and all(
         restraint.rx and restraint.ry and restraint.rz for restraint in base_restraints
     ):
         base_model = "fixed"
-    elif all(
+    elif translations_restrained and all(
         not restraint.rx and not restraint.ry and not restraint.rz
         for restraint in base_restraints
     ):
@@ -2238,15 +2242,25 @@ def _p399_stability_actions(
             "Compiled support restraints; physical rotational stiffness remains "
             "subject to connection evidence."
         ),
-        base_stiffness_status="assumed",
+        base_stiffness_status=(
+            "verified" if base_model == "perfectly_pinned" else "assumed"
+        ),
         direction_cases=directions,
         column_component_ids=column_component_ids,
         eaves_member_ids=eaves_member_ids,
         rafter_member_ids=rafter_member_ids,
         column_height_m=column_height,
         analysis_base_model=base_model,
-        analysis_basis_status="assumed",
-        physical_connection_stiffness_status="not_checked",
+        analysis_basis_status=(
+            "verified_conservative"
+            if base_model == "perfectly_pinned"
+            else "assumed"
+        ),
+        physical_connection_stiffness_status=(
+            "not_relied_upon"
+            if base_model == "perfectly_pinned"
+            else "not_checked"
+        ),
     )
     return generated_cases, generated_combinations, stability, [], []
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from math import sqrt
+from math import pi, sqrt
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +13,7 @@ from core.structural.authoring_runtime import (
     StructuralModel,
 )
 from core.structural.contracts import (
+    AnalyticalMemberDeclaration,
     AnchorGroupCheck,
     BoltedSheetInterfaceCheck,
     ConnectionCheck,
@@ -32,6 +33,7 @@ from core.structural.design_capture import (
     parse_project_structural_capture,
 )
 from core.structural.project_analysis import (
+    _analysis_base_model_matches,
     _bracing_load_path_traces,
     _calculated_anchored_fixture_resistance,
     _calculated_direct_anchored_sheet_resistance,
@@ -40,11 +42,137 @@ from core.structural.project_analysis import (
     _released_rotational_datum_restraints,
     _released_node_rotational_axes,
     _relative_transverse_deflection_mm,
+    _rafter_stability_applicability_checks,
     _select_calculated_connection_resistance,
     _stability_scope_comparisons,
     _tension_member_checks,
     solve_project_structural,
 )
+
+
+def _test_member(
+    *,
+    member_id: str,
+    component_id: str,
+    start_z: float,
+    end_z: float,
+    start_restraints: Restraints | None = None,
+    end_restraints: Restraints | None = None,
+) -> AnalyticalMemberDeclaration:
+    return AnalyticalMemberDeclaration(
+        id=member_id,
+        label=member_id,
+        component_id=component_id,
+        start=Vector3(x=0, y=0, z=start_z),
+        end=Vector3(x=0, y=0, z=end_z),
+        start_restraints=start_restraints or Restraints(),
+        end_restraints=end_restraints or Restraints(),
+        section_id="section",
+        material_id="material",
+        assumption="Structural regression fixture.",
+    )
+
+
+def test_segmented_column_base_match_uses_lowest_physical_endpoint() -> None:
+    pinned = Restraints(dx=True, dy=True, dz=True)
+    analysis = SimpleNamespace(
+        stability=SimpleNamespace(
+            analysis_base_model="perfectly_pinned",
+            column_component_ids=["column"],
+            eaves_member_ids=["column-segment-2"],
+        ),
+        members=[
+            _test_member(
+                member_id="column-segment-1",
+                component_id="column",
+                start_z=0,
+                end_z=1,
+                start_restraints=pinned,
+            ),
+            _test_member(
+                member_id="column-segment-2",
+                component_id="column",
+                start_z=1,
+                end_z=2,
+            ),
+        ],
+    )
+
+    assert _analysis_base_model_matches(analysis)
+
+    analysis.members[0] = analysis.members[0].model_copy(
+        update={"start_restraints": Restraints(dx=True, dy=True)}
+    )
+    assert not _analysis_base_model_matches(analysis)
+
+
+def test_rafter_applicability_keeps_independent_physical_lengths_separate() -> None:
+    members = [
+        _test_member(
+            member_id="rafter-a-1",
+            component_id="rafter-a",
+            start_z=0,
+            end_z=1,
+        ),
+        _test_member(
+            member_id="rafter-a-2",
+            component_id="rafter-a",
+            start_z=1,
+            end_z=2,
+        ),
+        _test_member(
+            member_id="rafter-b-1",
+            component_id="rafter-b",
+            start_z=0,
+            end_z=1,
+        ),
+        _test_member(
+            member_id="rafter-b-2",
+            component_id="rafter-b",
+            start_z=1,
+            end_z=2,
+        ),
+    ]
+    analysis = SimpleNamespace(
+        stability=SimpleNamespace(rafter_member_ids=[member.id for member in members]),
+        members=members,
+        sections=[
+            SectionProperties(
+                id="section",
+                label="Test section",
+                area_m2=1e-3,
+                iy_m4=1e-6,
+                iz_m4=2e-6,
+                torsion_j_m4=1e-8,
+            )
+        ],
+        materials=[
+            StructuralMaterial(
+                id="material",
+                label="Test steel",
+                elastic_modulus_kN_m2=200_000_000,
+                shear_modulus_kN_m2=80_000_000,
+                poisson_ratio=0.3,
+                density_kg_m3=7850,
+            )
+        ],
+    )
+    demands = {
+        ("positive-x", "rafter-a"): 10.0,
+        ("negative-x", "rafter-a"): 12.0,
+        ("positive-x", "rafter-b"): 8.0,
+        ("negative-x", "rafter-b"): 9.0,
+    }
+
+    checks = _rafter_stability_applicability_checks(analysis, demands)
+
+    assert [check.component_id for check in checks] == ["rafter-a", "rafter-b"]
+    assert [check.length_m for check in checks] == pytest.approx([2.0, 2.0])
+    expected_ncr = pi**2 * (200_000_000 * 2e-6) / 2.0**2
+    assert [check.elastic_critical_load_kN for check in checks] == pytest.approx(
+        [expected_ncr, expected_ncr]
+    )
+    assert checks[0].design_axial_kN == pytest.approx(12.0)
 
 
 def test_relative_transverse_deflection_removes_rigid_body_chord_motion() -> None:
