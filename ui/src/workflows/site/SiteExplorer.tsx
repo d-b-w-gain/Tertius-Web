@@ -14,8 +14,40 @@ import type { CandidateRepresentation } from './CandidateDesignLayer'
 
 export type SiteBaseMapMode = 'street' | 'nsw' | 'satellite' | 'none'
 export type SiteGroundMode = 'flat' | 'terrain'
+type SiteViewMode = '2d' | '3d'
+type SiteOverlayMode = 'wind' | 'terrain' | 'none'
+type SiteCameraMode = 'plan' | 'perspective'
+
+type SiteExplorerPreferences = {
+  viewMode: SiteViewMode
+  overlayMode: SiteOverlayMode
+  baseMapMode: SiteBaseMapMode
+  groundMode: SiteGroundMode
+  candidateRepresentation: CandidateRepresentation
+  cameraMode: SiteCameraMode
+}
+
+const SITE_EXPLORER_PREFERENCES_VERSION = 1
+
+function preferenceStorageKey(projectName: string) {
+  return `tertius.site-explorer.v${SITE_EXPLORER_PREFERENCES_VERSION}.${projectName}`
+}
+
+function isSiteExplorerPreferences(value: unknown): value is SiteExplorerPreferences {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<SiteExplorerPreferences>
+  return (
+    ['2d', '3d'].includes(candidate.viewMode ?? '')
+    && ['wind', 'terrain', 'none'].includes(candidate.overlayMode ?? '')
+    && ['street', 'nsw', 'satellite', 'none'].includes(candidate.baseMapMode ?? '')
+    && ['flat', 'terrain'].includes(candidate.groundMode ?? '')
+    && ['envelope', 'full'].includes(candidate.candidateRepresentation ?? '')
+    && ['plan', 'perspective'].includes(candidate.cameraMode ?? '')
+  )
+}
 
 type Props = {
+  projectName: string
   serverUrl: string
   extusServerUrl: string
   getAccessToken: () => Promise<string>
@@ -36,27 +68,78 @@ type Props = {
 }
 
 export function SiteExplorer(props: Props) {
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
+  const { extusServerUrl, getAccessToken, onCandidateDimensions } = props
+  const [viewMode, setViewMode] = useState<SiteViewMode>('2d')
   const [hasOpened3d, setHasOpened3d] = useState(false)
-  const [overlayMode, setOverlayMode] = useState<'wind' | 'terrain' | 'none'>('wind')
+  const [overlayMode, setOverlayMode] = useState<SiteOverlayMode>('wind')
   const [baseMapMode, setBaseMapMode] = useState<SiteBaseMapMode>('nsw')
   const [groundMode, setGroundMode] = useState<SiteGroundMode>('flat')
   const [richCapable, setRichCapable] = useState(true)
   const [candidateModelUrl, setCandidateModelUrl] = useState<string | null>(null)
   const [candidateModelState, setCandidateModelState] = useState<'idle' | 'loading' | 'ready' | 'missing'>('idle')
   const [candidateRepresentation, setCandidateRepresentation] = useState<CandidateRepresentation>('envelope')
-  const [cameraMode, setCameraMode] = useState<'plan' | 'perspective'>('plan')
+  const [cameraMode, setCameraMode] = useState<SiteCameraMode>('plan')
   const [candidateDimensions, setCandidateDimensions] = useState<CandidateModelSiteDimensions | null>(null)
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false)
 
   useEffect(() => {
-    if (props.terrainEvidenceId) {
-      setGroundMode('terrain')
-      setOverlayMode('terrain')
-      return
+    setPreferencesLoaded(false)
+    let preferences: SiteExplorerPreferences | null = null
+    try {
+      const encoded = window.localStorage.getItem(preferenceStorageKey(props.projectName))
+      const parsed: unknown = encoded ? JSON.parse(encoded) : null
+      if (isSiteExplorerPreferences(parsed)) preferences = parsed
+    } catch {
+      preferences = null
     }
-    setGroundMode('flat')
-    setOverlayMode('wind')
-  }, [props.terrainEvidenceId])
+    const terrainAvailable = Boolean(props.terrainEvidenceId)
+    const next = preferences ?? {
+      viewMode: '2d',
+      overlayMode: terrainAvailable ? 'terrain' : 'wind',
+      baseMapMode: 'nsw',
+      groundMode: terrainAvailable ? 'terrain' : 'flat',
+      candidateRepresentation: 'envelope',
+      cameraMode: 'plan',
+    }
+    const nextViewMode = next.viewMode
+    setViewMode(nextViewMode)
+    setHasOpened3d(nextViewMode === '3d')
+    setOverlayMode(next.overlayMode === 'terrain' && !terrainAvailable ? 'wind' : next.overlayMode)
+    setBaseMapMode(next.baseMapMode)
+    setGroundMode(next.groundMode === 'terrain' && !terrainAvailable ? 'flat' : next.groundMode)
+    setCandidateRepresentation(next.candidateRepresentation)
+    setCameraMode(next.cameraMode)
+    setPreferencesLoaded(true)
+  }, [props.projectName, props.terrainEvidenceId])
+
+  useEffect(() => {
+    if (!preferencesLoaded || !props.projectName) return
+    const preferences: SiteExplorerPreferences = {
+      viewMode,
+      overlayMode,
+      baseMapMode,
+      groundMode,
+      candidateRepresentation,
+      cameraMode,
+    }
+    try {
+      window.localStorage.setItem(
+        preferenceStorageKey(props.projectName),
+        JSON.stringify(preferences),
+      )
+    } catch {
+      // The workbench remains usable when browser preference storage is unavailable.
+    }
+  }, [
+    baseMapMode,
+    cameraMode,
+    candidateRepresentation,
+    groundMode,
+    overlayMode,
+    preferencesLoaded,
+    props.projectName,
+    viewMode,
+  ])
 
   useEffect(() => {
     if (typeof WebGL2RenderingContext === 'undefined') {
@@ -72,7 +155,7 @@ export function SiteExplorer(props: Props) {
     const checkCandidate = async () => {
       setCandidateModelState((current) => current === 'ready' ? current : 'loading')
       try {
-        const response = await apiFetch(`${props.extusServerUrl}/status`, props.getAccessToken)
+        const response = await apiFetch(`${extusServerUrl}/status`, getAccessToken)
         if (!response.ok) {
           if (!cancelled) {
             setCandidateModelUrl(null)
@@ -86,11 +169,11 @@ export function SiteExplorer(props: Props) {
         }
         if (!payload.mtime) throw new Error('Model status did not include an artifact timestamp')
         if (!cancelled) {
-          setCandidateModelUrl(`${props.extusServerUrl}/model?t=${encodeURIComponent(payload.mtime)}`)
+          setCandidateModelUrl(`${extusServerUrl}/model?t=${encodeURIComponent(payload.mtime)}`)
           setCandidateModelState('ready')
           if (payload.site_dimensions) {
             setCandidateDimensions(payload.site_dimensions)
-            props.onCandidateDimensions?.(payload.site_dimensions)
+            onCandidateDimensions?.(payload.site_dimensions)
           }
         }
       } catch {
@@ -106,7 +189,7 @@ export function SiteExplorer(props: Props) {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [props.extusServerUrl, props.getAccessToken, props.onCandidateDimensions])
+  }, [extusServerUrl, getAccessToken, onCandidateDimensions])
 
   return (
     <section className="rounded border border-cyan-500/40 bg-slate-900/60 p-3" data-testid="site-explorer">

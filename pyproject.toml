@@ -43,13 +43,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["server"]
+packages = ["server", "tertius"]
 
 [tool.mypy]
 python_version = "3.14"
-mypy_path = ["server"]
+mypy_path = ["server", "."]
 explicit_package_bases = true
-files = ["server", "extract_coords.py"]
+files = ["server", "tertius", "extract_coords.py"]
 
 # build123d, py-lib3mf, etc. ship no stubs or are partially typed.
 ignore_missing_imports = true

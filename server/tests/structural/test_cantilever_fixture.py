@@ -36,7 +36,7 @@ def test_pynite_cantilever_matches_independent_beam_solution():
 def test_fixture_contract_links_graph_results_and_visual_identity():
     snapshot = cantilever_snapshot()
 
-    assert snapshot.schema_version == "1.0"
+    assert snapshot.schema_version == "2.0"
     assert snapshot.mode == "fixture"
     assert {node.id for node in snapshot.nodes} == {BASE_NODE_ID, FREE_NODE_ID}
     assert snapshot.members[0].id == MEMBER_ID

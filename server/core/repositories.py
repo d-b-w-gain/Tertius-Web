@@ -14,11 +14,12 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, StructuralConfigurationRevision, now_utc
 from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
 
 
-FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
+PYTHON_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
+PROJECT_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.(?:py|json)$")
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 WORKER_LOST_ERROR = "Compile worker stopped before reporting a result"
 WORKER_LOST_ERROR_CODE = "worker_lost"
@@ -55,7 +56,13 @@ def normalize_file_version(value: datetime) -> str:
 
 
 def require_valid_python_filename(filename: str) -> str:
-    if not FILENAME_RE.fullmatch(filename):
+    if not PYTHON_FILENAME_RE.fullmatch(filename):
+        raise ValueError("Invalid Python filename")
+    return filename
+
+
+def require_valid_project_filename(filename: str) -> str:
+    if not PROJECT_FILENAME_RE.fullmatch(filename):
         raise ValueError("Invalid filename")
     return filename
 
@@ -130,19 +137,52 @@ class ProjectRepository:
         self.db.flush()
         return True
 
-    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+    def create_project(
+        self,
+        name: str,
+        user_id: UUID,
+        source_files: dict[str, str],
+        structural_configuration: dict[str, object] | None = None,
+    ) -> Project:
         name = require_valid_project_name(name)
+        validated_files = {
+            require_valid_project_filename(filename): content
+            for filename, content in source_files.items()
+        }
+        if "design.py" not in validated_files:
+            raise ValueError("Project source bundle must include design.py")
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)
         self.db.add(project)
         self.db.flush()
-        self.db.add(
-            ProjectFile(
-                tenant_id=self.tenant_id,
-                project_id=project.id,
-                filename="design.py",
-                content=default_code,
-            )
+        self.db.add_all(
+            [
+                ProjectFile(
+                    tenant_id=self.tenant_id,
+                    project_id=project.id,
+                    filename=filename,
+                    content=content,
+                )
+                for filename, content in validated_files.items()
+            ]
         )
+        if structural_configuration is not None:
+            from core.structural.project_configuration import (
+                StructuralProjectConfiguration,
+            )
+
+            validated_configuration = StructuralProjectConfiguration.model_validate(
+                structural_configuration
+            )
+            self.db.add(
+                StructuralConfigurationRevision(
+                    tenant_id=self.tenant_id,
+                    project_id=project.id,
+                    revision=1,
+                    digest=validated_configuration.configuration_digest,
+                    content=validated_configuration.model_dump(mode="json"),
+                    created_by=user_id,
+                )
+            )
         self.db.commit()
         return project
 
@@ -179,7 +219,7 @@ class ProjectRepository:
         return rows
 
     def get_code(self, project_name: str, filename: str) -> str | None:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         project = self.get_project(project_name)
         if project is None:
             return None
@@ -194,7 +234,7 @@ class ProjectRepository:
         return None if file is None else file.content
 
     def stage_code_update(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         project = self.get_project(project_name)
         if project is None:
             return False
@@ -301,7 +341,7 @@ class ProjectRepository:
         return snapshot, changed
 
     def delete_file(self, project_name: str, filename: str) -> bool:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         if filename == "design.py":
             raise ValueError("Cannot delete design.py")
 
@@ -689,6 +729,44 @@ class CompileRepository:
         for artifact in artifacts:
             self.db.delete(artifact)
         self.db.flush()
+
+    def prunable_artifact_bundles(
+        self,
+        project_id: UUID,
+        keep_latest: int,
+    ) -> list[Artifact]:
+        """Return every artifact belonging to an obsolete complete revision.
+
+        Artifact retention is revision based. Deleting kinds independently can
+        leave a model whose procurement, structural, or drawing projection has
+        already been removed.
+        """
+
+        keep_latest = max(0, keep_latest)
+        bundle_rows = list(
+            self.db.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.project_id == project_id,
+                    Artifact.compile_job_id.is_not(None),
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            ).all()
+        )
+        retained_job_ids: set[UUID] = set()
+        for artifact in bundle_rows:
+            job_id = artifact.compile_job_id
+            if job_id is None or job_id in retained_job_ids:
+                continue
+            if len(retained_job_ids) >= keep_latest:
+                continue
+            retained_job_ids.add(job_id)
+        return [
+            artifact
+            for artifact in bundle_rows
+            if artifact.compile_job_id not in retained_job_ids
+        ]
 
     def artifact_for_job(self, job_id: UUID, kind: str | None = None) -> Artifact | None:
         query = select(Artifact).where(

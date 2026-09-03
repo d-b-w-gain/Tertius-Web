@@ -31,6 +31,7 @@ RUN uv sync --no-dev --locked --no-install-project
 
 # Copy the server directory and install the project itself
 COPY server/ /app/server/
+COPY tertius/ /app/tertius/
 RUN uv sync --no-dev --locked
 
 RUN chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh

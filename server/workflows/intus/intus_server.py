@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from importlib.metadata import PackageNotFoundError, version
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version
 import logging
-from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID
 from pydantic import BaseModel, ValidationError
@@ -33,6 +33,7 @@ from core.pi_agent_prompt import (
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
+from core.project_templates import default_project_files, default_structural_configuration
 from core.llm_file_edit import (
     LLM_FILE_EDIT_CONTEXT_CHARS,
     LlmEditableFile as DomainEditableFile,
@@ -46,6 +47,7 @@ from core.repositories import (
     CompileRepository,
     ProjectRepository,
     normalize_file_version,
+    require_valid_project_filename,
     require_valid_python_filename,
     LlmEditRepository,
 )
@@ -66,15 +68,6 @@ app.add_middleware(
 )
 
 # â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
-
-def get_default_purlin():
-    if TEMPLATE_FILE.exists():
-        return TEMPLATE_FILE.read_text(encoding="utf-8")
-    return ""
-
-DEFAULT_PURLIN = get_default_purlin()
-
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
@@ -156,7 +149,12 @@ def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Ses
         return JSONResponse(status_code=400, content={"error": str(exc)})
     if existing:
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
-    repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
+    repo.create_project(
+        name,
+        ctx.user_id,
+        default_project_files(),
+        default_structural_configuration(),
+    )
     return {"success": True, "project": name}
 
 @app.post("/projects/{name}/activate")
@@ -216,7 +214,7 @@ def get_status(
 ):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -286,7 +284,7 @@ async def compile_project(
     repo = ProjectRepository(db, ctx.tenant_id)
     compile_repo = CompileRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})

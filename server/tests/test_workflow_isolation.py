@@ -18,7 +18,6 @@ from core.models import (
     TimusSettings,
     UserWorkspaceState,
 )
-from workflows.extus import extus_server
 from workflows.timus import timus_server
 
 
@@ -87,14 +86,19 @@ def add_compile_job_with_artifacts(
         )
     )
     if manifest is not None and manifest_job is not None:
+        manifest = {
+            "schema_version": "tertius.procurement.v1",
+            "compiled_design_digest": "d" * 64,
+            **manifest,
+        }
         manifest_bytes = json.dumps(manifest).encode("utf-8")
         db_session.add(
             Artifact(
                 tenant_id=seeded_tenant.tenant_id,
                 project_id=seeded_tenant.project_id,
                 compile_job_id=manifest_job.id,
-                kind="bom_manifest",
-                storage_key=f"{manifest_job.id}/bom_manifest.json",
+                kind="procurement",
+                storage_key=f"{manifest_job.id}/procurement.json",
                 content_type="application/json",
                 byte_size=len(manifest_bytes),
                 content=manifest_bytes,
@@ -261,19 +265,19 @@ def test_extus_serves_latest_authenticated_tenant_artifact(
     assert model_response.content == b"solid latest"
 
 
-def test_extus_bom_manifest_returns_404_when_missing(
+def test_extus_procurement_returns_404_when_missing(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
 ):
     add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None)
 
-    response = authenticated_extus_client.get("/bom_manifest")
+    response = authenticated_extus_client.get("/procurement")
 
     assert response.status_code == 404
 
 
-def test_extus_bom_manifest_reports_diagnostic_only_artifact(
+def test_extus_procurement_reports_diagnostic_only_artifact(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -284,14 +288,14 @@ def test_extus_bom_manifest_reports_diagnostic_only_artifact(
         manifest={
             "version": 1,
             "source_snapshot_hash": "snapshot-a",
-            "scopes": [],
+            "assemblies": [],
             "components": [],
             "requirements": [],
             "diagnostics": [{"code": "no_bom_metadata", "severity": "error", "message": "missing"}],
         },
     )
 
-    response = authenticated_extus_client.get("/bom_manifest")
+    response = authenticated_extus_client.get("/procurement")
 
     assert response.status_code == 200
     payload = response.json()
@@ -309,7 +313,7 @@ def test_extus_bom_manifest_reports_diagnostic_only_artifact(
     }
 
 
-def test_extus_bom_manifest_reports_scopes_only_artifact(
+def test_extus_procurement_reports_scopes_only_artifact(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -320,14 +324,14 @@ def test_extus_bom_manifest_reports_scopes_only_artifact(
         manifest={
             "version": 1,
             "source_snapshot_hash": "snapshot-a",
-            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "assemblies": [{"id": "portal", "label": "Portal", "parent_id": None}],
             "components": [],
             "requirements": [],
             "diagnostics": [],
         },
     )
 
-    response = authenticated_extus_client.get("/bom_manifest")
+    response = authenticated_extus_client.get("/procurement")
 
     assert response.status_code == 200
     payload = response.json()
@@ -336,7 +340,7 @@ def test_extus_bom_manifest_reports_scopes_only_artifact(
     assert payload["manifest_counts"]["requirements"] == 0
 
 
-def test_extus_bom_manifest_reports_ready_artifact(
+def test_extus_procurement_reports_ready_artifact(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -347,7 +351,7 @@ def test_extus_bom_manifest_reports_ready_artifact(
         manifest={
             "version": 1,
             "source_snapshot_hash": "snapshot-a",
-            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "assemblies": [{"id": "portal", "label": "Portal", "parent_id": None}],
             "components": [
                 {
                     "id": "portal.column.left",
@@ -371,15 +375,20 @@ def test_extus_bom_manifest_reports_ready_artifact(
         },
     )
 
-    response = authenticated_extus_client.get("/bom_manifest")
+    response = authenticated_extus_client.get("/procurement")
+    compatibility_response = authenticated_extus_client.get(
+        "/procurement_analysis"
+    )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["artifact_state"] == "ready"
     assert payload["manifest_counts"]["requirements"] == 1
+    assert compatibility_response.status_code == 200
+    assert compatibility_response.json() == payload
 
 
-def test_extus_bom_manifest_reports_stale_artifact_for_model_mismatch(
+def test_extus_procurement_reports_stale_artifact_for_model_mismatch(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -406,14 +415,14 @@ def test_extus_bom_manifest_reports_stale_artifact_for_model_mismatch(
         manifest={
             "version": 1,
             "source_snapshot_hash": "snapshot-a",
-            "scopes": [{"id": "portal", "label": "Portal", "parent_id": None}],
+            "assemblies": [{"id": "portal", "label": "Portal", "parent_id": None}],
             "components": [],
             "requirements": [],
             "diagnostics": [],
         },
     )
 
-    response = authenticated_extus_client.get("/bom_manifest")
+    response = authenticated_extus_client.get("/procurement")
 
     assert response.status_code == 200
     payload = response.json()
@@ -422,7 +431,7 @@ def test_extus_bom_manifest_reports_stale_artifact_for_model_mismatch(
     assert payload["artifact_state"] == "stale_manifest"
 
 
-def test_extus_procurement_analysis_uses_active_project_source(
+def test_extus_procurement_rejects_source_only_projects(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -444,22 +453,13 @@ right = make_member(1200, part_number="TEST-A")
     add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None)
     db_session.commit()
 
-    response = authenticated_extus_client.get("/procurement_analysis")
+    response = authenticated_extus_client.get("/procurement")
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["artifact_state"] == "scopes_only"
-    assert payload["manifest_counts"]["requirements"] == 2
-    assert payload["manifest"]["analysis_mode"] == "source_diagnostic"
-    assert payload["manifest"]["quantity_authority"] == "diagnostic_only"
-    requirements = payload["manifest"]["requirements"]
-    assert {requirement["part_number"] for requirement in requirements} == {"TEST-A"}
-    assert sum(requirement["rolled_up_quantity"] for requirement in requirements) == 2
-    assert {requirement["quantity_source"] for requirement in requirements} == {"diagnostic_placeholder"}
-    assert {requirement["orderable"] for requirement in requirements} == {False}
+    assert response.status_code == 404
+    assert response.json()["error"] == "Procurement artifact not found"
 
 
-def test_extus_procurement_analysis_uses_glb_visual_tree(
+def test_extus_procurement_rejects_glb_only_projects(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
@@ -493,29 +493,16 @@ left = make_member("VISUAL-A")
     add_compile_job_with_artifacts(db_session, seeded_tenant, manifest=None, model_content=model_content)
     db_session.commit()
 
-    response = authenticated_extus_client.get("/procurement_analysis")
+    response = authenticated_extus_client.get("/procurement")
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["is_verified_for_model"] is True
-    assert payload["manifest"]["analysis_mode"] == "visual_verified"
-    assert payload["manifest"]["quantity_authority"] == "visual_tree"
-    diagnostic_codes = {diagnostic["code"] for diagnostic in payload["manifest"]["diagnostics"]}
-    assert "unsupported_visual_artifact_for_analysis" not in diagnostic_codes
-    assert "invalid_gltf_json" not in diagnostic_codes
-    requirement = payload["manifest"]["requirements"][0]
-    assert requirement["part_number"] == "VISUAL-A"
-    assert requirement["quantity"] == 1
-    assert requirement["quantity_source"] == "visual_instances"
-    assert requirement["orderable"] is True
-    assert requirement["visual_instance_count"] == 1
+    assert response.status_code == 404
+    assert response.json()["error"] == "Procurement artifact not found"
 
 
-def test_extus_procurement_analysis_keeps_visual_bom_when_source_analysis_fails(
+def test_extus_procurement_uses_compiled_projection_only(
     authenticated_extus_client,
     db_session,
     seeded_tenant,
-    monkeypatch,
 ):
     model_content = make_test_glb({
         "asset": {"version": "2.0"},
@@ -525,13 +512,7 @@ def test_extus_procurement_analysis_keeps_visual_bom_when_source_analysis_fails(
             {
                 "name": "Rendered Plate",
                 "children": [1],
-                "extras": {
-                    "tertiusBom": {
-                        "part_number": "VISUAL-PLATE",
-                        "quantity": 1,
-                        "unit": "each",
-                    }
-                },
+                "extras": {"render_note": "must not be procurement authority"},
             },
             {"name": "mesh_1", "mesh": 0},
         ],
@@ -540,26 +521,38 @@ def test_extus_procurement_analysis_keeps_visual_bom_when_source_analysis_fails(
     add_compile_job_with_artifacts(
         db_session,
         seeded_tenant,
-        manifest=None,
+        manifest={
+            "assemblies": [],
+            "components": [
+                {
+                    "id": "PL1",
+                    "label": "Rendered Plate",
+                    "role": "plate",
+                    "visual_node_ids": ["PL1"],
+                }
+            ],
+            "requirements": [
+                {
+                    "id": "requirement:PL1",
+                    "component_id": "PL1",
+                    "part_number": "VISUAL-PLATE",
+                    "quantity": 1,
+                    "unit": "each",
+                    "orderable": True,
+                }
+            ],
+            "diagnostics": [],
+        },
         model_content=model_content,
     )
     db_session.commit()
 
-    def fail_source_analysis(_files):
-        raise TypeError("simulated unsupported source expression")
-
-    monkeypatch.setattr(extus_server, "analyze_design_sources", fail_source_analysis)
-
-    response = authenticated_extus_client.get("/procurement_analysis")
+    response = authenticated_extus_client.get("/procurement")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["manifest"]["analysis_mode"] == "visual_verified"
     assert [item["part_number"] for item in payload["manifest"]["requirements"]] == ["VISUAL-PLATE"]
-    assert any(
-        diagnostic["code"] == "source_analysis_failed"
-        for diagnostic in payload["manifest"]["diagnostics"]
-    )
+    assert payload["matches_model"] is True
 
 
 def test_extus_model_returns_404_when_active_artifact_content_is_missing(

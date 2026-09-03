@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import hashlib
 import importlib
 import json
@@ -10,8 +9,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from core.compile_messages import CompileBinaryAsset, CompileCommand, CompileSourceFile, serialized_message_size
-from core.object_store import ObjectIntegrityError, ObjectRef, ObjectStoreUnavailableError
+from core.compile_artifacts import decode_compile_artifact
+from core.compile_messages import (
+    CompileBinaryAsset,
+    CompileCommand,
+    CompileSourceFile,
+    serialized_message_size,
+)
+from core.object_store import (
+    ObjectIntegrityError,
+    ObjectRef,
+    ObjectStoreUnavailableError,
+)
 
 
 def command_payload(**overrides: object) -> bytes:
@@ -22,7 +31,9 @@ def command_payload(**overrides: object) -> bytes:
         "requested_by": uuid4(),
         "export_format": "stl",
         "created_at": datetime(2026, 6, 14, tzinfo=timezone.utc),
-        "files": [CompileSourceFile(filename="design.py", content="shape = 'queued'\n")],
+        "files": [
+            CompileSourceFile(filename="design.py", content="shape = 'queued'\n")
+        ],
         "request_id": "compile-request:test",
     }
     payload.update(overrides)
@@ -37,6 +48,61 @@ def job_settings(**overrides):
     }
     settings.update(overrides)
     return SimpleNamespace(**settings)
+
+
+def write_compiled_design(tmp_path, **overrides):
+    payload = {
+        "schema_version": "1.0",
+        "compiled_design_digest": "d" * 64,
+        "products": [],
+        "components": [],
+        "connections": [],
+        "unmanaged_geometry": [],
+        "readiness": {
+            "mechanical_graph_valid": True,
+            "procurement_complete": False,
+            "structural_model_complete": False,
+            "structural_verified": False,
+            "release_ready": False,
+        },
+        "diagnostics": [],
+    }
+    payload.update(overrides)
+    path = tmp_path / "tertius-compiled-design.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def write_workbench_artifacts(tmp_path, **compiled_overrides):
+    compiled_path = write_compiled_design(tmp_path, **compiled_overrides)
+    compiled = json.loads(compiled_path.read_text(encoding="utf-8"))
+    digest = compiled["compiled_design_digest"]
+    schemas = {
+        "procurement": "tertius.procurement.v1",
+        "structural": "tertius.structural.v1",
+        "drawing": "tertius.drawing.v1",
+        "bounds": "tertius.bounds.v1",
+    }
+    paths = {"compiled_design": compiled_path}
+    for kind, schema in schemas.items():
+        path = tmp_path / f"tertius-{kind}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": schema,
+                    "compiled_design_digest": digest,
+                    "projection_digest": kind[0] * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
+        paths[kind] = path
+    return paths
+
+
+def artifact_content(result, kind: str) -> bytes:
+    artifact = next(item for item in result.artifacts if item.kind == kind)
+    return decode_compile_artifact(artifact)
 
 
 class FakeMsg:
@@ -60,11 +126,20 @@ class FakePublisher:
     def __init__(self, fail=False):
         self.fail = fail
         self.published = []
+        self.compress_flags = []
 
-    async def publish_json(self, subject: str, message: BaseModel, message_id: str | None = None) -> None:
+    async def publish_json(
+        self,
+        subject: str,
+        message: BaseModel,
+        message_id: str | None = None,
+        *,
+        compress: bool = False,
+    ) -> None:
         if self.fail:
             raise RuntimeError("publish failed")
         self.published.append((subject, message, message_id))
+        self.compress_flags.append(compress)
 
 
 def test_compile_job_module_does_not_import_db_bound_executor():
@@ -81,15 +156,27 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
 
     output_path = tmp_path / "output.stl"
     output_path.write_bytes(b"solid job")
+    artifact_paths = write_workbench_artifacts(tmp_path)
 
-    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30
+    ):
         assert (project_dir / "design.py").read_text() == "shape = 'queued'\n"
         assert export_format == "stl"
         assert quality is None
         assert timeout_seconds == 600
-        return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
+        )
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox
+    )
     msg = FakeMsg(command_payload())
     publisher = FakePublisher()
 
@@ -100,9 +187,17 @@ def test_compile_job_publishes_success_and_acks(monkeypatch, tmp_path):
     subject, result, message_id = publisher.published[0]
     assert subject == "tertius.compile.result"
     assert result.status == "succeeded"
-    assert base64.b64decode(result.artifact_content_base64) == b"solid job"
-    assert result.artifact_byte_size == len(b"solid job")
+    assert artifact_content(result, "stl") == b"solid job"
+    assert {artifact.kind for artifact in result.artifacts} == {
+        "stl",
+        "compiled_design",
+        "procurement",
+        "structural",
+        "drawing",
+        "bounds",
+    }
     assert message_id == f"compile-result:{result.job_id}:succeeded"
+    assert publisher.compress_flags == [True]
 
 
 def test_compile_job_fetches_and_hydrates_3mf_sidecar(monkeypatch, tmp_path):
@@ -118,28 +213,50 @@ def test_compile_job_fetches_and_hydrates_3mf_sidecar(monkeypatch, tmp_path):
     )
     output_path = tmp_path / "output.glb"
     output_path.write_bytes(b"glb")
+    artifact_paths = write_workbench_artifacts(tmp_path)
 
     class FakeObjectStore:
         async def get(self, requested_ref):
             assert requested_ref == ref
             return content
 
-    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30
+    ):
         assert (project_dir / "source.3mf").read_bytes() == content
-        return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
+        )
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
-    msg = FakeMsg(command_payload(assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]))
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox
+    )
+    msg = FakeMsg(
+        command_payload(
+            assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
+        )
+    )
     publisher = FakePublisher()
 
-    asyncio.run(handle_compile_request_message(msg, publisher, job_settings(), FakeObjectStore()))
+    asyncio.run(
+        handle_compile_request_message(
+            msg, publisher, job_settings(), FakeObjectStore()
+        )
+    )
 
     assert msg.acked is True
     assert msg.naked is False
     assert publisher.published[0][1].status == "succeeded"
 
 
-def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(monkeypatch):
+def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(
+    monkeypatch,
+):
     from workflows.intus.compile_job import handle_compile_request_message
 
     digest = "c" * 64
@@ -157,11 +274,21 @@ def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(m
     def fail_if_called(*args, **kwargs):
         raise AssertionError("sandbox must not run")
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fail_if_called)
-    msg = FakeMsg(command_payload(assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]))
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fail_if_called
+    )
+    msg = FakeMsg(
+        command_payload(
+            assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
+        )
+    )
     publisher = FakePublisher()
 
-    asyncio.run(handle_compile_request_message(msg, publisher, job_settings(), BrokenObjectStore()))
+    asyncio.run(
+        handle_compile_request_message(
+            msg, publisher, job_settings(), BrokenObjectStore()
+        )
+    )
 
     assert msg.acked is True
     assert msg.naked is False
@@ -171,7 +298,9 @@ def test_compile_job_reports_sidecar_integrity_failure_without_running_sandbox(m
     assert result.retryable is False
 
 
-def test_compile_job_reports_sidecar_transport_failure_without_running_sandbox(monkeypatch):
+def test_compile_job_reports_sidecar_transport_failure_without_running_sandbox(
+    monkeypatch,
+):
     from workflows.intus.compile_job import handle_compile_request_message
 
     digest = "d" * 64
@@ -190,7 +319,9 @@ def test_compile_job_reports_sidecar_transport_failure_without_running_sandbox(m
     def fail_if_called(*args, **kwargs):
         raise AssertionError("sandbox must not run")
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fail_if_called)
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fail_if_called
+    )
     msg = FakeMsg(
         command_payload(
             assets=[CompileBinaryAsset(logical_filename="source.3mf", object_ref=ref)]
@@ -281,7 +412,9 @@ def test_run_once_preserves_python_only_path_without_opening_object_store(monkey
         assert message is msg
         assert object_store is None
 
-    monkeypatch.setattr(compile_job, "get_settings", lambda: SimpleNamespace(nats_url="nats://test"))
+    monkeypatch.setattr(
+        compile_job, "get_settings", lambda: SimpleNamespace(nats_url="nats://test")
+    )
     monkeypatch.setattr(compile_job, "configure_telemetry", lambda *args: None)
     monkeypatch.setattr(compile_job, "connect_nats", fake_connect)
     monkeypatch.setattr(compile_job, "ensure_compile_stream", fake_ensure)
@@ -321,7 +454,14 @@ def test_run_once_publishes_retryable_result_when_object_store_open_fails(monkey
             pass
 
     class RecordingPublisher(FakePublisher):
-        async def publish_json(self, subject, message, message_id=None):
+        async def publish_json(
+            self,
+            subject,
+            message,
+            message_id=None,
+            *,
+            compress=False,
+        ):
             published.append((subject, message, message_id))
 
     async def fake_connect(_url):
@@ -363,35 +503,18 @@ def test_run_once_publishes_retryable_result_when_object_store_open_fails(monkey
     assert published[0][1].retryable is True
 
 
-def test_compile_job_attaches_hashed_compiled_structural_manifest(
+def test_compile_job_attaches_hashed_compiled_design_graph(
     monkeypatch,
     tmp_path,
 ):
     from core.compile_runtime import runtime_files_hash
-    from core.structural.contracts import CompiledStructuralManifest
     from workflows.intus.compile_job import handle_compile_request_message
 
     output_path = tmp_path / "output.glb"
     output_path.write_bytes(b"glb")
-    manifest_path = tmp_path / "tertius-structural-manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "title": "Catalogue fixture",
-                "components": [
-                    {
-                        "id": "ground",
-                        "label": "Ground",
-                        "kind": "ground",
-                        "visual_node_id": "ground",
-                        "grounded": True,
-                    }
-                ],
-                "connections": [],
-                "loads": [],
-            }
-        ),
-        encoding="utf-8",
+    artifact_paths = write_workbench_artifacts(
+        tmp_path,
+        products=[{"key": "fixture", "definition_digest": "p" * 64}],
     )
 
     monkeypatch.setattr(
@@ -399,7 +522,7 @@ def test_compile_job_attaches_hashed_compiled_structural_manifest(
         lambda *args, **kwargs: SimpleNamespace(
             success=True,
             output_path=output_path,
-            structural_manifest_path=manifest_path,
+            artifact_paths=artifact_paths,
             stdout="",
             stderr="",
             error=None,
@@ -416,49 +539,27 @@ def test_compile_job_attaches_hashed_compiled_structural_manifest(
     asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
 
     result = publisher.published[0][1]
-    compiled = CompiledStructuralManifest.model_validate_json(
-        result.structural_manifest_json
-    )
-    assert compiled.source_hash == runtime_files_hash(
+    compiled = json.loads(artifact_content(result, "compiled_design"))
+    assert compiled["source_snapshot_hash"] == runtime_files_hash(
         {file.filename: file.content for file in source_files}
     )
-    assert compiled.design_hash == hashlib.sha256(
-        design_source.encode("utf-8")
-    ).hexdigest()
-    assert compiled.declaration["title"] == "Catalogue fixture"
+    assert compiled["products"] == [{"key": "fixture", "definition_digest": "p" * 64}]
 
 
-def test_compile_job_attaches_hashed_bom_manifest(
+def test_compile_job_rejects_missing_workbench_bundle(
     monkeypatch,
     tmp_path,
 ):
-    from core.compile_runtime import runtime_files_hash
     from workflows.intus.compile_job import handle_compile_request_message
 
     output_path = tmp_path / "output.glb"
     output_path.write_bytes(b"glb")
-    manifest_path = tmp_path / "tertius-bom-manifest.json"
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "source_snapshot_hash": "",
-                "scopes": [],
-                "components": [],
-                "requirements": [],
-                "diagnostics": [{"code": "fixture", "severity": "info"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-
     monkeypatch.setattr(
         "workflows.intus.compile_job.run_compile_sandbox",
         lambda *args, **kwargs: SimpleNamespace(
             success=True,
             output_path=output_path,
-            structural_manifest_path=None,
-            bom_manifest_path=manifest_path,
+            artifact_paths={},
             stdout="",
             stderr="",
             error=None,
@@ -474,11 +575,8 @@ def test_compile_job_attaches_hashed_bom_manifest(
     asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
 
     result = publisher.published[0][1]
-    manifest = json.loads(result.bom_manifest_json)
-    assert manifest["source_snapshot_hash"] == runtime_files_hash(
-        {file.filename: file.content for file in source_files}
-    )
-    assert manifest["diagnostics"] == [{"code": "fixture", "severity": "info"}]
+    assert result.status == "failed"
+    assert result.error_code == "missing_artifact_bundle"
 
 
 def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
@@ -486,21 +584,39 @@ def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
 
     output_path = tmp_path / "output.timus_views"
     output_path.write_text("{}", encoding="utf-8")
+    artifact_paths = write_workbench_artifacts(tmp_path)
 
-    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30
+    ):
         assert (project_dir / "design.py").exists()
-        assert (project_dir / "settings.json").read_text(encoding="utf-8") == '{"sheet_size":"A4"}'
+        assert (project_dir / "settings.json").read_text(
+            encoding="utf-8"
+        ) == '{"sheet_size":"A4"}'
         assert export_format == "timus_views"
-        return SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None)
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
+        )
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
-    msg = FakeMsg(command_payload(
-        export_format="timus_views",
-        files=[
-            CompileSourceFile(filename="design.py", content="shape = 'queued'\n"),
-            CompileSourceFile(filename="settings.json", content='{"sheet_size":"A4"}'),
-        ],
-    ))
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox
+    )
+    msg = FakeMsg(
+        command_payload(
+            export_format="timus_views",
+            files=[
+                CompileSourceFile(filename="design.py", content="shape = 'queued'\n"),
+                CompileSourceFile(
+                    filename="settings.json", content='{"sheet_size":"A4"}'
+                ),
+            ],
+        )
+    )
     publisher = FakePublisher()
 
     asyncio.run(handle_compile_request_message(msg, publisher, job_settings()))
@@ -508,16 +624,22 @@ def test_compile_job_allows_timus_settings_sidecar(monkeypatch, tmp_path):
     assert msg.acked is True
     result = publisher.published[0][1]
     assert result.status == "succeeded"
-    assert base64.b64decode(result.artifact_content_base64) == b"{}"
+    assert artifact_content(result, "timus_views") == b"{}"
 
 
 def test_compile_job_publishes_failure_and_acks(monkeypatch):
     from workflows.intus.compile_job import handle_compile_request_message
 
-    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
-        return SimpleNamespace(success=False, output_path=None, stdout="", stderr="boom", error="boom")
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30
+    ):
+        return SimpleNamespace(
+            success=False, output_path=None, stdout="", stderr="boom", error="boom"
+        )
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox
+    )
     msg = FakeMsg(command_payload())
     publisher = FakePublisher()
 
@@ -572,10 +694,16 @@ def test_compile_job_truncates_huge_sandbox_error_to_publish_failure(monkeypatch
 
     huge_stderr = "sandbox exploded\n" + ("x" * 20_000)
 
-    def fake_run_compile_sandbox(project_dir, export_format, quality=None, timeout_seconds=30):
-        return SimpleNamespace(success=False, output_path=None, stdout="", stderr=huge_stderr, error="")
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30
+    ):
+        return SimpleNamespace(
+            success=False, output_path=None, stdout="", stderr=huge_stderr, error=""
+        )
 
-    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    monkeypatch.setattr(
+        "workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox
+    )
     msg = FakeMsg(command_payload())
     publisher = FakePublisher()
     settings = job_settings(compile_result_max_bytes=1200)
@@ -596,13 +724,23 @@ def test_compile_job_does_not_ack_when_result_publish_fails(monkeypatch, tmp_pat
 
     output_path = tmp_path / "output.stl"
     output_path.write_bytes(b"solid job")
+    artifact_paths = write_workbench_artifacts(tmp_path)
     monkeypatch.setattr(
         "workflows.intus.compile_job.run_compile_sandbox",
-        lambda *args, **kwargs: SimpleNamespace(success=True, output_path=output_path, stdout="", stderr="", error=None),
+        lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
+        ),
     )
     msg = FakeMsg(command_payload())
 
-    asyncio.run(handle_compile_request_message(msg, FakePublisher(fail=True), job_settings()))
+    asyncio.run(
+        handle_compile_request_message(msg, FakePublisher(fail=True), job_settings())
+    )
 
     assert msg.acked is False
     assert msg.naked is True
@@ -621,7 +759,11 @@ def test_compile_job_terms_invalid_command():
 
 def test_compile_job_span_records_originating_llm_edit_job_hash(monkeypatch, tmp_path):
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+    from opentelemetry.sdk.trace.export import (
+        SimpleSpanProcessor,
+        SpanExporter,
+        SpanExportResult,
+    )
 
     from workflows.intus.compile_job import handle_compile_request_message
 
@@ -649,10 +791,16 @@ def test_compile_job_span_records_originating_llm_edit_job_hash(monkeypatch, tmp
 
     output_path = tmp_path / "output.stl"
     output_path.write_bytes(b"solid job")
+    artifact_paths = write_workbench_artifacts(tmp_path)
     monkeypatch.setattr(
         "workflows.intus.compile_job.run_compile_sandbox",
         lambda *args, **kwargs: SimpleNamespace(
-            success=True, output_path=output_path, stdout="", stderr="", error=None
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
         ),
     )
 

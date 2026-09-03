@@ -3,6 +3,7 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
@@ -90,6 +91,14 @@ export function structuralRestraintColor(
   return 0x64748b;
 }
 
+export function structuralEvidenceColor(
+  status: NonNullable<StructuralViewerOverlay['restraintMarkers']>[number]['evidenceStatus'],
+): number {
+  if (status === 'verified') return 0x22c55e;
+  if (status === 'missing' || status === 'mismatch') return 0xef4444;
+  return 0x94a3b8;
+}
+
 const COMPONENT_PREVIEW_SIZE = 512;
 const STRUCTURAL_OVERLAY_NAME = 'TertiusStructuralMomentOverlay';
 
@@ -106,6 +115,25 @@ type GltfParserJson = {
   scenes?: unknown;
   scene?: unknown;
 };
+
+export type ModelArtifactFormat = 'gltf' | 'stl';
+
+export function detectModelArtifactFormat(contentType: string | null, buffer: ArrayBuffer): ModelArtifactFormat {
+  const normalizedContentType = (contentType || '').toLowerCase();
+  if (normalizedContentType.includes('stl')) return 'stl';
+  if (normalizedContentType.includes('gltf') || normalizedContentType.includes('json')) return 'gltf';
+
+  const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 256));
+  if (bytes.length >= 4
+    && bytes[0] === 0x67
+    && bytes[1] === 0x6c
+    && bytes[2] === 0x54
+    && bytes[3] === 0x46) {
+    return 'gltf';
+  }
+  const textPrefix = new TextDecoder().decode(bytes).trimStart();
+  return textPrefix.startsWith('{') ? 'gltf' : 'stl';
+}
 
 function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
   const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
@@ -514,7 +542,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       workflow: 'extus',
       render_quality: renderQuality,
     });
-    const loader = new GLTFLoader();
+    const gltfLoader = new GLTFLoader();
+    const stlLoader = new STLLoader();
 
     const finishLoad = () => {
       if (isCurrentRequest()) {
@@ -540,30 +569,19 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
     
-    apiFetch(modelUrl, getAccessToken)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
-        }
-        return res.arrayBuffer();
-      })
-      .then(buffer => {
-        if (!isCurrentRequest()) return;
-        loader.parse(buffer, '', (gltf) => {
-          if (!isCurrentRequest()) return;
-      
-          const model = gltf.scene;
-          annotateGltfNodeIds(model, (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json);
-      
+    const acceptModel = (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+      if (!isCurrentRequest()) return;
+      if (gltfJson) annotateGltfNodeIds(model, gltfJson);
+
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
       const center = new THREE.Vector3();
       box.getCenter(center);
       model.position.sub(center);
-      
-      // Fix orientation (GLTF is Y-up, our grid was Z-up)
-      model.rotation.x = Math.PI / 2;
-      
+
+      // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up.
+      if (gltfJson) model.rotation.x = Math.PI / 2;
+
       // Update camera
       if (cameraRef.current) {
          const camera = cameraRef.current;
@@ -571,14 +589,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          const fov = camera.fov * (Math.PI / 180);
          let distance = Math.abs(sphere.radius / Math.sin(fov / 2));
          distance *= 1.5; // Padding
-         
+
          const currentDir = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0,0,0)).normalize();
          if (currentDir.lengthSq() === 0) currentDir.set(1, 1, 1).normalize();
-         
+
          camera.position.copy(currentDir.multiplyScalar(distance));
          camera.lookAt(0, 0, 0);
          camera.updateProjectionMatrix();
-         
+
          // Update helpers
          const size = Math.max(500, Math.ceil(sphere.radius * 4));
          const grid = sceneRef.current!.getObjectByName("GridHelper");
@@ -592,7 +610,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            axes.scale.set(scale, scale, scale);
          }
       }
-      
+
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR, // Steel blueish
@@ -600,7 +618,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         roughness: 0.4,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
-      
+
       const highlightMaterial = sharedMaterial.clone();
       highlightMaterial.emissive.setHex(0x3b82f6);
       highlightMaterial.emissiveIntensity = 0.5;
@@ -610,13 +628,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       model.userData.sharedMat = sharedMaterial;
       model.userData.highlightMat = highlightMaterial;
-      
+
       const isHigh = renderQuality === 'high';
-      
+
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
       const sourceMeshes: THREE.Mesh[] = [];
-      
+
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
@@ -629,21 +647,21 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            if (!hasSourceMaterialTransparency(mesh.material)) {
              sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            }
-           
+
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
            mesh.receiveShadow = false;
            mesh.material = (mesh.userData.viewerMaterials as ViewerMeshMaterials).highlight;
         }
       });
-      
+
       if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
           const CHUNK_SIZE = 1000;
           const chunks: THREE.BufferGeometry[] = [];
           const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
-          
+
           for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
              const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE), { useAuthoredColors: hasAuthoredColors });
              if (batch) {
@@ -652,10 +670,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                else batch.mesh.material.dispose();
              }
           }
-          
+
           const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
           chunks.forEach(g => g.dispose()); // Free intermediate chunks
-          
+
           if (finalMergedGeom) {
              const batchedMaterial = hasAuthoredColors
                ? new THREE.MeshStandardMaterial({
@@ -677,17 +695,40 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           console.error("BufferGeometryUtils.mergeGeometries chunking failed:", e);
         }
       }
-      
+
       clearCurrentModel();
-      
+
       sceneRef.current!.add(model);
       meshRef.current = model;
       loadedModelUrlRef.current = modelUrl;
-      
+
       // Unpack the hierarchy
       setSceneGraph(model);
       setSelectedNodeId(null);
       finishLoad();
+    };
+
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return Promise.all([res.arrayBuffer(), Promise.resolve(res.headers.get('content-type'))]);
+      })
+      .then(([buffer, contentType]) => {
+        if (!isCurrentRequest()) return;
+        if (detectModelArtifactFormat(contentType, buffer) === 'stl') {
+          const geometry = stlLoader.parse(buffer);
+          geometry.computeVertexNormals();
+          const model = new THREE.Group();
+          model.name = 'STL Model';
+          model.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })));
+          acceptModel(model);
+          return;
+        }
+        gltfLoader.parse(buffer, '', (gltf) => {
+          const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
+          acceptModel(gltf.scene, gltfJson || {});
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });
@@ -871,6 +912,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         Math.hypot(force.x, force.y, force.z)
       )),
     );
+    const restraintDemandMarkers = structuralOverlays.flatMap(
+      (overlay) => overlay.restraintMarkers ?? [],
+    );
+    const restraintDemandPeak = Math.max(
+      Number.EPSILON,
+      ...restraintDemandMarkers.map((marker) => marker.requiredForceKN ?? 0),
+    );
 
     for (const node of diagnosticNodes) {
       const nodeGroup = new THREE.Group();
@@ -972,7 +1020,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         if (length <= Number.EPSILON) continue;
         const color = structuralRestraintColor(restraint.status);
         const segment = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.014, 0.014, length, 10),
+          new THREE.CylinderGeometry(
+            restraint.selected ? 0.022 : 0.011,
+            restraint.selected ? 0.022 : 0.011,
+            length,
+            10,
+          ),
           new THREE.MeshBasicMaterial({
             color,
             transparent: true,
@@ -1026,6 +1079,115 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           marker.userData.tertiusStructuralOverlay = true;
           marker.userData.tertiusStructuralRestraint = restraint;
           memberGroup.add(marker);
+        }
+      }
+
+      for (const demandMarker of structuralOverlay.restraintMarkers ?? []) {
+        const origin = toModelCoordinates(new THREE.Vector3(
+          demandMarker.position.x,
+          demandMarker.position.y,
+          demandMarker.position.z,
+        ));
+        const markerColor = structuralRestraintColor(demandMarker.status);
+        const markerGroup = new THREE.Group();
+        markerGroup.position.copy(origin);
+        markerGroup.name = `${STRUCTURAL_OVERLAY_NAME}Demand-${demandMarker.id}`;
+        markerGroup.userData.tertiusStructuralOverlay = true;
+        markerGroup.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+
+        const core = new THREE.Mesh(
+          new THREE.SphereGeometry(demandMarker.selected ? 0.035 : 0.027, 14, 10),
+          new THREE.MeshBasicMaterial({
+            color: markerColor,
+            transparent: true,
+            opacity: 0.96,
+            depthTest: false,
+          }),
+        );
+        core.renderOrder = 39;
+        core.userData.tertiusStructuralOverlay = true;
+        core.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(core);
+
+        if (demandMarker.evidenceStatus !== 'verified') {
+          const evidenceRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.047, 0.006, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: structuralEvidenceColor(demandMarker.evidenceStatus),
+              transparent: true,
+              opacity: 0.98,
+              depthTest: false,
+            }),
+          );
+          evidenceRing.renderOrder = 40;
+          evidenceRing.userData.tertiusStructuralOverlay = true;
+          evidenceRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(evidenceRing);
+        }
+
+        if (demandMarker.selected) {
+          const selectionRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.061, 0.004, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: 0x22d3ee,
+              transparent: true,
+              opacity: 0.95,
+              depthTest: false,
+            }),
+          );
+          selectionRing.rotation.x = Math.PI / 2;
+          selectionRing.renderOrder = 41;
+          selectionRing.userData.tertiusStructuralOverlay = true;
+          selectionRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(selectionRing);
+        }
+
+        const hitTarget = new THREE.Mesh(
+          new THREE.SphereGeometry(0.075, 10, 8),
+          new THREE.MeshBasicMaterial({
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        hitTarget.userData.tertiusStructuralOverlay = true;
+        hitTarget.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(hitTarget);
+        memberGroup.add(markerGroup);
+
+        const requiredForceKN = demandMarker.requiredForceKN ?? 0;
+        const sourceDirection = new THREE.Vector3(
+          demandMarker.direction.x,
+          demandMarker.direction.y,
+          demandMarker.direction.z,
+        );
+        if (requiredForceKN > Number.EPSILON && sourceDirection.lengthSq() > 0) {
+          const direction = toModelCoordinates(sourceDirection).normalize();
+          const length = 0.10 + 0.20 * Math.min(1, requiredForceKN / restraintDemandPeak);
+          const arrow = new THREE.ArrowHelper(
+            direction,
+            origin,
+            length,
+            0x22d3ee,
+            Math.min(0.065, length * 0.35),
+            Math.min(0.038, length * 0.2),
+          );
+          arrow.name = `${STRUCTURAL_OVERLAY_NAME}RestraintDemand-${demandMarker.id}`;
+          arrow.renderOrder = 38;
+          arrow.traverse((object) => {
+            object.userData.tertiusStructuralOverlay = true;
+            object.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+            object.renderOrder = 38;
+            const material = (object as THREE.Mesh | THREE.Line).material;
+            const materials = Array.isArray(material) ? material : material ? [material] : [];
+            for (const candidate of materials) {
+              candidate.depthTest = false;
+              candidate.transparent = true;
+              candidate.opacity = 0.96;
+            }
+          });
+          memberGroup.add(arrow);
         }
       }
 

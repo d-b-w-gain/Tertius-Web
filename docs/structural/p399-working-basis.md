@@ -1,36 +1,39 @@
-# SCI P399 Working Design Basis
+# Australian Structural Verification Basis
 
 ## Decision
 
-SCI Publication P399, *Design of steel portal frame buildings to Eurocode 3*,
-is the working process guide for epic #330.
+NCC 2022 and the project-selected Australian standards are the primary design
+and certification basis. SCI Publication P399, *Design of steel portal frame
+buildings to Eurocode 3*, is supplemental portal-frame analysis guidance only.
 
-P399 supplies the order of work, the analytical questions that must be
+P399 contributes an audit-friendly order of work, the analytical questions that must be
 answered, and the expected relationship between frame analysis, stability,
 member verification, restraint, connections, bases, and serviceability. It is
-not an instruction to apply UK actions, factors, material rules, or section
-resistances to an Australian project.
+not the compliance framework and is not an instruction to apply UK actions,
+factors, material rules, or section resistances to an Australian project.
 
 Australian actions, combinations, materials, cold-formed member rules,
 connections, anchors, concrete, manufacturer data, and project requirements
 must be supplied by a separately versioned Australian standards pack. Every
-calculation result must record both:
+calculation result must record both, in this order:
 
-- the P399 process stage and source section that explains why the check exists;
 - the Australian standard, manufacturer source, project criterion, or explicit
-  engineering assumption that supplies the actual inputs and resistance rule.
+  engineering assumption that supplies the actual inputs and resistance rule;
+- any supplemental P399 process stage or source section that helps explain why
+  the check exists.
 
 The local reference copy reviewed for this decision is:
 
 `C:\Users\dbwga\Downloads\SCI_P399.pdf`
 
-## Non-negotiable calculation sequence
+## Australian verification sequence with supplemental P399 mapping
 
-P399 Table 3.1 and Sections 4 to 12 establish the sequence below. Tertius must
+The Australian verification workflow uses the sequence below. P399 Table 3.1
+and Sections 4 to 12 are recorded as supplemental process references. Tertius must
 not colour a member as passing until every preceding stage required for that
 check has a valid result.
 
-| Stage | P399 basis | Required Tertius output |
+| Stage | Supplemental P399 basis | Required Tertius output |
 | --- | --- | --- |
 | 1. Geometry and structural scheme | 3, 6.1 | Current physical geometry, analytical centre-lines, supports, releases, offsets, member roles, openings, and stable source IDs. |
 | 2. Actions | 4 | Permanent, imposed, wind, construction, accidental, and other applicable actions with tributary areas, direction, application points, and provenance. |

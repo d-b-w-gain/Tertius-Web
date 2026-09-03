@@ -7,6 +7,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+# Structural distances are authored and projected through several independent
+# floating-point calculations. A nanometre tolerance rejects materially
+# out-of-range loads while accepting round-off at a member endpoint.
+MEMBER_LOAD_DISTANCE_TOLERANCE_M = 1e-9
+
+
 class StructuralContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,6 +69,18 @@ class SectionProperties(StructuralContract):
     bending_reference_kNm: float | None = None
     bending_reference_axis: Literal["local_y", "local_z", "resultant"] | None = None
     bending_reference_basis: str | None = None
+    tension_width_mm: float | None = Field(default=None, gt=0)
+    tension_thickness_mm: float | None = Field(default=None, gt=0)
+    tension_hole_diameter_mm: float | None = Field(default=None, gt=0)
+    tension_holes_in_critical_section: int | None = Field(default=None, ge=0)
+    tension_force_distribution_factor: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+    )
+    end_fastener_nominal_diameter_mm: float | None = Field(default=None, gt=0)
+    end_fastener_spacing_mm: float | None = Field(default=None, gt=0)
+    end_fastener_edge_distance_mm: float | None = Field(default=None, gt=0)
     catalog: SectionCatalogReference | None = None
 
     @model_validator(mode="after")
@@ -104,6 +122,8 @@ class StructuralMaterial(StructuralContract):
     shear_modulus_kN_m2: float
     poisson_ratio: float
     density_kg_m3: float
+    yield_strength_MPa: float | None = Field(default=None, gt=0)
+    tensile_strength_MPa: float | None = Field(default=None, gt=0)
 
 
 class AnalyticalMemberDeclaration(StructuralContract):
@@ -112,6 +132,8 @@ class AnalyticalMemberDeclaration(StructuralContract):
     component_id: str
     start: Vector3
     end: Vector3
+    start_node_key: str | None = None
+    end_node_key: str | None = None
     start_restraints: Restraints = Field(default_factory=Restraints)
     end_restraints: Restraints = Field(default_factory=Restraints)
     section_id: str
@@ -134,6 +156,9 @@ class AnalyticalMemberDeclaration(StructuralContract):
     deflection_limit_ratio: float | None = None
     deflection_limit_mm: float | None = None
     deflection_limit_basis: str | None = None
+    serviceability_group_id: str | None = None
+    serviceability_group_label: str | None = None
+    serviceability_span_m: float | None = Field(default=None, gt=0)
     assumption: str
 
     @model_validator(mode="after")
@@ -185,6 +210,7 @@ class NodalLoad(StructuralContract):
     force: Vector3
     moment: Vector3 = Field(default_factory=lambda: Vector3(x=0, y=0, z=0))
     visual_node_id: str
+    provenance: str | None = None
 
 
 class MemberPointLoad(StructuralContract):
@@ -218,14 +244,42 @@ class LoadCombination(StructuralContract):
     label: str
     limit_state: Literal["serviceability", "ultimate"]
     factors: dict[str, float]
+    purpose: Literal["design", "stability_probe"] = "design"
+
+
+class UnavailableLoadCombination(StructuralContract):
+    """A Tertius-owned formula that cannot yet be assembled for this project."""
+
+    id: str
+    label: str
+    limit_state: Literal["serviceability", "ultimate"]
+    family: Literal["action_standard", "global_stability"]
+    missing_inputs: list[str] = Field(default_factory=list)
+    reason: str
+
+
+class ActionStandardPackEvidence(StructuralContract):
+    pack_id: str
+    pack_version: str
+    standard_reference: str
+    status: Literal["working", "verified"]
+    source_document_sha256: str | None = Field(
+        default=None, min_length=64, max_length=64
+    )
+    applicability: list[str] = Field(default_factory=list)
+    exclusions: list[str] = Field(default_factory=list)
+    combination_ids: list[str]
+    basis: str
 
 
 class StabilityDirectionDefinition(StructuralContract):
     id: str
+    base_combination_id: str | None = None
     stability_combination_id: str
     imperfection_case_id: str
     nhf_combination_id: str
     horizontal_axis: Literal["x", "y"] = "x"
+    direction_sign: Literal[-1, 1] = 1
 
 
 class StabilityDefinition(StructuralContract):
@@ -237,6 +291,7 @@ class StabilityDefinition(StructuralContract):
     base_stiffness_status: Literal["verified", "assumed"]
     amplification_warning_ratio: float = Field(default=1.1, gt=1.0)
     direction_cases: list[StabilityDirectionDefinition] = Field(default_factory=list)
+    column_component_ids: list[str] = Field(default_factory=list)
     eaves_member_ids: list[str] = Field(default_factory=list)
     rafter_member_ids: list[str] = Field(default_factory=list)
     column_height_m: float | None = Field(default=None, gt=0)
@@ -275,6 +330,17 @@ class StabilityDirectionResult(StructuralContract):
     member_comparisons: list[MemberStabilityComparison]
 
 
+class RafterStabilityApplicabilityCheck(StructuralContract):
+    component_id: str
+    member_ids: list[str]
+    length_m: float = Field(gt=0)
+    design_axial_kN: float = Field(ge=0)
+    elastic_critical_load_kN: float = Field(gt=0)
+    axial_limit_kN: float = Field(gt=0)
+    utilisation: float = Field(ge=0)
+    applicable: bool
+
+
 class StabilityResult(StructuralContract):
     method: Literal["p_delta"]
     combination_id: str
@@ -293,10 +359,13 @@ class StabilityResult(StructuralContract):
     rafter_axial_limit_kN: float | None = None
     rafter_axial_force_significant: bool | None = None
     simplified_alpha_cr_applicable: bool | None = None
+    rafter_applicability_checks: list[RafterStabilityApplicabilityCheck] = Field(
+        default_factory=list
+    )
 
 
 class CrossSectionVerificationDefinition(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    pack_id: Literal["as_nzs_4600_2005_a1_ewm"]
     combination_ids: list[str] = Field(min_length=1)
     member_ids: list[str] = Field(default_factory=list)
     off_axis_tolerance: float = Field(default=1e-6, ge=0)
@@ -350,6 +419,7 @@ class MemberRestraintCandidateDefinition(StructuralContract):
     demand_model: Literal[
         "not_defined",
         "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
     ] = "not_defined"
     demand_factor: float = Field(default=1.5, gt=0)
     design_force_capacity_kN: float | None = Field(default=None, gt=0)
@@ -371,7 +441,7 @@ class MemberRestraintCandidateDefinition(StructuralContract):
 
 
 class MemberStabilityVerificationDefinition(StructuralContract):
-    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    pack_id: Literal["as_nzs_4600_2005_a1_member"]
     combination_ids: list[str] = Field(min_length=1)
     segments: list[MemberStabilitySegmentDefinition] = Field(min_length=1)
     restraint_candidates: list[MemberRestraintCandidateDefinition] = Field(
@@ -422,11 +492,116 @@ class MemberCheck(StructuralContract):
     basis: str
 
 
+class AnchorGroupCheck(StructuralContract):
+    status: Literal["pass", "fail", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    anchor_part_number: str
+    anchor_count: int = Field(gt=0)
+    effective_anchor_count: float = Field(gt=0)
+    substrate_type: str | None = None
+    substrate_status: Literal["unverified", "candidate", "verified"]
+    tension_demand_kN: float = Field(ge=0)
+    shear_demand_kN: float = Field(ge=0)
+    tension_capacity_kN: float | None = Field(default=None, gt=0)
+    shear_capacity_kN: float | None = Field(default=None, gt=0)
+    interaction_utilisation: float | None = Field(default=None, ge=0)
+    installed_effective_embedment_mm: float | None = Field(default=None, gt=0)
+    reference_embedment_mm: float | None = Field(default=None, gt=0)
+    minimum_edge_distance_mm: float | None = Field(default=None, gt=0)
+    required_edge_distance_mm: float | None = Field(default=None, gt=0)
+    minimum_spacing_mm: float | None = Field(default=None, gt=0)
+    required_spacing_mm: float | None = Field(default=None, gt=0)
+    embedment_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    edge_distance_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    spacing_status: Literal["pass", "fail", "not_required", "not_checked"] = (
+        "not_checked"
+    )
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    basis: str
+    blockers: list[str] = Field(default_factory=list)
+
+
+class BoltedSheetInterfaceCheck(StructuralContract):
+    status: Literal["pass", "fail", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    bolt_part_number: str
+    bolt_count: int = Field(gt=0)
+    connected_member_id: str | None = None
+    connected_sheet_part_number: str | None = None
+    fixture_part_number: str | None = None
+    fixture_capacity_status: Literal["not_checked", "candidate", "verified"]
+    resultant_shear_demand_kN: float = Field(ge=0)
+    design_bolt_shear_capacity_kN: float | None = Field(default=None, gt=0)
+    design_sheet_bearing_capacity_kN: float | None = Field(default=None, gt=0)
+    design_sheet_tearout_capacity_kN: float | None = Field(default=None, gt=0)
+    governing_capacity_kN: float | None = Field(default=None, gt=0)
+    governing_utilisation: float | None = Field(default=None, ge=0)
+    nominal_bolt_diameter_mm: float | None = Field(default=None, gt=0)
+    connected_sheet_thickness_mm: float | None = Field(default=None, gt=0)
+    hole_diameter_mm: float | None = Field(default=None, gt=0)
+    hole_type: str | None = None
+    minimum_spacing_mm: float | None = Field(default=None, gt=0)
+    required_spacing_mm: float | None = Field(default=None, gt=0)
+    minimum_edge_distance_mm: float | None = Field(default=None, gt=0)
+    required_edge_distance_mm: float | None = Field(default=None, gt=0)
+    bolt_shear_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    sheet_bearing_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    sheet_tearout_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    hole_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    spacing_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    edge_distance_status: Literal["pass", "fail", "not_checked"] = "not_checked"
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    basis: str
+    blockers: list[str] = Field(default_factory=list)
+
+
+class ConnectionCheck(StructuralContract):
+    connection_id: str
+    label: str
+    status: Literal["pass", "fail", "not_checked", "unsupported"]
+    evidence_status: Literal["unverified", "candidate", "verified"]
+    pack_id: str
+    pack_version: str
+    identity_status: Literal["not_declared", "pass", "fail"]
+    identity_mismatches: list[str] = Field(default_factory=list)
+    governing_combination_id: str | None = None
+    governing_member_id: str | None = None
+    axial_demand_kN: float
+    shear_demand_kN: float
+    moment_demand_kNm: float
+    design_axial_capacity_kN: float | None = None
+    design_shear_capacity_kN: float | None = None
+    design_moment_capacity_kNm: float | None = None
+    axial_utilisation: float | None = None
+    shear_utilisation: float | None = None
+    moment_utilisation: float | None = None
+    governing_utilisation: float | None = None
+    stiffness_status: Literal["unverified", "verified"] = "unverified"
+    stiffness_basis: str = "Connection stiffness has not been verified."
+    expected_connector_part_numbers: list[str] = Field(default_factory=list)
+    rendered_connector_part_numbers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    source_sha256: str | None = None
+    anchor_group: AnchorGroupCheck | None = None
+    bolted_sheet_interface: BoltedSheetInterfaceCheck | None = None
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
+
+
 class TensionMemberCheck(StructuralContract):
     member_id: str
     label: str
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     capacity_status: Literal["not_checked", "candidate", "verified"]
+    member_capacity_status: Literal["not_checked", "candidate", "verified"]
+    connection_capacity_status: Literal["not_checked", "candidate", "verified"]
+    pack_id: Literal["as_nzs_4600_2005_a1_tension"] | None = None
     governing_combination_id: str | None = None
     tension_demand_kN: float
     tension_capacity_kN: float | None = None
@@ -436,15 +611,58 @@ class TensionMemberCheck(StructuralContract):
     connection_utilisation: float | None = None
     governing_utilisation: float | None = None
     end_fastener_count: int | None = None
+    rendered_end_connection_count: int = 0
+    rendered_end_fastener_counts: list[int] = Field(default_factory=list)
     required_force_per_end_fastener_kN: float | None = None
+    gross_area_mm2: float | None = None
+    net_area_mm2: float | None = None
+    gross_yield_capacity_kN: float | None = None
+    net_fracture_capacity_kN: float | None = None
+    connected_part_net_capacity_kN: float | None = None
+    end_bearing_capacity_kN: float | None = None
+    end_tearout_capacity_kN: float | None = None
+    end_fastener_part_numbers: list[str] = Field(default_factory=list)
+    end_fastener_product_keys: list[str] = Field(default_factory=list)
+    end_fastener_product_definition_digests: list[str] = Field(default_factory=list)
+    fastener_tested_single_shear_strength_kN: float | None = None
+    fastener_required_single_shear_strength_kN: float | None = None
+    fastener_shear_qualification_status: Literal[
+        "not_checked", "candidate", "pass", "fail"
+    ] = "not_checked"
+    fastener_evidence_status: Literal[
+        "unverified", "candidate", "verified"
+    ] | None = None
+    fastener_evidence_source: str | None = None
+    fastener_evidence_revision: str | None = None
+    fastener_evidence_url: str | None = None
+    spacing_status: Literal["not_checked", "pass", "fail"] = "not_checked"
+    edge_distance_status: Literal["not_checked", "pass", "fail"] = "not_checked"
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
+
+
+class BracingLoadPathTrace(StructuralContract):
+    id: str
+    member_id: str
+    component_id: str
+    governing_combination_id: str | None = None
+    status: Literal["pass", "fail", "candidate", "blocked"]
+    tension_demand_kN: float
+    component_ids: list[str] = Field(default_factory=list)
+    connection_ids: list[str] = Field(default_factory=list)
+    grounded_component_ids: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    basis: str
 
 
 class MemberCrossSectionCheck(StructuralContract):
     member_id: str
     label: str
-    pack_id: Literal["as_nzs_4600_2018_ewm"]
+    pack_id: Literal["as_nzs_4600_2005_a1_ewm"]
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     governing_combination_id: str | None = None
     governing_station_m: float | None = None
@@ -456,9 +674,15 @@ class MemberCrossSectionCheck(StructuralContract):
     torsion_kNm: float | None = None
     design_compression_capacity_kN: float | None = None
     design_major_bending_capacity_kNm: float | None = None
+    design_minor_bending_capacity_kNm: float | None = None
     design_web_shear_capacity_kN: float | None = None
+    design_off_axis_shear_capacity_kN: float | None = None
+    design_st_venant_torsion_capacity_kNm: float | None = None
     axial_bending_utilisation: float | None = None
+    biaxial_axial_bending_utilisation: float | None = None
     bending_shear_utilisation: float | None = None
+    minor_bending_shear_utilisation: float | None = None
+    torsion_utilisation: float | None = None
     governing_utilisation: float | None = None
     section_record_sha256: str | None = None
     capacity_factors: dict[str, float] = Field(default_factory=dict)
@@ -466,6 +690,10 @@ class MemberCrossSectionCheck(StructuralContract):
     shear_regime: Literal["stocky", "inelastic_buckling", "elastic_buckling"] | None = (
         None
     )
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     off_axis_load_path_status: Literal["not_declared", "candidate", "verified"] = (
         "not_declared"
     )
@@ -484,7 +712,7 @@ class MemberStabilityCheck(StructuralContract):
     segment_id: str
     member_id: str
     label: str
-    pack_id: Literal["as_nzs_4600_2018_ewm_member"]
+    pack_id: Literal["as_nzs_4600_2005_a1_member"]
     status: Literal["pass", "fail", "not_checked", "unsupported"]
     governing_combination_id: str | None = None
     governing_station_m: float | None = None
@@ -493,14 +721,61 @@ class MemberStabilityCheck(StructuralContract):
     unbraced_length_m: float
     axial_kN: float | None = None
     major_moment_kNm: float | None = None
+    minor_moment_kNm: float | None = None
+    web_shear_kN: float | None = None
+    off_axis_shear_kN: float | None = None
+    torsion_kNm: float | None = None
     elastic_flexural_buckling_stress_MPa: float | None = None
     elastic_torsional_buckling_stress_MPa: float | None = None
     elastic_flexural_torsional_buckling_stress_MPa: float | None = None
+    elastic_distortional_compression_stress_MPa: float | None = None
+    elastic_distortional_bending_stress_MPa: float | None = None
+    elastic_lateral_torsional_buckling_moment_kNm: float | None = None
+    elastic_minor_lateral_torsional_buckling_moment_kNm: float | None = None
+    elastic_major_axis_flexural_buckling_load_kN: float | None = None
+    elastic_minor_axis_flexural_buckling_load_kN: float | None = None
     nominal_global_buckling_stress_MPa: float | None = None
+    nominal_global_compression_capacity_kN: float | None = None
+    nominal_distortional_compression_capacity_kN: float | None = None
+    nominal_lateral_torsional_bending_capacity_kNm: float | None = None
+    nominal_distortional_bending_capacity_kNm: float | None = None
+    nominal_minor_lateral_torsional_bending_capacity_kNm: float | None = None
     design_member_compression_capacity_kN: float | None = None
     design_major_bending_capacity_kNm: float | None = None
+    design_minor_bending_capacity_kNm: float | None = None
+    design_global_compression_capacity_kN: float | None = None
+    design_distortional_compression_capacity_kN: float | None = None
+    design_lateral_torsional_bending_capacity_kNm: float | None = None
+    design_distortional_bending_capacity_kNm: float | None = None
+    design_section_minor_bending_capacity_kNm: float | None = None
+    design_minor_lateral_torsional_bending_capacity_kNm: float | None = None
+    design_web_shear_capacity_kN: float | None = None
+    design_off_axis_shear_capacity_kN: float | None = None
+    design_st_venant_torsion_capacity_kNm: float | None = None
+    governing_compression_mode: Literal["section", "global", "distortional"] | None = (
+        None
+    )
+    governing_bending_mode: Literal[
+        "section",
+        "lateral_torsional",
+        "distortional",
+    ] | None = None
+    governing_minor_bending_mode: Literal[
+        "section",
+        "lateral_torsional",
+    ] | None = None
     axial_utilisation: float | None = None
     axial_bending_utilisation: float | None = None
+    major_bending_utilisation: float | None = None
+    minor_bending_utilisation: float | None = None
+    web_shear_utilisation: float | None = None
+    off_axis_shear_utilisation: float | None = None
+    torsion_utilisation: float | None = None
+    major_axis_amplification_factor: float | None = None
+    minor_axis_amplification_factor: float | None = None
+    biaxial_member_interaction_utilisation: float | None = None
+    major_bending_shear_utilisation: float | None = None
+    minor_bending_shear_utilisation: float | None = None
     governing_utilisation: float | None = None
     lateral_bending_restraint: Literal[
         "unverified",
@@ -522,6 +797,10 @@ class MemberStabilityCheck(StructuralContract):
     restraint_candidate_ids: list[str] = Field(default_factory=list)
     distortional_buckling_status: Literal["unverified", "verified"]
     section_record_sha256: str | None = None
+    standard_reference: str | None = None
+    standard_status: str | None = None
+    standard_source_sha256: str | None = None
+    developments_supplement_sha256: str | None = None
     basis: str
     assumptions: list[str] = Field(default_factory=list)
 
@@ -572,6 +851,7 @@ class MemberRestraintCandidateCheck(StructuralContract):
     demand_model: Literal[
         "not_defined",
         "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
     ]
     transferred_load_kN: float | None = None
     load_eccentricity_m: float | None = None
@@ -593,6 +873,7 @@ class MemberRestraintCandidateCheck(StructuralContract):
     anchorage_connection_ids: list[str] = Field(default_factory=list)
     anchorage_grounded_component_id: str | None = None
     anchorage_basis: str = "No longitudinal anchorage evidence is declared."
+    anchorage_blockers: list[str] = Field(default_factory=list)
     mechanism: str
     provenance: str
     basis: str
@@ -600,13 +881,30 @@ class MemberRestraintCandidateCheck(StructuralContract):
 
 class ServiceabilityCheck(StructuralContract):
     member_id: str
+    physical_member_id: str | None = None
+    analytical_member_ids: list[str] = Field(default_factory=list)
+    span_m: float | None = Field(default=None, gt=0)
     label: str
     combination_id: str
     displacement_mm: float
     limit_mm: float | None
     utilisation: float | None
-    status: Literal["pass", "fail", "not_checked"]
+    status: Literal["pass", "fail", "not_checked", "not_applicable"]
     basis: str
+
+    @model_validator(mode="after")
+    def validate_non_applicable_reason(self) -> ServiceabilityCheck:
+        if self.status != "not_applicable":
+            return self
+        if not (self.physical_member_id or "").strip():
+            raise ValueError(
+                "a non-applicable serviceability check requires a physical member identity"
+            )
+        if not self.basis.strip():
+            raise ValueError(
+                "a non-applicable serviceability check requires an applicability reason"
+            )
+        return self
 
 
 class LoadSummary(StructuralContract):
@@ -651,13 +949,25 @@ VerificationStatus = Literal[
 ]
 
 
+class SupplementalMethod(StructuralContract):
+    id: str
+    label: str
+    reference: str
+    role: str
+
+
 class StructuralDesignBasis(StructuralContract):
     framework_id: str
     framework_label: str
     framework_reference: str
     jurisdiction: str
     analysis_method: str
+    building_classification: str | None = None
+    importance_level: str | None = None
+    design_life_years: int | None = Field(default=None, gt=0)
+    compliance_pathway: str = "Engineered solution"
     standards: dict[str, str] = Field(default_factory=dict)
+    supplemental_methods: list[SupplementalMethod] = Field(default_factory=list)
 
 
 class CalculationInput(StructuralContract):
@@ -681,7 +991,8 @@ class CalculationSheet(StructuralContract):
     stage_id: str
     title: str
     status: VerificationStatus
-    p399_reference: str
+    primary_reference: str
+    supplemental_references: list[str] = Field(default_factory=list)
     purpose: str
     assumptions: list[str] = Field(default_factory=list)
     inputs: list[CalculationInput] = Field(default_factory=list)
@@ -698,11 +1009,68 @@ class VerificationStage(StructuralContract):
     id: str
     order: int
     label: str
-    p399_reference: str
+    primary_reference: str
+    supplemental_references: list[str] = Field(default_factory=list)
     status: VerificationStatus
     summary: str
     sheet_ids: list[str] = Field(default_factory=list)
     blocking_stage_ids: list[str] = Field(default_factory=list)
+
+
+class CertificationGate(StructuralContract):
+    id: str
+    order: int
+    label: str
+    status: VerificationStatus
+    primary_reference: str
+    summary: str
+    stage_ids: list[str] = Field(default_factory=list)
+
+
+class CertificationModelCoverage(StructuralContract):
+    status: Literal["complete", "incomplete"]
+    compiled_member_count: int = Field(ge=0)
+    solved_member_count: int = Field(ge=0)
+    missing_result_member_ids: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class CertificationIssue(StructuralContract):
+    id: str
+    stage_id: str
+    kind: Literal[
+        "design_failure",
+        "evidence_gap",
+        "provisional_input",
+        "dependent_blocker",
+        "engineering_warning",
+    ]
+    owner: Literal["design", "tertius", "evidence", "mixed"]
+    count: int = Field(gt=0)
+    title: str
+    detail: str
+    next_action: str
+    affected_ids: list[str] = Field(default_factory=list)
+
+
+class CertificationReadiness(StructuralContract):
+    scheme_id: Literal["AU-NCC-2022"] = "AU-NCC-2022"
+    scheme_label: str = "Australian structural certification readiness"
+    document_status: Literal[
+        "analysis_incomplete",
+        "engineering_review_draft",
+        "certificate_draft_ready",
+    ]
+    draft_document_label: str
+    ready_for_engineering_review: bool
+    ready_for_certificate_draft: bool
+    ready_for_order: bool
+    conclusion: str
+    blocking_gate_ids: list[str] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    gates: list[CertificationGate] = Field(default_factory=list)
+    model_coverage: CertificationModelCoverage
+    issues: list[CertificationIssue] = Field(default_factory=list)
 
 
 class DesignComponent(StructuralContract):
@@ -712,6 +1080,19 @@ class DesignComponent(StructuralContract):
     visual_node_id: str
     grounded: bool = False
     part_number: str | None = None
+    role: str | None = None
+    product_key: str | None = None
+    product_definition_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
+    structural_evidence_status: Literal[
+        "unverified", "candidate", "verified"
+    ] | None = None
+    structural_evidence_basis: str | None = None
+    structural_properties: dict[str, Any] = Field(default_factory=dict)
+    fabrication: dict[str, Any] = Field(default_factory=dict)
 
 
 class ConnectionMemberEngagement(StructuralContract):
@@ -742,14 +1123,38 @@ class ConnectionJointModel(StructuralContract):
     member_engagements: list[ConnectionMemberEngagement] = Field(min_length=2)
 
 
+class ConnectionResistanceEvidence(StructuralContract):
+    pack_id: str
+    version: str
+    status: Literal["unverified", "candidate", "verified"]
+    basis: str
+    connector_part_numbers: list[str] = Field(min_length=1)
+    source: str | None = None
+    source_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    design_axial_capacity_kN: float | None = Field(default=None, gt=0)
+    design_shear_capacity_kN: float | None = Field(default=None, gt=0)
+    design_moment_capacity_kNm: float | None = Field(default=None, gt=0)
+    assumptions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_verified_source(self) -> ConnectionResistanceEvidence:
+        if self.status == "verified" and (
+            self.source is None or self.source_sha256 is None
+        ):
+            raise ValueError("verified connection resistance requires a hashed source")
+        return self
+
+
 class DesignConnection(StructuralContract):
     id: str
     label: str
     from_component_id: str
     to_component_id: str
+    component_ports: dict[str, str] = Field(default_factory=dict)
     connector_component_ids: list[str] = Field(default_factory=list)
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
     joint_model: ConnectionJointModel | None = None
+    resistance: ConnectionResistanceEvidence | None = None
 
 
 class StructuralWindActionBasis(StructuralContract):
@@ -767,6 +1172,7 @@ class StructuralWindActionBasis(StructuralContract):
     table_status: Literal["starter", "verified"]
     importance_level: str
     annual_recurrence_interval_years: int
+    design_event: Literal["serviceability", "ultimate"] = "ultimate"
     terrain_category: str
     reference_height_m: float
     regional_wind_speed_m_s: float
@@ -811,6 +1217,10 @@ class DesignSurfaceLoad(StructuralContract):
     coefficient_status: (
         Literal["assumed", "working_conservative", "verified"] | None
     ) = None
+    surface_action_pack_id: str | None = None
+    external_pressure_coefficient: float | None = None
+    internal_pressure_coefficient: float | None = None
+    area_reduction_factor: float | None = Field(default=None, gt=0)
 
 
 class DesignLoadPath(StructuralContract):
@@ -830,6 +1240,10 @@ class DesignAnalysisDefinition(StructuralContract):
     member_loads: list[MemberPointLoad]
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    unavailable_load_combinations: list[UnavailableLoadCombination] = Field(
+        default_factory=list
+    )
+    action_standard_pack: ActionStandardPackEvidence | None = None
     stability: StabilityDefinition | None = None
     cross_section_verification: CrossSectionVerificationDefinition | None = None
     member_stability_verification: MemberStabilityVerificationDefinition | None = None
@@ -839,6 +1253,12 @@ class ProjectStructuralCapture(StructuralContract):
     schema_version: Literal["0.1"] = "0.1"
     project_name: str
     design_hash: str
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+    )
     title: str
     authoring_mode: Literal["legacy", "generated"]
     design_basis: StructuralDesignBasis | None = None
@@ -906,6 +1326,17 @@ class ProjectStructuralCapture(StructuralContract):
                 if load.coefficient_status is None:
                     raise ValueError(
                         f"load {load.id!r} must declare its coefficient status"
+                    )
+                if load.surface_action_pack_id is not None and any(
+                    value is None
+                    for value in (
+                        load.external_pressure_coefficient,
+                        load.internal_pressure_coefficient,
+                        load.area_reduction_factor,
+                    )
+                ):
+                    raise ValueError(
+                        f"load {load.id!r} surface action pack evidence is incomplete"
                     )
                 expected_pressure = wind_bases_by_id[load.wind_basis_id].q_z_kPa * abs(
                     load.net_pressure_coefficient
@@ -997,10 +1428,11 @@ class ProjectStructuralCapture(StructuralContract):
                         member_point_load.source_load_id,
                         surface_load_ids,
                     )
-                if (
-                    not 0
+                if not (
+                    -MEMBER_LOAD_DISTANCE_TOLERANCE_M
                     <= member_point_load.distance_m
                     <= member_lengths[member_point_load.member_id]
+                    + MEMBER_LOAD_DISTANCE_TOLERANCE_M
                 ):
                     raise ValueError(
                         f"analysis load {member_point_load.id!r} lies outside its member"
@@ -1024,10 +1456,10 @@ class ProjectStructuralCapture(StructuralContract):
                     )
                 member_length = member_lengths[member_line_load.member_id]
                 if not (
-                    0
+                    -MEMBER_LOAD_DISTANCE_TOLERANCE_M
                     <= member_line_load.start_distance_m
                     < member_line_load.end_distance_m
-                    <= member_length
+                    <= member_length + MEMBER_LOAD_DISTANCE_TOLERANCE_M
                 ):
                     raise ValueError(
                         f"analysis distributed load {member_line_load.id!r} lies "
@@ -1046,10 +1478,11 @@ class ProjectStructuralCapture(StructuralContract):
                     )
             if self.analysis.stability is not None:
                 stability = self.analysis.stability
+                combination_ids = {item.id for item in self.analysis.load_combinations}
                 _require_reference(
                     "stability combination",
                     stability.stability_combination_id,
-                    {item.id for item in self.analysis.load_combinations},
+                    combination_ids,
                 )
                 _require_reference(
                     "stability imperfection case",
@@ -1064,6 +1497,28 @@ class ProjectStructuralCapture(StructuralContract):
                 if imperfection_case.category != "imperfection":
                     raise ValueError(
                         "stability imperfection case must use category 'imperfection'"
+                    )
+                for direction in stability.direction_cases:
+                    if direction.base_combination_id is not None:
+                        _require_reference(
+                            "stability base combination",
+                            direction.base_combination_id,
+                            combination_ids,
+                        )
+                    _require_reference(
+                        "stability direction combination",
+                        direction.stability_combination_id,
+                        combination_ids,
+                    )
+                    _require_reference(
+                        "stability NHF combination",
+                        direction.nhf_combination_id,
+                        combination_ids,
+                    )
+                    _require_reference(
+                        "stability direction imperfection case",
+                        direction.imperfection_case_id,
+                        load_case_ids,
                     )
             if self.analysis.cross_section_verification is not None:
                 verification = self.analysis.cross_section_verification
@@ -1259,10 +1714,12 @@ class SnapshotSource(StructuralContract):
     label: str
     design_id: str | None = None
     design_hash: str | None = None
+    analysis_configuration_revision: int | None = None
+    analysis_configuration_digest: str | None = None
 
 
 class StructuralSnapshot(StructuralContract):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     mode: Literal["fixture", "design"]
     title: str
     subtitle: str
@@ -1276,6 +1733,10 @@ class StructuralSnapshot(StructuralContract):
     materials: list[StructuralMaterial]
     load_cases: list[LoadCase]
     load_combinations: list[LoadCombination] = Field(default_factory=list)
+    unavailable_load_combinations: list[UnavailableLoadCombination] = Field(
+        default_factory=list
+    )
+    action_standard_pack: ActionStandardPackEvidence | None = None
     loads: list[NodalLoad]
     member_loads: list[MemberPointLoad] = Field(default_factory=list)
     member_distributed_loads: list[MemberDistributedLoad] = Field(default_factory=list)
@@ -1283,7 +1744,9 @@ class StructuralSnapshot(StructuralContract):
     member_results: list[MemberResult]
     member_diagrams: list[MemberDiagram] = Field(default_factory=list)
     member_checks: list[MemberCheck]
+    connection_checks: list[ConnectionCheck] = Field(default_factory=list)
     tension_member_checks: list[TensionMemberCheck] = Field(default_factory=list)
+    bracing_load_path_traces: list[BracingLoadPathTrace] = Field(default_factory=list)
     cross_section_checks: list[MemberCrossSectionCheck] = Field(default_factory=list)
     member_stability_checks: list[MemberStabilityCheck] = Field(default_factory=list)
     member_restraint_candidate_checks: list[MemberRestraintCandidateCheck] = Field(
@@ -1305,6 +1768,7 @@ class StructuralSnapshot(StructuralContract):
     stability: StabilityResult | None = None
     verification_stages: list[VerificationStage] = Field(default_factory=list)
     calculation_sheets: list[CalculationSheet] = Field(default_factory=list)
+    certification_readiness: CertificationReadiness | None = None
     capabilities: list[CapabilityState]
     warnings: list[str]
 
@@ -1368,6 +1832,12 @@ class StructuralSnapshot(StructuralContract):
                 stability_check.member_id,
                 member_ids,
             )
+        for bracing_trace in self.bracing_load_path_traces:
+            _require_reference(
+                "bracing load-path trace member",
+                bracing_trace.member_id,
+                member_ids,
+            )
         candidate_check_ids = _unique_ids(
             "member-restraint candidate checks",
             self.member_restraint_candidate_checks,
@@ -1416,6 +1886,12 @@ class StructuralSnapshot(StructuralContract):
                 service_check.member_id,
                 member_ids,
             )
+            for analytical_member_id in service_check.analytical_member_ids:
+                _require_reference(
+                    "serviceability check analytical member",
+                    analytical_member_id,
+                    member_ids,
+                )
         return self
 
 
