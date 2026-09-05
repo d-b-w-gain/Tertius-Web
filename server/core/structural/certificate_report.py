@@ -17,10 +17,21 @@ from .analysis_cache import canonical_digest
 from .contracts import StructuralSnapshot
 
 
-REPORT_SCHEMA_VERSION = "2"
-EVIDENCE_SCHEMA_VERSION = "tertius.structural.evidence.v1"
+REPORT_SCHEMA_VERSION = "3"
+EVIDENCE_SCHEMA_VERSION = "tertius.structural.evidence.v2"
+MANIFEST_SCHEMA_VERSION = "tertius.structural.report-manifest.v2"
 DOCUMENT_KIND = "structural_certificate_draft"
 MAX_REPORT_BYTES = 32 * 1024 * 1024
+
+ABCB_PROTOCOL_DISCLOSURE = {
+    "schema_version": "tertius.structural.abcb-protocol-disclosure.v1",
+    "protocol_id": "ABCB Protocol for Structural Software",
+    "protocol_edition": "2011.2",
+    # This must remain fail-closed until an independent structural appraisal,
+    # Compliance Document and controlled user-training scheme are in force.
+    "claim_status": "not_appraised",
+    "workflow_status": "engineer_review_required",
+}
 
 
 def _text(value: object, *, limit: int = 4_000) -> str:
@@ -91,6 +102,7 @@ def build_structural_evidence_json(
     payload = {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "document_status": "controlled_unsigned_draft",
+        "abcb_protocol": ABCB_PROTOCOL_DISCLOSURE,
         "report_identity": report_id,
         "generated_at": generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "project_name": project_name,
@@ -635,8 +647,9 @@ def build_manifest(
     evidence_content: bytes,
 ) -> dict[str, Any]:
     return {
-        "schema_version": "tertius.structural.report-manifest.v1",
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "document_status": "controlled_unsigned_draft",
+        "abcb_protocol": ABCB_PROTOCOL_DISCLOSURE,
         "report_identity": report_id,
         "generated_at": generated_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "analysis": dict(analysis_metadata),

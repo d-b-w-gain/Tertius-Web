@@ -59,6 +59,21 @@ def certificate_export_blockers(snapshot: StructuralSnapshot) -> list[str]:
         if open_count:
             blockers.append(f"{label}: {open_count} required check(s) are not passing.")
 
+    for connection in snapshot.connection_checks:
+        for label, supporting_check in (
+            ("anchor group", getattr(connection, "anchor_group", None)),
+            (
+                "bolted-sheet interface",
+                getattr(connection, "bolted_sheet_interface", None),
+            ),
+        ):
+            if supporting_check is not None and supporting_check.status != "pass":
+                blockers.append(
+                    f"Connection {getattr(connection, 'connection_id', '<unknown>')}: "
+                    f"selected {label} "
+                    f"check is {supporting_check.status}."
+                )
+
     if not snapshot.serviceability_checks:
         blockers.append("Serviceability: no member checks were recorded.")
     for check in snapshot.serviceability_checks:
