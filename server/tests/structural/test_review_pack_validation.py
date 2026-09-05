@@ -15,7 +15,7 @@ def _pack(
     hash_override: str | None = None,
     approved_claim: bool = False,
 ) -> bytes:
-    protocol = {
+    protocol: dict[str, object] = {
         "schema_version": "tertius.structural.abcb-protocol-disclosure.v1",
         "protocol_id": "ABCB Protocol for Structural Software",
         "protocol_edition": "2011.2",
@@ -34,8 +34,8 @@ def _pack(
                 },
             }
         )
-    pass_check = {"status": "pass"}
-    connection = deepcopy(pass_check)
+    pass_check: dict[str, object] = {"status": "pass"}
+    connection: dict[str, object] = deepcopy(pass_check)
     if nested_status is not None:
         connection["bolted_sheet_interface"] = {"status": nested_status}
     evidence = {
