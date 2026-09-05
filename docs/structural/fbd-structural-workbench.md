@@ -34,6 +34,14 @@ The legacy source is at
 `W:\ben\ContextUI\default\workflows\shed\FBD`. The first source/runtime audit is
 recorded in `docs/structural/fbd-source-inventory.md`.
 
+ABCB Protocol appraisal readiness is tracked separately from engineering
+certificate-draft readiness. The assessor-facing runbook and machine-readable
+release gates are in
+[`abcb-protocol-fat.md`](abcb-protocol-fat.md) and
+[`abcb-protocol-fat.json`](abcb-protocol-fat.json). Until those gates pass and a
+written independent appraisal exists, the workbench remains an engineer-review
+workflow and must not display an ABCB compliance claim.
+
 The legacy workflow has no `design.py`; its entrypoint is
 `portal_frame_fbd_server.py` plus 11 local imports. `design.py` plus local
 imports remains the target Tertius project boundary and must be created around
