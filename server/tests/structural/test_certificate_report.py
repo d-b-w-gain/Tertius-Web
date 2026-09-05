@@ -246,6 +246,10 @@ def test_review_pack_manifest_hashes_exact_artifacts():
         stored_manifest = json.loads(archive.read("manifest.json"))
     assert stored_manifest["files"][0]["sha256"] == sha256(pdf).hexdigest()
     assert stored_manifest["files"][1]["sha256"] == sha256(evidence).hexdigest()
+    assert stored_manifest["abcb_protocol"]["claim_status"] == "not_appraised"
+    assert json.loads(evidence)["abcb_protocol"]["workflow_status"] == (
+        "engineer_review_required"
+    )
 
 
 def test_genuine_not_checked_serviceability_blocks_export():
@@ -260,3 +264,15 @@ def test_reasoned_not_applicable_serviceability_does_not_block_export():
     snapshot = cast(StructuralSnapshot, _snapshot())
 
     assert certificate_export_blockers(snapshot) == []
+
+
+def test_unresolved_selected_connection_subcheck_blocks_export():
+    snapshot = cast(StructuralSnapshot, _snapshot())
+    snapshot.connection_checks[0].anchor_group = _item(status="unsupported")
+
+    blockers = certificate_export_blockers(snapshot)
+
+    assert any(
+        "selected anchor group check is unsupported" in blocker
+        for blocker in blockers
+    )

@@ -1754,6 +1754,8 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness(
     assert check.design_moment_capacity_kNm is not None
     assert check.design_moment_capacity_kNm > 0.6
     assert check.stiffness_status == "verified"
+    assert check.anchor_group is None
+    assert check.bolted_sheet_interface is None
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():
