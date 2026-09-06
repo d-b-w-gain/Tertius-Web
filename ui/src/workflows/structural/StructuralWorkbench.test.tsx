@@ -1079,6 +1079,8 @@ describe('StructuralWorkbench', () => {
     )
     expect(mocks.apiFetch).toHaveBeenCalledTimes(1)
     expect(screen.getByText('SAVED ANALYSIS')).toBeInTheDocument()
+    expect(screen.getByText(/ABCB PROTOCOL V2011\.2 — RELEASE NOT APPRAISED/))
+      .toHaveTextContent('JOB SCOPE NOT ASSESSED')
     expect(screen.getByRole('region', { name: 'Structural verification summary' }))
       .toBeInTheDocument()
     expect(screen.queryByText('Custom Orb roofing iron')).not.toBeInTheDocument()

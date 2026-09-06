@@ -970,6 +970,57 @@ class StructuralDesignBasis(StructuralContract):
     supplemental_methods: list[SupplementalMethod] = Field(default_factory=list)
 
 
+class ABCBProtocolGeometry(StructuralContract):
+    ground_level_m: float
+    eaves_height_m: float = Field(ge=0)
+    roof_height_m: float = Field(ge=0)
+    building_width_m: float = Field(gt=0)
+    building_length_m: float = Field(gt=0)
+    length_width_ratio: float = Field(gt=0)
+    roof_pitch_degrees: float = Field(ge=0, le=90)
+    basis: str
+
+    @model_validator(mode="after")
+    def validate_geometry(self) -> ABCBProtocolGeometry:
+        expected_ratio = self.building_length_m / self.building_width_m
+        if abs(self.length_width_ratio - expected_ratio) > 1e-9:
+            raise ValueError("length/width ratio must match the recorded dimensions")
+        if self.roof_height_m < self.eaves_height_m:
+            raise ValueError("roof height must not be lower than eaves height")
+        return self
+
+
+class ABCBProtocolScopeCheck(StructuralContract):
+    id: Literal[
+        "deemed_to_satisfy",
+        "eaves_height",
+        "roof_height",
+        "building_width",
+        "length_width_ratio",
+        "roof_pitch",
+    ]
+    label: str
+    value: float | str
+    limit: float | str
+    status: Literal["pass", "fail"]
+    reference: str
+
+
+class ABCBProtocolScopeAssessment(StructuralContract):
+    protocol_id: Literal["ABCB Protocol for Structural Software"] = (
+        "ABCB Protocol for Structural Software"
+    )
+    protocol_edition: Literal["2011.2"] = "2011.2"
+    ncc_reference: str
+    status: Literal["within_scope", "outside_scope"]
+    structural_system: Literal["steel_framed_building"]
+    compliance_pathway: str
+    geometry: ABCBProtocolGeometry
+    checks: list[ABCBProtocolScopeCheck]
+    blocking_reasons: list[str] = Field(default_factory=list)
+    basis: str
+
+
 class CalculationInput(StructuralContract):
     symbol: str
     label: str
@@ -1262,6 +1313,7 @@ class ProjectStructuralCapture(StructuralContract):
     title: str
     authoring_mode: Literal["legacy", "generated"]
     design_basis: StructuralDesignBasis | None = None
+    abcb_protocol_scope: ABCBProtocolScopeAssessment | None = None
     wind_action_bases: list[StructuralWindActionBasis] = Field(default_factory=list)
     components: list[DesignComponent]
     connections: list[DesignConnection]
@@ -1725,6 +1777,7 @@ class StructuralSnapshot(StructuralContract):
     subtitle: str
     source: SnapshotSource
     design_basis: StructuralDesignBasis | None = None
+    abcb_protocol_scope: ABCBProtocolScopeAssessment | None = None
     wind_action_bases: list[StructuralWindActionBasis] = Field(default_factory=list)
     units: StructuralUnits = Field(default_factory=StructuralUnits)
     nodes: list[StructuralNode]

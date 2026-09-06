@@ -23,7 +23,11 @@ def _item(**values):
     return SimpleNamespace(**values)
 
 
-def _snapshot(*, serviceability_status: str = "not_applicable"):
+def _snapshot(
+    *,
+    serviceability_status: str = "not_applicable",
+    protocol_scope_status: str | None = None,
+):
     pass_check = _item(status="pass")
     readiness = _item(
         ready_for_certificate_draft=True,
@@ -67,6 +71,22 @@ def _snapshot(*, serviceability_status: str = "not_applicable"):
                 "actions": "AS/NZS 1170",
                 "members": "AS/NZS 4600:2005+A1",
             },
+        ),
+        abcb_protocol_scope=(
+            _item(
+                status=protocol_scope_status,
+                compliance_pathway="Deemed-to-Satisfy",
+                geometry=_item(
+                    eaves_height_m=2.4,
+                    roof_height_m=3.0,
+                    building_width_m=3.0,
+                    length_width_ratio=5.0 / 3.0,
+                    roof_pitch_degrees=21.8,
+                ),
+                blocking_reasons=[],
+            )
+            if protocol_scope_status is not None
+            else None
         ),
         cross_section_checks=[pass_check],
         member_stability_checks=[pass_check],
@@ -161,7 +181,10 @@ def _metadata() -> dict[str, object]:
 
 
 def test_certificate_report_is_deterministic_and_discloses_applicability():
-    snapshot = cast(StructuralSnapshot, _snapshot())
+    snapshot = cast(
+        StructuralSnapshot,
+        _snapshot(protocol_scope_status="within_scope"),
+    )
     generated_at = datetime(2026, 9, 3, 2, 0, tzinfo=UTC)
     identity = report_identity(analysis_key_digest="a" * 64)
     evidence = build_structural_evidence_json(
@@ -195,6 +218,10 @@ def test_certificate_report_is_deterministic_and_discloses_applicability():
     assert first.rstrip().endswith(b"%%EOF")
     assert b"/CreationDate (D:20260903020000Z)" in first
     assert b"CONTROLLED DRAFT" in first
+    assert b"ABCB Protocol status" in first
+    assert b"Protocol job scope" in first
+    assert b"WITHIN SCOPE" in first
+    assert b"2.400 m / 6.000 m" in first
     assert b"Reviewing engineer declaration" in first
     assert b"1 NOT APPLICABLE / 0 NOT CHECKED" in first
     assert b"B1" in first
@@ -246,6 +273,10 @@ def test_review_pack_manifest_hashes_exact_artifacts():
         stored_manifest = json.loads(archive.read("manifest.json"))
     assert stored_manifest["files"][0]["sha256"] == sha256(pdf).hexdigest()
     assert stored_manifest["files"][1]["sha256"] == sha256(evidence).hexdigest()
+    assert stored_manifest["abcb_protocol"]["claim_status"] == "not_appraised"
+    assert json.loads(evidence)["abcb_protocol"]["workflow_status"] == (
+        "engineer_review_required"
+    )
 
 
 def test_genuine_not_checked_serviceability_blocks_export():
@@ -260,3 +291,15 @@ def test_reasoned_not_applicable_serviceability_does_not_block_export():
     snapshot = cast(StructuralSnapshot, _snapshot())
 
     assert certificate_export_blockers(snapshot) == []
+
+
+def test_unresolved_selected_connection_subcheck_blocks_export():
+    snapshot = cast(StructuralSnapshot, _snapshot())
+    snapshot.connection_checks[0].anchor_group = _item(status="unsupported")
+
+    blockers = certificate_export_blockers(snapshot)
+
+    assert any(
+        "selected anchor group check is unsupported" in blocker
+        for blocker in blockers
+    )

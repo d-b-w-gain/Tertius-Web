@@ -2280,6 +2280,23 @@ def _connection_checks(
             screw=calculated_screw,
             gusset=calculated_gusset,
         )
+        # Only retain supporting sub-checks that form part of the selected
+        # complete resistance path. Calculators intentionally probe partial
+        # joint patterns, but an inapplicable probe must not survive in the
+        # authoritative evidence as an unresolved nested result beneath a
+        # passing connection.
+        if evidence is not None or tension_evidence is not None:
+            anchor_group = None
+            bolted_sheet_interface = None
+        elif calculated_connection is not None:
+            selected_pack_id = calculated_connection["pack_id"]
+            if selected_pack_id not in {
+                "specified_grade_pinned_steel_fixture",
+                "as_nzs_4600_2005_a1_direct_anchored_sheet",
+            }:
+                anchor_group = None
+            if selected_pack_id != "specified_grade_pinned_steel_fixture":
+                bolted_sheet_interface = None
         if (
             (
                 anchor_group is not None
@@ -9878,6 +9895,7 @@ def solve_project_structural(
             analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,
+        abcb_protocol_scope=capture.abcb_protocol_scope,
         wind_action_bases=capture.wind_action_bases,
         nodes=structural_nodes,
         members=structural_members,

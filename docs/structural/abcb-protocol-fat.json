@@ -1,0 +1,249 @@
+{
+  "schema_version": "tertius.structural.abcb-fat.v1",
+  "protocol": {
+    "title": "ABCB Protocol for Structural Software",
+    "edition": "2011.2",
+    "ncc_references": ["B1D5", "H1D6", "Housing Provisions 2.2.5"],
+    "official_url": "https://ncc.abcb.gov.au/resource/protocol/protocol-structural-software"
+  },
+  "claim_rule": "No release may claim protocol compliance until every release gate passes, the Compliance Document is approved, independent appraisal is current, and trained-user controls are enabled.",
+  "evidence_classes": [
+    "automated",
+    "witnessed",
+    "document_review",
+    "external_certificate"
+  ],
+  "cases": [
+    {
+      "id": "FAT-001",
+      "protocol_area": "scope",
+      "title": "Permitted structural-system and DtS scope",
+      "acceptance": "Protocol mode accepts only appraised steel or timber trussed roof/floor or framed-building systems using declared NCC DtS criteria; all other systems use the engineer-review workflow.",
+      "method": "witnessed",
+      "evidence": ["scope-positive.json", "scope-negative.json", "ui-scope-decision.png"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-002",
+      "protocol_area": "scope",
+      "title": "NCC geometric limits",
+      "acceptance": "Protocol mode records and enforces eaves height <= 6 m, roof height <= 8.5 m, width <= 16 m, length <= 5 x width and roof pitch <= 35 degrees before producing design outputs.",
+      "method": "automated",
+      "evidence": ["geometry-boundary-results.json"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-003",
+      "protocol_area": "inputs",
+      "title": "Approval inputs are identifiable",
+      "acceptance": "Every job input used by analysis is identified in the evidence pack with value, unit, source, locked/discretionary classification and analysis digest.",
+      "method": "automated",
+      "evidence": ["input-register.json", "review-pack-validation.json"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-004",
+      "protocol_area": "inputs",
+      "title": "Engineering criteria cannot be silently overridden",
+      "acceptance": "Locked engineering criteria cannot be edited by a trained user; every permitted non-engineering override is identified in outputs and changes the analysis identity.",
+      "method": "witnessed",
+      "evidence": ["locked-input-attempt.json", "override-audit.json"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-005",
+      "protocol_area": "inputs",
+      "title": "Input self-checks fail closed",
+      "acceptance": "Missing, contradictory, invalid and out-of-range inputs produce a specific blocking diagnostic and no protocol design output.",
+      "method": "automated",
+      "evidence": ["negative-input-matrix.json"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-006",
+      "protocol_area": "inputs",
+      "title": "Engineer-supplied inputs are explicit",
+      "acceptance": "Any input requiring an engineer is labelled at entry and in output, with engineer identity, reference and controlled revision; its presence prevents trained-user-only sign-off unless the Compliance Document permits it.",
+      "method": "document_review",
+      "evidence": ["engineer-input-register.json", "sample-output.pdf"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-007",
+      "protocol_area": "outputs",
+      "title": "Software, release and approval identity",
+      "acceptance": "Every output identifies Tertius, the unique software/engine version, analysis identity, protocol edition, appraisal status and Compliance Document location/version.",
+      "method": "automated",
+      "evidence": ["review-pack-validation.json", "sample-output.pdf"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-008",
+      "protocol_area": "outputs",
+      "title": "NCC and referenced-document register",
+      "acceptance": "Outputs identify the applicable NCC edition/amendment and every structural standard or referenced document used by the selected calculation packs.",
+      "method": "automated",
+      "evidence": ["standards-register.json", "sample-output.pdf"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-009",
+      "protocol_area": "outputs",
+      "title": "Installation, transport and use constraints",
+      "acceptance": "Output contains the appraised fabrication, transport, erection, bracing, connection, support and installation constraints needed for the result to remain valid.",
+      "method": "document_review",
+      "evidence": ["sample-output.pdf", "installation-cross-reference.json"],
+      "automation": "planned",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-010",
+      "protocol_area": "outputs",
+      "title": "No protocol output outside approved limits",
+      "acceptance": "Changing any scope boundary beyond its approved value blocks protocol output and explains the violated limit; the engineer-review pathway remains available without a protocol claim.",
+      "method": "witnessed",
+      "evidence": ["scope-boundary-witness.md", "scope-negative.json"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-011",
+      "protocol_area": "outputs",
+      "title": "Trained-user identity and currency",
+      "acceptance": "Protocol output contains the user's name, training certificate number, trained software version and current validity; expired or wrong-version training blocks trained-user sign-off.",
+      "method": "witnessed",
+      "evidence": ["trained-user-positive.pdf", "trained-user-expired.json"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-012",
+      "protocol_area": "validation",
+      "title": "Reference calculations and component selection",
+      "acceptance": "Independent hand calculations or trusted reference solutions agree within predeclared tolerances for actions, combinations, analysis effects, member capacities, stability, connections, serviceability and selected components.",
+      "method": "external_certificate",
+      "evidence": ["benchmark-matrix.json", "independent-calculation-checks.pdf"],
+      "automation": "partial",
+      "current_implementation": "partial",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-013",
+      "protocol_area": "validation",
+      "title": "Representative and boundary job matrix",
+      "acceptance": "The appraised matrix covers supported frame types, materials, wind regions, terrain/shielding/topography cases, openings, roof pitches, dimensions, member families, connections and governing load combinations, including each boundary and one increment beyond it.",
+      "method": "witnessed",
+      "evidence": ["representative-job-matrix.json", "fat-run-index.json"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-014",
+      "protocol_area": "validation",
+      "title": "All required and selected sub-checks fail closed",
+      "acceptance": "A failed, unsupported, blocked, stale or genuinely unchecked required result, including a selected nested connection result, prevents output; an irrelevant partial calculator is not represented as selected evidence.",
+      "method": "automated",
+      "evidence": ["pytest.xml", "review-pack-validation.json"],
+      "automation": "implemented",
+      "current_implementation": "pass",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-015",
+      "protocol_area": "validation",
+      "title": "Immutable, reproducible review pack",
+      "acceptance": "The same saved analysis produces byte-identical evidence/report content and the independent verifier confirms file sizes, SHA-256 hashes, report identity, analysis identity and controlled-draft status.",
+      "method": "automated",
+      "evidence": ["review-pack-validation.json", "reproducibility-hashes.json"],
+      "automation": "implemented",
+      "current_implementation": "pass",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-016",
+      "protocol_area": "quality_assurance",
+      "title": "Formal QA system and independent verification",
+      "acceptance": "Controlled QA procedures identify requirements, design reviews, tests, defects, releases, records, independence and approval responsibilities; the appraiser samples traceability from requirement to evidence to release.",
+      "method": "document_review",
+      "evidence": ["quality-plan.pdf", "requirements-traceability.json", "release-approval.pdf"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-017",
+      "protocol_area": "software_author",
+      "title": "Competent structural software author",
+      "acceptance": "The Compliance Document identifies the responsible software author and evidence of structural engineering competence appropriate to the appraised scope.",
+      "method": "document_review",
+      "evidence": ["author-competence-register.pdf"],
+      "automation": "not_applicable",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-018",
+      "protocol_area": "software_user",
+      "title": "Current-version training and certificate controls",
+      "acceptance": "Training covers the approved version, scope, inputs, outputs, limitations and escalation rules; completion issues a unique certificate and version updates trigger review or retraining.",
+      "method": "document_review",
+      "evidence": ["training-syllabus.pdf", "training-register.json", "sample-training-certificate.pdf"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-019",
+      "protocol_area": "compliance_document",
+      "title": "Compliance Document completeness",
+      "acceptance": "The controlled Compliance Document covers scope/exclusions, ownership and qualifications, NCC/standards, installation, validation, QA, training, revision history, input/analysis/output features, screens and worked examples.",
+      "method": "external_certificate",
+      "evidence": ["compliance-document.pdf", "compliance-document-checklist.pdf"],
+      "automation": "planned",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-020",
+      "protocol_area": "independent_appraisal",
+      "title": "Written independent appraisal",
+      "acceptance": "An independent structural assessor reviews the complete FAT evidence and Compliance Document, records qualifications/method/results, certifies the approved scope in writing and states validity and conditions.",
+      "method": "external_certificate",
+      "evidence": ["independent-appraisal-certificate.pdf", "assessor-report.pdf"],
+      "automation": "not_applicable",
+      "current_implementation": "gap",
+      "release_gate": true
+    },
+    {
+      "id": "FAT-021",
+      "protocol_area": "maintenance",
+      "title": "NCC currency, unique versions and approval status",
+      "acceptance": "Each release has a unique version and unambiguous appraisal status; NCC/standard changes and software changes trigger impact assessment, regression, Compliance Document revision and reappraisal/retraining as required.",
+      "method": "document_review",
+      "evidence": ["release-register.json", "change-impact-sample.pdf", "revision-history.pdf"],
+      "automation": "planned",
+      "current_implementation": "partial",
+      "release_gate": true
+    }
+  ]
+}

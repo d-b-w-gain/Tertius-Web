@@ -38,6 +38,41 @@ export type StructuralDesignBasis = {
   }>
 }
 
+export type ABCBProtocolScopeAssessment = {
+  protocol_id: 'ABCB Protocol for Structural Software'
+  protocol_edition: '2011.2'
+  ncc_reference: string
+  status: 'within_scope' | 'outside_scope'
+  structural_system: 'steel_framed_building'
+  compliance_pathway: string
+  geometry: {
+    ground_level_m: number
+    eaves_height_m: number
+    roof_height_m: number
+    building_width_m: number
+    building_length_m: number
+    length_width_ratio: number
+    roof_pitch_degrees: number
+    basis: string
+  }
+  checks: Array<{
+    id:
+      | 'deemed_to_satisfy'
+      | 'eaves_height'
+      | 'roof_height'
+      | 'building_width'
+      | 'length_width_ratio'
+      | 'roof_pitch'
+    label: string
+    value: number | string
+    limit: number | string
+    status: 'pass' | 'fail'
+    reference: string
+  }>
+  blocking_reasons: string[]
+  basis: string
+}
+
 export type StructuralWindActionBasis = {
   id: string
   site_address: string
@@ -212,6 +247,7 @@ export type ProjectStructuralCapture = {
   title: string
   authoring_mode: 'legacy' | 'generated'
   design_basis: StructuralDesignBasis | null
+  abcb_protocol_scope?: ABCBProtocolScopeAssessment | null
   wind_action_bases: StructuralWindActionBasis[]
   components: DesignComponent[]
   connections: DesignConnection[]
@@ -423,6 +459,7 @@ export type StructuralSnapshot = {
     analysis_configuration_digest?: string | null
   }
   design_basis: StructuralDesignBasis | null
+  abcb_protocol_scope?: ABCBProtocolScopeAssessment | null
   wind_action_bases: StructuralWindActionBasis[]
   units: {
     length: 'm'
