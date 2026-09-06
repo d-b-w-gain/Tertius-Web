@@ -103,6 +103,7 @@ type CompactVerificationGroup = {
 
 type GoverningAnalysisState = {
   solver: Pick<StructuralSnapshot['solver'], 'combination_id'>
+  abcb_protocol_scope: StructuralSnapshot['abcb_protocol_scope']
   certification_readiness: StructuralSnapshot['certification_readiness']
   verification_stages: StructuralSnapshot['verification_stages']
   compactVerificationGroups: CompactVerificationGroup[]
@@ -148,6 +149,7 @@ function compactVerificationGroup(
 function governingAnalysisState(snapshot: StructuralSnapshot): GoverningAnalysisState {
   return {
     solver: { combination_id: snapshot.solver.combination_id },
+    abcb_protocol_scope: snapshot.abcb_protocol_scope,
     certification_readiness: snapshot.certification_readiness,
     verification_stages: snapshot.verification_stages,
     compactVerificationGroups: [
@@ -1194,6 +1196,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             ? 'AUSTRALIAN TECHNICAL GATES PASS — READY FOR CONTROLLED CERTIFICATE DRAFT AND ENGINEER REVIEW'
             : `AUSTRALIAN VERIFICATION ACTIVE — ${governingAnalysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${governingAnalysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
+      </div>
+
+      <div className="shrink-0 border-b border-cyan-500/20 bg-cyan-950/20 px-5 py-1.5 text-[10px] font-semibold text-cyan-100">
+        ABCB PROTOCOL V2011.2 — RELEASE NOT APPRAISED; ENGINEER REVIEW REQUIRED
+        {' · '}
+        {governingAnalysis?.abcb_protocol_scope
+          ? `JOB SCOPE ${governingAnalysis.abcb_protocol_scope.status.replaceAll('_', ' ').toUpperCase()}`
+          : 'JOB SCOPE NOT ASSESSED'}
       </div>
 
       {evidenceLevel === 'audit' && <StructuralWindBasisPanel bases={windActionBases} />}

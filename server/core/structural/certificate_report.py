@@ -412,6 +412,10 @@ def build_structural_certificate_pdf(
             ("Generated", generated_text),
             ("Analysis calculated", analysis_metadata.get("calculated_at", "not recorded")),
             ("Structural engine", analysis_metadata.get("engine_version", "not recorded")),
+            (
+                "ABCB Protocol status",
+                "Version 2011.2 - NOT APPRAISED; engineer review required",
+            ),
             ("Analysis key", analysis_metadata.get("key_digest", "not recorded")),
             ("Design digest", source.design_hash or "not recorded"),
             ("Configuration revision", source.analysis_configuration_revision or "not recorded"),
@@ -446,6 +450,45 @@ def build_structural_certificate_pdf(
         )
         _section(pdf, "Standards register")
         _key_values(pdf, sorted(basis.standards.items()))
+
+    protocol_scope = snapshot.abcb_protocol_scope
+    _section(pdf, "ABCB Protocol job-scope assessment")
+    if protocol_scope is None:
+        _status_box(pdf, "Protocol job scope", "NOT ASSESSED", passed=False)
+        _paragraph(
+            pdf,
+            "No compiled protocol geometry assessment is attached. This job cannot "
+            "use a trained-user protocol pathway.",
+        )
+    else:
+        _status_box(
+            pdf,
+            "Protocol job scope",
+            protocol_scope.status.replace("_", " ").upper(),
+            passed=protocol_scope.status == "within_scope",
+        )
+        geometry = protocol_scope.geometry
+        _key_values(
+            pdf,
+            (
+                ("Compliance pathway", protocol_scope.compliance_pathway),
+                ("Eaves height", f"{geometry.eaves_height_m:.3f} m / 6.000 m"),
+                ("Roof height", f"{geometry.roof_height_m:.3f} m / 8.500 m"),
+                ("Building width", f"{geometry.building_width_m:.3f} m / 16.000 m"),
+                ("Length / width", f"{geometry.length_width_ratio:.3f} / 5.000"),
+                ("Roof pitch", f"{geometry.roof_pitch_degrees:.3f} deg / 35.000 deg"),
+            ),
+        )
+        for blocker in protocol_scope.blocking_reasons:
+            _paragraph(pdf, blocker, bold=True, color=(127, 29, 29))
+        _paragraph(
+            pdf,
+            "A within-scope geometry result is not a software compliance claim. "
+            "Independent release appraisal, the Compliance Document and current "
+            "trained-user controls are separate mandatory gates.",
+            size=7.2,
+            line_height=3.8,
+        )
 
     _section(pdf, "Scope and conditions")
     _paragraph(

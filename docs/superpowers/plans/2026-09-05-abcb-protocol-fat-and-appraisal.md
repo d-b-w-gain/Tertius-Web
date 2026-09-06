@@ -24,9 +24,9 @@ appraisal remain open.
 
 ## Product controls required before appraisal
 
-- [ ] Add an explicit protocol-mode scope model for the appraised systems,
+- [x] Add an explicit protocol-mode scope model for the appraised systems,
   materials, jurisdictions and DtS pathways.
-- [ ] Record and fail closed on protocol geometry limits: eaves height, highest
+- [x] Record and fail closed on protocol geometry limits: eaves height, highest
   roof point, width, length/width ratio and roof pitch.
 - [ ] Build a complete input register with locked/discretionary/engineer-supplied
   classification and output disclosure.

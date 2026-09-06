@@ -26,6 +26,7 @@ from workflows.structural.structural_server import (
     _derive_member_restraint_candidates,
     _endpoint_connection_effects,
     _p399_stability_actions,
+    _portal_frame_abcb_protocol_scope,
     _portal_frame_wind_actions,
 )
 
@@ -717,6 +718,21 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
     assert len(surface_loads) == 84
     assert len(line_loads) == 84
     assert len(surface_sources) == 84
+    protocol_scope = _portal_frame_abcb_protocol_scope(
+        {"analytical_members": analytical_members},
+        components=components,
+        configuration=configuration,
+    )
+    assert protocol_scope is not None
+    assert protocol_scope.status == "outside_scope"
+    assert protocol_scope.geometry.eaves_height_m == pytest.approx(2.4)
+    assert protocol_scope.geometry.roof_height_m == pytest.approx(3.0)
+    assert protocol_scope.geometry.building_width_m == pytest.approx(3.0)
+    assert protocol_scope.geometry.building_length_m == pytest.approx(5.0)
+    assert protocol_scope.geometry.length_width_ratio == pytest.approx(5.0 / 3.0)
+    assert protocol_scope.geometry.roof_pitch_degrees == pytest.approx(
+        21.80140948635181
+    )
     first_frame_wall = next(
         load
         for load in surface_loads

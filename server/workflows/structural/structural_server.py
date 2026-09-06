@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.db import get_db
+from core.structural.abcb_protocol import assess_abcb_protocol_scope
 from core.structural.cantilever_fixture import cantilever_glb, cantilever_snapshot
 from core.structural.action_standard_packs import (
     ActionRole,
@@ -27,6 +28,8 @@ from core.structural.action_standard_packs import (
     resolve_action_standard_pack,
 )
 from core.structural.contracts import (
+    ABCBProtocolGeometry,
+    ABCBProtocolScopeAssessment,
     AnalyticalMemberDeclaration,
     CapabilityState,
     CrossSectionVerificationDefinition,
@@ -419,6 +422,7 @@ def _capture_from_structural_projection(
     wind_action_bases: list[StructuralWindActionBasis] = []
     surface_loads: list[DesignSurfaceLoad] = []
     effective_configuration = configuration
+    abcb_protocol_scope: ABCBProtocolScopeAssessment | None = None
     derived_distributed_loads: list[ConfiguredMemberDistributedLoad] = []
     surface_sources: dict[str, str] = {}
     if configuration is not None:
@@ -455,6 +459,11 @@ def _capture_from_structural_projection(
                 StructuralWindActionBasis.model_validate(value)
                 for value in overlaid["wind_action_bases"]
             ]
+        abcb_protocol_scope = _portal_frame_abcb_protocol_scope(
+            projection,
+            components=components,
+            configuration=effective_configuration or configuration,
+        )
     if configuration is not None and readiness.get("model_complete"):
         analysis, analysis_warnings = _analysis_from_projection(
             projection,
@@ -516,6 +525,7 @@ def _capture_from_structural_projection(
             if effective_configuration is not None
             else None
         ),
+        abcb_protocol_scope=abcb_protocol_scope,
         wind_action_bases=wind_action_bases,
         components=components,
         connections=connections,
@@ -911,6 +921,114 @@ def _trace_generated_load_paths(
             )
         )
     return paths
+
+
+def _portal_frame_abcb_protocol_scope(
+    projection: dict,
+    *,
+    components: list[DesignComponent],
+    configuration: StructuralProjectConfiguration,
+) -> ABCBProtocolScopeAssessment | None:
+    """Measure the configured portal envelope for a fail-closed protocol decision."""
+
+    configured = configuration.portal_frame_wind_actions
+    if configured is None:
+        return None
+    projected_members = [
+        member
+        for member in projection.get("analytical_members", [])
+        if isinstance(member, dict) and member.get("component_id")
+    ]
+    members_by_component: dict[str, list[dict]] = defaultdict(list)
+    for member in projected_members:
+        members_by_component[str(member["component_id"])].append(member)
+    for members in members_by_component.values():
+        members.sort(
+            key=lambda member: float(member.get("physical_start_distance_m") or 0.0)
+        )
+
+    role_by_component = {
+        component.id: (component.role or "").strip().lower() for component in components
+    }
+    column_ids = {
+        component_id
+        for component_id, role in role_by_component.items()
+        if role == configured.column_role.strip().lower()
+    }
+    rafter_ids = {
+        component_id
+        for component_id, role in role_by_component.items()
+        if role == configured.rafter_role.strip().lower()
+    }
+
+    def physical_endpoints(component_id: str) -> tuple[Vector3, Vector3] | None:
+        members = members_by_component.get(component_id, [])
+        if not members:
+            return None
+        return (
+            _vector(members[0].get("start_m"), label="physical member start"),
+            _vector(members[-1].get("end_m"), label="physical member end"),
+        )
+
+    frame_components: dict[float, dict[str, list[str]]] = defaultdict(
+        lambda: {"columns": [], "rafters": []}
+    )
+    endpoints: dict[str, tuple[Vector3, Vector3]] = {}
+    for component_id, key in (
+        *((component_id, "columns") for component_id in column_ids),
+        *((component_id, "rafters") for component_id in rafter_ids),
+    ):
+        component_endpoints = physical_endpoints(component_id)
+        if component_endpoints is None:
+            return None
+        start, end = component_endpoints
+        if abs(start.y - end.y) > 1e-5:
+            return None
+        endpoints[component_id] = component_endpoints
+        frame_y = round((start.y + end.y) / 2.0, 6)
+        frame_components[frame_y][key].append(component_id)
+
+    if len(frame_components) < 2 or any(
+        len(frame["columns"]) != 2 or len(frame["rafters"]) != 2
+        for frame in frame_components.values()
+    ):
+        return None
+    frame_positions = sorted(frame_components)
+    column_endpoints = [endpoints[component_id] for component_id in column_ids]
+    rafter_endpoints = [endpoints[component_id] for component_id in rafter_ids]
+    ground_level = min(min(start.z, end.z) for start, end in column_endpoints)
+    eaves_height = (
+        max(max(start.z, end.z) for start, end in column_endpoints) - ground_level
+    )
+    roof_height = (
+        max(max(start.z, end.z) for start, end in rafter_endpoints) - ground_level
+    )
+    column_x_positions = [
+        (start.x + end.x) / 2.0 for start, end in column_endpoints
+    ]
+    building_width = max(column_x_positions) - min(column_x_positions)
+    building_length = frame_positions[-1] - frame_positions[0]
+    if building_width <= 0 or building_length <= 0 or roof_height <= eaves_height:
+        return None
+    roof_pitch = degrees(atan2(roof_height - eaves_height, building_width / 2.0))
+    geometry = ABCBProtocolGeometry(
+        ground_level_m=ground_level,
+        eaves_height_m=eaves_height,
+        roof_height_m=roof_height,
+        building_width_m=building_width,
+        building_length_m=building_length,
+        length_width_ratio=building_length / building_width,
+        roof_pitch_degrees=roof_pitch,
+        basis=(
+            "Compiled portal column and rafter physical axes; ground is the lowest "
+            "portal-column endpoint, width is the column-line separation, and length "
+            "is the first-to-last frame separation."
+        ),
+    )
+    return assess_abcb_protocol_scope(
+        geometry=geometry,
+        compliance_pathway=configuration.design_basis.compliance_pathway,
+    )
 
 
 def _portal_frame_wind_actions(
