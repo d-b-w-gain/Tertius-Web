@@ -9895,6 +9895,7 @@ def solve_project_structural(
             analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,
+        abcb_protocol_scope=capture.abcb_protocol_scope,
         wind_action_bases=capture.wind_action_bases,
         nodes=structural_nodes,
         members=structural_members,

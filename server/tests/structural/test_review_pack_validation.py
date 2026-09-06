@@ -14,6 +14,7 @@ def _pack(
     nested_status: str | None = None,
     hash_override: str | None = None,
     approved_claim: bool = False,
+    scope_status: str = "within_scope",
 ) -> bytes:
     protocol: dict[str, object] = {
         "schema_version": "tertius.structural.abcb-protocol-disclosure.v1",
@@ -38,6 +39,17 @@ def _pack(
     connection: dict[str, object] = deepcopy(pass_check)
     if nested_status is not None:
         connection["bolted_sheet_interface"] = {"status": nested_status}
+    scope_checks = [
+        {"id": check_id, "status": "pass"}
+        for check_id in (
+            "deemed_to_satisfy",
+            "eaves_height",
+            "roof_height",
+            "building_width",
+            "length_width_ratio",
+            "roof_pitch",
+        )
+    ]
     evidence = {
         "schema_version": "tertius.structural.evidence.v2",
         "document_status": "controlled_unsigned_draft",
@@ -45,6 +57,10 @@ def _pack(
         "report_identity": "r" * 64,
         "analysis": {"key_digest": "a" * 64},
         "snapshot": {
+            "abcb_protocol_scope": {
+                "status": scope_status,
+                "checks": scope_checks,
+            },
             "certification_readiness": {
                 "ready_for_certificate_draft": True,
                 "model_coverage": {"status": "complete"},
@@ -129,3 +145,15 @@ def test_abcb_claim_profile_accepts_controlled_approved_disclosure() -> None:
     )
 
     assert result.ok
+
+
+def test_abcb_claim_profile_rejects_outside_scope_job() -> None:
+    result = validate_structural_review_pack(
+        _pack(approved_claim=True, scope_status="outside_scope"),
+        profile="abcb_claim",
+    )
+
+    assert not result.ok
+    assert "ABCB_JOB_OUTSIDE_SCOPE" in {
+        finding.code for finding in result.findings
+    }

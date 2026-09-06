@@ -158,11 +158,12 @@ The case register is the authoritative backlog. The present position is:
 - **Implemented:** immutable/deterministic review packs; independent hash and
   evidence verifier; fail-closed required checks; removal of irrelevant partial
   connection calculators from selected evidence.
-- **Partial:** calculation coverage, source traceability, report standards,
-  installation assumptions and unique engine identity exist but need the full
-  representative/reference matrix and protocol-specific output register.
-- **Missing:** protocol-mode scope classifier and geometric lockout; locked versus
-  discretionary input model; trained-user registry/currency enforcement;
+- **Partial:** the portal-frame job-scope classifier, five geometric checks,
+  claim-profile lockout, calculation coverage, source traceability, report
+  standards, installation assumptions and unique engine identity exist but need
+  the full representative/reference matrix and protocol-specific output register.
+- **Missing:** locked versus discretionary input model; trained-user
+  registry/currency enforcement;
   Compliance Document; formal QA/competence package; independent appraisal and
   controlled approval-state release process.
 

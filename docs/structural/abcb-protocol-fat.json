@@ -21,8 +21,8 @@
       "acceptance": "Protocol mode accepts only appraised steel or timber trussed roof/floor or framed-building systems using declared NCC DtS criteria; all other systems use the engineer-review workflow.",
       "method": "witnessed",
       "evidence": ["scope-positive.json", "scope-negative.json", "ui-scope-decision.png"],
-      "automation": "planned",
-      "current_implementation": "gap",
+      "automation": "partial",
+      "current_implementation": "partial",
       "release_gate": true
     },
     {
@@ -32,8 +32,8 @@
       "acceptance": "Protocol mode records and enforces eaves height <= 6 m, roof height <= 8.5 m, width <= 16 m, length <= 5 x width and roof pitch <= 35 degrees before producing design outputs.",
       "method": "automated",
       "evidence": ["geometry-boundary-results.json"],
-      "automation": "planned",
-      "current_implementation": "gap",
+      "automation": "partial",
+      "current_implementation": "partial",
       "release_gate": true
     },
     {

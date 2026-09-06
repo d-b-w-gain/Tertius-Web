@@ -324,6 +324,51 @@ def _validate_abcb_claim(
     evidence: Mapping[str, Any],
     fail,
 ) -> None:
+    snapshot = _mapping(evidence.get("snapshot"))
+    scope = (
+        _mapping(snapshot.get("abcb_protocol_scope"))
+        if snapshot is not None
+        else None
+    )
+    if scope is None or scope.get("status") != "within_scope":
+        fail(
+            "ABCB_JOB_OUTSIDE_SCOPE",
+            "A recorded within-scope ABCB job assessment is required.",
+            "$.snapshot.abcb_protocol_scope",
+        )
+    else:
+        checks = scope.get("checks")
+        expected_check_ids = {
+            "deemed_to_satisfy",
+            "eaves_height",
+            "roof_height",
+            "building_width",
+            "length_width_ratio",
+            "roof_pitch",
+        }
+        actual_check_ids = (
+            {
+                check.get("id")
+                for value in checks
+                if (check := _mapping(value)) is not None
+            }
+            if isinstance(checks, list)
+            else set()
+        )
+        if (
+            not isinstance(checks, list)
+            or actual_check_ids != expected_check_ids
+            or any(
+                (check := _mapping(value)) is None or check.get("status") != "pass"
+                for value in checks
+            )
+        ):
+            fail(
+                "ABCB_SCOPE_CHECK_OPEN",
+                "All six protocol pathway and geometry checks must pass.",
+                "$.snapshot.abcb_protocol_scope.checks",
+            )
+
     disclosure = _mapping(manifest.get("abcb_protocol"))
     if disclosure is None or disclosure != _mapping(evidence.get("abcb_protocol")):
         fail(
