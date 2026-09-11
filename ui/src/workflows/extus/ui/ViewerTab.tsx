@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { SpanStatusCode } from '@opentelemetry/api';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -22,10 +22,23 @@ import {
   resolveSceneNodeSelection,
 } from '../../shared/sceneNodeSelection';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
+import {
+  analyzePotentialCollisionsAsync,
+  collisionDisplayLabel,
+  collisionGroupFromLabel,
+  type CollisionSourceReference,
+  type PotentialCollision,
+} from '../collisionAnalysis';
+import {
+  COLLISION_ENGINE_CHECKPOINT,
+  verifyPotentialCollisions,
+  type VerifiedCollisionAnalysisResult,
+} from '../collisionNarrowPhase';
 import type { StructuralViewerOverlay } from '../model/viewer';
 import {
   createViewerMeshMaterials,
   DEFAULT_MODEL_COLOR,
+  disposeMaterial,
   disposeMesh,
   disposeObjectTree,
   hasAuthoredMaterialColor,
@@ -104,6 +117,13 @@ const STRUCTURAL_OVERLAY_NAME = 'TertiusStructuralMomentOverlay';
 
 type GltfNodeJson = {
   children?: unknown;
+  extras?: unknown;
+  mesh?: unknown;
+};
+
+type GltfMeshJson = {
+  name?: unknown;
+  extras?: unknown;
 };
 
 type GltfSceneJson = {
@@ -111,9 +131,11 @@ type GltfSceneJson = {
 };
 
 type GltfParserJson = {
+  meshes?: unknown;
   nodes?: unknown;
   scenes?: unknown;
   scene?: unknown;
+  extras?: unknown;
 };
 
 export type ModelArtifactFormat = 'gltf' | 'stl';
@@ -136,6 +158,7 @@ export function detectModelArtifactFormat(contentType: string | null, buffer: Ar
 }
 
 function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
+  const meshes = Array.isArray(gltfJson?.meshes) ? gltfJson.meshes as GltfMeshJson[] : [];
   const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
   const scenes = Array.isArray(gltfJson?.scenes) ? gltfJson.scenes as GltfSceneJson[] : [];
   const sceneIndex = typeof gltfJson?.scene === 'number' ? gltfJson.scene : 0;
@@ -147,9 +170,40 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
         Array.isArray(node.children) && node.children.some((childIndex) => childIndex === index)
       )));
 
+  const rootExtras = gltfJson?.extras;
+  if (rootExtras && typeof rootExtras === 'object') {
+    const sourceMap = (rootExtras as { tertiusSourceMap?: unknown }).tertiusSourceMap;
+    if (sourceMap && typeof sourceMap === 'object') root.userData.tertiusSourceMap = sourceMap;
+  }
+
   const annotateNode = (object: THREE.Object3D | undefined, nodeId: number) => {
     if (!object || !nodes[nodeId]) return;
     object.userData.tertiusGltfNodeId = String(nodeId);
+    const meshId = nodes[nodeId].mesh;
+    const meshDefinition = typeof meshId === 'number' ? meshes[meshId] : undefined;
+    if (
+      typeof meshDefinition?.name === 'string'
+      && meshDefinition.name.startsWith('__TERTIUS_COLLISION_IGNORE__ ')
+    ) {
+      object.userData.tertiusCollisionCheckDisabled = true;
+    }
+    if (typeof meshDefinition?.name === 'string') {
+      const collisionGroup = collisionGroupFromLabel(meshDefinition.name);
+      if (collisionGroup) object.userData.tertiusCollisionGroup = collisionGroup;
+    }
+    const meshExtras = meshDefinition?.extras;
+    if (meshExtras && typeof meshExtras === 'object') {
+      const meshBom = (meshExtras as { tertiusBom?: unknown }).tertiusBom;
+      if (meshBom && typeof meshBom === 'object') object.userData.tertiusBom = meshBom;
+    }
+    const extras = nodes[nodeId].extras;
+    if (extras && typeof extras === 'object') {
+      const ids = (extras as { tertiusSourceCallIds?: unknown }).tertiusSourceCallIds;
+      if (Array.isArray(ids)) object.userData.tertiusSourceCallIds = ids.map(String).filter(Boolean);
+      const bom = (extras as { tertiusBom?: unknown }).tertiusBom;
+      if (bom && typeof bom === 'object') object.userData.tertiusBom = bom;
+    }
+    object.name = collisionDisplayLabel(object.name);
     const childNodeIds = Array.isArray(nodes[nodeId].children)
       ? nodes[nodeId].children.filter((value): value is number => Number.isInteger(value))
       : [];
@@ -158,6 +212,43 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
 
   sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
 }
+
+function preferredCollisionSource(references: CollisionSourceReference[]): CollisionSourceReference | undefined {
+  return references.find(reference => reference.sourceFile && reference.sourceLine)
+    || references.find(reference => reference.definitionFile && reference.definitionLine)
+    || references[0];
+}
+
+function collisionSourceLabel(references: CollisionSourceReference[]): string {
+  const reference = preferredCollisionSource(references);
+  if (!reference) return 'Source mapping unavailable — recompile to add it';
+  const file = reference.sourceFile || reference.definitionFile;
+  const line = reference.sourceLine || reference.definitionLine;
+  const location = file ? `${file}${line ? `:${line}` : ''}` : reference.callId;
+  return reference.functionName ? `${location} · ${reference.functionName}()` : location;
+}
+
+function collisionClipboardText(pair: PotentialCollision): string {
+  const contact = pair.contactPoint
+    ? [pair.contactPoint.x, pair.contactPoint.y, pair.contactPoint.z]
+      .map(value => (value * 1000).toFixed(1))
+      .join(', ')
+    : 'unavailable';
+  return [
+    'Investigate this verified rendered-mesh collision in design.py:',
+    `A: ${pair.a.label} — ${collisionSourceLabel(pair.a.sourceReferences)}`,
+    `B: ${pair.b.label} — ${collisionSourceLabel(pair.b.sourceReferences)}`,
+    `Approximate surface contact in viewer coordinates: ${contact} mm.`,
+    'The broad-phase box candidate was confirmed by triangle-to-triangle intersection.',
+  ].join('\n');
+}
+
+type CollisionScanState = {
+  phase: 'idle' | 'broad' | 'prepare' | 'narrow' | 'cancelled' | 'error';
+  processed: number;
+  total: number;
+  message?: string;
+};
 
 
 export const ViewerTab: React.FC<ViewerProps> = (props) => {
@@ -267,6 +358,21 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [collisionPanelOpen, setCollisionPanelOpen] = useState(false);
+  const [collisionAnalysis, setCollisionAnalysis] = useState<VerifiedCollisionAnalysisResult | null>(null);
+  const [collisionScanState, setCollisionScanState] = useState<CollisionScanState>({
+    phase: 'idle',
+    processed: 0,
+    total: 0,
+  });
+  const collisionScanRunning = collisionScanState.phase === 'broad'
+    || collisionScanState.phase === 'prepare'
+    || collisionScanState.phase === 'narrow';
+  const [collisionMinimumPenetration, setCollisionMinimumPenetration] = useState(1);
+  const [collisionSearch, setCollisionSearch] = useState('');
+  const [collisionVisibleLimit, setCollisionVisibleLimit] = useState(50);
+  const [activeCollisionId, setActiveCollisionId] = useState<string | null>(null);
+  const [copiedCollisionId, setCopiedCollisionId] = useState<string | null>(null);
   const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>(() => (
     readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY))
   ));
@@ -292,12 +398,36 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const loadedModelUrlRef = useRef<string>('');
   const previousExternalSelectionKeyRef = useRef<string>('');
   const appearanceByPathRef = useRef(appearanceByPath);
+  const collisionScanAbortRef = useRef<AbortController | null>(null);
+  const collisionScanRunningRef = useRef(false);
+
+  const filteredCollisionPairs = useMemo(() => {
+    const pairs = collisionAnalysis?.pairs ?? [];
+    const query = collisionSearch.trim().toLocaleLowerCase();
+    if (!query) return pairs;
+    return pairs.filter(pair => [
+      pair.a.label,
+      pair.b.label,
+      collisionSourceLabel(pair.a.sourceReferences),
+      collisionSourceLabel(pair.b.sourceReferences),
+    ].some(value => value.toLocaleLowerCase().includes(query)));
+  }, [collisionAnalysis, collisionSearch]);
+  const visibleCollisionPairs = filteredCollisionPairs.slice(0, collisionVisibleLimit);
 
   useEffect(() => {
     appearanceByPathRef.current = appearanceByPath;
   }, [appearanceByPath]);
 
+  useEffect(() => {
+    collisionScanRunningRef.current = collisionScanRunning;
+    if (controlsRef.current) {
+      controlsRef.current.autoRotate = autoRotateRef.current && !collisionScanRunning;
+    }
+  }, [collisionScanRunning]);
+
   const clearCurrentModel = useCallback(() => {
+    collisionScanAbortRef.current?.abort();
+    collisionScanAbortRef.current = null;
     const scene = sceneRef.current;
     const current = meshRef.current;
     if (!scene || !current) return;
@@ -306,6 +436,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     meshRef.current = null;
     setSceneGraph(null);
     setSelectedNodeId(null);
+    setCollisionAnalysis(null);
+    setCollisionVisibleLimit(50);
+    setCollisionScanState({ phase: 'idle', processed: 0, total: 0 });
+    setActiveCollisionId(null);
   }, []);
 
   const resizeRendererToContainer = useCallback(() => {
@@ -428,8 +562,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
     window.addEventListener('resize', resizeRendererToContainer);
 
-    const animate = () => {
+    let lastRenderAt = 0;
+    const animate = (timestamp = 0) => {
       animIdRef.current = requestAnimationFrame(animate);
+      if (collisionScanRunningRef.current && timestamp - lastRenderAt < 100) return;
+      lastRenderAt = timestamp;
       controls.update();
       renderer.render(scene, camera);
     };
@@ -490,9 +627,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   useEffect(() => {
     autoRotateRef.current = autoRotate;
     if (controlsRef.current) {
-       controlsRef.current.autoRotate = autoRotate;
+       controlsRef.current.autoRotate = autoRotate && !collisionScanRunning;
     }
-  }, [autoRotate]);
+  }, [autoRotate, collisionScanRunning]);
 
   useEffect(() => {
     if (!rendererRef.current || !sceneRef.current) return;
@@ -1465,6 +1602,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   }, []);
 
   const handleSelectNode = (node: THREE.Object3D | null) => {
+     setActiveCollisionId(null);
      if (!node) {
         setSelectedNodeId(null);
         localStorage.removeItem(SCENE_NODE_SELECTION_STORAGE_KEY);
@@ -1476,6 +1614,147 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      window.dispatchEvent(new Event('storage'));
      setSelectedNodeId(node.uuid);
   };
+
+  const runCollisionAnalysis = useCallback(async () => {
+    const model = meshRef.current;
+    if (!model) return;
+    collisionScanAbortRef.current?.abort();
+    const controller = new AbortController();
+    collisionScanAbortRef.current = controller;
+    const minimumPenetration = Number.isFinite(collisionMinimumPenetration)
+      ? Math.max(0, collisionMinimumPenetration)
+      : 1;
+    setCollisionPanelOpen(true);
+    setCollisionAnalysis(null);
+    setActiveCollisionId(null);
+    setCopiedCollisionId(null);
+    setCollisionScanState({ phase: 'broad', processed: 0, total: 0 });
+
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    if (controller.signal.aborted) return;
+
+    try {
+      let lastBroadPhaseUpdateAt = 0;
+      const candidates = await analyzePotentialCollisionsAsync(model, {
+        minimumPenetrationMm: minimumPenetration,
+        maxPairs: Number.MAX_SAFE_INTEGER,
+        signal: controller.signal,
+        onProgress: (processed, total) => {
+          const now = performance.now();
+          if (processed !== total && now - lastBroadPhaseUpdateAt < 100) return;
+          lastBroadPhaseUpdateAt = now;
+          setCollisionScanState({ phase: 'broad', processed, total });
+        },
+      });
+      setCollisionScanState({ phase: 'prepare', processed: 0, total: 0 });
+      let lastPreparationUpdateAt = 0;
+      let lastVerificationUpdateAt = 0;
+      const analysis = await verifyPotentialCollisions(candidates, {
+        maxPairs: Number.MAX_SAFE_INTEGER,
+        minimumPenetrationMm: minimumPenetration,
+        signal: controller.signal,
+        onPreparationProgress: (processed, total) => {
+          const now = performance.now();
+          if (processed !== total && now - lastPreparationUpdateAt < 100) return;
+          lastPreparationUpdateAt = now;
+          setCollisionScanState({ phase: 'prepare', processed, total });
+        },
+        onProgress: (processed, total) => {
+          const now = performance.now();
+          if (processed !== total && now - lastVerificationUpdateAt < 100) return;
+          lastVerificationUpdateAt = now;
+          setCollisionScanState({ phase: 'narrow', processed, total });
+        },
+        onPartialResult: (partialAnalysis) => {
+          setCollisionAnalysis(partialAnalysis);
+          setActiveCollisionId(current => current || partialAnalysis.pairs[0]?.id || null);
+        },
+      });
+      if (controller.signal.aborted) return;
+      setCollisionAnalysis(analysis);
+      setCollisionScanState({
+        phase: 'idle',
+        processed: analysis.candidatePairCount,
+        total: analysis.candidatePairCount,
+      });
+      setActiveCollisionId(analysis.pairs[0]?.id || null);
+      if (analysis.pairs[0]) {
+        const bounds = analysis.pairs[0].a.bounds.clone().union(analysis.pairs[0].b.bounds);
+        frameCameraOnBox(bounds, 1.25);
+      }
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+      setCollisionScanState({
+        phase: 'error',
+        processed: 0,
+        total: 0,
+        message: error instanceof Error ? error.message : 'Mesh collision analysis failed',
+      });
+    } finally {
+      if (collisionScanAbortRef.current === controller) collisionScanAbortRef.current = null;
+    }
+  }, [collisionMinimumPenetration, frameCameraOnBox]);
+
+  const cancelCollisionAnalysis = useCallback(() => {
+    const controller = collisionScanAbortRef.current;
+    if (!controller) return;
+    controller.abort();
+    collisionScanAbortRef.current = null;
+    setCollisionScanState(previous => ({
+      phase: 'cancelled',
+      processed: previous.processed,
+      total: previous.total,
+      message: 'Collision scan cancelled.',
+    }));
+  }, []);
+
+  const inspectCollision = useCallback((pair: PotentialCollision) => {
+    setActiveCollisionId(pair.id);
+    setAutoRotate(false);
+    frameCameraOnBox(pair.a.bounds.clone().union(pair.b.bounds), 1.25);
+  }, [frameCameraOnBox]);
+
+  const copyCollisionDetails = useCallback(async (pair: PotentialCollision) => {
+    try {
+      await navigator.clipboard.writeText(collisionClipboardText(pair));
+      setCopiedCollisionId(pair.id);
+    } catch (error) {
+      console.warn('Could not copy collision details', error);
+    }
+  }, []);
+
+  const activeCollision = collisionAnalysis?.pairs.find(pair => pair.id === activeCollisionId) || null;
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !activeCollision?.contactPoint) return;
+    const pairBounds = activeCollision.a.bounds.clone().union(activeCollision.b.bounds);
+    const radius = THREE.MathUtils.clamp(
+      pairBounds.getBoundingSphere(new THREE.Sphere()).radius * 0.018,
+      0.006,
+      0.035,
+    );
+    const marker = new THREE.Mesh(
+      new THREE.OctahedronGeometry(radius, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0xf472b6,
+        transparent: true,
+        opacity: 0.98,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    marker.position.copy(activeCollision.contactPoint);
+    marker.name = 'TertiusCollisionContact';
+    marker.renderOrder = 50;
+    scene.add(marker);
+
+    return () => {
+      scene.remove(marker);
+      marker.geometry.dispose();
+      disposeMaterial(marker.material);
+    };
+  }, [activeCollision]);
 
   useEffect(() => {
     const handleStorage = () => {
@@ -1543,6 +1822,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const normalizedExternalIds = new Set([...(externallySelectedIds || new Set<string>())].map(normalizeExternalSelectionId).filter(Boolean));
       const externalSelection = externallySelectedIds?.size ? resolveExternalSelectionMeshes(model, externallySelectedIds) : null;
       const hasRenderableExternalSelection = Boolean(externalSelection?.hasSelection);
+      const hasActiveCollision = Boolean(activeCollision) && !hasRenderableExternalSelection;
+      const collisionNodeAId = activeCollision?.a.node.uuid;
+      const collisionNodeBId = activeCollision?.b.node.uuid;
       const selectedNodeIds = externallySelectedIds || (selectedNodeId ? new Set([selectedNodeId]) : new Set<string>());
       const isNodeSelected = (node: THREE.Object3D) => (
         externallySelectedIds
@@ -1559,7 +1841,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         model.userData.appearanceBatchKey = '';
      };
 
-     if (hasAppearanceOverrides && model.userData.appearanceBatchKey !== appearanceBatchKey) {
+     if (hasAppearanceOverrides && !hasActiveCollision && model.userData.appearanceBatchKey !== appearanceBatchKey) {
         removeAppearanceBatch();
 
         const opaqueMeshes: THREE.Mesh[] = [];
@@ -1595,13 +1877,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            model.userData.appearanceBatchMesh = appearanceBatch.mesh;
            model.userData.appearanceBatchKey = appearanceBatchKey;
         }
-     } else if (!hasAppearanceOverrides) {
+     } else if (!hasAppearanceOverrides || hasActiveCollision) {
         removeAppearanceBatch();
      }
      
      // Reset batched mesh
-     if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection;
-     if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection;
+     if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {
@@ -1614,18 +1896,23 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            let isSelected = false;
            let isHidden = false;
            let isTransparent = false;
+           let collisionRole: 'a' | 'b' | null = null;
            const hasModelTransparency = hasSourceMaterialTransparency(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
             let p: THREE.Object3D | null = child;
 
             while (p && p !== model) {
                if (isNodeSelected(p)) isSelected = true;
+               if (p.uuid === collisionNodeAId) collisionRole = 'a';
+               if (p.uuid === collisionNodeBId) collisionRole = 'b';
                const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
                if (appearance?.hidden) isHidden = true;
               if (appearance?.transparent) isTransparent = true;
               p = p.parent;
            }
            
-           if (hasRenderableExternalSelection) {
+           if (hasActiveCollision) {
+              mesh.visible = collisionRole !== null;
+           } else if (hasRenderableExternalSelection) {
               mesh.visible = Boolean(externalSelection?.meshes.has(mesh)) && !isHidden;
            } else if (hasAppearanceOverrides) {
               mesh.visible = !isHidden && (isTransparent || isSelected || hasModelTransparency);
@@ -1637,7 +1924,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            if (mesh.visible) {
               const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
               const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
-              if (isTransparent && shouldHighlightSelection && viewerMaterials) {
+              if (collisionRole === 'a' && viewerMaterials) {
+                 mesh.material = viewerMaterials.collisionA;
+              } else if (collisionRole === 'b' && viewerMaterials) {
+                 mesh.material = viewerMaterials.collisionB;
+              } else if (isTransparent && shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.transparentHighlight;
               } else if (shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.highlight;
@@ -1661,6 +1952,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      renderQuality,
      externalSelectedNodeIds,
      externalSelectionKey,
+     activeCollision,
    ]);
 
   useEffect(() => {
@@ -1684,14 +1976,188 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         renderQuality={renderQuality}
         showGrid={showGrid}
         autoRotate={autoRotate}
+        collisionPanelOpen={collisionPanelOpen}
+        collisionScanRunning={collisionScanRunning}
+        collisionCount={collisionAnalysis?.confirmedPairCount}
+        collisionScanDisabled={!sceneGraph || collisionScanRunning}
         loadErrorText={loadErrorText}
         isModelLoading={isModelLoading}
         statusText={statusText}
         onFit={() => frameModelRoot(1.5)}
+        onRunCollisionAnalysis={runCollisionAnalysis}
         onToggleRenderQuality={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
         onToggleGrid={() => setShowGrid(!showGrid)}
         onToggleAutoRotate={() => setAutoRotate(!autoRotate)}
       />
+
+      {collisionPanelOpen && (
+        <aside className="absolute right-4 top-4 bottom-4 z-20 flex w-[min(24rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950/95 text-slate-200 shadow-2xl backdrop-blur">
+          <div className="border-b border-slate-800 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-white">Verified mesh collisions</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  AABB shortlist followed by BVH triangle-to-triangle confirmation.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  cancelCollisionAnalysis();
+                  setCollisionPanelOpen(false);
+                  setActiveCollisionId(null);
+                }}
+                className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                aria-label="Close overlap inspector"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-slate-400">
+                Ignore candidates whose box overlap is below
+                <span className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={collisionMinimumPenetration}
+                    onChange={event => setCollisionMinimumPenetration(Number(event.target.value))}
+                    className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white outline-none focus:border-sky-500"
+                  />
+                  <span>mm</span>
+                </span>
+              </label>
+              <button
+                type="button"
+                onClick={collisionScanRunning ? cancelCollisionAnalysis : runCollisionAnalysis}
+                className={`rounded border px-3 py-1.5 text-xs font-bold text-white ${collisionScanRunning ? 'border-rose-600 bg-rose-700 hover:bg-rose-600' : 'border-sky-600 bg-sky-700 hover:bg-sky-600'}`}
+              >
+                {collisionScanRunning ? 'Cancel scan' : 'Scan again'}
+              </button>
+            </div>
+
+            {collisionScanState.phase === 'broad' && (
+              <div className="mt-3 text-xs text-sky-300" aria-live="polite">
+                Shortlisting component boxes{collisionScanState.total > 0 ? `: ${collisionScanState.processed} / ${collisionScanState.total}` : '…'}
+              </div>
+            )}
+            {collisionScanState.phase === 'prepare' && (
+              <div className="mt-3 text-xs text-sky-300" aria-live="polite">
+                Preparing rendered meshes: {collisionScanState.processed} / {collisionScanState.total}
+              </div>
+            )}
+            {collisionScanState.phase === 'narrow' && (
+              <div className="mt-3 text-xs text-sky-300" aria-live="polite">
+                Verifying rendered triangles: {collisionScanState.processed} / {collisionScanState.total} candidates
+              </div>
+            )}
+            {collisionScanState.phase === 'cancelled' && (
+              <div className="mt-3 rounded border border-slate-700 bg-slate-900/60 p-2 text-xs text-slate-300" role="status">
+                {collisionScanState.message}
+              </div>
+            )}
+            {collisionScanState.phase === 'error' && (
+              <div className="mt-3 rounded border border-red-900/70 bg-red-950/40 p-2 text-xs text-red-300" role="alert">
+                Collision scan failed: {collisionScanState.message}
+              </div>
+            )}
+            {collisionAnalysis && (
+              <>
+                <div className="mt-3 text-xs text-slate-300" aria-live="polite">
+                  {collisionAnalysis.confirmedPairCount} confirmed{collisionScanRunning ? ' so far' : ''} from {collisionAnalysis.candidatePairCount} box candidate{collisionAnalysis.candidatePairCount === 1 ? '' : 's'} across {collisionAnalysis.componentCount} components
+                </div>
+                <label className="mt-3 block text-xs text-slate-400">
+                  Find a component or design.py source
+                  <input
+                    type="search"
+                    value={collisionSearch}
+                    onChange={(event) => {
+                      setCollisionSearch(event.target.value);
+                      setCollisionVisibleLimit(50);
+                    }}
+                    placeholder="e.g. header, C100, roof sheet"
+                    className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500"
+                  />
+                </label>
+                <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <span>{filteredCollisionPairs.length} matching result{filteredCollisionPairs.length === 1 ? '' : 's'}</span>
+                  <span className="font-mono">{COLLISION_ENGINE_CHECKPOINT}</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-2" data-testid="collision-result-list">
+            {!collisionScanRunning && collisionAnalysis?.pairs.length === 0 && (
+              <div className="m-2 rounded-lg border border-emerald-900/70 bg-emerald-950/40 p-3 text-sm text-emerald-300">
+                No triangle-level intersections were found among {collisionAnalysis.candidatePairCount} box candidate{collisionAnalysis.candidatePairCount === 1 ? '' : 's'}.
+              </div>
+            )}
+            {visibleCollisionPairs.map((pair, index) => (
+              <div
+                key={pair.id}
+                className={`mb-2 rounded-lg border p-3 transition-colors ${activeCollisionId === pair.id ? 'border-rose-500 bg-rose-950/30' : 'border-slate-800 bg-slate-900/70 hover:border-slate-600'}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => inspectCollision(pair)}
+                  className="w-full text-left"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-bold text-slate-400">Pair {index + 1}</span>
+                    <span className="rounded border border-fuchsia-800/70 bg-fuchsia-950/40 px-2 py-0.5 text-[10px] font-semibold text-fuchsia-300">
+                      Mesh intersection confirmed
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-red-500" />
+                    <div className="min-w-0">
+                      <div className="break-words text-sm font-semibold text-red-200">{pair.a.label}</div>
+                      <div className="break-words font-mono text-[11px] leading-4 text-slate-400">{collisionSourceLabel(pair.a.sourceReferences)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+                    <div className="min-w-0">
+                      <div className="break-words text-sm font-semibold text-amber-200">{pair.b.label}</div>
+                      <div className="break-words font-mono text-[11px] leading-4 text-slate-400">{collisionSourceLabel(pair.b.sourceReferences)}</div>
+                    </div>
+                  </div>
+                  {pair.contactPoint && (
+                    <div className="mt-2 font-mono text-[10px] text-fuchsia-300">
+                      Contact marker: {[pair.contactPoint.x, pair.contactPoint.y, pair.contactPoint.z]
+                        .map(value => (value * 1000).toFixed(1))
+                        .join(', ')} mm
+                    </div>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyCollisionDetails(pair)}
+                  className="mt-3 rounded border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 hover:border-sky-600 hover:text-sky-300"
+                >
+                  {copiedCollisionId === pair.id ? 'Copied' : 'Copy design.py fix context'}
+                </button>
+              </div>
+            ))}
+            {visibleCollisionPairs.length < filteredCollisionPairs.length && (
+              <button
+                type="button"
+                onClick={() => setCollisionVisibleLimit(limit => limit + 50)}
+                className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 hover:border-sky-600 hover:text-sky-300"
+              >
+                Show 50 more ({filteredCollisionPairs.length - visibleCollisionPairs.length} remaining)
+              </button>
+            )}
+          </div>
+
+          <div className="border-t border-slate-800 p-3 text-[11px] leading-4 text-slate-500">
+            Mesh-level verification removes empty-space and rotated-box false positives. Exact CAD/B-Rep confirmation is still required for certification and fully contained solids.
+          </div>
+        </aside>
+      )}
       
       {/* 3D Canvas */}
       <div className="flex-1 relative" ref={containerRef}>
