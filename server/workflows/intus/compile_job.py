@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import gzip
 import hashlib
 import json
 import logging
@@ -22,7 +20,12 @@ from core.compile_messages import (
 from core.compile_runtime import (
     hydrate_project_files,
     runtime_files_hash,
-    structural_runtime_files_hash,
+)
+from core.compile_artifacts import (
+    WORKBENCH_ARTIFACT_KINDS,
+    compile_bundle_digest,
+    encode_compile_artifact,
+    validate_compile_bundle,
 )
 from core.compile_sandbox import run_compile_sandbox
 from core.config import get_settings
@@ -48,8 +51,6 @@ from core.telemetry import (
     histogram_record,
     record_exception,
 )
-from core.structural.contracts import CompiledStructuralManifest
-from core.structural.design_capture import capture_project_structural_declaration
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,11 @@ async def handle_compile_request_message(
                 {"export_format": command.export_format},
             )
 
-        counter_add("tertius.compile.job.started.count", 1, {"export_format": command.export_format})
+        counter_add(
+            "tertius.compile.job.started.count",
+            1,
+            {"export_format": command.export_format},
+        )
         start = perf_counter()
         try:
             binary_files: dict[str, bytes] = {}
@@ -116,9 +121,9 @@ async def handle_compile_request_message(
                 else:
                     try:
                         for asset in command.assets:
-                            binary_files[asset.logical_filename] = await object_store.get(
-                                asset.object_ref
-                            )
+                            binary_files[
+                                asset.logical_filename
+                            ] = await object_store.get(asset.object_ref)
                     except ObjectStoreUnavailableError as exc:
                         result = _failed_result(
                             command,
@@ -150,20 +155,33 @@ async def handle_compile_request_message(
                 # Keep the NATS event loop responsive while CAD runs in its bounded
                 # subprocess. Otherwise a long Build123D compile prevents client
                 # keepalives and the result publish loses its connection.
-                result = await asyncio.to_thread(execute_compile_command, command, settings)
-            assert_message_size(result, settings.compile_result_max_bytes, "result")
+                result = await asyncio.to_thread(
+                    execute_compile_command, command, settings
+                )
+            assert_message_size(
+                result,
+                settings.compile_result_max_bytes,
+                "result",
+                compress=True,
+            )
             await publisher.publish_json(
                 settings.compile_result_subject,
                 result,
                 message_id=compile_result_message_id(result),
+                compress=True,
             )
             await msg.ack()
             span.set_attribute("messaging.nats.ack_action", "ack")
-            labels = {"export_format": command.export_format, "job_status": result.status}
+            labels = {
+                "export_format": command.export_format,
+                "job_status": result.status,
+            }
             counter_add("tertius.compile.job.finished.count", 1, labels)
             if result.status == "failed":
                 counter_add("tertius.compile.job.failed.count", 1, labels)
-            histogram_record("tertius.compile.job.duration", elapsed_seconds(start), labels)
+            histogram_record(
+                "tertius.compile.job.duration", elapsed_seconds(start), labels
+            )
         except Exception as exc:
             logger.exception("Compile job failed before request ack")
             record_exception(span, exc)
@@ -226,78 +244,80 @@ def execute_compile_command(
                 user_message="Compile failed before an artifact was produced. Try again.",
                 retryable=True,
             )
-        output_bytes = result.output_path.read_bytes()
-        structural_manifest_json = None
-        bom_manifest_json = None
-        manifest_path = getattr(result, "structural_manifest_path", None)
-        if manifest_path is not None:
-            try:
-                declaration = json.loads(manifest_path.read_text(encoding="utf-8"))
-                design_hash = hashlib.sha256(
-                    files["design.py"].encode("utf-8")
-                ).hexdigest()
-                capture_project_structural_declaration(
-                    declaration,
-                    project_name="compiled-project",
-                    design_hash=design_hash,
-                    capture_detail="Compile-time structural validation.",
-                )
-                compiled_manifest = CompiledStructuralManifest(
-                    source_hash=runtime_files_hash(files),
-                    structural_source_hash=structural_runtime_files_hash(files),
-                    design_hash=design_hash,
-                    declaration=declaration,
-                )
-                structural_manifest_json = compiled_manifest.model_dump_json()
-            except (KeyError, OSError, TypeError, ValueError) as exc:
-                return _failed_result(
-                    command,
-                    started_at,
-                    error=f"Invalid compiled structural manifest: {exc}",
-                    error_code="invalid_structural_manifest",
-                    user_message=(
-                        "Compile produced invalid structural metadata. "
-                        "Fix the structural catalogue or design declaration."
-                    ),
-                    retryable=False,
-                )
-        bom_manifest_path = getattr(result, "bom_manifest_path", None)
-        if bom_manifest_path is not None:
-            try:
-                bom_manifest = json.loads(
-                    bom_manifest_path.read_text(encoding="utf-8")
-                )
-                if not isinstance(bom_manifest, dict):
-                    raise ValueError("manifest root must be a JSON object")
-                bom_manifest["source_snapshot_hash"] = runtime_files_hash(files)
-                bom_manifest_json = json.dumps(
-                    bom_manifest,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
-            except (OSError, TypeError, ValueError) as exc:
-                return _failed_result(
-                    command,
-                    started_at,
-                    error=f"Invalid compiled BoM manifest: {exc}",
-                    error_code="invalid_bom_manifest",
-                    user_message=(
-                        "Compile produced invalid Procurement metadata. "
-                        "Fix the BOM declarations in the design or component library."
-                    ),
-                    retryable=False,
-                )
+        artifact_paths = getattr(result, "artifact_paths", {})
+        missing_paths = sorted(WORKBENCH_ARTIFACT_KINDS - set(artifact_paths))
+        if missing_paths:
+            return _failed_result(
+                command,
+                started_at,
+                error=f"Compile completed without required artifacts: {missing_paths}",
+                error_code="missing_artifact_bundle",
+                user_message=(
+                    "Compile failed because Tertius could not finalize every workbench "
+                    "from the mechanical design."
+                ),
+                retryable=False,
+            )
+        artifact_contents = {
+            command.export_format: result.output_path.read_bytes(),
+            **{
+                kind: path.read_bytes()
+                for kind, path in artifact_paths.items()
+                if kind in WORKBENCH_ARTIFACT_KINDS
+            },
+        }
+        try:
+            compiled_design = json.loads(artifact_contents["compiled_design"])
+            if not isinstance(compiled_design, dict):
+                raise ValueError("compiled-design root must be a JSON object")
+            if compiled_design.get("schema_version") != "1.0":
+                raise ValueError("compiled-design schema_version must be '1.0'")
+            if not str(compiled_design.get("compiled_design_digest") or ""):
+                raise ValueError("compiled-design digest is missing")
+            compiled_design["source_snapshot_hash"] = runtime_files_hash(files)
+            artifact_contents["compiled_design"] = json.dumps(
+                compiled_design,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (OSError, TypeError, ValueError) as exc:
+            return _failed_result(
+                command,
+                started_at,
+                error=f"Invalid compiled-design graph: {exc}",
+                error_code="invalid_compiled_design",
+                user_message=(
+                    "Compile produced inconsistent mechanical/workbench data. "
+                    "Fix the product library or physical design definition."
+                ),
+                retryable=False,
+            )
 
-    is_compressed = False
-    payload_bytes = output_bytes
-
-    # Compress the artifact if it might reduce payload size over NATS
-    compressed_bytes = gzip.compress(output_bytes)
-    if len(compressed_bytes) < len(output_bytes):
-        payload_bytes = compressed_bytes
-        is_compressed = True
+    artifacts = [
+        encode_compile_artifact(kind, content)
+        for kind, content in sorted(artifact_contents.items())
+    ]
+    bundle_digest = compile_bundle_digest(artifacts)
+    try:
+        validate_compile_bundle(
+            artifacts,
+            export_format=command.export_format,
+            expected_bundle_digest=bundle_digest,
+        )
+    except ValueError as exc:
+        return _failed_result(
+            command,
+            started_at,
+            error=f"Invalid compile artifact bundle: {exc}",
+            error_code="invalid_artifact_bundle",
+            user_message=(
+                "Compile produced inconsistent mechanical/workbench data. "
+                "Fix the product library or physical design definition."
+            ),
+            retryable=False,
+        )
 
     success = CompileResultPayload(
         job_id=command.job_id,
@@ -305,18 +325,19 @@ def execute_compile_command(
         project_id=command.project_id,
         export_format=command.export_format,
         status="succeeded",
-        artifact_content_base64=base64.b64encode(payload_bytes).decode("ascii"),
-        artifact_byte_size=len(output_bytes),  # original uncompressed size
-        artifact_content_type=None,
-        structural_manifest_json=structural_manifest_json,
-        bom_manifest_json=bom_manifest_json,
-        is_compressed=is_compressed,
+        artifacts=artifacts,
+        bundle_digest=bundle_digest,
         worker_started_at=started_at,
         worker_finished_at=now_utc(),
     )
 
     try:
-        assert_message_size(success, settings.compile_result_max_bytes, "result")
+        assert_message_size(
+            success,
+            settings.compile_result_max_bytes,
+            "result",
+            compress=True,
+        )
         return success
     except ValueError as exc:
         return _failed_result(

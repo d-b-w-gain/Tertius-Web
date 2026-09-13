@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.db import Base
@@ -111,6 +113,160 @@ class ProjectFile(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     project: Mapped[Project] = relationship(back_populates="files")
+
+
+class StructuralConfigurationRevision(Base):
+    __tablename__ = "structural_configuration_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "revision",
+            name="uq_structural_configuration_project_revision",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+
+class StructuralAnalysisResult(Base):
+    __tablename__ = "structural_analysis_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "key_digest",
+            name="uq_structural_analysis_result_identity",
+        ),
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "tenant_id",
+            name="uq_structural_analysis_result_project_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    key_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    design_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    site_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot_schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    combination_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+    )
+    calculation_duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+
+class StructuralReportExport(Base):
+    __tablename__ = "structural_report_exports"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "project_id",
+            "structural_analysis_result_id",
+            "document_kind",
+            "report_schema_version",
+            name="uq_structural_report_export_identity",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "tenant_id"],
+            ["projects.id", "projects.tenant_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["structural_analysis_result_id", "project_id", "tenant_id"],
+            [
+                "structural_analysis_results.id",
+                "structural_analysis_results.project_id",
+                "structural_analysis_results.tenant_id",
+            ],
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    structural_analysis_result_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        nullable=False,
+        index=True,
+    )
+    requested_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_users.id"),
+        nullable=False,
+    )
+    document_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_identity_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    pdf_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    pdf_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    pdf_byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_json_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
 
 
 class SourceSnapshot(Base):
@@ -298,13 +454,19 @@ class Artifact(Base):
             ["compile_jobs.id", "compile_jobs.project_id", "compile_jobs.tenant_id"],
             name="fk_artifacts_compile_job_project_tenant",
         ),
+        UniqueConstraint(
+            "tenant_id",
+            "compile_job_id",
+            "kind",
+            name="uq_artifacts_tenant_compile_kind",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     project_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     compile_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(Uuid)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     byte_size: Mapped[Optional[int]] = mapped_column()

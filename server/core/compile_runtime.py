@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from core.repositories import require_valid_python_filename
+from core.repositories import require_valid_project_filename
 
 ALLOWED_RUNTIME_SIDECAR_FILES = {"settings.json"}
 
@@ -13,7 +13,7 @@ ALLOWED_RUNTIME_SIDECAR_FILES = {"settings.json"}
 def require_valid_runtime_filename(filename: str) -> str:
     if filename in ALLOWED_RUNTIME_SIDECAR_FILES:
         return filename
-    return require_valid_python_filename(filename)
+    return require_valid_project_filename(filename)
 
 
 def runtime_files_hash(files: dict[str, str]) -> str:

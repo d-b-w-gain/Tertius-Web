@@ -196,6 +196,32 @@ class SiteWindDefinition(SiteContract):
         default_factory=SiteWindActionEnvelope
     )
 
+    @model_validator(mode="after")
+    def populate_standard_table_starters(self):
+        """Seed region-specific Md and Mc without claiming table verification."""
+
+        if (
+            self.cardinal_direction_multipliers is not None
+            and self.climate_change_multiplier is not None
+        ):
+            return self
+
+        evidence = site_table_evidence(self.region)
+        if self.cardinal_direction_multipliers is None:
+            self.cardinal_direction_multipliers = (
+                SiteCardinalDirectionMultipliers.model_validate(
+                    evidence["direction_multipliers"]
+                )
+            )
+        if self.climate_change_multiplier is None:
+            self.climate_change_multiplier = float(
+                evidence["climate_change_multiplier"]
+            )
+        # Automatic starter values still require review against the licensed
+        # project standard and its applicable amendments.
+        self.table_status = "starter"
+        return self
+
 
 class SiteTerrainEvidenceReference(SiteContract):
     evidence_id: str = Field(pattern=r"^gisv1-[0-9a-f]{32}$")
@@ -595,6 +621,8 @@ def site_wind_basis(
     *,
     basis_id: str | None = None,
     face: BuildingFace | None = None,
+    annual_probability: str | None = None,
+    design_event: Literal["serviceability", "ultimate"] = "ultimate",
 ) -> dict[str, Any]:
     calculation = calculate_site_definition(site)
     face_record = None
@@ -615,7 +643,30 @@ def site_wind_basis(
                 region=site.wind.region,
                 terrain_category=site.wind.terrain_category,
                 importance_level=site.project_basis.importance_level,
-                annual_probability_uls=site.wind.annual_probability_uls,
+                annual_probability_uls=(
+                    annual_probability or site.wind.annual_probability_uls
+                ),
+                reference_height_m=site.wind.reference_height_m,
+                direction_multiplier=governing_sector["direction_multiplier"],
+                terrain_height_multiplier=governing_sector["terrain_height_multiplier"],
+                shielding_multiplier=governing_sector["shielding_multiplier"],
+                topographic_multiplier=governing_sector["topographic_multiplier"],
+                climate_change_multiplier=site.wind.climate_change_multiplier,
+            ),
+        }
+    elif annual_probability is not None:
+        governing_sector = next(
+            value
+            for value in calculation["cardinal_wind_speeds"]
+            if value["direction"] == calculation["governing_cardinal_direction"]
+        )
+        calculation = {
+            **calculation,
+            **compute_site_wind(
+                region=site.wind.region,
+                terrain_category=site.wind.terrain_category,
+                importance_level=site.project_basis.importance_level,
+                annual_probability_uls=annual_probability,
                 reference_height_m=site.wind.reference_height_m,
                 direction_multiplier=governing_sector["direction_multiplier"],
                 terrain_height_multiplier=governing_sector["terrain_height_multiplier"],
@@ -648,6 +699,7 @@ def site_wind_basis(
         "annual_recurrence_interval_years": calculation[
             "annual_recurrence_interval_years"
         ],
+        "design_event": design_event,
         "terrain_category": calculation["terrain_category"],
         "reference_height_m": calculation["reference_height_m"],
         "regional_wind_speed_m_s": calculation["regional_wind_speed_m_s"],
@@ -694,17 +746,29 @@ def site_wind_basis(
 def apply_site_definition(
     declaration: dict[str, Any],
     site: SiteDefinition,
+    *,
+    annual_probability: str | None = None,
+    basis_suffix: str = "",
+    design_event: Literal["serviceability", "ultimate"] = "ultimate",
 ) -> dict[str, Any]:
     """Overlay site-derived actions onto a compiled geometry declaration."""
 
     value = deepcopy(declaration)
     existing_bases = value.get("wind_action_bases") or []
-    target_basis_id = site.wind.basis_id
+    target_basis_id = f"{site.wind.basis_id}{basis_suffix}"
     directional_case_faces = {
         "wind-plus-x": "left",
         "wind-minus-x": "right",
         "wind-plus-y": "front",
         "wind-minus-y": "back",
+        "wind-sls-plus-x": "left",
+        "wind-sls-minus-x": "right",
+        "wind-sls-plus-y": "front",
+        "wind-sls-minus-y": "back",
+        "wind-uls-plus-x": "left",
+        "wind-uls-minus-x": "right",
+        "wind-uls-plus-y": "front",
+        "wind-uls-minus-y": "back",
     }
 
     def load_face(load: Mapping[str, Any]) -> BuildingFace | None:
@@ -740,12 +804,25 @@ def apply_site_definition(
             for face in BUILDING_FACES
         }
         value["wind_action_bases"] = [
-            site_wind_basis(site, basis_id=face_basis_ids[face], face=face)
+            site_wind_basis(
+                site,
+                basis_id=face_basis_ids[face],
+                face=face,
+                annual_probability=annual_probability,
+                design_event=design_event,
+            )
             for face in BUILDING_FACES
         ]
         bases_by_id = {basis["id"]: basis for basis in value["wind_action_bases"]}
     else:
-        value["wind_action_bases"] = [site_wind_basis(site, basis_id=target_basis_id)]
+        value["wind_action_bases"] = [
+            site_wind_basis(
+                site,
+                basis_id=target_basis_id,
+                annual_probability=annual_probability,
+                design_event=design_event,
+            )
+        ]
         face_basis_ids = {}
         bases_by_id = {target_basis_id: value["wind_action_bases"][0]}
 
@@ -781,6 +858,7 @@ def apply_site_definition(
                     provenance.split("; site basis ")[0]
                     + f"; site basis {SITE_DEFINITION_FILENAME} "
                     f"revision {site_definition_revision(site)}; "
+                    f"{design_event} wind event; "
                     "worst available credible case policy "
                     f"({site.wind.action_envelope.enclosure}, "
                     f"{site.wind.action_envelope.openings_operating_state}, "
@@ -791,6 +869,35 @@ def apply_site_definition(
     design_basis = value.get("design_basis")
     standards = site.project_basis.standards
     if isinstance(design_basis, dict):
+        design_basis.update(
+            {
+                "framework_id": "AU-NCC-2022",
+                "framework_label": (
+                    "NCC 2022 Amendment 2 Australian structural verification"
+                ),
+                "framework_reference": (
+                    "NCC 2022 Amendment 2, Volume Two Part H1 and ABCB Housing "
+                    "Provisions Part 2.2"
+                ),
+                "building_classification": (
+                    f"Class {site.project_basis.building_classification}"
+                ),
+                "importance_level": site.project_basis.importance_level,
+                "design_life_years": site.project_basis.design_life_years,
+                "compliance_pathway": "Engineered solution",
+                "supplemental_methods": [
+                    {
+                        "id": "SCI-P399",
+                        "label": "SCI P399 portal-frame stability workflow",
+                        "reference": "Table 3.1 and Sections 4-12",
+                        "role": (
+                            "Supplemental analysis guidance; not the Australian "
+                            "compliance basis"
+                        ),
+                    }
+                ],
+            }
+        )
         design_basis["jurisdiction"] = site.project_basis.jurisdiction
         design_standards = dict(design_basis.get("standards") or {})
 

@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LlmEditProgressSnapshot } from '../shared/projectStorage'
 import { GenerateDesignWindow } from './GenerateDesignWindow'
+import { ProgressActivity } from './ui/ProgressActivity'
+import { ConversationPanel } from './ui/ConversationPanel'
 
 const storage = vi.hoisted(() => ({
   getActiveProject: vi.fn(),
@@ -102,6 +104,77 @@ function piProgressSnapshot(
     ...overrides,
   }
 }
+
+describe('Generate conversation UI', () => {
+  afterEach(cleanup)
+
+  it('renders progress activity from snapshot props', () => {
+    render(
+      <ProgressActivity
+        progress={piProgressSnapshot()}
+        active
+        defaultOpen
+      />,
+    )
+
+    expect(screen.getByText('Thinking & activity')).toBeInTheDocument()
+    expect(screen.getByText('Inspecting the model structure.')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'AI activity updated: 1 event. Latest: Reasoning updated. Sequence: 1.',
+    )
+  })
+
+  it('routes conversation prompt and selection interactions through props', () => {
+    const onPromptChange = vi.fn()
+    const onSelectMessage = vi.fn()
+    const onSubmit = vi.fn((event: React.FormEvent) => event.preventDefault())
+
+    render(
+      <ConversationPanel
+        statusText="Ready to generate."
+        compileFormat="glb"
+        compileQuality="sketch"
+        projectSelector={<div>Project selector</div>}
+        messages={[{
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'Generated one file.',
+          createdAt: 1,
+          compileStatus: 'succeeded',
+        }]}
+        selectedMessageId={null}
+        llmModels={[{
+          id: 'gpt-test',
+          label: 'GPT Test',
+          model: 'gpt-test',
+          enabled: true,
+        }]}
+        selectedModelId="gpt-test"
+        prompt=""
+        error={null}
+        isSubmitting={false}
+        canSubmit={false}
+        onClose={vi.fn()}
+        onRefresh={vi.fn()}
+        onSelectModel={vi.fn()}
+        onSelectMessage={onSelectMessage}
+        onPromptChange={onPromptChange}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    fireEvent.click(screen.getByText('Generated one file.'))
+    fireEvent.change(
+      screen.getByPlaceholderText('Describe the CAD design or modification...'),
+      { target: { value: 'Make a bracket' } },
+    )
+    fireEvent.submit(screen.getByRole('button', { name: 'Generate Design' }).closest('form')!)
+
+    expect(onSelectMessage).toHaveBeenCalledWith('assistant-1')
+    expect(onPromptChange).toHaveBeenCalledWith('Make a bracket')
+    expect(onSubmit).toHaveBeenCalledOnce()
+  })
+})
 
 describe('GenerateDesignWindow', () => {
   beforeEach(() => {

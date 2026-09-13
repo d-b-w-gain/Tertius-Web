@@ -8,6 +8,7 @@ from core.compile_runtime import (
 )
 from core.site_definition import (
     SiteCardinalDirectionMultipliers,
+    SiteDefinition,
     SiteDefinitionError,
     SiteTerrainEvidenceReference,
     SiteWindMultiplierEvidenceReference,
@@ -111,6 +112,33 @@ def test_site_definition_migrates_legacy_warning_text_to_explicit_fields():
     assert parsed.project_basis.building_classification == "10a"
 
 
+def test_missing_md_and_mc_are_populated_from_the_embedded_region_tables():
+    payload = default_site_definition().model_dump(mode="json")
+    payload["wind"].update({
+        "region": "A2",
+        "cardinal_direction_multipliers": None,
+        "climate_change_multiplier": None,
+        "table_status": "verified",
+    })
+
+    site = SiteDefinition.model_validate(payload)
+
+    assert site.wind.cardinal_direction_multipliers == (
+        SiteCardinalDirectionMultipliers(
+            n=0.85,
+            ne=0.75,
+            e=0.85,
+            se=0.95,
+            s=0.95,
+            sw=0.95,
+            w=1.00,
+            nw=0.95,
+        )
+    )
+    assert site.wind.climate_change_multiplier == pytest.approx(1.0)
+    assert site.wind.table_status == "starter"
+
+
 def test_site_definition_rejects_executable_code():
     with pytest.raises(SiteDefinitionError, match="may only contain"):
         parse_site_definition(
@@ -182,6 +210,7 @@ def test_legacy_single_direction_multiplier_remains_conservative_but_incomplete(
     site = default_site_definition()
     site.location.address = "14 Porter St"
     site.wind.direction_multiplier = 0.95
+    site.wind.cardinal_direction_multipliers = None
     site.wind.region_status = "verified"
     site.wind.table_status = "verified"
     site.project_basis.standards.confirmed = True
@@ -323,6 +352,10 @@ def test_site_overlay_recalculates_wind_load_without_changing_topology():
     assert overlaid["loads"][0]["pressure_kPa"] == pytest.approx(0.8 * 0.837014)
     assert overlaid["loads"][0]["coefficient_status"] == "working_conservative"
     assert overlaid["design_basis"]["standards"]["wind_actions"] == "AS/NZS 1170.2:2021"
+    assert overlaid["design_basis"]["framework_id"] == "AU-NCC-2022"
+    assert overlaid["design_basis"]["building_classification"] == "Class 10a"
+    assert overlaid["design_basis"]["importance_level"] == "2"
+    assert overlaid["design_basis"]["supplemental_methods"][0]["id"] == "SCI-P399"
     assert "confirm" not in (
         overlaid["design_basis"]["standards"]["action_combinations"].lower()
     )

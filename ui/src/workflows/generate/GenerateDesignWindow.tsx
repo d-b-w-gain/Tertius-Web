@@ -6,11 +6,8 @@ import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
   type LlmEditConversationEntry,
-  type LlmEditProgressEvent,
-  type LlmEditProgressSnapshot,
   type LlmFileEditResult,
   type LlmModelOption,
-  type PiAgentToolName,
   type ProjectFileMetadata,
 } from '../shared/projectStorage'
 import {
@@ -22,6 +19,15 @@ import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingReque
 import { LatestModelViewer, ModelViewerCanvas } from '../extus/ui/ViewerTab'
 import { recordAiUsage } from './AiUsageGauge'
 import { runWithInteractionSpan } from '../../telemetry'
+import {
+  buildCompileRepairPrompt,
+  isNonTerminalStatus,
+  mergeProgressSnapshot,
+  orderEditableFiles,
+  type ChatMessage,
+  type CompileJobStatus,
+} from './model/conversation'
+import { ConversationPanel } from './ui/ConversationPanel'
 
 const AI_EDIT_FILE_LIMIT = 20
 const COMPILE_FORMAT = 'glb'
@@ -32,33 +38,6 @@ const COMPILE_STATUS_RETRY_MS = 3_000
 const LLM_EDIT_STATUS_INITIAL_DELAY_MS = 1_000
 const LLM_EDIT_STATUS_POLL_MS = 1_500
 const LLM_EDIT_STATUS_RETRY_MS = 2_000
-
-type EditableFilePointer = ProjectFileMetadata & {
-  id: string
-  updated_at: string
-}
-
-type ChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  createdAt: number
-  files?: Array<{ filename: string; summary?: string; changed?: boolean }>
-  usage?: LlmFileEditResult['usage']
-  model?: string
-  artifactId?: string
-  modelUrl?: string
-  compileStatus?: 'queued' | 'running' | 'succeeded' | 'failed'
-  jobId?: string
-  repairJobId?: string
-  compileJobId?: string
-  repairAttempted?: boolean
-  repairForCompileJobId?: string
-  progress?: LlmEditProgressSnapshot
-  progressActive?: boolean
-  progressDisclosure?: boolean
-  renderKey?: string
-}
 
 export type GenerateViewportState = {
   title: string
@@ -73,32 +52,6 @@ type GenerateDesignWindowProps = {
   isActive?: boolean
   renderViewport?: boolean
   onViewportStateChange?: (state: GenerateViewportState) => void
-}
-
-type CompileJobStatus = {
-  status?: string
-  job_id?: string
-  artifact_id?: string
-  format?: string
-  export_format?: string
-  user_message?: string
-  short?: string
-  error?: string
-  error_code?: string
-  retryable?: boolean
-}
-
-function hasEditableFilePointer(file: ProjectFileMetadata): file is EditableFilePointer {
-  return Boolean(file.id && file.updated_at)
-}
-
-function orderEditableFiles(metadata: ProjectFileMetadata[]) {
-  const designFile = metadata.find(file => file.filename === 'design.py')
-  const remainingFiles = metadata.filter(file => file.filename !== 'design.py')
-  return [
-    ...(designFile ? [designFile] : []),
-    ...remainingFiles,
-  ].filter(hasEditableFilePointer)
 }
 
 function jsonMessage(data: unknown, fallback: string) {
@@ -124,10 +77,6 @@ function assistantMessageId(jobId: string) {
   return `job:${jobId}`
 }
 
-function isNonTerminalStatus(status?: string) {
-  return status === 'queued' || status === 'running'
-}
-
 function isRepairableCompileFailure(data: CompileJobStatus) {
   const detail = `${data.error_code || ''}\n${data.error || ''}\n${data.user_message || ''}`.toLowerCase()
   return data.retryable !== false && (
@@ -139,163 +88,8 @@ function isRepairableCompileFailure(data: CompileJobStatus) {
   )
 }
 
-function buildCompileRepairPrompt(originalPrompt: string, data: CompileJobStatus) {
-  const failure = [
-    data.error_code ? `Error code: ${data.error_code}` : '',
-    data.user_message ? `User message: ${data.user_message}` : '',
-    data.error ? `Traceback:\n${data.error}` : '',
-  ].filter(Boolean).join('\n\n')
-  return [
-    'The previous generated design failed to compile in the Tertius build123d sandbox.',
-    'Fix the Python source so it compiles successfully. Preserve the original design intent.',
-    'Do not use APIs shown as missing in the traceback. Return the full corrected file content.',
-    '',
-    `Original user request:\n${originalPrompt}`,
-    '',
-    failure,
-  ].join('\n')
-}
-
 function isCompileRepairEntry(entry: LlmEditConversationEntry) {
   return entry.metadata?.source === 'generate_design_compile_repair'
-}
-
-function executionStartedAt(snapshot: LlmEditProgressSnapshot) {
-  const timestamp = Date.parse(snapshot.execution_started_at)
-  return Number.isFinite(timestamp) ? timestamp : 0
-}
-
-function mergeProgressSnapshot(
-  current: LlmEditProgressSnapshot | undefined,
-  incoming: LlmEditProgressSnapshot,
-): LlmEditProgressSnapshot {
-  if (!current) return incoming
-  if (current.execution_id !== incoming.execution_id) {
-    return executionStartedAt(incoming) > executionStartedAt(current) ? incoming : current
-  }
-  if (
-    incoming.last_batch_sequence < current.last_batch_sequence
-    || incoming.last_sequence < current.last_sequence
-  ) {
-    return current
-  }
-
-  const truncationBoundaries = [
-    current.truncated_before_sequence,
-    incoming.truncated_before_sequence,
-  ].filter((sequence): sequence is number => sequence !== null)
-  const truncatedBeforeSequence = truncationBoundaries.length > 0
-    ? Math.max(...truncationBoundaries)
-    : null
-  const eventsBySequence = new Map<number, LlmEditProgressEvent>()
-  for (const event of current.events) eventsBySequence.set(event.sequence, event)
-  for (const event of incoming.events) eventsBySequence.set(event.sequence, event)
-  const events = [...eventsBySequence.values()]
-    .filter(event => (
-      event.sequence <= incoming.last_sequence
-      && (truncatedBeforeSequence === null || event.sequence > truncatedBeforeSequence)
-    ))
-    .sort((left, right) => left.sequence - right.sequence)
-
-  return {
-    ...incoming,
-    truncated_before_sequence: truncatedBeforeSequence,
-    events,
-  }
-}
-
-const TOOL_ACTIVITY_LABELS: Record<PiAgentToolName, string> = {
-  read: 'Read',
-  edit: 'Edit',
-  write: 'Write',
-  grep: 'Search',
-  find: 'Find',
-  ls: 'List',
-}
-
-function toolActivityLabel(event: LlmEditProgressEvent) {
-  if (!event.tool_name) return ''
-  const action = TOOL_ACTIVITY_LABELS[event.tool_name]
-  if (event.kind === 'tool_started') return `${action} started`
-  return `${action} ${event.is_error ? 'failed' : 'completed'}`
-}
-
-function ProgressActivity({
-  progress,
-  active = false,
-  defaultOpen = false,
-}: {
-  progress?: LlmEditProgressSnapshot
-  active?: boolean
-  defaultOpen?: boolean
-}) {
-  // React has no native <details> defaultOpen prop. This mount-stable value
-  // initializes `open`, then leaves the disclosure browser-controlled so later
-  // progress renders do not overwrite the user's toggle.
-  const [initiallyOpen] = useState(defaultOpen)
-  const eventCount = progress?.events.length || 0
-  const progressState = active
-    ? eventCount > 0 ? 'Working' : 'Starting'
-    : 'Complete'
-  const latestEvent = progress?.events.at(-1)
-  const latestLabel = latestEvent?.kind === 'reasoning_delta'
-    ? 'Reasoning updated'
-    : latestEvent ? toolActivityLabel(latestEvent) : ''
-  return (
-    <>
-      {active && progress && latestLabel && (
-        <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-          AI activity updated: {progress.events.length} {progress.events.length === 1 ? 'event' : 'events'}. Latest: {latestLabel}. Sequence: {progress.last_sequence}.
-        </p>
-      )}
-      <details open={initiallyOpen} className="border-t border-slate-800 bg-slate-950/35 px-3 py-2">
-        <summary className="flex cursor-pointer select-none items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-400">
-          <span className="font-sans font-semibold text-slate-300">Thinking &amp; activity</span>
-          <span className={`ml-auto font-mono font-semibold ${active ? 'text-cyan-300' : 'text-slate-400'}`}>
-            {progressState}
-          </span>
-          <span className="font-mono text-slate-400">
-            {eventCount} {eventCount === 1 ? 'update' : 'updates'}
-          </span>
-        </summary>
-        {progress && progress.events.length > 0 ? (
-          <ol className="ml-1 mt-3 space-y-3 border-l border-slate-700/80 pl-4">
-            {progress.truncated_before_sequence !== null && (
-              <li className="relative text-[11px] leading-4 text-slate-300">
-                <span className="absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full bg-slate-700" />
-                Earlier activity was truncated.
-              </li>
-            )}
-            {progress.events.map(event => (
-              <li key={event.sequence} className="relative text-[11px] leading-4 text-slate-400">
-                <span className={`absolute -left-[1.19rem] top-1.5 h-1.5 w-1.5 rounded-full ${
-                  event.kind === 'tool_finished' && event.is_error ? 'bg-red-500' : 'bg-cyan-700'
-                }`} />
-                {event.kind === 'reasoning_delta' ? (
-                  <p className="whitespace-pre-wrap break-words text-slate-400">{event.text?.slice(0, 1000)}</p>
-                ) : (
-                  <div className="flex min-w-0 items-baseline gap-2">
-                    <span className={event.is_error ? 'font-medium text-red-300' : 'font-medium text-slate-300'}>
-                      {toolActivityLabel(event)}
-                    </span>
-                    {event.target && (
-                      <code className="min-w-0 break-all font-mono text-[10px] text-slate-300">
-                        {event.target}
-                      </code>
-                    )}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="mt-3 text-[11px] leading-4 text-slate-400">
-            {active ? 'Waiting for the first progress update…' : 'No activity details were received.'}
-          </p>
-        )}
-      </details>
-    </>
-  )
 }
 
 export function GenerateDesignWindow({
@@ -1101,144 +895,33 @@ export function GenerateDesignWindow({
       )}
 
       {isConversationOpen && (
-        <aside
-          role="complementary"
-          aria-label="Generate Design conversation"
-          className="pointer-events-auto absolute inset-x-3 bottom-3 top-16 z-20 flex min-h-0 flex-col rounded border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/60 backdrop-blur md:left-auto md:right-4 md:w-[28rem]"
-        >
-          <div className="border-b border-slate-800 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold text-slate-100">Generate Design</h2>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void loadActiveProject(undefined, { hydrateConversation: true })}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  aria-expanded="true"
-                  onClick={() => setIsConversationOpen(false)}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                >
-                  Close Generate Design conversation
-                </button>
-              </div>
-            </div>
-            <div className="mt-4">
-              <ProjectSelector />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-            <span className="min-w-0 text-sm text-slate-300">{statusText}</span>
-            <span className="shrink-0 rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-              {COMPILE_FORMAT}/{COMPILE_QUALITY}
-            </span>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
-            <label htmlFor="generate-design-model" className="font-semibold text-slate-200">
-              AI model
-            </label>
-            <select
-              id="generate-design-model"
-              aria-label="AI model"
-              value={selectedModel?.id || ''}
-              onChange={event => setSelectedModelId(event.currentTarget.value)}
-              disabled={!llmModels.some(model => model.enabled)}
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:text-slate-500"
-            >
-              {llmModels.map(model => (
-                <option key={model.id} value={model.id} disabled={!model.enabled}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            {messages.length === 0 ? (
-              <div className="rounded border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-500">
-                Generated design messages will appear here.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {messages.map(message => {
-                  const hasActivity = message.role === 'assistant' && Boolean(
-                    message.progressDisclosure
-                    || message.progressActive
-                    || message.progress?.events.length
-                  )
-                  return (
-                    <div
-                      ref={message.role === 'assistant'
-                        ? node => scrollSubmittedMessageIntoView(node, message.id)
-                        : undefined}
-                      key={message.renderKey || message.id}
-                      className={`overflow-hidden rounded border transition-colors ${
-                        selectedMessageId === message.id
-                          ? 'border-cyan-700 bg-cyan-950/30'
-                          : 'border-slate-800 bg-slate-900/50'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setSelectedMessageId(message.id)}
-                        className={`block w-full p-3 text-left transition-colors ${
-                          selectedMessageId === message.id ? '' : 'hover:bg-slate-900'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
-                            {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
-                          </span>
-                          {message.compileStatus && (
-                            <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
-                          )}
-                        </div>
-                        <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
-                        {(message.model || message.usage) && (
-                          <div className="mt-2 font-mono text-[10px] text-slate-500">
-                            {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
-                          </div>
-                        )}
-                      </button>
-                      {hasActivity && (
-                        <ProgressActivity
-                          progress={message.progress}
-                          active={Boolean(message.progressActive)}
-                          defaultOpen={Boolean(message.progressDisclosure || message.progressActive)}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-
-          <form onSubmit={submitPrompt} className="border-t border-slate-800 p-4">
-            <textarea
-              value={prompt}
-              onChange={event => setPrompt(event.currentTarget.value)}
-              placeholder="Describe the CAD design or modification..."
-              className="h-28 w-full resize-none rounded border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500"
-            />
-            {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
-            <button
-              type="submit"
-              disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel?.enabled}
-              className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSubmitting ? 'Generating...' : 'Generate Design'}
-            </button>
-          </form>
-        </aside>
+        <ConversationPanel
+          statusText={statusText}
+          compileFormat={COMPILE_FORMAT}
+          compileQuality={COMPILE_QUALITY}
+          projectSelector={<ProjectSelector />}
+          messages={messages}
+          selectedMessageId={selectedMessageId}
+          llmModels={llmModels}
+          selectedModelId={selectedModel?.id || ''}
+          prompt={prompt}
+          error={error}
+          isSubmitting={isSubmitting}
+          canSubmit={Boolean(
+            !isSubmitting
+            && prompt.trim()
+            && activeProject
+            && fileMetadata.length > 0
+            && selectedModel?.enabled
+          )}
+          onClose={() => setIsConversationOpen(false)}
+          onRefresh={() => void loadActiveProject(undefined, { hydrateConversation: true })}
+          onSelectModel={setSelectedModelId}
+          onSelectMessage={setSelectedMessageId}
+          onPromptChange={setPrompt}
+          onSubmit={submitPrompt}
+          onMessageRef={scrollSubmittedMessageIntoView}
+        />
       )}
     </div>
   )

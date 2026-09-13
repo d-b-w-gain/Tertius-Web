@@ -8,6 +8,17 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 local_tool_prefix='r''tk'
 
+extract_workflow_trigger() {
+  local workflow="$1"
+  local trigger="$2"
+
+  awk -v trigger="$trigger" '
+    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
+    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
+    in_trigger { print }
+  ' "$workflow"
+}
+
 if rg -q "(^|[[:space:]])${local_tool_prefix}[[:space:]]" "${ROOT_DIR}/scripts" --glob '*.sh'; then
   echo "Repository scripts must not depend on the local ${local_tool_prefix} command wrapper." >&2
   exit 1
@@ -22,6 +33,10 @@ render_local() {
 
 render_default() {
   helm template "$RELEASE_NAME" "$CHART_DIR"
+}
+
+render_cloudflared() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set cloudflared.enabled=true
 }
 
 render_keda_disabled() {
@@ -160,6 +175,17 @@ if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfi
   echo "UI image build must not bake browser Keycloak/OIDC client settings; auth is handled by the API BFF." >&2
   exit 1
 fi
+
+chart_workflow="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+chart_pull_request_trigger="$(extract_workflow_trigger "$chart_workflow" pull_request)"
+chart_push_trigger="$(extract_workflow_trigger "$chart_workflow" push)"
+for chart_trigger in "$chart_pull_request_trigger" "$chart_push_trigger"; do
+  if ! rg -F -q -- "- 'README.md'" <<<"$chart_trigger" ||
+     ! rg -F -q -- "- 'ui/.env.example'" <<<"$chart_trigger"; then
+    echo ".github/workflows/chart-tests.yml must watch frontend API documentation sources." >&2
+    exit 1
+  fi
+done
 
 if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
   echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
@@ -532,6 +558,7 @@ rendered="$(render_local)"
 leased_secret_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES" \
   --set-string harnessLifecycle.leaseId=11111111-1111-4111-8111-111111111111)"
 default_rendered="$(render_default)"
+cloudflared_rendered="$(render_cloudflared)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
 app_secret_rendered="$(render_app_secret_created)"
@@ -560,6 +587,7 @@ api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kuberne
 pi_enabled_api_deployment="$(extract_render_doc "$pi_worker_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 pi_disabled_api_deployment="$(extract_render_doc "$pi_disabled_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+cloudflared_deployment="$(extract_render_doc "$cloudflared_rendered" 'kind: Deployment' 'app.kubernetes.io/component: cloudflared')"
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
@@ -587,6 +615,15 @@ pi_worker="$(extract_render_doc "$pi_worker_rendered" 'kind: ScaledJob' 'app.kub
 pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
 pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
 pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
+
+if ! rg -q -- '--metrics' <<<"$cloudflared_deployment" || ! rg -q '0\.0\.0\.0:2000' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must expose its metrics and readiness endpoint on a fixed port." >&2
+  exit 1
+fi
+if ! rg -q 'path: /ready' <<<"$cloudflared_deployment" || ! rg -q 'readinessProbe:' <<<"$cloudflared_deployment" || ! rg -q 'livenessProbe:' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must report disconnected tunnels through readiness and liveness probes." >&2
+  exit 1
+fi
 
 # I-001: the API ConfigMap owns one ordered model catalog and the Pi worker
 # references that exact key. Parse the rendered scalar so this remains valid
@@ -1358,17 +1395,6 @@ extract_workflow_job() {
   ' "$workflow"
 }
 
-extract_workflow_trigger() {
-  local workflow="$1"
-  local trigger="$2"
-
-  awk -v trigger="$trigger" '
-    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
-    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
-    in_trigger { print }
-  ' "$workflow"
-}
-
 extract_job_if() {
   awk '
     /^    if:/ { in_if = 1 }
@@ -1519,6 +1545,17 @@ promote_job="$(extract_workflow_job "$IMAGE_WORKFLOW" promote | sed '/^[[:space:
 app_token_count="$( (rg -c 'actions/create-github-app-token@v3' <<<"$promote_job" || true) | tr -d ' ' )"
 client_id_count="$( (rg -F -c 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" || true) | tr -d ' ' )"
 private_key_count="$( (rg -F -c 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job" || true) | tr -d ' ' )"
+
+if ! rg -q '^[[:space:]]*gh pr edit([[:space:]]|$)' <<<"$promote_job"; then
+  echo "Build Images promotion must refresh reused PR metadata for the staged image tag." >&2
+  exit 1
+fi
+
+if ! rg -F -q 'while [ "$SECONDS" -lt "$head_deadline" ]' <<<"$promote_job" ||
+   ! rg -F -q '"${head_sha}" = "${local_head}"' <<<"$promote_job"; then
+  echo "Build Images promotion must wait for the reused PR to report its pushed head." >&2
+  exit 1
+fi
 
 if [ "$app_token_count" -lt 2 ] || [ "$client_id_count" -lt 2 ] || [ "$private_key_count" -lt 2 ] ||
    [ "$( (rg -c 'permission-checks:[[:space:]]*read' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||

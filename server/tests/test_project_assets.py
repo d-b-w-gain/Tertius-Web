@@ -72,7 +72,7 @@ def test_resource_constants_are_centralized_at_exact_values():
     assert MAX_3MF_COORDINATE_MM == 1_000_000.0
     assert MAX_3MF_MANIFEST_BYTES == 256 * 1024
     assert MAX_3MF_DERIVED_BREP_BYTES == 512 * 1024 * 1024
-    assert IMPORT_3MF_CONVERSION_VERSION == "tertius-3mf-brep-v1-build123d-0.8.0"
+    assert IMPORT_3MF_CONVERSION_VERSION == "tertius-3mf-brep-v1-build123d-0.11.1"
     assert SOURCE_3MF_MEDIA_TYPE == "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
     assert THREE_MF_MEDIA_TYPE == SOURCE_3MF_MEDIA_TYPE
     assert OCTET_STREAM_MEDIA_TYPE == "application/octet-stream"
@@ -100,6 +100,15 @@ def test_import_manifest_accepts_lowercase_hex_digests():
     manifest = Import3mfManifest.model_validate(manifest_payload())
     assert manifest.source_sha256 == "a" * 64
     assert manifest.brep_sha256 == "b" * 64
+
+
+def test_import_manifest_accepts_legacy_build123d_conversion_version():
+    payload = manifest_payload()
+    payload["conversion_version"] = "tertius-3mf-brep-v1-build123d-0.8.0"
+
+    manifest = Import3mfManifest.model_validate(payload)
+
+    assert manifest.conversion_version == "tertius-3mf-brep-v1-build123d-0.8.0"
 
 
 def test_import_manifest_requires_contiguous_indices_from_zero():

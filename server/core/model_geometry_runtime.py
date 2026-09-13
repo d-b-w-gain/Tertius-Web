@@ -11,11 +11,13 @@ def _shape_bounds_m(value):
 
 
 def visual_metadata_tree(value, *, bd, source_call_ids, root=False):
-    metadata = getattr(value, "tertius_bom", None)
+    component_id = getattr(value, "tertius_component_id", None)
+    product_key = getattr(value, "tertius_product_key", None)
+    product_digest = getattr(value, "tertius_product_definition_digest", None)
+    connection_id = getattr(value, "tertius_connection_id", None)
+    connection_digest = getattr(value, "tertius_connection_definition_digest", None)
     source_ids = source_call_ids(value)
     label = str(getattr(value, "label", "") or "")
-    if not label and isinstance(metadata, dict):
-        label = str(metadata.get("part_number") or metadata.get("product_key") or "")
     children = []
     for child in getattr(value, "children", ()) or ():
         if isinstance(child, bd.Shape):
@@ -24,19 +26,17 @@ def visual_metadata_tree(value, *, bd, source_call_ids, root=False):
             )
     result = {
         "label": label,
-        "bom": metadata if isinstance(metadata, dict) else None,
+        "component_id": str(component_id) if component_id else None,
+        "product_key": str(product_key) if product_key else None,
+        "product_definition_digest": str(product_digest) if product_digest else None,
+        "connection_id": str(connection_id) if connection_id else None,
+        "connection_definition_digest": str(connection_digest) if connection_digest else None,
         "source_call_ids": source_ids,
         "children": children,
     }
     normalised_label = label.lower().replace("_", "-").replace(" ", "-")
     label_tokens = {token for token in normalised_label.split("-") if token}
-    part_number = (
-        str(metadata.get("part_number") or "") if isinstance(metadata, dict) else ""
-    )
-    if root or (
-        "roof" in label_tokens
-        and (normalised_label.startswith("surface-") or "ROOF" in part_number.upper())
-    ):
+    if root or ("roof" in label_tokens and normalised_label.startswith("surface-")):
         result["bounds_m"] = _shape_bounds_m(value)
         if not root:
             result["site_role"] = "roof"

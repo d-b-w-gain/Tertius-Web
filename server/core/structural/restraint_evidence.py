@@ -22,6 +22,19 @@ class RestraintEvidenceResolution:
     design_force_capacity_kN: float | None
     design_moment_capacity_kNm: float | None
     stiffness_status: Literal["unverified", "verified"]
+    restrains_lateral_translation: bool
+    restrains_twist: bool
+    restrained_flange: Literal[
+        "auto",
+        "positive_local_y",
+        "negative_local_y",
+        "both",
+    ]
+    demand_model: Literal[
+        "not_defined",
+        "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
+    ]
     capacity_basis: str
     references: tuple[str, ...]
     assumptions: tuple[str, ...]
@@ -116,6 +129,10 @@ def resolve_restraint_evidence(
             design_force_capacity_kN=None,
             design_moment_capacity_kNm=None,
             stiffness_status="unverified",
+            restrains_lateral_translation=False,
+            restrains_twist=False,
+            restrained_flange="auto",
+            demand_model="not_defined",
             capacity_basis="No registered evidence pack matched this candidate.",
             references=(),
             assumptions=(),
@@ -124,11 +141,14 @@ def resolve_restraint_evidence(
 
     applicability = raw_pack.get("applicability")
     resistance = raw_pack.get("resistance")
+    mechanism = raw_pack.get("mechanism")
     source = raw_pack.get("source")
     if not isinstance(applicability, dict):
         raise RestraintEvidenceError(f"pack {pack_id!r} has no applicability object")
     if not isinstance(resistance, dict):
         raise RestraintEvidenceError(f"pack {pack_id!r} has no resistance object")
+    if not isinstance(mechanism, dict):
+        raise RestraintEvidenceError(f"pack {pack_id!r} has no mechanism object")
     if not isinstance(source, dict):
         raise RestraintEvidenceError(f"pack {pack_id!r} has no source object")
     source_sha = _required_text(source.get("sha256"), "source SHA-256").lower()
@@ -144,12 +164,28 @@ def resolve_restraint_evidence(
     stiffness_status = resistance.get("stiffness_status")
     if stiffness_status not in {"unverified", "verified"}:
         raise RestraintEvidenceError("evidence stiffness_status is invalid")
+    restrained_flange = mechanism.get("restrained_flange", "auto")
+    if restrained_flange not in {
+        "auto",
+        "positive_local_y",
+        "negative_local_y",
+        "both",
+    }:
+        raise RestraintEvidenceError("evidence restrained_flange is invalid")
+    demand_model = mechanism.get("demand_model", "not_defined")
+    if demand_model not in {
+        "not_defined",
+        "aisi_2004_d3_2_2_eccentric_load_couple",
+        "as_nzs_4600_2005_4_3_2_flange_force",
+    }:
+        raise RestraintEvidenceError("evidence demand_model is invalid")
     mismatches = _identity_mismatches(applicability, configuration)
     references = (
         f"{_required_text(source.get('title'), 'source title')} — "
         f"{_required_text(source.get('url'), 'source URL')}",
         f"SHA-256 {source_sha}",
         *(str(page) for page in pages),
+        *(str(value) for value in raw_pack.get("references", [])),
     )
     return RestraintEvidenceResolution(
         pack_id=pack_id,
@@ -165,8 +201,34 @@ def resolve_restraint_evidence(
             "design moment capacity",
         ),
         stiffness_status=stiffness_status,
+        restrains_lateral_translation=bool(
+            mechanism.get("restrains_lateral_translation")
+        ),
+        restrains_twist=bool(mechanism.get("restrains_twist")),
+        restrained_flange=restrained_flange,
+        demand_model=demand_model,
         capacity_basis=_required_text(resistance.get("basis"), "capacity basis"),
         references=references,
         assumptions=tuple(str(value) for value in raw_pack.get("assumptions", [])),
         exclusions=tuple(str(value) for value in raw_pack.get("exclusions", [])),
     )
+
+
+def match_restraint_evidence_pack(
+    configuration: RestraintConfigurationIdentity,
+) -> RestraintEvidenceResolution | None:
+    """Select an evidence pack only when every rendered product identity matches."""
+
+    matches = [
+        resolve_restraint_evidence(pack_id, configuration)
+        for pack_id in restraint_evidence_registry()
+        if not _identity_mismatches(
+            restraint_evidence_registry()[pack_id]["applicability"],
+            configuration,
+        )
+    ]
+    if len(matches) > 1:
+        raise RestraintEvidenceError(
+            "multiple restraint-evidence packs match the same rendered configuration"
+        )
+    return matches[0] if matches else None

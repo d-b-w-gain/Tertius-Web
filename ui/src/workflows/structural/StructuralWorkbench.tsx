@@ -2,24 +2,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { apiFetch } from '../../api/client'
 import { useAuth } from '../../auth/AuthProvider'
-import { LatestModelViewer } from '../extus/ui/ViewerTab'
+import {
+  LatestModelViewer,
+  type StructuralViewerOverlay,
+} from '../extus/ui/ViewerTab'
 import { resolveWorkflowServerUrl } from '../shared/apiConfig'
 import { ACTIVE_PROJECT_CHANGED_EVENT } from '../shared/ui/ProjectSelector'
 import { GuestWorkflowNotice } from '../shared/ui/GuestWorkflowNotice'
 import type {
+  ActiveStructuralWorkbenchResponse,
   CapabilityState,
+  CertificationIssue,
   DesignComponent,
   ProjectStructuralCapture,
+  StructuralAnalysisCacheInfo,
+  StructuralAnalysisProgress,
   StructuralSnapshot,
   Vector3,
   VerificationStatus,
 } from './contracts'
 import { SITE_BASIS_CHANGED_EVENT } from '../site/SiteWorkbench'
 import { StructuralWindBasisPanel } from './StructuralWindBasisPanel'
+import { buildStage8Overlays, buildStructuralStageFocus } from './stageFocus'
 
 type StructuralWorkbenchProps = {
   isActive?: boolean
 }
+
+type EvidenceLevel = 'overview' | 'investigate' | 'audit'
 
 const capabilityStyle: Record<CapabilityState['status'], string> = {
   online: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300',
@@ -45,6 +55,22 @@ const verificationStyle: Record<VerificationStatus, string> = {
   blocked: 'border-red-500/40 bg-red-950/40 text-red-300',
 }
 
+const certificationIssueStyle: Record<CertificationIssue['kind'], string> = {
+  design_failure: 'border-red-500/50 bg-red-950/30 text-red-200',
+  evidence_gap: 'border-fuchsia-500/40 bg-fuchsia-950/20 text-fuchsia-200',
+  provisional_input: 'border-amber-500/40 bg-amber-950/20 text-amber-200',
+  dependent_blocker: 'border-orange-500/40 bg-orange-950/20 text-orange-200',
+  engineering_warning: 'border-yellow-500/40 bg-yellow-950/20 text-yellow-200',
+}
+
+const certificationIssueLabel: Record<CertificationIssue['kind'], string> = {
+  design_failure: 'calculated failure',
+  evidence_gap: 'evidence gap',
+  provisional_input: 'Tertius provisional',
+  dependent_blocker: 'downstream blocker',
+  engineering_warning: 'engineering review',
+}
+
 function number(value: number, digits = 3) {
   return value.toLocaleString(undefined, {
     maximumFractionDigits: digits,
@@ -63,80 +89,268 @@ const stabilityStatusRank = {
   pass: 1,
 } as const
 
+type CompactVerificationGroup = {
+  id: string
+  label: string
+  status: VerificationStatus
+  total: number
+  passed: number
+  failed: number
+  unsupported: number
+  notApplicable: number
+  open: number
+}
+
+type GoverningAnalysisState = {
+  solver: Pick<StructuralSnapshot['solver'], 'combination_id'>
+  certification_readiness: StructuralSnapshot['certification_readiness']
+  verification_stages: StructuralSnapshot['verification_stages']
+  compactVerificationGroups: CompactVerificationGroup[]
+}
+
+function compactVerificationGroup(
+  id: string,
+  label: string,
+  statuses: readonly string[],
+): CompactVerificationGroup {
+  const passed = statuses.filter((status) => status === 'pass').length
+  const failed = statuses.filter(
+    (status) => status === 'fail' || status === 'blocked',
+  ).length
+  const unsupported = statuses.filter((status) => status === 'unsupported').length
+  const notApplicable = statuses.filter((status) => status === 'not_applicable').length
+  const open = Math.max(
+    0,
+    statuses.length - passed - failed - unsupported - notApplicable,
+  )
+  const status: VerificationStatus = failed > 0
+    ? 'fail'
+    : unsupported > 0
+      ? 'unsupported'
+      : statuses.some((candidate) => candidate === 'warning' || candidate === 'candidate')
+        ? 'warning'
+        : passed > 0
+          ? 'pass'
+          : 'not_checked'
+  return {
+    id,
+    label,
+    status,
+    total: statuses.length,
+    passed,
+    failed,
+    unsupported,
+    notApplicable,
+    open,
+  }
+}
+
+function governingAnalysisState(snapshot: StructuralSnapshot): GoverningAnalysisState {
+  return {
+    solver: { combination_id: snapshot.solver.combination_id },
+    certification_readiness: snapshot.certification_readiness,
+    verification_stages: snapshot.verification_stages,
+    compactVerificationGroups: [
+      compactVerificationGroup(
+        'cross-sections',
+        'Cross-sections',
+        (snapshot.cross_section_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'member-stability',
+        'Member stability',
+        (snapshot.member_stability_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'connections',
+        'Connections',
+        (snapshot.connection_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'tension-members',
+        'Tension members',
+        (snapshot.tension_member_checks ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'bracing',
+        'Bracing paths',
+        (snapshot.bracing_load_path_traces ?? []).map((check) => check.status),
+      ),
+      compactVerificationGroup(
+        'serviceability',
+        'Serviceability',
+        snapshot.serviceability_checks.map((check) => check.status),
+      ),
+    ],
+  }
+}
+
+const recoverableStructuralGatewayStatuses = new Set([502, 503, 504, 524])
+
+async function fetchStructuralResponse(
+  url: string,
+  getAccessToken: () => Promise<string>,
+) {
+  const response = await apiFetch(url, getAccessToken)
+  if (!recoverableStructuralGatewayStatuses.has(response.status)) return response
+
+  // A fresh structural solve can outlive the public gateway request while the
+  // API still completes and stores its content-addressed result. Retry once so
+  // the UI picks up that saved result instead of leaving a 524 error on screen.
+  return apiFetch(url, getAccessToken)
+}
+
+function analysisCacheFromHeaders(response: Response): StructuralAnalysisCacheInfo | null {
+  const status = response.headers.get('X-Tertius-Structural-Cache')?.toLowerCase()
+  const keyDigest = response.headers.get('X-Tertius-Structural-Cache-Key')
+  const engineVersion = response.headers.get('X-Tertius-Structural-Engine')
+  const calculatedAt = response.headers.get('X-Tertius-Structural-Calculated-At')
+  const duration = Number(
+    response.headers.get('X-Tertius-Structural-Calculation-Seconds'),
+  )
+  if (
+    (status !== 'hit' && status !== 'calculated')
+    || !keyDigest
+    || !engineVersion
+    || !calculatedAt
+    || !Number.isFinite(duration)
+  ) {
+    return null
+  }
+  return {
+    status,
+    key_digest: keyDigest,
+    engine_version: engineVersion,
+    calculated_at: calculatedAt,
+    calculation_duration_seconds: duration,
+  }
+}
+
 export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProps) {
   const { authMode, getAccessToken, login } = useAuth()
   const [capture, setCapture] = useState<ProjectStructuralCapture | null>(null)
+  const [governingAnalysis, setGoverningAnalysis] = useState<GoverningAnalysisState | null>(
+    null,
+  )
   const [analysis, setAnalysis] = useState<StructuralSnapshot | null>(null)
   const [selectedVisualNodeId, setSelectedVisualNodeId] = useState('')
   const [selectedMemberId, setSelectedMemberId] = useState('')
   const [selectedCombinationId, setSelectedCombinationId] = useState('')
   const [selectedSheetId, setSelectedSheetId] = useState('')
+  const [activeStageId, setActiveStageId] = useState('')
   const [selectedRestraintTraceId, setSelectedRestraintTraceId] = useState('')
   const [diagramMode, setDiagramMode] = useState<'moment' | 'displacement'>('moment')
   const [momentComponent, setMomentComponent] = useState<'resultant' | 'major' | 'minor'>(
     'resultant',
   )
+  const [memberEvidenceStage, setMemberEvidenceStage] = useState<
+    'cross_section' | 'member_stability'
+  >('member_stability')
+  const [evidenceLevel, setEvidenceLevel] = useState<EvidenceLevel>('overview')
   const [isLoading, setIsLoading] = useState(false)
+  const [analysisLoadPhase, setAnalysisLoadPhase] = useState<
+    'idle' | 'checking' | 'calculating'
+  >('idle')
+  const [analysisCache, setAnalysisCache] = useState<StructuralAnalysisCacheInfo | null>(null)
+  const [governingAnalysisKey, setGoverningAnalysisKey] = useState('')
+  const [reportBusy, setReportBusy] = useState<'pdf' | 'zip' | null>(null)
+  const [reportStatus, setReportStatus] = useState<string | null>(null)
+  const [reportError, setReportError] = useState<string | null>(null)
+  const [analysisProgress, setAnalysisProgress] = useState<StructuralAnalysisProgress | null>(
+    null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const captureRequestId = useRef(0)
+  const combinationRequestId = useRef(0)
   const serverUrl = resolveWorkflowServerUrl('structural', import.meta.env?.VITE_API_URL)
   const extusServerUrl = resolveWorkflowServerUrl('extus', import.meta.env?.VITE_API_URL)
 
   const loadCapture = useCallback(async () => {
     if (!isActive || authMode !== 'authenticated') return
     const requestId = ++captureRequestId.current
+    combinationRequestId.current += 1
     setIsLoading(true)
+    setAnalysisLoadPhase('checking')
+    setAnalysisCache(null)
+    setAnalysisProgress(null)
     setError(null)
     setAnalysisError(null)
-    try {
-      const [captureResponse, analysisResponse] = await Promise.all([
-        apiFetch(`${serverUrl}/active/capture`, getAccessToken),
-        apiFetch(`${serverUrl}/active/analysis`, getAccessToken),
-      ])
-      const payload = await captureResponse.json().catch(() => null) as
-        | ProjectStructuralCapture
-        | { detail?: string }
-        | null
-      if (!captureResponse.ok) {
-        const detail = payload && 'detail' in payload ? payload.detail : undefined
-        throw new Error(detail || `Structural capture returned ${captureResponse.status}`)
+    let progressPollTimer: number | undefined
+    const pollProgress = async () => {
+      try {
+        const response = await apiFetch(
+          `${serverUrl}/active/analysis/progress`,
+          getAccessToken,
+        )
+        if (!response.ok || requestId !== captureRequestId.current) return
+        const progress = (await response.json()) as StructuralAnalysisProgress
+        if (requestId === captureRequestId.current) setAnalysisProgress(progress)
+      } catch {
+        // Progress is advisory. The workbench request remains authoritative.
       }
-      const analysisPayload = await analysisResponse.json().catch(() => null) as
-        | StructuralSnapshot
+    }
+    const calculationTimer = window.setTimeout(() => {
+      if (requestId === captureRequestId.current) {
+        setAnalysisLoadPhase('calculating')
+        void pollProgress()
+        progressPollTimer = window.setInterval(() => void pollProgress(), 1000)
+      }
+    }, 750)
+    try {
+      const response = await fetchStructuralResponse(
+        `${serverUrl}/active/workbench`,
+        getAccessToken,
+      )
+      const payload = await response.json().catch(() => null) as
+        | ActiveStructuralWorkbenchResponse
         | { detail?: string }
         | null
-      const nextCapture = payload as ProjectStructuralCapture
+      if (!response.ok) {
+        const detail = payload && 'detail' in payload ? payload.detail : undefined
+        throw new Error(detail || `Structural workbench returned ${response.status}`)
+      }
+      const workbench = payload as ActiveStructuralWorkbenchResponse
       if (requestId !== captureRequestId.current) return
-      setCapture(nextCapture)
+      setCapture(workbench.capture)
       setSelectedVisualNodeId('')
       setSelectedRestraintTraceId('')
-      if (analysisResponse.ok) {
-        const nextAnalysis = analysisPayload as StructuralSnapshot
+      setAnalysisCache(workbench.cache)
+      setGoverningAnalysisKey(workbench.cache?.key_digest || '')
+      setReportStatus(null)
+      setReportError(null)
+      if (workbench.analysis) {
+        const nextAnalysis = workbench.analysis
+        setGoverningAnalysis(governingAnalysisState(nextAnalysis))
         setAnalysis(nextAnalysis)
         setSelectedCombinationId(nextAnalysis.solver.combination_id)
         setSelectedMemberId(nextAnalysis.members[0]?.id || '')
         setSelectedSheetId(nextAnalysis.calculation_sheets?.[0]?.id || '')
+        setActiveStageId(nextAnalysis.calculation_sheets?.[0]?.stage_id || '')
+        setMemberEvidenceStage('member_stability')
       } else {
+        setGoverningAnalysis(null)
         setAnalysis(null)
-        setAnalysisError(
-          analysisPayload && 'detail' in analysisPayload
-            ? analysisPayload.detail || `Structural analysis returned ${analysisResponse.status}`
-            : `Structural analysis returned ${analysisResponse.status}`,
-        )
+        setAnalysisError(workbench.analysis_error || 'Structural analysis is unavailable')
       }
     } catch (loadError) {
       if (requestId !== captureRequestId.current) return
       setCapture(null)
+      setGoverningAnalysis(null)
       setAnalysis(null)
+      setAnalysisCache(null)
+      setGoverningAnalysisKey('')
       setError(
         loadError instanceof Error
           ? loadError.message
           : 'The active project structural declaration could not be loaded',
       )
     } finally {
+      window.clearTimeout(calculationTimer)
+      if (progressPollTimer !== undefined) window.clearInterval(progressPollTimer)
       if (requestId === captureRequestId.current) {
         setIsLoading(false)
+        setAnalysisLoadPhase('idle')
       }
     }
   }, [authMode, getAccessToken, isActive, serverUrl])
@@ -156,10 +370,30 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   }, [loadCapture])
 
   const selectCombination = useCallback(async (combinationId: string) => {
+    const requestId = ++combinationRequestId.current
     setSelectedCombinationId(combinationId)
     setAnalysisError(null)
+    setAnalysisLoadPhase('checking')
+    setAnalysisProgress(null)
+    let progressPollTimer: number | undefined
+    const progressUrl = `${serverUrl}/active/analysis/progress?combination_id=${encodeURIComponent(combinationId)}`
+    const pollProgress = async () => {
+      try {
+        const response = await apiFetch(progressUrl, getAccessToken)
+        if (!response.ok || requestId !== combinationRequestId.current) return
+        setAnalysisProgress((await response.json()) as StructuralAnalysisProgress)
+      } catch {
+        // Progress is advisory. The selected-combination request remains authoritative.
+      }
+    }
+    const calculationTimer = window.setTimeout(() => {
+      if (requestId !== combinationRequestId.current) return
+      setAnalysisLoadPhase('calculating')
+      void pollProgress()
+      progressPollTimer = window.setInterval(() => void pollProgress(), 1000)
+    }, 750)
     try {
-      const response = await apiFetch(
+      const response = await fetchStructuralResponse(
         `${serverUrl}/active/analysis?combination_id=${encodeURIComponent(combinationId)}`,
         getAccessToken,
       )
@@ -171,8 +405,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         const detail = payload && 'detail' in payload ? payload.detail : undefined
         throw new Error(detail || `Structural analysis returned ${response.status}`)
       }
+      if (requestId !== combinationRequestId.current) return
       const nextAnalysis = payload as StructuralSnapshot
       setAnalysis(nextAnalysis)
+      setAnalysisCache(analysisCacheFromHeaders(response))
       setSelectedRestraintTraceId('')
       setSelectedSheetId((current) => (
         nextAnalysis.calculation_sheets?.some((sheet) => sheet.id === current)
@@ -185,17 +421,28 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           : nextAnalysis.members[0]?.id || ''
       ))
     } catch (loadError) {
+      if (requestId !== combinationRequestId.current) return
       setAnalysisError(
         loadError instanceof Error
           ? loadError.message
           : 'The selected load combination could not be solved',
       )
+    } finally {
+      window.clearTimeout(calculationTimer)
+      if (progressPollTimer !== undefined) window.clearInterval(progressPollTimer)
+      if (requestId === combinationRequestId.current) setAnalysisLoadPhase('idle')
     }
   }, [getAccessToken, serverUrl])
 
   const componentsById = useMemo(
     () => new Map(capture?.components.map((component) => [component.id, component]) || []),
     [capture],
+  )
+  const connectionChecksById = useMemo(
+    () => new Map(
+      (analysis?.connection_checks ?? []).map((check) => [check.connection_id, check]),
+    ),
+    [analysis],
   )
   const firstLoad = capture?.loads[0]
   const firstPath = capture?.load_paths.find((path) => path.load_id === firstLoad?.id)
@@ -220,64 +467,106 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
   const selectedTensionCheck = analysis?.tension_member_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const selectedGlobalBracingTrace = useMemo(() => {
-    if (!capture || !selectedMember?.tension_only) return undefined
-    const declaration = capture.analysis?.members.find(
-      (member) => member.id === selectedMember.id,
-    )
-    if (!declaration) return undefined
-    const collectorConnection = capture.connections.find((connection) => (
-      connection.to_component_id === declaration.component_id
-      && connection.id.endsWith('-collector')
-    ))
-    const foundationConnection = capture.connections.find((connection) => (
-      connection.from_component_id === declaration.component_id
-      && connection.id.endsWith('-foundation')
-      && componentsById.get(connection.to_component_id)?.grounded
-    ))
-    if (!collectorConnection || !foundationConnection) return undefined
-    return {
-      componentIds: Array.from(new Set([
-        collectorConnection.from_component_id,
-        ...collectorConnection.connector_component_ids,
-        declaration.component_id,
-        ...foundationConnection.connector_component_ids,
-        foundationConnection.to_component_id,
-      ])),
-    }
-  }, [capture, componentsById, selectedMember])
-  const selectedCrossSectionCheck = analysis?.cross_section_checks?.find(
+  const selectedGlobalBracingTrace = analysis?.bracing_load_path_traces?.find(
+    (trace) => trace.member_id === selectedMember?.id,
+  )
+  const availableCrossSectionCheck = analysis?.cross_section_checks?.find(
     (check) => check.member_id === selectedMember?.id,
   )
-  const selectedMemberStabilityCheck = analysis?.member_stability_checks
+  const availableMemberStabilityCheck = analysis?.member_stability_checks
     ?.filter((check) => check.member_id === selectedMember?.id)
     .sort((left, right) => (
       stabilityStatusRank[right.status] - stabilityStatusRank[left.status]
       || (right.governing_utilisation ?? -1) - (left.governing_utilisation ?? -1)
     ))[0]
+  const activeMemberEvidenceStage = memberEvidenceStage === 'cross_section'
+    && availableCrossSectionCheck
+    ? 'cross_section'
+    : memberEvidenceStage === 'member_stability' && availableMemberStabilityCheck
+      ? 'member_stability'
+      : availableMemberStabilityCheck
+        ? 'member_stability'
+        : 'cross_section'
+  const selectedCrossSectionCheck = activeMemberEvidenceStage === 'cross_section'
+    ? availableCrossSectionCheck
+    : undefined
+  const selectedMemberStabilityCheck = activeMemberEvidenceStage === 'member_stability'
+    ? availableMemberStabilityCheck
+    : undefined
   const selectedDisplayCheckStatus = selectedMemberStabilityCheck?.status
+    || selectedCrossSectionCheck?.status
     || selectedCheck?.status
+  const selectedDisplayUtilisation = selectedMemberStabilityCheck?.governing_utilisation
+    ?? selectedCrossSectionCheck?.governing_utilisation
+    ?? selectedCheck?.utilisation
   const crossSectionStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'cross_section',
   )
   const memberStabilityStage = analysis?.verification_stages?.find(
     (stage) => stage.id === 'member_stability',
   )
+  const compactVerificationGroups = governingAnalysis?.compactVerificationGroups ?? []
+  const compactFailureCount = compactVerificationGroups.reduce(
+    (total, group) => total + group.failed,
+    0,
+  )
+  const compactUnsupportedCount = compactVerificationGroups.reduce(
+    (total, group) => total + group.unsupported,
+    0,
+  )
+  const compactOverallStatus: VerificationStatus = !governingAnalysis
+    ? 'not_checked'
+    : compactFailureCount > 0
+      ? 'fail'
+      : compactUnsupportedCount > 0
+        ? 'unsupported'
+        : governingAnalysis.certification_readiness?.ready_for_engineering_review
+          ? 'pass'
+          : 'warning'
+  const openCertificationGates = governingAnalysis?.certification_readiness?.gates.filter(
+    (gate) => gate.status !== 'pass',
+  ) ?? []
+  const investigationIssues = governingAnalysis?.certification_readiness?.issues ?? []
+  const governingCertificationReadiness = governingAnalysis?.certification_readiness ?? null
+  const attentionStageCount = governingAnalysis?.verification_stages.filter(
+    (stage) => stage.status !== 'pass',
+  ).length ?? 0
   const selectedServiceability = analysis?.serviceability_checks.find(
-    (check) => check.member_id === selectedMember?.id,
+    (check) => (
+      check.member_id === selectedMember?.id
+      || check.analytical_member_ids?.includes(selectedMember?.id || '')
+    ),
   )
   const activeCombination = analysis?.load_combinations.find(
     (combination) => combination.id === selectedCombinationId,
   ) || analysis?.load_combinations[0]
+  const unavailableCombinations = analysis?.unavailable_load_combinations ?? []
   const selectedCalculationSheet = analysis?.calculation_sheets?.find(
     (sheet) => sheet.id === selectedSheetId,
   ) || analysis?.calculation_sheets?.[0]
   const selectedRestraintTrace = analysis?.member_restraint_traces?.find(
     (trace) => trace.id === selectedRestraintTraceId,
-  )
+  ) || (activeStageId === 'bracing'
+    ? analysis?.member_restraint_traces
+      ?.filter((trace) => (
+        trace.combination_id === selectedCombinationId
+        && trace.status !== 'not_required'
+      ))
+      .sort((left, right) => (
+        (right.required_restraint_force_kN ?? 0)
+        - (left.required_restraint_force_kN ?? 0)
+      ))[0]
+    : undefined)
+  const selectedBoundaryCandidateIds = new Set([
+    ...(selectedRestraintTrace?.start_restraint_candidate_ids ?? []),
+    ...(selectedRestraintTrace?.end_restraint_candidate_ids ?? []),
+  ])
   const selectedRestraintChecks = (analysis?.member_restraint_candidate_checks ?? [])
-    .filter((check) => selectedRestraintTrace?.governing_candidate_check_ids.includes(check.id))
-  const selectedRestraintVisualNodeIds = useMemo(() => {
+    .filter((check) => (
+      selectedRestraintTrace?.combination_id === check.combination_id
+      && selectedBoundaryCandidateIds.has(check.candidate_id)
+    ))
+  const selectedRestraintVisualNodeIds = (() => {
     if (!capture) {
       return selectedVisualNodeId ? [selectedVisualNodeId] : undefined
     }
@@ -294,17 +583,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         ? selectedRestraintChecks.flatMap((check) => check.anchorage_component_ids)
         : [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
-      ...(selectedGlobalBracingTrace?.componentIds ?? [])
+      ...(selectedGlobalBracingTrace?.component_ids ?? [])
         .map((componentId) => componentVisualNodes.get(componentId) ?? ''),
     ].filter(Boolean)))
-  }, [
-    capture,
-    selectedCrossSectionCheck,
-    selectedRestraintChecks,
-    selectedRestraintTrace,
-    selectedGlobalBracingTrace,
-    selectedVisualNodeId,
-  ])
+  })()
   const selectRestraintTrace = useCallback((traceId: string) => {
     const currentAnalysis = analysis
     const trace = currentAnalysis?.member_restraint_traces?.find(
@@ -312,6 +594,8 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     if (!trace || !currentAnalysis) return
     setSelectedRestraintTraceId(trace.id)
+    setEvidenceLevel('audit')
+    setActiveStageId('bracing')
     setSelectedMemberId(trace.member_id)
     setSelectedVisualNodeId(
       currentAnalysis.members.find(
@@ -320,13 +604,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     )
     setSelectedSheetId(
       currentAnalysis.calculation_sheets?.find(
+        (sheet) => sheet.stage_id === 'bracing',
+      )?.id
+      || currentAnalysis.calculation_sheets?.find(
         (sheet) => sheet.stage_id === 'member_stability',
       )?.id
       || '',
     )
     setDiagramMode('moment')
   }, [analysis])
-  const structuralOverlays = useMemo(() => {
+  const analysisOverlays = useMemo(() => {
     if (!analysis || !activeCombination) return undefined
     const nodes = new Map(analysis.nodes.map((node) => [node.id, node]))
     return analysis.member_diagrams
@@ -366,6 +653,23 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             },
           }]
         })
+      const nodalArrows = diagramIndex === 0
+        ? analysis.loads.flatMap((load) => {
+          const factor = activeCombination.factors[load.case_id] ?? 0
+          const node = nodes.get(load.node_id)
+          if (factor === 0 || !node) return []
+          return [{
+            id: load.id,
+            label: load.label,
+            position: node.position,
+            force_kN: {
+              x: load.force.x * factor,
+              y: load.force.y * factor,
+              z: load.force.z * factor,
+            },
+          }]
+        })
+        : []
       const lineArrows = analysis.member_distributed_loads
         .filter((load) => load.member_id === diagram.member_id)
         .flatMap((load) => {
@@ -389,7 +693,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
           (candidate) => candidate.member_id === diagram.member_id,
         )
         : analysis.serviceability_checks.find(
-          (candidate) => candidate.member_id === diagram.member_id,
+          (candidate) => (
+            candidate.member_id === diagram.member_id
+            || candidate.analytical_member_ids?.includes(diagram.member_id)
+          ),
         )
       const restraintSegments = (analysis.member_restraint_traces ?? [])
         .filter((trace) => (
@@ -428,7 +735,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
               : station.moment_kNm,
           displacement_mm: station.displacement_mm,
         })),
-        loadArrows: [...pointArrows, ...lineArrows],
+        loadArrows: [...nodalArrows, ...pointArrows, ...lineArrows],
         nodes: diagramIndex === 0
           ? analysis.nodes.map((node) => ({
             id: node.id,
@@ -455,16 +762,67 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       }
     })
   }, [activeCombination, analysis, diagramMode, momentComponent])
+  const activeStage = analysis?.verification_stages?.find(
+    (stage) => stage.id === activeStageId,
+  )
+  const stageFocus = useMemo(() => (
+    buildStructuralStageFocus(analysis, activeStageId, activeCombination)
+  ), [activeCombination, activeStageId, analysis])
+  const stage8Overlays = useMemo(() => (
+    buildStage8Overlays(
+      analysis,
+      activeStageId,
+      activeCombination?.id,
+      selectedRestraintTraceId,
+      stageFocus,
+    )
+  ), [
+    activeCombination?.id,
+    activeStageId,
+    analysis,
+    selectedRestraintTraceId,
+    stageFocus,
+  ])
+  const structuralOverlays = useMemo<StructuralViewerOverlay[] | undefined>(() => {
+    if (!analysis) return undefined
+    if (activeStageId === 'bracing') return stage8Overlays
+    if (!stageFocus) return analysisOverlays
+    const baseOverlays = analysisOverlays ?? []
+    if (baseOverlays.length === 0) {
+      return [{
+        id: `stage-focus-${stageFocus.id}`,
+        label: `Stage ${stageFocus.order} ${stageFocus.label}`,
+        mode: diagramMode,
+        status: 'not_checked',
+        stations: [],
+        stageFocus,
+      }]
+    }
+    return baseOverlays.map((overlay, index) => (
+      index === 0 ? { ...overlay, stageFocus } : overlay
+    ))
+  }, [
+    activeStageId,
+    analysis,
+    analysisOverlays,
+    diagramMode,
+    stage8Overlays,
+    stageFocus,
+  ])
   const capabilities = analysis?.capabilities || capture?.capabilities || []
   const windActionBases = analysis?.wind_action_bases || capture?.wind_action_bases || []
   const selectVerificationStage = (stageId: string) => {
     if (!analysis) return
+    setActiveStageId(stageId)
     const stage = analysis.verification_stages?.find((candidate) => candidate.id === stageId)
     const sheet = analysis.calculation_sheets?.find(
       (candidate) => stage?.sheet_ids.includes(candidate.id),
     )
     if (!sheet) return
     setSelectedSheetId(sheet.id)
+    if (stageId === 'cross_section' || stageId === 'member_stability') {
+      setMemberEvidenceStage(stageId)
+    }
     if (stageId === 'stability' && analysis.stability) {
       setDiagramMode('displacement')
       if (selectedCombinationId !== analysis.stability.combination_id) {
@@ -480,6 +838,19 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
         void selectCombination(governingCombination)
       }
     }
+    if (stageId === 'bracing') {
+      const trace = analysis.member_restraint_traces?.find((candidate) => (
+        candidate.combination_id === selectedCombinationId
+        && candidate.status !== 'not_required'
+      )) || analysis.member_restraint_traces?.find(
+        (candidate) => candidate.status !== 'not_required',
+      )
+      if (trace) {
+        selectRestraintTrace(trace.id)
+        setSelectedSheetId(sheet.id)
+        return
+      }
+    }
     const memberId = sheet.related_member_ids[0]
     const member = analysis.members.find((candidate) => candidate.id === memberId)
     if (member) {
@@ -487,18 +858,33 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
       setSelectedVisualNodeId(member.visual_node_id)
     }
   }
+  const selectMemberEvidenceStage = (
+    stageId: 'cross_section' | 'member_stability',
+  ) => {
+    setActiveStageId(stageId)
+    setMemberEvidenceStage(stageId)
+    const sheet = analysis?.calculation_sheets?.find(
+      (candidate) => candidate.stage_id === stageId,
+    )
+    if (sheet) setSelectedSheetId(sheet.id)
+  }
   const downloadCalculationSheets = () => {
     if (!analysis) return
     const payload = {
       source: analysis.source,
       design_basis: analysis.design_basis,
       wind_action_bases: analysis.wind_action_bases,
-      active_combination: analysis.solver.combination_id,
+      governing_combination: governingAnalysis?.solver.combination_id ?? null,
+      rendered_combination: analysis.solver.combination_id,
       stability: analysis.stability ?? null,
+      connection_checks: analysis.connection_checks ?? [],
       member_restraint_traces: analysis.member_restraint_traces ?? [],
       member_restraint_candidate_checks: analysis.member_restraint_candidate_checks ?? [],
-      verification_stages: analysis.verification_stages ?? [],
+      certification_readiness: governingAnalysis?.certification_readiness ?? null,
+      verification_stages: governingAnalysis?.verification_stages ?? [],
       calculation_sheets: analysis.calculation_sheets ?? [],
+      rendered_verification_stages: analysis.verification_stages ?? [],
+      rendered_calculation_sheets: analysis.calculation_sheets ?? [],
     }
     const url = URL.createObjectURL(new Blob(
       [JSON.stringify(payload, null, 2)],
@@ -506,10 +892,90 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
     ))
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${analysis.source.design_id || 'tertius'}-p399-calculations.json`
+    anchor.download = `${analysis.source.design_id || 'tertius'}-australian-structural-evidence.json`
     anchor.click()
     URL.revokeObjectURL(url)
   }
+  const downloadStructuralReport = useCallback(async (kind: 'pdf' | 'zip') => {
+    if (!governingAnalysisKey || !capture) return
+    const confirmed = window.confirm(
+      'This export is a controlled unsigned draft. It requires review and signature '
+      + 'by an appropriately qualified engineer and is not authority approval. Continue?',
+    )
+    if (!confirmed) return
+    setReportBusy(kind)
+    setReportError(null)
+    setReportStatus(kind === 'pdf' ? 'Building certificate draft...' : 'Building review pack...')
+    try {
+      const path = kind === 'pdf'
+        ? '/active/report/certificate-draft.pdf'
+        : '/active/report/review-pack.zip'
+      const response = await apiFetch(`${serverUrl}${path}`, getAccessToken, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis_key_digest: governingAnalysisKey }),
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as
+          | { detail?: string | { message?: string; blockers?: string[] } }
+          | null
+        const detail = payload?.detail
+        const message = typeof detail === 'string'
+          ? detail
+          : detail?.message
+            ? `${detail.message}${detail.blockers?.length ? ` ${detail.blockers.join(' ')}` : ''}`
+            : `Structural report returned ${response.status}`
+        if (response.status === 409) {
+          setGoverningAnalysisKey('')
+          void loadCapture()
+        }
+        if (response.status === 422) {
+          setEvidenceLevel('investigate')
+          const blockingStageId = governingAnalysis?.certification_readiness?.gates
+            .find((gate) => gate.status !== 'pass')?.stage_ids[0]
+          if (blockingStageId) setActiveStageId(blockingStageId)
+        }
+        throw new Error(message)
+      }
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const disposition = response.headers.get('Content-Disposition') || ''
+      const serverFilename = disposition.match(/filename="([^"]+)"/i)?.[1]
+      const fallbackFilename = `${capture.project_name}-structural-${
+        kind === 'pdf' ? 'certificate-draft.pdf' : 'review-pack.zip'
+      }`
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = serverFilename || fallbackFilename
+      anchor.click()
+      URL.revokeObjectURL(objectUrl)
+      const reportId = response.headers.get('X-Tertius-Structural-Report-Id')
+      setReportStatus(
+        `${kind === 'pdf' ? 'Certificate draft' : 'Review pack'} downloaded as ${
+          serverFilename || fallbackFilename
+        }${
+          reportId ? ` - report ${reportId.slice(0, 16)}` : ''
+        }${analysisCache ? ` - ${analysisCache.engine_version}, analysed ${analysisCache.calculated_at}` : ''}`,
+      )
+    } catch (reportFailure) {
+      setReportStatus(null)
+      setReportError(
+        reportFailure instanceof Error
+          ? reportFailure.message
+          : 'The structural report could not be downloaded',
+      )
+    } finally {
+      setReportBusy(null)
+    }
+  }, [
+    analysisCache,
+    capture,
+    getAccessToken,
+    governingAnalysis,
+    governingAnalysisKey,
+    loadCapture,
+    serverUrl,
+  ])
 
   if (authMode === 'guest') {
     return (
@@ -539,21 +1005,66 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 HANDLE-AUTHORED
               </span>
             )}
+            {capture?.analysis_configuration_revision && (
+              <span
+                className="rounded border border-violet-500/50 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-violet-300"
+                title={capture.analysis_configuration_digest || undefined}
+              >
+                CONFIG R{capture.analysis_configuration_revision}
+              </span>
+            )}
+            {analysis?.action_standard_pack && (
+              <span
+                className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.08em] text-amber-300"
+                title={`${analysis.action_standard_pack.standard_reference} — ${analysis.action_standard_pack.basis}`}
+              >
+                ACTIONS PACK {analysis.action_standard_pack.pack_version}
+              </span>
+            )}
+            {analysisLoadPhase !== 'idle' && (
+              <span className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] text-amber-200">
+                {analysisLoadPhase === 'checking'
+                  ? 'CHECKING SAVED ANALYSIS'
+                  : `CALCULATING & SAVING ANALYSIS${
+                      analysisProgress?.state === 'running'
+                        ? ` · ${number(analysisProgress.elapsed_seconds, 0)}s`
+                        : ''
+                    }`}
+              </span>
+            )}
+            {analysisLoadPhase === 'idle' && analysisCache && (
+              <span
+                className={`rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.12em] ${
+                  analysisCache.status === 'hit'
+                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                    : 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300'
+                }`}
+                title={`Structural engine ${analysisCache.engine_version}; cache ${analysisCache.key_digest}; original calculation ${number(analysisCache.calculation_duration_seconds, 1)} seconds`}
+              >
+                {analysisCache.status === 'hit'
+                  ? 'SAVED ANALYSIS'
+                  : `CALCULATED & SAVED ${number(analysisCache.calculation_duration_seconds, 1)}s`}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             {analysis
               ? 'Active-project geometry with PyNite member demand and signed diagrams'
-              : 'Active-project geometry with statically parsed structural connectivity'}
+              : 'Active-project compiled mechanical topology; analysis context required'}
           </p>
         </div>
-        {analysis && (
+        {analysis && evidenceLevel !== 'overview' && (
           <div className="ml-auto flex items-center gap-2">
-            <label className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
-              Combination
+            <label
+              className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500"
+              title="Selects the loads, reactions, restraints, and ribbons rendered in 3D. Verification continues to use its governing combinations."
+            >
+              Rendered combination
               <select
-                aria-label="Load combination"
+                aria-label="Rendered load combination"
                 value={selectedCombinationId}
                 onChange={(event) => void selectCombination(event.target.value)}
+                disabled={analysisLoadPhase !== 'idle'}
                 className="ml-2 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs normal-case tracking-normal text-slate-200"
               >
                 {analysis.load_combinations.map((combination) => (
@@ -561,8 +1072,55 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {combination.id} · {combination.label}
                   </option>
                 ))}
+                {unavailableCombinations.length > 0 && (
+                  <optgroup label="Unavailable — missing inputs">
+                    {unavailableCombinations.map((combination) => (
+                      <option
+                        key={`unavailable-${combination.family}-${combination.id}`}
+                        value={`unavailable:${combination.family}:${combination.id}`}
+                        disabled
+                      >
+                        {combination.id} · unavailable — {combination.reason}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
+            {unavailableCombinations.length > 0 && (
+              <details className="relative">
+                <summary className="cursor-pointer list-none rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/15">
+                  {unavailableCombinations.length} unavailable
+                </summary>
+                <div className="absolute right-0 z-50 mt-2 max-h-[70vh] w-96 overflow-y-auto rounded border border-amber-500/40 bg-slate-950 p-3 text-xs shadow-2xl shadow-black/50">
+                  <p className="font-semibold text-amber-200">
+                    Combinations waiting for required actions
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                    These formulas are owned by Tertius, but remain disabled until
+                    their inputs can be generated from the project model.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {unavailableCombinations.map((combination) => (
+                      <div
+                        key={`unavailable-detail-${combination.family}-${combination.id}`}
+                        className="border-t border-slate-800 pt-2 first:border-0 first:pt-0"
+                      >
+                        <p className="font-mono font-semibold text-slate-200">
+                          {combination.id}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                          {combination.label}
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-amber-100/80">
+                          {combination.reason}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </details>
+            )}
             {analysis.solver.combination_selection === 'governing_working_envelope' && (
               <span className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-200">
                 Governing working envelope
@@ -611,32 +1169,83 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             )}
           </div>
         )}
-        <div className="hidden items-center gap-2 xl:flex">
-          {capabilities.map((capability) => (
-            <span
-              key={capability.id}
-              title={capability.detail}
-              className={`rounded border px-2 py-1 text-[10px] font-semibold ${capabilityStyle[capability.status]}`}
-            >
-              {capability.label}
-            </span>
-          ))}
-        </div>
+        {evidenceLevel === 'audit' && (
+          <div className="hidden items-center gap-2 xl:flex">
+            {capabilities.map((capability) => (
+              <span
+                key={capability.id}
+                title={capability.detail}
+                className={`rounded border px-2 py-1 text-[10px] font-semibold ${capabilityStyle[capability.status]}`}
+              >
+                {capability.label}
+              </span>
+            ))}
+          </div>
+        )}
       </header>
 
-      <div className="shrink-0 border-b border-amber-500/30 bg-amber-950/40 px-5 py-2 text-xs font-semibold text-amber-200">
-        {analysis
-          ? analysis.stability
-            ? 'P399 PROCESS ACTIVE — LINEAR/P-DELTA DEMAND IS VISIBLE; ASSUMPTIONS AND INCOMPLETE VERIFICATION STAGES REMAIN'
-            : 'P399 PROCESS ACTIVE — ELASTIC DEMAND IS VISIBLE; INCOMPLETE VERIFICATION STAGES REMAIN BLOCKED'
+      <div className={`shrink-0 border-b px-5 py-2 text-xs font-semibold ${
+        governingAnalysis?.certification_readiness?.ready_for_certificate_draft
+          ? 'border-emerald-500/30 bg-emerald-950/40 text-emerald-200'
+          : 'border-amber-500/30 bg-amber-950/40 text-amber-200'
+      }`}>
+        {governingAnalysis?.certification_readiness
+          ? governingAnalysis.certification_readiness.ready_for_certificate_draft
+            ? 'AUSTRALIAN TECHNICAL GATES PASS — READY FOR CONTROLLED CERTIFICATE DRAFT AND ENGINEER REVIEW'
+            : `AUSTRALIAN VERIFICATION ACTIVE — ${governingAnalysis.certification_readiness.blocking_gate_ids.length} CERTIFICATION GATE(S) OPEN; ${governingAnalysis.certification_readiness.ready_for_engineering_review ? 'DRAFT ENGINEERING REVIEW EVIDENCE IS AVAILABLE' : 'ANALYSIS IS INCOMPLETE'}`
           : 'LOAD PATH CAPTURE ONLY — CAPACITY, CONNECTIONS, ANCHORS, AND CONCRETE ARE NOT CHECKED'}
       </div>
 
-      <StructuralWindBasisPanel bases={windActionBases} />
+      {evidenceLevel === 'audit' && <StructuralWindBasisPanel bases={windActionBases} />}
 
       <div className="flex min-h-0 flex-1">
         <aside className="w-[27rem] shrink-0 overflow-y-auto border-r border-slate-800 bg-slate-950">
-          {isLoading && <div className="p-5 text-sm text-slate-400">Parsing active design…</div>}
+          {isLoading && (
+            <div className="p-5 text-sm text-slate-400">
+              <div>
+                {analysisLoadPhase === 'calculating'
+                  ? 'Calculating structural analysis…'
+                  : 'Loading saved structural analysis…'}
+              </div>
+              {analysisLoadPhase === 'calculating' && (
+                <div className="mt-2 space-y-2 text-xs leading-relaxed text-slate-500">
+                  <div className="font-semibold text-amber-200">
+                    {analysisProgress?.state === 'running'
+                      ? analysisProgress.stage_label
+                      : 'Starting the structural calculation'}
+                  </div>
+                  <div>
+                    Elapsed:{' '}
+                    {number(analysisProgress?.elapsed_seconds ?? 0, 0)} seconds
+                    {analysisProgress?.completed_units != null &&
+                    analysisProgress.total_units != null
+                      ? ` · ${analysisProgress.completed_units}/${analysisProgress.total_units}`
+                      : ''}
+                  </div>
+                  {analysisProgress?.completed_units != null &&
+                    analysisProgress.total_units != null &&
+                    analysisProgress.total_units > 0 && (
+                      <div className="h-1.5 overflow-hidden rounded bg-slate-800">
+                        <div
+                          className="h-full bg-amber-400 transition-[width] duration-300"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              (analysisProgress.completed_units /
+                                analysisProgress.total_units) *
+                                100,
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                  <div>
+                    The result will be stored and reused when the workbench is reopened.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {error && (
             <div className="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
               <div className="font-semibold">Structural declaration unavailable</div>
@@ -650,13 +1259,267 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             </div>
           )}
           {capture && (
-            <div className="space-y-5 p-4">
+            <>
+              <div className="p-4">
+                <section
+                  aria-label="Structural verification summary"
+                  className={`rounded border p-4 ${verificationStyle[compactOverallStatus]}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] opacity-75">
+                        Structural verification summary
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-100">
+                        {!analysis
+                          ? 'No calculated result available'
+                          : compactFailureCount > 0
+                          ? `${compactFailureCount} calculated failure${compactFailureCount === 1 ? '' : 's'}`
+                          : compactUnsupportedCount > 0
+                            ? `${compactUnsupportedCount} unsupported check${compactUnsupportedCount === 1 ? '' : 's'}`
+                            : 'No calculated structural failures'}
+                      </div>
+                    </div>
+                    <span className="rounded border border-current/30 px-2 py-1 font-mono text-[9px] font-bold uppercase">
+                      {compactOverallStatus.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2" role="list">
+                    {compactVerificationGroups.map((group) => (
+                      <div
+                        key={group.id}
+                        role="listitem"
+                        className={`rounded border p-2 ${verificationStyle[group.status]}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold text-slate-100">
+                            {group.label}
+                          </span>
+                          <span className="font-mono text-[8px] font-bold uppercase">
+                            {group.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-1 font-mono text-[10px]">
+                          {group.passed} pass
+                        </div>
+                        {(group.failed > 0 || group.unsupported > 0 || group.notApplicable > 0 || group.open > 0) && (
+                          <div className="mt-1 text-[8px] opacity-80">
+                            {[
+                              group.failed > 0 ? `${group.failed} fail` : '',
+                              group.unsupported > 0 ? `${group.unsupported} unsupported` : '',
+                              group.notApplicable > 0 ? `${group.notApplicable} not applicable` : '',
+                              group.open > 0 ? `${group.open} not checked` : '',
+                            ].filter(Boolean).join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {governingAnalysis?.certification_readiness && (
+                    <div className="mt-3 flex items-center justify-between gap-3 text-[9px] text-slate-300">
+                      <span>
+                        {governingAnalysis.certification_readiness.ready_for_engineering_review
+                          ? 'Engineering review evidence is available.'
+                          : `${governingAnalysis.certification_readiness.blocking_gate_ids.length} engineering gate(s) remain open.`}
+                      </span>
+                      <span className="shrink-0 font-mono uppercase text-slate-400">
+                        {governingAnalysis.certification_readiness.document_status.replaceAll('_', ' ')}
+                      </span>
+                    </div>
+                  )}
+                  {governingAnalysis?.certification_readiness?.ready_for_certificate_draft && (
+                    <div className="mt-3 rounded border border-emerald-500/30 bg-slate-950/50 p-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.14em] text-emerald-200">
+                        Controlled document export
+                      </div>
+                      <p className="mt-1 text-[9px] leading-relaxed text-slate-400">
+                        Unsigned drafts tied to this exact saved analysis; engineer review and signature are required.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={isLoading || reportBusy !== null || !governingAnalysisKey}
+                          onClick={() => void downloadStructuralReport('pdf')}
+                          className="rounded border border-emerald-500/50 bg-emerald-950/30 px-2 py-1.5 text-[9px] font-semibold text-emerald-100 hover:bg-emerald-950/60 disabled:opacity-50"
+                        >
+                          {reportBusy === 'pdf' ? 'Building PDF...' : 'Download certificate draft PDF'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoading || reportBusy !== null || !governingAnalysisKey}
+                          onClick={() => void downloadStructuralReport('zip')}
+                          className="rounded border border-cyan-500/50 bg-cyan-950/30 px-2 py-1.5 text-[9px] font-semibold text-cyan-100 hover:bg-cyan-950/60 disabled:opacity-50"
+                        >
+                          {reportBusy === 'zip' ? 'Building pack...' : 'Download full review pack'}
+                        </button>
+                      </div>
+                      {(reportStatus || reportError) && (
+                        <div className={`mt-2 text-[9px] ${reportError ? 'text-red-300' : 'text-cyan-200'}`}>
+                          {reportError || reportStatus}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div
+                    role="group"
+                    aria-label="Evidence detail level"
+                    className="mt-4 grid grid-cols-3 gap-1 rounded border border-slate-700 bg-slate-950/60 p-1"
+                  >
+                    {([
+                      ['overview', 'Overview', 'High-level governing pass/fail only'],
+                      ['investigate', 'Investigate', 'Open gates and actionable issues'],
+                      ['audit', 'Audit', 'Complete calculation evidence'],
+                    ] as const).map(([level, label, title]) => (
+                      <button
+                        key={level}
+                        type="button"
+                        aria-pressed={evidenceLevel === level}
+                        aria-controls={level === 'overview' ? undefined : 'structural-detailed-evidence'}
+                        title={title}
+                        onClick={() => setEvidenceLevel(level)}
+                        className={`rounded px-2 py-2 text-[10px] font-semibold transition ${
+                          evidenceLevel === level
+                            ? 'bg-cyan-500/20 text-cyan-100'
+                            : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+              {evidenceLevel === 'investigate' && governingAnalysis && (
+                <div
+                  id="structural-detailed-evidence"
+                  className="space-y-3 border-t border-slate-800 p-4"
+                >
+                  <section className="rounded border border-cyan-500/30 bg-cyan-950/20 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                          Investigation view
+                        </div>
+                        <p className="mt-1 text-[10px] leading-relaxed text-slate-300">
+                          Only governing gates and issues needing attention are mounted here.
+                          The rendered combination above changes the 3D telemetry, not this summary.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded border border-cyan-500/30 px-2 py-1 font-mono text-[9px] text-cyan-200">
+                        {openCertificationGates.length + investigationIssues.length} items
+                      </span>
+                    </div>
+                  </section>
+
+                  {openCertificationGates.length === 0 && investigationIssues.length === 0 ? (
+                    <section className={`rounded border p-3 ${verificationStyle.pass}`}>
+                      <div className="text-xs font-semibold">No open verification items</div>
+                      <p className="mt-1 text-[10px] opacity-80">
+                        The governing calculation has no open gates or recorded issues. Use Audit
+                        only when the complete calculation trail is required.
+                      </p>
+                    </section>
+                  ) : (
+                    <>
+                      {openCertificationGates.length > 0 && (
+                        <section className="space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                            Open gates · {openCertificationGates.length}
+                          </div>
+                          {openCertificationGates.map((gate) => (
+                            <button
+                              key={gate.id}
+                              type="button"
+                              onClick={() => selectVerificationStage(gate.stage_ids[0] || '')}
+                              className={`w-full rounded border p-3 text-left ${verificationStyle[gate.status]}`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-semibold text-slate-100">
+                                  {gate.order}. {gate.label}
+                                </span>
+                                <span className="font-mono text-[9px] font-bold uppercase">
+                                  {gate.status.replace('_', ' ')}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[10px] leading-relaxed opacity-80">
+                                {gate.summary}
+                              </p>
+                            </button>
+                          ))}
+                        </section>
+                      )}
+
+                      {investigationIssues.length > 0 && (
+                        <section className="space-y-2">
+                          <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                            Actionable issues · {investigationIssues.length}
+                          </div>
+                          {investigationIssues.map((issue) => (
+                            <button
+                              key={issue.id}
+                              type="button"
+                              onClick={() => selectVerificationStage(issue.stage_id)}
+                              className={`w-full rounded border p-3 text-left ${certificationIssueStyle[issue.kind]}`}
+                            >
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="text-xs font-semibold text-slate-100">
+                                  {issue.title}
+                                </span>
+                                <span className="font-mono text-[9px] font-bold uppercase">
+                                  {issue.count} · {certificationIssueLabel[issue.kind]}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-[10px] leading-relaxed opacity-85">
+                                {issue.detail}
+                              </p>
+                              <p className="mt-2 text-[10px] font-semibold text-slate-100">
+                                Next: {issue.next_action}
+                              </p>
+                              {issue.affected_ids.length > 0 && (
+                                <p className="mt-1 truncate font-mono text-[9px] opacity-70">
+                                  {issue.affected_ids.join(', ')}
+                                </p>
+                              )}
+                            </button>
+                          ))}
+                        </section>
+                      )}
+                    </>
+                  )}
+
+                  {attentionStageCount > openCertificationGates.length && (
+                    <p className="text-[9px] leading-relaxed text-slate-500">
+                      {attentionStageCount} verification stages contain non-pass evidence. Open Audit
+                      for the complete stage and calculation-sheet trail.
+                    </p>
+                  )}
+                </div>
+              )}
+              {evidenceLevel === 'audit' && (
+                <div
+                  id="structural-detailed-evidence"
+                  className="space-y-5 border-t border-slate-800 p-4"
+                >
+              {analysis && (
+                <section className="rounded border border-violet-500/30 bg-violet-950/20 p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-violet-300">
+                    Complete audit · rendered combination
+                  </div>
+                  <p className="mt-1 break-all font-mono text-[10px] text-slate-200">
+                    {analysis.solver.combination_id}
+                  </p>
+                  <p className="mt-1 text-[9px] leading-relaxed text-slate-400">
+                    Diagrams and combination-specific sheets below follow this rendered case.
+                    Governing certification status remains fixed to the automatic verification result.
+                  </p>
+                </section>
+              )}
               {analysis?.design_basis && (
                 <section className="rounded border border-cyan-500/40 bg-cyan-950/20 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-                        Working design framework
+                        Primary Australian compliance framework
                       </div>
                       <div className="mt-1 text-sm font-semibold text-slate-100">
                         {analysis.design_basis.framework_label}
@@ -671,6 +1534,104 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {analysis.design_basis.jurisdiction} ·{' '}
                     {analysis.design_basis.analysis_method}
                   </p>
+                  {analysis.design_basis.supplemental_methods.length > 0 && (
+                    <div className="mt-2 rounded border border-slate-700 bg-slate-950/60 px-2 py-1.5 text-[9px] text-slate-400">
+                      Supplemental method: {analysis.design_basis.supplemental_methods
+                        .map((method) => `${method.id} — ${method.role}`)
+                        .join('; ')}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {governingCertificationReadiness && (
+                <section className={`rounded border p-3 ${
+                  governingCertificationReadiness.ready_for_certificate_draft
+                    ? verificationStyle.pass
+                    : verificationStyle.blocked
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.18em] opacity-80">
+                        Australian certification readiness
+                      </div>
+                      <div className="mt-1 text-xs font-semibold text-slate-100">
+                        {governingCertificationReadiness.draft_document_label}
+                      </div>
+                    </div>
+                    <span className="font-mono text-[9px] uppercase">
+                      {governingCertificationReadiness.document_status.replaceAll('_', ' ')}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[10px] leading-relaxed text-slate-300">
+                    {governingCertificationReadiness.conclusion}
+                  </p>
+                  <div className={`mt-3 rounded border p-2 ${
+                    governingCertificationReadiness.model_coverage.status === 'complete'
+                      ? verificationStyle.pass
+                      : verificationStyle.fail
+                  }`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] font-semibold">PyNite model coverage</span>
+                      <span className="font-mono text-[8px] uppercase">
+                        {governingCertificationReadiness.model_coverage.solved_member_count}/
+                        {governingCertificationReadiness.model_coverage.compiled_member_count} members
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[9px] leading-relaxed opacity-80">
+                      {governingCertificationReadiness.model_coverage.summary}
+                    </p>
+                  </div>
+                  {governingCertificationReadiness.issues.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <div className="text-[9px] font-bold uppercase tracking-[0.16em] text-slate-400">
+                        What is actually blocking certification
+                      </div>
+                      {governingCertificationReadiness.issues.map((issue) => (
+                        <button
+                          key={issue.id}
+                          type="button"
+                          onClick={() => selectVerificationStage(issue.stage_id)}
+                          className={`w-full rounded border p-2 text-left ${certificationIssueStyle[issue.kind]}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="text-[9px] font-semibold leading-snug">
+                              {issue.title}
+                            </span>
+                            <span className="shrink-0 font-mono text-[8px] uppercase">
+                              {issue.count} · {issue.owner}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[8px] font-bold uppercase tracking-wide opacity-70">
+                            {certificationIssueLabel[issue.kind]} · Stage {issue.stage_id.replaceAll('_', ' ')}
+                          </div>
+                          <p className="mt-1 text-[9px] leading-relaxed opacity-85">
+                            {issue.detail}
+                          </p>
+                          <p className="mt-1 text-[9px] leading-relaxed text-slate-300">
+                            Next: {issue.next_action}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {governingCertificationReadiness.gates.map((gate) => (
+                      <div
+                        key={gate.id}
+                        title={gate.summary}
+                        className={`rounded border p-2 ${verificationStyle[gate.status]}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] font-semibold">{gate.order}. {gate.label}</span>
+                          <span className="font-mono text-[8px] uppercase">
+                            {gate.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-[8px] opacity-70">{gate.primary_reference}</div>
+                      </div>
+                    ))}
+                  </div>
                 </section>
               )}
 
@@ -678,14 +1639,14 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 <section>
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                      P399 verification spine
+                      Australian verification detail
                     </div>
                     <button
                       type="button"
                       onClick={downloadCalculationSheets}
                       className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[9px] font-semibold text-slate-300 hover:border-cyan-500 hover:text-cyan-200"
                     >
-                      Export calculation JSON
+                      Export engineering-review JSON
                     </button>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2">
@@ -696,7 +1657,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         title={stage.summary}
                         onClick={() => selectVerificationStage(stage.id)}
                         className={`rounded border p-2 text-left ${verificationStyle[stage.status]} ${
-                          selectedCalculationSheet?.stage_id === stage.id
+                          activeStageId === stage.id
                             ? 'ring-1 ring-cyan-300'
                             : ''
                         }`}
@@ -709,7 +1670,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             {stage.status.replace('_', ' ')}
                           </span>
                         </div>
-                        <div className="mt-1 text-[8px] opacity-70">{stage.p399_reference}</div>
+                        <div className="mt-1 text-[8px] opacity-70">{stage.primary_reference}</div>
                       </button>
                     ))}
                   </div>
@@ -737,8 +1698,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                     {selectedCalculationSheet.purpose}
                   </p>
                   <div className="mt-2 rounded bg-slate-950/60 px-2 py-1 font-mono text-[9px] text-slate-400">
-                    {selectedCalculationSheet.p399_reference}
+                    {selectedCalculationSheet.primary_reference}
                   </div>
+                  {selectedCalculationSheet.supplemental_references.length > 0 && (
+                    <div className="mt-1 rounded bg-slate-950/40 px-2 py-1 text-[9px] text-slate-500">
+                      Supplemental: {selectedCalculationSheet.supplemental_references.join('; ')}
+                    </div>
+                  )}
                   {selectedCalculationSheet.inputs.length > 0 && (
                     <div className="mt-3">
                       <div className="text-[9px] font-bold uppercase tracking-wide opacity-70">
@@ -873,7 +1839,12 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                       >
                         <div className="flex justify-between gap-2">
                           <span className="font-semibold text-slate-200">{check.candidate_id}</span>
-                          <span className="font-mono uppercase text-slate-300">{check.status}</span>
+                          <span className="font-mono uppercase text-slate-300">
+                            {selectedRestraintTrace.effective_restraint_candidate_ids
+                              .includes(check.candidate_id)
+                              ? check.status
+                              : 'located — not credited'}
+                          </span>
                         </div>
                         <div className="mt-1 font-mono text-cyan-200">
                           P* {check.required_force_kN === null
@@ -883,6 +1854,11 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             ? '—'
                             : `${number(check.available_force_kN, 4)} kN`}
                           {' · '}stiffness {check.stiffness_status}
+                        </div>
+                        <div className="mt-1 text-[8px] uppercase tracking-wide text-slate-500">
+                          Demand {check.demand_model === 'as_nzs_4600_2005_4_3_2_flange_force'
+                            ? 'AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3 · 2.5% critical flange force'
+                            : check.demand_model.replaceAll('_', ' ')}
                         </div>
                         <div className="mt-2 grid grid-cols-2 gap-1 font-mono text-[8px] uppercase">
                           <span className={check.identity_status === 'pass'
@@ -926,6 +1902,13 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </ul>
                         )}
                         <p className="mt-1 text-amber-100">{check.anchorage_basis}</p>
+                        {(check.anchorage_blockers?.length ?? 0) > 0 && (
+                          <ul className="mt-1 space-y-1 text-[9px] text-amber-200">
+                            {check.anchorage_blockers?.map((blocker) => (
+                              <li key={blocker}>• {blocker}</li>
+                            ))}
+                          </ul>
+                        )}
                         {check.anchorage_component_ids.length > 0 && (
                           <p className="mt-1 break-all font-mono text-[8px] text-slate-500">
                             Path {check.anchorage_component_ids.join(' → ')}
@@ -991,6 +1974,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                   {capture.connections.map((connection) => {
                     const from = componentsById.get(connection.from_component_id)
                     const to = componentsById.get(connection.to_component_id)
+                    const check = connectionChecksById.get(connection.id)
                     return (
                       <button
                         key={connection.id}
@@ -998,7 +1982,16 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         onClick={() => setSelectedVisualNodeId(to?.visual_node_id || '')}
                         className="w-full rounded border border-slate-800 bg-slate-900/70 p-3 text-left hover:border-slate-600"
                       >
-                        <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-xs font-semibold text-slate-200">{connection.label}</div>
+                          {check && (
+                            <span className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase ${
+                              verificationStyle[check.status]
+                            }`}>
+                              {check.status.replace('_', ' ')}
+                            </span>
+                          )}
+                        </div>
                         <div className="mt-1 text-[10px] text-cyan-300">
                           {from?.label || connection.from_component_id} → {to?.label || connection.to_component_id}
                         </div>
@@ -1007,6 +2000,246 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (id) => componentsById.get(id)?.label || id,
                           ).join(', ') || 'direct declaration'} · {connection.transfers.join(', ')}
                         </div>
+                        {check && (
+                          <div className="mt-2 border-t border-slate-800 pt-2">
+                            <div className="grid grid-cols-3 gap-2 font-mono text-[9px] text-slate-300">
+                              <span>N* {number(check.axial_demand_kN, 3)} kN</span>
+                              <span>V* {number(check.shear_demand_kN, 3)} kN</span>
+                              <span>M* {number(check.moment_demand_kNm, 3)} kN·m</span>
+                            </div>
+                            {(check.design_axial_capacity_kN !== null
+                              || check.design_shear_capacity_kN !== null
+                              || check.design_moment_capacity_kNm !== null) && (
+                              <div className="mt-1 grid grid-cols-3 gap-2 font-mono text-[9px] text-emerald-300">
+                                <span>ϕNn {check.design_axial_capacity_kN === null
+                                  ? '—'
+                                  : `${number(check.design_axial_capacity_kN, 3)} kN`}</span>
+                                <span>ϕVn {check.design_shear_capacity_kN === null
+                                  ? '—'
+                                  : `${number(check.design_shear_capacity_kN, 3)} kN`}</span>
+                                <span>ϕMn {check.design_moment_capacity_kNm === null
+                                  ? '—'
+                                  : `${number(check.design_moment_capacity_kNm, 3)} kN·m`}</span>
+                              </div>
+                            )}
+                            <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-slate-500">
+                              <span>{check.pack_id} v{check.pack_version}</span>
+                              <span className={
+                                check.identity_status === 'pass'
+                                  ? 'text-emerald-400'
+                                  : check.identity_status === 'fail'
+                                    ? 'text-red-400'
+                                    : 'text-amber-300'
+                              }>
+                                Identity {check.identity_status.replace('_', ' ')}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-[9px] leading-relaxed text-slate-500">
+                              {check.governing_utilisation !== null
+                                ? `Governing utilisation ${number(check.governing_utilisation, 3)}.`
+                                : `Resistance unavailable—demand is visible but this joint cannot pass. ${
+                                  check.assumptions[1] || check.assumptions[0] || ''
+                                }`}
+                            </p>
+                            {check.governing_combination_id && (
+                              <p className="mt-1 font-mono text-[8px] text-cyan-300">
+                                Governing {check.governing_combination_id}
+                                {check.governing_member_id
+                                  ? ` · ${check.governing_member_id}`
+                                  : ''}
+                              </p>
+                            )}
+                            {check.anchor_group && (
+                              <div className={`mt-2 rounded border p-2 ${
+                                check.anchor_group.status === 'pass'
+                                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                                  : check.anchor_group.status === 'fail'
+                                    ? 'border-red-500/40 bg-red-500/10'
+                                    : 'border-amber-500/30 bg-amber-500/5'
+                              }`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[9px] font-bold text-slate-200">
+                                    {check.anchor_group.anchor_count}× {check.anchor_group.anchor_part_number}
+                                  </span>
+                                  <span className={`font-mono text-[8px] uppercase ${
+                                    check.anchor_group.status === 'pass'
+                                      ? 'text-emerald-300'
+                                      : check.anchor_group.status === 'fail'
+                                        ? 'text-red-300'
+                                        : 'text-amber-300'
+                                  }`}>
+                                    Anchor {check.anchor_group.status}
+                                  </span>
+                                </div>
+                                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[8px] text-slate-400">
+                                  <span>
+                                    Uplift {number(check.anchor_group.tension_demand_kN, 3)} / {
+                                      check.anchor_group.tension_capacity_kN === null
+                                        ? '—'
+                                        : number(check.anchor_group.tension_capacity_kN, 3)
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Shear {number(check.anchor_group.shear_demand_kN, 3)} / {
+                                      check.anchor_group.shear_capacity_kN === null
+                                        ? '—'
+                                        : number(check.anchor_group.shear_capacity_kN, 3)
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Embed {check.anchor_group.installed_effective_embedment_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.installed_effective_embedment_mm, 1)} mm · {
+                                      check.anchor_group.embedment_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Edge {check.anchor_group.minimum_edge_distance_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.minimum_edge_distance_mm, 1)} mm · {
+                                      check.anchor_group.edge_distance_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Spacing {check.anchor_group.minimum_spacing_mm === null
+                                      ? '—'
+                                      : number(check.anchor_group.minimum_spacing_mm, 1)} mm · {
+                                      check.anchor_group.spacing_status.replace('_', ' ')
+                                    }
+                                  </span>
+                                  <span>
+                                    Interaction {check.anchor_group.interaction_utilisation === null
+                                      ? '—'
+                                      : number(check.anchor_group.interaction_utilisation, 3)}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[8px] text-slate-500">
+                                  Substrate {check.anchor_group.substrate_type || 'not declared'} · {
+                                    check.anchor_group.substrate_status
+                                  } · effective group count {
+                                    number(check.anchor_group.effective_anchor_count, 1)
+                                  }
+                                </p>
+                                {check.anchor_group.blockers.length > 0 && (
+                                  <ul className="mt-1 space-y-1 text-[8px] text-amber-200">
+                                    {check.anchor_group.blockers.map((blocker) => (
+                                      <li key={blocker}>• {blocker}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
+                            {check.bolted_sheet_interface && (
+                              <div className={`mt-2 rounded border p-2 ${
+                                check.bolted_sheet_interface.status === 'pass'
+                                  ? 'border-emerald-500/30 bg-emerald-500/5'
+                                  : check.bolted_sheet_interface.status === 'fail'
+                                    ? 'border-red-500/40 bg-red-500/10'
+                                    : 'border-amber-500/30 bg-amber-500/5'
+                              }`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-mono text-[9px] font-bold text-slate-200">
+                                    {check.bolted_sheet_interface.connected_sheet_part_number || 'Cee web'} / {
+                                      check.bolted_sheet_interface.bolt_count
+                                    }x {check.bolted_sheet_interface.bolt_part_number}
+                                  </span>
+                                  <span className={`font-mono text-[8px] uppercase ${
+                                    check.bolted_sheet_interface.status === 'pass'
+                                      ? 'text-emerald-300'
+                                      : check.bolted_sheet_interface.status === 'fail'
+                                        ? 'text-red-300'
+                                        : 'text-amber-300'
+                                  }`}>
+                                    Web interface {check.bolted_sheet_interface.status}
+                                  </span>
+                                </div>
+                                <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[8px] text-slate-400">
+                                  <span>
+                                    Resultant {number(
+                                      check.bolted_sheet_interface.resultant_shear_demand_kN,
+                                      3,
+                                    )} kN
+                                  </span>
+                                  <span>
+                                    Governing capacity {
+                                      check.bolted_sheet_interface.governing_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.governing_capacity_kN,
+                                          3,
+                                        )
+                                    } kN
+                                  </span>
+                                  <span>
+                                    Bolt shear {
+                                      check.bolted_sheet_interface.design_bolt_shear_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_bolt_shear_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.bolt_shear_status}
+                                  </span>
+                                  <span>
+                                    Sheet bearing {
+                                      check.bolted_sheet_interface.design_sheet_bearing_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_sheet_bearing_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.sheet_bearing_status}
+                                  </span>
+                                  <span>
+                                    Sheet tearout {
+                                      check.bolted_sheet_interface.design_sheet_tearout_capacity_kN === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.design_sheet_tearout_capacity_kN,
+                                          3,
+                                        )
+                                    } kN · {check.bolted_sheet_interface.sheet_tearout_status}
+                                  </span>
+                                  <span>
+                                    Utilisation {
+                                      check.bolted_sheet_interface.governing_utilisation === null
+                                        ? '—'
+                                        : number(
+                                          check.bolted_sheet_interface.governing_utilisation,
+                                          3,
+                                        )
+                                    }
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[8px] text-slate-500">
+                                  Hole {check.bolted_sheet_interface.hole_diameter_mm === null
+                                    ? '—'
+                                    : number(check.bolted_sheet_interface.hole_diameter_mm, 1)} mm · {
+                                    check.bolted_sheet_interface.hole_status
+                                  } · spacing {check.bolted_sheet_interface.spacing_status} · edge {
+                                    check.bolted_sheet_interface.edge_distance_status
+                                  }
+                                </p>
+                                <p className={`mt-1 text-[8px] ${
+                                  check.bolted_sheet_interface.fixture_capacity_status === 'verified'
+                                    ? 'text-emerald-300'
+                                    : 'text-amber-200'
+                                }`}>
+                                  Fixture {
+                                    check.bolted_sheet_interface.fixture_part_number || 'not resolved'
+                                  } · plate {check.bolted_sheet_interface.fixture_capacity_status.replace('_', ' ')}
+                                </p>
+                                {check.bolted_sheet_interface.blockers.length > 0 && (
+                                  <ul className="mt-1 space-y-1 text-[8px] text-amber-200">
+                                    {check.bolted_sheet_interface.blockers.map((blocker) => (
+                                      <li key={blocker}>• {blocker}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </button>
                     )
                   })}
@@ -1055,10 +2288,45 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         </dd>
                       </div>
                     )}
+                    {firstLoad.external_pressure_coefficient !== null
+                      && firstLoad.external_pressure_coefficient !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">External Cp,e</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.external_pressure_coefficient)}
+                        </dd>
+                      </div>
+                    )}
+                    {firstLoad.internal_pressure_coefficient !== null
+                      && firstLoad.internal_pressure_coefficient !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">Internal Cp,i</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.internal_pressure_coefficient)}
+                        </dd>
+                      </div>
+                    )}
+                    {firstLoad.area_reduction_factor !== null
+                      && firstLoad.area_reduction_factor !== undefined && (
+                      <div>
+                        <dt className="text-slate-500">Area factor Ka</dt>
+                        <dd className="font-mono">
+                          {number(firstLoad.area_reduction_factor)}
+                        </dd>
+                      </div>
+                    )}
                     <div className="col-span-2">
                       <dt className="text-slate-500">Direction</dt>
                       <dd className="font-mono">{vector(firstLoad.direction)}</dd>
                     </div>
+                    {firstLoad.surface_action_pack_id && (
+                      <div className="col-span-2">
+                        <dt className="text-slate-500">Tertius surface-action pack</dt>
+                        <dd className="break-all font-mono text-[10px] text-cyan-200">
+                          {firstLoad.surface_action_pack_id}
+                        </dd>
+                      </div>
+                    )}
                   </dl>
                   <p className="mt-3 border-t border-indigo-500/20 pt-2 text-[10px] text-slate-400">
                     {firstLoad.provenance}
@@ -1238,7 +2506,10 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             (candidate) => candidate.member_id === member.id,
                           ))
                         : analysis.serviceability_checks.find(
-                          (candidate) => candidate.member_id === member.id,
+                          (candidate) => (
+                            candidate.member_id === member.id
+                            || candidate.analytical_member_ids?.includes(member.id)
+                          ),
                         )
                       return (
                         <button
@@ -1418,11 +2689,100 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Candidate strap capacity</dt>
+                          <dt className="text-slate-500">Strap design capacity</dt>
                           <dd className="font-mono text-slate-200">
                             {selectedTensionCheck.tension_capacity_kN == null
                               ? 'Unverified'
                               : `${number(selectedTensionCheck.tension_capacity_kN, 3)} kN`}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {selectedTensionCheck.member_capacity_status.replace('_', ' ')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">End connection capacity</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.end_connection_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.end_connection_capacity_kN, 3)} kN`}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {selectedTensionCheck.connection_capacity_status.replace('_', ' ')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Gross / net area</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.gross_area_mm2 == null
+                              || selectedTensionCheck.net_area_mm2 == null
+                              ? 'Unspecified'
+                              : `${number(selectedTensionCheck.gross_area_mm2, 2)} / ${number(
+                                  selectedTensionCheck.net_area_mm2,
+                                  2,
+                                )} mm²`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Gross yield / net fracture</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.gross_yield_capacity_kN == null
+                              || selectedTensionCheck.net_fracture_capacity_kN == null
+                              ? 'Unverified'
+                              : `${number(selectedTensionCheck.gross_yield_capacity_kN, 3)} / ${number(
+                                  selectedTensionCheck.net_fracture_capacity_kN,
+                                  3,
+                                )} kN`}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Bearing / tear-out capacity</dt>
+                          <dd className="font-mono text-slate-200">
+                            {[
+                              selectedTensionCheck.end_bearing_capacity_kN,
+                              selectedTensionCheck.end_tearout_capacity_kN,
+                            ].map((value) => (
+                              value == null ? '—' : number(value, 3)
+                            )).join(' / ')} kN
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Installed fastener product</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.end_fastener_part_numbers.join(', ') || 'Unidentified'}
+                          </dd>
+                          <dd className="mt-0.5 font-mono text-[9px] uppercase text-violet-300">
+                            {(selectedTensionCheck.fastener_evidence_status || 'unverified').replace('_', ' ')} evidence
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Tested shear / required 1.25 Vb</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedTensionCheck.fastener_tested_single_shear_strength_kN == null
+                              || selectedTensionCheck.fastener_required_single_shear_strength_kN == null
+                              ? 'Not qualified'
+                              : `${number(
+                                  selectedTensionCheck.fastener_tested_single_shear_strength_kN,
+                                  3,
+                                )} / ${number(
+                                  selectedTensionCheck.fastener_required_single_shear_strength_kN,
+                                  3,
+                                )} kN`}
+                          </dd>
+                          <dd className={`mt-0.5 font-mono text-[9px] uppercase ${
+                            selectedTensionCheck.fastener_shear_qualification_status === 'pass'
+                              ? 'text-emerald-300'
+                              : selectedTensionCheck.fastener_shear_qualification_status === 'fail'
+                                ? 'text-red-300'
+                                : 'text-amber-300'
+                          }`}>
+                            {selectedTensionCheck.fastener_shear_qualification_status.replace('_', ' ')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Spacing / edge distance</dt>
+                          <dd className="font-mono uppercase text-slate-200">
+                            {selectedTensionCheck.spacing_status.replace('_', ' ')} /{' '}
+                            {selectedTensionCheck.edge_distance_status.replace('_', ' ')}
                           </dd>
                         </div>
                         <div>
@@ -1434,34 +2794,77 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Candidate screw-group capacity</dt>
+                          <dt className="text-slate-500">Rendered end fasteners</dt>
                           <dd className="font-mono text-slate-200">
-                            {selectedTensionCheck.end_connection_capacity_kN == null
-                              ? 'Unverified'
-                              : `${number(selectedTensionCheck.end_connection_capacity_kN, 3)} kN`}
+                            {selectedTensionCheck.rendered_end_connection_count === 0
+                              ? 'No physical ends found'
+                              : `${selectedTensionCheck.rendered_end_fastener_counts.join(' / ')} across ${
+                                  selectedTensionCheck.rendered_end_connection_count
+                                } ends`}
+                          </dd>
+                        </div>
+                        <div className="col-span-2">
+                          <dt className="text-slate-500">Fastener evidence</dt>
+                          <dd className="text-[10px] leading-relaxed text-slate-300">
+                            {selectedTensionCheck.fastener_evidence_url ? (
+                              <a
+                                className="text-cyan-300 underline decoration-cyan-500/50 underline-offset-2"
+                                href={selectedTensionCheck.fastener_evidence_url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {selectedTensionCheck.fastener_evidence_source || 'Manufacturer source'}
+                                {selectedTensionCheck.fastener_evidence_revision
+                                  ? ` · ${selectedTensionCheck.fastener_evidence_revision}`
+                                  : ''}
+                              </a>
+                            ) : (
+                              selectedTensionCheck.fastener_evidence_source || 'No source linked'
+                            )}
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-slate-500">Screw-group utilisation</dt>
+                          <dt className="text-slate-500">Governing utilisation</dt>
                           <dd className="font-mono text-slate-200">
-                            {selectedTensionCheck.connection_utilisation == null
+                            {selectedTensionCheck.governing_utilisation == null
                               ? 'Unverified'
-                              : `${number(selectedTensionCheck.connection_utilisation * 100, 1)}%`}
+                              : `${number(selectedTensionCheck.governing_utilisation * 100, 1)}%`}
                           </dd>
                         </div>
                       </dl>
-                      <p className="mt-2 text-[10px] leading-relaxed text-amber-200/80">
-                        Candidate resistance is shown for comparison only; the exact Airco strap and C100 screw connection remain unverified.
-                      </p>
+                      <div className="mt-2 border-t border-slate-800 pt-2 text-[10px] leading-relaxed text-slate-400">
+                        <p>
+                          {selectedTensionCheck.standard_reference || selectedTensionCheck.basis}
+                        </p>
+                        {selectedTensionCheck.assumptions.length > 0 && (
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-200/80">
+                            {selectedTensionCheck.assumptions.map((assumption) => (
+                              <li key={assumption}>{assumption}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     </div>
                   )}
                   {selectedMember.tension_only && selectedGlobalBracingTrace && (
                     <div className="mt-3 rounded border border-cyan-500/30 bg-slate-950/50 p-3">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
-                        Selected global bracing trace
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">
+                          Selected global bracing trace
+                        </span>
+                        <span className={`rounded px-2 py-0.5 font-mono text-[9px] ${
+                          selectedGlobalBracingTrace.status === 'pass'
+                            ? 'bg-emerald-500/15 text-emerald-300'
+                            : selectedGlobalBracingTrace.status === 'fail'
+                              || selectedGlobalBracingTrace.status === 'blocked'
+                              ? 'bg-red-500/15 text-red-300'
+                              : 'bg-amber-500/15 text-amber-300'
+                        }`}>
+                          {selectedGlobalBracingTrace.status.toUpperCase()}
+                        </span>
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-1 text-[9px] text-slate-200">
-                        {selectedGlobalBracingTrace.componentIds.map((componentId, index) => (
+                        {selectedGlobalBracingTrace.component_ids.map((componentId, index) => (
                           <span key={componentId} className="contents">
                             {index > 0 && <span className="text-slate-500">→</span>}
                             <button
@@ -1477,12 +2880,88 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                         ))}
                       </div>
                       <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
-                        Collector → tension strap → grounded foundation. This global X-bracing
-                        path is shown separately from the Stage 7 compression-flange restraint trace.
+                        {selectedGlobalBracingTrace.basis}
                       </p>
+                      <dl className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                        <div>
+                          <dt className="text-slate-500">Grounded components</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedGlobalBracingTrace.grounded_component_ids.join(', ') || 'None'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-slate-500">Governing ULS</dt>
+                          <dd className="font-mono text-slate-200">
+                            {selectedGlobalBracingTrace.governing_combination_id || 'No tension'}
+                          </dd>
+                        </div>
+                      </dl>
+                      {selectedGlobalBracingTrace.blockers.length > 0 && (
+                        <ul className="mt-2 list-disc space-y-0.5 pl-4 text-[10px] leading-relaxed text-amber-200/80">
+                          {selectedGlobalBracingTrace.blockers.map((blocker) => (
+                            <li key={blocker}>{blocker}</li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   )}
-                  {selectedCheck && (
+                  {(availableCrossSectionCheck || availableMemberStabilityCheck) && (
+                    <div
+                      role="group"
+                      aria-label="Selected member verification stage"
+                      className="mt-3 grid grid-cols-2 gap-2 rounded border border-slate-700 bg-slate-950/50 p-1.5"
+                    >
+                      <button
+                        type="button"
+                        disabled={!availableCrossSectionCheck}
+                        onClick={() => selectMemberEvidenceStage('cross_section')}
+                        className={`rounded border px-2 py-2 text-left transition ${
+                          activeMemberEvidenceStage === 'cross_section'
+                            ? 'border-cyan-400 bg-cyan-500/15 text-cyan-100'
+                            : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-600'
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        <span className="block text-[9px] font-bold uppercase tracking-[0.14em]">
+                          6. Cross-section
+                        </span>
+                        <span className="mt-1 block font-mono text-[9px] uppercase">
+                          {availableCrossSectionCheck?.status.replace('_', ' ') || 'not available'}
+                          {availableCrossSectionCheck?.governing_utilisation !== null
+                            && availableCrossSectionCheck?.governing_utilisation !== undefined
+                            ? ` · ${number(
+                                availableCrossSectionCheck.governing_utilisation * 100,
+                                1,
+                              )}%`
+                            : ''}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!availableMemberStabilityCheck}
+                        onClick={() => selectMemberEvidenceStage('member_stability')}
+                        className={`rounded border px-2 py-2 text-left transition ${
+                          activeMemberEvidenceStage === 'member_stability'
+                            ? 'border-violet-400 bg-violet-500/15 text-violet-100'
+                            : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-600'
+                        } disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        <span className="block text-[9px] font-bold uppercase tracking-[0.14em]">
+                          7. Member stability
+                        </span>
+                        <span className="mt-1 block font-mono text-[9px] uppercase">
+                          {availableMemberStabilityCheck?.status.replace('_', ' ') || 'not available'}
+                          {availableMemberStabilityCheck?.governing_utilisation !== null
+                            && availableMemberStabilityCheck?.governing_utilisation !== undefined
+                            ? ` · ${number(
+                                availableMemberStabilityCheck.governing_utilisation * 100,
+                                1,
+                              )}%`
+                            : ''}
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                  {(selectedCheck || selectedCrossSectionCheck || selectedMemberStabilityCheck) && (
                     <div className={`mt-3 rounded border p-3 ${
                       selectedDisplayCheckStatus === 'pass'
                         ? 'border-emerald-500/40 bg-emerald-950/30'
@@ -1531,18 +3010,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                                   )} kN axial screen`}
                             </>
                           )
-                          : (
+                          : selectedCrossSectionCheck
+                            ? (
+                              <>
+                                {selectedCrossSectionCheck.governing_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck.governing_utilisation * 100,
+                                      1,
+                                    )}% governing section envelope`}
+                              </>
+                            )
+                            : selectedCheck
+                              ? (
                             <>
                               {number(selectedCheck.demand_kNm, 4)} kN·m /{' '}
                               {selectedCheck.capacity_kNm === null
                                 ? 'no reference'
                                 : `${number(selectedCheck.capacity_kNm, 4)} kN·m`}
                             </>
-                          )}
+                              )
+                              : '—'}
                       </div>
-                      {selectedCheck.utilisation !== null && (
+                      {selectedDisplayUtilisation !== null
+                        && selectedDisplayUtilisation !== undefined && (
                         <div className="mt-1 font-mono text-[10px] text-slate-400">
-                          {number(selectedCheck.utilisation * 100, 1)}%{' '}
+                          {number(selectedDisplayUtilisation * 100, 1)}%{' '}
                           {selectedMemberStabilityCheck
                             ? 'governing member utilisation'
                             : selectedCrossSectionCheck
@@ -1608,26 +3101,56 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-pink-400">Minor-axis My</dt>
+                            <dt className="text-pink-400">Minor-axis My / resistance</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.minor_moment_kNm === null
                                 ? '—'
-                                : `${number(
+                                : number(
                                     selectedCrossSectionCheck.minor_moment_kNm,
                                     4,
-                                  )} kN·m`}
-                              {' · no verified resistance'}
+                                  )}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_minor_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_minor_bending_capacity_kNm,
+                                    4,
+                                  )} kN·m
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-pink-400">Off-axis shear Fz</dt>
+                            <dt className="text-pink-400">Off-axis shear Fz / resistance</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.off_axis_shear_kN === null
                                 ? '—'
-                                : `${number(
+                                : number(
                                     selectedCrossSectionCheck.off_axis_shear_kN,
                                     4,
-                                  )} kN`}
+                                  )}
+                              {' / '}
+                              {selectedCrossSectionCheck.design_off_axis_shear_capacity_kN === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck.design_off_axis_shear_capacity_kN,
+                                    4,
+                                  )} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Torque / St-Venant resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedCrossSectionCheck.torsion_kNm === null
+                                ? '—'
+                                : number(selectedCrossSectionCheck.torsion_kNm, 4)}
+                              {' / '}
+                              {selectedCrossSectionCheck
+                                .design_st_venant_torsion_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedCrossSectionCheck
+                                      .design_st_venant_torsion_capacity_kNm,
+                                    4,
+                                  )} kN·m
                             </dd>
                           </div>
                           <div>
@@ -1635,6 +3158,32 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             <dd className="font-mono text-slate-300">
                               {selectedCrossSectionCheck.shear_regime?.replace('_', ' ') || '—'}
                             </dd>
+                          </div>
+                          <div className="col-span-2 grid grid-cols-2 gap-2 rounded border border-slate-700/70 p-2">
+                            <div>
+                              <dt className="text-slate-500">Biaxial N + M utilisation</dt>
+                              <dd className="font-mono text-slate-300">
+                                {selectedCrossSectionCheck
+                                  .biaxial_axial_bending_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck
+                                        .biaxial_axial_bending_utilisation * 100,
+                                      1,
+                                    )}%`}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-slate-500">Torsion utilisation</dt>
+                              <dd className="font-mono text-slate-300">
+                                {selectedCrossSectionCheck.torsion_utilisation === null
+                                  ? '—'
+                                  : `${number(
+                                      selectedCrossSectionCheck.torsion_utilisation * 100,
+                                      1,
+                                    )}%`}
+                              </dd>
+                            </div>
                           </div>
                           <div className="col-span-2 rounded border border-amber-500/30 bg-amber-950/20 p-2">
                             <div className="flex items-center justify-between gap-2">
@@ -1698,6 +3247,122 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
+                            <dt className="text-cyan-400">Major Mz / member resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.major_moment_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.major_moment_kNm, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.design_major_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_major_bending_capacity_kNm,
+                                    3,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-pink-400">Minor My / member resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.minor_moment_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.minor_moment_kNm, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.design_minor_bending_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_minor_bending_capacity_kNm,
+                                    3,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Shear Fy / Fz</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.web_shear_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.web_shear_kN, 3)}
+                              {' / '}
+                              {selectedMemberStabilityCheck.off_axis_shear_kN === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.off_axis_shear_kN, 3)} kN
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Torque / resistance</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.torsion_kNm === null
+                                ? '—'
+                                : number(selectedMemberStabilityCheck.torsion_kNm, 4)}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .design_st_venant_torsion_capacity_kNm === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .design_st_venant_torsion_capacity_kNm,
+                                    4,
+                                  )} kN·m
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Governing modes N / Mz / My</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.governing_compression_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                              {' / '}
+                              {selectedMemberStabilityCheck.governing_bending_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                              {' / '}
+                              {selectedMemberStabilityCheck.governing_minor_bending_mode
+                                ?.replaceAll('_', ' ') || '—'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Interaction / torsion</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .biaxial_member_interaction_utilisation === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .biaxial_member_interaction_utilisation * 100,
+                                    1,
+                                  )}%
+                              {' / '}
+                              {selectedMemberStabilityCheck.torsion_utilisation === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck.torsion_utilisation * 100,
+                                    1,
+                                  )}%
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Axial amplification Mz / My</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .major_axis_amplification_factor === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .major_axis_amplification_factor,
+                                    3,
+                                  )}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .minor_axis_amplification_factor === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .minor_axis_amplification_factor,
+                                    3,
+                                  )}
+                            </dd>
+                          </div>
+                          <div>
                             <dt className="text-slate-500">Flexural-torsional Fe</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedMemberStabilityCheck
@@ -1711,7 +3376,29 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-slate-500">Compression-flange restraint</dt>
+                            <dt className="text-slate-500">Distortional fod (N / M)</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck
+                                .elastic_distortional_compression_stress_MPa === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .elastic_distortional_compression_stress_MPa,
+                                    2,
+                                  )}
+                              {' / '}
+                              {selectedMemberStabilityCheck
+                                .elastic_distortional_bending_stress_MPa === null
+                                ? '—'
+                                : number(
+                                    selectedMemberStabilityCheck
+                                      .elastic_distortional_bending_stress_MPa,
+                                    2,
+                                  )} MPa
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Candidate restraint (not credited)</dt>
                             <dd className="font-mono text-slate-300">
                               {selectedMemberStabilityCheck.lateral_bending_restraint
                                 .replaceAll('_', ' ')}
@@ -1740,10 +3427,22 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                               {selectedMemberStabilityCheck.distortional_buckling_status}
                             </dd>
                           </div>
+                          <div className="col-span-2">
+                            <dt className="text-slate-500">Calculation basis</dt>
+                            <dd className="font-mono text-slate-300">
+                              {selectedMemberStabilityCheck.standard_reference || '—'}
+                            </dd>
+                            <dd className="break-all font-mono text-[8px] text-slate-500">
+                              {selectedMemberStabilityCheck.standard_source_sha256 || 'source hash missing'}
+                            </dd>
+                          </div>
                         </dl>
                       )}
                       <p className="mt-2 text-[9px] text-slate-500">
-                        {selectedCheck.basis}
+                        {selectedMemberStabilityCheck?.basis
+                          || selectedCrossSectionCheck?.basis
+                          || selectedCheck?.basis
+                          || 'No calculation basis is available for this member.'}
                       </p>
                     </div>
                   )}
@@ -1874,7 +3573,7 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {crossSectionStage?.summary ||
-                    'Select a versioned Australian capacity pack in design.py.'}
+                    'Select a versioned Australian capacity pack in Structural workbench configuration.'}
                   {' '}This colour is Stage 6 cross-section resistance only. Member buckling,
                   restraint, bracing, connections, bases, and the final order decision remain
                   separate verification stages.
@@ -1894,13 +3593,15 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
                 </div>
                 <p className="mt-1 text-[10px] opacity-75">
                   {memberStabilityStage?.summary ||
-                    'Author restraint-defined segments in design.py.'}
+                    'Author restraint-defined segments in Structural workbench configuration.'}
                   {' '}Green/red member colours only represent Stage 7 when the
                   governing compression-flange/twist restraint and distortional
                   buckling resistance are verified.
                 </p>
               </section>
-            </div>
+                </div>
+              )}
+            </>
           )}
         </aside>
 
@@ -1910,7 +3611,9 @@ export function StructuralWorkbench({ isActive = true }: StructuralWorkbenchProp
             isActive={isActive}
             statusTextOverride={
               analysis
-                ? `Active-project model with PyNite ${diagramMode} overlay`
+                ? activeStage
+                  ? `Stage ${activeStage.order} ${activeStage.label} · ${activeStage.status.replace('_', ' ')}`
+                  : `Active-project model with PyNite ${diagramMode} overlay`
                 : 'Active-project model linked to parsed structural declarations'
             }
             externalSelectedNodeIds={selectedRestraintVisualNodeIds}

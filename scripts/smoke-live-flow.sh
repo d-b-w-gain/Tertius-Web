@@ -27,6 +27,7 @@ back to a non-interactive authorization-code login against the same realm.
 Optional environment:
   LIVE_FLOW_PROJECT
   LIVE_FLOW_MODEL_ID
+  LIVE_FLOW_SEED_CODE                (default: minimal Build123D model)
   LIVE_FLOW_AI_PROMPT                (default: harmless design.py comment)
   LIVE_FLOW_EXPECTED_AI_OUTCOME      (changed or no_changes; default: any)
   LIVE_FLOW_VERIFY_CONVERSATION      (true or false; default: false)
@@ -420,14 +421,15 @@ write_json() {
   shift
   python3 - "$file" "$@" <<'PY'
 import json
+import os
 import sys
 
 target = sys.argv[1]
 kind = sys.argv[2]
 
 if kind == "save":
-    code = """import build123d as bd
-box = bd.Box(10, 10, 10)
+    code = os.environ.get("LIVE_FLOW_SEED_CODE") or """import build123d as bd
+model = bd.Box(10, 10, 10)
 """
     payload = {"code": code, "file": "design.py"}
 elif kind == "compile":

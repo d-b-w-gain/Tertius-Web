@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mumble-announcer
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: mumble-announcer
+    app.kubernetes.io/part-of: spruik
+data:
+  announcer.py: |
+    import audioop
+    import json
+    import os
+    import time
+    import urllib.parse
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import pymumble_py3
+
+
+    MUMBLE_HOST = os.getenv("MUMBLE_HOST", "mumble.telephony.svc.cluster.local")
+    MUMBLE_PORT = int(os.getenv("MUMBLE_SERVER_PORT", "64738"))
+    KOKORO_URL = os.getenv(
+        "KOKORO_URL",
+        "http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech",
+    )
+
+
+    def read_secret(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+
+
+    mumble = pymumble_py3.Mumble(
+        MUMBLE_HOST,
+        "Gain Engineering Phone",
+        port=MUMBLE_PORT,
+        password=read_secret("/run/secrets/server-password"),
+        reconnect=True,
+    )
+    mumble.set_application_string("Spruik audio bridge")
+    mumble.start()
+    mumble.is_ready()
+
+
+    def synthesize(text, voice):
+        body = json.dumps(
+            {
+                "model": "kokoro",
+                "input": text,
+                "voice": voice,
+                "response_format": "pcm",
+                "speed": 1.0,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            KOKORO_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            pcm_24khz = response.read()
+        pcm_48khz, _ = audioop.ratecv(pcm_24khz, 2, 1, 24000, 48000, None)
+        return pcm_48khz
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def send_json(self, status, payload):
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self):
+            if urllib.parse.urlparse(self.path).path == "/healthz":
+                self.send_json(200, {"ready": mumble.is_alive()})
+                return
+            self.send_json(404, {"error": "not found"})
+
+        def do_POST(self):
+            if urllib.parse.urlparse(self.path).path != "/announce":
+                self.send_json(404, {"error": "not found"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                text = str(payload.get("text") or "The Gain Engineering audio test is working.")
+                voice = str(payload.get("voice") or "bf_emma")
+                pcm = synthesize(text, voice)
+                mumble.sound_output.add_sound(pcm)
+                deadline = time.monotonic() + 60
+                while mumble.sound_output.get_buffer_size() > 0 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.send_json(200, {"sent": True})
+            except Exception as error:
+                self.send_json(500, {"sent": False, "error": str(error)})
+
+        def log_message(self, message, *args):
+            print("%s - %s" % (self.address_string(), message % args), flush=True)
+
+
+    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mumble-announcer
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: mumble-announcer
+    app.kubernetes.io/part-of: spruik
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mumble-announcer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mumble-announcer
+        app.kubernetes.io/part-of: spruik
+    spec:
+      automountServiceAccountToken: false
+      initContainers:
+        - name: install-pymumble
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - pip install --no-cache-dir --target=/deps pymumble==1.6.1
+          volumeMounts:
+            - name: python-dependencies
+              mountPath: /deps
+      containers:
+        - name: announcer
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update >/dev/null
+              apt-get install -y --no-install-recommends libopus0 >/dev/null
+              exec python /app/announcer.py
+          env:
+            - name: PYTHONPATH
+              value: /deps
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: application
+              mountPath: /app
+              readOnly: true
+            - name: python-dependencies
+              mountPath: /deps
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: application
+          configMap:
+            name: mumble-announcer
+        - name: python-dependencies
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: mumble-secrets
+            items:
+              - key: server-password
+                path: server-password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mumble-announcer
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: mumble-announcer
+    app.kubernetes.io/part-of: spruik
+spec:
+  selector:
+    app.kubernetes.io/name: mumble-announcer
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

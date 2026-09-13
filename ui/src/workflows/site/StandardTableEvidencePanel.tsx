@@ -59,8 +59,8 @@ export function StandardTableEvidencePanel({
           <h2 className="font-semibold text-slate-100">Digitised standard-table evidence</h2>
           <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
             Table 3.2(A) supplies the eight Australian direction multipliers and Table 3.3
-            supplies Mc. Applying these values keeps them editable and does not mark the
-            project tables verified.
+            supplies Mc. Tertius automatically starts each wind region with these values;
+            they remain editable and do not mark the project tables verified.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -113,7 +113,7 @@ export function StandardTableEvidencePanel({
             </p>
             <button type="button" onClick={() => onApply(currentEvidence)}
               className="rounded border border-cyan-500/60 bg-cyan-950/30 px-3 py-2 text-xs font-semibold text-cyan-200 hover:bg-cyan-950/60">
-              Use Table 3.2(A) Md and Table 3.3 Mc
+              Reset Md and Mc to table values
             </button>
           </div>
           <details className="mt-3 rounded border border-slate-800 bg-slate-950/50 p-3 text-xs">

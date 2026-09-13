@@ -20,7 +20,7 @@ ENV VITE_API_URL=${VITE_API_URL} \
     GIT_COMMIT=${GIT_COMMIT} \
     GIT_COMMIT_DATE=${GIT_COMMIT_DATE}
 
-RUN npm exec vite -- build
+RUN npm run build
 
 FROM nginx:1.29-alpine
 

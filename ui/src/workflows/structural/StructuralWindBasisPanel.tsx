@@ -5,6 +5,12 @@ type StructuralWindBasisPanelProps = {
 }
 
 const directionOrder = ['+Y', '+X', '-X', '-Y'] as const
+const eventOrder = ['serviceability', 'ultimate'] as const
+
+const eventLabels = {
+  serviceability: 'SLS serviceability',
+  ultimate: 'ULS ultimate',
+} as const
 
 function DirectionCard({ basis }: { basis: StructuralWindActionBasis }) {
   const contributors = basis.contributing_cardinal_directions?.join(' / ') || '—'
@@ -32,19 +38,31 @@ function DirectionCard({ basis }: { basis: StructuralWindActionBasis }) {
 export function StructuralWindBasisPanel({ bases }: StructuralWindBasisPanelProps) {
   if (bases.length === 0) return null
 
-  const directional = new Map(
-    bases
-      .filter((basis) => basis.structural_action_direction)
-      .map((basis) => [basis.structural_action_direction, basis]),
+  const directionalByEvent = new Map(
+    eventOrder.map((event) => [
+      event,
+      new Map(
+        bases
+          .filter((basis) => (
+            basis.design_event === event && basis.structural_action_direction
+          ))
+          .map((basis) => [basis.structural_action_direction!, basis]),
+      ),
+    ]),
+  )
+  const completeEvents = eventOrder.filter(
+    (event) => directionalByEvent.get(event)?.size === directionOrder.length,
   )
 
-  if (directional.size !== 4) {
+  if (completeEvents.length === 0) {
     const basis = bases[0]!
     return (
       <section className="shrink-0 border-b border-slate-800 bg-slate-900/50 px-5 py-2">
         <div className="flex items-center justify-between gap-4 text-xs">
           <span className="font-semibold text-slate-300">Wind action basis</span>
-          <span className="text-amber-300">Single conservative site envelope</span>
+          <span className="text-amber-300">
+            {eventLabels[basis.design_event]} · 1-in-{basis.annual_recurrence_interval_years} years
+          </span>
           <span className="font-mono text-slate-100">
             {basis.q_z_kPa.toFixed(3)} kPa · {basis.site_wind_speed_m_s.toFixed(2)} m/s
           </span>
@@ -65,10 +83,27 @@ export function StructuralWindBasisPanel({ bases }: StructuralWindBasisPanelProp
           Hide
         </span>
       </summary>
-      <div className="grid grid-cols-1 gap-2 px-5 pb-3 md:grid-cols-2 xl:grid-cols-4">
-        {directionOrder.map((direction) => (
-          <DirectionCard key={direction} basis={directional.get(direction)!} />
-        ))}
+      <div className="space-y-3 px-5 pb-3">
+        {completeEvents.map((event) => {
+          const directional = directionalByEvent.get(event)!
+          const recurrence = directional.values().next().value
+            ?.annual_recurrence_interval_years
+          return (
+            <section key={event}>
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+                {eventLabels[event]} · 1-in-{recurrence} years
+              </div>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                {directionOrder.map((direction) => (
+                  <DirectionCard
+                    key={`${event}-${direction}`}
+                    basis={directional.get(direction)!}
+                  />
+                ))}
+              </div>
+            </section>
+          )
+        })}
       </div>
     </details>
   )

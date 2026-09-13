@@ -1,16 +1,21 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  detectModelArtifactFormat,
   ModelViewerCanvas,
   ViewerTab,
   structuralCheckColor,
+  structuralEvidenceColor,
+  structuralRestraintColor,
 } from './ViewerTab'
+import { ViewerControls } from './ViewerControls'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   getAccessToken: vi.fn(),
   rendererSetSize: vi.fn(),
   gltfParse: vi.fn(),
+  stlParse: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({ apiFetch: mocks.apiFetch }))
@@ -31,6 +36,11 @@ vi.mock('three/examples/jsm/controls/OrbitControls.js', () => ({
 vi.mock('three/examples/jsm/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
     parse = mocks.gltfParse
+  },
+}))
+vi.mock('three/examples/jsm/loaders/STLLoader.js', () => ({
+  STLLoader: class {
+    parse = mocks.stlParse
   },
 }))
 vi.mock('three/examples/jsm/utils/BufferGeometryUtils.js', () => ({
@@ -129,9 +139,27 @@ function binaryResponse(ok = true, status = ok ? 200 : 404) {
   return {
     ok,
     status,
+    headers: { get: vi.fn().mockReturnValue('model/gltf-binary') },
     arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
   }
 }
+
+function encodedBuffer(value: string): ArrayBuffer {
+  return new TextEncoder().encode(value).buffer as ArrayBuffer
+}
+
+describe('model artifact format detection', () => {
+  it('uses the response content type for STL and glTF artifacts', () => {
+    expect(detectModelArtifactFormat('model/stl', new ArrayBuffer(0))).toBe('stl')
+    expect(detectModelArtifactFormat('model/gltf-binary', new ArrayBuffer(0))).toBe('gltf')
+  })
+
+  it('sniffs legacy octet-stream responses without assuming glTF', () => {
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('solid exported\nendsolid exported'))).toBe('stl')
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('  {"asset":{"version":"2.0"}}'))).toBe('gltf')
+    expect(detectModelArtifactFormat('application/octet-stream', encodedBuffer('glTF'))).toBe('gltf')
+  })
+})
 
 describe('ViewerTab active state', () => {
   const originalRequestAnimationFrame = window.requestAnimationFrame
@@ -152,6 +180,97 @@ describe('ViewerTab active state', () => {
     expect(structuralCheckColor('pass')).toBe(0x22c55e)
     expect(structuralCheckColor('fail')).toBe(0xef4444)
     expect(structuralCheckColor('not_checked')).toBe(0x94a3b8)
+  })
+
+  it('distinguishes restraint state from missing physical evidence', () => {
+    expect(structuralRestraintColor('verified')).toBe(0x22c55e)
+    expect(structuralRestraintColor('candidate')).toBe(0xf59e0b)
+    expect(structuralEvidenceColor('verified')).toBe(0x22c55e)
+    expect(structuralEvidenceColor('missing')).toBe(0xef4444)
+    expect(structuralEvidenceColor('mismatch')).toBe(0xef4444)
+    expect(structuralEvidenceColor('not_checked')).toBe(0x94a3b8)
+  })
+
+  it('explains the selected structural stage in the viewer HUD', () => {
+    render(
+      <ModelViewerCanvas
+        modelUrl=""
+        getAccessToken={mocks.getAccessToken}
+        statusText="Stage 8 Bracing/restraint"
+        structuralOverlays={[{
+          id: 'stage-focus-bracing',
+          label: 'Stage 8 restraint focus',
+          mode: 'moment',
+          status: 'not_checked',
+          stations: [],
+          stageFocus: {
+            id: 'bracing',
+            order: 8,
+            label: 'Bracing/restraint',
+            status: 'warning',
+            summary: 'One exact product candidate still lacks stiffness and anchorage.',
+            visualDescription: 'Compression-flange restraint and physical evidence.',
+            combinationLabel: 'ULS-WX+ · transverse wind',
+            metrics: [{ label: 'Maximum required', value: '0.268 kN' }],
+            legend: [
+              { label: 'Exact-product candidate', tone: 'candidate' },
+              { label: 'Missing stiffness / anchorage ring', tone: 'missing' },
+            ],
+          },
+        }]}
+      />,
+    )
+
+    expect(screen.getByText('Stage 8 visual check')).toBeInTheDocument()
+    expect(screen.getByText('Bracing/restraint')).toBeInTheDocument()
+    expect(screen.getByText('Compression-flange restraint and physical evidence.')).toBeInTheDocument()
+    expect(screen.getByText('0.268 kN')).toBeInTheDocument()
+    expect(screen.getByText('Missing stiffness / anchorage ring')).toBeInTheDocument()
+  })
+
+  it('renders viewer status and delegates toolbar controls through props', () => {
+    const onFit = vi.fn()
+    const onToggleRenderQuality = vi.fn()
+    const onToggleGrid = vi.fn()
+    const onToggleAutoRotate = vi.fn()
+    const onRunCollisionAnalysis = vi.fn()
+
+    render(
+      <ViewerControls
+        projectName="demo"
+        renderQuality="high"
+        showGrid
+        autoRotate={false}
+        collisionPanelOpen={false}
+        collisionScanRunning={false}
+        collisionCount={12}
+        collisionScanDisabled={false}
+        loadErrorText={null}
+        isModelLoading={false}
+        statusText="Model ready"
+        instancingStats={{ batches: 8, instances: 64, fallbackMeshes: 12 }}
+        onFit={onFit}
+        onRunCollisionAnalysis={onRunCollisionAnalysis}
+        onToggleRenderQuality={onToggleRenderQuality}
+        onToggleGrid={onToggleGrid}
+        onToggleAutoRotate={onToggleAutoRotate}
+      />,
+    )
+
+    expect(screen.getByText('demo')).toBeInTheDocument()
+    expect(screen.getByText('Model ready')).toBeInTheDocument()
+    expect(screen.getByTestId('viewer-instancing-stats')).toHaveTextContent('GPU instances: 64 / 8 draws')
+    fireEvent.click(screen.getByRole('button', { name: 'Frame the whole model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collisions: 12' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Visuals: High' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Grid: ON' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate: OFF' }))
+
+    expect(onFit).toHaveBeenCalledOnce()
+    expect(onRunCollisionAnalysis).toHaveBeenCalledOnce()
+    expect(onToggleRenderQuality).toHaveBeenCalledOnce()
+    expect(onToggleGrid).toHaveBeenCalledOnce()
+    expect(onToggleAutoRotate).toHaveBeenCalledOnce()
   })
 
   afterEach(() => {

@@ -511,7 +511,7 @@ def test_member_restraint_segments_are_derived_from_connected_builder_axes():
         factors={"dead": 1.2},
     )
     model.member_stability_verification(
-        pack_id="as_nzs_4600_2018_ewm_member",
+        pack_id="as_nzs_4600_2005_a1_member",
         combination_ids=("ULS-G",),
         members=(primary,),
         distortional_buckling_basis="Unit-test evidence remains unverified.",
@@ -619,7 +619,7 @@ def test_member_boundary_restraint_is_derived_from_connection_and_member_end():
         factors={"dead": 1.2},
     )
     model.member_stability_verification(
-        pack_id="as_nzs_4600_2018_ewm_member",
+        pack_id="as_nzs_4600_2005_a1_member",
         combination_ids=("ULS-G",),
         members=(rafter,),
         distortional_buckling_basis="Unit-test evidence remains unverified.",
@@ -903,7 +903,7 @@ def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
             label="Ambiguous physical member load",
         )
     model.cross_section_verification(
-        pack_id="as_nzs_4600_2018_ewm",
+        pack_id="as_nzs_4600_2005_a1_ewm",
         combination_ids=("uls",),
         members=(first, second),
     )
@@ -942,7 +942,7 @@ def test_one_rendered_member_can_expose_multiple_targetable_solver_segments():
             evidence_basis="Unit-test shared-node restraint candidate.",
         )
     model.member_stability_verification(
-        pack_id="as_nzs_4600_2018_ewm_member",
+        pack_id="as_nzs_4600_2005_a1_member",
         combination_ids=("uls",),
         members=(first, second),
         distortional_buckling_basis="Unit-test evidence remains unverified.",
@@ -1315,7 +1315,7 @@ def test_catalogue_member_self_weight_and_service_combination_are_authored():
         factors={"dead": 1.2},
     )
     model.member_stability_verification(
-        pack_id="as_nzs_4600_2018_ewm_member",
+        pack_id="as_nzs_4600_2005_a1_member",
         combination_ids=("ULS-G",),
         segments=(
             {
@@ -1345,7 +1345,10 @@ def test_catalogue_member_self_weight_and_service_combination_are_authored():
     assert line_load["source_kind"] == "self_weight"
     assert manifest["analysis"]["load_combinations"][0]["factors"] == {"case-dead": 1.0}
     member_verification = manifest["analysis"]["member_stability_verification"]
-    assert member_verification["pack_id"] == "as_nzs_4600_2018_ewm_member"
+    assert (
+        member_verification["pack_id"]
+        == "as_nzs_4600_2005_a1_member"
+    )
     assert member_verification["combination_ids"] == ["ULS-G"]
     assert member_verification["segments"][0]["member_id"] == "beam-axis"
 

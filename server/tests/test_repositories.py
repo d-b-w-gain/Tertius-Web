@@ -31,6 +31,7 @@ from core.repositories import (
     FileVersionConflictError,
     LlmEditRepository,
     ProjectRepository,
+    require_valid_project_filename,
     require_valid_project_name,
     require_valid_python_filename,
 )
@@ -125,7 +126,11 @@ def test_project_repository_create_project_stays_tenant_scoped(db_session):
     repo_a = ProjectRepository(db_session, seeded["tenant_a"])
     repo_b = ProjectRepository(db_session, seeded["tenant_b"])
 
-    project = repo_a.create_project("new_project", seeded["user_a"], "from build123d import *")
+    project = repo_a.create_project(
+        "new_project",
+        seeded["user_a"],
+        {"design.py": "from build123d import *"},
+    )
 
     assert project.tenant_id == seeded["tenant_a"]
     assert repo_a.list_projects() == ["new_project", "same_name"]
@@ -138,7 +143,11 @@ def test_project_repository_set_active_project_updates_workspace_state_and_activ
     seeded = seed_two_tenants(db_session)
     repo = ProjectRepository(db_session, seeded["tenant_a"])
 
-    project = repo.create_project("active_project", seeded["user_a"], "from build123d import *")
+    project = repo.create_project(
+        "active_project",
+        seeded["user_a"],
+        {"design.py": "from build123d import *"},
+    )
     project_file = db_session.scalar(
         select(ProjectFile).where(
             ProjectFile.tenant_id == seeded["tenant_a"],
@@ -221,6 +230,10 @@ def test_project_repository_rejects_invalid_filename_and_project_name(db_session
     repo = ProjectRepository(db_session, seeded["tenant_a"])
 
     assert require_valid_python_filename("design.py") == "design.py"
+    assert (
+        require_valid_project_filename("lysaght_zc_v2.part00.json")
+        == "lysaght_zc_v2.part00.json"
+    )
     assert require_valid_project_name("valid-project_1") == "valid-project_1"
 
     with pytest.raises(ValueError):

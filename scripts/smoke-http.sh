@@ -144,7 +144,7 @@ import sys
 
 with open(sys.argv[1], "w", encoding="utf-8") as f:
     json.dump({
-        "code": "import build123d as bd\nbox = bd.Box(10, 10, 10)\n",
+        "code": "import build123d as bd\nmodel = bd.Box(10, 10, 10)\n",
         "export_format": "stl",
         "file": "design.py",
     }, f)

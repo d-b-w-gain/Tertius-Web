@@ -25,7 +25,17 @@ export type StructuralDesignBasis = {
   framework_reference: string
   jurisdiction: string
   analysis_method: string
+  building_classification: string | null
+  importance_level: string | null
+  design_life_years: number | null
+  compliance_pathway: string
   standards: Record<string, string>
+  supplemental_methods: Array<{
+    id: string
+    label: string
+    reference: string
+    role: string
+  }>
 }
 
 export type StructuralWindActionBasis = {
@@ -43,6 +53,7 @@ export type StructuralWindActionBasis = {
   table_status: 'starter' | 'verified'
   importance_level: string
   annual_recurrence_interval_years: number
+  design_event: 'serviceability' | 'ultimate'
   terrain_category: string
   reference_height_m: number
   regional_wind_speed_m_s: number
@@ -90,7 +101,8 @@ export type CalculationSheet = {
   stage_id: string
   title: string
   status: VerificationStatus
-  p399_reference: string
+  primary_reference: string
+  supplemental_references: string[]
   purpose: string
   assumptions: string[]
   inputs: CalculationInput[]
@@ -107,7 +119,8 @@ export type VerificationStage = {
   id: string
   order: number
   label: string
-  p399_reference: string
+  primary_reference: string
+  supplemental_references: string[]
   status: VerificationStatus
   summary: string
   sheet_ids: string[]
@@ -121,6 +134,7 @@ export type DesignComponent = {
   visual_node_id: string
   grounded: boolean
   part_number: string | null
+  role?: string | null
 }
 
 export type DesignConnection = {
@@ -128,6 +142,7 @@ export type DesignConnection = {
   label: string
   from_component_id: string
   to_component_id: string
+  component_ports?: Record<string, string>
   connector_component_ids: string[]
   transfers: Array<'force' | 'shear' | 'moment' | 'wind_normal'>
   joint_model?: {
@@ -145,6 +160,19 @@ export type DesignConnection = {
       bolt_line_distances_m: number[]
     }>
   } | null
+  resistance?: {
+    pack_id: string
+    version: string
+    status: 'unverified' | 'candidate' | 'verified'
+    basis: string
+    connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    assumptions: string[]
+  } | null
 }
 
 export type DesignSurfaceLoad = {
@@ -160,6 +188,10 @@ export type DesignSurfaceLoad = {
   wind_basis_id: string | null
   net_pressure_coefficient: number | null
   coefficient_status: 'assumed' | 'working_conservative' | 'verified' | null
+  surface_action_pack_id?: string | null
+  external_pressure_coefficient?: number | null
+  internal_pressure_coefficient?: number | null
+  area_reduction_factor?: number | null
 }
 
 export type DesignLoadPath = {
@@ -175,6 +207,8 @@ export type ProjectStructuralCapture = {
   schema_version: '0.1'
   project_name: string
   design_hash: string
+  analysis_configuration_revision?: number | null
+  analysis_configuration_digest?: string | null
   title: string
   authoring_mode: 'legacy' | 'generated'
   design_basis: StructuralDesignBasis | null
@@ -192,6 +226,8 @@ export type ProjectStructuralCapture = {
       component_id: string
       start: Vector3
       end: Vector3
+      start_node_key?: string | null
+      end_node_key?: string | null
       start_restraints: StructuralNode['restraints']
       end_restraints: StructuralNode['restraints']
       section_id: string
@@ -216,6 +252,8 @@ export type ProjectStructuralCapture = {
     }>
     load_cases: StructuralSnapshot['load_cases']
     load_combinations: LoadCombination[]
+    unavailable_load_combinations?: UnavailableLoadCombination[]
+    action_standard_pack?: ActionStandardPackEvidence | null
     member_loads: MemberPointLoad[]
     member_distributed_loads: MemberDistributedLoad[]
   } | null
@@ -254,6 +292,82 @@ export type LoadCombination = {
   label: string
   limit_state: 'serviceability' | 'ultimate'
   factors: Record<string, number>
+  purpose?: 'design' | 'stability_probe'
+}
+
+export type CertificationGate = {
+  id: string
+  order: number
+  label: string
+  status: VerificationStatus
+  primary_reference: string
+  summary: string
+  stage_ids: string[]
+}
+
+export type CertificationModelCoverage = {
+  status: 'complete' | 'incomplete'
+  compiled_member_count: number
+  solved_member_count: number
+  missing_result_member_ids: string[]
+  summary: string
+}
+
+export type CertificationIssue = {
+  id: string
+  stage_id: string
+  kind:
+    | 'design_failure'
+    | 'evidence_gap'
+    | 'provisional_input'
+    | 'dependent_blocker'
+    | 'engineering_warning'
+  owner: 'design' | 'tertius' | 'evidence' | 'mixed'
+  count: number
+  title: string
+  detail: string
+  next_action: string
+  affected_ids: string[]
+}
+
+export type CertificationReadiness = {
+  scheme_id: 'AU-NCC-2022'
+  scheme_label: string
+  document_status:
+    | 'analysis_incomplete'
+    | 'engineering_review_draft'
+    | 'certificate_draft_ready'
+  draft_document_label: string
+  ready_for_engineering_review: boolean
+  ready_for_certificate_draft: boolean
+  ready_for_order: boolean
+  conclusion: string
+  blocking_gate_ids: string[]
+  blocking_reasons: string[]
+  gates: CertificationGate[]
+  model_coverage: CertificationModelCoverage
+  issues: CertificationIssue[]
+}
+
+export type UnavailableLoadCombination = {
+  id: string
+  label: string
+  limit_state: 'serviceability' | 'ultimate'
+  family: 'action_standard' | 'global_stability'
+  missing_inputs: string[]
+  reason: string
+}
+
+export type ActionStandardPackEvidence = {
+  pack_id: string
+  pack_version: string
+  standard_reference: string
+  status: 'working' | 'verified'
+  source_document_sha256: string | null
+  applicability: string[]
+  exclusions: string[]
+  combination_ids: string[]
+  basis: string
 }
 
 export type MemberDiagramStation = {
@@ -296,7 +410,7 @@ export type StructuralMember = {
 }
 
 export type StructuralSnapshot = {
-  schema_version: '1.0'
+  schema_version: '2.0'
   mode: 'fixture' | 'design'
   title: string
   subtitle: string
@@ -305,6 +419,8 @@ export type StructuralSnapshot = {
     label: string
     design_id: string | null
     design_hash: string | null
+    analysis_configuration_revision?: number | null
+    analysis_configuration_digest?: string | null
   }
   design_basis: StructuralDesignBasis | null
   wind_action_bases: StructuralWindActionBasis[]
@@ -328,6 +444,14 @@ export type StructuralSnapshot = {
     bending_reference_kNm: number | null
     bending_reference_axis: 'local_y' | 'local_z' | 'resultant' | null
     bending_reference_basis: string | null
+    tension_width_mm?: number | null
+    tension_thickness_mm?: number | null
+    tension_hole_diameter_mm?: number | null
+    tension_holes_in_critical_section?: number | null
+    tension_force_distribution_factor?: number | null
+    end_fastener_nominal_diameter_mm?: number | null
+    end_fastener_spacing_mm?: number | null
+    end_fastener_edge_distance_mm?: number | null
     catalog?: {
       catalog_id: string
       catalog_version: string
@@ -345,6 +469,8 @@ export type StructuralSnapshot = {
     shear_modulus_kN_m2: number
     poisson_ratio: number
     density_kg_m3: number
+    yield_strength_MPa?: number | null
+    tensile_strength_MPa?: number | null
   }>
   load_cases: Array<{
     id: string
@@ -352,6 +478,8 @@ export type StructuralSnapshot = {
     category: 'dead' | 'live' | 'wind' | 'imperfection' | 'fixture'
   }>
   load_combinations: LoadCombination[]
+  unavailable_load_combinations?: UnavailableLoadCombination[]
+  action_standard_pack?: ActionStandardPackEvidence | null
   loads: Array<{
     id: string
     label: string
@@ -360,6 +488,7 @@ export type StructuralSnapshot = {
     force: Vector3
     moment: Vector3
     visual_node_id: string
+    provenance?: string | null
   }>
   member_loads: MemberPointLoad[]
   member_distributed_loads: MemberDistributedLoad[]
@@ -391,11 +520,107 @@ export type StructuralSnapshot = {
     status: 'pass' | 'fail' | 'not_checked'
     basis: string
   }>
+  connection_checks?: Array<{
+    connection_id: string
+    label: string
+    status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
+    evidence_status: 'unverified' | 'candidate' | 'verified'
+    pack_id: string
+    pack_version: string
+    identity_status: 'not_declared' | 'pass' | 'fail'
+    identity_mismatches: string[]
+    governing_combination_id: string | null
+    governing_member_id: string | null
+    axial_demand_kN: number
+    shear_demand_kN: number
+    moment_demand_kNm: number
+    design_axial_capacity_kN: number | null
+    design_shear_capacity_kN: number | null
+    design_moment_capacity_kNm: number | null
+    axial_utilisation: number | null
+    shear_utilisation: number | null
+    moment_utilisation: number | null
+    governing_utilisation: number | null
+    expected_connector_part_numbers: string[]
+    rendered_connector_part_numbers: string[]
+    source: string | null
+    source_sha256: string | null
+    anchor_group?: {
+      status: 'pass' | 'fail' | 'unsupported'
+      evidence_status: 'unverified' | 'candidate' | 'verified'
+      pack_id: string
+      pack_version: string
+      anchor_part_number: string
+      anchor_count: number
+      effective_anchor_count: number
+      substrate_type: string | null
+      substrate_status: 'unverified' | 'candidate' | 'verified'
+      tension_demand_kN: number
+      shear_demand_kN: number
+      tension_capacity_kN: number | null
+      shear_capacity_kN: number | null
+      interaction_utilisation: number | null
+      installed_effective_embedment_mm: number | null
+      reference_embedment_mm: number | null
+      minimum_edge_distance_mm: number | null
+      required_edge_distance_mm: number | null
+      minimum_spacing_mm: number | null
+      required_spacing_mm: number | null
+      embedment_status: 'pass' | 'fail' | 'not_checked'
+      edge_distance_status: 'pass' | 'fail' | 'not_checked'
+      spacing_status: 'pass' | 'fail' | 'not_required' | 'not_checked'
+      source: string | null
+      source_sha256: string | null
+      basis: string
+      blockers: string[]
+    } | null
+    bolted_sheet_interface?: {
+      status: 'pass' | 'fail' | 'unsupported'
+      evidence_status: 'unverified' | 'candidate' | 'verified'
+      pack_id: string
+      pack_version: string
+      bolt_part_number: string
+      bolt_count: number
+      connected_member_id: string | null
+      connected_sheet_part_number: string | null
+      fixture_part_number: string | null
+      fixture_capacity_status: 'not_checked' | 'candidate' | 'verified'
+      resultant_shear_demand_kN: number
+      design_bolt_shear_capacity_kN: number | null
+      design_sheet_bearing_capacity_kN: number | null
+      design_sheet_tearout_capacity_kN: number | null
+      governing_capacity_kN: number | null
+      governing_utilisation: number | null
+      nominal_bolt_diameter_mm: number | null
+      connected_sheet_thickness_mm: number | null
+      hole_diameter_mm: number | null
+      hole_type: string | null
+      minimum_spacing_mm: number | null
+      required_spacing_mm: number | null
+      minimum_edge_distance_mm: number | null
+      required_edge_distance_mm: number | null
+      bolt_shear_status: 'pass' | 'fail' | 'not_checked'
+      sheet_bearing_status: 'pass' | 'fail' | 'not_checked'
+      sheet_tearout_status: 'pass' | 'fail' | 'not_checked'
+      hole_status: 'pass' | 'fail' | 'not_checked'
+      spacing_status: 'pass' | 'fail' | 'not_checked'
+      edge_distance_status: 'pass' | 'fail' | 'not_checked'
+      source: string | null
+      source_sha256: string | null
+      basis: string
+      blockers: string[]
+    } | null
+    basis: string
+    assumptions: string[]
+  }>
   tension_member_checks?: Array<{
     member_id: string
     label: string
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     capacity_status: 'not_checked' | 'candidate' | 'verified'
+    member_capacity_status: 'not_checked' | 'candidate' | 'verified'
+    connection_capacity_status: 'not_checked' | 'candidate' | 'verified'
+    pack_id: 'as_nzs_4600_2005_a1_tension' | null
     governing_combination_id: string | null
     tension_demand_kN: number
     tension_capacity_kN: number | null
@@ -405,14 +630,52 @@ export type StructuralSnapshot = {
     connection_utilisation: number | null
     governing_utilisation: number | null
     end_fastener_count: number | null
+    rendered_end_connection_count: number
+    rendered_end_fastener_counts: number[]
     required_force_per_end_fastener_kN: number | null
+    gross_area_mm2: number | null
+    net_area_mm2: number | null
+    gross_yield_capacity_kN: number | null
+    net_fracture_capacity_kN: number | null
+    connected_part_net_capacity_kN: number | null
+    end_bearing_capacity_kN: number | null
+    end_tearout_capacity_kN: number | null
+    end_fastener_part_numbers: string[]
+    end_fastener_product_keys: string[]
+    end_fastener_product_definition_digests: string[]
+    fastener_tested_single_shear_strength_kN: number | null
+    fastener_required_single_shear_strength_kN: number | null
+    fastener_shear_qualification_status: 'not_checked' | 'candidate' | 'pass' | 'fail'
+    fastener_evidence_status: 'unverified' | 'candidate' | 'verified' | null
+    fastener_evidence_source: string | null
+    fastener_evidence_revision: string | null
+    fastener_evidence_url: string | null
+    spacing_status: 'not_checked' | 'pass' | 'fail'
+    edge_distance_status: 'not_checked' | 'pass' | 'fail'
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     basis: string
     assumptions: string[]
+  }>
+  bracing_load_path_traces?: Array<{
+    id: string
+    member_id: string
+    component_id: string
+    governing_combination_id: string | null
+    status: 'pass' | 'fail' | 'candidate' | 'blocked'
+    tension_demand_kN: number
+    component_ids: string[]
+    connection_ids: string[]
+    grounded_component_ids: string[]
+    blockers: string[]
+    basis: string
   }>
   cross_section_checks?: Array<{
     member_id: string
     label: string
-    pack_id: 'as_nzs_4600_2018_ewm'
+    pack_id: 'as_nzs_4600_2005_a1_ewm'
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     governing_combination_id: string | null
     governing_station_m: number | null
@@ -424,14 +687,24 @@ export type StructuralSnapshot = {
     torsion_kNm: number | null
     design_compression_capacity_kN: number | null
     design_major_bending_capacity_kNm: number | null
+    design_minor_bending_capacity_kNm: number | null
     design_web_shear_capacity_kN: number | null
+    design_off_axis_shear_capacity_kN: number | null
+    design_st_venant_torsion_capacity_kNm: number | null
     axial_bending_utilisation: number | null
+    biaxial_axial_bending_utilisation: number | null
     bending_shear_utilisation: number | null
+    minor_bending_shear_utilisation: number | null
+    torsion_utilisation: number | null
     governing_utilisation: number | null
     section_record_sha256: string | null
     capacity_factors: Record<string, number>
     web_slenderness: number | null
     shear_regime: 'stocky' | 'inelastic_buckling' | 'elastic_buckling' | null
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     off_axis_load_path_status: 'not_declared' | 'candidate' | 'verified'
     off_axis_required_reaction_kN: number | null
     off_axis_source_component_ids: string[]
@@ -447,7 +720,7 @@ export type StructuralSnapshot = {
     segment_id: string
     member_id: string
     label: string
-    pack_id: 'as_nzs_4600_2018_ewm_member'
+    pack_id: 'as_nzs_4600_2005_a1_member'
     status: 'pass' | 'fail' | 'not_checked' | 'unsupported'
     governing_combination_id: string | null
     governing_station_m: number | null
@@ -456,14 +729,52 @@ export type StructuralSnapshot = {
     unbraced_length_m: number
     axial_kN: number | null
     major_moment_kNm: number | null
+    minor_moment_kNm: number | null
+    web_shear_kN: number | null
+    off_axis_shear_kN: number | null
+    torsion_kNm: number | null
     elastic_flexural_buckling_stress_MPa: number | null
     elastic_torsional_buckling_stress_MPa: number | null
     elastic_flexural_torsional_buckling_stress_MPa: number | null
+    elastic_distortional_compression_stress_MPa: number | null
+    elastic_distortional_bending_stress_MPa: number | null
+    elastic_lateral_torsional_buckling_moment_kNm: number | null
+    elastic_minor_lateral_torsional_buckling_moment_kNm: number | null
+    elastic_major_axis_flexural_buckling_load_kN: number | null
+    elastic_minor_axis_flexural_buckling_load_kN: number | null
     nominal_global_buckling_stress_MPa: number | null
+    nominal_global_compression_capacity_kN: number | null
+    nominal_distortional_compression_capacity_kN: number | null
+    nominal_lateral_torsional_bending_capacity_kNm: number | null
+    nominal_distortional_bending_capacity_kNm: number | null
+    nominal_minor_lateral_torsional_bending_capacity_kNm: number | null
     design_member_compression_capacity_kN: number | null
     design_major_bending_capacity_kNm: number | null
+    design_minor_bending_capacity_kNm: number | null
+    design_global_compression_capacity_kN: number | null
+    design_distortional_compression_capacity_kN: number | null
+    design_lateral_torsional_bending_capacity_kNm: number | null
+    design_distortional_bending_capacity_kNm: number | null
+    design_section_minor_bending_capacity_kNm: number | null
+    design_minor_lateral_torsional_bending_capacity_kNm: number | null
+    design_web_shear_capacity_kN: number | null
+    design_off_axis_shear_capacity_kN: number | null
+    design_st_venant_torsion_capacity_kNm: number | null
+    governing_compression_mode: 'section' | 'global' | 'distortional' | null
+    governing_bending_mode: 'section' | 'lateral_torsional' | 'distortional' | null
+    governing_minor_bending_mode: 'section' | 'lateral_torsional' | null
     axial_utilisation: number | null
     axial_bending_utilisation: number | null
+    major_bending_utilisation: number | null
+    minor_bending_utilisation: number | null
+    web_shear_utilisation: number | null
+    off_axis_shear_utilisation: number | null
+    torsion_utilisation: number | null
+    major_axis_amplification_factor: number | null
+    minor_axis_amplification_factor: number | null
+    biaxial_member_interaction_utilisation: number | null
+    major_bending_shear_utilisation: number | null
+    minor_bending_shear_utilisation: number | null
     governing_utilisation: number | null
     lateral_bending_restraint:
       | 'unverified'
@@ -477,6 +788,10 @@ export type StructuralSnapshot = {
     restraint_candidate_ids: string[]
     distortional_buckling_status: 'unverified' | 'verified'
     section_record_sha256: string | null
+    standard_reference: string | null
+    standard_status: string | null
+    standard_source_sha256: string | null
+    developments_supplement_sha256: string | null
     basis: string
     assumptions: string[]
   }>
@@ -488,7 +803,10 @@ export type StructuralSnapshot = {
     combination_id: string
     contact_flange: 'positive_local_y' | 'negative_local_y' | 'both' | 'none'
     status: 'unsupported' | 'candidate' | 'pass' | 'fail' | 'not_required'
-    demand_model: 'not_defined' | 'aisi_2004_d3_2_2_eccentric_load_couple'
+  demand_model:
+    | 'not_defined'
+    | 'aisi_2004_d3_2_2_eccentric_load_couple'
+    | 'as_nzs_4600_2005_4_3_2_flange_force'
     transferred_load_kN: number | null
     load_eccentricity_m: number | null
     member_depth_m: number | null
@@ -509,6 +827,7 @@ export type StructuralSnapshot = {
     anchorage_connection_ids: string[]
     anchorage_grounded_component_id: string | null
     anchorage_basis: string
+    anchorage_blockers?: string[]
     mechanism: string
     provenance: string
     basis: string
@@ -534,12 +853,15 @@ export type StructuralSnapshot = {
   }>
   serviceability_checks: Array<{
     member_id: string
+    physical_member_id?: string | null
+    analytical_member_ids?: string[]
+    span_m?: number | null
     label: string
     combination_id: string
     displacement_mm: number
     limit_mm: number | null
     utilisation: number | null
-    status: 'pass' | 'fail' | 'not_checked'
+    status: 'pass' | 'fail' | 'not_checked' | 'not_applicable'
     basis: string
   }>
   load_summary: {
@@ -611,9 +933,46 @@ export type StructuralSnapshot = {
     rafter_axial_limit_kN?: number | null
     rafter_axial_force_significant?: boolean | null
     simplified_alpha_cr_applicable?: boolean | null
+    rafter_applicability_checks?: Array<{
+      component_id: string
+      member_ids: string[]
+      length_m: number
+      design_axial_kN: number
+      elastic_critical_load_kN: number
+      axial_limit_kN: number
+      utilisation: number
+      applicable: boolean
+    }>
   } | null
   verification_stages: VerificationStage[]
   calculation_sheets: CalculationSheet[]
+  certification_readiness: CertificationReadiness | null
   capabilities: CapabilityState[]
   warnings: string[]
+}
+
+export type StructuralAnalysisCacheInfo = {
+  status: 'hit' | 'calculated'
+  key_digest: string
+  engine_version: string
+  calculated_at: string
+  calculation_duration_seconds: number
+}
+
+export type StructuralAnalysisProgress = {
+  state: 'idle' | 'running' | 'complete' | 'failed'
+  stage_id: string
+  stage_label: string
+  completed_units: number | null
+  total_units: number | null
+  elapsed_seconds: number
+  engine_version: string | null
+  key_digest: string | null
+}
+
+export type ActiveStructuralWorkbenchResponse = {
+  capture: ProjectStructuralCapture
+  analysis: StructuralSnapshot | null
+  analysis_error: string | null
+  cache: StructuralAnalysisCacheInfo | null
 }

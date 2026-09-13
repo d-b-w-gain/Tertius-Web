@@ -123,7 +123,7 @@ def _is_project_frame(frame) -> bool:
     if _project_dir_prefix and not normalized.startswith(_project_dir_prefix):
         return False
     name = normalized.rsplit("/", 1)[-1]
-    if name in {"tertius_bom.py", "tertius_provenance.py"}:
+    if name == "tertius_provenance.py":
         return False
     return True
 
@@ -196,25 +196,10 @@ def _append_source_ids_from(source: Any, target: Any) -> None:
         _set_source_ids(target_shape, ids)
 
 
-def _bom_metadata(value: Any) -> dict[str, Any] | None:
-    metadata = getattr(value, "tertius_bom", None)
-    return dict(metadata) if isinstance(metadata, dict) else None
-
-
-def _set_bom_metadata(value: Any, metadata: dict[str, Any] | None) -> None:
-    if not isinstance(value, bd.Shape) or metadata is None:
-        return
-    try:
-        setattr(value, "tertius_bom", dict(metadata))
-    except Exception:
-        pass
-
-
 def _copy_visual_contract(source: Any, result: Any) -> Any:
     if not isinstance(source, bd.Shape) or not isinstance(result, bd.Shape):
         return result
     _set_source_ids(result, _source_ids(source))
-    _set_bom_metadata(result, _bom_metadata(source))
     source_children = [child for child in (getattr(source, "children", ()) or ()) if isinstance(child, bd.Shape)]
     result_children = [child for child in (getattr(result, "children", ()) or ()) if isinstance(child, bd.Shape)]
     for source_child, result_child in zip(source_children, result_children):

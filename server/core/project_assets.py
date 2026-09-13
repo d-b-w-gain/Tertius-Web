@@ -23,8 +23,11 @@ MAX_3MF_TRIANGLES = 10_000_000
 MAX_3MF_COORDINATE_MM = 1_000_000.0
 MAX_3MF_MANIFEST_BYTES = 256 * 1024
 MAX_3MF_DERIVED_BREP_BYTES = 512 * 1024 * 1024
-IMPORT_3MF_CONVERSION_VERSION = "tertius-3mf-brep-v1-build123d-0.8.0"
-Import3mfConversionVersion = Literal["tertius-3mf-brep-v1-build123d-0.8.0"]
+IMPORT_3MF_CONVERSION_VERSION = "tertius-3mf-brep-v1-build123d-0.11.1"
+Import3mfConversionVersion = Literal[
+    "tertius-3mf-brep-v1-build123d-0.8.0",
+    "tertius-3mf-brep-v1-build123d-0.11.1",
+]
 THREE_MF_MEDIA_TYPE = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml"
 SOURCE_3MF_MEDIA_TYPE = THREE_MF_MEDIA_TYPE
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
