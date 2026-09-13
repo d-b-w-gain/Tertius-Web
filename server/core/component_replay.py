@@ -693,7 +693,12 @@ def replay_selected_components(
             diagnostic_code="component_replay_timeout",
         )
 
-    payload = json.loads(stdout) if stdout.strip() else {"ok": False, "error": stderr}
+    raw_payload: Any = json.loads(stdout) if stdout.strip() else {"ok": False, "error": stderr}
+    payload: dict[str, Any] = (
+        raw_payload
+        if isinstance(raw_payload, dict)
+        else {"ok": False, "error": "Component replay returned a non-object JSON payload"}
+    )
     if process.returncode != 0 or not payload.get("ok"):
         return ComponentReplayResult(
             success=False,
