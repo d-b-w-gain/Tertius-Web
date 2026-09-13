@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bluescope-api-workbench
+  labels:
+    app.kubernetes.io/name: bluescope-api-workbench
+    app.kubernetes.io/part-of: procurement-workbench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bluescope-api-workbench
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bluescope-api-workbench
+        app.kubernetes.io/part-of: procurement-workbench
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: tertius
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: workbench
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/app/server.py"]
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PROCUREMENT_DB
+              value: /procurement-data/procurement.db
+            - name: BLUESCOPE_API_BASE
+              value: https://gateway.apiaut.bluescope.com/api/experience/gs1/orders/v1
+            - name: BLUESCOPE_TOKEN_URL
+              value: https://login.microsoftonline.com/bluescopeltd.onmicrosoft.com/oauth2/token
+          envFrom:
+            - secretRef:
+                name: bluescope-api-credentials
+                optional: true
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: source
+              mountPath: /app
+              readOnly: true
+            - name: procurement-data
+              mountPath: /procurement-data
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: source
+          configMap:
+            name: bluescope-workbench-source
+        - name: procurement-data
+          persistentVolumeClaim:
+            claimName: bom-procurement-data
+            readOnly: true
+        - name: tmp
+          emptyDir: {}
+

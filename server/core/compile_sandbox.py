@@ -136,6 +136,7 @@ try:
         return {
             "label": label,
             "bom": metadata if isinstance(metadata, dict) else None,
+            "color": getattr(value, "color", None),
             "source_call_ids": source_ids,
             "children": children,
         }
@@ -198,7 +199,9 @@ try:
                 def color_factor(color):
                     rgba = None
                     try:
-                        if hasattr(color, "to_tuple"):
+                        if hasattr(color, "__iter__"):
+                            rgba = list(color)
+                        elif hasattr(color, "to_tuple"):
                             rgba = list(color.to_tuple())
                         elif all(hasattr(color, attr) for attr in ("r", "g", "b")):
                             rgba = [color.r, color.g, color.b, getattr(color, "a", 1.0)]
@@ -211,7 +214,10 @@ try:
                     if len(rgba) == 3:
                         rgba.append(1.0)
                     try:
-                        return [float(component) for component in rgba[:4]]
+                        return [
+                            struct.unpack("<f", struct.pack("<f", float(component)))[0]
+                            for component in rgba[:4]
+                        ]
                     except Exception:
                         return None
 
@@ -285,24 +291,34 @@ try:
                         if isinstance(pbr, dict) and "baseColorFactor" in pbr:
                             changed = mark_authored_material(material) or changed
 
+                    def apply_color_to_node(node, factor):
+                        if "mesh" not in node:
+                            return False
+                        mesh_index = node["mesh"]
+                        meshes = gltf_json.get("meshes", [])
+                        if not isinstance(mesh_index, int) or not (0 <= mesh_index < len(meshes)):
+                            return False
+                        color_changed = False
+                        for primitive in meshes[mesh_index].get("primitives", []):
+                            material_index = primitive.get("material")
+                            materials = gltf_json.get("materials", [])
+                            if isinstance(material_index, int) and 0 <= material_index < len(materials):
+                                material = materials[material_index]
+                                pbr = material.setdefault("pbrMetallicRoughness", {})
+                                if pbr.get("baseColorFactor") != factor:
+                                    pbr["baseColorFactor"] = factor
+                                    color_changed = True
+                                color_changed = mark_authored_material(material) or color_changed
+                        return color_changed
+
                     for node in gltf_json.get("nodes", []):
                         node_tag = node.get("name")
                         if node_tag in label_bom_mapping:
                             extras = node.setdefault("extras", {})
                             extras["tertiusBom"] = label_bom_mapping[node_tag]
                             changed = True
-                        if node_tag in color_mapping and "mesh" in node:
-                            mesh_index = node["mesh"]
-                            meshes = gltf_json.get("meshes", [])
-                            if isinstance(mesh_index, int) and 0 <= mesh_index < len(meshes):
-                                for primitive in meshes[mesh_index].get("primitives", []):
-                                    material_index = primitive.get("material")
-                                    materials = gltf_json.get("materials", [])
-                                    if isinstance(material_index, int) and 0 <= material_index < len(materials):
-                                        material = materials[material_index]
-                                        pbr = material.setdefault("pbrMetallicRoughness", {})
-                                        pbr["baseColorFactor"] = color_mapping[node_tag]
-                                        changed = mark_authored_material(material) or changed
+                        if node_tag in color_mapping:
+                            changed = apply_color_to_node(node, color_mapping[node_tag]) or changed
                         if node_tag in bom_mapping:
                             extras = node.setdefault("extras", {})
                             extras["tertiusBom"] = bom_mapping[node_tag]
@@ -328,6 +344,7 @@ try:
 
                         label = str(visual_node.get("label") or "")
                         bom_metadata = visual_node.get("bom")
+                        authored_color = visual_node.get("color")
                         source_call_ids = [
                             str(item)
                             for item in (visual_node.get("source_call_ids") or [])
@@ -340,6 +357,10 @@ try:
                             extras = node.setdefault("extras", {})
                             extras["tertiusBom"] = bom_metadata
                             changed = True
+                        if authored_color is not None:
+                            factor = color_factor(authored_color)
+                            if factor is not None:
+                                changed = apply_color_to_node(node, factor) or changed
                         if source_call_ids:
                             extras = node.setdefault("extras", {})
                             extras["tertiusSourceCallIds"] = source_call_ids

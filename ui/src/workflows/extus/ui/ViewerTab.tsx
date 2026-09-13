@@ -21,6 +21,12 @@ import {
   resolveSceneNodeSelection,
 } from '../../shared/sceneNodeSelection';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
+import {
+  analyzePotentialCollisions,
+  type CollisionAnalysisResult,
+  type CollisionSourceReference,
+  type PotentialCollision,
+} from '../collisionAnalysis';
 
 interface ViewerProps {
   serverUrl: string;
@@ -47,6 +53,7 @@ const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase
 
 type GltfNodeJson = {
   children?: unknown;
+  extras?: unknown;
 };
 
 type GltfSceneJson = {
@@ -57,6 +64,7 @@ type GltfParserJson = {
   nodes?: unknown;
   scenes?: unknown;
   scene?: unknown;
+  extras?: unknown;
 };
 
 function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
@@ -71,9 +79,20 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
         Array.isArray(node.children) && node.children.some((childIndex) => childIndex === index)
       )));
 
+  const rootExtras = gltfJson?.extras;
+  if (rootExtras && typeof rootExtras === 'object') {
+    const sourceMap = (rootExtras as { tertiusSourceMap?: unknown }).tertiusSourceMap;
+    if (sourceMap && typeof sourceMap === 'object') root.userData.tertiusSourceMap = sourceMap;
+  }
+
   const annotateNode = (object: THREE.Object3D | undefined, nodeId: number) => {
     if (!object || !nodes[nodeId]) return;
     object.userData.tertiusGltfNodeId = String(nodeId);
+    const extras = nodes[nodeId].extras;
+    if (extras && typeof extras === 'object') {
+      const ids = (extras as { tertiusSourceCallIds?: unknown }).tertiusSourceCallIds;
+      if (Array.isArray(ids)) object.userData.tertiusSourceCallIds = ids.map(String).filter(Boolean);
+    }
     const childNodeIds = Array.isArray(nodes[nodeId].children)
       ? nodes[nodeId].children.filter((value): value is number => Number.isInteger(value))
       : [];
@@ -161,6 +180,8 @@ type ViewerMeshMaterials = {
   highlight: THREE.Material | THREE.Material[];
   transparent: THREE.Material | THREE.Material[];
   transparentHighlight: THREE.Material | THREE.Material[];
+  collisionA: THREE.Material | THREE.Material[];
+  collisionB: THREE.Material | THREE.Material[];
 };
 
 function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
@@ -258,7 +279,26 @@ export function createViewerMeshMaterials(
     mat.polygonOffsetUnits = -1;
   });
 
-  return { base, highlight, transparent, transparentHighlight };
+  const collisionA = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
+    if ('emissive' in mat) {
+      (mat as THREE.MeshStandardMaterial).emissive.setHex(0xef4444);
+      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.9;
+    }
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -1;
+  });
+  const collisionB = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
+    if ('emissive' in mat) {
+      (mat as THREE.MeshStandardMaterial).emissive.setHex(0xf59e0b);
+      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.9;
+    }
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -1;
+  });
+
+  return { base, highlight, transparent, transparentHighlight, collisionA, collisionB };
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[] | null | undefined): void {
@@ -273,6 +313,8 @@ function disposeViewerMeshMaterials(materials: ViewerMeshMaterials | undefined):
   disposeMaterial(materials.highlight);
   disposeMaterial(materials.transparent);
   disposeMaterial(materials.transparentHighlight);
+  disposeMaterial(materials.collisionA);
+  disposeMaterial(materials.collisionB);
 }
 
 function disposeMesh(mesh: THREE.Mesh): void {
@@ -310,6 +352,34 @@ function closestSelectableSceneNode(object: THREE.Object3D, root: THREE.Object3D
 
 function isViewerBatchMesh(object: THREE.Object3D): boolean {
   return object.name === "TertiusBatchedMesh" || object.name === "TertiusAppearanceBatchMesh";
+}
+
+function preferredCollisionSource(references: CollisionSourceReference[]): CollisionSourceReference | undefined {
+  return references.find(reference => reference.sourceFile && reference.sourceLine)
+    || references.find(reference => reference.definitionFile && reference.definitionLine)
+    || references[0];
+}
+
+function collisionSourceLabel(references: CollisionSourceReference[]): string {
+  const reference = preferredCollisionSource(references);
+  if (!reference) return 'Source mapping unavailable — recompile to add it';
+  const file = reference.sourceFile || reference.definitionFile;
+  const line = reference.sourceLine || reference.definitionLine;
+  const location = file ? `${file}${line ? `:${line}` : ''}` : reference.callId;
+  return reference.functionName ? `${location} · ${reference.functionName}()` : location;
+}
+
+function collisionClipboardText(pair: PotentialCollision): string {
+  const dimensions = [pair.overlapSize.x, pair.overlapSize.y, pair.overlapSize.z]
+    .map(value => (value * 1000).toFixed(1))
+    .join(' × ');
+  return [
+    `Investigate this potential component overlap in design.py:`,
+    `A: ${pair.a.label} — ${collisionSourceLabel(pair.a.sourceReferences)}`,
+    `B: ${pair.b.label} — ${collisionSourceLabel(pair.b.sourceReferences)}`,
+    `Bounding-box penetration: ${dimensions} mm.`,
+    `Confirm the actual solids intersect before changing the design; this report is broad-phase AABB analysis.`,
+  ].join('\n');
 }
 
 export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
@@ -452,6 +522,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isolatedNodeId, setIsolatedNodeId] = useState<string | null>(null);
+  const [collisionPanelOpen, setCollisionPanelOpen] = useState(false);
+  const [collisionAnalysis, setCollisionAnalysis] = useState<CollisionAnalysisResult | null>(null);
+  const [collisionMinimumPenetration, setCollisionMinimumPenetration] = useState(1);
+  const [activeCollisionId, setActiveCollisionId] = useState<string | null>(null);
+  const [copiedCollisionId, setCopiedCollisionId] = useState<string | null>(null);
   const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>(() => (
     readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY))
   ));
@@ -482,6 +557,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     setSceneGraph(null);
     setSelectedNodeId(null);
     setIsolatedNodeId(null);
+    setCollisionAnalysis(null);
+    setActiveCollisionId(null);
   }, []);
 
   const resizeRendererToContainer = useCallback(() => {
@@ -1100,6 +1177,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   }, []);
 
   const handleSelectNode = (node: THREE.Object3D | null, isDouble: boolean) => {
+     setActiveCollisionId(null);
      if (!node) {
         setSelectedNodeId(null);
         setIsolatedNodeId(null);
@@ -1119,6 +1197,66 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         setSelectedNodeId(node.uuid);
      }
   };
+
+  const runCollisionAnalysis = useCallback(() => {
+    const model = meshRef.current;
+    if (!model) return;
+    const minimumPenetration = Number.isFinite(collisionMinimumPenetration)
+      ? Math.max(0, collisionMinimumPenetration)
+      : 1;
+    const analysis = analyzePotentialCollisions(model, { minimumPenetrationMm: minimumPenetration, maxPairs: 250 });
+    setCollisionAnalysis(analysis);
+    setCollisionPanelOpen(true);
+    setActiveCollisionId(analysis.pairs[0]?.id || null);
+    setCopiedCollisionId(null);
+    if (analysis.pairs[0]) {
+      const bounds = analysis.pairs[0].a.bounds.clone().union(analysis.pairs[0].b.bounds);
+      frameCameraOnBox(bounds, 1.25);
+    }
+  }, [collisionMinimumPenetration, frameCameraOnBox]);
+
+  const inspectCollision = useCallback((pair: PotentialCollision) => {
+    setActiveCollisionId(pair.id);
+    setAutoRotate(false);
+    frameCameraOnBox(pair.a.bounds.clone().union(pair.b.bounds), 1.25);
+  }, [frameCameraOnBox]);
+
+  const copyCollisionDetails = useCallback(async (pair: PotentialCollision) => {
+    try {
+      await navigator.clipboard.writeText(collisionClipboardText(pair));
+      setCopiedCollisionId(pair.id);
+    } catch (error) {
+      console.warn('Could not copy collision details', error);
+    }
+  }, []);
+
+  const activeCollision = collisionAnalysis?.pairs.find(pair => pair.id === activeCollisionId) || null;
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !activeCollision) return;
+    const overlapBounds = new THREE.Box3(
+      new THREE.Vector3(
+        Math.max(activeCollision.a.bounds.min.x, activeCollision.b.bounds.min.x),
+        Math.max(activeCollision.a.bounds.min.y, activeCollision.b.bounds.min.y),
+        Math.max(activeCollision.a.bounds.min.z, activeCollision.b.bounds.min.z),
+      ),
+      new THREE.Vector3(
+        Math.min(activeCollision.a.bounds.max.x, activeCollision.b.bounds.max.x),
+        Math.min(activeCollision.a.bounds.max.y, activeCollision.b.bounds.max.y),
+        Math.min(activeCollision.a.bounds.max.z, activeCollision.b.bounds.max.z),
+      ),
+    );
+    const helper = new THREE.Box3Helper(overlapBounds, 0xf472b6);
+    helper.name = 'TertiusCollisionBounds';
+    scene.add(helper);
+
+    return () => {
+      scene.remove(helper);
+      helper.geometry.dispose();
+      disposeMaterial(helper.material);
+    };
+  }, [activeCollision]);
 
   useEffect(() => {
     const handleStorage = () => {
@@ -1186,6 +1324,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       const normalizedExternalIds = new Set([...(externallySelectedIds || new Set<string>())].map(normalizeExternalSelectionId).filter(Boolean));
       const externalSelection = externallySelectedIds?.size ? resolveExternalSelectionMeshes(model, externallySelectedIds) : null;
       const hasRenderableExternalSelection = Boolean(externalSelection?.hasSelection);
+      const hasActiveCollision = Boolean(activeCollision) && !hasRenderableExternalSelection;
+      const collisionNodeAId = activeCollision?.a.node.uuid;
+      const collisionNodeBId = activeCollision?.b.node.uuid;
       const selectedNodeIds = externallySelectedIds || (selectedNodeId ? new Set([selectedNodeId]) : new Set<string>());
       const isNodeSelected = (node: THREE.Object3D) => (
         externallySelectedIds
@@ -1202,7 +1343,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         model.userData.appearanceBatchKey = '';
      };
 
-     if (hasAppearanceOverrides && !isolatedNodeId && model.userData.appearanceBatchKey !== appearanceBatchKey) {
+     if (hasAppearanceOverrides && !isolatedNodeId && !hasActiveCollision && model.userData.appearanceBatchKey !== appearanceBatchKey) {
         removeAppearanceBatch();
 
         const opaqueMeshes: THREE.Mesh[] = [];
@@ -1237,13 +1378,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            model.userData.appearanceBatchMesh = appearanceBatch.mesh;
            model.userData.appearanceBatchKey = appearanceBatchKey;
         }
-     } else if (!hasAppearanceOverrides || isolatedNodeId) {
+     } else if (!hasAppearanceOverrides || isolatedNodeId || hasActiveCollision) {
         removeAppearanceBatch();
      }
      
      // Reset batched mesh
-     if (batchedMesh) batchedMesh.visible = !isolatedNodeId && !hasAppearanceOverrides && !hasRenderableExternalSelection;
-     if (appearanceBatchMesh) appearanceBatchMesh.visible = !isolatedNodeId && hasAppearanceOverrides && !hasRenderableExternalSelection;
+     if (batchedMesh) batchedMesh.visible = !isolatedNodeId && !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     if (appearanceBatchMesh) appearanceBatchMesh.visible = !isolatedNodeId && hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {
@@ -1256,19 +1397,24 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            let isIsolated = false;
            let isHidden = false;
            let isTransparent = false;
+           let collisionRole: 'a' | 'b' | null = null;
            const hasModelTransparency = hasSourceMaterialTransparency(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
             let p: THREE.Object3D | null = child;
 
             while (p && p !== model) {
                if (isNodeSelected(p)) isSelected = true;
                if (p.uuid === isolatedNodeId) isIsolated = true;
+               if (p.uuid === collisionNodeAId) collisionRole = 'a';
+               if (p.uuid === collisionNodeBId) collisionRole = 'b';
                const appearance = appearanceByPath[getSceneNodePathKey(model, p)];
                if (appearance?.hidden) isHidden = true;
               if (appearance?.transparent) isTransparent = true;
               p = p.parent;
            }
            
-           if (isolatedNodeId) {
+           if (hasActiveCollision) {
+              mesh.visible = collisionRole !== null;
+           } else if (isolatedNodeId) {
               // If we are in isolation mode, only isolated parts are visible
               mesh.visible = isIsolated && !isHidden;
            } else if (hasRenderableExternalSelection) {
@@ -1283,7 +1429,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            if (mesh.visible) {
               const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
               const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
-              if (isTransparent && shouldHighlightSelection && viewerMaterials) {
+              if (collisionRole === 'a' && viewerMaterials) {
+                 mesh.material = viewerMaterials.collisionA;
+              } else if (collisionRole === 'b' && viewerMaterials) {
+                 mesh.material = viewerMaterials.collisionB;
+              } else if (isTransparent && shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.transparentHighlight;
               } else if (shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.highlight;
@@ -1300,7 +1450,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
      });
 
-   }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey]);
+   }, [selectedNodeId, isolatedNodeId, sceneGraph, appearanceByPath, renderQuality, externalSelectionKey, externalSelectedNodeIds, activeCollision]);
 
   useEffect(() => {
     if (!onExternalSelectionPreviewChange) return;
@@ -1338,6 +1488,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           >
             Fit
           </button>
+          <button
+            onClick={runCollisionAnalysis}
+            disabled={!sceneGraph}
+            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${collisionPanelOpen ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-rose-500 hover:text-rose-300'}`}
+            title="Find component bounding boxes that penetrate each other"
+          >
+            Overlaps{collisionAnalysis ? `: ${collisionAnalysis.totalPairCount}` : ''}
+          </button>
           <button 
             onClick={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
             className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${renderQuality === 'high' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
@@ -1361,6 +1519,115 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           {loadErrorText || (isModelLoading ? 'Loading model...' : statusText)}
         </div>
       </div>
+
+      {collisionPanelOpen && (
+        <aside className="absolute right-4 top-4 bottom-4 z-20 flex w-[min(24rem,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950/95 text-slate-200 shadow-2xl backdrop-blur">
+          <div className="border-b border-slate-800 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-white">Potential overlaps</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  Broad-phase component boxes, ranked by penetration volume.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCollisionPanelOpen(false);
+                  setActiveCollisionId(null);
+                }}
+                className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+                aria-label="Close overlap inspector"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-slate-400">
+                Ignore penetration below
+                <span className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={collisionMinimumPenetration}
+                    onChange={event => setCollisionMinimumPenetration(Number(event.target.value))}
+                    className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-white outline-none focus:border-sky-500"
+                  />
+                  <span>mm</span>
+                </span>
+              </label>
+              <button
+                type="button"
+                onClick={runCollisionAnalysis}
+                className="rounded border border-sky-600 bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-600"
+              >
+                Scan again
+              </button>
+            </div>
+
+            {collisionAnalysis && (
+              <div className="mt-3 text-xs text-slate-300" aria-live="polite">
+                {collisionAnalysis.totalPairCount} pair{collisionAnalysis.totalPairCount === 1 ? '' : 's'} across {collisionAnalysis.componentCount} components
+                {collisionAnalysis.truncated ? ` · showing the largest ${collisionAnalysis.pairs.length}` : ''}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2">
+            {collisionAnalysis?.pairs.length === 0 && (
+              <div className="m-2 rounded-lg border border-emerald-900/70 bg-emerald-950/40 p-3 text-sm text-emerald-300">
+                No component boxes overlap beyond the current threshold.
+              </div>
+            )}
+            {collisionAnalysis?.pairs.map((pair, index) => (
+              <div
+                key={pair.id}
+                className={`mb-2 rounded-lg border p-3 transition-colors ${activeCollisionId === pair.id ? 'border-rose-500 bg-rose-950/30' : 'border-slate-800 bg-slate-900/70 hover:border-slate-600'}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => inspectCollision(pair)}
+                  className="w-full text-left"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-bold text-slate-400">Pair {index + 1}</span>
+                    <span className="font-mono text-[11px] text-slate-500">
+                      {(pair.overlapSize.x * 1000).toFixed(1)} × {(pair.overlapSize.y * 1000).toFixed(1)} × {(pair.overlapSize.z * 1000).toFixed(1)} mm
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-red-500" />
+                    <div className="min-w-0">
+                      <div className="break-words text-sm font-semibold text-red-200">{pair.a.label}</div>
+                      <div className="break-words font-mono text-[11px] leading-4 text-slate-400">{collisionSourceLabel(pair.a.sourceReferences)}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+                    <div className="min-w-0">
+                      <div className="break-words text-sm font-semibold text-amber-200">{pair.b.label}</div>
+                      <div className="break-words font-mono text-[11px] leading-4 text-slate-400">{collisionSourceLabel(pair.b.sourceReferences)}</div>
+                    </div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyCollisionDetails(pair)}
+                  className="mt-3 rounded border border-slate-700 px-2 py-1 text-[11px] font-semibold text-slate-300 hover:border-sky-600 hover:text-sky-300"
+                >
+                  {copiedCollisionId === pair.id ? 'Copied' : 'Copy design.py fix context'}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t border-slate-800 p-3 text-[11px] leading-4 text-slate-500">
+            This is a fast AABB diagnostic. It can include intentional joints or empty space inside rotated parts; confirm the red and amber solids visually before editing source.
+          </div>
+        </aside>
+      )}
       
       {/* 3D Canvas */}
       <div className="flex-1 relative" ref={containerRef}>

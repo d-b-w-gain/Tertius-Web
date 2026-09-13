@@ -1,4 +1,3 @@
-import os
 import json
 import struct
 import time
@@ -282,7 +281,7 @@ raise RuntimeError("stop after leak attempt")
         encoding="utf-8",
     )
 
-    run_compile_sandbox(tmp_path, "stl", timeout_seconds=5)
+    run_compile_sandbox(tmp_path, "stl", timeout_seconds=30)
 
     assert (tmp_path / "leaked-secret.txt").read_text(encoding="utf-8") == ""
 

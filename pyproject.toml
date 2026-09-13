@@ -2,13 +2,12 @@
 name = "tertius-web"
 version = "0.1.0"
 description = "Tertius Web platform (API server and supporting tooling)"
-requires-python = ">=3.14"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pydantic",
     "build123d",
-    "py-lib3mf==2.3.1",
     "fpdf2",
     "fonttools",
     "pydantic-settings",
