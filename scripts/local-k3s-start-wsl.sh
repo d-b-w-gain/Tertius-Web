@@ -4,6 +4,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-tertius}"
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 SERVICE_PORT="${SERVICE_PORT:-80}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:18080}"
 
 step() {
   printf '\n==> %s\n' "$1"
@@ -161,8 +162,8 @@ fi
 step "Ready Tertius pods"
 kubectl -n "$NAMESPACE" get pods
 
-step "Setting local auth issuer"
-PUBLIC_BASE_URL=http://localhost:18080 NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-repair-auth-wsl.sh
+step "Setting auth issuer for ${PUBLIC_BASE_URL}"
+PUBLIC_BASE_URL="$PUBLIC_BASE_URL" NAMESPACE="$NAMESPACE" bash ./scripts/local-k3s-repair-auth-wsl.sh
 
 release="${RELEASE_NAME:-tertius}"
 pi_enabled="$(helm get values "$release" -n "$NAMESPACE" --all -o json 2>/dev/null | jq -r '.piAgent.enabled // false' 2>/dev/null || printf false)"

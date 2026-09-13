@@ -1,0 +1,301 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asterisk
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: asterisk
+    app.kubernetes.io/part-of: spruik
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: asterisk
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: asterisk
+        app.kubernetes.io/part-of: spruik
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: generate-welcome-message
+          image: curlimages/curl:8.10.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              generate_prompt() {
+                prompt_text="$1"
+                output_file="$2"
+                printf '{"model":"kokoro","input":"%s","voice":"bf_emma","response_format":"pcm","speed":1.0}' "$prompt_text" |
+                  curl --fail --silent --show-error --retry 10 --retry-delay 2 --max-time 120 \
+                    -H 'Content-Type: application/json' \
+                    --data-binary @- \
+                    http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech \
+                    -o "$output_file"
+                test -s "$output_file"
+              }
+              generate_prompt "$GREETING_TEXT" /sounds/standard-greeting.sln24
+              generate_prompt "$VOICEMAIL_GREETING_TEXT" /sounds/voicemail-greeting.sln24
+              generate_prompt "$THANK_YOU_TEXT" /sounds/thank-you.sln24
+              generate_prompt "$HOLD_PROMO_TEXT" /moh/hold-promotion.sln24
+              test -s /sounds/standard-greeting.sln24
+              test -s /sounds/voicemail-greeting.sln24
+              test -s /sounds/thank-you.sln24
+              test -s /moh/hold-promotion.sln24
+          env:
+            - name: GREETING_TEXT
+              value: Thanks for calling Gain Engineering. Please hold while we connect your call.
+            - name: VOICEMAIL_GREETING_TEXT
+              value: Thanks for calling Gain Engineering. Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.
+            - name: THANK_YOU_TEXT
+              value: Thank you. Your message has been recorded.
+            - name: HOLD_PROMO_TEXT
+              value: While we connect your call, Gain Engineering provides integrated hardware and radio frequency engineering across Wollongong and the Illawarra. We turn concepts into manufacturing-ready hardware with precision mechanical layouts, CAD modelling, drawing packages, and rugged industrial enclosures. We also provide ACMA frequency coordination, interference modelling, and spectrum licensing for point-to-point radio links. Thanks for holding. We will be with you shortly.
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: asterisk-sounds
+              mountPath: /sounds
+            - name: asterisk-moh
+              mountPath: /moh
+      containers:
+        - name: asterisk
+          image: andrius/asterisk:22.10.1_debian-trixie
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/sbin/asterisk
+          args:
+            - -f
+            - -n
+          env:
+            - name: TZ
+              value: Australia/Sydney
+            - name: SIGNAL_NUMBER
+              valueFrom:
+                secretKeyRef:
+                  name: voicemail-signal
+                  key: signal-number
+            - name: SIGNAL_API_URL
+              value: http://signal-cli.cnc-controller.svc.cluster.local:8080/v2/send
+          ports:
+            - name: sip-udp
+              containerPort: 5060
+              protocol: UDP
+            - name: rtp-start
+              containerPort: 10000
+              protocol: UDP
+          readinessProbe:
+            exec:
+              command:
+                - /usr/sbin/asterisk
+                - -rx
+                - core show uptime
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - /usr/sbin/asterisk
+                - -rx
+                - core show uptime
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: asterisk-config
+              mountPath: /etc/asterisk
+              readOnly: true
+            - name: asterisk-agi
+              mountPath: /var/lib/asterisk/agi-bin
+              readOnly: true
+            - name: asterisk-run
+              mountPath: /var/run/asterisk
+            - name: asterisk-sounds
+              mountPath: /var/lib/asterisk/sounds/custom
+            - name: asterisk-moh
+              mountPath: /var/lib/asterisk/moh/spruik
+            - name: voicemail-data
+              mountPath: /var/spool/asterisk/voicemail
+        - name: manager
+          image: ghcr.io/d-b-w-gain/spruik:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -u
+            - /opt/spruik/manager/server.py
+          env:
+            - name: SPRUIK_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: spruik-manager
+                  key: admin-token
+            - name: SPRUIK_MANAGER_PORT
+              value: "8088"
+            - name: KOKORO_URL
+              value: http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech
+            - name: STANDARD_GREETING
+              value: Thanks for calling Gain Engineering. Please hold while we connect your call.
+            - name: STANDARD_VOICE
+              value: bf_emma
+            - name: HOLD_PROMO
+              value: While we connect your call, Gain Engineering provides integrated hardware and radio frequency engineering across Wollongong and the Illawarra. We turn concepts into manufacturing-ready hardware with precision mechanical layouts, CAD modelling, drawing packages, and rugged industrial enclosures. We also provide ACMA frequency coordination, interference modelling, and spectrum licensing for point-to-point radio links. Thanks for holding. We will be with you shortly.
+            - name: HOLD_VOICE
+              value: bf_emma
+            - name: VOICEMAIL_GREETING
+              value: Thanks for calling Gain Engineering. Nobody is available to take your call. Please leave a message after the tone, then hang up when you are finished.
+            - name: VOICEMAIL_VOICE
+              value: bf_emma
+            - name: THANK_YOU_MESSAGE
+              value: Thank you. Your message has been recorded.
+            - name: THANK_YOU_VOICE
+              value: bf_emma
+          ports:
+            - name: manager
+              containerPort: 8088
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: manager
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: manager
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: asterisk-run
+              mountPath: /var/run/asterisk
+            - name: asterisk-sounds
+              mountPath: /var/lib/asterisk/sounds/custom
+            - name: asterisk-moh
+              mountPath: /var/lib/asterisk/moh/spruik
+            - name: voicemail-data
+              mountPath: /var/spool/asterisk/voicemail
+            - name: spruik-data
+              mountPath: /var/lib/spruik
+      volumes:
+        - name: asterisk-config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: asterisk-config
+              - secret:
+                  name: asterisk-secrets
+                  items:
+                    - key: pjsip-secrets.conf
+                      path: pjsip-secrets.conf
+        - name: asterisk-run
+          emptyDir: {}
+        - name: asterisk-agi
+          configMap:
+            name: asterisk-config
+            defaultMode: 0550
+            items:
+              - key: generate-personal-greeting.sh
+                path: generate-personal-greeting.sh
+              - key: send-voicemail-signal.sh
+                path: send-voicemail-signal.sh
+        - name: asterisk-sounds
+          emptyDir: {}
+        - name: asterisk-moh
+          emptyDir: {}
+        - name: voicemail-data
+          persistentVolumeClaim:
+            claimName: asterisk-voicemail
+        - name: spruik-data
+          persistentVolumeClaim:
+            claimName: spruik-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: asterisk-voicemail
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: asterisk
+    app.kubernetes.io/part-of: spruik
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spruik-data
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: spruik-manager
+    app.kubernetes.io/part-of: spruik
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
