@@ -292,6 +292,7 @@ keycloak:
 cloudflared:
   enabled: false
   replicaCount: 1
+  metricsPort: 2000
   image:
     repository: cloudflare/cloudflared
     tag: "2026.5.0"

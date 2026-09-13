@@ -24,6 +24,10 @@ render_default() {
   helm template "$RELEASE_NAME" "$CHART_DIR"
 }
 
+render_cloudflared() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set cloudflared.enabled=true
+}
+
 render_keda_disabled() {
   helm template "$RELEASE_NAME" "$CHART_DIR" --set keda.enabled=false
 }
@@ -530,6 +534,7 @@ fi
 
 rendered="$(render_local)"
 default_rendered="$(render_default)"
+cloudflared_rendered="$(render_cloudflared)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
 app_secret_rendered="$(render_app_secret_created)"
@@ -550,6 +555,7 @@ api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kuberne
 pi_enabled_api_deployment="$(extract_render_doc "$pi_worker_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 pi_disabled_api_deployment="$(extract_render_doc "$pi_disabled_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+cloudflared_deployment="$(extract_render_doc "$cloudflared_rendered" 'kind: Deployment' 'app.kubernetes.io/component: cloudflared')"
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
@@ -577,6 +583,15 @@ pi_worker="$(extract_render_doc "$pi_worker_rendered" 'kind: ScaledJob' 'app.kub
 pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
 pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
 pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
+
+if ! rg -q -- '--metrics' <<<"$cloudflared_deployment" || ! rg -q '0\.0\.0\.0:2000' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must expose its metrics and readiness endpoint on a fixed port." >&2
+  exit 1
+fi
+if ! rg -q 'path: /ready' <<<"$cloudflared_deployment" || ! rg -q 'readinessProbe:' <<<"$cloudflared_deployment" || ! rg -q 'livenessProbe:' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must report disconnected tunnels through readiness and liveness probes." >&2
+  exit 1
+fi
 
 # ConfigMap-backed API settings must change the pod template so Helm rolls the
 # API together with workers that consume the same feature flag.

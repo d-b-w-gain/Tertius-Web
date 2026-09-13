@@ -143,6 +143,10 @@ stringData:
 
 Cloudflare tunnel tokens, database passwords, image pull credentials, and Keycloak admin credentials should be managed outside Git, then referenced by chart values.
 
+Kubernetes `Running` status alone is not sufficient for the tunnel connector:
+the chart's `/ready` probes mark `cloudflared` unready when it has no active
+Cloudflare edge connection.
+
 ## Cluster Prerequisites
 
 The production cluster must already have:
@@ -351,6 +355,30 @@ flux -n tertius get helmreleases tertius
 kubectl -n tertius get pods
 kubectl -n tertius get clusters.postgresql.cnpg.io
 kubectl -n tertius describe helmrelease tertius
+```
+
+### Cloudflare Error 1033 recovery
+
+Error 1033 means the tunnel selected by the public hostname has no connected
+connector. Confirm the production host and Kubernetes node are online before
+inspecting the connector:
+
+```bash
+kubectl get nodes
+flux -n flux-system get sources git tertius-web
+flux -n tertius get helmreleases tertius
+kubectl -n tertius get deployment,pods -l app.kubernetes.io/component=cloudflared
+kubectl -n tertius logs deploy/tertius-cloudflared --tail=200 \
+  | grep -E 'Starting tunnel|Registered tunnel connection|ERR|WRN'
+```
+
+After recovering the host, restart a connector that did not re-establish its
+edge connections and run the public smoke check:
+
+```bash
+kubectl -n tertius rollout restart deployment/tertius-cloudflared
+kubectl -n tertius rollout status deployment/tertius-cloudflared --timeout=2m
+bash scripts/smoke-production.sh https://tertius.johnsonyuen.com
 ```
 
 ## Troubleshooting

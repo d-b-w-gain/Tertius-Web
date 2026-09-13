@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - '.github/workflows/production-smoke.yml'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
@@ -14,6 +15,7 @@ on:
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
+      - 'scripts/smoke-production.sh'
       - 'scripts/smoke-live-flow.sh'
       - 'docker-compose.yml'
       - 'docker-compose.parity.yml'
@@ -30,6 +32,7 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - '.github/workflows/production-smoke.yml'
       - 'infra/charts/**'
       - 'infra/clusters/production/kustomization.yaml'
       - 'infra/clusters/production/flux-system/gitrepository.yaml'
@@ -39,6 +42,7 @@ on:
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
+      - 'scripts/smoke-production.sh'
       - 'scripts/smoke-live-flow.sh'
       - 'docker-compose.yml'
       - 'docker-compose.parity.yml'
