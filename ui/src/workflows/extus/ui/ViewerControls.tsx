@@ -36,6 +36,11 @@ export interface ViewerControlsProps {
   loadErrorText: string | null;
   isModelLoading: boolean;
   statusText: string;
+  instancingStats?: {
+    batches: number;
+    instances: number;
+    fallbackMeshes: number;
+  };
   onFit: () => void;
   onRunCollisionAnalysis: () => void;
   onToggleRenderQuality: () => void;
@@ -56,6 +61,7 @@ export function ViewerControls({
   loadErrorText,
   isModelLoading,
   statusText,
+  instancingStats,
   onFit,
   onRunCollisionAnalysis,
   onToggleRenderQuality,
@@ -74,6 +80,15 @@ export function ViewerControls({
         {projectName && (
           <div className="text-xs font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
             {projectName}
+          </div>
+        )}
+        {instancingStats && instancingStats.instances > 0 && (
+          <div
+            className="text-xs font-bold text-emerald-200 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/40"
+            title={`${instancingStats.instances} repeated primitives rendered by ${instancingStats.batches} GPU instance batches; ${instancingStats.fallbackMeshes} opaque primitives use the compatibility batch`}
+            data-testid="viewer-instancing-stats"
+          >
+            GPU instances: {instancingStats.instances} / {instancingStats.batches} draws
           </div>
         )}
         {stageFocus ? (

@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import {
   DEFAULT_MODEL_COLOR,
   createViewerMeshMaterials,
+  disposeObjectTree,
   hasAuthoredMaterialColor,
 } from '../scene/materials'
 import {
@@ -130,5 +131,21 @@ describe('ViewerTab material batching', () => {
     expect([position.getX(2), position.getY(2)]).toEqual([-1, 0])
     expect([uv.getX(1), uv.getY(1)]).toEqual([0, 1])
     expect([uv.getX(2), uv.getY(2)]).toEqual([1, 0])
+  })
+
+  it('disposes shared instancing resources exactly once', () => {
+    const root = new THREE.Group()
+    const geometry = new THREE.BoxGeometry(1, 1, 1)
+    const material = new THREE.MeshStandardMaterial()
+    const geometryDispose = vi.spyOn(geometry, 'dispose')
+    const materialDispose = vi.spyOn(material, 'dispose')
+
+    root.add(new THREE.Mesh(geometry, material))
+    root.add(new THREE.InstancedMesh(geometry, material, 2))
+
+    disposeObjectTree(root)
+
+    expect(geometryDispose).toHaveBeenCalledTimes(1)
+    expect(materialDispose).toHaveBeenCalledTimes(1)
   })
 })

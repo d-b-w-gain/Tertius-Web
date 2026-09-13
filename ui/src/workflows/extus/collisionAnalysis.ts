@@ -73,7 +73,9 @@ const sourceCallIds = (node: THREE.Object3D): string[] => {
 }
 
 const isViewerBatchMesh = (node: THREE.Object3D) => (
-  node.name === 'TertiusBatchedMesh' || node.name === 'TertiusAppearanceBatchMesh'
+  node.userData?.tertiusViewerBatch === true
+  || node.name === 'TertiusBatchedMesh'
+  || node.name === 'TertiusAppearanceBatchMesh'
 )
 
 const componentNodeForMesh = (mesh: THREE.Object3D, root: THREE.Object3D): THREE.Object3D => {
