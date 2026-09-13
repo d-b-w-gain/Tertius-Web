@@ -30,7 +30,8 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "recharts": "^3.8.1",
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "three-mesh-bvh": "^0.9.14"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

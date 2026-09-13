@@ -233,6 +233,7 @@ describe('ViewerTab active state', () => {
     const onToggleRenderQuality = vi.fn()
     const onToggleGrid = vi.fn()
     const onToggleAutoRotate = vi.fn()
+    const onRunCollisionAnalysis = vi.fn()
 
     render(
       <ViewerControls
@@ -240,10 +241,15 @@ describe('ViewerTab active state', () => {
         renderQuality="high"
         showGrid
         autoRotate={false}
+        collisionPanelOpen={false}
+        collisionScanRunning={false}
+        collisionCount={12}
+        collisionScanDisabled={false}
         loadErrorText={null}
         isModelLoading={false}
         statusText="Model ready"
         onFit={onFit}
+        onRunCollisionAnalysis={onRunCollisionAnalysis}
         onToggleRenderQuality={onToggleRenderQuality}
         onToggleGrid={onToggleGrid}
         onToggleAutoRotate={onToggleAutoRotate}
@@ -253,11 +259,13 @@ describe('ViewerTab active state', () => {
     expect(screen.getByText('demo')).toBeInTheDocument()
     expect(screen.getByText('Model ready')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Frame the whole model' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Collisions: 12' }))
     fireEvent.click(screen.getByRole('button', { name: 'Visuals: High' }))
     fireEvent.click(screen.getByRole('button', { name: 'Grid: ON' }))
     fireEvent.click(screen.getByRole('button', { name: 'Rotate: OFF' }))
 
     expect(onFit).toHaveBeenCalledOnce()
+    expect(onRunCollisionAnalysis).toHaveBeenCalledOnce()
     expect(onToggleRenderQuality).toHaveBeenCalledOnce()
     expect(onToggleGrid).toHaveBeenCalledOnce()
     expect(onToggleAutoRotate).toHaveBeenCalledOnce()
