@@ -146,7 +146,7 @@ type GltfAssociation = {
   primitives?: number;
 };
 
-type GltfAssociationMap = Map<THREE.Object3D, GltfAssociation>;
+type GltfAssociationMap = Map<THREE.Object3D, GltfAssociation | undefined>;
 
 export type ModelArtifactFormat = 'gltf' | 'stl';
 
@@ -167,7 +167,7 @@ export function detectModelArtifactFormat(contentType: string | null, buffer: Ar
   return textPrefix.startsWith('{') ? 'gltf' : 'stl';
 }
 
-function annotateGltfNodeIds(
+export function annotateGltfNodeIds(
   root: THREE.Object3D,
   gltfJson: GltfParserJson | undefined,
   associations?: GltfAssociationMap,
@@ -227,6 +227,7 @@ function annotateGltfNodeIds(
   sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
 
   associations?.forEach((association, object) => {
+    if (!association) return;
     if (typeof association.nodes === 'number') {
       object.userData.tertiusGltfNodeId = String(association.nodes);
     }
