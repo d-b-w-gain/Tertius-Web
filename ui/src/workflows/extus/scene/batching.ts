@@ -21,6 +21,29 @@ export type ViewerBatch = {
   usesAuthoredColors: boolean;
 };
 
+export type ViewerInstanceCandidate = {
+  source: THREE.Mesh;
+  geometry: THREE.BufferGeometry;
+  sourceMaterial: THREE.Material | THREE.Material[];
+  matrix: THREE.Matrix4;
+  geometryKey?: string;
+};
+
+export type ViewerInstanceBuildOptions = {
+  minimumInstances?: number;
+  createMesh?: (
+    geometry: THREE.BufferGeometry,
+    sourceMaterial: THREE.Material | THREE.Material[],
+    count: number,
+  ) => THREE.InstancedMesh;
+};
+
+export type ViewerInstanceBuild = {
+  meshes: THREE.InstancedMesh[];
+  leftovers: ViewerInstanceCandidate[];
+  instanceCount: number;
+};
+
 export function normalizeExternalSelectionId(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -39,7 +62,72 @@ export function matchesExternalSelection(
 }
 
 export function isViewerBatchMesh(object: THREE.Object3D): boolean {
-  return object.name === 'TertiusBatchedMesh' || object.name === 'TertiusAppearanceBatchMesh';
+  return object.userData?.tertiusViewerBatch === true
+    || object.name === 'TertiusBatchedMesh'
+    || object.name === 'TertiusAppearanceBatchMesh';
+}
+
+function materialIdentity(material: THREE.Material | THREE.Material[]): string {
+  return (Array.isArray(material) ? material : [material]).map(item => item.uuid).join(',');
+}
+
+/**
+ * Build GPU instance batches only from explicit GLTF geometry identities.
+ *
+ * The server-side GLB optimiser makes repeated primitives share a mesh index;
+ * GLTFLoader exposes that index through its association map. Requiring that
+ * identity here prevents equal-looking but semantically distinct geometry from
+ * being combined by a heuristic. Mirrored matrices remain on the established
+ * geometry-baking path because Three.js does not support negatively scaled
+ * InstancedMesh transforms.
+ */
+export function buildViewerInstances(
+  candidates: ViewerInstanceCandidate[],
+  options: ViewerInstanceBuildOptions = {},
+): ViewerInstanceBuild {
+  const minimumInstances = Math.max(2, Math.floor(options.minimumInstances ?? 2));
+  const buckets = new Map<string, ViewerInstanceCandidate[]>();
+  const leftovers: ViewerInstanceCandidate[] = [];
+
+  candidates.forEach((candidate) => {
+    if (!candidate.geometryKey || candidate.matrix.determinant() <= 0) {
+      leftovers.push(candidate);
+      return;
+    }
+    const key = `${candidate.geometryKey}|${materialIdentity(candidate.sourceMaterial)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(candidate);
+    else buckets.set(key, [candidate]);
+  });
+
+  const meshes: THREE.InstancedMesh[] = [];
+  let instanceCount = 0;
+  buckets.forEach((bucket, key) => {
+    if (bucket.length < minimumInstances) {
+      leftovers.push(...bucket);
+      return;
+    }
+
+    const first = bucket[0]!;
+    const mesh = options.createMesh?.(
+      first.geometry,
+      first.sourceMaterial,
+      bucket.length,
+    ) ?? new THREE.InstancedMesh(first.geometry, first.sourceMaterial, bucket.length);
+    bucket.forEach((candidate, index) => mesh.setMatrixAt(index, candidate.matrix));
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+    mesh.name = `TertiusInstancedMesh-${meshes.length + 1}`;
+    mesh.userData.tertiusViewerBatch = true;
+    mesh.userData.viewerInstanceKey = key;
+    mesh.userData.viewerInstanceSources = bucket.map(candidate => candidate.source);
+    meshes.push(mesh);
+    instanceCount += bucket.length;
+  });
+
+  return { meshes, leftovers, instanceCount };
 }
 
 function reverseTriangleWinding(geometry: THREE.BufferGeometry): void {
@@ -146,8 +234,8 @@ export function closestSelectableSceneNode(
   while (current && current !== root) {
     const isMesh = (current as THREE.Mesh).isMesh;
     const isAssemblyNode = current.type === 'Group' || current.type === 'Object3D';
-    if (current.name && current.name !== 'TertiusBatchedMesh' && isAssemblyNode) return current;
-    if (current.name && current.name !== 'TertiusBatchedMesh') fallback = current;
+    if (current.name && !isViewerBatchMesh(current) && isAssemblyNode) return current;
+    if (current.name && !isViewerBatchMesh(current)) fallback = current;
     if ((isMesh || isAssemblyNode) && !fallback.name) fallback = current;
     current = current.parent;
   }

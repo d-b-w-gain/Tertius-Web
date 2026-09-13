@@ -161,17 +161,41 @@ export function disposeMesh(mesh: THREE.Mesh): void {
 }
 
 export function disposeObjectTree(object: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const collectMaterial = (material: THREE.Material | THREE.Material[] | null | undefined) => {
+    if (!material) return;
+    (Array.isArray(material) ? material : [material]).forEach(item => materials.add(item));
+  };
+  const collectViewerMaterials = (viewerMaterials: ViewerMeshMaterials | undefined) => {
+    if (!viewerMaterials) return;
+    collectMaterial(viewerMaterials.base);
+    collectMaterial(viewerMaterials.highlight);
+    collectMaterial(viewerMaterials.transparent);
+    collectMaterial(viewerMaterials.transparentHighlight);
+    collectMaterial(viewerMaterials.collisionA);
+    collectMaterial(viewerMaterials.collisionB);
+  };
+
+  collectMaterial(object.userData?.sharedMat as THREE.Material | THREE.Material[] | undefined);
+  collectMaterial(object.userData?.highlightMat as THREE.Material | THREE.Material[] | undefined);
+
   object.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) {
       const mesh = child as THREE.Mesh;
-      disposeMesh(mesh);
-      disposeMaterial(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
-      disposeViewerMeshMaterials(mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined);
-      (mesh.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined)?.dispose();
+      geometries.add(mesh.geometry);
+      collectMaterial(mesh.material);
+      collectMaterial(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
+      collectViewerMaterials(mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined);
+      const viewerGeometry = mesh.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
+      if (viewerGeometry) geometries.add(viewerGeometry);
     } else if ((child as THREE.Line).isLine || (child as THREE.LineSegments).isLineSegments) {
       const line = child as THREE.Line;
-      line.geometry.dispose();
-      disposeMaterial(line.material);
+      geometries.add(line.geometry);
+      collectMaterial(line.material);
     }
   });
+
+  geometries.forEach(geometry => geometry.dispose());
+  materials.forEach(material => material.dispose());
 }

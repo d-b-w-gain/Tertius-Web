@@ -46,6 +46,7 @@ import {
   type ViewerMeshMaterials,
 } from '../scene/materials';
 import {
+  buildViewerInstances,
   buildViewerBatch,
   applyViewerGeometryTransform,
   closestSelectableSceneNode,
@@ -139,6 +140,14 @@ type GltfParserJson = {
   extras?: unknown;
 };
 
+type GltfAssociation = {
+  nodes?: number;
+  meshes?: number;
+  primitives?: number;
+};
+
+type GltfAssociationMap = Map<THREE.Object3D, GltfAssociation>;
+
 export type ModelArtifactFormat = 'gltf' | 'stl';
 
 export function detectModelArtifactFormat(contentType: string | null, buffer: ArrayBuffer): ModelArtifactFormat {
@@ -158,7 +167,11 @@ export function detectModelArtifactFormat(contentType: string | null, buffer: Ar
   return textPrefix.startsWith('{') ? 'gltf' : 'stl';
 }
 
-function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
+function annotateGltfNodeIds(
+  root: THREE.Object3D,
+  gltfJson: GltfParserJson | undefined,
+  associations?: GltfAssociationMap,
+): void {
   const meshes = Array.isArray(gltfJson?.meshes) ? gltfJson.meshes as GltfMeshJson[] : [];
   const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
   const scenes = Array.isArray(gltfJson?.scenes) ? gltfJson.scenes as GltfSceneJson[] : [];
@@ -212,6 +225,16 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
   };
 
   sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
+
+  associations?.forEach((association, object) => {
+    if (typeof association.nodes === 'number') {
+      object.userData.tertiusGltfNodeId = String(association.nodes);
+    }
+    if (typeof association.meshes === 'number') {
+      object.userData.tertiusGltfMeshId = association.meshes;
+      object.userData.tertiusGltfPrimitiveId = association.primitives ?? 0;
+    }
+  });
 }
 
 function preferredCollisionSource(references: CollisionSourceReference[]): CollisionSourceReference | undefined {
@@ -356,6 +379,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
+  const [viewerInstancingStats, setViewerInstancingStats] = useState<{
+    batches: number;
+    instances: number;
+    fallbackMeshes: number;
+  }>();
   
   const [sceneGraph, setSceneGraph] = useState<THREE.Object3D | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -433,6 +461,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     collisionScanAbortRef.current = null;
     const scene = sceneRef.current;
     const current = meshRef.current;
+    setViewerInstancingStats(undefined);
     if (!scene || !current) return;
     disposeObjectTree(current);
     scene.remove(current);
@@ -658,7 +687,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          node.castShadow = isHigh;
          node.receiveShadow = isHigh;
          if ((node as THREE.Mesh).material) {
-            ((node as THREE.Mesh).material as THREE.Material).needsUpdate = true;
+            const material = (node as THREE.Mesh).material;
+            (Array.isArray(material) ? material : [material]).forEach((item) => {
+              item.needsUpdate = true;
+            });
          }
       }
     });
@@ -723,9 +755,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       window.setTimeout(resolve, 0);
     });
 
-    const acceptModel = async (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+    const acceptModel = async (
+      model: THREE.Object3D,
+      gltfJson?: GltfParserJson,
+      gltfAssociations?: GltfAssociationMap,
+    ) => {
       if (!isCurrentRequest()) return;
-      if (gltfJson) annotateGltfNodeIds(model, gltfJson);
+      if (gltfJson) annotateGltfNodeIds(model, gltfJson, gltfAssociations);
 
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
@@ -787,26 +823,67 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
-      const sourceMeshes: THREE.Mesh[] = [];
+      const instanceCandidates: Array<{
+        source: THREE.Mesh;
+        geometry: THREE.BufferGeometry;
+        sourceMaterial: THREE.Material | THREE.Material[];
+        matrix: THREE.Matrix4;
+        geometryKey?: string;
+      }> = [];
 
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
-           const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
-           applyViewerGeometryTransform(geom, relativeMatrix);
            mesh.userData.viewerSourceMaterial = mesh.material;
-           mesh.userData.viewerBatchGeometry = geom;
-           mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
+           mesh.userData.viewerBatchMatrix = relativeMatrix;
            if (!hasSourceMaterialTransparency(mesh.material)) {
-             sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
+             const meshId = mesh.userData.tertiusGltfMeshId;
+             const primitiveId = mesh.userData.tertiusGltfPrimitiveId;
+             const supportsGpuInstances = !(mesh as THREE.SkinnedMesh).isSkinnedMesh
+               && Object.keys(mesh.geometry.morphAttributes).length === 0;
+             instanceCandidates.push({
+               source: mesh,
+               geometry: mesh.geometry,
+               sourceMaterial: mesh.material,
+               matrix: relativeMatrix,
+               geometryKey: supportsGpuInstances && typeof meshId === 'number'
+                 ? `mesh:${meshId}:primitive:${typeof primitiveId === 'number' ? primitiveId : 0}`
+                 : undefined,
+             });
            }
 
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
            mesh.receiveShadow = false;
-           mesh.material = (mesh.userData.viewerMaterials as ViewerMeshMaterials).highlight;
         }
+      });
+
+      const viewerInstances = buildViewerInstances(instanceCandidates, {
+        createMesh: (geometry, sourceMaterial, count) => {
+          const materials = createViewerMeshMaterials(sourceMaterial, sharedMaterial);
+          const mesh = new THREE.InstancedMesh(geometry, materials.base, count);
+          mesh.userData.viewerMaterials = materials;
+          return mesh;
+        },
+      });
+      viewerInstances.meshes.forEach((instanceMesh) => {
+        instanceMesh.castShadow = isHigh;
+        instanceMesh.receiveShadow = isHigh;
+        model.add(instanceMesh);
+      });
+      model.userData.instancedMeshes = viewerInstances.meshes;
+      model.userData.viewerInstanceStats = {
+        batches: viewerInstances.meshes.length,
+        instances: viewerInstances.instanceCount,
+        fallbackMeshes: viewerInstances.leftovers.length,
+      };
+
+      const sourceMeshes = viewerInstances.leftovers.map((candidate) => {
+        const geometry = candidate.geometry.clone();
+        applyViewerGeometryTransform(geometry, candidate.matrix);
+        candidate.source.userData.viewerBatchGeometry = geometry;
+        return new THREE.Mesh(geometry, candidate.sourceMaterial);
       });
 
       // Let Firefox paint the loading state before starting the expensive
@@ -869,6 +946,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       sceneRef.current!.add(model);
       meshRef.current = model;
       loadedModelUrlRef.current = modelUrl;
+      setViewerInstancingStats(model.userData.viewerInstanceStats);
 
       // Unpack the hierarchy
       setSceneGraph(model);
@@ -897,8 +975,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           return;
         }
         gltfLoader.parse(buffer, '', (gltf) => {
-          const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
-          void acceptModel(gltf.scene, gltfJson || {}).catch(err => {
+          const parser = gltf.parser as unknown as {
+            json?: GltfParserJson;
+            associations?: GltfAssociationMap;
+          } | undefined;
+          void acceptModel(gltf.scene, parser?.json || {}, parser?.associations).catch(err => {
             failLoad("Model artifact could not be prepared.", err);
           });
         }, (err) => {
@@ -1849,7 +1930,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      const model = meshRef.current;
      const batchedMesh = model.userData.batchedMesh;
      const appearanceBatchMesh = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
-      const sharedMaterial = model.userData.sharedMat as THREE.Material | undefined;
+      const instancedMeshes = model.userData.instancedMeshes as THREE.InstancedMesh[] | undefined;
+      const sharedMaterial = model.userData.sharedMat as THREE.MeshStandardMaterial | undefined;
       const highlightMaterial = model.userData.highlightMat as THREE.Material | undefined;
       const hasAppearanceOverrides = Object.values(appearanceByPath).some(appearance => appearance.hidden || appearance.transparent);
       const appearanceBatchKey = JSON.stringify(appearanceByPath);
@@ -1898,7 +1980,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
 
            if (!isHidden && !isTransparent && !hasModelTransparency) {
-              const geometry = child.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
+              let geometry = child.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
+              if (!geometry) {
+                const matrix = child.userData.viewerBatchMatrix as THREE.Matrix4 | undefined;
+                if (matrix) {
+                  geometry = (child as THREE.Mesh).geometry.clone();
+                  applyViewerGeometryTransform(geometry, matrix);
+                  child.userData.viewerBatchGeometry = geometry;
+                }
+              }
               if (geometry && material) opaqueMeshes.push(new THREE.Mesh(geometry, material));
            }
         });
@@ -1918,6 +2008,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      
      // Reset batched mesh
      if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     instancedMeshes?.forEach((mesh) => {
+       mesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     });
      if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
      
      // Evaluate visibility for individual meshes based on selection or isolation
@@ -1957,7 +2050,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
 
            if (mesh.visible) {
-              const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
+              let viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
+              if (!viewerMaterials && sharedMaterial) {
+                viewerMaterials = createViewerMeshMaterials(
+                  mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined,
+                  sharedMaterial,
+                );
+                mesh.userData.viewerMaterials = viewerMaterials;
+              }
               const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
               if (collisionRole === 'a' && viewerMaterials) {
                  mesh.material = viewerMaterials.collisionA;
@@ -2018,6 +2118,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadErrorText={loadErrorText}
         isModelLoading={isModelLoading}
         statusText={statusText}
+        instancingStats={viewerInstancingStats}
         onFit={() => frameModelRoot(1.5)}
         onRunCollisionAnalysis={runCollisionAnalysis}
         onToggleRenderQuality={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}

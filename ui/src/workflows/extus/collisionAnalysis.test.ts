@@ -99,6 +99,23 @@ describe('Extus collision analysis', () => {
     expect(result.totalPairCount).toBe(0)
   })
 
+  it('ignores viewer-only GPU instance batches', () => {
+    const root = new THREE.Group()
+    root.add(component('Physical member', 'call_member', [0, 0, 0]))
+    const viewerBatch = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.01, 0.01, 0.01),
+      new THREE.MeshBasicMaterial(),
+      2,
+    )
+    viewerBatch.userData.tertiusViewerBatch = true
+    root.add(viewerBatch)
+
+    const result = analyzePotentialCollisions(root, { minimumPenetrationMm: 1 })
+
+    expect(result.componentCount).toBe(1)
+    expect(result.totalPairCount).toBe(0)
+  })
+
   it('ignores components explicitly excluded through exported BoM metadata', () => {
     const root = new THREE.Group()
     root.add(component('Portal column', 'call_column', [0, 0, 0]))

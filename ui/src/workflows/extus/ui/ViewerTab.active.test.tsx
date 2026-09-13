@@ -248,6 +248,7 @@ describe('ViewerTab active state', () => {
         loadErrorText={null}
         isModelLoading={false}
         statusText="Model ready"
+        instancingStats={{ batches: 8, instances: 64, fallbackMeshes: 12 }}
         onFit={onFit}
         onRunCollisionAnalysis={onRunCollisionAnalysis}
         onToggleRenderQuality={onToggleRenderQuality}
@@ -258,6 +259,7 @@ describe('ViewerTab active state', () => {
 
     expect(screen.getByText('demo')).toBeInTheDocument()
     expect(screen.getByText('Model ready')).toBeInTheDocument()
+    expect(screen.getByTestId('viewer-instancing-stats')).toHaveTextContent('GPU instances: 64 / 8 draws')
     fireEvent.click(screen.getByRole('button', { name: 'Frame the whole model' }))
     fireEvent.click(screen.getByRole('button', { name: 'Collisions: 12' }))
     fireEvent.click(screen.getByRole('button', { name: 'Visuals: High' }))
