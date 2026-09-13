@@ -79,16 +79,22 @@ try:
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
         deflection = 0.001
+        angular_deflection = 0.1
         if quality_arg == "sketch":
             deflection = 200.0
+            angular_deflection = 0.8
         elif quality_arg == "rough":
             deflection = 100.0
+            angular_deflection = 0.6
         elif quality_arg == "low":
             deflection = 50.0
+            angular_deflection = 0.45
         elif quality_arg == "medium":
             deflection = 30.0
+            angular_deflection = 0.35
         elif quality_arg == "normal":
             deflection = 10.0
+            angular_deflection = 0.3
         elif quality_arg == "high":
             deflection = 1.0
 
@@ -97,7 +103,7 @@ try:
             str(output_path),
             binary=(export_format == "glb"),
             linear_deflection=deflection,
-            angular_deflection=0.1
+            angular_deflection=angular_deflection
         )
 
         if export_format in ("gltf", "glb"):
