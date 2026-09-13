@@ -1,0 +1,41 @@
+name: Production Smoke
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/production-smoke.yml'
+      - 'infra/charts/**'
+      - 'infra/clusters/production/**'
+      - 'scripts/smoke-production.sh'
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-smoke-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  public-site:
+    name: Public site is healthy
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRODUCTION_URL: https://tertius.johnsonyuen.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Wait for production and run smoke checks
+        shell: bash
+        env:
+          # Pushes may need to wait for Flux's five-minute reconciliation loop.
+          SMOKE_ATTEMPTS: ${{ github.event_name == 'push' && '60' || '3' }}
+          SMOKE_RETRY_DELAY_SECONDS: ${{ github.event_name == 'push' && '15' || '10' }}
+          SMOKE_INITIAL_DELAY_SECONDS: ${{ github.event_name == 'push' && '300' || '0' }}
+        run: bash ./scripts/smoke-production.sh "$PRODUCTION_URL"
