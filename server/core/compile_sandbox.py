@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import glb_dedup
 from .model_geometry_runtime import TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE
 from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
 
@@ -371,6 +372,9 @@ try:
 
                 if export_format == "glb":
                     patch_glb_metadata(str(output_path), tag_to_name, tag_to_color)
+                    from tertius_glb_runtime import deduplicate_glb_file
+
+                    deduplicate_glb_file(output_path)
                 else:
                     patch_gltf_metadata(str(output_path), tag_to_name, tag_to_color)
             except Exception as patch_e:
@@ -561,6 +565,11 @@ def run_compile_sandbox(
     model_geometry_helper_path = project_dir / "tertius_model_geometry.py"
     model_geometry_helper_path.write_text(
         TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE,
+        encoding="utf-8",
+    )
+    glb_helper_path = project_dir / "tertius_glb_runtime.py"
+    glb_helper_path.write_text(
+        Path(glb_dedup.__file__).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     args = [sys.executable, "-c", SANDBOX_SCRIPT, ext]
