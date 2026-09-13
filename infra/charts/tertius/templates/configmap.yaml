@@ -34,6 +34,7 @@ metadata:
 data:
   APP_ENV: {{ .Values.app.environment | quote }}
   API_BASE_PATH: {{ .Values.app.config.apiBasePath | quote }}
+  GIS_CACHE_URL: {{ ternary (printf "http://%s:%d" (include "tertius.gisCacheName" .) (.Values.gisCache.service.port | int)) "" .Values.gisCache.enabled | quote }}
   KEYCLOAK_ISSUER: {{ $keycloakIssuer | quote }}
   KEYCLOAK_AUDIENCE: {{ $keycloakAudience | quote }}
   KEYCLOAK_AUTHORIZED_PARTY: {{ .Values.app.config.keycloakAuthorizedParty | quote }}
@@ -60,6 +61,8 @@ data:
   COMPILE_TIMEOUT_SECONDS: {{ .Values.app.config.compileTimeoutSeconds | quote }}
   COMPILE_REQUEST_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileRequestMaxBytes | int64) | quote }}
   COMPILE_RESULT_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileResultMaxBytes | int64) | quote }}
+  COMPILE_SIDECAR_TTL_SECONDS: {{ printf "%d" (.Values.app.config.compileSidecarTtlSeconds | int64) | quote }}
+  COMPILE_SIDECAR_MAX_BYTES: {{ printf "%d" (.Values.app.config.compileSidecarMaxBytes | int64) | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_FILES: {{ .Values.app.config.llmFileEditMaxContextFiles | quote }}
   LLM_FILE_EDIT_MAX_CONTEXT_CHARS: {{ printf "%d" (.Values.app.config.llmFileEditMaxContextChars | int64) | quote }}
   LLM_USER_RATE_LIMIT_PER_MINUTE: {{ .Values.app.config.llmUserRateLimitPerMinute | quote }}
@@ -69,7 +72,7 @@ data:
   PI_AGENT_ENABLED: {{ .Values.piAgent.enabled | quote }}
   PI_AGENT_PROVIDER: {{ .Values.app.config.piAgentProvider | quote }}
   PI_AGENT_MODEL: {{ .Values.app.config.piAgentModel | quote }}
-  PI_AGENT_MODEL_LABEL: {{ .Values.app.config.piAgentModelLabel | quote }}
+  PI_AGENT_MODELS_JSON: {{ .Values.app.config.piAgentModels | toJson | quote }}
   PI_AGENT_THINKING: {{ .Values.app.config.piAgentThinking | quote }}
   PI_AGENT_TIMEOUT_SECONDS: {{ .Values.app.config.piAgentTimeoutSeconds | quote }}
   PI_AGENT_MAX_TURNS: {{ .Values.app.config.piAgentMaxTurns | quote }}

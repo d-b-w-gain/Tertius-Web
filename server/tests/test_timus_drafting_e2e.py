@@ -26,17 +26,18 @@ from workflows.timus import timus_server
 # ---------------------------------------------------------------------------
 
 BOX_CODE = """import build123d as bd
-box = bd.Box(10, 10, 10)
+model = bd.Box(10, 10, 10)
 """
 
 CYLINDER_CODE = """import build123d as bd
-cyl = bd.Cylinder(radius=5, height=20)
+model = bd.Cylinder(radius=5, height=20)
 """
 
 
 # ---------------------------------------------------------------------------
 # PDF content helpers
 # ---------------------------------------------------------------------------
+
 
 def _count_pdf_pages(pdf_bytes: bytes) -> int:
     """Count pages by looking for PDF page markers."""
@@ -45,7 +46,9 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
     return len(re.findall(rb"/Type\s*/Page[^s]", pdf_bytes))
 
 
-def _persist_timus_views_artifact(db_session, seeded_tenant, views: dict | None = None) -> Artifact:
+def _persist_timus_views_artifact(
+    db_session, seeded_tenant, views: dict | None = None
+) -> Artifact:
     payload = views or {
         "top": [[[0, 0], [10, 0], False]],
         "front": [[[0, 0], [0, 10], False]],
@@ -71,7 +74,10 @@ def _persist_timus_views_artifact(db_session, seeded_tenant, views: dict | None 
 # HLR projection: verify edge segments for all 4 views
 # ---------------------------------------------------------------------------
 
-def test_hlr_projection_produces_edges_for_all_four_views(db_session, seeded_tenant, monkeypatch):
+
+def test_hlr_projection_produces_edges_for_all_four_views(
+    db_session, seeded_tenant, monkeypatch
+):
     """Run the sandbox with timus_views export and verify the JSON output
     contains edge segments for top, front, side, and iso views."""
     from core.compile_runtime import hydrate_project_files
@@ -79,14 +85,18 @@ def test_hlr_projection_produces_edges_for_all_four_views(db_session, seeded_ten
     files = {"design.py": BOX_CODE}
     with hydrate_project_files(files) as project_dir:
         settings_path = project_dir / "settings.json"
-        settings_path.write_text(json.dumps({
-            "title": "TEST BOX",
-            "stamp_text": "APPROVED",
-            "show_redline": True,
-            "show_hidden_lines": True,
-            "scale": 1.0,
-            "sheet_size": "A4",
-        }))
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "title": "TEST BOX",
+                    "stamp_text": "APPROVED",
+                    "show_redline": True,
+                    "show_hidden_lines": True,
+                    "scale": 1.0,
+                    "sheet_size": "A4",
+                }
+            )
+        )
 
         result = run_compile_sandbox(project_dir, "timus_views", timeout_seconds=30)
 
@@ -99,21 +109,30 @@ def test_hlr_projection_produces_edges_for_all_four_views(db_session, seeded_ten
             assert view_name in views, f"Missing view: {view_name}"
             segments = views[view_name]
             assert isinstance(segments, list), f"{view_name} segments should be a list"
-            assert segments, f"{view_name} should contain at least one projected edge segment"
+            assert segments, (
+                f"{view_name} should contain at least one projected edge segment"
+            )
 
             # Segment format: [[x1, y1], [x2, y2], is_hidden] (3 elements)
             seg = segments[0]
-            assert len(seg) == 3, f"Segment should have 3 elements (p1, p2, hidden), got {seg}"
+            assert len(seg) == 3, (
+                f"Segment should have 3 elements (p1, p2, hidden), got {seg}"
+            )
             assert len(seg[0]) == 2, f"Point 1 should have 2 coordinates, got {seg[0]}"
             assert len(seg[1]) == 2, f"Point 2 should have 2 coordinates, got {seg[1]}"
-            assert isinstance(seg[2], bool), f"Hidden flag should be a bool, got {type(seg[2])}"
+            assert isinstance(seg[2], bool), (
+                f"Hidden flag should be a bool, got {type(seg[2])}"
+            )
 
 
 # ---------------------------------------------------------------------------
 # PDF generation: real PDF output
 # ---------------------------------------------------------------------------
 
-def test_drafting_pdf_endpoint_returns_valid_pdf(authenticated_timus_client, db_session, seeded_tenant):
+
+def test_drafting_pdf_endpoint_returns_valid_pdf(
+    authenticated_timus_client, db_session, seeded_tenant
+):
     """GET /projects/{name}/drafting.pdf should return a valid PDF with
     correct content type and basic structure."""
     # Update design.py with valid build123d code
@@ -154,7 +173,10 @@ def test_drafting_pdf_endpoint_returns_valid_pdf(authenticated_timus_client, db_
 # PDF page dimensions vary by sheet size
 # ---------------------------------------------------------------------------
 
-def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session, seeded_tenant):
+
+def test_drafting_pdf_respects_sheet_size(
+    authenticated_timus_client, db_session, seeded_tenant
+):
     """Different sheet sizes should produce different PDF page dimensions."""
     design = db_session.scalar(
         select(ProjectFile).where(
@@ -192,7 +214,9 @@ def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session
     a3_box = re.search(rb"/MediaBox\s*\[([^\]]+)\]", a3_response.content)
     assert a4_box is not None, "A4 PDF should have MediaBox"
     assert a3_box is not None, "A3 PDF should have MediaBox"
-    assert a4_box.group(1) != a3_box.group(1), "A4 and A3 should have different MediaBox values"
+    assert a4_box.group(1) != a3_box.group(1), (
+        "A4 and A3 should have different MediaBox values"
+    )
 
     # Both should be valid PDFs
     assert a3_response.content.startswith(b"%PDF-")
@@ -202,6 +226,7 @@ def test_drafting_pdf_respects_sheet_size(authenticated_timus_client, db_session
 # ---------------------------------------------------------------------------
 # Background build flow: trigger -> poll -> retrieve
 # ---------------------------------------------------------------------------
+
 
 def test_background_build_flow_trigger_poll_retrieve(
     authenticated_timus_client, db_session, seeded_tenant, monkeypatch
@@ -223,10 +248,14 @@ def test_background_build_flow_trigger_poll_retrieve(
         published.append(command)
 
     def fail_if_direct_sandbox(*args, **kwargs):
-        raise AssertionError("Timus drafting build must not run the sandbox in the API process")
+        raise AssertionError(
+            "Timus drafting build must not run the sandbox in the API process"
+        )
 
     monkeypatch.setattr(timus_server, "publish_timus_compile_command", fake_publish)
-    monkeypatch.setattr(timus_server, "run_compile_sandbox", fail_if_direct_sandbox, raising=False)
+    monkeypatch.setattr(
+        timus_server, "run_compile_sandbox", fail_if_direct_sandbox, raising=False
+    )
 
     # Initial status should be "none" (no artifact yet)
     status = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
@@ -237,7 +266,10 @@ def test_background_build_flow_trigger_poll_retrieve(
     assert trigger.json()["status"] in ("queued", "building")
     assert len(published) == 1
     assert published[0].export_format == "timus_views"
-    assert {source.filename for source in published[0].files} >= {"design.py", "settings.json"}
+    assert {source.filename for source in published[0].files} >= {
+        "design.py",
+        "settings.json",
+    }
 
     status2 = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
     assert status2.json()["status"] == "building"
@@ -276,7 +308,9 @@ def test_drafting_build_expires_abandoned_running_job(
     )
     db_session.add(stale_job)
     db_session.flush()
-    stale_job.created_at = stale_job.created_at - timedelta(seconds=timus_server.TIMUS_BUILD_TIMEOUT_SECONDS + 1)
+    stale_job.created_at = stale_job.created_at - timedelta(
+        seconds=timus_server.TIMUS_BUILD_TIMEOUT_SECONDS + 1
+    )
     db_session.commit()
 
     published = []
@@ -286,7 +320,9 @@ def test_drafting_build_expires_abandoned_running_job(
 
     monkeypatch.setattr(timus_server, "publish_timus_compile_command", fake_publish)
 
-    response = authenticated_timus_client.post("/projects/default_purlin/drafting/build")
+    response = authenticated_timus_client.post(
+        "/projects/default_purlin/drafting/build"
+    )
 
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
@@ -312,7 +348,9 @@ def test_drafting_status_reports_latest_failed_job(
     db_session.add(failed_job)
     db_session.commit()
 
-    response = authenticated_timus_client.get("/projects/default_purlin/drafting/status")
+    response = authenticated_timus_client.get(
+        "/projects/default_purlin/drafting/status"
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -327,6 +365,7 @@ def test_drafting_status_reports_latest_failed_job(
 # ---------------------------------------------------------------------------
 # Cache poisoning: stale cache not served after design.py change
 # ---------------------------------------------------------------------------
+
 
 def test_drafting_pdf_requires_current_artifact_after_design_change(
     authenticated_timus_client, db_session, seeded_tenant, monkeypatch
@@ -358,7 +397,10 @@ def test_drafting_pdf_requires_current_artifact_after_design_change(
         params={"size": "A4", "scale": "0.1"},
     )
     assert response2.status_code == 409
-    assert response2.json()["user_message"] == "Generate PDF Data before downloading the drafting PDF."
+    assert (
+        response2.json()["user_message"]
+        == "Generate PDF Data before downloading the drafting PDF."
+    )
 
 
 def test_drafting_pdf_does_not_recompute_when_persisted_views_are_stale(
@@ -394,7 +436,9 @@ def test_drafting_pdf_does_not_recompute_when_persisted_views_are_stale(
     db_session.commit()
 
     def fake_get_projected_views(cache_key, compound, mtime):
-        raise AssertionError("Stale persisted views must not be recomputed in the API process")
+        raise AssertionError(
+            "Stale persisted views must not be recomputed in the API process"
+        )
 
     monkeypatch.setattr(timus_server, "get_projected_views", fake_get_projected_views)
 
@@ -410,7 +454,10 @@ def test_drafting_pdf_does_not_recompute_when_persisted_views_are_stale(
 # Settings round-trip + validation
 # ---------------------------------------------------------------------------
 
-def test_timus_settings_full_round_trip(authenticated_timus_client, db_session, seeded_tenant):
+
+def test_timus_settings_full_round_trip(
+    authenticated_timus_client, db_session, seeded_tenant
+):
     """Save custom settings, retrieve them, verify all fields round-trip correctly."""
     payload = {
         "title": "CUSTOM BRACKET",
@@ -421,7 +468,9 @@ def test_timus_settings_full_round_trip(authenticated_timus_client, db_session, 
         "sheet_size": "A2",
     }
 
-    save = authenticated_timus_client.put("/projects/default_purlin/settings", json=payload)
+    save = authenticated_timus_client.put(
+        "/projects/default_purlin/settings", json=payload
+    )
     assert save.status_code == 200
     assert save.json()["success"] is True
 
@@ -436,7 +485,9 @@ def test_timus_settings_full_round_trip(authenticated_timus_client, db_session, 
     assert data["sheet_size"] == "A2"
 
 
-def test_timus_settings_defaults_when_none_saved(authenticated_timus_client, db_session, seeded_tenant):
+def test_timus_settings_defaults_when_none_saved(
+    authenticated_timus_client, db_session, seeded_tenant
+):
     """Before any settings are saved, defaults should be returned."""
     # Delete any existing settings
     db_session.query(TimusSettings).filter(
@@ -473,7 +524,10 @@ def test_timus_settings_rejects_invalid_sheet_size(authenticated_timus_client):
 # Bounds endpoint
 # ---------------------------------------------------------------------------
 
-def test_bounds_endpoint_returns_max_dimension(authenticated_timus_client, db_session, seeded_tenant):
+
+def test_bounds_endpoint_returns_max_dimension(
+    authenticated_timus_client, db_session, seeded_tenant
+):
     """GET /projects/{name}/bounds should return max_dim from the build123d model."""
     design = db_session.scalar(
         select(ProjectFile).where(

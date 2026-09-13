@@ -13,6 +13,8 @@ evidence in final notes or PR notes.
   `bash scripts/check-runtime-parity.sh`. When Kubernetes is reachable, the
   deployment test also submits the rendered Pi `NetworkPolicy` with
   `kubectl apply --dry-run=server` to catch API-server-only validation errors.
+- k3s harness lifecycle changes: `bash scripts/test-k3s-harness-lifecycle.sh`
+  before the broader deployment config and runtime parity gates.
 - Runtime integration changes: shared HTTP smoke against the relevant runtime.
 - Authenticated frontend/API workflow changes: `scripts/harness-k3s.sh
   live-flow` or `scripts/harness-compose.sh live-flow`.

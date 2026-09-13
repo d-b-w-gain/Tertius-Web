@@ -653,8 +653,9 @@ async def handle_pi_agent_request_message(msg, publisher: Publisher, settings) -
         await msg.term()
         return
 
+    allowed_models = {model.id for model in settings.pi_agent_models}
     if (
-        command.model != settings.pi_agent_model
+        command.model not in allowed_models
         or command.thinking != settings.pi_agent_thinking
     ):
         logger.warning("Rejected Pi agent command with unsupported runtime selection")

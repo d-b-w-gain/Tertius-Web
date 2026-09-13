@@ -7,11 +7,16 @@ from math import cos, hypot, pi
 from pathlib import Path
 from typing import Any
 
+from core.structural.wind_standard_tables import (
+    AUSTRALIAN_REGIONS,
+    lookup_climate_change_multiplier,
+)
+
 
 # Ported from the working ContextUI shed/FBD wind_pressure.py calculation.
 # The version is deliberately retained so design.py snapshots and calculation
 # sheets can identify the exact starter table set that produced q_z.
-TABLE_VERSION = "AS1170.2-2021-starter-v1"
+TABLE_VERSION = "AS1170.2-2021-starter-v2"
 REGION_DATA_VERSION = "GA-1170.2-wind-regions-simplified-t0.0500"
 AIR_DENSITY_KG_M3 = 1.2
 
@@ -21,40 +26,72 @@ REGION_SOURCE = (
 REGION_VERIFY_AGAINST = "AS/NZS 1170.2:2021 Fig. 3.1(A)"
 
 _A_VALUES = {
+    1: 30.0,
+    5: 32.0,
+    10: 34.0,
+    20: 37.0,
     25: 37.0,
+    50: 39.0,
     100: 41.0,
     200: 43.0,
+    250: 43.0,
     500: 45.0,
-    1000: 47.0,
+    1000: 46.0,
     2000: 48.0,
-    2500: 49.0,
+    2500: 48.0,
+    5000: 50.0,
+    10000: 51.0,
 }
 _B_VALUES = {
+    1: 26.0,
+    5: 28.0,
+    10: 33.0,
+    20: 38.0,
     25: 39.0,
-    100: 47.0,
+    50: 44.0,
+    100: 48.0,
     200: 52.0,
+    250: 53.0,
     500: 57.0,
     1000: 60.0,
-    2000: 62.0,
-    2500: 63.0,
+    2000: 63.0,
+    2500: 64.0,
+    5000: 67.0,
+    10000: 69.0,
 }
 _C_VALUES = {
+    1: 23.0,
+    5: 33.0,
+    10: 39.0,
+    20: 45.0,
     25: 47.0,
+    50: 52.0,
     100: 56.0,
     200: 61.0,
+    250: 62.0,
     500: 66.0,
     1000: 70.0,
     2000: 73.0,
     2500: 74.0,
+    5000: 78.0,
+    10000: 81.0,
 }
 _D_VALUES = {
+    1: 23.0,
+    5: 35.0,
+    10: 43.0,
+    20: 51.0,
     25: 53.0,
+    50: 60.0,
     100: 66.0,
     200: 72.0,
+    250: 74.0,
     500: 80.0,
     1000: 85.0,
-    2000: 88.0,
+    2000: 90.0,
     2500: 91.0,
+    5000: 95.0,
+    10000: 99.0,
 }
 
 V_R_TABLE_AU: dict[tuple[str, int], float] = {
@@ -73,25 +110,17 @@ V_R_TABLE_AU: dict[tuple[str, int], float] = {
 }
 
 M_C_TABLE: dict[str, float] = {
-    "A0": 1.0,
-    "A1": 1.0,
-    "A2": 1.0,
-    "A3": 1.0,
-    "A4": 1.0,
-    "A5": 1.0,
-    "B1": 1.0,
-    "B2": 1.05,
-    "C": 1.05,
-    "D": 1.05,
+    region: lookup_climate_change_multiplier(region)
+    for region in AUSTRALIAN_REGIONS
 }
 
 M_Z_CAT_TABLE: dict[float, dict[str, float]] = {
-    3.0: {"1": 0.99, "2": 0.91, "2.5": 0.83, "3": 0.75, "4": 0.75},
-    5.0: {"1": 1.05, "2": 0.91, "2.5": 0.83, "3": 0.75, "4": 0.75},
-    10.0: {"1": 1.12, "2": 1.00, "2.5": 0.89, "3": 0.83, "4": 0.75},
-    15.0: {"1": 1.16, "2": 1.05, "2.5": 0.94, "3": 0.89, "4": 0.75},
-    20.0: {"1": 1.19, "2": 1.08, "2.5": 0.97, "3": 0.91, "4": 0.80},
-    30.0: {"1": 1.22, "2": 1.12, "2.5": 1.01, "3": 0.96, "4": 0.89},
+    3.0: {"1": 0.97, "2": 0.91, "2.5": 0.87, "3": 0.83, "4": 0.75},
+    5.0: {"1": 1.01, "2": 0.91, "2.5": 0.87, "3": 0.83, "4": 0.75},
+    10.0: {"1": 1.08, "2": 1.00, "2.5": 0.92, "3": 0.83, "4": 0.75},
+    15.0: {"1": 1.12, "2": 1.05, "2.5": 0.97, "3": 0.89, "4": 0.75},
+    20.0: {"1": 1.14, "2": 1.08, "2.5": 1.01, "3": 0.94, "4": 0.75},
+    30.0: {"1": 1.18, "2": 1.12, "2.5": 1.06, "3": 1.00, "4": 0.80},
 }
 _MZ_HEIGHTS = sorted(M_Z_CAT_TABLE)
 
@@ -172,6 +201,7 @@ def compute_site_wind(
     annual_probability_uls: str = "",
     reference_height_m: float,
     direction_multiplier: float = 1.0,
+    terrain_height_multiplier: float | None = None,
     shielding_multiplier: float = 1.0,
     topographic_multiplier: float = 1.0,
     climate_change_multiplier: float | None = None,
@@ -193,10 +223,15 @@ def compute_site_wind(
         if climate_change_multiplier is None
         else float(climate_change_multiplier)
     )
-    terrain = lookup_terrain_height_multiplier(
-        terrain_category,
-        reference_height_m,
-    )
+    if terrain_height_multiplier is None:
+        terrain = lookup_terrain_height_multiplier(
+            terrain_category,
+            reference_height_m,
+        )
+        terrain_source = "terrain category and height table"
+    else:
+        terrain = float(terrain_height_multiplier)
+        terrain_source = "authored directional multiplier"
     direction = float(direction_multiplier)
     shielding = float(shielding_multiplier)
     topographic = float(topographic_multiplier)
@@ -242,6 +277,7 @@ def compute_site_wind(
         "climate_change_multiplier": round(climate, 6),
         "direction_multiplier": round(direction, 6),
         "terrain_height_multiplier": round(terrain, 6),
+        "terrain_height_source": terrain_source,
         "shielding_multiplier": round(shielding, 6),
         "topographic_multiplier": round(topographic, 6),
         "site_wind_speed_m_s": round(site_speed, 6),
@@ -267,6 +303,7 @@ def verify_site_wind_snapshot(snapshot: dict[str, Any]) -> list[str]:
             annual_probability_uls=str(snapshot["annual_recurrence_interval_years"]),
             reference_height_m=float(snapshot["reference_height_m"]),
             direction_multiplier=float(snapshot["direction_multiplier"]),
+            terrain_height_multiplier=float(snapshot["terrain_height_multiplier"]),
             shielding_multiplier=float(snapshot["shielding_multiplier"]),
             topographic_multiplier=float(snapshot["topographic_multiplier"]),
             climate_change_multiplier=float(snapshot["climate_change_multiplier"]),

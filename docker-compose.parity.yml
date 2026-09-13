@@ -15,10 +15,12 @@ services:
       COMPILE_RESULT_CONSUMER: compile-result-api
       COMPILE_REQUEST_MAX_BYTES: 8388608
       COMPILE_RESULT_MAX_BYTES: 33554432
+      COMPILE_SIDECAR_TTL_SECONDS: 86400
+      COMPILE_SIDECAR_MAX_BYTES: 8589934592
       PI_AGENT_ENABLED: "true"
       PI_AGENT_PROVIDER: openai-codex
       PI_AGENT_MODEL: gpt-5.6-sol
-      PI_AGENT_MODEL_LABEL: GPT-5.6 Sol
+      PI_AGENT_MODELS_JSON: '[{"id":"gpt-5.6-sol","label":"GPT-5.6 Sol"},{"id":"gpt-5.6-luna","label":"GPT-5.6 Luna"},{"id":"gpt-5.6-terra","label":"GPT-5.6 Terra"}]'
       PI_AGENT_THINKING: medium
       PI_AGENT_TIMEOUT_SECONDS: 480
       PI_AGENT_MAX_TURNS: 24
@@ -61,10 +63,16 @@ services:
       KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8080/realms/tertius}
       KEYCLOAK_JWKS_URL_OVERRIDE: ${KEYCLOAK_JWKS_URL_OVERRIDE:-http://keycloak:8080/realms/tertius/protocol/openid-connect/certs}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:${COMPOSE_PARITY_UI_PORT:-18080}}
+      GIS_CACHE_URL: http://gis-cache:8000
     depends_on:
       - postgres
       - nats
       - otel-collector
+      - gis-cache
+
+  gis-cache:
+    ports: !override
+      - "${COMPOSE_PARITY_GIS_PORT:-18004}:8000"
 
   frontend:
     image: !reset null
@@ -102,3 +110,5 @@ services:
   pi-agent-worker:
     volumes:
       - pi-agent-auth:/var/lib/pi-agent
+    environment:
+      PI_AGENT_MODELS_JSON: '[{"id":"gpt-5.6-sol","label":"GPT-5.6 Sol"},{"id":"gpt-5.6-luna","label":"GPT-5.6 Luna"},{"id":"gpt-5.6-terra","label":"GPT-5.6 Terra"}]'

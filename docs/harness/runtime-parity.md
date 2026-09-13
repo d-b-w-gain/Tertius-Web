@@ -16,6 +16,8 @@ image behavior, and environment contracts.
 | Valkey | chart dependency | not required for all dev flows | inherited/optional | document differences |
 | Compile worker model | KEDA `ScaledJob` | looped `compile-job-runner` | looped `compile-job-runner` | intentional adapter |
 | Pi agent worker model | serial KEDA `ScaledJob` | one looped `pi-agent-worker` | one looped `pi-agent-worker` | serial execution and transport parity required |
+| Generate Design models | ordered `PI_AGENT_MODELS_JSON` ConfigMap catalog shared by API and worker; Sol default | identical catalog in API and worker environments | identical catalog in API and worker environments | selection is persisted per job; catalog is non-secret deployment configuration |
+| Generate Design source context | fixed 300,000-character product budget below the operational safety ceiling | same fixed budget | same fixed budget | end users cannot configure context size |
 | Pi OAuth storage | retained RWO PVC | retained `pi-agent-auth` volume | retained `pi-agent-auth` volume | never bind host `~/.pi`; explicit delete only |
 | Pi append policy | identical read-only image file in API and worker | bind-mounted API policy file and image-backed worker policy file; rebuild the worker after prompt changes | identical read-only image file in API and worker | intentional dev drift; no environment, Secret, ConfigMap, workspace, or OAuth-PVC copy |
 | Pi conversation continuity | bounded Postgres context, one `--no-session` worker per turn | bounded Postgres context, one `--no-session` worker per turn | bounded Postgres context, one `--no-session` worker per turn | Pi session files are not persisted |
@@ -23,6 +25,7 @@ image behavior, and environment contracts.
 | KEDA ScaledJob | enabled by chart when CRD exists | not present | not present | k3s required |
 | CloudNativePG | app and Keycloak clusters | container Postgres | container Postgres | k3s required |
 | PVCs | chart/operator storage | Compose named volumes | Compose named volumes | intentional adapter |
+| GIS evidence cache | TiTiler/rio-tiler image with retained RWO PVC; API-only ingress | same image with retained named volume and host debug port | same image and storage contract | evidence IDs and provenance are parity-required; Helm NetworkPolicy is k3s-only |
 | NetworkPolicy | chart policies | not present | not present | k3s required |
 | OTEL collector | chart collector | local collector | local collector | protocol/name parity required |
 | metrics backend | optional local chart backend | VictoriaMetrics | VictoriaMetrics | local-only unless enabled |
@@ -40,3 +43,7 @@ Postgres, or Keycloak service names. Docker bridge networking still provides
 general outbound internet access required for the subscription provider, so it
 is a weaker egress boundary than the Helm NetworkPolicy and is not evidence of
 destination-level filtering.
+
+The GIS cache accepts uploaded rasters from the API and never resolves a caller-
+supplied URL. Compose exposes port `18004` for focused diagnostics; the Helm
+Service remains cluster-internal and its NetworkPolicy admits only API pods.

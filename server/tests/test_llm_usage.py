@@ -232,7 +232,19 @@ def test_llm_models_endpoint_reflects_pi_agent_availability(
                 "model": "gpt-5.6-sol",
                 "label": "GPT-5.6 Sol",
                 "enabled": pi_agent_enabled,
-            }
+            },
+            {
+                "id": "gpt-5.6-luna",
+                "model": "gpt-5.6-luna",
+                "label": "GPT-5.6 Luna",
+                "enabled": pi_agent_enabled,
+            },
+            {
+                "id": "gpt-5.6-terra",
+                "model": "gpt-5.6-terra",
+                "label": "GPT-5.6 Terra",
+                "enabled": pi_agent_enabled,
+            },
         ],
     }
 

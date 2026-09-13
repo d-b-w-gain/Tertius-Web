@@ -6,7 +6,6 @@ import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
 import { perfLog } from '../../../observability/performance';
 import { getPollingDelay, MODEL_STATUS_POLL_INTERVAL_MS, shouldRunPollingRequest } from '../../shared/polling';
-import { createProjectStorage } from '../../shared/projectStorage';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
 
 type SubTab = 'bom' | 'suppliers' | 'review';
@@ -24,46 +23,10 @@ const SELECTION_UPDATE_CHUNK_SIZE = 350;
 const SELECTION_LAYER = 1;
 const ENABLE_PROCUREMENT_3D_SELECTION = true;
 const PACKAGE_TYPES: PackageType[] = ['each', 'box', 'pack', 'stock_length', 'roll', 'reel', 'bulk_volume', 'bulk_mass'];
-const BOM_RECOVERY_POLL_MS = 2_000;
-const BOM_RECOVERY_MAX_POLLS = 90;
 const PROCUREMENT_SYNC_WORK_LOG_MS = 50;
 const PROCUREMENT_SYNC_WORK_WARN_MS = 200;
 const QUOTE_PREVIEW_CAPTURE_WAIT_MS = 180;
 const QUOTE_PREVIEW_CAPTURE_TIMEOUT_MS = 2_800;
-const BOM_STARTER_SNIPPET = `from tertius_bom import bom_scope, bom_component, requirement
-
-with bom_scope("Portal", id="portal"):
-    column = make_column(...)
-    bom_component(
-        column,
-        id="portal.column.left",
-        role="Column",
-        requirements=[
-            requirement(
-                part_number="C10019",
-                quantity=1,
-                unit="each",
-                dimensions={"length_mm": 2400},
-            )
-        ],
-    )
-`;
-
-const BOM_METADATA_EDIT_PROMPT = `Add explicit tertius_bom procurement metadata to the CAD design.
-
-Required outcome:
-- Import bom_scope, bom_component, and requirement from tertius_bom.
-- Preserve the existing geometry and visual output.
-- Wrap meaningful top-level collections in bom_scope calls, using stable ids and human labels from the design domain.
-- Bind visible build components, not faces/meshes, with bom_component calls.
-- Add requirement entries only for real end items. Do not invent assembly rows from GLB labels, function names, or generic keywords.
-- Where the design already contains a part number, material, length, colour, finish, grade, or standard, carry that value into the requirement.
-- Where a required commercial identity is unknown, use a clear placeholder such as TODO_PART_NUMBER and keep the quantity/unit/dimensions explicit.
-- Fasteners must remain separate bolt/nut/screw requirements when they are separate procurement items.
-- Bulk materials may use units such as L, kg, m3, or each as appropriate.
-
-The goal is to make compile emit a bom_manifest.json artifact with scopes, components, requirements, and diagnostics that can be visually verified in Procurement.`;
-
 interface ManifestScope {
   id: string;
   label: string;
@@ -125,27 +88,6 @@ interface ManifestDiagnostic {
   requirement_id?: string;
   source_file?: string | null;
   source_line?: number | null;
-}
-
-interface BomSourceCall {
-  function: string;
-  sourceFile: string;
-  scope: string;
-  line: number;
-  parameters: Record<string, unknown>;
-  standardInputs: Record<string, unknown>;
-  bomKind: string;
-  bomReadiness: string;
-  bomMissingFields: string[];
-}
-
-interface BomMetadata {
-  calls?: BomSourceCall[];
-}
-
-interface FeatureValue {
-  name: string;
-  value: string | number | boolean;
 }
 
 export interface BomManifest {
@@ -511,270 +453,6 @@ const newSupplier = (): Supplier => ({
   pricing: [],
 });
 
-const DEFAULT_NODE_NAMES = new Set(['', 'Mesh', 'Component', 'SOLID']);
-const GENERATED_NAME_PATTERNS = [
-  /^=>\d+(?:_\d+)?$/i,
-  /^node[_\s-]?\d+$/i,
-  /^mesh[_\s-]?\d+$/i,
-  /^object[_\s-]?3?d?[_\s-]?\d+$/i,
-  /^shape[_\s-]?\d+$/i,
-  /^face[_\s-]?\d+$/i,
-  /^edge[_\s-]?\d+$/i,
-  /^solid(?:[_\s-]?\d+)?$/i,
-  /^compound[_\s-]?\d+$/i,
-  /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
-];
-
-const isGeneratedOrDefaultName = (name: string) => {
-  const trimmed = name.trim();
-  return DEFAULT_NODE_NAMES.has(trimmed) || GENERATED_NAME_PATTERNS.some((pattern) => pattern.test(trimmed));
-};
-
-const slugId = (value: string, fallback = 'item') => {
-  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug || fallback;
-};
-
-const uniqueManifestId = (base: string, used: Set<string>) => {
-  let candidate = base;
-  let index = 2;
-  while (used.has(candidate)) {
-    candidate = `${base}-${index}`;
-    index += 1;
-  }
-  used.add(candidate);
-  return candidate;
-};
-
-const isNamedGroup = (node: THREE.Object3D) => {
-  const isGroup = node.type === 'Group' || node.type === 'Object3D';
-  const name = node.name || '';
-  return isGroup && node.children.length > 0 && !isGeneratedOrDefaultName(name);
-};
-
-const hasMeshDescendant = (node: THREE.Object3D): boolean => {
-  if ((node as THREE.Mesh).isMesh) return true;
-  return node.children.some(hasMeshDescendant);
-};
-
-const hasNamedGroupChildWithMeshes = (node: THREE.Object3D): boolean => (
-  node.children.some((child) => (
-    (isNamedGroup(child) && hasMeshDescendant(child))
-    || hasNamedGroupChildWithMeshes(child)
-  ))
-);
-
-const objectPath = (ancestors: THREE.Object3D[], node: THREE.Object3D) => (
-  [...ancestors, node]
-    .map((item, index) => (item.name || `${item.type || 'node'}_${index + 1}`).replace(/\//g, '_'))
-    .filter(Boolean)
-    .join('/')
-);
-
-const normalizeForMatch = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
-
-const scoreSourceCall = (displayName: string, path: string, call: BomSourceCall) => {
-  const nodeText = `${displayName} ${path}`.toLowerCase();
-  const sourceText = `${call.function} ${call.scope} ${call.bomKind}`.toLowerCase();
-  const normalizedNode = normalizeForMatch(nodeText);
-  const normalizedSource = normalizeForMatch(sourceText);
-  let score = 0;
-  const reasons: string[] = [];
-
-  if (nodeText.includes('fastener') && call.bomKind === 'fastener_assembly') {
-    score += 8;
-    reasons.push('fastener node matched fastener assembly call');
-  }
-  if (nodeText.includes('column') && normalizedSource.includes('column')) {
-    score += 6;
-    reasons.push('column node matched column source scope');
-  }
-  if (nodeText.includes('rafter') && normalizedSource.includes('rafter')) {
-    score += 6;
-    reasons.push('rafter node matched rafter source scope');
-  }
-  if (nodeText.includes('fascia') && normalizedSource.includes('fascia')) {
-    score += 6;
-    reasons.push('fascia node matched fascia source scope');
-  }
-  if (nodeText.includes('apex') && normalizedSource.includes('apex')) {
-    score += 6;
-    reasons.push('apex node matched apex source function');
-  }
-  if (nodeText.includes('knee') && normalizedSource.includes('knee')) {
-    score += 6;
-    reasons.push('knee node matched knee source function');
-  }
-  if (nodeText.includes('base') && (normalizedSource.includes('gpb') || normalizedSource.includes('base'))) {
-    score += 5;
-    reasons.push('base node matched GPB/base source function');
-  }
-  if ((nodeText.includes('100cp') || normalizedNode.includes('cpbracket')) && normalizedSource.includes('100cp')) {
-    score += 7;
-    reasons.push('100CP node matched 100CP source function');
-  }
-  if (nodeText.includes('bracket') && call.bomKind === 'bracket') {
-    score += 3;
-    reasons.push('bracket node matched bracket source kind');
-  }
-  if (nodeText.includes('foundation') && call.bomKind === 'foundation') {
-    score += 6;
-    reasons.push('foundation node matched foundation source function');
-  }
-  if ((nodeText.includes('block') || nodeText.includes('versaloc')) && call.bomKind === 'block') {
-    score += 6;
-    reasons.push('block node matched block source function');
-  }
-
-  return { score, reason: reasons.join('; ') };
-};
-
-const findSourceCall = (displayName: string, path: string, metadata: BomMetadata | null) => {
-  let best: { call: BomSourceCall; score: number; reason: string } | null = null;
-  for (const call of metadata?.calls || []) {
-    const scored = scoreSourceCall(displayName, path, call);
-    if (!best || scored.score > best.score) best = { call, score: scored.score, reason: scored.reason };
-  }
-  return best && best.score >= 5 ? best : null;
-};
-
-const resolveCompactValue = (value: unknown, featureValues: Map<string, string | number | boolean>): unknown => {
-  const record = asRecord(value);
-  if (record.kind === 'literal') return record.value;
-  if (record.kind === 'reference') {
-    const name = asString(record.name);
-    return featureValues.has(name) ? featureValues.get(name) : name;
-  }
-  if (record.kind === 'expression') return asString(record.source);
-  return value;
-};
-
-export const deriveAssemblyTreeManifest = (
-  root: THREE.Object3D,
-  baseManifest: BomManifest | null,
-  bomMetadata: BomMetadata | null,
-  features: FeatureValue[],
-): BomManifest | null => {
-  const featureValues = new Map(features.map((feature) => [feature.name, feature.value]));
-  const usedIds = new Set<string>();
-  const scopes: ManifestScope[] = [];
-  const components: ManifestComponent[] = [];
-  const requirements: ManifestRequirement[] = [];
-  const diagnostics: ManifestDiagnostic[] = [...(baseManifest?.diagnostics || [])];
-  const scopeByObject = new Map<THREE.Object3D, ManifestScope>();
-  const componentObjects: Array<{ node: THREE.Object3D; ancestors: THREE.Object3D[] }> = [];
-
-  const visit = (node: THREE.Object3D, ancestors: THREE.Object3D[]) => {
-    if (isNamedGroup(node) && hasMeshDescendant(node)) {
-      if (hasNamedGroupChildWithMeshes(node)) {
-        const path = objectPath(ancestors, node);
-        const id = uniqueManifestId(slugId(path, 'scope'), usedIds);
-        const parentScope = [...ancestors].reverse().map((ancestor) => scopeByObject.get(ancestor)).find(Boolean) || null;
-        const scope = {
-          id,
-          label: node.name || id,
-          parent_id: parentScope?.id || null,
-          source_file: null,
-          source_line: null,
-        };
-        scopes.push(scope);
-        scopeByObject.set(node, scope);
-      } else {
-        componentObjects.push({ node, ancestors });
-      }
-    }
-    node.children.forEach((child) => visit(child, [...ancestors, node]));
-  };
-
-  root.children.forEach((child) => visit(child, []));
-
-  for (const { node, ancestors } of componentObjects) {
-    const parentScope = [...ancestors].reverse().map((ancestor) => scopeByObject.get(ancestor)).find(Boolean) || null;
-    const path = objectPath(ancestors, node);
-    const sourceMatch = findSourceCall(node.name || '', path, bomMetadata);
-    const sourceCall = sourceMatch?.call || null;
-    const componentId = uniqueManifestId(slugId(path, 'component'), usedIds);
-    components.push({
-      id: componentId,
-      scope_id: parentScope?.id || null,
-      label: node.name || componentId,
-      role: sourceCall?.bomKind || 'component',
-      visual_node_ids: [node.uuid],
-      source_file: sourceCall?.sourceFile || null,
-      source_line: sourceCall?.line ?? null,
-    });
-
-    const standardInputs = sourceCall?.standardInputs || {};
-    const partNumber = resolveCompactValue(standardInputs.part_number ?? standardInputs.product_key, featureValues);
-    const resolvedPartNumber = asString(partNumber).trim();
-    const lengthMm = resolveCompactValue(standardInputs.length_mm, featureValues);
-    const dimensions: Record<string, unknown> = {};
-    if (lengthMm !== undefined && lengthMm !== '') dimensions.length_mm = lengthMm;
-
-    for (const key of ['width_mm', 'height_mm', 'thickness_mm', 'diameter_mm', 'grip_length_mm']) {
-      const resolved = resolveCompactValue(standardInputs[key], featureValues);
-      if (resolved !== undefined && resolved !== '') dimensions[key] = resolved;
-    }
-    if (!resolvedPartNumber) dimensions.component_label = node.name || componentId;
-
-    requirements.push({
-      id: `${componentId}.requirement`,
-      component_id: componentId,
-      scope_id: parentScope?.id || null,
-      part_number: resolvedPartNumber || null,
-      quantity: 1,
-      rolled_up_quantity: 1,
-      quantity_source: 'visual_instances',
-      quantity_confidence: 'verified',
-      orderable: true,
-      unit: asString(resolveCompactValue(standardInputs.unit, featureValues) || 'each'),
-      dimensions,
-      material: asString(resolveCompactValue(standardInputs.material, featureValues)) || null,
-      finish: asString(resolveCompactValue(standardInputs.finish, featureValues)) || null,
-      grade: asString(resolveCompactValue(standardInputs.grade, featureValues)) || null,
-      standard: asString(resolveCompactValue(standardInputs.standard, featureValues)) || null,
-      source_file: sourceCall?.sourceFile || null,
-      source_line: sourceCall?.line ?? null,
-    });
-
-    if (!sourceCall) {
-      diagnostics.push({
-        code: 'assembly_tree_no_source_match',
-        severity: 'warning',
-        message: `${node.name || componentId} was inferred from the GLTF tree, but no matching design.py source call was found.`,
-        component_id: componentId,
-      });
-    } else if (sourceCall.bomReadiness !== 'ok') {
-      diagnostics.push({
-        code: 'assembly_tree_incomplete_requirement',
-        severity: 'warning',
-        message: `${node.name || componentId} has inferred procurement metadata but is missing ${sourceCall.bomMissingFields.join(', ') || 'some'} fields.`,
-        component_id: componentId,
-        source_file: sourceCall.sourceFile,
-        source_line: sourceCall.line,
-      });
-    }
-  }
-
-  if (!components.length && !requirements.length) return null;
-
-  return {
-    version: baseManifest?.version || 1,
-    source_snapshot_hash: baseManifest?.source_snapshot_hash || '',
-    scopes,
-    components,
-    requirements,
-    diagnostics: [
-      ...diagnostics,
-      {
-        code: 'assembly_tree_inferred_manifest',
-        severity: 'info',
-        message: 'Procurement derived draft components and requirements from the GLTF assembly tree and Artus design.py metadata.',
-      },
-    ],
-    visual_path_map: baseManifest?.visual_path_map || {},
-  };
-};
 
 export const manifestCounts = (manifest: BomManifest | null | undefined): ManifestCounts => ({
   scopes: manifest?.scopes?.length || 0,
@@ -807,7 +485,7 @@ const artifactStateMessage = (state: BomArtifactState) => {
   if (state === 'scopes_only') return 'This compile produced selectable assembly views, but no procurement requirements have been declared for them yet.';
   if (state === 'diagnostic_only') return 'This compile produced diagnostics only. Procurement will not invent rows from mesh names, function names, or GLB labels.';
   if (state === 'stale_manifest') return 'The latest model and latest BoM manifest came from different compile jobs. Recompile before treating Procurement as verified.';
-  return 'A 3D model can exist without a matching BoM manifest. Compile a design that emits tertius_bom metadata to create one.';
+  return 'A 3D model can exist without a complete procurement projection. Use workbench-enabled product imports, resolve the component diagnostics, and compile again.';
 };
 
 const dimensionsKey = (dimensions: Record<string, unknown>) => (
@@ -1417,7 +1095,6 @@ type EmissiveMaterial = THREE.Material & {
 export const BomReviewTab: React.FC<{
   artusServerUrl: string;
   extusServerUrl: string;
-  intusServerUrl: string;
   isActive?: boolean;
   onOpenCompiler?: () => void;
   useSharedViewport?: boolean;
@@ -1427,7 +1104,6 @@ export const BomReviewTab: React.FC<{
 }> = ({
   artusServerUrl: _artusServerUrl,
   extusServerUrl,
-  intusServerUrl,
   isActive = true,
   onOpenCompiler,
   useSharedViewport = false,
@@ -1435,21 +1111,13 @@ export const BomReviewTab: React.FC<{
   onViewportFrameChange,
   componentPreviewImage,
 }) => {
-  const { authMode, getAccessToken } = useAuth();
-  const storage = useMemo(
-    () => createProjectStorage({ authMode, serverUrl: intusServerUrl, getAccessToken }),
-    [authMode, getAccessToken, intusServerUrl],
-  );
+  const { getAccessToken } = useAuth();
   const [subTab, setSubTab] = useState<SubTab>('bom');
   const [projectName, setProjectName] = useState('');
   const [manifestEnvelope, setManifestEnvelope] = useState<ManifestEnvelope | null>(null);
   const [modelUrl, setModelUrl] = useState('');
   const [statusText, setStatusText] = useState('Waiting for compiled model...');
   const [error, setError] = useState<string | null>(null);
-  const [recoveryStatus, setRecoveryStatus] = useState('');
-  const [isDraftingBomMetadata, setIsDraftingBomMetadata] = useState(false);
-  const [snippetCopied, setSnippetCopied] = useState(false);
-  const [procurementAnalysisUnavailable, setProcurementAnalysisUnavailable] = useState(false);
   const [selectedScopeId, setSelectedScopeId] = useState('__all__');
   const [selectedLineKey, setSelectedLineKey] = useState<string | null>(null);
   const [selectedComponentId, setSelectedComponentId] = useState<string | null>(null);
@@ -1512,36 +1180,17 @@ export const BomReviewTab: React.FC<{
           if (mounted) setProjectName(asString(data.project_name));
         }
 
-        let analysisUnavailable = false;
-        let manifestResponse = await apiFetch(`${extusServerUrl}/procurement_analysis`, getAccessToken);
-        if (manifestResponse.status === 404) {
-          analysisUnavailable = true;
-          manifestResponse = await apiFetch(`${extusServerUrl}/bom_manifest`, getAccessToken);
-        }
+        const manifestResponse = await apiFetch(`${extusServerUrl}/procurement`, getAccessToken);
         if (!manifestResponse.ok) {
           if (mounted) {
             setManifestEnvelope(null);
-            setProcurementAnalysisUnavailable(analysisUnavailable);
-            setError(manifestResponse.status === 404 ? null : 'Failed to read the procurement analysis artifact.');
+            setError(manifestResponse.status === 404 ? null : 'Failed to read the procurement artifact.');
           }
           return;
         }
         const jsonStartedAt = performance.now();
-        let data = normalizeManifestEnvelope((await manifestResponse.json()) as ManifestEnvelope);
+        const data = normalizeManifestEnvelope((await manifestResponse.json()) as ManifestEnvelope);
         const jsonDurationMs = Math.round(performance.now() - jsonStartedAt);
-        if (analysisUnavailable && data?.manifest) {
-          const fallbackManifest = {
-            ...data.manifest,
-            components: [],
-            requirements: [],
-          };
-          data = {
-            ...data,
-            manifest: fallbackManifest,
-            artifact_state: fallbackManifest.scopes.length > 0 ? 'scopes_only' : 'diagnostic_only',
-            manifest_counts: manifestCounts(fallbackManifest),
-          };
-        }
         const durationMs = Math.round(performance.now() - startedAt);
         perfLog('Procurement', 'manifest-fetch-complete', {
           durationMs,
@@ -1552,11 +1201,10 @@ export const BomReviewTab: React.FC<{
         if (mounted && data && data.mtime !== lastManifestMtime) {
           lastManifestMtime = data.mtime;
           setManifestEnvelope(data);
-          setProcurementAnalysisUnavailable(analysisUnavailable);
           setError(null);
         }
       } catch {
-        if (mounted) setError('Failed to connect to the procurement analysis endpoint.');
+        if (mounted) setError('Failed to connect to the procurement endpoint.');
       }
     };
 
@@ -1700,20 +1348,13 @@ export const BomReviewTab: React.FC<{
   const showScopeList = false;
   const showBomToolbar = isReadyManifest || artifactState === 'scopes_only';
   const showBomTable = isReadyManifest && bomLines.length > 0;
-  const emptyStateTitle = procurementAnalysisUnavailable && !isReadyManifest
-    ? 'Deterministic procurement analysis is not available'
-    : isReadyManifest ? 'No procurement requirements in this view' : artifactStateTitle(artifactState);
+  const emptyStateTitle = isReadyManifest ? 'No procurement requirements in this view' : artifactStateTitle(artifactState);
   const emptyStateMessage = isReadyManifest
     ? `${selectedScope?.label || projectName || 'The current view'} has no declared procurement requirements.`
-    : procurementAnalysisUnavailable
-      ? 'The BoM tab needs the /api/extus/procurement_analysis endpoint to show the same rows as the procurement analysis viewer. The running backend does not expose that endpoint yet, so GLTF-derived draft rows are hidden.'
     : artifactStateMessage(artifactState);
-  const canDraftBomMetadata = authMode !== 'guest' && Boolean(projectName) && !isDraftingBomMetadata;
   const viewerVerificationText = isReadyManifest
     ? 'Verified: model and BoM manifest match'
-    : procurementAnalysisUnavailable
-      ? 'Procurement analysis endpoint unavailable'
-      : `Procurement unverified: ${artifactStateTitle(artifactState)}`;
+    : `Procurement unverified: ${artifactStateTitle(artifactState)}`;
 
   useEffect(() => {
     setVisibleRows(INITIAL_VISIBLE_ROWS);
@@ -1812,79 +1453,6 @@ export const BomReviewTab: React.FC<{
     setSelectedComponentId(componentId);
     setSelectedLineKey(null);
   }, []);
-
-  const copyStarterSnippet = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(BOM_STARTER_SNIPPET);
-      setSnippetCopied(true);
-      window.setTimeout(() => setSnippetCopied(false), 2_000);
-    } catch {
-      setRecoveryStatus('Clipboard copy failed. Open Compiler and add tertius_bom metadata manually.');
-    }
-  }, []);
-
-  const draftBomMetadata = useCallback(async () => {
-    if (authMode === 'guest') {
-      setRecoveryStatus('Log in before drafting BoM metadata.');
-      return;
-    }
-    if (!projectName) {
-      setRecoveryStatus('Select an active project before drafting BoM metadata.');
-      return;
-    }
-
-    setIsDraftingBomMetadata(true);
-    setRecoveryStatus('Preparing design.py for BoM metadata drafting...');
-    try {
-      const metadata = await storage.listFileMetadata(projectName);
-      const editableFiles = metadata
-        .filter((file) => file.id && file.updated_at)
-        .slice(0, 20)
-        .map((file) => ({
-          id: file.id,
-          filename: file.filename,
-          updated_at: file.updated_at as string,
-        }));
-      const designFile = editableFiles.find((file) => file.filename === 'design.py');
-      if (!designFile) {
-        setRecoveryStatus('design.py metadata is not available. Open Compiler, refresh the project, then try again.');
-        return;
-      }
-
-      const job = await storage.applyLlmFileEditJob(projectName, {
-        prompt: BOM_METADATA_EDIT_PROMPT,
-        files: editableFiles,
-        active_file_id: designFile.id,
-        metadata: { source: 'procurement_bom_recovery' },
-      });
-      setRecoveryStatus(`BoM metadata draft queued (${job.job_id}).`);
-
-      for (let attempt = 0; attempt < BOM_RECOVERY_MAX_POLLS; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, BOM_RECOVERY_POLL_MS));
-        const status = await storage.getLlmFileEditJob(projectName, job.job_id);
-        if (status.status === 'queued' || status.status === 'running') {
-          setRecoveryStatus(`BoM metadata draft is ${status.status}...`);
-          continue;
-        }
-        if (status.status === 'succeeded' && status.result) {
-          if (status.result.outcome === 'changed') {
-            const changed = status.result.files.filter((file) => file.changed).map((file) => file.filename).join(', ');
-            setRecoveryStatus(`BoM metadata drafted in ${changed || 'design.py'}. Review it in Compiler, then compile GLB again.`);
-          } else {
-            setRecoveryStatus(status.result.message || 'The BoM metadata draft finished without changing design.py.');
-          }
-          return;
-        }
-        setRecoveryStatus(status.user_message || status.error || 'BoM metadata draft failed.');
-        return;
-      }
-      setRecoveryStatus('BoM metadata draft is still running. Open Compiler to check the edit job history.');
-    } catch (err) {
-      setRecoveryStatus(err instanceof Error ? err.message : 'BoM metadata draft failed.');
-    } finally {
-      setIsDraftingBomMetadata(false);
-    }
-  }, [authMode, projectName, storage]);
 
   const saveSupplierEdit = () => {
     if (!editSupplier?.name.trim()) return;
@@ -2018,12 +1586,6 @@ export const BomReviewTab: React.FC<{
           The latest BoM manifest and latest 3D model came from different compile jobs. Recompile before treating this BoM as verified.
         </div>
       )}
-      {procurementAnalysisUnavailable && !isReadyManifest && (
-        <div className="pointer-events-auto border-b border-amber-900/60 bg-amber-950/30 px-4 py-2 text-sm text-amber-200">
-          The running backend does not expose deterministic procurement analysis yet, so GLTF-derived draft rows are hidden.
-        </div>
-      )}
-
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {subTab === 'bom' && (
           <>
@@ -2125,31 +1687,17 @@ export const BomReviewTab: React.FC<{
                   <div className="mt-2 max-w-3xl text-sm text-slate-400">{emptyStateMessage}</div>
                   {!isReadyManifest && (
                     <div className="mt-4 rounded border border-amber-900/50 bg-amber-950/20 p-4">
-                      <div className="text-xs font-bold uppercase tracking-wider text-amber-300">Recovery</div>
+                      <div className="text-xs font-bold uppercase tracking-wider text-amber-300">Compile diagnostics</div>
+                      <div className="mt-2 text-xs text-slate-400">
+                        Procurement is generated by Tertius from workbench-enabled product imports. Resolve the reported component diagnostics in the mechanical design or product library, then compile again.
+                      </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          onClick={draftBomMetadata}
-                          disabled={!canDraftBomMetadata}
-                          className={`rounded px-3 py-2 text-xs font-semibold ${canDraftBomMetadata ? 'bg-amber-600 text-white hover:bg-amber-500' : 'cursor-not-allowed bg-slate-800 text-slate-500'}`}
-                        >
-                          {isDraftingBomMetadata ? 'Drafting metadata...' : 'Draft BoM metadata'}
-                        </button>
                         <button
                           onClick={onOpenCompiler}
                           className="rounded bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
                         >
                           Open Compiler
                         </button>
-                        <button
-                          onClick={copyStarterSnippet}
-                          className="rounded bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
-                        >
-                          {snippetCopied ? 'Snippet copied' : 'Copy starter snippet'}
-                        </button>
-                      </div>
-                      {recoveryStatus && <div className="mt-3 text-xs text-slate-300">{recoveryStatus}</div>}
-                      <div className="mt-3 text-xs text-slate-500">
-                        The draft action edits design.py through Intus. Review the change, compile GLB again, then Procurement will load the new manifest artifact.
                       </div>
                     </div>
                   )}
@@ -2742,11 +2290,16 @@ const ProcurementSceneViewer: React.FC<{
     };
 
     const visit = (object: THREE.Object3D, inheritedInfo: VisualMeshInfo | null) => {
+      const managedComponentId = asString(
+        asRecord(asRecord(object.userData).tertiusComponent).id,
+      ).trim();
       const uuidComponentId = visualIdToComponent.get(object.uuid);
       const nameComponentId = visualIdToComponent.get(object.name);
       const explicitVisualNodeId = uuidComponentId ? object.uuid : nameComponentId ? object.name : null;
       const parsed = parseBomNodeName(object.name);
-      const ownInfo = explicitVisualNodeId
+      const ownInfo = managedComponentId
+        ? { componentId: managedComponentId, visualNodeId: managedComponentId }
+        : explicitVisualNodeId
         ? { componentId: uuidComponentId || nameComponentId || '', visualNodeId: explicitVisualNodeId }
         : parsed
           ? { componentId: parsed.componentId, visualNodeId: parsed.visualNodeId }

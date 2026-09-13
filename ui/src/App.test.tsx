@@ -46,6 +46,19 @@ afterEach(() => {
 })
 
 describe('App guest mode', () => {
+  it('opens and closes About through rendered state', () => {
+    render(<App />)
+
+    const aboutButton = screen.getByRole('button', { name: 'About' })
+    expect(screen.queryByRole('link', { name: 'View on GitHub' })).not.toBeInTheDocument()
+
+    fireEvent.click(aboutButton)
+    expect(screen.getByRole('link', { name: 'View on GitHub' })).toBeVisible()
+
+    fireEvent.click(aboutButton)
+    expect(screen.queryByRole('link', { name: 'View on GitHub' })).not.toBeInTheDocument()
+  })
+
   it('starts with the sidebar collapsed on desktop', () => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hashlib import sha256
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from core.auth import get_auth_context
 from core.auth_types import AuthContext
 from core.workbench_access import STRUCTURAL_WORKBENCH_ROLE
-from core.compile_runtime import runtime_files_hash
 from core.db import get_db
 from core.structural.contracts import CompiledStructuralManifest
 from core.structural.design_capture import (
@@ -210,7 +209,7 @@ site_wind = structure.wind_action_basis(
     region_approximate=True,
     region_status="suggested",
     standard="AS/NZS 1170.2:2021",
-    table_version="AS1170.2-2021-starter-v1",
+    table_version="AS1170.2-2021-starter-v2",
     table_status="starter",
     importance_level="2",
     annual_recurrence_interval_years=500,
@@ -224,7 +223,7 @@ site_wind = structure.wind_action_basis(
     topographic_multiplier=1.0,
     site_wind_speed_m_s=33.75,
     q_z_kPa=0.683438,
-    verifier_hash="6fd0fef70f0f",
+    verifier_hash="77ee232fa355",
     provenance="FBD site-wind calculation test fixture.",
 )""",
     ).replace(
@@ -338,7 +337,7 @@ def test_static_capture_rejects_executable_structural_declarations():
         parse_project_structural_capture(source, project_name="structural_test")
 
 
-def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
+def test_active_capture_api_requires_a_compiled_projection(monkeypatch):
     context = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -348,23 +347,14 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
     )
     project = type("ProjectStub", (), {"name": "structural_test"})()
 
-    class RepositoryStub:
-        def __init__(self, _db, tenant_id):
-            assert tenant_id == context.tenant_id
-
-        def files_for_runtime(self, project_name):
-            assert project_name == "structural_test"
-            return {"design.py": DESIGN}
-
     monkeypatch.setattr(
         structural_server, "get_active_project", lambda _db, _ctx: project
     )
     monkeypatch.setattr(
         structural_server,
-        "get_latest_structural_manifest_artifact",
+        "get_latest_structural_projection_artifact",
         lambda _db, _ctx, _project: None,
     )
-    monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
     structural_server.app.dependency_overrides[get_auth_context] = lambda: context
     structural_server.app.dependency_overrides[get_db] = lambda: object()
     try:
@@ -373,12 +363,11 @@ def test_active_capture_api_uses_the_authenticated_active_project(monkeypatch):
     finally:
         structural_server.app.dependency_overrides.clear()
 
-    assert response.status_code == 200
-    assert response.json()["project_name"] == "structural_test"
-    assert response.json()["load_paths"][0]["status"] == "complete"
+    assert response.status_code == 404
+    assert "structural projection" in response.json()["detail"]
 
 
-def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeypatch):
+def test_active_capture_api_uses_current_compiled_structural_projection(monkeypatch):
     context = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -387,35 +376,43 @@ def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeyp
         roles=frozenset({STRUCTURAL_WORKBENCH_ROLE}),
     )
     project = SimpleNamespace(id=uuid4(), name="structural_test")
-    files = {
-        "catalog.json.py": '{"version":"2.0"}',
-        "design.py": DESIGN,
+    projection = {
+        "schema_version": "tertius.structural.v1",
+        "compiled_design_digest": "d" * 64,
+        "components": [
+            {"component_id": "M1", "kind": "member", "mark": "M1"},
+            {"component_id": "M2", "kind": "member", "mark": "M2"},
+        ],
+        "joints": [
+            {
+                "connection_id": "J1",
+                "ports": [
+                    {"component_id": "M1", "port": "end"},
+                    {"component_id": "M2", "port": "start"},
+                ],
+                "connector_component_ids": [],
+                "transfers": ["force"],
+            }
+        ],
+        "readiness": {"model_complete": True},
+        "diagnostics": [],
     }
-    compiled = CompiledStructuralManifest(
-        source_hash=runtime_files_hash(files),
-        design_hash=sha256(DESIGN.encode("utf-8")).hexdigest(),
-        declaration=_structural_declaration(DESIGN),
-    )
-
-    class RepositoryStub:
-        def __init__(self, _db, tenant_id):
-            assert tenant_id == context.tenant_id
-
-        def files_for_runtime(self, project_name):
-            assert project_name == "structural_test"
-            return files
 
     monkeypatch.setattr(
         structural_server, "get_active_project", lambda _db, _ctx: project
     )
     monkeypatch.setattr(
         structural_server,
-        "get_latest_structural_manifest_artifact",
+        "get_latest_structural_projection_artifact",
         lambda _db, _ctx, _project: SimpleNamespace(
-            content=compiled.model_dump_json().encode("utf-8")
+            content=json.dumps(projection).encode("utf-8")
         ),
     )
-    monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
+    monkeypatch.setattr(
+        structural_server,
+        "get_latest_structural_configuration",
+        lambda _db, _ctx, _project: None,
+    )
     structural_server.app.dependency_overrides[get_auth_context] = lambda: context
     structural_server.app.dependency_overrides[get_db] = lambda: object()
     try:
@@ -425,12 +422,11 @@ def test_active_capture_api_prefers_current_compiled_structural_manifest(monkeyp
         structural_server.app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json()["capabilities"][0]["detail"].startswith(
-        "Structural manifest resolved from the compiled design.py source closure"
-    )
+    assert response.json()["design_hash"] == "d" * 64
+    assert response.json()["connections"][0]["id"] == "J1"
 
 
-def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypatch):
+def test_active_capture_api_rejects_removed_structural_manifest_schema(monkeypatch):
     context = AuthContext(
         user_id=uuid4(),
         tenant_id=uuid4(),
@@ -445,25 +441,21 @@ def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypat
         declaration=_structural_declaration(DESIGN),
     )
 
-    class RepositoryStub:
-        def __init__(self, _db, tenant_id):
-            assert tenant_id == context.tenant_id
-
-        def files_for_runtime(self, project_name):
-            assert project_name == "structural_test"
-            return {"design.py": DESIGN + "\n# changed\n"}
-
     monkeypatch.setattr(
         structural_server, "get_active_project", lambda _db, _ctx: project
     )
     monkeypatch.setattr(
         structural_server,
-        "get_latest_structural_manifest_artifact",
+        "get_latest_structural_projection_artifact",
         lambda _db, _ctx, _project: SimpleNamespace(
             content=compiled.model_dump_json().encode("utf-8")
         ),
     )
-    monkeypatch.setattr(structural_server, "ProjectRepository", RepositoryStub)
+    monkeypatch.setattr(
+        structural_server,
+        "get_latest_structural_configuration",
+        lambda _db, _ctx, _project: None,
+    )
     structural_server.app.dependency_overrides[get_auth_context] = lambda: context
     structural_server.app.dependency_overrides[get_db] = lambda: object()
     try:
@@ -472,5 +464,5 @@ def test_active_capture_api_rejects_stale_compiled_structural_manifest(monkeypat
     finally:
         structural_server.app.dependency_overrides.clear()
 
-    assert response.status_code == 409
-    assert "Compile the active project" in response.json()["detail"]
+    assert response.status_code == 422
+    assert "unsupported structural projection" in response.json()["detail"]

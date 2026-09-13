@@ -53,6 +53,12 @@ jobs:
         run: |
           docker build --target api -t tertius-api:test -f Dockerfile.api .
           docker build --target pi-agent -t tertius-pi-agent:test -f Dockerfile.api .
+          docker build --target gis-cache -t tertius-gis-cache:test -f Dockerfile.gis .
+
+      - name: Verify GIS cache runtime identity and API isolation
+        run: |
+          docker run --rm --entrypoint python tertius-gis-cache:test -c 'import rasterio, rio_cogeo, rio_tiler, titiler.core; from server.gis_cache.app import app; assert app.docs_url is None'
+          docker run --rm --entrypoint sh tertius-gis-cache:test -c 'test "$(id -u)" = 1000 && test "$(id -g)" = 1000 && test -z "${DATABASE_URL:-}" && test ! -e /app/server/pi'
 
       - name: Verify common prompt artifact and API tooling isolation
         run: |
@@ -166,8 +172,18 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --group dev
 
+      - name: Install GIS cache test dependencies
+        run: uv sync --project gis-cache --group dev --locked
+
       - name: Run Python type checks
         run: uv run mypy
 
       - name: Run Python tests
-        run: uv run pytest
+        # The GIS service deliberately has an isolated dependency environment;
+        # run its Rasterio/TiTiler suite in the dedicated step below.
+        run: uv run pytest --ignore=server/tests/gis_cache
+
+      - name: Run GIS cache tests
+        # Do not load the API suite's SQLAlchemy/Testcontainers conftest into
+        # the intentionally isolated GIS environment.
+        run: PYTHONPATH=. uv run --project gis-cache pytest --confcutdir=server/tests/gis_cache server/tests/gis_cache

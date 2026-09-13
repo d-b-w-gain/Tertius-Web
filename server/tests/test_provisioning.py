@@ -10,6 +10,7 @@ from core.models import (
     UserWorkspaceState,
 )
 from core.provisioning import provision_user_context
+from core.project_templates import default_project_files
 
 
 def test_first_login_creates_tenant_membership_and_default_project(db_session):
@@ -25,10 +26,16 @@ def test_first_login_creates_tenant_membership_and_default_project(db_session):
 
     user = db_session.get(AppUser, ctx.user_id)
     tenant = db_session.get(Tenant, ctx.tenant_id)
-    membership = db_session.scalar(select(TenantMembership).where(TenantMembership.user_id == ctx.user_id))
-    project = db_session.scalar(select(Project).where(Project.tenant_id == ctx.tenant_id))
+    membership = db_session.scalar(
+        select(TenantMembership).where(TenantMembership.user_id == ctx.user_id)
+    )
+    project = db_session.scalar(
+        select(Project).where(Project.tenant_id == ctx.tenant_id)
+    )
     design_file = db_session.scalar(
-        select(ProjectFile).where(ProjectFile.project_id == project.id, ProjectFile.filename == "design.py")
+        select(ProjectFile).where(
+            ProjectFile.project_id == project.id, ProjectFile.filename == "design.py"
+        )
     )
     workspace = db_session.scalar(
         select(UserWorkspaceState).where(
@@ -46,7 +53,13 @@ def test_first_login_creates_tenant_membership_and_default_project(db_session):
     assert project.name == "default_purlin"
     assert project.created_by == ctx.user_id
     assert design_file.tenant_id == ctx.tenant_id
-    assert "build123d" in design_file.content
+    assert "from lysaght_zc import CONNECTION_FAMILY, cee_member" in design_file.content
+    assert {
+        row.filename
+        for row in db_session.scalars(
+            select(ProjectFile).where(ProjectFile.project_id == project.id)
+        )
+    } == set(default_project_files())
     assert workspace.active_project_id == project.id
     assert workspace.active_file_id == design_file.id
 
@@ -87,5 +100,7 @@ def test_second_login_updates_existing_user_without_duplicate_provisioning(db_se
     assert db_session.scalar(select(func.count()).select_from(Tenant)) == 1
     assert db_session.scalar(select(func.count()).select_from(TenantMembership)) == 1
     assert db_session.scalar(select(func.count()).select_from(Project)) == 1
-    assert db_session.scalar(select(func.count()).select_from(ProjectFile)) == 1
+    assert db_session.scalar(select(func.count()).select_from(ProjectFile)) == len(
+        default_project_files()
+    )
     assert db_session.scalar(select(func.count()).select_from(UserWorkspaceState)) == 1

@@ -63,6 +63,11 @@ spec:
                 value: {{ .Values.app.config.piAgentProvider | quote }}
               - name: PI_AGENT_MODEL
                 value: {{ .Values.app.config.piAgentModel | quote }}
+              - name: PI_AGENT_MODELS_JSON
+                valueFrom:
+                  configMapKeyRef:
+                    name: {{ include "tertius.configName" . }}
+                    key: PI_AGENT_MODELS_JSON
               - name: PI_AGENT_THINKING
                 value: {{ .Values.app.config.piAgentThinking | quote }}
               - name: PI_AGENT_TIMEOUT_SECONDS

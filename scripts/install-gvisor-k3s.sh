@@ -8,6 +8,10 @@ KUBECONFIG_PATH="${KUBECONFIG_PATH:-/etc/rancher/k3s/k3s.yaml}"
 CONTAINERD_DIR="${CONTAINERD_DIR:-/var/lib/rancher/k3s/agent/etc/containerd}"
 SMOKE_NAMESPACE="${SMOKE_NAMESPACE:-tertius-gvisor-smoke}"
 SMOKE_JOB="${SMOKE_JOB:-gvisor-smoke}"
+DIAGNOSTIC_NAMESPACE="${DIAGNOSTIC_NAMESPACE:-$SMOKE_NAMESPACE}"
+DIAGNOSTIC_KEEP_NAMESPACE="${DIAGNOSTIC_KEEP_NAMESPACE:-${KEEP_SMOKE_NAMESPACE:-false}}"
+DIAGNOSTIC_NAMESPACE_OWNER_ID=""
+DIAGNOSTIC_NAMESPACE_CREATED=false
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run this script as root, for example: sudo $0" >&2
@@ -23,6 +27,59 @@ if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl is required before running this script." >&2
   exit 1
 fi
+
+gvisor_kubectl() {
+  KUBECONFIG="$KUBECONFIG_PATH" kubectl "$@"
+}
+
+new_diagnostic_owner_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    sed -n '1p' /proc/sys/kernel/random/uuid
+  fi
+}
+
+cleanup_owned_diagnostic_namespace() {
+  status=$1
+  trap - EXIT INT TERM
+  if [ "$DIAGNOSTIC_NAMESPACE_CREATED" = true ] && [ "$DIAGNOSTIC_KEEP_NAMESPACE" != true ]; then
+    current_owner=$(gvisor_kubectl get namespace "$DIAGNOSTIC_NAMESPACE" \
+      -o 'jsonpath={.metadata.annotations.tertius\.io/diagnostic-owner-id}' 2>/dev/null || true)
+    if [ "$current_owner" = "$DIAGNOSTIC_NAMESPACE_OWNER_ID" ]; then
+      gvisor_kubectl delete namespace "$DIAGNOSTIC_NAMESPACE" --ignore-not-found=true --wait=true || true
+    fi
+  fi
+  exit "$status"
+}
+
+claim_diagnostic_namespace() {
+  if ! existing_namespace=$(gvisor_kubectl get namespace "$DIAGNOSTIC_NAMESPACE" --ignore-not-found=true -o name); then
+    echo "Unable to determine whether diagnostic namespace ${DIAGNOSTIC_NAMESPACE} already exists." >&2
+    return 1
+  fi
+  if [ -n "$existing_namespace" ]; then
+    echo "Refusing pre-existing diagnostic namespace ${DIAGNOSTIC_NAMESPACE}." >&2
+    return 1
+  fi
+  DIAGNOSTIC_NAMESPACE_OWNER_ID=$(new_diagnostic_owner_id)
+  DIAGNOSTIC_NAMESPACE_CREATED=true
+  trap 'cleanup_owned_diagnostic_namespace $?' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  gvisor_kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${DIAGNOSTIC_NAMESPACE}
+  annotations:
+    tertius.io/diagnostic-owner-id: ${DIAGNOSTIC_NAMESPACE_OWNER_ID}
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+EOF
+}
 
 install_gvisor_binaries() {
   local arch
@@ -116,18 +173,10 @@ EOF
 }
 
 run_smoke_test() {
-  KUBECONFIG="$KUBECONFIG_PATH" kubectl delete namespace "$SMOKE_NAMESPACE" --ignore-not-found=true --wait=true
+  DIAGNOSTIC_NAMESPACE="$SMOKE_NAMESPACE"
+  claim_diagnostic_namespace
 
   KUBECONFIG="$KUBECONFIG_PATH" kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ${SMOKE_NAMESPACE}
-  labels:
-    pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/warn: restricted
----
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -249,9 +298,9 @@ EOF
   return 1
 }
 
-cleanup_smoke_test() {
-  KUBECONFIG="$KUBECONFIG_PATH" kubectl delete namespace "$SMOKE_NAMESPACE" --ignore-not-found=true --wait=true
-}
+if [ "${TEST_GVISOR_K3S_LIB_ONLY:-false}" = true ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 install_gvisor_binaries
 ensure_gvisor_binaries
@@ -259,6 +308,5 @@ ensure_containerd_template
 restart_k3s
 apply_runtime_class
 run_smoke_test
-cleanup_smoke_test
 
 echo "gVisor installed and verified for k3s RuntimeClass ${RUNTIME_CLASS_NAME}."

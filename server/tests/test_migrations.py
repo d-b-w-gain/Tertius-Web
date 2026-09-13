@@ -36,6 +36,8 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
     assert "project_files" in table_names
     assert "artifacts" in table_names
     assert "compile_jobs" in table_names
+    assert "structural_analysis_results" in table_names
+    assert "structural_report_exports" in table_names
     artifact_columns = {
         column["name"]: column for column in inspector.get_columns("artifacts")
     }
@@ -69,6 +71,41 @@ def test_alembic_upgrade_creates_multitenant_schema(postgres_url: str, monkeypat
         "content",
         "created_at",
     } <= set(snapshot_columns)
+    structural_result_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("structural_analysis_results")
+    }
+    assert {
+        "key_digest",
+        "design_digest",
+        "configuration_digest",
+        "site_digest",
+        "engine_version",
+        "snapshot_schema_version",
+        "combination_id",
+        "snapshot",
+        "calculation_duration_seconds",
+    } <= set(structural_result_columns)
+    assert str(structural_result_columns["snapshot"]["type"]).lower() == "jsonb"
+    structural_report_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("structural_report_exports")
+    }
+    assert {
+        "structural_analysis_result_id",
+        "requested_by",
+        "document_kind",
+        "report_schema_version",
+        "report_identity_digest",
+        "filename",
+        "pdf_content",
+        "pdf_sha256",
+        "pdf_byte_size",
+        "evidence_json_content",
+        "evidence_sha256",
+        "evidence_byte_size",
+        "manifest",
+    } <= set(structural_report_columns)
 
 
 def test_alembic_head_matches_sqlalchemy_models(postgres_url: str, monkeypatch):

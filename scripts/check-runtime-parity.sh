@@ -43,6 +43,8 @@ not_contains() {
 
 not_contains "$CHART_DIR/templates/configmap.yaml" 'LLM_WEEKLY_BUDGET_USD' "Helm ConfigMap must not include direct-provider dollar budgets"
 contains "$CHART_DIR/templates/configmap.yaml" 'PI_AGENT_STREAM_NAME' "Helm ConfigMap must include Pi agent transport settings"
+contains "$CHART_DIR/templates/configmap.yaml" 'PI_AGENT_MODELS_JSON' "Helm ConfigMap must include the Pi model catalog"
+contains "$CHART_DIR/templates/pi-agent-worker.yaml" 'key:[[:space:]]*PI_AGENT_MODELS_JSON' "Helm Pi worker must reference the ConfigMap model catalog"
 python3 - "$ROOT_DIR/Dockerfile.api" "$ROOT_DIR/server/core/pi_agent_system_prompt.md" <<'PY' || fail "API and Pi worker images must inherit the same immutable checked-in prompt artifact"
 from pathlib import Path
 import sys
@@ -65,6 +67,15 @@ for file in \
   "$ROOT_DIR/docker-compose.parity.yml"; do
   not_contains "$file" 'PI_AGENT_SYSTEM_PROMPT|piAgent\.systemPrompt|systemPrompt:' "$file must not expose a runtime Pi prompt override"
 done
+for file in \
+  "$ROOT_DIR/server/.env.example" \
+  "$CHART_DIR/values.yaml" \
+  "$CHART_DIR/templates/configmap.yaml" \
+  "$CHART_DIR/templates/pi-agent-worker.yaml" \
+  "$ROOT_DIR/docker-compose.yml" \
+  "$ROOT_DIR/docker-compose.parity.yml"; do
+  not_contains "$file" 'PI_AGENT_MODEL_LABEL|piAgentModelLabel' "$file must not expose the obsolete Pi model label setting"
+done
 not_contains "$CHART_DIR/templates/pi-agent-worker.yaml" 'pi_agent_system_prompt\.md|/app/server/core' "Helm must not mount over the image-owned Pi prompt"
 not_contains "$ROOT_DIR/docker-compose.yml" 'pi_agent_system_prompt\.md|/app/server/core' "Compose dev must not mount over the image-owned Pi prompt"
 not_contains "$ROOT_DIR/docker-compose.parity.yml" 'pi_agent_system_prompt\.md|/app/server/core' "Compose parity must not mount over the image-owned Pi prompt"
@@ -78,6 +89,14 @@ contains "$ROOT_DIR/scripts/harness-compose.sh" 'pi-agent-auth' "Compose harness
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'finally:' "Pi worker must clean its temporary workspace on every outcome"
 contains "$ROOT_DIR/server/workflows/intus/pi_agent_job.py" 'shutil\.rmtree\(root\)' "Pi worker must remove each temporary workspace"
 contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-pi-agent:local' "k3s CI image list must preload the Pi agent image"
+contains "$ROOT_DIR/docker-compose.yml" 'gis-cache:' "Compose dev must define the GIS cache"
+contains "$ROOT_DIR/docker-compose.yml" 'GIS_CACHE_URL:[[:space:]]*http://gis-cache:8000' "Compose API must use the internal GIS cache service"
+contains "$ROOT_DIR/server/.env.example" '^GIS_CACHE_URL=' "API env example must document the GIS cache endpoint"
+contains "$ROOT_DIR/server/core/config.py" 'gis_cache_url:' "API settings must expose the GIS cache endpoint"
+contains "$ROOT_DIR/Dockerfile.gis" 'USER 1000:1000' "GIS cache image must run as non-root"
+contains "$CHART_DIR/templates/gis-cache.yaml" 'readOnlyRootFilesystem:[[:space:]]*true' "Helm GIS cache must use a read-only root filesystem"
+contains "$CHART_DIR/templates/gis-cache-networkpolicy.yaml" 'app.kubernetes.io/component: api' "Helm GIS cache ingress must be API-only"
+contains "$ROOT_DIR/ci/k3s-images.txt" 'tertius-gis-cache:local' "k3s CI image list must preload the GIS cache image"
 contains "$CHART_DIR/values.yaml" 'tracesBackend:' "Helm values must define tracesBackend"
 contains "$CHART_DIR/templates/otel-collector.yaml" 'otlphttp/victoriatraces' "Helm collector must define VictoriaTraces exporter"
 contains "$ROOT_DIR/infra/otel/otel-collector-local.yaml" 'otlphttp/victoriatraces' "Local collector must define VictoriaTraces exporter"
@@ -96,7 +115,7 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 0
 fi
 
-helm template tertius "$CHART_DIR" --values "$LOCAL_VALUES" >"$TMP_DIR/helm.yaml"
+helm template tertius "$CHART_DIR" --values "$LOCAL_VALUES" --set piAgent.enabled=true >"$TMP_DIR/helm.yaml"
 docker compose -f "$ROOT_DIR/docker-compose.yml" config >"$TMP_DIR/compose-dev.yaml"
 COMPOSE_PARITY_UI_PORT=18080 COMPOSE_PARITY_API_PORT=18000 \
   docker compose -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/docker-compose.parity.yml" config >"$TMP_DIR/compose-parity.yaml"
@@ -106,7 +125,7 @@ COMPOSE_PARITY_UI_PORT=18080 COMPOSE_PARITY_API_PORT=18000 \
 docker compose -p tertius-parity-a -f "$ROOT_DIR/docker-compose.yml" config --format json >"$TMP_DIR/compose-project-a.json"
 docker compose -p tertius-parity-b -f "$ROOT_DIR/docker-compose.yml" config --format json >"$TMP_DIR/compose-project-b.json"
 
-python3 - "$TMP_DIR/compose-dev.json" "$TMP_DIR/compose-parity.json" <<'PY' || fail "Compose Pi worker scoped security/network contract is invalid"
+python3 - "$TMP_DIR/compose-dev.json" "$TMP_DIR/compose-parity.json" <<'PY' || fail "Compose Pi worker scoped security/network and model catalog contract is invalid"
 import copy
 import json
 import sys
@@ -134,6 +153,11 @@ def validate(config):
     assert any(item.startswith("/tmp:") and "size=256m" in item and "mode=0700" in item for item in tmpfs)
     assert any(item.startswith("/tmp/home:") and "size=16m" in item and "mode=0700" in item for item in tmpfs)
     env = worker["environment"]
+    expected_catalog = [
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+    ]
     expected = {
         "PI_AGENT_STREAM_NAME": "TERTIUS_PI_AGENT",
         "PI_AGENT_REQUEST_SUBJECT": "tertius.pi.request",
@@ -153,7 +177,48 @@ def validate(config):
     assert not (forbidden & set(env))
     api_env = services["backend"]["environment"]
     assert api_env["PI_AGENT_RESULT_CONSUMER"] == "pi-agent-result-api"
+    assert api_env["GIS_CACHE_URL"] == "http://gis-cache:8000"
     assert not (forbidden & set(api_env))
+    gis = services["gis-cache"]
+    assert gis["user"] == "1000:1000"
+    assert gis["read_only"] is True and gis["init"] is True
+    assert gis["cap_drop"] == ["ALL"]
+    assert gis["pids_limit"] == 128
+    assert gis["security_opt"] == ["no-new-privileges:true"]
+    assert gis["environment"]["GIS_CACHE_ROOT"] == "/var/lib/tertius-gis"
+    assert gis["environment"]["GIS_GNAF_STATES"] == "NSW"
+    assert gis["environment"]["GIS_TERRAIN_DEFAULT_RADIUS_M"] == "2000"
+    assert gis["environment"]["GIS_NSW_TERRAIN_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIERS_BASE_URL"] == "https://thredds.nci.org.au/thredds"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_GA_WIND_MULTIPLIER_WORKERS"] == "8"
+    assert gis["environment"]["GIS_NSW_ELEVATION_INDEX_URL"].endswith("/Elevation_Index_Public/FeatureServer/0/query")
+    assert gis["environment"]["GIS_NSW_DEM_DOWNLOAD_BASE_URL"] == "https://portal.spatial.nsw.gov.au/download/dem"
+    assert gis["environment"]["GIS_NSW_PROPERTY_FEATURE_URL"].endswith("/NSW_Land_Parcel_Property_Theme/FeatureServer/12/query")
+    assert gis["environment"]["GIS_NSW_PROPERTY_TIMEOUT_SECONDS"] == "30"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_OVERTURE_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_INDEX_URL"].endswith("/2026-07-24/dataset-links.csv")
+    assert gis["environment"]["GIS_MICROSOFT_BUILDINGS_TIMEOUT_SECONDS"] == "90"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHTS_ENABLED"] == "true"
+    assert gis["environment"]["GIS_ELVIS_DOWNLOADABLES_URL"] == "https://api.elevation.fsdf.org.au/elevation/downloadables"
+    assert gis["environment"]["GIS_ELVIS_BUILDING_HEIGHT_RADIUS_M"] == "120"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TIMEOUT_SECONDS"] == "180"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_MAX_BYTES"] == "268435456"
+    assert gis["environment"]["GIS_ELVIS_POINT_CLOUD_TOTAL_MAX_BYTES"] == "536870912"
+    assert gis["environment"]["GIS_ELVIS_AWS_REGION"] == "ap-southeast-2"
+    assert gis["environment"]["GIS_ELVIS_IDENTITY_POOL_ID"] == "ap-southeast-2:56462c13-533a-4f84-9a68-631dcd3345ad"
+    assert len(gis["volumes"]) == 1
+    assert gis["volumes"][0]["target"] == "/var/lib/tertius-gis"
+    assert json.loads(api_env["PI_AGENT_MODELS_JSON"]) == expected_catalog
+    assert json.loads(env["PI_AGENT_MODELS_JSON"]) == expected_catalog
+    assert api_env["PI_AGENT_MODELS_JSON"] == env["PI_AGENT_MODELS_JSON"]
+    assert api_env["PI_AGENT_MODEL"] == "gpt-5.6-sol"
+    assert env["PI_AGENT_MODEL"] == "gpt-5.6-sol"
+    assert "PI_AGENT_MODEL_LABEL" not in api_env
+    assert "PI_AGENT_MODEL_LABEL" not in env
 
 configs = []
 for path in sys.argv[1:]:
@@ -194,6 +259,41 @@ for mutation in mutations:
     raise AssertionError("worker contract validator accepted a negative mutation")
 PY
 
+python3 - "$TMP_DIR/helm.yaml" <<'PY' || fail "Helm API and Pi worker model catalog contract is invalid"
+import json
+import re
+import sys
+
+rendered = open(sys.argv[1], encoding="utf-8").read()
+documents = rendered.split("\n---\n")
+expected = [
+    {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
+    {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
+    {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+]
+catalog_match = re.search(r"^\s*PI_AGENT_MODELS_JSON:\s*(.+)$", rendered, re.MULTILINE)
+assert catalog_match, "ConfigMap must render PI_AGENT_MODELS_JSON"
+raw_catalog = catalog_match.group(1).strip()
+if raw_catalog.startswith("'") and raw_catalog.endswith("'"):
+    decoded = raw_catalog[1:-1].replace("''", "'")
+else:
+    decoded = json.loads(raw_catalog)
+catalog = json.loads(decoded) if isinstance(decoded, str) else decoded
+assert catalog == expected
+config_doc = next(doc for doc in documents if "kind: ConfigMap" in doc and "PI_AGENT_MODELS_JSON:" in doc)
+config_name = re.search(r"^metadata:\s*$\n\s+name:\s*([^\s]+)", config_doc, re.MULTILINE).group(1)
+api_doc = next(doc for doc in documents if "kind: Deployment" in doc and "app.kubernetes.io/component: api" in doc)
+worker_doc = next(doc for doc in documents if "kind: ScaledJob" in doc and "app.kubernetes.io/component: pi-agent-worker" in doc)
+assert re.search(rf"configMapRef:\s+name:\s*{re.escape(config_name)}(?:\s|$)", api_doc)
+assert re.search(
+    r"- name:\s*PI_AGENT_MODELS_JSON\s+valueFrom:\s+configMapKeyRef:\s+"
+    rf"name:\s*{re.escape(config_name)}\s+key:\s*PI_AGENT_MODELS_JSON(?:\s|$)",
+    worker_doc,
+)
+assert re.search(r"- name:\s*PI_AGENT_MODEL\s+value:\s*[\"']?gpt-5\.6-sol[\"']?(?:\s|$)", worker_doc)
+assert "PI_AGENT_MODEL_LABEL" not in rendered
+PY
+
 python3 - "$TMP_DIR/compose-project-a.json" "$TMP_DIR/compose-project-b.json" <<'PY' || fail "Compose Pi egress network must be project-scoped"
 import json
 import sys
@@ -222,10 +322,19 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'pi-agent-result-api' "${file} must include Pi result consumer"
   contains "$file" '8388608' "${file} must include compile request max bytes"
   contains "$file" '33554432' "${file} must include compile result max bytes/NATS max payload"
+  contains "$file" 'COMPILE_SIDECAR_TTL_SECONDS' "${file} must include compile sidecar TTL"
+  contains "$file" 'COMPILE_SIDECAR_MAX_BYTES' "${file} must include compile sidecar capacity"
+  contains "$file" '8589934592' "${file} must include the 8 GiB compile sidecar capacity"
   contains "$file" 'TERTIUS_BILLING' "${file} must include billing stream name"
   contains "$file" 'tertius\.billing\.usage\.llm\.tokens' "${file} must include billing subject"
   contains "$file" 'tertius-api' "${file} must include API service name"
   contains "$file" 'tertius-ui' "${file} must include UI service name"
+  contains "$file" 'tertius-gis-cache|gis-cache' "${file} must include GIS cache service name"
+  contains "$file" 'GIS_CACHE_URL' "${file} must include the internal GIS cache URL"
+  contains "$file" 'GIS_NSW_PROPERTY_FEATURE_URL' "${file} must include the NSW property boundary service contract"
+  contains "$file" 'GIS_MICROSOFT_BUILDINGS_INDEX_URL' "${file} must include the reusable open building-data contract"
+  contains "$file" 'GIS_OVERTURE_BUILDINGS_ENABLED' "${file} must include the reconciled building-data contract"
+  contains "$file" 'GIS_ELVIS_BUILDING_HEIGHTS_ENABLED' "${file} must include the classified point-cloud height contract"
   contains "$file" '4317|grpc' "${file} must include OTEL gRPC contract"
   contains "$file" 'victoriatraces' "${file} must include VictoriaTraces"
   contains "$file" '10428' "${file} must include VictoriaTraces port"
@@ -254,6 +363,7 @@ not_contains "$TMP_DIR/compose-parity.yaml" '5173:5173|published: "5173"|target:
 not_contains "$TMP_DIR/compose-parity.yaml" 'node:20|npm install|npm run dev|CHOKIDAR_USEPOLLING|source: .*/ui|source: .*/server' "Compose parity must not retain dev image, commands, HMR env, or API/UI bind mounts"
 contains "$TMP_DIR/compose-parity.yaml" '18080|published: "18080"' "Compose parity must expose default UI port 18080"
 contains "$TMP_DIR/compose-parity.yaml" '18000|published: "18000"' "Compose parity must expose default API port 18000"
+contains "$TMP_DIR/compose-parity.yaml" '18004|published: "18004"' "Compose parity must expose default GIS cache port 18004"
 
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18080' "Harness docs must document UI port 18080"
 contains "$ROOT_DIR/docs/harness/local-harness.md" 'http://localhost:18000' "Harness docs must document API port 18000"

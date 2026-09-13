@@ -3,6 +3,7 @@ import { SpanStatusCode } from '@opentelemetry/api';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { apiFetch } from '../../../api/client';
 import { useAuth } from '../../../auth/AuthProvider';
@@ -21,6 +22,36 @@ import {
   resolveSceneNodeSelection,
 } from '../../shared/sceneNodeSelection';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
+import type { StructuralViewerOverlay } from '../model/viewer';
+import {
+  createViewerMeshMaterials,
+  DEFAULT_MODEL_COLOR,
+  disposeMesh,
+  disposeObjectTree,
+  hasAuthoredMaterialColor,
+  hasSourceMaterialTransparency,
+  type ViewerMeshMaterials,
+} from '../scene/materials';
+import {
+  buildViewerBatch,
+  applyViewerGeometryTransform,
+  closestSelectableSceneNode,
+  getRenderableObjectBounds,
+  isViewerBatchMesh,
+  isViewerObjectHidden,
+  matchesExternalSelection,
+  normalizeExternalSelectionId,
+  resolveExternalSelectionMeshes,
+} from '../scene/batching';
+import { ViewerControls } from './ViewerControls';
+
+export {
+  DEFAULT_MODEL_COLOR,
+  createViewerMeshMaterials,
+  hasAuthoredMaterialColor,
+} from '../scene/materials';
+export { buildViewerBatch, isViewerObjectHidden } from '../scene/batching';
+export type { StructuralViewerOverlay } from '../model/viewer';
 
 interface ViewerProps {
   serverUrl: string;
@@ -44,48 +75,6 @@ interface ModelViewerCanvasProps {
   onExternalSelectionPreviewChange?: (preview: ComponentPreviewImage | null) => void;
 }
 
-export type StructuralViewerOverlay = {
-  id: string;
-  label: string;
-  mode?: 'moment' | 'displacement';
-  status?: 'pass' | 'fail' | 'not_checked';
-  utilisation?: number | null;
-  diagramColor?: number;
-  stations: Array<{
-    position: { x: number; y: number; z: number };
-    moment_kNm?: { x: number; y: number; z: number };
-    displacement_mm?: { x: number; y: number; z: number };
-  }>;
-  loadArrows?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    force_kN: { x: number; y: number; z: number };
-  }>;
-  nodes?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    restrained: boolean;
-  }>;
-  reactions?: Array<{
-    id: string;
-    label: string;
-    position: { x: number; y: number; z: number };
-    force_kN: { x: number; y: number; z: number };
-    moment_kNm: { x: number; y: number; z: number };
-  }>;
-  restraintSegments?: Array<{
-    id: string;
-    label: string;
-    start: { x: number; y: number; z: number };
-    end: { x: number; y: number; z: number };
-    compressionFlange: 'positive_local_y' | 'negative_local_y' | 'none';
-    status: 'missing' | 'candidate' | 'inadequate' | 'verified' | 'not_required';
-  }>;
-  maxOffsetMm?: number;
-};
-
 export function structuralCheckColor(
   status: StructuralViewerOverlay['status'],
 ): number {
@@ -103,11 +92,16 @@ export function structuralRestraintColor(
   return 0x64748b;
 }
 
-export const DEFAULT_MODEL_COLOR = 0x8b9bb4;
+export function structuralEvidenceColor(
+  status: NonNullable<StructuralViewerOverlay['restraintMarkers']>[number]['evidenceStatus'],
+): number {
+  if (status === 'verified') return 0x22c55e;
+  if (status === 'missing' || status === 'mismatch') return 0xef4444;
+  return 0x94a3b8;
+}
+
 const COMPONENT_PREVIEW_SIZE = 512;
 const STRUCTURAL_OVERLAY_NAME = 'TertiusStructuralMomentOverlay';
-
-const normalizeExternalSelectionId = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 type GltfNodeJson = {
   children?: unknown;
@@ -122,6 +116,25 @@ type GltfParserJson = {
   scenes?: unknown;
   scene?: unknown;
 };
+
+export type ModelArtifactFormat = 'gltf' | 'stl';
+
+export function detectModelArtifactFormat(contentType: string | null, buffer: ArrayBuffer): ModelArtifactFormat {
+  const normalizedContentType = (contentType || '').toLowerCase();
+  if (normalizedContentType.includes('stl')) return 'stl';
+  if (normalizedContentType.includes('gltf') || normalizedContentType.includes('json')) return 'gltf';
+
+  const bytes = new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 256));
+  if (bytes.length >= 4
+    && bytes[0] === 0x67
+    && bytes[1] === 0x6c
+    && bytes[2] === 0x54
+    && bytes[3] === 0x46) {
+    return 'gltf';
+  }
+  const textPrefix = new TextDecoder().decode(bytes).trimStart();
+  return textPrefix.startsWith('{') ? 'gltf' : 'stl';
+}
 
 function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | undefined): void {
   const nodes = Array.isArray(gltfJson?.nodes) ? gltfJson.nodes as GltfNodeJson[] : [];
@@ -147,289 +160,6 @@ function annotateGltfNodeIds(root: THREE.Object3D, gltfJson: GltfParserJson | un
   sceneNodeIds.forEach((nodeId, childIndex) => annotateNode(root.children[childIndex], nodeId));
 }
 
-const matchesExternalSelection = (
-  object: THREE.Object3D,
-  selectedIds: Set<string>,
-  normalizedSelectedIds: Set<string>,
-) => (
-  selectedIds.has(object.uuid)
-  || Boolean(object.userData?.tertiusGltfNodeId && selectedIds.has(String(object.userData.tertiusGltfNodeId)))
-  || Boolean(object.name && selectedIds.has(object.name))
-  || Boolean(object.name && normalizedSelectedIds.has(normalizeExternalSelectionId(object.name)))
-);
-
-const getRenderableObjectBounds = (object: THREE.Object3D) => {
-  const bounds = new THREE.Box3();
-
-  object.traverse((child) => {
-    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
-    const meshBox = new THREE.Box3().setFromObject(child);
-    if (!meshBox.isEmpty()) bounds.union(meshBox);
-  });
-
-  if (bounds.isEmpty()) {
-    const objectBox = new THREE.Box3().setFromObject(object);
-    if (!objectBox.isEmpty()) bounds.union(objectBox);
-  }
-
-  return bounds;
-};
-
-const resolveExternalSelectionMeshes = (model: THREE.Object3D, selectedIds: Set<string>) => {
-  const normalizedSelectedIds = new Set([...selectedIds].map(normalizeExternalSelectionId).filter(Boolean));
-  const bounds = new THREE.Box3();
-  const meshes = new Set<THREE.Mesh>();
-  let focusObject: THREE.Object3D | null = null;
-
-  model.traverse((child) => {
-    if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
-    const mesh = child as THREE.Mesh;
-    let current: THREE.Object3D | null = mesh;
-    while (current && current !== model) {
-      if (matchesExternalSelection(current, selectedIds, normalizedSelectedIds)) {
-        focusObject = focusObject || current;
-        const meshBox = new THREE.Box3().setFromObject(mesh);
-        if (!meshBox.isEmpty()) {
-          bounds.union(meshBox);
-          meshes.add(mesh);
-        }
-        return;
-      }
-      current = current.parent;
-    }
-  });
-
-  const focusBounds = focusObject ? getRenderableObjectBounds(focusObject) : new THREE.Box3();
-
-  return {
-    bounds,
-    focusBounds: focusBounds.isEmpty() ? bounds : focusBounds,
-    focusObject,
-    meshes,
-    hasSelection: meshes.size > 0 && !bounds.isEmpty(),
-  };
-};
-
-type ViewerBatchOptions = {
-  createMesh?: (geometry: THREE.BufferGeometry, material: THREE.Material) => THREE.Mesh;
-  useAuthoredColors?: boolean;
-};
-
-type ViewerBatch = {
-  mesh: THREE.Mesh;
-  usesAuthoredColors: boolean;
-};
-
-type ViewerMeshMaterials = {
-  base: THREE.Material | THREE.Material[];
-  highlight: THREE.Material | THREE.Material[];
-  transparent: THREE.Material | THREE.Material[];
-  transparentHighlight: THREE.Material | THREE.Material[];
-};
-
-function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
-  return Array.isArray(material) ? material : [material];
-}
-
-export function hasAuthoredMaterialColor(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
-  if (!material) return false;
-  return materialList(material).some((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
-}
-
-function hasSourceMaterialTransparency(material: THREE.Material | THREE.Material[] | null | undefined): boolean {
-  if (!material) return false;
-  return materialList(material).some((mat) => mat.transparent === true && 'opacity' in mat && mat.opacity < 1);
-}
-
-function colorFromMaterial(material: THREE.Material | THREE.Material[] | null | undefined): THREE.Color | null {
-  if (!material) return null;
-  const authored = materialList(material).find((mat) => mat.userData?.tertiusAuthoredColor === true && 'color' in mat);
-  const color = authored && 'color' in authored ? (authored as THREE.MeshStandardMaterial).color : null;
-  return color ? color.clone() : null;
-}
-
-function geometryWithVertexColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
-  if (geometry.getAttribute('color')) return geometry;
-  const position = geometry.getAttribute('position');
-  if (!position) return geometry;
-  const colors = new Float32Array(position.count * 3);
-  for (let i = 0; i < position.count; i += 1) {
-    colors[i * 3] = color.r;
-    colors[i * 3 + 1] = color.g;
-    colors[i * 3 + 2] = color.b;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  return geometry;
-}
-
-function cloneViewerMaterial(
-  material: THREE.Material,
-  fallback: THREE.MeshStandardMaterial,
-  configure?: (clone: THREE.Material) => void,
-): THREE.Material {
-  const clone = material.clone();
-  clone.side = THREE.FrontSide;
-  if ('metalness' in clone && 'metalness' in fallback) {
-    (clone as THREE.MeshStandardMaterial).metalness = fallback.metalness;
-  }
-  if ('roughness' in clone && 'roughness' in fallback) {
-    (clone as THREE.MeshStandardMaterial).roughness = fallback.roughness;
-  }
-  configure?.(clone);
-  return clone;
-}
-
-function createViewerMaterialVariant(
-  material: THREE.Material | THREE.Material[],
-  fallback: THREE.MeshStandardMaterial,
-  configure?: (clone: THREE.Material) => void,
-): THREE.Material | THREE.Material[] {
-  return Array.isArray(material)
-    ? material.map(mat => cloneViewerMaterial(mat, fallback, configure))
-    : cloneViewerMaterial(material, fallback, configure);
-}
-
-export function createViewerMeshMaterials(
-  sourceMaterial: THREE.Material | THREE.Material[] | null | undefined,
-  fallbackMaterial: THREE.MeshStandardMaterial,
-): ViewerMeshMaterials {
-  const baseSource = sourceMaterial ?? fallbackMaterial;
-  const base = createViewerMaterialVariant(baseSource, fallbackMaterial);
-  const highlight = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    if ('emissive' in mat) {
-      (mat as THREE.MeshStandardMaterial).emissive.setHex(0x3b82f6);
-      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
-    }
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = -1;
-    mat.polygonOffsetUnits = -1;
-  });
-  const transparent = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    mat.transparent = true;
-    mat.opacity = 0.28;
-    mat.depthWrite = false;
-  });
-  const transparentHighlight = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
-    mat.transparent = true;
-    mat.opacity = 0.45;
-    mat.depthWrite = false;
-    if ('emissive' in mat) {
-      (mat as THREE.MeshStandardMaterial).emissive.setHex(0x3b82f6);
-      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.5;
-    }
-    mat.polygonOffset = true;
-    mat.polygonOffsetFactor = -1;
-    mat.polygonOffsetUnits = -1;
-  });
-
-  return { base, highlight, transparent, transparentHighlight };
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[] | null | undefined): void {
-  if (!material) return;
-  if (Array.isArray(material)) material.forEach(mat => mat.dispose());
-  else material.dispose();
-}
-
-function disposeViewerMeshMaterials(materials: ViewerMeshMaterials | undefined): void {
-  if (!materials) return;
-  disposeMaterial(materials.base);
-  disposeMaterial(materials.highlight);
-  disposeMaterial(materials.transparent);
-  disposeMaterial(materials.transparentHighlight);
-}
-
-function disposeMesh(mesh: THREE.Mesh): void {
-  mesh.geometry.dispose();
-  disposeMaterial(mesh.material);
-}
-
-function disposeObjectTree(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    if ((child as THREE.Mesh).isMesh) {
-      const mesh = child as THREE.Mesh;
-      disposeMesh(mesh);
-      disposeMaterial(mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined);
-      disposeViewerMeshMaterials(mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined);
-      (mesh.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined)?.dispose();
-    } else if ((child as THREE.Line).isLine || (child as THREE.LineSegments).isLineSegments) {
-      const line = child as THREE.Line;
-      line.geometry.dispose();
-      disposeMaterial(line.material);
-    }
-  });
-}
-
-function closestSelectableSceneNode(object: THREE.Object3D, root: THREE.Object3D): THREE.Object3D {
-  let current: THREE.Object3D | null = object;
-  let fallback: THREE.Object3D = object;
-
-  while (current && current !== root) {
-    const isMesh = (current as THREE.Mesh).isMesh;
-    const isAssemblyNode = current.type === 'Group' || current.type === 'Object3D';
-    if (current.name && current.name !== 'TertiusBatchedMesh' && isAssemblyNode) return current;
-    if (current.name && current.name !== 'TertiusBatchedMesh') fallback = current;
-    if ((isMesh || isAssemblyNode) && !fallback.name) fallback = current;
-    current = current.parent;
-  }
-
-  return fallback;
-}
-
-function isViewerBatchMesh(object: THREE.Object3D): boolean {
-  return object.name === "TertiusBatchedMesh" || object.name === "TertiusAppearanceBatchMesh";
-}
-
-export function isViewerObjectHidden(
-  root: THREE.Object3D,
-  object: THREE.Object3D,
-  appearanceByPath: SceneNodeAppearanceMap,
-): boolean {
-  let current: THREE.Object3D | null = object;
-  while (current && current !== root) {
-    if (appearanceByPath[getSceneNodePathKey(root, current)]?.hidden) return true;
-    current = current.parent;
-  }
-  return false;
-}
-
-export function buildViewerBatch(meshes: THREE.Mesh[], options: ViewerBatchOptions = {}): ViewerBatch | null {
-  if (meshes.length === 0) return null;
-
-  const usesAuthoredColors = options.useAuthoredColors ?? meshes.some((mesh) => hasAuthoredMaterialColor(mesh.material));
-  const defaultColor = new THREE.Color(DEFAULT_MODEL_COLOR);
-  const geometries = meshes.map((mesh) => {
-    const geometry = mesh.geometry.clone();
-    if (usesAuthoredColors) {
-      geometryWithVertexColor(geometry, colorFromMaterial(mesh.material) ?? defaultColor);
-    }
-    return geometry;
-  });
-
-  const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
-  geometries.forEach((geometry) => geometry.dispose());
-  if (!mergedGeometry) return null;
-
-  const material = usesAuthoredColors
-    ? new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        vertexColors: true,
-        metalness: 0.6,
-        roughness: 0.4,
-        side: THREE.FrontSide,
-      })
-    : new THREE.MeshStandardMaterial({
-        color: DEFAULT_MODEL_COLOR,
-        metalness: 0.6,
-        roughness: 0.4,
-        side: THREE.FrontSide,
-      });
-
-  return {
-    mesh: (options.createMesh ?? ((geometry, meshMaterial) => new THREE.Mesh(geometry, meshMaterial)))(mergedGeometry, material),
-    usesAuthoredColors,
-  };
-}
 
 export const ViewerTab: React.FC<ViewerProps> = (props) => {
   const { authMode, login } = useAuth();
@@ -531,7 +261,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
-  const [autoRotate, setAutoRotate] = useState<boolean>(true);
+  const [autoRotate, setAutoRotate] = useState<boolean>(false);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
@@ -545,7 +275,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const autoRotateRef = useRef<boolean>(true);
+  const autoRotateRef = useRef<boolean>(false);
+  const renderQualityRef = useRef<'high' | 'low'>('high');
+  const needsRenderRef = useRef<boolean>(true);
   const isActiveRef = useRef<boolean>(isActive);
   const structuralRestraintSelectRef = useRef(onStructuralRestraintSelect);
 
@@ -590,6 +322,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    needsRenderRef.current = true;
   }, []);
 
   const frameCameraOnBox = useCallback((box: THREE.Box3, padding = 1.08) => {
@@ -612,6 +345,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
     controls.target.copy(sphere.center);
     controls.update();
+    needsRenderRef.current = true;
     return true;
   }, []);
 
@@ -646,7 +380,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.35;
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
@@ -670,11 +404,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     canvas.addEventListener('wheel', handleInteraction);
     
     // Lighting setup
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
     ambientLight.name = 'Ambient';
     scene.add(ambientLight);
     
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
     hemiLight.name = 'Hemi';
     hemiLight.position.set(0, 0, 200);
     scene.add(hemiLight);
@@ -701,8 +435,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
     const animate = () => {
       animIdRef.current = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      const controlsChanged = controls.update();
+      if (controls.autoRotate || controlsChanged || needsRenderRef.current) {
+        renderer.render(scene, camera);
+        needsRenderRef.current = false;
+      }
     };
     animate();
 
@@ -726,6 +463,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       setSelectedNodeId(null);
     };
   }, [isActive, resizeRendererToContainer]);
+
+  useEffect(() => {
+    needsRenderRef.current = true;
+  });
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -768,6 +509,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   useEffect(() => {
     if (!rendererRef.current || !sceneRef.current) return;
     const isHigh = renderQuality === 'high';
+    renderQualityRef.current = renderQuality;
     
     rendererRef.current.shadowMap.enabled = isHigh;
     rendererRef.current.setPixelRatio(isHigh ? Math.min(window.devicePixelRatio, 2) : 1);
@@ -784,6 +526,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          }
       }
     });
+    needsRenderRef.current = true;
   }, [renderQuality]);
 
   // 3. Load GLTF when URL changes
@@ -811,9 +554,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const isCurrentRequest = () => !isCancelled && modelLoadRequestRef.current === requestId;
     const loadSpan = startInteractionSpan('3d_viewer_load', {
       workflow: 'extus',
-      render_quality: renderQuality,
+      render_quality: renderQualityRef.current,
     });
-    const loader = new GLTFLoader();
+    const gltfLoader = new GLTFLoader();
+    const stlLoader = new STLLoader();
 
     const finishLoad = () => {
       if (isCurrentRequest()) {
@@ -839,30 +583,23 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
     
-    apiFetch(modelUrl, getAccessToken)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
-        }
-        return res.arrayBuffer();
-      })
-      .then(buffer => {
-        if (!isCurrentRequest()) return;
-        loader.parse(buffer, '', (gltf) => {
-          if (!isCurrentRequest()) return;
-      
-          const model = gltf.scene;
-          annotateGltfNodeIds(model, (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json);
-      
+    const yieldToBrowser = () => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+
+    const acceptModel = async (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+      if (!isCurrentRequest()) return;
+      if (gltfJson) annotateGltfNodeIds(model, gltfJson);
+
       // Compute bounding box and center
       const box = new THREE.Box3().setFromObject(model);
       const center = new THREE.Vector3();
       box.getCenter(center);
       model.position.sub(center);
-      
-      // Fix orientation (GLTF is Y-up, our grid was Z-up)
-      model.rotation.x = Math.PI / 2;
-      
+
+      // GLTF is Y-up; STL emitted by the CAD compiler is already Z-up.
+      if (gltfJson) model.rotation.x = Math.PI / 2;
+
       // Update camera
       if (cameraRef.current) {
          const camera = cameraRef.current;
@@ -870,14 +607,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          const fov = camera.fov * (Math.PI / 180);
          let distance = Math.abs(sphere.radius / Math.sin(fov / 2));
          distance *= 1.5; // Padding
-         
+
          const currentDir = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0,0,0)).normalize();
          if (currentDir.lengthSq() === 0) currentDir.set(1, 1, 1).normalize();
-         
+
          camera.position.copy(currentDir.multiplyScalar(distance));
          camera.lookAt(0, 0, 0);
          camera.updateProjectionMatrix();
-         
+
          // Update helpers
          const size = Math.max(500, Math.ceil(sphere.radius * 4));
          const grid = sceneRef.current!.getObjectByName("GridHelper");
@@ -891,15 +628,15 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            axes.scale.set(scale, scale, scale);
          }
       }
-      
+
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR, // Steel blueish
-        metalness: 0.6,
-        roughness: 0.4,
+        metalness: 0.15,
+        roughness: 0.72,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
-      
+
       const highlightMaterial = sharedMaterial.clone();
       highlightMaterial.emissive.setHex(0x3b82f6);
       highlightMaterial.emissiveIntensity = 0.5;
@@ -909,40 +646,48 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       model.userData.sharedMat = sharedMaterial;
       model.userData.highlightMat = highlightMaterial;
-      
-      const isHigh = renderQuality === 'high';
-      
+
+      const isHigh = renderQualityRef.current === 'high';
+
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
       const sourceMeshes: THREE.Mesh[] = [];
-      
+
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
-           geom.applyMatrix4(relativeMatrix);
+           applyViewerGeometryTransform(geom, relativeMatrix);
            mesh.userData.viewerSourceMaterial = mesh.material;
            mesh.userData.viewerBatchGeometry = geom;
            mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
            if (!hasSourceMaterialTransparency(mesh.material)) {
              sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
            }
-           
+
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
            mesh.receiveShadow = false;
            mesh.material = (mesh.userData.viewerMaterials as ViewerMeshMaterials).highlight;
         }
       });
-      
+
+      // Let Firefox paint the loading state before starting the expensive
+      // geometry merges. Each later chunk yields for the same reason.
+      await yieldToBrowser();
+      if (!isCurrentRequest()) {
+        disposeObjectTree(model);
+        return;
+      }
+
       if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
-          const CHUNK_SIZE = 1000;
+          const CHUNK_SIZE = 500;
           const chunks: THREE.BufferGeometry[] = [];
           const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
-          
+
           for (let i = 0; i < sourceMeshes.length; i += CHUNK_SIZE) {
              const batch = buildViewerBatch(sourceMeshes.slice(i, i + CHUNK_SIZE), { useAuthoredColors: hasAuthoredColors });
              if (batch) {
@@ -950,18 +695,24 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
                else batch.mesh.material.dispose();
              }
+             await yieldToBrowser();
+             if (!isCurrentRequest()) {
+               chunks.forEach(g => g.dispose());
+               disposeObjectTree(model);
+               return;
+             }
           }
-          
+
           const finalMergedGeom = BufferGeometryUtils.mergeGeometries(chunks, false);
           chunks.forEach(g => g.dispose()); // Free intermediate chunks
-          
+
           if (finalMergedGeom) {
              const batchedMaterial = hasAuthoredColors
                ? new THREE.MeshStandardMaterial({
                    color: 0xffffff,
                    vertexColors: true,
-                   metalness: 0.6,
-                   roughness: 0.4,
+                   metalness: 0.15,
+                   roughness: 0.72,
                    side: THREE.FrontSide
                  })
                : sharedMaterial;
@@ -976,17 +727,44 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           console.error("BufferGeometryUtils.mergeGeometries chunking failed:", e);
         }
       }
-      
+
       clearCurrentModel();
-      
+
       sceneRef.current!.add(model);
       meshRef.current = model;
       loadedModelUrlRef.current = modelUrl;
-      
+
       // Unpack the hierarchy
       setSceneGraph(model);
       setSelectedNodeId(null);
       finishLoad();
+    };
+
+    apiFetch(modelUrl, getAccessToken)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Model artifact unavailable (${res.status || 'HTTP error'})`);
+        }
+        return Promise.all([res.arrayBuffer(), Promise.resolve(res.headers.get('content-type'))]);
+      })
+      .then(([buffer, contentType]) => {
+        if (!isCurrentRequest()) return;
+        if (detectModelArtifactFormat(contentType, buffer) === 'stl') {
+          const geometry = stlLoader.parse(buffer);
+          geometry.computeVertexNormals();
+          const model = new THREE.Group();
+          model.name = 'STL Model';
+          model.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })));
+          void acceptModel(model).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
+          return;
+        }
+        gltfLoader.parse(buffer, '', (gltf) => {
+          const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
+          void acceptModel(gltf.scene, gltfJson || {}).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });
@@ -1002,7 +780,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadSpanEnded = true;
       }
     };
-  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel, isActive]);
+  }, [modelUrl, getAccessToken, clearCurrentModel, isActive]);
 
   const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
 
@@ -1170,6 +948,13 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         Math.hypot(force.x, force.y, force.z)
       )),
     );
+    const restraintDemandMarkers = structuralOverlays.flatMap(
+      (overlay) => overlay.restraintMarkers ?? [],
+    );
+    const restraintDemandPeak = Math.max(
+      Number.EPSILON,
+      ...restraintDemandMarkers.map((marker) => marker.requiredForceKN ?? 0),
+    );
 
     for (const node of diagnosticNodes) {
       const nodeGroup = new THREE.Group();
@@ -1271,7 +1056,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         if (length <= Number.EPSILON) continue;
         const color = structuralRestraintColor(restraint.status);
         const segment = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.014, 0.014, length, 10),
+          new THREE.CylinderGeometry(
+            restraint.selected ? 0.022 : 0.011,
+            restraint.selected ? 0.022 : 0.011,
+            length,
+            10,
+          ),
           new THREE.MeshBasicMaterial({
             color,
             transparent: true,
@@ -1325,6 +1115,115 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           marker.userData.tertiusStructuralOverlay = true;
           marker.userData.tertiusStructuralRestraint = restraint;
           memberGroup.add(marker);
+        }
+      }
+
+      for (const demandMarker of structuralOverlay.restraintMarkers ?? []) {
+        const origin = toModelCoordinates(new THREE.Vector3(
+          demandMarker.position.x,
+          demandMarker.position.y,
+          demandMarker.position.z,
+        ));
+        const markerColor = structuralRestraintColor(demandMarker.status);
+        const markerGroup = new THREE.Group();
+        markerGroup.position.copy(origin);
+        markerGroup.name = `${STRUCTURAL_OVERLAY_NAME}Demand-${demandMarker.id}`;
+        markerGroup.userData.tertiusStructuralOverlay = true;
+        markerGroup.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+
+        const core = new THREE.Mesh(
+          new THREE.SphereGeometry(demandMarker.selected ? 0.035 : 0.027, 14, 10),
+          new THREE.MeshBasicMaterial({
+            color: markerColor,
+            transparent: true,
+            opacity: 0.96,
+            depthTest: false,
+          }),
+        );
+        core.renderOrder = 39;
+        core.userData.tertiusStructuralOverlay = true;
+        core.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(core);
+
+        if (demandMarker.evidenceStatus !== 'verified') {
+          const evidenceRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.047, 0.006, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: structuralEvidenceColor(demandMarker.evidenceStatus),
+              transparent: true,
+              opacity: 0.98,
+              depthTest: false,
+            }),
+          );
+          evidenceRing.renderOrder = 40;
+          evidenceRing.userData.tertiusStructuralOverlay = true;
+          evidenceRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(evidenceRing);
+        }
+
+        if (demandMarker.selected) {
+          const selectionRing = new THREE.Mesh(
+            new THREE.TorusGeometry(0.061, 0.004, 8, 28),
+            new THREE.MeshBasicMaterial({
+              color: 0x22d3ee,
+              transparent: true,
+              opacity: 0.95,
+              depthTest: false,
+            }),
+          );
+          selectionRing.rotation.x = Math.PI / 2;
+          selectionRing.renderOrder = 41;
+          selectionRing.userData.tertiusStructuralOverlay = true;
+          selectionRing.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+          markerGroup.add(selectionRing);
+        }
+
+        const hitTarget = new THREE.Mesh(
+          new THREE.SphereGeometry(0.075, 10, 8),
+          new THREE.MeshBasicMaterial({
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+          }),
+        );
+        hitTarget.userData.tertiusStructuralOverlay = true;
+        hitTarget.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+        markerGroup.add(hitTarget);
+        memberGroup.add(markerGroup);
+
+        const requiredForceKN = demandMarker.requiredForceKN ?? 0;
+        const sourceDirection = new THREE.Vector3(
+          demandMarker.direction.x,
+          demandMarker.direction.y,
+          demandMarker.direction.z,
+        );
+        if (requiredForceKN > Number.EPSILON && sourceDirection.lengthSq() > 0) {
+          const direction = toModelCoordinates(sourceDirection).normalize();
+          const length = 0.10 + 0.20 * Math.min(1, requiredForceKN / restraintDemandPeak);
+          const arrow = new THREE.ArrowHelper(
+            direction,
+            origin,
+            length,
+            0x22d3ee,
+            Math.min(0.065, length * 0.35),
+            Math.min(0.038, length * 0.2),
+          );
+          arrow.name = `${STRUCTURAL_OVERLAY_NAME}RestraintDemand-${demandMarker.id}`;
+          arrow.renderOrder = 38;
+          arrow.traverse((object) => {
+            object.userData.tertiusStructuralOverlay = true;
+            object.userData.tertiusStructuralRestraint = { id: demandMarker.traceId };
+            object.renderOrder = 38;
+            const material = (object as THREE.Mesh | THREE.Line).material;
+            const materials = Array.isArray(material) ? material : material ? [material] : [];
+            for (const candidate of materials) {
+              candidate.depthTest = false;
+              candidate.transparent = true;
+              candidate.opacity = 0.96;
+            }
+          });
+          memberGroup.add(arrow);
         }
       }
 
@@ -1815,73 +1714,20 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
   return (
     <div className="flex-1 relative bg-slate-900 flex overflow-hidden">
-      
-      {/* Overlay Status */}
-      <div className="absolute top-4 left-4 z-10 bg-slate-950/80 backdrop-blur border border-slate-800 rounded-lg p-3 shadow-xl pointer-events-none flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-4">
-          <div className="text-xs font-mono font-medium text-sky-400 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-sky-500 animate-pulse" />
-            Extus Viewer
-          </div>
-          {projectName && (
-            <div className="text-xs font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
-              {projectName}
-            </div>
-          )}
-          {structuralOverlays?.length ? (
-            <div
-              className="text-xs font-bold text-amber-200 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/40"
-              title={structuralOverlays.map((overlay) => overlay.label).join('\n')}
-            >
-              {structuralOverlays.length} analytical {
-                structuralOverlays[0]?.mode === 'displacement' ? 'deflection' : 'moment'
-              } ribbon{structuralOverlays.length === 1 ? '' : 's'} ·{' '}
-              {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.loadArrows?.length ?? 0),
-                0,
-              )} loads · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.nodes?.length ?? 0),
-                0,
-              )} nodes · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.reactions?.length ?? 0),
-                0,
-              )} reactions · {structuralOverlays.reduce(
-                (count, overlay) => count + (overlay.restraintSegments?.length ?? 0),
-                0,
-              )} restraint traces
-            </div>
-          ) : null}
-          <button
-            onClick={() => frameModelRoot(1.5)}
-            className="pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border border-slate-700 bg-slate-800 text-slate-300 transition-colors hover:border-sky-500 hover:text-sky-300"
-            title="Frame the whole model"
-            aria-label="Frame the whole model"
-          >
-            Fit
-          </button>
-          <button 
-            onClick={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${renderQuality === 'high' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Visuals: {renderQuality === 'high' ? 'High' : 'Low'}
-          </button>
-          <button 
-            onClick={() => setShowGrid(!showGrid)}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${showGrid ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Grid: {showGrid ? 'ON' : 'OFF'}
-          </button>
-          <button 
-            onClick={() => setAutoRotate(!autoRotate)}
-            className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors ${autoRotate ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}`}
-          >
-            Rotate: {autoRotate ? 'ON' : 'OFF'}
-          </button>
-        </div>
-        <div className="text-xs text-slate-400" aria-live="polite">
-          {loadErrorText || (isModelLoading ? 'Loading model...' : statusText)}
-        </div>
-      </div>
+      <ViewerControls
+        projectName={projectName}
+        structuralOverlays={structuralOverlays}
+        renderQuality={renderQuality}
+        showGrid={showGrid}
+        autoRotate={autoRotate}
+        loadErrorText={loadErrorText}
+        isModelLoading={isModelLoading}
+        statusText={statusText}
+        onFit={() => frameModelRoot(1.5)}
+        onToggleRenderQuality={() => setRenderQuality(renderQuality === 'high' ? 'low' : 'high')}
+        onToggleGrid={() => setShowGrid(!showGrid)}
+        onToggleAutoRotate={() => setAutoRotate(!autoRotate)}
+      />
       
       {/* 3D Canvas */}
       <div className="flex-1 relative" ref={containerRef}>

@@ -2,9 +2,10 @@
 import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version
 import logging
-from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID
 from pydantic import BaseModel, ValidationError
@@ -32,10 +33,11 @@ from core.pi_agent_prompt import (
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
+from core.project_templates import default_project_files, default_structural_configuration
 from core.llm_file_edit import (
+    LLM_FILE_EDIT_CONTEXT_CHARS,
     LlmEditableFile as DomainEditableFile,
     LlmFileEditInput,
-    llm_edit_context_chars_for_tier,
     select_llm_edit_context_files as select_domain_context_files,
 )
 from core.telemetry import (
@@ -45,6 +47,7 @@ from core.repositories import (
     CompileRepository,
     ProjectRepository,
     normalize_file_version,
+    require_valid_project_filename,
     require_valid_python_filename,
     LlmEditRepository,
 )
@@ -65,15 +68,6 @@ app.add_middleware(
 )
 
 # â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
-
-def get_default_purlin():
-    if TEMPLATE_FILE.exists():
-        return TEMPLATE_FILE.read_text(encoding="utf-8")
-    return ""
-
-DEFAULT_PURLIN = get_default_purlin()
-
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
@@ -112,7 +106,15 @@ async def publish_compile_command(command: CompileCommand) -> None:
 @app.get("/health")
 def health():
     has_b3d = importlib.util.find_spec("build123d") is not None
-    return {"status": "ok", "build123d_installed": has_b3d}
+    try:
+        build123d_version = version("build123d") if has_b3d else None
+    except PackageNotFoundError:
+        build123d_version = None
+    return {
+        "status": "ok",
+        "build123d_installed": has_b3d,
+        "build123d_version": build123d_version,
+    }
 
 @app.get("/project_name")
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -147,7 +149,12 @@ def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Ses
         return JSONResponse(status_code=400, content={"error": str(exc)})
     if existing:
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
-    repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
+    repo.create_project(
+        name,
+        ctx.user_id,
+        default_project_files(),
+        default_structural_configuration(),
+    )
     return {"success": True, "project": name}
 
 @app.post("/projects/{name}/activate")
@@ -207,7 +214,7 @@ def get_status(
 ):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -277,7 +284,7 @@ async def compile_project(
     repo = ProjectRepository(db, ctx.tenant_id)
     compile_repo = CompileRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -454,6 +461,10 @@ def _llm_edit_job_model(job: LlmEditJob) -> str | None:
         return result_model
 
     request_payload = job.request_payload or {}
+    dispatched_model = request_payload.get("dispatched_model")
+    if isinstance(dispatched_model, str) and dispatched_model:
+        return dispatched_model
+
     request_model = request_payload.get("model_id")
     if isinstance(request_model, str) and request_model:
         return request_model
@@ -593,6 +604,7 @@ async def start_llm_file_edit_job(
     repo = ProjectRepository(db, ctx.tenant_id)
     job_repo = LlmEditRepository(db, ctx.tenant_id)
     settings = get_settings()
+    selected_model = req.model_id or settings.pi_agent_model
     job = None
     publication_attempted = False
     try:
@@ -619,7 +631,7 @@ async def start_llm_file_edit_job(
         if active_job is not None:
             db.rollback()
             return JSONResponse(status_code=409, content={"success": False, "error": "An AI edit is already running for this project", "retryable": True})
-        if req.model_id not in (None, "", settings.pi_agent_model):
+        if selected_model not in {model.id for model in settings.pi_agent_models}:
             return JSONResponse(status_code=400, content={"success": False, "error": "unsupported_model"})
 
         seen_ids: set[UUID] = set()
@@ -651,7 +663,7 @@ async def start_llm_file_edit_job(
             max_files=settings.llm_file_edit_max_context_files,
             max_chars=min(
                 settings.llm_file_edit_max_context_chars,
-                llm_edit_context_chars_for_tier(req.context_tier),
+                LLM_FILE_EDIT_CONTEXT_CHARS,
             ),
         )
         prompt_snapshot = load_pi_agent_prompt()
@@ -710,7 +722,7 @@ async def start_llm_file_edit_job(
         request_payload.update(
             {
                 "dispatched_provider": settings.pi_agent_provider,
-                "dispatched_model": settings.pi_agent_model,
+                "dispatched_model": selected_model,
                 "dispatched_thinking": settings.pi_agent_thinking,
                 "dispatched_command_schema_version": 2,
                 "dispatched_conversation": conversation.model_dump(mode="json"),
@@ -739,7 +751,7 @@ async def start_llm_file_edit_job(
             tenant_id=ctx.tenant_id,
             project_id=project.id,
             provider=settings.pi_agent_provider,
-            model=settings.pi_agent_model,
+            model=selected_model,
             thinking=settings.pi_agent_thinking,
             prompt=req.prompt,
             prior_prompts=[],
@@ -760,7 +772,7 @@ async def start_llm_file_edit_job(
             pi_agent_metric_attributes(
                 operation="pi_agent.api",
                 provider=settings.pi_agent_provider,
-                model=settings.pi_agent_model,
+                model=selected_model,
                 status="queued",
             ),
         )

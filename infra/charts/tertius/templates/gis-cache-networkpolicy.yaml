@@ -1,0 +1,54 @@
+{{- if and .Values.gisCache.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tertius.gisCacheName" . }}
+  labels:
+    {{- include "tertius.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gis-cache
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tertius.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gis-cache
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tertius.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gisCache.port }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The service itself allowlists official data.gov.au, DEA and NSW Spatial
+    # Services source URLs; standard NetworkPolicy cannot constrain FQDNs.
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- if and .Values.app.observability.enabled .Values.app.observability.collector.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "tertius.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    {{- end }}
+{{- end }}

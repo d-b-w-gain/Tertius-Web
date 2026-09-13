@@ -188,10 +188,59 @@ and result artifacts consumed by the workbench and calculation reports.
   assessment, and first-/second-order decision to the solver adapter.
 - [ ] Port and independently verify the applicable FBD cross-section/member
   calculations into a versioned Australian calculation pack.
-- [ ] Model restraint segments, load reversal, purlin/girt/batten continuity,
-  opening interruptions, and bracing before activating member pass/fail.
-- [ ] Port connection, base, anchor, concrete, and serviceability checks with
-  the correct responsibility and evidence boundaries.
+- [x] Derive restraint candidate locations and topology-to-ground paths from
+  compiled purlin/rafter, longitudinal-member/column, and brace joints without
+  separate design-file member/restraint lists.
+- [ ] Verify restraint twist control, effective-flange engagement, stiffness,
+  capacity, load reversal, opening interruptions, and anchorage before
+  activating member pass/fail.
+- [x] Envelope ULS actions at every compiled physical joint and retain rendered
+  connector identity even when no resistance evidence is available.
+- [ ] Port connection, base, anchor, concrete resistance and remaining
+  serviceability checks with the correct responsibility and evidence
+  boundaries.
+
+Stage 9 connection evidence (2026-08-19): exact rendered tension-strap ends now
+reuse the Tertius-owned AS/NZS 4600 screw resistance calculation inside the
+general physical-joint register. Stage 8 bracing and restraint paths require
+passing Stage 9 connections all the way to ground. Unsupported brackets,
+anchors, substrate interaction, and foundation limit states stay visibly
+blocked rather than inheriting capacity from geometry, so this work item
+remains open.
+
+Base-anchor evidence slice (2026-08-19): structural projections now preserve
+instance fabrication facts and the generic Tertius anchor pack checks signed
+uplift, shear, embedment, edge distance, group spacing, and conservative linear
+interaction against a SHA-256-pinned manufacturer working-load row. The shed's
+project-local Ramset import owns exact `AS12100WGM` geometry, procurement and
+catalogue facts; the mechanical design now renders and connects the same 34
+managed anchors across all 15 grounded joints. Published single-anchor block
+loads are not multiplied for close groups. The anchor sub-check is visible in
+Stage 9, while 100GPB/web-bolt/connected-sheet and masonry wall/footing/soil
+limit states keep the overall connection item open.
+
+Action-pipeline evidence (2026-08-17): the Tertius-owned, source-digested
+AS/NZS 1170.0 pack derives the R2 roof imposed action, distinct 1-in-25 SLS and
+project-ultimate wind actions in both structural directions, the scoped
+stabilizing/destabilizing combinations, and the supplemental four-direction
+SCI P399 EHF/NHF cases from the compiled mechanical graph and Site basis. The
+pipeline resolved 18 action cases and 25 combinations before local roof
+alternatives were added. The live shed now has 12 mutually exclusive 1.4 kN
+midspan cases on its compiled roof/ceiling purlins, producing 30 action cases
+and 49 combinations. The later Tertius-owned rectangular enclosed-gable
+surface-action pack closes the scoped AS/NZS 1170.2 surface/internal-pressure
+boundary while failing closed outside its declared applicability.
+
+Surface-action evidence (2026-08-19):
+`as_nzs_1170_2_rectangular_enclosed_main_frame_v1` replaces the stored
+0.8/-0.5/-0.9 worked coefficients. It derives average roof height, pitch,
+windward/leeward and roof-zone `Cp,e`, 2021 `Ka`, compiled door/window dominant
+opening candidates, `Cp,i`, signed `Cnet`, pressure direction, and solver line
+actions. Each load records the formula, pack version, inputs, and source
+SHA-256 values. The pack does not take optional `Kc` reductions and uses
+`Kl=1` for main portal members. Open-sided buildings, gable pitches outside
+10-25 degrees, and unverified openings under a verified-only Site policy fail
+closed rather than falling back to provisional loads.
 
 ### Task 7: Migrate and reconcile the current shed
 

@@ -9,6 +9,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.models import LlmEditJob, LlmUsageRecord, ProjectFile, SourceSnapshot
+from core.pi_agent_models import (
+    DEFAULT_PI_AGENT_MODELS_JSON,
+    parse_pi_agent_models,
+)
 from core.pi_agent_conversation import conversation_turn_from_job
 from core.pi_agent_messages import (
     PiAgentChangedFile,
@@ -1277,7 +1281,7 @@ async def test_queued_reconciliation_republishes_with_same_deterministic_id(db_s
             raise RuntimeError("ack lost")
 
     publisher = AmbiguousPublisher()
-    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6-sol", pi_agent_thinking="medium")
+    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6-sol", pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON), pi_agent_thinking="medium")
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     assert [call[1]["message_id"] for call in publisher.calls] == [f"pi-request:{job.id}"] * 2
@@ -1320,6 +1324,7 @@ async def test_queued_reconciliation_preserves_v1_context(db_session, seeded_ten
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
         pi_agent_model="gpt-5.6-sol",
+        pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON),
         pi_agent_thinking="medium",
     )
 
@@ -1438,6 +1443,7 @@ async def test_queued_reconciliation_fails_closed_for_invalid_dispatch_context(
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
         pi_agent_model="gpt-5.6-sol",
+        pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON),
         pi_agent_thinking="medium",
     )
 
@@ -1482,7 +1488,7 @@ async def test_queued_reconciliation_fails_when_manifest_file_changed(
         "counter_add",
         lambda name, value, attrs: metrics.append((name, value, attrs)),
     )
-    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6-sol", pi_agent_thinking="medium")
+    settings = SimpleNamespace(pi_agent_request_subject="request", pi_agent_request_max_bytes=524288, pi_agent_provider="openai-codex", pi_agent_model="gpt-5.6-sol", pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON), pi_agent_thinking="medium")
     assert await republish_queued_pi_agent_jobs(db_session, publisher, settings, backoff_seconds=0) == 0
     db_session.refresh(job)
     assert job.status == "failed"
@@ -1524,6 +1530,7 @@ async def test_queued_reconciliation_config_failure_emits_bounded_terminal(
         pi_agent_request_max_bytes=524288,
         pi_agent_provider="openai-codex",
         pi_agent_model="gpt-5.6-sol",
+        pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON),
         pi_agent_thinking="medium",
     )
 
@@ -1537,3 +1544,47 @@ async def test_queued_reconciliation_config_failure_emits_bounded_terminal(
     terminal = [item for item in metrics if item[0] == "tertius.pi_agent.job.terminal.count"]
     assert len(terminal) == 1
     assert terminal[0][2]["failure_category"] == "dispatch_config_error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra"])
+async def test_queued_reconciliation_republishes_catalog_non_default_model(
+    db_session,
+    seeded_tenant,
+    model,
+):
+    file = db_session.scalar(
+        select(ProjectFile).where(ProjectFile.project_id == seeded_tenant.project_id)
+    )
+    job = _job(db_session, seeded_tenant, file, _result(seeded_tenant, file))
+    payload = dict(job.request_payload)
+    payload.update(
+        {
+            "dispatch_attempted_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=2)
+            ).isoformat(),
+            "dispatch_created_at": datetime.now(timezone.utc).isoformat(),
+            "dispatched_thinking": "medium",
+            "dispatched_model": model,
+        }
+    )
+    job.request_payload = payload
+    flag_modified(job, "request_payload")
+    db_session.commit()
+    publisher = Publisher()
+    settings = SimpleNamespace(
+        pi_agent_request_subject="request",
+        pi_agent_request_max_bytes=524288,
+        pi_agent_provider="openai-codex",
+        pi_agent_model="gpt-5.6-sol",
+        pi_agent_models=parse_pi_agent_models(DEFAULT_PI_AGENT_MODELS_JSON),
+        pi_agent_thinking="medium",
+    )
+
+    assert (
+        await republish_queued_pi_agent_jobs(
+            db_session, publisher, settings, backoff_seconds=0
+        )
+        == 1
+    )
+    assert publisher.calls[0][0][1].model == model

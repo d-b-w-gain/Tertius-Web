@@ -71,6 +71,17 @@ api:
       cpu: "2"
       memory: 2Gi
 
+gisCache:
+  enabled: true
+  image:
+    repository: localhost/tertius-gis-cache
+    tag: local
+    pullPolicy: IfNotPresent
+  storage:
+    enabled: true
+    size: 20Gi
+    storageClassName: local-path
+
 compileJobs:
   runtimeClassName: ""
   maxReplicaCount: 1
@@ -111,7 +122,7 @@ postgres:
     create: true
     password: tertius-local-password
   storage:
-    size: 2Gi
+    size: 32Gi
     storageClass: local-path
 
 keycloak:
@@ -157,7 +168,7 @@ nats:
     jetstream:
       fileStore:
         pvc:
-          size: 1Gi
+          size: 10Gi
           storageClassName: local-path
   container:
     resources:

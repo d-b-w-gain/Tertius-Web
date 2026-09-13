@@ -36,7 +36,7 @@ def test_pynite_cantilever_matches_independent_beam_solution():
 def test_fixture_contract_links_graph_results_and_visual_identity():
     snapshot = cantilever_snapshot()
 
-    assert snapshot.schema_version == "1.0"
+    assert snapshot.schema_version == "2.0"
     assert snapshot.mode == "fixture"
     assert {node.id for node in snapshot.nodes} == {BASE_NODE_ID, FREE_NODE_ID}
     assert snapshot.members[0].id == MEMBER_ID
@@ -142,6 +142,7 @@ def test_structural_site_picker_exposes_region_conflict_and_qz_derivation():
     assert payload["selected_region"] == "C"
     assert payload["suggested_region"] == "A2"
     assert payload["region_conflict"] is True
-    assert payload["q_z_kPa"] == pytest.approx(1.62084)
+    assert payload["terrain_height_multiplier"] == pytest.approx(0.83)
+    assert payload["q_z_kPa"] == pytest.approx(1.985061)
     assert overlay_response.status_code == 200
     assert overlay_response.json()["type"] == "FeatureCollection"

@@ -471,9 +471,10 @@ async def republish_queued_pi_agent_jobs(
         repo = LlmEditRepository(db, job.tenant_id)
         error_code = "dispatch_config_error"
         try:
+            allowed_models = {model.id for model in settings.pi_agent_models}
             if (
                 payload.get("dispatched_provider") != settings.pi_agent_provider
-                or payload.get("dispatched_model") != settings.pi_agent_model
+                or payload.get("dispatched_model") not in allowed_models
                 or payload.get("dispatched_thinking") != settings.pi_agent_thinking
             ):
                 raise ValueError("Pi agent runtime configuration changed")
