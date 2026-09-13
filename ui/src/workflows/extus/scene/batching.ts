@@ -21,6 +21,18 @@ export type ViewerBatch = {
   usesAuthoredColors: boolean;
 };
 
+export type ViewerInstanceCandidate = {
+  geometry: THREE.BufferGeometry;
+  material: THREE.Material | THREE.Material[];
+  matrix: THREE.Matrix4;
+  sourceMaterial?: THREE.Material | THREE.Material[];
+};
+
+export type ViewerInstances = {
+  meshes: THREE.InstancedMesh[];
+  leftovers: ViewerInstanceCandidate[];
+};
+
 export function normalizeExternalSelectionId(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -39,7 +51,49 @@ export function matchesExternalSelection(
 }
 
 export function isViewerBatchMesh(object: THREE.Object3D): boolean {
-  return object.name === 'TertiusBatchedMesh' || object.name === 'TertiusAppearanceBatchMesh';
+  return (
+    object.name === 'TertiusBatchedMesh'
+    || object.name === 'TertiusAppearanceBatchMesh'
+    || object.name.startsWith('TertiusInstancedMesh-')
+  );
+}
+
+function viewerMaterialKey(material: THREE.Material | THREE.Material[]): string {
+  return (Array.isArray(material) ? material : [material]).map(item => item.uuid).join(',');
+}
+
+export function buildViewerInstances(
+  candidates: ViewerInstanceCandidate[],
+  minimumInstances = 2,
+): ViewerInstances {
+  const buckets = new Map<string, ViewerInstanceCandidate[]>();
+  candidates.forEach((candidate) => {
+    const key = `${candidate.geometry.uuid}|${viewerMaterialKey(candidate.sourceMaterial ?? candidate.material)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(candidate);
+    else buckets.set(key, [candidate]);
+  });
+
+  const meshes: THREE.InstancedMesh[] = [];
+  const leftovers: ViewerInstanceCandidate[] = [];
+  buckets.forEach((bucket) => {
+    if (bucket.length < minimumInstances) {
+      leftovers.push(...bucket);
+      return;
+    }
+
+    const first = bucket[0]!;
+    const mesh = new THREE.InstancedMesh(first.geometry, first.material, bucket.length);
+    bucket.forEach((candidate, index) => mesh.setMatrixAt(index, candidate.matrix));
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingBox();
+    mesh.computeBoundingSphere();
+    mesh.name = `TertiusInstancedMesh-${meshes.length + 1}`;
+    meshes.push(mesh);
+  });
+
+  return { meshes, leftovers };
 }
 
 export function getRenderableObjectBounds(object: THREE.Object3D): THREE.Box3 {

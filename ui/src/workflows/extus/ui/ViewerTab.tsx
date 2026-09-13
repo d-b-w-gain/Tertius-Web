@@ -34,6 +34,7 @@ import {
 } from '../scene/materials';
 import {
   buildViewerBatch,
+  buildViewerInstances,
   closestSelectableSceneNode,
   getRenderableObjectBounds,
   isViewerBatchMesh,
@@ -633,27 +634,49 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
-      const sourceMeshes: THREE.Mesh[] = [];
+      const instanceCandidates: Array<{
+        geometry: THREE.BufferGeometry;
+        material: THREE.Material | THREE.Material[];
+        matrix: THREE.Matrix4;
+        sourceMaterial: THREE.Material | THREE.Material[];
+      }> = [];
 
       model.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
            const mesh = child as THREE.Mesh;
-           const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
-           geom.applyMatrix4(relativeMatrix);
            mesh.userData.viewerSourceMaterial = mesh.material;
-           mesh.userData.viewerBatchGeometry = geom;
-           mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
+           mesh.userData.viewerBatchMatrix = relativeMatrix;
            if (!hasSourceMaterialTransparency(mesh.material)) {
-             sourceMeshes.push(new THREE.Mesh(geom, mesh.material));
+             instanceCandidates.push({
+               geometry: mesh.geometry,
+               material: mesh.material,
+               matrix: relativeMatrix,
+               sourceMaterial: mesh.material,
+             });
            }
 
            mesh.visible = false; // Hidden by default, batched mesh handles rendering
            mesh.castShadow = false;
            mesh.receiveShadow = false;
-           mesh.material = (mesh.userData.viewerMaterials as ViewerMeshMaterials).highlight;
         }
       });
+
+      const viewerInstances = buildViewerInstances(instanceCandidates);
+      viewerInstances.meshes.forEach((instanceMesh) => {
+        instanceMesh.userData.viewerSourceMaterial = instanceMesh.material;
+        instanceMesh.userData.viewerMaterials = createViewerMeshMaterials(instanceMesh.material, sharedMaterial);
+        instanceMesh.material = (instanceMesh.userData.viewerMaterials as ViewerMeshMaterials).base;
+        instanceMesh.castShadow = isHigh;
+        instanceMesh.receiveShadow = isHigh;
+        model.add(instanceMesh);
+      });
+      model.userData.instancedMeshes = viewerInstances.meshes;
+
+      const sourceMeshes = viewerInstances.leftovers.map(candidate => new THREE.Mesh(
+        candidate.geometry.clone().applyMatrix4(candidate.matrix),
+        candidate.material,
+      ));
 
       if (sourceMeshes.length > 0) {
         try {
@@ -1535,6 +1558,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      const model = meshRef.current;
      const batchedMesh = model.userData.batchedMesh;
      const appearanceBatchMesh = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
+      const instancedMeshes = model.userData.instancedMeshes as THREE.InstancedMesh[] | undefined;
       const sharedMaterial = model.userData.sharedMat as THREE.Material | undefined;
       const highlightMaterial = model.userData.highlightMat as THREE.Material | undefined;
       const hasAppearanceOverrides = Object.values(appearanceByPath).some(appearance => appearance.hidden || appearance.transparent);
@@ -1581,7 +1605,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
 
            if (!isHidden && !isTransparent && !hasModelTransparency) {
-              const geometry = child.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
+              let geometry = child.userData.viewerBatchGeometry as THREE.BufferGeometry | undefined;
+              if (!geometry) {
+                const matrix = child.userData.viewerBatchMatrix as THREE.Matrix4 | undefined;
+                if (matrix) {
+                  geometry = (child as THREE.Mesh).geometry.clone().applyMatrix4(matrix);
+                  child.userData.viewerBatchGeometry = geometry;
+                }
+              }
               if (geometry && material) opaqueMeshes.push(new THREE.Mesh(geometry, material));
            }
         });
@@ -1601,6 +1632,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      
      // Reset batched mesh
      if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection;
+     instancedMeshes?.forEach((mesh) => {
+       mesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection;
+     });
      if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection;
      
      // Evaluate visibility for individual meshes based on selection or isolation
@@ -1635,7 +1669,14 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
 
            if (mesh.visible) {
-              const viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
+              let viewerMaterials = mesh.userData.viewerMaterials as ViewerMeshMaterials | undefined;
+              if (!viewerMaterials && sharedMaterial) {
+                viewerMaterials = createViewerMeshMaterials(
+                  mesh.userData.viewerSourceMaterial as THREE.Material | THREE.Material[] | undefined,
+                  sharedMaterial as THREE.MeshStandardMaterial,
+                );
+                mesh.userData.viewerMaterials = viewerMaterials;
+              }
               const shouldHighlightSelection = isSelected && !hasRenderableExternalSelection;
               if (isTransparent && shouldHighlightSelection && viewerMaterials) {
                  mesh.material = viewerMaterials.transparentHighlight;
