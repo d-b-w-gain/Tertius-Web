@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import glb_dedup
 from .model_geometry_runtime import TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE
 from .provenance_runtime import TERTIUS_PROVENANCE_HELPER_SOURCE
 
@@ -78,16 +79,22 @@ try:
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
         deflection = 0.001
+        angular_deflection = 0.1
         if quality_arg == "sketch":
             deflection = 200.0
+            angular_deflection = 0.8
         elif quality_arg == "rough":
             deflection = 100.0
+            angular_deflection = 0.6
         elif quality_arg == "low":
             deflection = 50.0
+            angular_deflection = 0.45
         elif quality_arg == "medium":
             deflection = 30.0
+            angular_deflection = 0.35
         elif quality_arg == "normal":
             deflection = 10.0
+            angular_deflection = 0.3
         elif quality_arg == "high":
             deflection = 1.0
 
@@ -96,7 +103,7 @@ try:
             str(output_path),
             binary=(export_format == "glb"),
             linear_deflection=deflection,
-            angular_deflection=0.1
+            angular_deflection=angular_deflection
         )
 
         if export_format in ("gltf", "glb"):
@@ -371,6 +378,9 @@ try:
 
                 if export_format == "glb":
                     patch_glb_metadata(str(output_path), tag_to_name, tag_to_color)
+                    from tertius_glb_runtime import deduplicate_glb_file
+
+                    deduplicate_glb_file(output_path)
                 else:
                     patch_gltf_metadata(str(output_path), tag_to_name, tag_to_color)
             except Exception as patch_e:
@@ -561,6 +571,11 @@ def run_compile_sandbox(
     model_geometry_helper_path = project_dir / "tertius_model_geometry.py"
     model_geometry_helper_path.write_text(
         TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE,
+        encoding="utf-8",
+    )
+    glb_helper_path = project_dir / "tertius_glb_runtime.py"
+    glb_helper_path.write_text(
+        Path(glb_dedup.__file__).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     args = [sys.executable, "-c", SANDBOX_SCRIPT, ext]

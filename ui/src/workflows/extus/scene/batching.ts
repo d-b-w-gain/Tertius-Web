@@ -42,6 +42,48 @@ export function isViewerBatchMesh(object: THREE.Object3D): boolean {
   return object.name === 'TertiusBatchedMesh' || object.name === 'TertiusAppearanceBatchMesh';
 }
 
+function reverseTriangleWinding(geometry: THREE.BufferGeometry): void {
+  const index = geometry.getIndex();
+  if (index) {
+    for (let offset = 0; offset + 2 < index.count; offset += 3) {
+      const second = index.getX(offset + 1);
+      index.setX(offset + 1, index.getX(offset + 2));
+      index.setX(offset + 2, second);
+    }
+    index.needsUpdate = true;
+    return;
+  }
+
+  // Non-indexed geometry stores each triangle as three consecutive vertices.
+  // Swap the final two vertices, including normals/UVs/colours, to keep every
+  // attribute aligned with its position.
+  for (const attribute of Object.values(geometry.attributes)) {
+    for (let offset = 0; offset + 2 < attribute.count; offset += 3) {
+      for (let component = 0; component < attribute.itemSize; component += 1) {
+        const second = attribute.getComponent(offset + 1, component);
+        attribute.setComponent(offset + 1, component, attribute.getComponent(offset + 2, component));
+        attribute.setComponent(offset + 2, component, second);
+      }
+    }
+    attribute.needsUpdate = true;
+  }
+}
+
+/**
+ * Bake an instance transform into viewer geometry without losing mirrored
+ * components to front-face culling. Three.js normally compensates for a
+ * negative object transform at draw time; batching removes that object-level
+ * signal, so the triangle winding must be corrected before the merge.
+ */
+export function applyViewerGeometryTransform(
+  geometry: THREE.BufferGeometry,
+  transform: THREE.Matrix4,
+): THREE.BufferGeometry {
+  if (transform.determinant() < 0) reverseTriangleWinding(geometry);
+  geometry.applyMatrix4(transform);
+  return geometry;
+}
+
 export function getRenderableObjectBounds(object: THREE.Object3D): THREE.Box3 {
   const bounds = new THREE.Box3();
 
@@ -150,14 +192,14 @@ export function buildViewerBatch(
     ? new THREE.MeshStandardMaterial({
         color: 0xffffff,
         vertexColors: true,
-        metalness: 0.6,
-        roughness: 0.4,
+        metalness: 0.15,
+        roughness: 0.72,
         side: THREE.FrontSide,
       })
     : new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR,
-        metalness: 0.6,
-        roughness: 0.4,
+        metalness: 0.15,
+        roughness: 0.72,
         side: THREE.FrontSide,
       });
 

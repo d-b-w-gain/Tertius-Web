@@ -47,6 +47,7 @@ import {
 } from '../scene/materials';
 import {
   buildViewerBatch,
+  applyViewerGeometryTransform,
   closestSelectableSceneNode,
   getRenderableObjectBounds,
   isViewerBatchMesh,
@@ -351,7 +352,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
-  const [autoRotate, setAutoRotate] = useState<boolean>(true);
+  const [autoRotate, setAutoRotate] = useState<boolean>(false);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
@@ -380,7 +381,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const autoRotateRef = useRef<boolean>(true);
+  const autoRotateRef = useRef<boolean>(false);
+  const renderQualityRef = useRef<'high' | 'low'>('high');
+  const needsRenderRef = useRef<boolean>(true);
   const isActiveRef = useRef<boolean>(isActive);
   const structuralRestraintSelectRef = useRef(onStructuralRestraintSelect);
 
@@ -453,6 +456,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    needsRenderRef.current = true;
   }, []);
 
   const frameCameraOnBox = useCallback((box: THREE.Box3, padding = 1.08) => {
@@ -475,6 +479,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
     controls.target.copy(sphere.center);
     controls.update();
+    needsRenderRef.current = true;
     return true;
   }, []);
 
@@ -509,7 +514,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.35;
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
@@ -533,11 +538,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     canvas.addEventListener('wheel', handleInteraction);
     
     // Lighting setup
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
     ambientLight.name = 'Ambient';
     scene.add(ambientLight);
     
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
     hemiLight.name = 'Hemi';
     hemiLight.position.set(0, 0, 200);
     scene.add(hemiLight);
@@ -565,10 +570,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     let lastRenderAt = 0;
     const animate = (timestamp = 0) => {
       animIdRef.current = requestAnimationFrame(animate);
+      const controlsChanged = controls.update();
+      if (!controls.autoRotate && !controlsChanged && !needsRenderRef.current) return;
       if (collisionScanRunningRef.current && timestamp - lastRenderAt < 100) return;
       lastRenderAt = timestamp;
-      controls.update();
       renderer.render(scene, camera);
+      needsRenderRef.current = false;
     };
     animate();
 
@@ -592,6 +599,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       setSelectedNodeId(null);
     };
   }, [isActive, resizeRendererToContainer]);
+
+  useEffect(() => {
+    needsRenderRef.current = true;
+  });
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -634,6 +645,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   useEffect(() => {
     if (!rendererRef.current || !sceneRef.current) return;
     const isHigh = renderQuality === 'high';
+    renderQualityRef.current = renderQuality;
     
     rendererRef.current.shadowMap.enabled = isHigh;
     rendererRef.current.setPixelRatio(isHigh ? Math.min(window.devicePixelRatio, 2) : 1);
@@ -650,6 +662,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          }
       }
     });
+    needsRenderRef.current = true;
   }, [renderQuality]);
 
   // 3. Load GLTF when URL changes
@@ -677,7 +690,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const isCurrentRequest = () => !isCancelled && modelLoadRequestRef.current === requestId;
     const loadSpan = startInteractionSpan('3d_viewer_load', {
       workflow: 'extus',
-      render_quality: renderQuality,
+      render_quality: renderQualityRef.current,
     });
     const gltfLoader = new GLTFLoader();
     const stlLoader = new STLLoader();
@@ -706,7 +719,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
     
-    const acceptModel = (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+    const yieldToBrowser = () => new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 0);
+    });
+
+    const acceptModel = async (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
       if (!isCurrentRequest()) return;
       if (gltfJson) annotateGltfNodeIds(model, gltfJson);
 
@@ -751,8 +768,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR, // Steel blueish
-        metalness: 0.6,
-        roughness: 0.4,
+        metalness: 0.15,
+        roughness: 0.72,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
 
@@ -766,7 +783,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       model.userData.sharedMat = sharedMaterial;
       model.userData.highlightMat = highlightMaterial;
 
-      const isHigh = renderQuality === 'high';
+      const isHigh = renderQualityRef.current === 'high';
 
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
@@ -777,7 +794,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            const mesh = child as THREE.Mesh;
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
-           geom.applyMatrix4(relativeMatrix);
+           applyViewerGeometryTransform(geom, relativeMatrix);
            mesh.userData.viewerSourceMaterial = mesh.material;
            mesh.userData.viewerBatchGeometry = geom;
            mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
@@ -792,10 +809,18 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
       });
 
+      // Let Firefox paint the loading state before starting the expensive
+      // geometry merges. Each later chunk yields for the same reason.
+      await yieldToBrowser();
+      if (!isCurrentRequest()) {
+        disposeObjectTree(model);
+        return;
+      }
+
       if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
-          const CHUNK_SIZE = 1000;
+          const CHUNK_SIZE = 500;
           const chunks: THREE.BufferGeometry[] = [];
           const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
 
@@ -805,6 +830,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                chunks.push(batch.mesh.geometry);
                if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
                else batch.mesh.material.dispose();
+             }
+             await yieldToBrowser();
+             if (!isCurrentRequest()) {
+               chunks.forEach(g => g.dispose());
+               disposeObjectTree(model);
+               return;
              }
           }
 
@@ -816,8 +847,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                ? new THREE.MeshStandardMaterial({
                    color: 0xffffff,
                    vertexColors: true,
-                   metalness: 0.6,
-                   roughness: 0.4,
+                   metalness: 0.15,
+                   roughness: 0.72,
                    side: THREE.FrontSide
                  })
                : sharedMaterial;
@@ -860,12 +891,16 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           const model = new THREE.Group();
           model.name = 'STL Model';
           model.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })));
-          acceptModel(model);
+          void acceptModel(model).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
           return;
         }
         gltfLoader.parse(buffer, '', (gltf) => {
           const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
-          acceptModel(gltf.scene, gltfJson || {});
+          void acceptModel(gltf.scene, gltfJson || {}).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });
@@ -881,7 +916,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadSpanEnded = true;
       }
     };
-  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel, isActive]);
+  }, [modelUrl, getAccessToken, clearCurrentModel, isActive]);
 
   const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
 
