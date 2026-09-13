@@ -26,13 +26,33 @@ spec:
           args:
             - tunnel
             - --no-autoupdate
+            - --metrics
+            - 0.0.0.0:{{ .Values.cloudflared.metricsPort }}
             - run
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.cloudflared.metricsPort }}
+              protocol: TCP
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.cloudflared.tunnelTokenSecretName | quote }}
                   key: {{ .Values.cloudflared.tunnelTokenSecretKey | quote }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.cloudflared.resources | nindent 12 }}
 {{- end }}

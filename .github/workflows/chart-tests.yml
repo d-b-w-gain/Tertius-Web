@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - '.github/workflows/production-smoke.yml'
       - 'README.md'
       - 'ui/.env.example'
       - 'infra/charts/**'
@@ -23,6 +24,7 @@ on:
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
+      - 'scripts/smoke-production.sh'
       - 'scripts/smoke-live-flow.sh'
       - 'docker-compose.yml'
       - 'docker-compose.parity.yml'
@@ -39,6 +41,7 @@ on:
     paths:
       - '.github/workflows/chart-tests.yml'
       - '.github/workflows/images.yml'
+      - '.github/workflows/production-smoke.yml'
       - 'README.md'
       - 'ui/.env.example'
       - 'infra/charts/**'
@@ -57,6 +60,7 @@ on:
       - 'scripts/check-runtime-parity.sh'
       - 'scripts/harness-*.sh'
       - 'scripts/smoke-http.sh'
+      - 'scripts/smoke-production.sh'
       - 'scripts/smoke-live-flow.sh'
       - 'docker-compose.yml'
       - 'docker-compose.parity.yml'

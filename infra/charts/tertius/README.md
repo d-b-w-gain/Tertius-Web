@@ -214,6 +214,12 @@ The intended production route is one public hostname through Cloudflare Tunnel. 
 
 With this in place the browser can keep one origin and still reach authentication endpoints through the UI service.
 
+The chart exposes cloudflared's local `/ready` endpoint only as a pod probe.
+The endpoint reports success only while the connector has an active connection
+to Cloudflare, preventing a disconnected tunnel from appearing Ready in
+Kubernetes. For production token rotation and Error 1033 recovery, see
+`infra/deploy/README.md`.
+
 ## Notes
 
 This chart provisions future-facing infrastructure and environment variables. NATS is available as a platform capability, but application-level streams, publishers, consumers, and authentication are deferred until a workflow needs them.
