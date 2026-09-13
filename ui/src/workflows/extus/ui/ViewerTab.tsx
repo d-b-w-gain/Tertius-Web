@@ -584,7 +584,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     };
     
     const yieldToBrowser = () => new Promise<void>((resolve) => {
-      requestAnimationFrame(() => resolve());
+      window.setTimeout(resolve, 0);
     });
 
     const acceptModel = async (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
