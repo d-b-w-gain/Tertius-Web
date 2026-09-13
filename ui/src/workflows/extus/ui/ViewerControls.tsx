@@ -29,10 +29,15 @@ export interface ViewerControlsProps {
   renderQuality: 'high' | 'low';
   showGrid: boolean;
   autoRotate: boolean;
+  collisionPanelOpen: boolean;
+  collisionScanRunning: boolean;
+  collisionCount?: number;
+  collisionScanDisabled: boolean;
   loadErrorText: string | null;
   isModelLoading: boolean;
   statusText: string;
   onFit: () => void;
+  onRunCollisionAnalysis: () => void;
   onToggleRenderQuality: () => void;
   onToggleGrid: () => void;
   onToggleAutoRotate: () => void;
@@ -44,10 +49,15 @@ export function ViewerControls({
   renderQuality,
   showGrid,
   autoRotate,
+  collisionPanelOpen,
+  collisionScanRunning,
+  collisionCount,
+  collisionScanDisabled,
   loadErrorText,
   isModelLoading,
   statusText,
   onFit,
+  onRunCollisionAnalysis,
   onToggleRenderQuality,
   onToggleGrid,
   onToggleAutoRotate,
@@ -103,6 +113,16 @@ export function ViewerControls({
           aria-label="Frame the whole model"
         >
           Fit
+        </button>
+        <button
+          onClick={onRunCollisionAnalysis}
+          disabled={collisionScanDisabled}
+          className={`pointer-events-auto text-xs font-bold px-2 py-0.5 rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${collisionPanelOpen ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-rose-500 hover:text-rose-300'}`}
+          title="Find box candidates, then verify their rendered triangles intersect"
+        >
+          {collisionScanRunning
+            ? 'Checking…'
+            : `Collisions${collisionCount === undefined ? '' : `: ${collisionCount}`}`}
         </button>
         <button
           onClick={onToggleRenderQuality}

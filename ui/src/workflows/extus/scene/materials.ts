@@ -7,6 +7,8 @@ export type ViewerMeshMaterials = {
   highlight: THREE.Material | THREE.Material[];
   transparent: THREE.Material | THREE.Material[];
   transparentHighlight: THREE.Material | THREE.Material[];
+  collisionA: THREE.Material | THREE.Material[];
+  collisionB: THREE.Material | THREE.Material[];
 };
 
 function materialList(material: THREE.Material | THREE.Material[]): THREE.Material[] {
@@ -113,7 +115,26 @@ export function createViewerMeshMaterials(
     mat.polygonOffsetUnits = -1;
   });
 
-  return { base, highlight, transparent, transparentHighlight };
+  const collisionA = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
+    if ('emissive' in mat) {
+      (mat as THREE.MeshStandardMaterial).emissive.setHex(0xef4444);
+      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.9;
+    }
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -1;
+  });
+  const collisionB = createViewerMaterialVariant(baseSource, fallbackMaterial, (mat) => {
+    if ('emissive' in mat) {
+      (mat as THREE.MeshStandardMaterial).emissive.setHex(0xf59e0b);
+      (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.9;
+    }
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -1;
+    mat.polygonOffsetUnits = -1;
+  });
+
+  return { base, highlight, transparent, transparentHighlight, collisionA, collisionB };
 }
 
 export function disposeMaterial(
@@ -130,6 +151,8 @@ export function disposeViewerMeshMaterials(materials: ViewerMeshMaterials | unde
   disposeMaterial(materials.highlight);
   disposeMaterial(materials.transparent);
   disposeMaterial(materials.transparentHighlight);
+  disposeMaterial(materials.collisionA);
+  disposeMaterial(materials.collisionB);
 }
 
 export function disposeMesh(mesh: THREE.Mesh): void {
