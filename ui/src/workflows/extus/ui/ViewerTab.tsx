@@ -583,7 +583,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       finishLoad();
     };
     
-    const acceptModel = (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
+    const yieldToBrowser = () => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+
+    const acceptModel = async (model: THREE.Object3D, gltfJson?: GltfParserJson) => {
       if (!isCurrentRequest()) return;
       if (gltfJson) annotateGltfNodeIds(model, gltfJson);
 
@@ -669,10 +673,18 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         }
       });
 
+      // Let Firefox paint the loading state before starting the expensive
+      // geometry merges. Each later chunk yields for the same reason.
+      await yieldToBrowser();
+      if (!isCurrentRequest()) {
+        disposeObjectTree(model);
+        return;
+      }
+
       if (sourceMeshes.length > 0) {
         try {
           // Chunk the geometry merge to prevent V8 Out of Memory crashes on massive assemblies
-          const CHUNK_SIZE = 1000;
+          const CHUNK_SIZE = 500;
           const chunks: THREE.BufferGeometry[] = [];
           const hasAuthoredColors = sourceMeshes.some(mesh => hasAuthoredMaterialColor(mesh.material));
 
@@ -682,6 +694,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                chunks.push(batch.mesh.geometry);
                if (Array.isArray(batch.mesh.material)) batch.mesh.material.forEach(mat => mat.dispose());
                else batch.mesh.material.dispose();
+             }
+             await yieldToBrowser();
+             if (!isCurrentRequest()) {
+               chunks.forEach(g => g.dispose());
+               disposeObjectTree(model);
+               return;
              }
           }
 
@@ -737,12 +755,16 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
           const model = new THREE.Group();
           model.name = 'STL Model';
           model.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })));
-          acceptModel(model);
+          void acceptModel(model).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
           return;
         }
         gltfLoader.parse(buffer, '', (gltf) => {
           const gltfJson = (gltf.parser as unknown as { json?: GltfParserJson } | undefined)?.json;
-          acceptModel(gltf.scene, gltfJson || {});
+          void acceptModel(gltf.scene, gltfJson || {}).catch(err => {
+            failLoad("Model artifact could not be prepared.", err);
+          });
         }, (err) => {
           failLoad("Model artifact could not be parsed.", err);
         });
