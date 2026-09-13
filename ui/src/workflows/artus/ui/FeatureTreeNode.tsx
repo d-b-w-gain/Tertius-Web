@@ -65,7 +65,10 @@ export const FeatureTreeNode: React.FC<FeatureTreeNodeProps> = ({
   onToggleVisibility,
   onToggleTransparency,
 }) => {
-  const [expanded, setExpanded] = useState(depth < 2);
+  // Keep only the assembly root open initially. Expanding every first-level
+  // component eagerly turns a large CAD model into thousands of hidden DOM
+  // rows and buttons, which can stall the whole page even when WebGL is idle.
+  const [expanded, setExpanded] = useState(depth < 1);
   const [isHovered, setIsHovered] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const nodeRef = useRef<HTMLDivElement>(null);

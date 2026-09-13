@@ -6,6 +6,7 @@ import {
   hasAuthoredMaterialColor,
 } from '../scene/materials'
 import {
+  applyViewerGeometryTransform,
   buildViewerBatch,
   isViewerObjectHidden,
 } from '../scene/batching'
@@ -91,5 +92,43 @@ describe('ViewerTab material batching', () => {
     expect(isViewerObjectHidden(root, mesh, {})).toBe(false)
     expect(isViewerObjectHidden(root, mesh, { 'path:0': { hidden: true } })).toBe(true)
     expect(isViewerObjectHidden(root, mesh, { 'path:0.0': { hidden: true } })).toBe(true)
+  })
+
+  it('reverses triangle winding when a mirrored instance transform is baked for batching', () => {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]), 3))
+    geometry.setIndex([0, 1, 2])
+
+    applyViewerGeometryTransform(geometry, new THREE.Matrix4().makeScale(-1, 1, 1))
+
+    expect(Array.from(geometry.getIndex()!.array)).toEqual([0, 2, 1])
+    expect(geometry.getAttribute('position').getX(1)).toBe(-1)
+  })
+
+  it('reverses every attribute for mirrored non-indexed triangle geometry', () => {
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+    ]), 3))
+    geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array([
+      0, 0,
+      1, 0,
+      0, 1,
+    ]), 2))
+
+    applyViewerGeometryTransform(geometry, new THREE.Matrix4().makeScale(-1, 1, 1))
+
+    const position = geometry.getAttribute('position')
+    const uv = geometry.getAttribute('uv')
+    expect([position.getX(1), position.getY(1)]).toEqual([0, 1])
+    expect([position.getX(2), position.getY(2)]).toEqual([-1, 0])
+    expect([uv.getX(1), uv.getY(1)]).toEqual([0, 1])
+    expect([uv.getX(2), uv.getY(2)]).toEqual([1, 0])
   })
 })
