@@ -34,6 +34,7 @@ import {
 } from '../scene/materials';
 import {
   buildViewerBatch,
+  applyViewerGeometryTransform,
   closestSelectableSceneNode,
   getRenderableObjectBounds,
   isViewerBatchMesh,
@@ -260,7 +261,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   onExternalSelectionPreviewChange,
 }) => {
   const [showGrid, setShowGrid] = useState<boolean>(true);
-  const [autoRotate, setAutoRotate] = useState<boolean>(true);
+  const [autoRotate, setAutoRotate] = useState<boolean>(false);
   const [renderQuality, setRenderQuality] = useState<'high' | 'low'>('high');
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
@@ -274,7 +275,9 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const autoRotateRef = useRef<boolean>(true);
+  const autoRotateRef = useRef<boolean>(false);
+  const renderQualityRef = useRef<'high' | 'low'>('high');
+  const needsRenderRef = useRef<boolean>(true);
   const isActiveRef = useRef<boolean>(isActive);
   const structuralRestraintSelectRef = useRef(onStructuralRestraintSelect);
 
@@ -319,6 +322,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    needsRenderRef.current = true;
   }, []);
 
   const frameCameraOnBox = useCallback((box: THREE.Box3, padding = 1.08) => {
@@ -341,6 +345,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     controls.maxDistance = Math.max(distance * 200, radius * 500, controls.minDistance * 1000);
     controls.target.copy(sphere.center);
     controls.update();
+    needsRenderRef.current = true;
     return true;
   }, []);
 
@@ -430,8 +435,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
 
     const animate = () => {
       animIdRef.current = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
+      const controlsChanged = controls.update();
+      if (controls.autoRotate || controlsChanged || needsRenderRef.current) {
+        renderer.render(scene, camera);
+        needsRenderRef.current = false;
+      }
     };
     animate();
 
@@ -455,6 +463,10 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       setSelectedNodeId(null);
     };
   }, [isActive, resizeRendererToContainer]);
+
+  useEffect(() => {
+    needsRenderRef.current = true;
+  });
 
   useEffect(() => {
     isActiveRef.current = isActive;
@@ -497,6 +509,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   useEffect(() => {
     if (!rendererRef.current || !sceneRef.current) return;
     const isHigh = renderQuality === 'high';
+    renderQualityRef.current = renderQuality;
     
     rendererRef.current.shadowMap.enabled = isHigh;
     rendererRef.current.setPixelRatio(isHigh ? Math.min(window.devicePixelRatio, 2) : 1);
@@ -513,6 +526,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
          }
       }
     });
+    needsRenderRef.current = true;
   }, [renderQuality]);
 
   // 3. Load GLTF when URL changes
@@ -540,7 +554,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     const isCurrentRequest = () => !isCancelled && modelLoadRequestRef.current === requestId;
     const loadSpan = startInteractionSpan('3d_viewer_load', {
       workflow: 'extus',
-      render_quality: renderQuality,
+      render_quality: renderQualityRef.current,
     });
     const gltfLoader = new GLTFLoader();
     const stlLoader = new STLLoader();
@@ -614,8 +628,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       // Override materials to add shadows and default color
       const sharedMaterial = new THREE.MeshStandardMaterial({
         color: DEFAULT_MODEL_COLOR, // Steel blueish
-        metalness: 0.6,
-        roughness: 0.4,
+        metalness: 0.15,
+        roughness: 0.72,
         side: THREE.FrontSide // FrontSide doubles rendering performance over DoubleSide
       });
 
@@ -629,7 +643,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       model.userData.sharedMat = sharedMaterial;
       model.userData.highlightMat = highlightMaterial;
 
-      const isHigh = renderQuality === 'high';
+      const isHigh = renderQualityRef.current === 'high';
 
       model.updateMatrixWorld(true);
       const inverseModelMatrix = model.matrixWorld.clone().invert();
@@ -640,7 +654,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            const mesh = child as THREE.Mesh;
            const geom = mesh.geometry.clone();
            const relativeMatrix = new THREE.Matrix4().multiplyMatrices(inverseModelMatrix, mesh.matrixWorld);
-           geom.applyMatrix4(relativeMatrix);
+           applyViewerGeometryTransform(geom, relativeMatrix);
            mesh.userData.viewerSourceMaterial = mesh.material;
            mesh.userData.viewerBatchGeometry = geom;
            mesh.userData.viewerMaterials = createViewerMeshMaterials(mesh.material, sharedMaterial);
@@ -679,8 +693,8 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
                ? new THREE.MeshStandardMaterial({
                    color: 0xffffff,
                    vertexColors: true,
-                   metalness: 0.6,
-                   roughness: 0.4,
+                   metalness: 0.15,
+                   roughness: 0.72,
                    side: THREE.FrontSide
                  })
                : sharedMaterial;
@@ -744,7 +758,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         loadSpanEnded = true;
       }
     };
-  }, [modelUrl, getAccessToken, renderQuality, clearCurrentModel, isActive]);
+  }, [modelUrl, getAccessToken, clearCurrentModel, isActive]);
 
   const externalSelectionKey = externalSelectedNodeIds?.join('\u001f') || '';
 
