@@ -380,7 +380,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.35;
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, canvas);
@@ -404,11 +404,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     canvas.addEventListener('wheel', handleInteraction);
     
     // Lighting setup
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
     ambientLight.name = 'Ambient';
     scene.add(ambientLight);
     
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.8);
     hemiLight.name = 'Hemi';
     hemiLight.position.set(0, 0, 200);
     scene.add(hemiLight);
