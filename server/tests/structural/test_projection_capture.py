@@ -49,6 +49,8 @@ def test_structural_workbench_capture_uses_compiled_projection() -> None:
                 ],
                 "connector_component_ids": ["KB1"],
                 "transfers": ["force", "shear", "moment"],
+                "maximum_port_offset_mm": 2.0,
+                "analysis_point_m": [0.0006, 0.0, 0.0],
             }
         ],
         "readiness": {"model_complete": True, "verified": False},
@@ -64,6 +66,8 @@ def test_structural_workbench_capture_uses_compiled_projection() -> None:
     assert [component.id for component in capture.components] == ["C1", "R1", "KB1"]
     assert capture.connections[0].connector_component_ids == ["KB1"]
     assert capture.connections[0].component_ports == {"C1": "end", "R1": "start"}
+    assert capture.connections[0].analysis_point == Vector3(x=0.0006, y=0.0, z=0.0)
+    assert capture.connections[0].maximum_port_offset_mm == pytest.approx(2.0)
     assert capture.analysis is None
     assert {capability.status for capability in capture.capabilities} == {
         "online",
@@ -217,20 +221,18 @@ def test_restraint_candidates_are_derived_from_compiled_physical_joints() -> Non
         for candidate in candidates
     )
     assert all(
-        candidate.evidence_pack_id
-        == "lysaght-zc-2026-08-c10012-100ac-pb1230hs"
-        and candidate.demand_model
-        == "as_nzs_4600_2005_4_3_2_flange_force"
+        candidate.evidence_pack_id == "lysaght-zc-2026-08-c10012-100ac-pb1230hs"
+        and candidate.demand_model == "as_nzs_4600_2005_4_3_2_flange_force"
         for candidate in candidates
     )
 
 
 @pytest.mark.parametrize(
     "bracing_role",
-        (
-            "left roof-plane tension cross brace",
-            "right roof-plane tension cross brace",
-        ),
+    (
+        "left roof-plane tension cross brace",
+        "right roof-plane tension cross brace",
+    ),
 )
 def test_roof_bracing_connection_is_a_purlin_restraint_candidate(
     bracing_role: str,
@@ -710,9 +712,7 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
         "column_role": "portal column",
         "rafter_role": "portal rafter",
         "roof_imposed_receiver_role": "roof/ceiling purlin",
-        "surface_action_pack_id": (
-            "as_nzs_1170_2_rectangular_enclosed_main_frame_v1"
-        ),
+        "surface_action_pack_id": ("as_nzs_1170_2_rectangular_enclosed_main_frame_v1"),
     }
     assert len(wind_bases) == 8
     assert len(surface_loads) == 84
@@ -734,18 +734,16 @@ def test_portal_role_action_model_derives_site_wind_cases_and_line_actions() -> 
         21.80140948635181
     )
     first_frame_wall = next(
-        load
-        for load in surface_loads
-        if load.id == "site:wind-uls-plus-x:F1CL:wall"
+        load for load in surface_loads if load.id == "site:wind-uls-plus-x:F1CL:wall"
     )
     assert first_frame_wall.area_m2 == pytest.approx(2.4 * 2.5)
     assert len(effective_configuration.member_loads) == 2
-    assert {
-        load.case_id for load in effective_configuration.member_loads
-    } == {"roof-concentrated:RP1", "roof-concentrated:RP2"}
+    assert {load.case_id for load in effective_configuration.member_loads} == {
+        "roof-concentrated:RP1",
+        "roof-concentrated:RP2",
+    }
     assert all(
-        load.distance_m == pytest.approx(2.5)
-        and load.force.z == pytest.approx(-1.4)
+        load.distance_m == pytest.approx(2.5) and load.force.z == pytest.approx(-1.4)
         for load in effective_configuration.member_loads
     )
     bases_by_event = {
@@ -1186,7 +1184,9 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
         item for item in capture.analysis.sections if item.id == declaration.section_id
     )
     material = next(
-        item for item in capture.analysis.materials if item.id == declaration.material_id
+        item
+        for item in capture.analysis.materials
+        if item.id == declaration.material_id
     )
     assert section.tension_width_mm == pytest.approx(30.0)
     assert section.tension_hole_diameter_mm == pytest.approx(5.5)
@@ -1195,9 +1195,10 @@ def test_product_authored_tension_member_behavior_reaches_analysis(tmp_path) -> 
     assert material.tensile_strength_MPa == pytest.approx(480.0)
     component = next(item for item in capture.components if item.id == "P1")
     assert component.product_key == product_key
-    assert component.product_definition_digest == projected_purlin[
-        "product_definition_digest"
-    ]
+    assert (
+        component.product_definition_digest
+        == projected_purlin["product_definition_digest"]
+    )
     assert component.structural_properties["end_fastener_count"] == 2
     assert capture.analysis.cross_section_verification is not None
     assert declaration.id not in capture.analysis.cross_section_verification.member_ids

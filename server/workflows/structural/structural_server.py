@@ -408,6 +408,19 @@ def _capture_from_structural_projection(
                     if component_id in component_ids
                 ],
                 transfers=joint.get("transfers") or [],
+                analysis_point=(
+                    Vector3(
+                        x=float(joint["analysis_point_m"][0]),
+                        y=float(joint["analysis_point_m"][1]),
+                        z=float(joint["analysis_point_m"][2]),
+                    )
+                    if isinstance(joint.get("analysis_point_m"), list | tuple)
+                    and len(joint["analysis_point_m"]) == 3
+                    else None
+                ),
+                maximum_port_offset_mm=float(
+                    joint.get("maximum_port_offset_mm") or 0.0
+                ),
                 resistance=joint.get("resistance"),
             )
         )
@@ -1003,9 +1016,7 @@ def _portal_frame_abcb_protocol_scope(
     roof_height = (
         max(max(start.z, end.z) for start, end in rafter_endpoints) - ground_level
     )
-    column_x_positions = [
-        (start.x + end.x) / 2.0 for start, end in column_endpoints
-    ]
+    column_x_positions = [(start.x + end.x) / 2.0 for start, end in column_endpoints]
     building_width = max(column_x_positions) - min(column_x_positions)
     building_length = frame_positions[-1] - frame_positions[0]
     if building_width <= 0 or building_length <= 0 or roof_height <= eaves_height:
@@ -1222,7 +1233,9 @@ def _portal_frame_wind_actions(
         for index, frame_y in enumerate(frame_positions)
     }
     if any(width <= 0 for width in tributary_widths.values()):
-        raise ValueError("compiled portal frames produce a non-positive tributary width")
+        raise ValueError(
+            "compiled portal frames produce a non-positive tributary width"
+        )
 
     potential_opening_roles = {
         "door jamb",
@@ -1740,8 +1753,7 @@ def _portal_frame_wind_actions(
             strip_centroid_distance = (
                 frame_y - frame_positions[0] + tributary_widths[frame_y] / 2.0
                 if wind_sign > 0
-                else frame_positions[-1] - frame_y
-                + tributary_widths[frame_y] / 2.0
+                else frame_positions[-1] - frame_y + tributary_widths[frame_y] / 2.0
             )
             longitudinal_roof_cpe_by_frame[frame_y] = (
                 longitudinal_roof_external_coefficient(
@@ -2343,8 +2355,7 @@ def _p399_stability_actions(
         base_restraints.append(min(endpoint_restraints, key=lambda item: item[0])[1])
     base_model: Literal["unspecified", "perfectly_pinned", "rotational_spring", "fixed"]
     translations_restrained = all(
-        restraint.dx and restraint.dy and restraint.dz
-        for restraint in base_restraints
+        restraint.dx and restraint.dy and restraint.dz for restraint in base_restraints
     )
     if translations_restrained and all(
         restraint.rx and restraint.ry and restraint.rz for restraint in base_restraints
@@ -2381,14 +2392,10 @@ def _p399_stability_actions(
         column_height_m=column_height,
         analysis_base_model=base_model,
         analysis_basis_status=(
-            "verified_conservative"
-            if base_model == "perfectly_pinned"
-            else "assumed"
+            "verified_conservative" if base_model == "perfectly_pinned" else "assumed"
         ),
         physical_connection_stiffness_status=(
-            "not_relied_upon"
-            if base_model == "perfectly_pinned"
-            else "not_checked"
+            "not_relied_upon" if base_model == "perfectly_pinned" else "not_checked"
         ),
     )
     return generated_cases, generated_combinations, stability, [], []

@@ -629,9 +629,9 @@ class TensionMemberCheck(StructuralContract):
     fastener_shear_qualification_status: Literal[
         "not_checked", "candidate", "pass", "fail"
     ] = "not_checked"
-    fastener_evidence_status: Literal[
-        "unverified", "candidate", "verified"
-    ] | None = None
+    fastener_evidence_status: Literal["unverified", "candidate", "verified"] | None = (
+        None
+    )
     fastener_evidence_source: str | None = None
     fastener_evidence_revision: str | None = None
     fastener_evidence_url: str | None = None
@@ -755,15 +755,21 @@ class MemberStabilityCheck(StructuralContract):
     governing_compression_mode: Literal["section", "global", "distortional"] | None = (
         None
     )
-    governing_bending_mode: Literal[
-        "section",
-        "lateral_torsional",
-        "distortional",
-    ] | None = None
-    governing_minor_bending_mode: Literal[
-        "section",
-        "lateral_torsional",
-    ] | None = None
+    governing_bending_mode: (
+        Literal[
+            "section",
+            "lateral_torsional",
+            "distortional",
+        ]
+        | None
+    ) = None
+    governing_minor_bending_mode: (
+        Literal[
+            "section",
+            "lateral_torsional",
+        ]
+        | None
+    ) = None
     axial_utilisation: float | None = None
     axial_bending_utilisation: float | None = None
     major_bending_utilisation: float | None = None
@@ -1138,9 +1144,9 @@ class DesignComponent(StructuralContract):
         min_length=64,
         max_length=64,
     )
-    structural_evidence_status: Literal[
-        "unverified", "candidate", "verified"
-    ] | None = None
+    structural_evidence_status: (
+        Literal["unverified", "candidate", "verified"] | None
+    ) = None
     structural_evidence_basis: str | None = None
     structural_properties: dict[str, Any] = Field(default_factory=dict)
     fabrication: dict[str, Any] = Field(default_factory=dict)
@@ -1204,6 +1210,8 @@ class DesignConnection(StructuralContract):
     component_ports: dict[str, str] = Field(default_factory=dict)
     connector_component_ids: list[str] = Field(default_factory=list)
     transfers: list[Literal["force", "shear", "moment", "wind_normal"]]
+    analysis_point: Vector3 | None = None
+    maximum_port_offset_mm: float = Field(default=0.0, ge=0)
     joint_model: ConnectionJointModel | None = None
     resistance: ConnectionResistanceEvidence | None = None
 
