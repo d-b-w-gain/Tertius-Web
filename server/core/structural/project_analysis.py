@@ -5214,9 +5214,49 @@ def _resolved_analytical_node_position(
 ) -> Vector3:
     """Map a physical member port to its declared connection workpoint."""
 
-    if node_key is None or node_key not in joint_node_specs:
+    if node_key is None:
         return position
-    workpoint, maximum_offset_m = joint_node_specs[node_key]
+    joint_node_spec = joint_node_specs.get(node_key)
+    if (
+        joint_node_spec is None
+        and node_key.startswith("joint:")
+        and "+" in node_key
+    ):
+        constituent_specs = [
+            joint_node_specs.get(f"joint:{connection_id}")
+            for connection_id in node_key.removeprefix("joint:").split("+")
+        ]
+        if all(spec is not None for spec in constituent_specs):
+            resolved_specs = [spec for spec in constituent_specs if spec is not None]
+            workpoint = Vector3(
+                **{
+                    axis: sum(
+                        getattr(spec_workpoint, axis)
+                        for spec_workpoint, _ in resolved_specs
+                    )
+                    / len(resolved_specs)
+                    for axis in ("x", "y", "z")
+                }
+            )
+            maximum_offset_m = max(
+                maximum_offset for _, maximum_offset in resolved_specs
+            )
+            if any(
+                dist(
+                    (spec_workpoint.x, spec_workpoint.y, spec_workpoint.z),
+                    (workpoint.x, workpoint.y, workpoint.z),
+                )
+                > maximum_offset + 1e-9
+                for spec_workpoint, maximum_offset in resolved_specs
+            ):
+                raise StructuralAnalysisError(
+                    f"analytical node key {node_key!r} combines connection "
+                    "workpoints outside their declared offsets"
+                )
+            joint_node_spec = (workpoint, maximum_offset_m)
+    if joint_node_spec is None:
+        return position
+    workpoint, maximum_offset_m = joint_node_spec
     offset_m = dist(
         (position.x, position.y, position.z),
         (workpoint.x, workpoint.y, workpoint.z),

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from core.compile_artifacts import compile_bundle_digest, encode_compile_artifact
 from core.compile_messages import CompileResultPayload
@@ -270,6 +270,40 @@ def test_apply_compile_result_records_artifact_and_marks_success(
     assert persisted.status == "succeeded"
     assert artifact.content == b"solid result"
     assert artifact.content_type == "application/octet-stream"
+
+
+def test_prunable_artifact_bundles_do_not_hydrate_blob_content(
+    db_session,
+    seeded_tenant,
+):
+    from core.repositories import CompileRepository
+    from workflows.intus.compile_result_consumer import apply_compile_result
+
+    jobs = []
+    for _ in range(2):
+        job = CompileJob(
+            tenant_id=seeded_tenant.tenant_id,
+            project_id=seeded_tenant.project_id,
+            requested_by=seeded_tenant.user_id,
+            status="running",
+            export_format="stl",
+        )
+        db_session.add(job)
+        db_session.commit()
+        apply_compile_result(
+            db_session,
+            result_payload(job, seeded_tenant),
+            consumer_settings(),
+        )
+        jobs.append(job.id)
+
+    db_session.expunge_all()
+    repo = CompileRepository(db_session, seeded_tenant.tenant_id)
+    prunable = repo.prunable_artifact_bundles(seeded_tenant.project_id, 1)
+
+    assert prunable
+    assert {artifact.compile_job_id for artifact in prunable} == {jobs[0]}
+    assert all("content" in inspect(artifact).unloaded for artifact in prunable)
 
 
 def test_apply_compile_result_records_structural_projection(

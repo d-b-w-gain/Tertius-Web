@@ -6,6 +6,7 @@ import {
   isSceneNodeSelectionMatch,
   readSceneNodeAppearanceMap,
   resolveSceneNodeSelection,
+  sceneNodeAppearanceStorageKey,
   writeSceneNodeAppearanceMap,
 } from './sceneNodeSelection';
 
@@ -62,5 +63,17 @@ describe('sceneNodeSelection', () => {
       'path:0': { hidden: true, transparent: false },
       'path:2': { hidden: false, transparent: true },
     });
+  });
+
+  it('scopes appearance state to one compiled model', () => {
+    const firstKey = sceneNodeAppearanceStorageKey('/api/extus/model?t=1');
+    const secondKey = sceneNodeAppearanceStorageKey('/api/extus/model?t=2');
+
+    writeSceneNodeAppearanceMap({ 'path:0': { hidden: true } }, firstKey);
+
+    expect(readSceneNodeAppearanceMap(localStorage.getItem(firstKey))).toEqual({
+      'path:0': { hidden: true, transparent: false },
+    });
+    expect(readSceneNodeAppearanceMap(localStorage.getItem(secondKey))).toEqual({});
   });
 });

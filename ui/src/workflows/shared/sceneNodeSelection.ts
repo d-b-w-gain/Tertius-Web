@@ -5,6 +5,13 @@ export const SCENE_NODE_APPEARANCE_STORAGE_KEY = 'tertius_scene_node_appearance'
 export const SCENE_NODE_TARGET_STORAGE_KEY = 'tertius_scene_node_target';
 export const SCENE_NODE_TARGET_EVENT = 'tertius:scene-node-target';
 
+export function sceneNodeAppearanceStorageKey(modelIdentity: string): string {
+  const normalizedIdentity = modelIdentity.trim();
+  return normalizedIdentity
+    ? `${SCENE_NODE_APPEARANCE_STORAGE_KEY}:${encodeURIComponent(normalizedIdentity)}`
+    : SCENE_NODE_APPEARANCE_STORAGE_KEY;
+}
+
 export type SceneNodeAppearance = {
   hidden?: boolean;
   transparent?: boolean;
@@ -124,7 +131,10 @@ export function readSceneNodeAppearanceMap(value: string | null): SceneNodeAppea
   }
 }
 
-export function writeSceneNodeAppearanceMap(appearanceByPath: SceneNodeAppearanceMap): void {
+export function writeSceneNodeAppearanceMap(
+  appearanceByPath: SceneNodeAppearanceMap,
+  storageKey = SCENE_NODE_APPEARANCE_STORAGE_KEY,
+): void {
   const compact: SceneNodeAppearanceMap = {};
   for (const [key, appearance] of Object.entries(appearanceByPath)) {
     const next: SceneNodeAppearance = {};
@@ -134,8 +144,8 @@ export function writeSceneNodeAppearanceMap(appearanceByPath: SceneNodeAppearanc
   }
 
   if (Object.keys(compact).length === 0) {
-    localStorage.removeItem(SCENE_NODE_APPEARANCE_STORAGE_KEY);
+    localStorage.removeItem(storageKey);
   } else {
-    localStorage.setItem(SCENE_NODE_APPEARANCE_STORAGE_KEY, JSON.stringify(compact));
+    localStorage.setItem(storageKey, JSON.stringify(compact));
   }
 }
