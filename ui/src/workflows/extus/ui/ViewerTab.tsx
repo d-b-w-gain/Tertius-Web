@@ -11,7 +11,6 @@ import { MODEL_STATUS_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingRequest
 import { GuestWorkflowNotice } from '../../shared/ui/GuestWorkflowNotice';
 import { startInteractionSpan } from '../../../telemetry';
 import {
-  SCENE_NODE_APPEARANCE_STORAGE_KEY,
   SCENE_NODE_SELECTION_STORAGE_KEY,
   SCENE_NODE_TARGET_EVENT,
   SCENE_NODE_TARGET_STORAGE_KEY,
@@ -20,6 +19,7 @@ import {
   getSceneNodePathKey,
   readSceneNodeAppearanceMap,
   resolveSceneNodeSelection,
+  sceneNodeAppearanceStorageKey,
 } from '../../shared/sceneNodeSelection';
 import type { ComponentPreviewImage } from '../../shared/componentPreview';
 import {
@@ -56,6 +56,7 @@ import {
   matchesExternalSelection,
   normalizeExternalSelectionId,
   resolveExternalSelectionMeshes,
+  updateViewerInstanceAppearance,
 } from '../scene/batching';
 import { ViewerControls } from './ViewerControls';
 
@@ -403,9 +404,11 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   const [collisionVisibleLimit, setCollisionVisibleLimit] = useState(50);
   const [activeCollisionId, setActiveCollisionId] = useState<string | null>(null);
   const [copiedCollisionId, setCopiedCollisionId] = useState<string | null>(null);
-  const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>(() => (
-    readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY))
-  ));
+  const appearanceStorageKey = useMemo(
+    () => sceneNodeAppearanceStorageKey(modelUrl),
+    [modelUrl],
+  );
+  const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>({});
   
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1876,7 +1879,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
   useEffect(() => {
     const handleStorage = () => {
       const selectedValue = localStorage.getItem(SCENE_NODE_SELECTION_STORAGE_KEY);
-      setAppearanceByPath(readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY)));
+      setAppearanceByPath(readSceneNodeAppearanceMap(localStorage.getItem(appearanceStorageKey)));
       if (!selectedValue) {
          setSelectedNodeId(null);
          return;
@@ -1893,7 +1896,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
     handleStorage();
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
-  }, [sceneGraph]);
+  }, [appearanceStorageKey, sceneGraph]);
 
   useEffect(() => {
     const frameTargetValue = (value: string | null) => {
@@ -1930,7 +1933,6 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      if (!meshRef.current) return;
      const model = meshRef.current;
      const batchedMesh = model.userData.batchedMesh;
-     const appearanceBatchMesh = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
       const instancedMeshes = model.userData.instancedMeshes as THREE.InstancedMesh[] | undefined;
       const sharedMaterial = model.userData.sharedMat as THREE.MeshStandardMaterial | undefined;
       const highlightMaterial = model.userData.highlightMat as THREE.Material | undefined;
@@ -1951,11 +1953,12 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
       );
 
      const removeAppearanceBatch = () => {
-        const currentBatch = model.userData.appearanceBatchMesh as THREE.Mesh | undefined;
-        if (!currentBatch) return;
-        model.remove(currentBatch);
-        disposeMesh(currentBatch);
-        model.userData.appearanceBatchMesh = undefined;
+        const currentBatches = (model.userData.appearanceBatchMeshes || []) as THREE.Mesh[];
+        currentBatches.forEach((batch) => {
+          model.remove(batch);
+          disposeMesh(batch);
+        });
+        model.userData.appearanceBatchMeshes = [];
         model.userData.appearanceBatchKey = '';
      };
 
@@ -1966,6 +1969,7 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
         model.traverse((child) => {
            if (child.userData.tertiusStructuralOverlay) return;
            if (isViewerBatchMesh(child) || !(child as THREE.Mesh).isMesh) return;
+           if (child.userData.viewerInstancedSource) return;
 
            let isHidden = false;
            let isTransparent = false;
@@ -1994,15 +1998,20 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
            }
         });
 
-        const appearanceBatch = buildViewerBatch(opaqueMeshes);
-        if (appearanceBatch) {
-           appearanceBatch.mesh.name = "TertiusAppearanceBatchMesh";
+        const nextAppearanceBatches: THREE.Mesh[] = [];
+        const chunkSize = 500;
+        for (let index = 0; index < opaqueMeshes.length; index += chunkSize) {
+           const appearanceBatch = buildViewerBatch(opaqueMeshes.slice(index, index + chunkSize));
+           if (!appearanceBatch) continue;
+           appearanceBatch.mesh.name = `TertiusAppearanceBatchMesh-${nextAppearanceBatches.length + 1}`;
+           appearanceBatch.mesh.userData.tertiusViewerBatch = true;
            appearanceBatch.mesh.castShadow = renderQuality === 'high';
            appearanceBatch.mesh.receiveShadow = renderQuality === 'high';
            model.add(appearanceBatch.mesh);
-           model.userData.appearanceBatchMesh = appearanceBatch.mesh;
-           model.userData.appearanceBatchKey = appearanceBatchKey;
+           nextAppearanceBatches.push(appearanceBatch.mesh);
         }
+        model.userData.appearanceBatchMeshes = nextAppearanceBatches;
+        model.userData.appearanceBatchKey = appearanceBatchKey;
      } else if (!hasAppearanceOverrides || hasActiveCollision) {
         removeAppearanceBatch();
      }
@@ -2010,9 +2019,21 @@ export const ModelViewerCanvas: React.FC<ModelViewerCanvasProps> = ({
      // Reset batched mesh
      if (batchedMesh) batchedMesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
      instancedMeshes?.forEach((mesh) => {
-       mesh.visible = !hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+       mesh.visible = !hasRenderableExternalSelection && !hasActiveCollision;
+       const nextInstanceAppearanceKey = hasAppearanceOverrides ? appearanceBatchKey : '';
+       if (mesh.userData.viewerAppearanceKey !== nextInstanceAppearanceKey) {
+         updateViewerInstanceAppearance(
+           model,
+           mesh,
+           hasAppearanceOverrides ? appearanceByPath : {},
+         );
+         mesh.userData.viewerAppearanceKey = nextInstanceAppearanceKey;
+       }
      });
-     if (appearanceBatchMesh) appearanceBatchMesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     const currentAppearanceBatches = (model.userData.appearanceBatchMeshes || []) as THREE.Mesh[];
+     currentAppearanceBatches.forEach((mesh) => {
+       mesh.visible = hasAppearanceOverrides && !hasRenderableExternalSelection && !hasActiveCollision;
+     });
      
      // Evaluate visibility for individual meshes based on selection or isolation
      model.traverse((child) => {

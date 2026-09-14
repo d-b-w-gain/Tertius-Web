@@ -115,6 +115,9 @@ export function buildViewerInstances(
       bucket.length,
     ) ?? new THREE.InstancedMesh(first.geometry, first.sourceMaterial, bucket.length);
     bucket.forEach((candidate, index) => mesh.setMatrixAt(index, candidate.matrix));
+    bucket.forEach((candidate) => {
+      candidate.source.userData.viewerInstancedSource = true;
+    });
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingBox();
@@ -254,6 +257,35 @@ export function isViewerObjectHidden(
     current = current.parent;
   }
   return false;
+}
+
+export function updateViewerInstanceAppearance(
+  root: THREE.Object3D,
+  mesh: THREE.InstancedMesh,
+  appearanceByPath: SceneNodeAppearanceMap,
+): void {
+  const sources = mesh.userData.viewerInstanceSources as THREE.Mesh[] | undefined;
+  if (!sources || sources.length !== mesh.count) return;
+
+  const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+  sources.forEach((source, index) => {
+    let hidden = false;
+    let transparent = false;
+    let current: THREE.Object3D | null = source;
+    while (current && current !== root) {
+      const appearance = appearanceByPath[getSceneNodePathKey(root, current)];
+      hidden ||= appearance?.hidden === true;
+      transparent ||= appearance?.transparent === true;
+      current = current.parent;
+    }
+    const originalMatrix = source.userData.viewerBatchMatrix as THREE.Matrix4 | undefined;
+    if (originalMatrix) {
+      mesh.setMatrixAt(index, hidden || transparent ? hiddenMatrix : originalMatrix);
+    }
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingBox();
+  mesh.computeBoundingSphere();
 }
 
 export function buildViewerBatch(

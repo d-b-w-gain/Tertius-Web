@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 
-import { buildViewerInstances, isViewerBatchMesh } from './batching';
+import {
+  buildViewerInstances,
+  isViewerBatchMesh,
+  updateViewerInstanceAppearance,
+} from './batching';
 
 function candidate(
   geometry: THREE.BufferGeometry,
@@ -9,8 +13,10 @@ function candidate(
   matrix: THREE.Matrix4,
   geometryKey?: string,
 ) {
+  const source = new THREE.Mesh(geometry, material);
+  source.userData.viewerBatchMatrix = matrix;
   return {
-    source: new THREE.Mesh(geometry, material),
+    source,
     geometry,
     sourceMaterial: material,
     matrix,
@@ -72,5 +78,39 @@ describe('buildViewerInstances', () => {
 
     expect(result.meshes).toHaveLength(0);
     expect(result.leftovers).toHaveLength(3);
+  });
+
+  it('masks only overridden instances and restores their original matrices', () => {
+    const root = new THREE.Group();
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const material = new THREE.MeshStandardMaterial();
+    const first = candidate(
+      geometry,
+      material,
+      new THREE.Matrix4().makeTranslation(1, 0, 0),
+      'mesh:7:primitive:0',
+    );
+    const second = candidate(
+      geometry,
+      material,
+      new THREE.Matrix4().makeTranslation(2, 0, 0),
+      'mesh:7:primitive:0',
+    );
+    root.add(first.source, second.source);
+    const result = buildViewerInstances([first, second]);
+    const instanceMesh = result.meshes[0]!;
+    const matrix = new THREE.Matrix4();
+
+    updateViewerInstanceAppearance(root, instanceMesh, {
+      'path:1': { hidden: true },
+    });
+    instanceMesh.getMatrixAt(0, matrix);
+    expect(matrix.elements).toEqual(first.matrix.elements);
+    instanceMesh.getMatrixAt(1, matrix);
+    expect(matrix.determinant()).toBe(0);
+
+    updateViewerInstanceAppearance(root, instanceMesh, {});
+    instanceMesh.getMatrixAt(1, matrix);
+    expect(matrix.elements).toEqual(second.matrix.elements);
   });
 });

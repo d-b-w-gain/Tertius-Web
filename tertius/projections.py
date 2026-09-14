@@ -74,14 +74,12 @@ def _member_stations(
         parameter = (
             sum(offset[index] * axis[index] for index in range(3)) / length_squared
         )
-        projected = tuple(
-            start_point[index] + parameter * axis[index] for index in range(3)
-        )
-        perpendicular_offset = sqrt(
-            sum((point[index] - projected[index]) ** 2 for index in range(3))
-        )
         station_mm = parameter * length_mm
-        if perpendicular_offset <= 0.1 and -0.1 <= station_mm <= length_mm + 0.1:
+        # Connected fabricated ports may sit on a web, cleat or bracket rather
+        # than exactly on the analytical member axis. Project the port onto the
+        # axis here; project_analysis later validates the resulting eccentricity
+        # against the physical connection's maximum_port_offset_mm.
+        if -0.1 <= station_mm <= length_mm + 0.1:
             candidates.append((min(length_mm, max(0.0, station_mm)), name, port))
 
     candidates.sort(key=lambda item: (item[0], item[1]))
