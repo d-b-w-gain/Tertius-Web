@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from collections import defaultdict, deque
 from importlib.metadata import version
-from math import pi, sqrt
+from math import dist, pi, sqrt
 from typing import Any, Literal, TypedDict, cast
 
 from .capacity_packs import (
@@ -2280,6 +2280,23 @@ def _connection_checks(
             screw=calculated_screw,
             gusset=calculated_gusset,
         )
+        # Only retain supporting sub-checks that form part of the selected
+        # complete resistance path. Calculators intentionally probe partial
+        # joint patterns, but an inapplicable probe must not survive in the
+        # authoritative evidence as an unresolved nested result beneath a
+        # passing connection.
+        if evidence is not None or tension_evidence is not None:
+            anchor_group = None
+            bolted_sheet_interface = None
+        elif calculated_connection is not None:
+            selected_pack_id = calculated_connection["pack_id"]
+            if selected_pack_id not in {
+                "specified_grade_pinned_steel_fixture",
+                "as_nzs_4600_2005_a1_direct_anchored_sheet",
+            }:
+                anchor_group = None
+            if selected_pack_id != "specified_grade_pinned_steel_fixture":
+                bolted_sheet_interface = None
         if (
             (
                 anchor_group is not None
@@ -5171,6 +5188,46 @@ def _coordinate_key(position: Vector3) -> tuple[float, float, float]:
         round(getattr(position, axis), NODE_COORDINATE_DIGITS)
         for axis in ("x", "y", "z")
     )
+
+
+def _analytical_joint_node_specs(
+    connections: Sequence[DesignConnection],
+) -> dict[str, tuple[Vector3, float]]:
+    """Return explicit joint workpoints and their permitted physical eccentricity."""
+
+    return {
+        f"joint:{connection.id}": (
+            connection.analysis_point,
+            connection.maximum_port_offset_mm / 1000.0,
+        )
+        for connection in connections
+        if connection.analysis_point is not None
+    }
+
+
+def _resolved_analytical_node_position(
+    position: Vector3,
+    *,
+    node_key: str | None,
+    joint_node_specs: Mapping[str, tuple[Vector3, float]],
+    endpoint_label: str,
+) -> Vector3:
+    """Map a physical member port to its declared connection workpoint."""
+
+    if node_key is None or node_key not in joint_node_specs:
+        return position
+    workpoint, maximum_offset_m = joint_node_specs[node_key]
+    offset_m = dist(
+        (position.x, position.y, position.z),
+        (workpoint.x, workpoint.y, workpoint.z),
+    )
+    if offset_m > maximum_offset_m + 1e-9:
+        raise StructuralAnalysisError(
+            f"analytical node key {node_key!r} places {endpoint_label} "
+            f"{offset_m * 1000.0:g} mm from its physical-connection workpoint; "
+            f"the connection permits at most {maximum_offset_m * 1000.0:g} mm"
+        )
+    return workpoint
 
 
 def _merge_restraints(
@@ -8493,6 +8550,7 @@ def solve_project_structural(
 
     nodes_by_topology: dict[tuple[object, ...], dict[str, Any]] = {}
     member_node_ids: dict[str, tuple[str, str]] = {}
+    joint_node_specs = _analytical_joint_node_specs(capture.connections)
     for declaration in analysis.members:
         component = components[declaration.component_id]
         member_nodes: list[str] = []
@@ -8510,7 +8568,13 @@ def solve_project_structural(
                 declaration.end_restraints,
             ),
         ):
-            coordinate = _coordinate_key(position)
+            analytical_position = _resolved_analytical_node_position(
+                position,
+                node_key=node_key,
+                joint_node_specs=joint_node_specs,
+                endpoint_label=f"{declaration.id}.{endpoint}",
+            )
+            coordinate = _coordinate_key(analytical_position)
             key: tuple[object, ...] = (
                 ("explicit", node_key)
                 if node_key is not None
@@ -8520,7 +8584,7 @@ def solve_project_structural(
             if node is None:
                 node = {
                     "id": f"node-{len(nodes_by_topology) + 1}",
-                    "position": position,
+                    "position": analytical_position,
                     "restraints": {
                         "dx": False,
                         "dy": False,
@@ -9878,6 +9942,7 @@ def solve_project_structural(
             analysis_configuration_digest=capture.analysis_configuration_digest,
         ),
         design_basis=capture.design_basis,
+        abcb_protocol_scope=capture.abcb_protocol_scope,
         wind_action_bases=capture.wind_action_bases,
         nodes=structural_nodes,
         members=structural_members,

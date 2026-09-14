@@ -71,7 +71,9 @@ def _member_stations(
             continue
         point = tuple(float(value) for value in port["point_mm"])
         offset = tuple(point[index] - start_point[index] for index in range(3))
-        parameter = sum(offset[index] * axis[index] for index in range(3)) / length_squared
+        parameter = (
+            sum(offset[index] * axis[index] for index in range(3)) / length_squared
+        )
         projected = tuple(
             start_point[index] + parameter * axis[index] for index in range(3)
         )
@@ -188,9 +190,7 @@ def procurement_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                     "scope_id": None,
                     "visual_node_ids": [component["id"]],
                     "product_key": component["product_key"],
-                    "product_definition_digest": component[
-                        "product_definition_digest"
-                    ],
+                    "product_definition_digest": component["product_definition_digest"],
                 }
                 for component in compiled_design.get("components", [])
                 if isinstance(component, dict)
@@ -241,9 +241,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             {
                 "component_id": component["id"],
                 "product_key": component["product_key"],
-                "product_definition_digest": component[
-                    "product_definition_digest"
-                ],
+                "product_definition_digest": component["product_definition_digest"],
                 "kind": structural["kind"],
                 "mark": component.get("mark"),
                 "role": component.get("role"),
@@ -280,70 +278,100 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
         ):
             base_member_id = f"member:{component['id']}"
             structural_properties = structural.get("properties") or {}
-            analytical_members.append({
-                "id": (
-                    base_member_id
-                    if segment_count == 1
-                    else f"{base_member_id}:segment:{segment_index:02d}"
-                ),
-                "physical_member_id": base_member_id,
-                "component_id": component["id"],
-                "product_key": component["product_key"],
-                "product_definition_digest": component[
-                    "product_definition_digest"
-                ],
-                "segment_index": segment_index,
-                "segment_count": segment_count,
-                "physical_start_distance_m": float(segment_start["station_mm"]) / 1000.0,
-                "physical_end_distance_m": float(segment_end["station_mm"]) / 1000.0,
-                "start_m": [
-                    float(value) / 1000.0 for value in segment_start["point_mm"]
-                ],
-                "end_m": [
-                    float(value) / 1000.0 for value in segment_end["point_mm"]
-                ],
-                "start_port_names": list(segment_start["port_names"]),
-                "end_port_names": list(segment_end["port_names"]),
-                "section_x_direction": list(segment_start["section_x_direction"]),
-                "section": structural.get("section") or {},
-                "material": structural.get("material") or {},
-                "evidence_status": structural.get("evidence_status"),
-                "evidence_basis": structural.get("evidence_basis"),
-                "tension_only": bool(structural_properties.get("tension_only")),
-                "compression_only": bool(
-                    structural_properties.get("compression_only")
-                ),
-                "tension_capacity_status": structural_properties.get(
-                    "tension_capacity_status",
-                    "not_checked",
-                ),
-                "tension_capacity_kN": structural_properties.get(
-                    "tension_capacity_kN"
-                ),
-                "tension_capacity_basis": structural_properties.get(
-                    "tension_capacity_basis"
-                ),
-                "end_fastener_count": structural_properties.get(
-                    "end_fastener_count"
-                ),
-                "end_connection_capacity_kN": structural_properties.get(
-                    "end_connection_capacity_kN"
-                ),
-                "end_connection_basis": structural_properties.get(
-                    "end_connection_basis"
-                ),
-                "profile_rotation_deg": float(
-                    (component.get("fabrication") or {}).get("rotation_deg") or 0.0
-                ),
-            })
+            analytical_members.append(
+                {
+                    "id": (
+                        base_member_id
+                        if segment_count == 1
+                        else f"{base_member_id}:segment:{segment_index:02d}"
+                    ),
+                    "physical_member_id": base_member_id,
+                    "component_id": component["id"],
+                    "product_key": component["product_key"],
+                    "product_definition_digest": component["product_definition_digest"],
+                    "segment_index": segment_index,
+                    "segment_count": segment_count,
+                    "physical_start_distance_m": float(segment_start["station_mm"])
+                    / 1000.0,
+                    "physical_end_distance_m": float(segment_end["station_mm"])
+                    / 1000.0,
+                    "start_m": [
+                        float(value) / 1000.0 for value in segment_start["point_mm"]
+                    ],
+                    "end_m": [
+                        float(value) / 1000.0 for value in segment_end["point_mm"]
+                    ],
+                    "start_port_names": list(segment_start["port_names"]),
+                    "end_port_names": list(segment_end["port_names"]),
+                    "section_x_direction": list(segment_start["section_x_direction"]),
+                    "section": structural.get("section") or {},
+                    "material": structural.get("material") or {},
+                    "evidence_status": structural.get("evidence_status"),
+                    "evidence_basis": structural.get("evidence_basis"),
+                    "tension_only": bool(structural_properties.get("tension_only")),
+                    "compression_only": bool(
+                        structural_properties.get("compression_only")
+                    ),
+                    "tension_capacity_status": structural_properties.get(
+                        "tension_capacity_status",
+                        "not_checked",
+                    ),
+                    "tension_capacity_kN": structural_properties.get(
+                        "tension_capacity_kN"
+                    ),
+                    "tension_capacity_basis": structural_properties.get(
+                        "tension_capacity_basis"
+                    ),
+                    "end_fastener_count": structural_properties.get(
+                        "end_fastener_count"
+                    ),
+                    "end_connection_capacity_kN": structural_properties.get(
+                        "end_connection_capacity_kN"
+                    ),
+                    "end_connection_basis": structural_properties.get(
+                        "end_connection_basis"
+                    ),
+                    "profile_rotation_deg": float(
+                        (component.get("fabrication") or {}).get("rotation_deg") or 0.0
+                    ),
+                }
+            )
 
     joints: list[dict[str, Any]] = []
     connectivity: dict[str, list[str]] = defaultdict(list)
+    port_points_mm = {
+        (str(component["component_id"]), str(port["name"])): tuple(
+            float(value) for value in port["point_mm"]
+        )
+        for component in structural_components
+        for port in component.get("ports", [])
+        if isinstance(port, dict)
+        and port.get("name")
+        and isinstance(port.get("point_mm"), list | tuple)
+        and len(port["point_mm"]) == 3
+    }
     for connection in compiled_design.get("connections", []):
         if not isinstance(connection, dict):
             continue
         definition = connection.get("definition") or {}
         connected_ports = connection.get("ports") or []
+        connected_points_mm = [
+            port_points_mm[(str(port["component_id"]), str(port["port"]))]
+            for port in connected_ports
+            if isinstance(port, dict)
+            and (str(port.get("component_id") or ""), str(port.get("port") or ""))
+            in port_points_mm
+        ]
+        analysis_point_m = (
+            [
+                sum(point[axis] for point in connected_points_mm)
+                / len(connected_points_mm)
+                / 1000.0
+                for axis in range(3)
+            ]
+            if len(connected_points_mm) == len(connected_ports) and connected_points_mm
+            else None
+        )
         joint = {
             "id": f"joint:{connection['id']}",
             "connection_id": connection["id"],
@@ -355,6 +383,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             "stiffness_status": definition.get("stiffness_status"),
             "stiffness_basis": definition.get("stiffness_basis"),
             "maximum_port_offset_mm": definition.get("maximum_port_offset_mm"),
+            "analysis_point_m": analysis_point_m,
             "resistance": definition.get("resistance"),
         }
         joints.append(joint)
@@ -375,9 +404,7 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
         topology.union(
             [(component_id, str(name)) for name in member["start_port_names"]]
         )
-        topology.union(
-            [(component_id, str(name)) for name in member["end_port_names"]]
-        )
+        topology.union([(component_id, str(name)) for name in member["end_port_names"]])
     for member in analytical_members:
         component_id = str(member["component_id"])
         member["start_node_key"] = topology.node_key(
@@ -429,18 +456,16 @@ def drawing_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                 "mark": component.get("mark"),
                 "role": component.get("role"),
                 "product_key": component["product_key"],
-                "product_definition_digest": component[
-                    "product_definition_digest"
-                ],
+                "product_definition_digest": component["product_definition_digest"],
                 "name": (
                     drawing.get("name")
                     if isinstance(drawing, dict)
-                    else product.get("label") if product else component["id"]
+                    else product.get("label")
+                    if product
+                    else component["id"]
                 ),
                 "attributes": (
-                    drawing.get("attributes") or {}
-                    if isinstance(drawing, dict)
-                    else {}
+                    drawing.get("attributes") or {} if isinstance(drawing, dict) else {}
                 ),
                 "fabrication": component.get("fabrication") or {},
                 "ports": component.get("ports") or [],
@@ -456,9 +481,7 @@ def drawing_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
                     "connection_id": connection["id"],
                     "mark": connection.get("mark"),
                     "ports": connection.get("ports") or [],
-                    "connector_component_ids": connection.get(
-                        "connector_component_ids"
-                    )
+                    "connector_component_ids": connection.get("connector_component_ids")
                     or [],
                 }
                 for connection in compiled_design.get("connections", [])

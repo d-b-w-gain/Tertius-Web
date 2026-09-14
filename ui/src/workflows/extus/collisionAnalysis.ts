@@ -28,6 +28,7 @@ export type CollisionComponent = {
   meshBounds: THREE.Box3[]
   meshCount: number
   collisionGroup?: string
+  collisionGroups: string[]
   sourceReferences: CollisionSourceReference[]
 }
 
@@ -149,8 +150,13 @@ const collisionComponent = (
 
   const gltfNodeId = node.userData?.tertiusGltfNodeId
   const id = typeof gltfNodeId === 'string' && gltfNodeId ? gltfNodeId : node.uuid
-  const meshGroups = new Set(collisionMeshes.map(mesh => collisionPolicyForNode(mesh, root).group).filter(Boolean))
-  const collisionGroup = meshGroups.size === 1 ? [...meshGroups][0] : undefined
+  const meshGroups = new Set<string>()
+  collisionMeshes.forEach((mesh) => {
+    const policy = collisionPolicyForNode(mesh, root)
+    ;(policy.groups ?? (policy.group ? [policy.group] : [])).forEach(group => meshGroups.add(group))
+  })
+  const collisionGroups = [...meshGroups]
+  const collisionGroup = collisionGroups.length === 1 ? collisionGroups[0] : undefined
   return {
     id,
     label: collisionDisplayLabel(node.name) || `Component ${index + 1}`,
@@ -160,6 +166,7 @@ const collisionComponent = (
     meshBounds,
     meshCount: collisionMeshes.length,
     collisionGroup,
+    collisionGroups,
     sourceReferences: sourceReferencesFor(node, root),
   }
 }

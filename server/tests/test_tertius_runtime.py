@@ -318,7 +318,9 @@ def test_explicit_shared_connector_can_span_multiple_physical_joints() -> None:
         )
         graph = session.finalize(model)
 
-    assert [connection["connector_component_ids"] for connection in graph["connections"]] == [
+    assert [
+        connection["connector_component_ids"] for connection in graph["connections"]
+    ] == [
         ["B1"],
         ["B1"],
     ]
@@ -614,6 +616,50 @@ def test_connection_rejects_unexplained_member_endpoint_gap() -> None:
                 ports=(first.ports.end, second.ports.start),
                 connector_components=(connector,),
             )
+
+
+def test_structural_projection_centres_offset_ports_at_joint_workpoint() -> None:
+    with compile_session() as session:
+        first = managed_member(
+            product=member_product(),
+            mark="M1",
+            start=(0, 0, 0),
+            end=(0, 0, 100),
+        )
+        second = managed_member(
+            product=member_product(),
+            mark="M2",
+            start=(0, 0, 101.2),
+            end=(0, 0, 201.2),
+        )
+        connector = managed_component(
+            bd.Box(1, 1, 1),
+            product=connector_product(),
+            mark="K1",
+        )
+        connection = physical_connection(
+            bd.Compound(children=[connector]),  # type: ignore[call-overload]
+            definition=ConnectionDefinition(
+                key="bolted",
+                label="Bolted",
+                family="test-bolted",
+                transfers=("force", "shear"),
+                analysis_model="pinned",
+                maximum_port_offset_mm=2.0,
+            ),
+            ports=(first.ports.end, second.ports.start),
+            connector_components=(connector,),
+            mark="J1",
+        )
+        model = bd.Compound(  # type: ignore[call-overload]
+            children=[first, second, connection]
+        )
+        graph = session.finalize(model)
+
+    joint = all_workbench_projections(graph, model=model)["structural"]["joints"][0]
+
+    assert joint["maximum_port_offset_mm"] == pytest.approx(2.0)
+    assert joint["analysis_point_m"] == pytest.approx([0.0, 0.0, 0.1006])
 
 
 def test_component_port_can_belong_to_only_one_physical_connection() -> None:

@@ -33,7 +33,9 @@ from core.structural.design_capture import (
     parse_project_structural_capture,
 )
 from core.structural.project_analysis import (
+    StructuralAnalysisError,
     _analysis_base_model_matches,
+    _analytical_joint_node_specs,
     _bracing_load_path_traces,
     _calculated_anchored_fixture_resistance,
     _calculated_direct_anchored_sheet_resistance,
@@ -42,12 +44,51 @@ from core.structural.project_analysis import (
     _released_rotational_datum_restraints,
     _released_node_rotational_axes,
     _relative_transverse_deflection_mm,
+    _resolved_analytical_node_position,
     _rafter_stability_applicability_checks,
     _select_calculated_connection_resistance,
     _stability_scope_comparisons,
     _tension_member_checks,
     solve_project_structural,
 )
+
+
+def test_declared_physical_joint_resolves_offset_ports_to_one_analysis_workpoint() -> (
+    None
+):
+    connection = DesignConnection(
+        id="stud-track",
+        label="Paired-cleat stud connection",
+        from_component_id="track-left",
+        to_component_id="track-right",
+        transfers=["force", "shear"],
+        analysis_point=Vector3(x=0.0, y=1.0006, z=0.0345),
+        maximum_port_offset_mm=2.0,
+    )
+    specs = _analytical_joint_node_specs([connection])
+
+    left = _resolved_analytical_node_position(
+        Vector3(x=0.0, y=1.0, z=0.0345),
+        node_key="joint:stud-track",
+        joint_node_specs=specs,
+        endpoint_label="left.end",
+    )
+    right = _resolved_analytical_node_position(
+        Vector3(x=0.0, y=1.0012, z=0.0345),
+        node_key="joint:stud-track",
+        joint_node_specs=specs,
+        endpoint_label="right.start",
+    )
+
+    assert left == right == connection.analysis_point
+
+    with pytest.raises(StructuralAnalysisError, match="permits at most 2 mm"):
+        _resolved_analytical_node_position(
+            Vector3(x=0.0, y=1.003, z=0.0345),
+            node_key="joint:stud-track",
+            joint_node_specs=specs,
+            endpoint_label="bad.start",
+        )
 
 
 def _test_member(
@@ -216,9 +257,7 @@ def test_shared_pin_stabilizes_only_rotations_with_zero_member_stiffness() -> No
         (0.0, 1.0, 0.0),
         (0.0, 0.0, 1.0),
     )
-    assert _released_node_rotational_axes(
-        [(identity, Restraints())]
-    ) == ()
+    assert _released_node_rotational_axes([(identity, Restraints())]) == ()
 
 
 def test_axis_aligned_torsion_chain_gets_one_zero_energy_rotation_datum() -> None:
@@ -239,10 +278,13 @@ def test_axis_aligned_torsion_chain_gets_one_zero_energy_rotation_datum() -> Non
     ) == (("left", "rx"),)
 
     free["right"]["rx"] = True
-    assert _released_rotational_datum_restraints(
-        [("left", "right", identity, pinned_bending, pinned_bending)],
-        free,
-    ) == ()
+    assert (
+        _released_rotational_datum_restraints(
+            [("left", "right", identity, pinned_bending, pinned_bending)],
+            free,
+        )
+        == ()
+    )
 
 
 def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
@@ -379,7 +421,9 @@ def test_bracing_load_path_traces_both_rendered_ends_to_ground() -> None:
         [tension_check],
     )[0]
     assert unverified_trace.status == "candidate"
-    assert any("no demand/resistance check" in item for item in unverified_trace.blockers)
+    assert any(
+        "no demand/resistance check" in item for item in unverified_trace.blockers
+    )
 
     traces = _bracing_load_path_traces(
         capture,
@@ -996,7 +1040,9 @@ def test_complete_pinned_anchored_fixture_closes_verified_force_path() -> None:
     )
     assert moment_result is not None
     assert moment_result["status"] == "unsupported"
-    assert any("cannot be credited with moment" in item for item in moment_result["blockers"])
+    assert any(
+        "cannot be credited with moment" in item for item in moment_result["blockers"]
+    )
 
 
 def test_direct_anchor_checks_cold_formed_web_and_anchor_path() -> None:
@@ -1114,9 +1160,7 @@ def test_direct_anchor_checks_cold_formed_web_and_anchor_path() -> None:
 
 def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
     bolt_properties = {
-        "bolted_sheet_fastener_pack_id": (
-            "as_nzs_4600_2005_a1_bolted_sheet_interface"
-        ),
+        "bolted_sheet_fastener_pack_id": ("as_nzs_4600_2005_a1_bolted_sheet_interface"),
         "bolted_sheet_fastener_pack_version": "1",
         "nominal_diameter_mm": 12.0,
         "bolt_tensile_strength_MPa": 830.0,
@@ -1264,9 +1308,7 @@ def test_base_connection_resolves_bolted_cold_formed_sheet_interface() -> None:
 
 def test_complete_bolted_cleat_calculates_eccentric_group_and_stiffness() -> None:
     bolt_properties = {
-        "bolted_sheet_fastener_pack_id": (
-            "as_nzs_4600_2005_a1_bolted_sheet_interface"
-        ),
+        "bolted_sheet_fastener_pack_id": ("as_nzs_4600_2005_a1_bolted_sheet_interface"),
         "bolted_sheet_fastener_pack_version": "1",
         "nominal_diameter_mm": 12.0,
         "bolt_tensile_strength_MPa": 830.0,
@@ -1300,9 +1342,7 @@ def test_complete_bolted_cleat_calculates_eccentric_group_and_stiffness() -> Non
             product_definition_digest="f" * 64,
             structural_evidence_status="verified",
             structural_properties={
-                "connection_capacity_pack_id": (
-                    "as_nzs_4600_2005_a1_bolted_cleat"
-                ),
+                "connection_capacity_pack_id": ("as_nzs_4600_2005_a1_bolted_cleat"),
                 "connection_capacity_pack_version": "1",
                 "source": "Lysaght Zeds and Cees guide, pages 17-20",
                 "source_sha256": "a" * 64,
@@ -1614,9 +1654,7 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness(
     expected_status: str,
 ) -> None:
     bolt_properties = {
-        "bolted_sheet_fastener_pack_id": (
-            "as_nzs_4600_2005_a1_bolted_sheet_interface"
-        ),
+        "bolted_sheet_fastener_pack_id": ("as_nzs_4600_2005_a1_bolted_sheet_interface"),
         "nominal_diameter_mm": 12.0,
         "bolt_tensile_strength_MPa": 830.0,
         "bolt_minor_area_mm2": 76.2,
@@ -1754,6 +1792,8 @@ def test_fabricated_portal_gusset_checks_strength_and_rotational_stiffness(
     assert check.design_moment_capacity_kNm is not None
     assert check.design_moment_capacity_kNm > 0.6
     assert check.stiffness_status == "verified"
+    assert check.anchor_group is None
+    assert check.bolted_sheet_interface is None
 
 
 def test_global_stability_scope_excludes_secondary_member_numerical_noise():
@@ -2059,7 +2099,9 @@ def test_multi_member_frame_solves_catalogue_self_weight_and_service_loads():
     assert service.certification_readiness.model_coverage.status == "complete"
     assert service.certification_readiness.model_coverage.compiled_member_count == 2
     assert service.certification_readiness.model_coverage.solved_member_count == 2
-    assert service.certification_readiness.model_coverage.missing_result_member_ids == []
+    assert (
+        service.certification_readiness.model_coverage.missing_result_member_ids == []
+    )
     assert "DRAFT ENGINEERING REVIEW REPORT" in (
         service.certification_readiness.draft_document_label
     )
@@ -2076,7 +2118,9 @@ def test_orphaned_released_node_dofs_do_not_make_solver_singular():
         project_name="released_free_end",
     )
     assert capture.analysis is not None
-    beam = next(member for member in capture.analysis.members if member.id == "beam-axis")
+    beam = next(
+        member for member in capture.analysis.members if member.id == "beam-axis"
+    )
     beam.end_releases = Restraints(ry=True, rz=True)
 
     snapshot = solve_project_structural(capture, combination_id="SLS-G+Q")
@@ -2091,7 +2135,9 @@ def test_axial_only_tie_is_not_applicable_as_a_bending_member():
         project_name="axial_tie_serviceability",
     )
     assert capture.analysis is not None
-    beam = next(member for member in capture.analysis.members if member.id == "beam-axis")
+    beam = next(
+        member for member in capture.analysis.members if member.id == "beam-axis"
+    )
     beam.tension_only = True
     beam_load = next(
         load
@@ -2340,7 +2386,9 @@ def test_tertius_generates_p399_ehf_and_nhf_from_solved_base_reactions():
     assert ehf_positive.force.x > 0
     assert ehf_negative.force.x == pytest.approx(-ehf_positive.force.x)
     assert nhf_positive.force.x == pytest.approx(ehf_positive.force.x)
-    assert "1/200 of the solved vertical base reaction" in (ehf_positive.provenance or "")
+    assert "1/200 of the solved vertical base reaction" in (
+        ehf_positive.provenance or ""
+    )
     assert snapshot.equilibrium.status == "pass"
 
 
@@ -2472,20 +2520,20 @@ structural_assembly = structure.assembly""",
                     "lip": 14.5,
                     "fy": 450,
                     "E": 200000,
-                        "G": 80000,
-                        "A": 409,
-                        "Ae": 329,
-                        "Zxe": 12300,
-                        "Zx": 13200,
-                        "Zy": 4210,
-                        "flange": 51,
-                        "d1": 92.5,
+                    "G": 80000,
+                    "A": 409,
+                    "Ae": 329,
+                    "Zxe": 12300,
+                    "Zx": 13200,
+                    "Zy": 4210,
+                    "flange": 51,
+                    "d1": 92.5,
                     "t": 1.9,
                     "rx": 40.6,
                     "ry": 18.7,
                     "x0": 40.4,
-                        "ro2": 3630,
-                        "beta_y": 122,
+                    "ro2": 3630,
+                    "beta_y": 122,
                     "J": 492,
                     "Iw": 311000000,
                 },
@@ -2565,7 +2613,9 @@ structural_assembly = structure.assembly""",
         for check in snapshot.cross_section_checks
     )
     beam_cross_section = next(
-        check for check in snapshot.cross_section_checks if check.member_id == "beam-axis"
+        check
+        for check in snapshot.cross_section_checks
+        if check.member_id == "beam-axis"
     )
     assert beam_cross_section.off_axis_load_path_status == "candidate"
     assert beam_cross_section.off_axis_collector_component_ids == [
@@ -2670,8 +2720,7 @@ structural_assembly = structure.assembly""",
     assert all(
         check.distortional_buckling_status == "verified"
         and check.governing_bending_mode is not None
-        and check.standard_reference
-        == "AS/NZS 4600:2005 incorporating Amendment No. 1"
+        and check.standard_reference == "AS/NZS 4600:2005 incorporating Amendment No. 1"
         for check in unrestrained_snapshot.member_stability_checks
     )
     assert {check.status for check in unrestrained_snapshot.member_checks} == {"pass"}
@@ -2913,12 +2962,10 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
     assert loaded_candidate.status == "pass"
 
     standard_manifest = deepcopy(manifest)
-    for candidate in standard_manifest["analysis"][
-        "member_stability_verification"
-    ]["restraint_candidates"]:
-        candidate["demand_model"] = (
-            "as_nzs_4600_2005_4_3_2_flange_force"
-        )
+    for candidate in standard_manifest["analysis"]["member_stability_verification"][
+        "restraint_candidates"
+    ]:
+        candidate["demand_model"] = "as_nzs_4600_2005_4_3_2_flange_force"
     standard_capture = capture_project_structural_declaration(
         standard_manifest,
         project_name="as_nzs_restraint_demand",
@@ -2939,9 +2986,7 @@ def test_signed_moment_flips_effective_compression_flange_restraint_trace():
         (standard_candidate.required_force_kN or 0.0)
         * (standard_candidate.member_depth_m or 0.0)
     )
-    assert "AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3" in (
-        standard_candidate.mechanism
-    )
+    assert "AS/NZS 4600:2005 clauses 4.3.2.2-4.3.2.3" in (standard_candidate.mechanism)
 
     inadequate_manifest = deepcopy(manifest)
     for candidate in inadequate_manifest["analysis"]["member_stability_verification"][

@@ -32,6 +32,17 @@ describe('Extus collision policy', () => {
     )).toBe(true)
   })
 
+  it('suppresses only components sharing one of several local joint groups', () => {
+    expect(shouldAnalyzeCollisionPair(
+      { collisionGroups: ['stud-head-1', 'stud-base-1'] },
+      { collisionGroups: ['stud-base-1'] },
+    )).toBe(false)
+    expect(shouldAnalyzeCollisionPair(
+      { collisionGroups: ['stud-head-1', 'stud-base-1'] },
+      { collisionGroups: ['stud-base-2'] },
+    )).toBe(true)
+  })
+
   it('excludes flexible components through design metadata with a reason', () => {
     const root = new THREE.Group()
     const batt = new THREE.Mesh()
