@@ -1,0 +1,27 @@
+[project]
+name = "tertius-gis-cache"
+version = "0.1.0"
+description = "Internal Tertius GIS evidence cache and raster service"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "boto3>=1.42,<2",
+    "fastapi>=0.139,<0.140",
+    "laspy[lazrs]>=2.6,<3",
+    "numpy>=2.4,<3",
+    "overturemaps>=1.0.1,<1.1",
+    "pyproj>=3.7,<4",
+    "python-multipart>=0.0.20,<0.1",
+    "remotezip>=0.12,<0.13",
+    "rasterio>=1.5,<1.6",
+    "rio-cogeo>=7,<8",
+    "rio-tiler>=9,<10",
+    "shapely>=2.1,<3",
+    "titiler-core>=2,<3",
+    "uvicorn[standard]>=0.35,<0.36",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28,<0.29",
+    "pytest>=8,<10",
+]

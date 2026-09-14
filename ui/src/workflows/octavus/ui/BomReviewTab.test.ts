@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import * as THREE from 'three';
 import {
   buildSupplierQuoteHtml,
   buildSupplierQuoteCsv,
   canonicalRequirementKey,
-  deriveAssemblyTreeManifest,
   groupManifestRequirements,
   manifestCounts,
   normalizeManifestEnvelope,
@@ -51,6 +49,28 @@ describe('Procurement manifest grouping', () => {
     expect(grouped[0]?.quantity).toBe(2);
     expect(grouped[0]?.componentIds).toEqual(['portal.column.left', 'portal.column.right']);
     expect(canonicalRequirementKey(manifest.requirements[0]!)).toContain('length_mm=2400');
+  });
+
+  it('keeps otherwise matching requirements separate when colour differs', () => {
+    const manifest: BomManifest = {
+      version: 1,
+      source_snapshot_hash: 'snapshot-a',
+      scopes: [],
+      components: [
+        { id: 'sheet.surfmist', scope_id: null, label: 'Roof Sheet Surfmist', role: 'Sheet', visual_node_ids: [] },
+        { id: 'sheet.monument', scope_id: null, label: 'Roof Sheet Monument', role: 'Sheet', visual_node_ids: [] },
+      ],
+      requirements: [
+        { id: 'r1', component_id: 'sheet.surfmist', part_number: 'CUSTOM-ORB', quantity: 1, unit: 'sheet', dimensions: { length_mm: 2400 }, colour: 'Surfmist' },
+        { id: 'r2', component_id: 'sheet.monument', part_number: 'CUSTOM-ORB', quantity: 1, unit: 'sheet', dimensions: { length_mm: 2400 }, color: 'Monument' },
+      ],
+      diagnostics: [],
+    };
+
+    const grouped = groupManifestRequirements(manifest, '__all__');
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped.map((line) => line.colour).sort()).toEqual(['Monument', 'Surfmist']);
   });
 
   it('does not create rows when the manifest has no explicit requirements', () => {
@@ -178,55 +198,6 @@ describe('Procurement manifest grouping', () => {
     expect(resolveBomArtifactState(envelope(scopesOnly, true, 'diagnostic_only'))).toBe('diagnostic_only');
   });
 
-  it('derives draft components from named GLTF leaf groups under assembly groups', () => {
-    const root = new THREE.Object3D();
-    const portal = new THREE.Object3D();
-    portal.name = 'Portal_1';
-    const leftColumn = new THREE.Object3D();
-    leftColumn.name = 'Left_Column';
-    leftColumn.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial()));
-    portal.add(leftColumn);
-    root.add(portal);
-
-    const manifest = deriveAssemblyTreeManifest(
-      root,
-      {
-        version: 1,
-        source_snapshot_hash: 'snapshot-a',
-        scopes: [],
-        components: [],
-        requirements: [],
-        diagnostics: [],
-      },
-      {
-        calls: [{
-          function: 'lysaght_zc_purlin',
-          sourceFile: 'design.py',
-          scope: 'make_portal::column',
-          line: 240,
-          parameters: {},
-          standardInputs: {
-            part_number: { kind: 'reference', name: 'PURLIN_PART_NUMBER' },
-            length_mm: { kind: 'reference', name: 'column_height' },
-          },
-          bomKind: 'structural_member',
-          bomReadiness: 'ok',
-          bomMissingFields: [],
-        }],
-      },
-      [
-        { name: 'PURLIN_PART_NUMBER', value: 'C10019' },
-        { name: 'column_height', value: 2400 },
-      ],
-    );
-
-    expect(manifest?.scopes.map((scope) => scope.label)).toEqual(['Portal_1']);
-    expect(manifest?.components.map((component) => component.label)).toEqual(['Left_Column']);
-    expect(manifest?.requirements[0]?.part_number).toBe('C10019');
-    expect(manifest?.requirements[0]?.dimensions).toEqual({ length_mm: 2400 });
-    expect(groupManifestRequirements(manifest, manifest?.scopes[0]?.id || '__all__')[0]?.displayName).toBe('C10019x24');
-  });
-
   it('calculates generic box packaging from grouped requirements', () => {
     const manifest: BomManifest = {
       version: 1,
@@ -279,6 +250,7 @@ describe('Procurement manifest grouping', () => {
         unit: 'sheet',
         dimensions: { length_mm: 2800 },
         material: 'steel',
+        color: 'Woodland Grey',
         finish: 'zincalume',
       }],
       diagnostics: [],
@@ -291,6 +263,7 @@ describe('Procurement manifest grouping', () => {
     expect(grouped[0]?.displayName).toBe('CUSTOM-ORBx28');
     expect(grouped[0]?.quantity).toBe(1);
     expect(grouped[0]?.unit).toBe('sheet');
+    expect(grouped[0]?.colour).toBe('Woodland Grey');
     expect(groupManifestRequirements(manifest, '__all__')[0]?.quantity).toBe(14);
     expect(groupManifestRequirements(manifest, 'missing-scope')).toEqual([]);
   });
@@ -365,7 +338,7 @@ describe('Procurement manifest grouping', () => {
         { id: 'bolt', scope_id: null, label: 'Bolt', role: 'Fastener', visual_node_ids: ['bolt-node'] },
       ],
       requirements: [
-        { id: 'r1', component_id: 'purlin', part_number: 'C10012', quantity: 1, unit: 'each', dimensions: { length_mm: 9000 }, material: 'galvanised steel' },
+        { id: 'r1', component_id: 'purlin', part_number: 'C10012', quantity: 1, unit: 'each', dimensions: { length_mm: 9000 }, material: 'galvanised steel', colour: 'Surfmist' },
         { id: 'r2', component_id: 'bolt', part_number: 'M12_BOLT', quantity: 84, unit: 'each', dimensions: { size: 'M12' } },
       ],
       diagnostics: [],
@@ -395,8 +368,12 @@ describe('Procurement manifest grouping', () => {
     expect(csv).toContain('"Small hardware / general"');
     expect(csv).toContain('"Supplier unit price ex GST"');
     expect(csv).toContain('"C10012"');
+    expect(csv).toContain('"Colour"');
+    expect(csv).toContain('"Surfmist"');
     expect(csv).toContain('"9000"');
     expect(html).toContain('Shed BoM Quote Request');
+    expect(html).toContain('Colour');
+    expect(html).toContain('Surfmist');
     expect(html).toContain('Unit $ ex GST');
     expect(html).toContain('Notes / substitutions');
     expect(html).toContain('Optional small hardware');

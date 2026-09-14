@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import gzip
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -155,6 +156,32 @@ async def test_nats_publisher_uses_message_id_header_for_dedupe():
     assert headers["Nats-Msg-Id"] == "compile-result-1"
     assert "traceparent" in headers
     assert timeout == 60.0
+
+
+@pytest.mark.asyncio
+async def test_nats_publisher_can_gzip_complete_json_envelope():
+    jetstream = FakeJetStream()
+    publisher = NatsPublisher(jetstream)
+    command = CompileCommand(
+        job_id=uuid4(),
+        tenant_id=uuid4(),
+        project_id=uuid4(),
+        requested_by=uuid4(),
+        export_format="glb",
+        created_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+    )
+
+    await publisher.publish_json(
+        "tertius.compile.result",
+        command,
+        message_id="compile-result-gzip",
+        compress=True,
+    )
+
+    _, payload, headers, _ = jetstream.published[0]
+    assert headers["Content-Encoding"] == "gzip"
+    assert headers["Nats-Msg-Id"] == "compile-result-gzip"
+    assert CompileCommand.model_validate_json(gzip.decompress(payload)) == command
 
 
 @pytest.mark.asyncio

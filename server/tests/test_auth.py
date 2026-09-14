@@ -12,7 +12,16 @@ from starlette.requests import Request
 from sqlalchemy.orm import Session
 
 import core.auth as auth
-from core.auth import claims_to_principal, decode_keycloak_token, get_auth_context, get_cookie_auth_context, session_token_hash
+from core.auth import (
+    claims_to_principal,
+    decode_keycloak_token,
+    get_auth_context,
+    get_cookie_auth_context,
+    keycloak_logout_url,
+    keycloak_token_url,
+    logout_keycloak_session,
+    session_token_hash,
+)
 from core.auth_types import AuthContext
 from core.config import Settings
 from core.models import AuthSession
@@ -120,6 +129,9 @@ def test_claims_to_principal_maps_keycloak_claims():
             "email": "a@example.com",
             "preferred_username": "alice",
             "name": "Alice Example",
+            "realm_access": {
+                "roles": ["workbench-site", "workbench-structural", 42],
+            },
         }
     )
 
@@ -127,6 +139,12 @@ def test_claims_to_principal_maps_keycloak_claims():
     assert principal.email == "a@example.com"
     assert principal.username == "alice"
     assert principal.display_name == "Alice Example"
+    assert principal.roles == frozenset({"workbench-site", "workbench-structural"})
+
+
+def test_claims_to_principal_ignores_missing_or_invalid_realm_roles():
+    assert claims_to_principal({"sub": "kc-user-1"}).roles == frozenset()
+    assert claims_to_principal({"sub": "kc-user-1", "realm_access": "not-a-dictionary"}).roles == frozenset()
 
 
 def test_decode_keycloak_token_accepts_valid_rs256_token(monkeypatch):
@@ -202,7 +220,12 @@ def test_decode_keycloak_token_rejects_unknown_kid(monkeypatch):
 
 def test_get_auth_context_rejects_missing_bearer_token():
     with pytest.raises(HTTPException) as exc:
-        get_auth_context(request=_request(), response=Response(), credentials=None, db=cast(Session, None))
+        get_auth_context(
+            request=_request(),
+            response=Response(),
+            credentials=None,
+            db=cast(Session, None),
+        )
 
     assert exc.value.status_code == 401
 
@@ -249,7 +272,11 @@ def test_oauth_state_secret_requires_configured_secret(monkeypatch):
     monkeypatch.setattr(
         app_main,
         "settings",
-        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=False),
+        Settings(
+            auth_session_secret="",
+            oidc_client_secret="",
+            auth_allow_insecure_oauth_state_secret=False,
+        ),
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -264,7 +291,11 @@ def test_oauth_state_secret_allows_explicit_local_fallback(monkeypatch):
     monkeypatch.setattr(
         app_main,
         "settings",
-        Settings(auth_session_secret="", oidc_client_secret="", auth_allow_insecure_oauth_state_secret=True),
+        Settings(
+            auth_session_secret="",
+            oidc_client_secret="",
+            auth_allow_insecure_oauth_state_secret=True,
+        ),
     )
 
     assert app_main._auth_state_secret() == b"insecure-local-auth-state-secret"
@@ -303,6 +334,86 @@ def test_keycloak_token_url_falls_back_to_issuer(monkeypatch):
     )
 
     assert app_main._keycloak_token_url() == "http://localhost:18080/realms/tertius/protocol/openid-connect/token"
+
+
+def test_refresh_token_url_uses_internal_jwks_service():
+    settings = Settings(
+        keycloak_issuer="http://127.0.0.1:18081/realms/tertius",
+        keycloak_jwks_url_override=(
+            "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"
+        ),
+    )
+
+    assert keycloak_token_url(settings) == (
+        "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/token"
+    )
+
+
+def test_logout_url_uses_internal_jwks_service():
+    settings = Settings(
+        keycloak_issuer="http://127.0.0.1:18081/realms/tertius",
+        keycloak_jwks_url_override=(
+            "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"
+        ),
+    )
+
+    assert keycloak_logout_url(settings) == (
+        "http://tertius-fbd-smoke-keycloak-service:8080/realms/tertius/protocol/openid-connect/logout"
+    )
+
+
+def test_logout_keycloak_session_revokes_refresh_token(monkeypatch):
+    settings = _patch_session_settings(monkeypatch)
+    session = AuthSession(refresh_token="refresh-token")
+    captured = {}
+
+    class _Response:
+        status_code = 204
+
+    def post(url, *, data, timeout):
+        captured.update(url=url, data=data, timeout=timeout)
+        return _Response()
+
+    monkeypatch.setattr(auth.httpx, "post", post)
+
+    assert logout_keycloak_session(session) is True
+    assert captured == {
+        "url": keycloak_logout_url(settings),
+        "data": {
+            "client_id": settings.oidc_client_id,
+            "refresh_token": "refresh-token",
+        },
+        "timeout": 10,
+    }
+
+
+def test_auth_logout_revokes_keycloak_and_deletes_local_session(monkeypatch):
+    import main as app_main
+
+    settings = _patch_session_settings(monkeypatch)
+    monkeypatch.setattr(app_main, "settings", settings)
+    token = "session-token"
+    session = AuthSession(refresh_token="refresh-token")
+    db = _Db(session)
+    revoked = []
+    monkeypatch.setattr(
+        app_main,
+        "logout_keycloak_session",
+        lambda stored_session: revoked.append(stored_session) or True,
+    )
+    request = _request(
+        method="POST",
+        headers=[(b"cookie", f"{settings.auth_session_cookie_name}={token}".encode("ascii"))],
+    )
+    response = Response()
+
+    result = app_main.auth_logout(request, response, db)
+
+    assert result == {"ok": True, "identity_provider_logout": True}
+    assert revoked == [session]
+    assert db.deleted is session
+    assert db.committed is True
+    assert f"{settings.auth_session_cookie_name}=" in response.headers["set-cookie"]
 
 
 def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monkeypatch):
@@ -379,7 +490,9 @@ def test_cookie_auth_context_refreshes_server_side_token_and_requires_csrf(monke
     assert "tertius_session=" in response.headers["set-cookie"]
 
 
-def test_cookie_auth_context_keeps_session_when_refresh_service_is_unavailable(monkeypatch):
+def test_cookie_auth_context_keeps_session_when_refresh_service_is_unavailable(
+    monkeypatch,
+):
     settings = _patch_session_settings(monkeypatch)
     user_id = uuid4()
     tenant_id = uuid4()

@@ -10,6 +10,12 @@ CONTENT_TYPES = {
     "glb": "model/gltf-binary",
     "pdf": "application/pdf",
     "timus_views": "application/json",
+    "timus_bounds": "application/json",
+    "compiled_design": "application/json",
+    "procurement": "application/json",
+    "structural": "application/json",
+    "drawing": "application/json",
+    "bounds": "application/json",
 }
 
 

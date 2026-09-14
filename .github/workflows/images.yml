@@ -13,10 +13,80 @@ permissions:
   packages: write
 
 concurrency:
-  group: ci-owned-image-promotion
+  group: ${{ github.ref == 'refs/heads/master' && 'ci-owned-image-promotion' || format('smoke-images-{0}', github.ref) }}
   cancel-in-progress: true
 
 jobs:
+  smoke-images:
+    name: Build branch smoke images
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/master' }}
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set smoke image tag
+        id: vars
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          commit_date="$(git log -1 --format=%cI)"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "commit_date=${commit_date}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=smoke-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          target: api
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
+          push: true
+          tags: ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
+          cache-from: type=gha,scope=tertius-api
+          cache-to: type=gha,mode=max,scope=tertius-api,ignore-error=true
+
+      - name: Build and push GIS cache smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gis
+          target: gis-cache
+          push: true
+          tags: ghcr.io/d-b-w-gain/tertius-gis-cache:${{ steps.vars.outputs.image_tag }}
+          cache-from: type=gha,scope=tertius-gis-cache
+          cache-to: type=gha,mode=max,scope=tertius-gis-cache,ignore-error=true
+
+      - name: Build and push UI smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ui
+          build-args: |
+            VITE_API_URL=/api
+            VITE_KEYCLOAK_AUTHORITY=/realms/tertius
+            VITE_KEYCLOAK_CLIENT_ID=tertius-ui
+            GIT_COMMIT=${{ steps.vars.outputs.short_sha }}
+            GIT_COMMIT_DATE=${{ steps.vars.outputs.commit_date }}
+          push: true
+          tags: ghcr.io/d-b-w-gain/tertius-ui:${{ steps.vars.outputs.image_tag }}
+          cache-from: type=gha,scope=tertius-ui
+          cache-to: type=gha,mode=max,scope=tertius-ui,ignore-error=true
+
   images:
     name: Build and push GHCR images
     runs-on: ubuntu-latest
@@ -65,6 +135,9 @@ jobs:
           context: .
           file: Dockerfile.api
           target: api
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-api:${{ steps.vars.outputs.image_tag }}
@@ -79,6 +152,9 @@ jobs:
           context: .
           file: Dockerfile.api
           target: pi-agent
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
+          no-cache: true
           push: true
           tags: |
             ghcr.io/d-b-w-gain/tertius-pi-agent:${{ steps.vars.outputs.image_tag }}
@@ -86,6 +162,20 @@ jobs:
             ghcr.io/d-b-w-gain/tertius-pi-agent:master
           cache-from: type=gha,scope=tertius-pi-agent
           cache-to: type=gha,mode=max,scope=tertius-pi-agent
+
+      - name: Build and push GIS cache image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gis
+          target: gis-cache
+          push: true
+          tags: |
+            ghcr.io/d-b-w-gain/tertius-gis-cache:${{ steps.vars.outputs.image_tag }}
+            ghcr.io/d-b-w-gain/tertius-gis-cache:sha-${{ steps.vars.outputs.short_sha }}
+            ghcr.io/d-b-w-gain/tertius-gis-cache:master
+          cache-from: type=gha,scope=tertius-gis-cache
+          cache-to: type=gha,mode=max,scope=tertius-gis-cache
 
       - name: Build and push UI image
         uses: docker/build-push-action@v6
@@ -179,16 +269,30 @@ jobs:
                 --head "${PROMOTION_BRANCH}" \
                 --base master \
                 --title "chore: promote ${IMAGE_TAG}" \
-                --body "Promotes the API, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
+                --body "Promotes the API, GIS cache, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
             )"
             pr_number="${pr_url##*/}"
+          else
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "chore: promote ${IMAGE_TAG}" \
+              --body "Promotes the API, GIS cache, Pi agent, and UI images built from ${SOURCE_SHA} as ${IMAGE_TAG}."
           fi
 
-          head_sha="$(gh pr view "${pr_number}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --json headRefOid \
-            --jq '.headRefOid')"
           local_head="$(git rev-parse HEAD)"
+          head_deadline=$((SECONDS + 60))
+          head_sha=""
+          while [ "$SECONDS" -lt "$head_deadline" ]; do
+            head_sha="$(gh pr view "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json headRefOid \
+              --jq '.headRefOid')"
+            if [ "${head_sha}" = "${local_head}" ]; then
+              break
+            fi
+            echo "Waiting for promotion PR head to advance from ${head_sha} to ${local_head}."
+            sleep 2
+          done
           if [ "${head_sha}" != "${local_head}" ]; then
             echo "::error::Promotion PR head ${head_sha} does not match pushed commit ${local_head}."
             exit 1

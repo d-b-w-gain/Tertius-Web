@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import time
@@ -26,8 +27,14 @@ from core.nats_client import (
     pull_pi_agent_request_subscription,
     pull_pi_agent_result_subscription,
 )
-from core.pi_agent_messages import PiAgentCommand, PiAgentResult, PiAgentUsage
-from core.pi_agent_rpc import PiAgentRpcResult
+from core.pi_agent_messages import (
+    PiAgentCommand,
+    PiAgentProgressBatch,
+    PiAgentProgressSnapshot,
+    PiAgentResult,
+    PiAgentUsage,
+)
+from core.pi_agent_rpc import PiAgentRpcProgressEvent, PiAgentRpcResult
 from workflows.intus import intus_server
 from workflows.intus import pi_agent_job as worker_module
 from workflows.intus import pi_agent_result_consumer as result_module
@@ -85,12 +92,43 @@ async def fake_pi_rpc(_prompt, *, cwd: Path, **_kwargs) -> PiAgentRpcResult:
     )
 
 
+async def fake_pi_rpc_with_progress(
+    prompt, *, cwd: Path, progress_callback=None, **kwargs
+) -> PiAgentRpcResult:
+    if progress_callback is not None:
+        await progress_callback(
+            PiAgentRpcProgressEvent(
+                kind="reasoning_delta", text="Inspecting the model"
+            )
+        )
+        await progress_callback(
+            PiAgentRpcProgressEvent(
+                kind="tool_started", tool_name="read", target="design.py"
+            )
+        )
+        await progress_callback(
+            PiAgentRpcProgressEvent(
+                kind="tool_finished",
+                tool_name="read",
+                target="design.py",
+                is_error=False,
+            )
+        )
+    return await fake_pi_rpc(prompt, cwd=cwd, **kwargs)
+
+
 def pointer(file: ProjectFile) -> dict[str, str]:
     return {"id": str(file.id), "filename": file.filename, "updated_at": file.updated_at.isoformat()}
 
 
-async def run_pipeline(js, settings, db_session, monkeypatch):
-    monkeypatch.setattr(worker_module, "run_pi_agent", fake_pi_rpc)
+async def run_pipeline(
+    js, settings, db_session, monkeypatch, *, require_progress=False
+):
+    monkeypatch.setattr(
+        worker_module,
+        "run_pi_agent",
+        fake_pi_rpc_with_progress if require_progress else fake_pi_rpc,
+    )
     publisher = NatsPublisher(js)
     request_sub = await pull_pi_agent_request_subscription(js, settings)
     request = (await request_sub.fetch(batch=1, timeout=5))[0]
@@ -99,9 +137,25 @@ async def run_pipeline(js, settings, db_session, monkeypatch):
     with pytest.raises(TimeoutError):
         await request_sub.fetch(batch=1, timeout=1)
     result_sub = await pull_pi_agent_result_subscription(js, settings)
-    result = (await result_sub.fetch(batch=1, timeout=5))[0]
-    await result_module.handle_pi_agent_result_message(result, db_session, settings, publisher)
-    return request
+    progress_seen = False
+    while True:
+        message = (await result_sub.fetch(batch=1, timeout=5))[0]
+        envelope = json.loads(message.data)
+        await result_module.handle_pi_agent_result_message(
+            message, db_session, settings, publisher
+        )
+        if envelope.get("message_type") != "progress":
+            assert not require_progress or progress_seen
+            return request
+
+        progress = PiAgentProgressBatch.model_validate(envelope)
+        db_session.expire_all()
+        persisted = db_session.get(LlmEditJob, progress.job_id)
+        assert persisted.status not in {"succeeded", "failed"}
+        snapshot = PiAgentProgressSnapshot.model_validate(persisted.progress_payload)
+        assert snapshot.last_batch_sequence == progress.batch_sequence
+        assert snapshot.events[-1].sequence == progress.events[-1].sequence
+        progress_seen = True
 
 
 async def provision_result_consumer_runtime(js, settings, monkeypatch):
@@ -137,7 +191,9 @@ async def test_pi_pipeline_worker_publishes_and_api_applies_result(
             json={"prompt": "Add height", "files": [pointer(file)], "active_file_id": str(file.id)},
         )
         assert response.status_code == 202
-        request = await run_pipeline(js, settings, db_session, monkeypatch)
+        request = await run_pipeline(
+            js, settings, db_session, monkeypatch, require_progress=True
+        )
         assert request.metadata.num_delivered == 1
         db_session.expire_all()
         job = db_session.get(LlmEditJob, UUID(response.json()["job_id"]))

@@ -2,12 +2,13 @@
 import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
+from importlib.metadata import PackageNotFoundError, version
 import importlib.util
+from importlib.metadata import PackageNotFoundError, version
 import logging
-from pathlib import Path
 from typing import Any, Optional, cast
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from fastapi import Depends, FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -24,7 +25,7 @@ from core.llm_usage import LlmUsageLimitExceeded, assert_llm_usage_allowed
 from core.models import CompileJob, LlmEditJob, Project, ProjectFile, UserWorkspaceState
 from core.nats_client import NatsPublisher, connect_nats, ensure_compile_stream, ensure_pi_agent_stream
 from core.pi_agent_conversation import next_conversation_context, render_conversation_context
-from core.pi_agent_messages import PiAgentCommand, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
+from core.pi_agent_messages import PiAgentCommand, PiAgentProgressSnapshot, PiAgentSourceFile, assert_pi_agent_command_size, pi_agent_command_message_id
 from core.pi_agent_prompt import (
     PiAgentPromptError,
     estimate_pi_agent_usage,
@@ -32,10 +33,11 @@ from core.pi_agent_prompt import (
     render_pi_agent_user_prompt,
 )
 from core.pi_agent_telemetry import pi_agent_metric_attributes
+from core.project_templates import default_project_files, default_structural_configuration
 from core.llm_file_edit import (
+    LLM_FILE_EDIT_CONTEXT_CHARS,
     LlmEditableFile as DomainEditableFile,
     LlmFileEditInput,
-    llm_edit_context_chars_for_tier,
     select_llm_edit_context_files as select_domain_context_files,
 )
 from core.telemetry import (
@@ -45,6 +47,7 @@ from core.repositories import (
     CompileRepository,
     ProjectRepository,
     normalize_file_version,
+    require_valid_project_filename,
     require_valid_python_filename,
     LlmEditRepository,
 )
@@ -65,15 +68,6 @@ app.add_middleware(
 )
 
 # â”€â”€ Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-TEMPLATE_FILE = Path(__file__).parent / 'templates' / 'default_purlin.py'
-
-def get_default_purlin():
-    if TEMPLATE_FILE.exists():
-        return TEMPLATE_FILE.read_text(encoding="utf-8")
-    return ""
-
-DEFAULT_PURLIN = get_default_purlin()
-
 # ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 class CodeRequest(BaseModel):
     code: str
@@ -112,7 +106,15 @@ async def publish_compile_command(command: CompileCommand) -> None:
 @app.get("/health")
 def health():
     has_b3d = importlib.util.find_spec("build123d") is not None
-    return {"status": "ok", "build123d_installed": has_b3d}
+    try:
+        build123d_version = version("build123d") if has_b3d else None
+    except PackageNotFoundError:
+        build123d_version = None
+    return {
+        "status": "ok",
+        "build123d_installed": has_b3d,
+        "build123d_version": build123d_version,
+    }
 
 @app.get("/project_name")
 def get_project_name(ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
@@ -147,7 +149,12 @@ def new_project(name: str, ctx: AuthContext = Depends(get_auth_context), db: Ses
         return JSONResponse(status_code=400, content={"error": str(exc)})
     if existing:
         return JSONResponse(status_code=400, content={"error": "Project already exists"})
-    repo.create_project(name, ctx.user_id, DEFAULT_PURLIN)
+    repo.create_project(
+        name,
+        ctx.user_id,
+        default_project_files(),
+        default_structural_configuration(),
+    )
     return {"success": True, "project": name}
 
 @app.post("/projects/{name}/activate")
@@ -207,7 +214,7 @@ def get_status(
 ):
     repo = ProjectRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -277,7 +284,7 @@ async def compile_project(
     repo = ProjectRepository(db, ctx.tenant_id)
     compile_repo = CompileRepository(db, ctx.tenant_id)
     try:
-        filename = require_valid_python_filename(file)
+        filename = require_valid_project_filename(file)
         project = repo.get_project(name)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -454,10 +461,60 @@ def _llm_edit_job_model(job: LlmEditJob) -> str | None:
         return result_model
 
     request_payload = job.request_payload or {}
+    dispatched_model = request_payload.get("dispatched_model")
+    if isinstance(dispatched_model, str) and dispatched_model:
+        return dispatched_model
+
     request_model = request_payload.get("model_id")
     if isinstance(request_model, str) and request_model:
         return request_model
     return None
+
+
+def _llm_edit_job_progress_snapshot(
+    job: LlmEditJob,
+) -> PiAgentProgressSnapshot | None:
+    if not job.progress_payload:
+        return None
+    try:
+        return PiAgentProgressSnapshot.model_validate(job.progress_payload)
+    except ValidationError:
+        return None
+
+
+def _llm_edit_job_progress(job: LlmEditJob) -> dict[str, Any] | None:
+    snapshot = _llm_edit_job_progress_snapshot(job)
+    if snapshot is None:
+        return None
+    return snapshot.model_dump(mode="json")
+
+
+def _llm_edit_job_history_progress(job: LlmEditJob) -> dict[str, Any] | None:
+    snapshot = _llm_edit_job_progress_snapshot(job)
+    if snapshot is None:
+        return None
+
+    retained_events = snapshot.events[-8:]
+    preview_events = [
+        event.model_copy(update={"text": event.text[:240]})
+        if event.kind == "reasoning_delta" and event.text is not None
+        else event
+        for event in retained_events
+    ]
+    truncated_before_sequence = snapshot.truncated_before_sequence
+    if len(snapshot.events) > len(retained_events):
+        truncated_before_sequence = snapshot.events[-len(retained_events) - 1].sequence
+
+    preview = PiAgentProgressSnapshot(
+        schema_version=1,
+        execution_id=snapshot.execution_id,
+        execution_started_at=snapshot.execution_started_at,
+        last_batch_sequence=snapshot.last_batch_sequence,
+        last_sequence=snapshot.last_sequence,
+        truncated_before_sequence=truncated_before_sequence,
+        events=preview_events,
+    )
+    return preview.model_dump(mode="json")
 
 
 def _serialize_llm_edit_history_message(
@@ -468,8 +525,12 @@ def _serialize_llm_edit_history_message(
     request_payload = job.request_payload or {}
     result_payload = job.result_payload or {}
     request_files = request_payload.get("files")
-    artifact = compile_repo.artifact_for_job(compile_job.id) if compile_job is not None else None
-    return {
+    artifact = (
+        compile_repo.artifact_for_job(compile_job.id, compile_job.export_format)
+        if compile_job is not None
+        else None
+    )
+    message = {
         "job_id": str(job.id),
         "prompt": str(request_payload.get("prompt") or ""),
         "content": _llm_edit_job_content(job),
@@ -492,6 +553,9 @@ def _serialize_llm_edit_history_message(
             else None
         ),
     }
+    if job.status in {"succeeded", "failed"}:
+        message["progress"] = _llm_edit_job_history_progress(job)
+    return message
 
 
 
@@ -540,6 +604,7 @@ async def start_llm_file_edit_job(
     repo = ProjectRepository(db, ctx.tenant_id)
     job_repo = LlmEditRepository(db, ctx.tenant_id)
     settings = get_settings()
+    selected_model = req.model_id or settings.pi_agent_model
     job = None
     publication_attempted = False
     try:
@@ -566,7 +631,7 @@ async def start_llm_file_edit_job(
         if active_job is not None:
             db.rollback()
             return JSONResponse(status_code=409, content={"success": False, "error": "An AI edit is already running for this project", "retryable": True})
-        if req.model_id not in (None, "", settings.pi_agent_model):
+        if selected_model not in {model.id for model in settings.pi_agent_models}:
             return JSONResponse(status_code=400, content={"success": False, "error": "unsupported_model"})
 
         seen_ids: set[UUID] = set()
@@ -598,7 +663,7 @@ async def start_llm_file_edit_job(
             max_files=settings.llm_file_edit_max_context_files,
             max_chars=min(
                 settings.llm_file_edit_max_context_chars,
-                llm_edit_context_chars_for_tier(req.context_tier),
+                LLM_FILE_EDIT_CONTEXT_CHARS,
             ),
         )
         prompt_snapshot = load_pi_agent_prompt()
@@ -657,7 +722,7 @@ async def start_llm_file_edit_job(
         request_payload.update(
             {
                 "dispatched_provider": settings.pi_agent_provider,
-                "dispatched_model": settings.pi_agent_model,
+                "dispatched_model": selected_model,
                 "dispatched_thinking": settings.pi_agent_thinking,
                 "dispatched_command_schema_version": 2,
                 "dispatched_conversation": conversation.model_dump(mode="json"),
@@ -686,7 +751,7 @@ async def start_llm_file_edit_job(
             tenant_id=ctx.tenant_id,
             project_id=project.id,
             provider=settings.pi_agent_provider,
-            model=settings.pi_agent_model,
+            model=selected_model,
             thinking=settings.pi_agent_thinking,
             prompt=req.prompt,
             prior_prompts=[],
@@ -707,7 +772,7 @@ async def start_llm_file_edit_job(
             pi_agent_metric_attributes(
                 operation="pi_agent.api",
                 provider=settings.pi_agent_provider,
-                model=settings.pi_agent_model,
+                model=selected_model,
                 status="queued",
             ),
         )
@@ -811,6 +876,7 @@ def get_llm_file_edit_job_status(
         "job_id": str(job.id),
         "status": job.status,
         "result": job.result_payload,
+        "progress": _llm_edit_job_progress(job),
         "error": job.error,
         "error_code": job.error_code,
         "user_message": job.user_message,
@@ -853,7 +919,11 @@ def get_compile_job_status(
     if job is None:
         return JSONResponse(status_code=404, content={"error": "Compile job not found"})
 
-    artifact = compile_repo.artifact_for_job(job.id) if job.status == "succeeded" else None
+    artifact = (
+        compile_repo.artifact_for_job(job.id, job.export_format)
+        if job.status == "succeeded"
+        else None
+    )
     return {
         "job_id": str(job.id),
         "status": job.status,

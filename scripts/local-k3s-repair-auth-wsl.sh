@@ -18,6 +18,10 @@ ok() {
 
 issuer="${PUBLIC_BASE_URL}/realms/${REALM}"
 jwks="http://tertius-keycloak-service:8080/realms/${REALM}/protocol/openid-connect/certs"
+auth_cookie_secure=false
+if [[ "$PUBLIC_BASE_URL" == https://* ]]; then
+  auth_cookie_secure=true
+fi
 
 step "Repairing API auth environment"
 kubectl -n "$NAMESPACE" set env deployment/tertius-api \
@@ -26,9 +30,32 @@ kubectl -n "$NAMESPACE" set env deployment/tertius-api \
   KEYCLOAK_ISSUER="$issuer" \
   OIDC_ISSUER_URL="$issuer" \
   KEYCLOAK_JWKS_URL_OVERRIDE="$jwks" \
+  AUTH_COOKIE_SECURE="$auth_cookie_secure" \
   >/dev/null
 kubectl -n "$NAMESPACE" rollout status deployment/tertius-api --timeout=180s
 ok "API auth env is set for ${issuer}"
+
+step "Setting Keycloak public and admin hostname"
+kubectl -n "$NAMESPACE" patch keycloak tertius-keycloak --type=merge \
+  -p "{\"spec\":{\"hostname\":{\"hostname\":\"${PUBLIC_BASE_URL}\",\"admin\":\"${PUBLIC_BASE_URL}\"}}}" \
+  >/dev/null
+
+keycloak_generation="$(kubectl -n "$NAMESPACE" get keycloak tertius-keycloak -o jsonpath='{.metadata.generation}')"
+for i in $(seq 1 90); do
+  observed_generation="$(kubectl -n "$NAMESPACE" get keycloak tertius-keycloak -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)"
+  ready_status="$(kubectl -n "$NAMESPACE" get keycloak tertius-keycloak -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  error_status="$(kubectl -n "$NAMESPACE" get keycloak tertius-keycloak -o jsonpath='{.status.conditions[?(@.type=="HasErrors")].status}' 2>/dev/null || true)"
+  if [ "$observed_generation" = "$keycloak_generation" ] && [ "$ready_status" = "True" ] && [ "$error_status" != "True" ]; then
+    ok "Keycloak advertises ${PUBLIC_BASE_URL}"
+    break
+  fi
+  if [ "$i" = "90" ]; then
+    echo "Keycloak did not reconcile public hostname '${PUBLIC_BASE_URL}' in time." >&2
+    kubectl -n "$NAMESPACE" get keycloak tertius-keycloak -o yaml >&2
+    exit 1
+  fi
+  sleep 2
+done
 
 step "Finding Keycloak pod"
 keycloak_pod="$(kubectl -n "$NAMESPACE" get pod -l app=keycloak,app.kubernetes.io/managed-by=keycloak-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"

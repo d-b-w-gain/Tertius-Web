@@ -6,6 +6,10 @@ metadata:
   labels:
     {{- include "tertius.labels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
+  {{- with .Values.harnessLifecycle.leaseId }}
+  annotations:
+    tertius.io/lease-id: {{ . | quote }}
+  {{- end }}
 spec:
   instances: {{ .Values.postgres.instances }}
   imageName: {{ .Values.postgres.imageName | quote }}
@@ -30,6 +34,10 @@ metadata:
   labels:
     {{- include "tertius.labels" . | nindent 4 }}
     app.kubernetes.io/component: keycloak-postgres
+  {{- with .Values.harnessLifecycle.leaseId }}
+  annotations:
+    tertius.io/lease-id: {{ . | quote }}
+  {{- end }}
 spec:
   instances: {{ .Values.keycloak.database.instances }}
   imageName: {{ .Values.keycloak.database.imageName | quote }}

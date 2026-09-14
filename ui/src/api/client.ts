@@ -113,7 +113,8 @@ export async function apiFetch(
 
   const request = (async () => {
     const headers = new Headers(init.headers)
-    if (init.body && !headers.has('Content-Type')) {
+    const isMultipart = typeof FormData !== 'undefined' && init.body instanceof FormData
+    if (init.body && !isMultipart && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json')
     }
     if (!readonly && !headers.has('X-CSRF-Token')) {

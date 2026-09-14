@@ -41,12 +41,15 @@ from core.auth import (
     clear_auth_cookies,
     decode_keycloak_token,
     get_auth_context,
+    keycloak_token_url,
+    logout_keycloak_session,
     new_csrf_token,
     new_session_token,
     session_token_hash,
     set_auth_cookies,
     utc_now,
 )
+from core.workbench_access import enabled_workbenches
 from core.db import get_db
 from core.models import AuthSession
 
@@ -55,6 +58,8 @@ from workflows.intus.intus_server import app as intus_app
 from workflows.artus.artus_server import app as artus_app
 from workflows.extus.extus_server import app as extus_app
 from workflows.timus.timus_server import app as timus_app
+from workflows.structural.structural_server import app as structural_app
+from workflows.site.site_server import app as site_app
 from workflows.intus.compile_result_consumer import run_result_consumer
 from workflows.intus.pi_agent_result_consumer import (
     run_pi_agent_active_observer,
@@ -111,9 +116,7 @@ async def start_pi_agent_active_observer():
     if not settings.pi_agent_enabled:
         return
     _pi_agent_active_stop_event = asyncio.Event()
-    _pi_agent_active_task = asyncio.create_task(
-        run_pi_agent_active_observer(_pi_agent_active_stop_event)
-    )
+    _pi_agent_active_task = asyncio.create_task(run_pi_agent_active_observer(_pi_agent_active_stop_event))
 
 
 async def stop_pi_agent_active_observer():
@@ -249,12 +252,7 @@ def _code_challenge(verifier: str) -> str:
 
 
 def _keycloak_token_url() -> str:
-    if settings.keycloak_jwks_url_override:
-        jwks_url = settings.keycloak_jwks_url_override.rstrip("/")
-        suffix = "/protocol/openid-connect/certs"
-        if jwks_url.endswith(suffix):
-            return f"{jwks_url[:-len(suffix)]}/protocol/openid-connect/token"
-    return f"{settings.keycloak_issuer.rstrip('/')}/protocol/openid-connect/token"
+    return keycloak_token_url(settings)
 
 
 @app.get("/api/auth/login")
@@ -326,13 +324,19 @@ def auth_callback(
 
     token_response = httpx.post(_keycloak_token_url(), data=token_data, timeout=10)
     if token_response.status_code >= 400:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token exchange failed")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="OIDC token exchange failed",
+        )
     token_payload = token_response.json()
     access_token = token_payload.get("access_token")
     refresh_token = token_payload.get("refresh_token")
     expires_in = int(token_payload.get("expires_in") or 300)
     if not access_token or not refresh_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OIDC token response was incomplete")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="OIDC token response was incomplete",
+        )
 
     claims = decode_keycloak_token(access_token)
     principal = claims_to_principal(claims)
@@ -374,19 +378,27 @@ def auth_me(ctx: AuthContext = Depends(get_auth_context)):
         "user_id": str(ctx.user_id),
         "tenant_id": str(ctx.tenant_id),
         "email": ctx.email,
+        "workbenches": enabled_workbenches(ctx.roles),
     }
 
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request, response: Response, db=Depends(get_db)):
     session_token = request.cookies.get(settings.auth_session_cookie_name)
+    identity_provider_logout = False
     if session_token:
-        session = db.scalar(select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token)))
+        session = db.scalar(
+            select(AuthSession).where(AuthSession.session_token_hash == session_token_hash(session_token))
+        )
         if session is not None:
+            identity_provider_logout = logout_keycloak_session(session)
             db.delete(session)
             db.commit()
     clear_auth_cookies(response)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "identity_provider_logout": identity_provider_logout,
+    }
 
 
 # Mount the workflows to sub-paths
@@ -394,9 +406,12 @@ app.mount("/api/intus", intus_app)
 app.mount("/api/artus", artus_app)
 app.mount("/api/extus", extus_app)
 app.mount("/api/timus", timus_app)
+app.mount("/api/structural", structural_app)
+app.mount("/api/site", site_app)
 
 if __name__ == "__main__":
     import uvicorn
+
     # Use environment variable for port, default to 8000
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

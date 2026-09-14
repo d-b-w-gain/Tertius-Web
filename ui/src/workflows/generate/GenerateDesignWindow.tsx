@@ -6,7 +6,6 @@ import { GUEST_WORKSPACE_CHANGED_EVENT } from '../shared/guestWorkspace'
 import {
   createProjectStorage,
   type LlmEditConversationEntry,
-  type LlmEditContextTier,
   type LlmFileEditResult,
   type LlmModelOption,
   type ProjectFileMetadata,
@@ -20,6 +19,15 @@ import { ACTIVE_PROJECT_POLL_INTERVAL_MS, getPollingDelay, shouldRunPollingReque
 import { LatestModelViewer, ModelViewerCanvas } from '../extus/ui/ViewerTab'
 import { recordAiUsage } from './AiUsageGauge'
 import { runWithInteractionSpan } from '../../telemetry'
+import {
+  buildCompileRepairPrompt,
+  isNonTerminalStatus,
+  mergeProgressSnapshot,
+  orderEditableFiles,
+  type ChatMessage,
+  type CompileJobStatus,
+} from './model/conversation'
+import { ConversationPanel } from './ui/ConversationPanel'
 
 const AI_EDIT_FILE_LIMIT = 20
 const COMPILE_FORMAT = 'glb'
@@ -30,36 +38,6 @@ const COMPILE_STATUS_RETRY_MS = 3_000
 const LLM_EDIT_STATUS_INITIAL_DELAY_MS = 1_000
 const LLM_EDIT_STATUS_POLL_MS = 1_500
 const LLM_EDIT_STATUS_RETRY_MS = 2_000
-
-const LLM_EDIT_CONTEXT_TIERS: Array<{ value: LlmEditContextTier; label: string; chars: string }> = [
-  { value: 'low', label: 'Low', chars: '80k' },
-  { value: 'medium', label: 'Medium', chars: '160k' },
-  { value: 'high', label: 'High', chars: '250k' },
-  { value: 'very_high', label: 'Very High', chars: '2.0m (~500k tokens)' },
-]
-
-type EditableFilePointer = ProjectFileMetadata & {
-  id: string
-  updated_at: string
-}
-
-type ChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  createdAt: number
-  files?: Array<{ filename: string; summary?: string; changed?: boolean }>
-  usage?: LlmFileEditResult['usage']
-  model?: string
-  artifactId?: string
-  modelUrl?: string
-  compileStatus?: 'queued' | 'running' | 'succeeded' | 'failed'
-  jobId?: string
-  repairJobId?: string
-  compileJobId?: string
-  repairAttempted?: boolean
-  repairForCompileJobId?: string
-}
 
 export type GenerateViewportState = {
   title: string
@@ -74,32 +52,6 @@ type GenerateDesignWindowProps = {
   isActive?: boolean
   renderViewport?: boolean
   onViewportStateChange?: (state: GenerateViewportState) => void
-}
-
-type CompileJobStatus = {
-  status?: string
-  job_id?: string
-  artifact_id?: string
-  format?: string
-  export_format?: string
-  user_message?: string
-  short?: string
-  error?: string
-  error_code?: string
-  retryable?: boolean
-}
-
-function hasEditableFilePointer(file: ProjectFileMetadata): file is EditableFilePointer {
-  return Boolean(file.id && file.updated_at)
-}
-
-function orderEditableFiles(metadata: ProjectFileMetadata[]) {
-  const designFile = metadata.find(file => file.filename === 'design.py')
-  const remainingFiles = metadata.filter(file => file.filename !== 'design.py')
-  return [
-    ...(designFile ? [designFile] : []),
-    ...remainingFiles,
-  ].filter(hasEditableFilePointer)
 }
 
 function jsonMessage(data: unknown, fallback: string) {
@@ -125,10 +77,6 @@ function assistantMessageId(jobId: string) {
   return `job:${jobId}`
 }
 
-function isNonTerminalStatus(status?: string) {
-  return status === 'queued' || status === 'running'
-}
-
 function isRepairableCompileFailure(data: CompileJobStatus) {
   const detail = `${data.error_code || ''}\n${data.error || ''}\n${data.user_message || ''}`.toLowerCase()
   return data.retryable !== false && (
@@ -138,23 +86,6 @@ function isRepairableCompileFailure(data: CompileJobStatus) {
     detail.includes('nameerror') ||
     detail.includes('typeerror')
   )
-}
-
-function buildCompileRepairPrompt(originalPrompt: string, data: CompileJobStatus) {
-  const failure = [
-    data.error_code ? `Error code: ${data.error_code}` : '',
-    data.user_message ? `User message: ${data.user_message}` : '',
-    data.error ? `Traceback:\n${data.error}` : '',
-  ].filter(Boolean).join('\n\n')
-  return [
-    'The previous generated design failed to compile in the Tertius build123d sandbox.',
-    'Fix the Python source so it compiles successfully. Preserve the original design intent.',
-    'Do not use APIs shown as missing in the traceback. Return the full corrected file content.',
-    '',
-    `Original user request:\n${originalPrompt}`,
-    '',
-    failure,
-  ].join('\n')
 }
 
 function isCompileRepairEntry(entry: LlmEditConversationEntry) {
@@ -181,7 +112,6 @@ export function GenerateDesignWindow({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null)
   const [llmModels, setLlmModels] = useState<LlmModelOption[]>([])
   const [selectedModelId, setSelectedModelId] = useState('')
-  const [contextTier, setContextTier] = useState<LlmEditContextTier>('low')
   const [statusText, setStatusText] = useState('Select a project to generate a design.')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -189,6 +119,7 @@ export function GenerateDesignWindow({
 
   const activeProjectRef = useRef('')
   const messagesRef = useRef<ChatMessage[]>([])
+  const pendingScrollMessageIdRef = useRef<string | null>(null)
   const startLlmEditPollingRef = useRef<(projectName: string, jobId: string, assistantId: string) => void>(() => {})
   const compileRequestRef = useRef(new Map<string, number>())
   const compileTimerRef = useRef(new Map<string, number>())
@@ -202,6 +133,15 @@ export function GenerateDesignWindow({
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+
+  const scrollSubmittedMessageIntoView = useCallback((
+    node: HTMLDivElement | null,
+    messageIdToScroll: string,
+  ) => {
+    if (!node || pendingScrollMessageIdRef.current !== messageIdToScroll) return
+    pendingScrollMessageIdRef.current = null
+    node.scrollIntoView?.({ block: 'nearest' })
+  }, [])
 
   const clearCompileTimer = useCallback((jobId: string) => {
     const timer = compileTimerRef.current.get(jobId)
@@ -237,7 +177,7 @@ export function GenerateDesignWindow({
     ))
     : undefined
   const selectedModelUrl = selectedMessage?.modelUrl || selectedJobAssistant?.modelUrl || ''
-  const selectedModel = llmModels.find(model => model.id === selectedModelId) || llmModels[0]
+  const selectedModel = llmModels.find(model => model.id === selectedModelId)
   const selectedCompileStatus = (
     selectedMessage?.compileJobId ? selectedMessage.compileStatus : undefined
   ) || (
@@ -326,6 +266,8 @@ export function GenerateDesignWindow({
           repairJobId: isCompileRepairEntry(entry) ? entry.job_id : undefined,
           compileJobId: compile?.job_id,
           repairAttempted: isCompileRepairEntry(entry),
+          progress: entry.progress || undefined,
+          progressActive: isNonTerminalStatus(entry.status),
         },
       ]
     })
@@ -407,15 +349,24 @@ export function GenerateDesignWindow({
         const response = await storage.listLlmModels()
         if (cancelled) return
         if (response.models.length === 0) {
+          setLlmModels([])
+          setSelectedModelId('')
           throw new Error('No AI model is configured.')
         }
         setLlmModels(response.models)
         setSelectedModelId(current => {
-          if (current && response.models.some(model => model.id === current)) return current
-          return response.default_model_id || response.models[0]?.id || ''
+          if (current && response.models.some(model => model.id === current && model.enabled)) return current
+          const defaultModel = response.models.find(model => (
+            model.id === response.default_model_id && model.enabled
+          ))
+          return defaultModel?.id || response.models.find(model => model.enabled)?.id || ''
         })
       } catch (modelError) {
-        if (!cancelled) setError(modelError instanceof Error ? modelError.message : 'Failed to load LLM models.')
+        if (!cancelled) {
+          setLlmModels([])
+          setSelectedModelId('')
+          setError(modelError instanceof Error ? modelError.message : 'Failed to load LLM models.')
+        }
       }
     }
 
@@ -488,6 +439,9 @@ export function GenerateDesignWindow({
             const currentMessage = messagesRef.current.find(candidate => candidate.id === assistantMessageId)
             if (currentMessage && !currentMessage.repairAttempted) {
               try {
+                if (!currentMessage.model) {
+                  throw new Error('Original AI model is unavailable.')
+                }
                 const originalPrompt = messagesRef.current.find(candidate => (
                   candidate.id === promptMessageId(currentMessage.jobId || '')
                 ))?.content || prompt || 'Generate a design.'
@@ -500,8 +454,7 @@ export function GenerateDesignWindow({
                     updated_at: file.updated_at,
                   })),
                   active_file_id: activeFileId,
-                  model_id: selectedModel?.id,
-                  context_tier: contextTier,
+                  model_id: currentMessage.model,
                   metadata: { source: 'generate_design_compile_repair' },
                 })
                 updateAssistantMessage(assistantMessageId, current => ({
@@ -511,6 +464,7 @@ export function GenerateDesignWindow({
                   repairAttempted: true,
                   repairForCompileJobId: jobId,
                   repairJobId: repairJob.job_id,
+                  progressActive: true,
                 }))
                 clearCompileTimer(jobId)
                 compileRequestRef.current.delete(jobId)
@@ -557,7 +511,7 @@ export function GenerateDesignWindow({
 
     clearCompileTimer(jobId)
     compileTimerRef.current.set(jobId, window.setTimeout(tick, COMPILE_STATUS_INITIAL_DELAY_MS))
-  }, [buildLlmEditRequest, clearCompileTimer, contextTier, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, selectedModel?.id, storage, updateAssistantMessage])
+  }, [buildLlmEditRequest, clearCompileTimer, getAccessToken, intusServerUrl, modelUrlForArtifact, prompt, storage, updateAssistantMessage])
 
   const startCompilePolling = useCallback((projectName: string, jobId: string, assistantMessageId: string) => {
     const requestId = (compileRequestRef.current.get(jobId) || 0) + 1
@@ -641,7 +595,7 @@ export function GenerateDesignWindow({
         changed: file.changed,
       })),
       usage: result.usage,
-      model: result.model,
+      model: current.model || result.model,
       compileStatus: result.outcome === 'changed' ? 'queued' : undefined,
       jobId: current.repairAttempted ? current.jobId : originatingLlmEditJobId || current.jobId,
       repairJobId: current.repairAttempted ? originatingLlmEditJobId || current.repairJobId : current.repairJobId,
@@ -677,6 +631,13 @@ export function GenerateDesignWindow({
       if (llmEditRequestRef.current.get(jobId) !== requestId || activeProjectRef.current !== projectName) return
       try {
         const response = await storage.getLlmFileEditJob(projectName, jobId)
+        updateAssistantMessage(assistantMessageId, current => ({
+          ...current,
+          progress: response.progress
+            ? mergeProgressSnapshot(current.progress, response.progress)
+            : current.progress,
+          progressActive: isNonTerminalStatus(response.status),
+        }))
         if (response.status === 'succeeded') {
           if (!response.result) {
             updateAssistantMessage(assistantMessageId, current => ({
@@ -754,8 +715,9 @@ export function GenerateDesignWindow({
 
   const submitPrompt = async (event: FormEvent) => {
     event.preventDefault()
-    if (!prompt.trim() || isSubmitting) return
+    if (!prompt.trim() || isSubmitting || !selectedModel?.enabled) return
     const submittedPrompt = prompt.trim()
+    const submittedModelId = selectedModel.id
     const userMessage: ChatMessage = {
       id: messageId('user'),
       role: 'user',
@@ -768,8 +730,13 @@ export function GenerateDesignWindow({
       content: 'Generating design edit...',
       createdAt: Date.now(),
       compileStatus: 'queued',
+      model: submittedModelId,
+      progressActive: true,
+      progressDisclosure: true,
+      renderKey: messageId('render'),
     }
 
+    pendingScrollMessageIdRef.current = assistantMessage.id
     setMessages(prev => [...prev, userMessage, assistantMessage])
     setSelectedMessageId(assistantMessage.id)
     setPrompt('')
@@ -782,7 +749,7 @@ export function GenerateDesignWindow({
       const job = await runWithInteractionSpan('llm_file_edit_submit', {
         workflow: 'generate',
         source: 'generate_design_window',
-        model_id: selectedModel?.id || '',
+        model_id: submittedModelId,
       }, () => storage.applyLlmFileEditJob(activeProject, {
           prompt: submittedPrompt,
           files: requestFiles.map(file => ({
@@ -791,8 +758,7 @@ export function GenerateDesignWindow({
             updated_at: file.updated_at,
           })),
           active_file_id: activeFileId,
-          model_id: selectedModel?.id,
-          context_tier: contextTier,
+          model_id: submittedModelId,
           metadata: { source: 'generate_design_window' },
         }))
       const stablePromptId = promptMessageId(job.job_id)
@@ -833,12 +799,17 @@ export function GenerateDesignWindow({
         ...current,
         content: `Error: ${message}`,
         compileStatus: 'failed',
+        progressActive: false,
       }))
       setStatusText(message)
     } finally {
       setIsSubmitting(false)
     }
   }
+
+  const hasActiveProgress = messages.some(message => (
+    message.role === 'assistant' && message.progressActive
+  ))
 
   if (authMode === 'guest') {
     return (
@@ -912,133 +883,45 @@ export function GenerateDesignWindow({
             onClick={() => setIsConversationOpen(true)}
             className="pointer-events-auto rounded border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs font-semibold text-slate-100 shadow-xl shadow-slate-950/40 transition-colors hover:bg-slate-800"
           >
-            Open Generate Design conversation
+            <span>Open Generate Design conversation</span>
+            {hasActiveProgress && (
+              <span className="ml-2 inline-flex items-center gap-1 text-cyan-300">
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-cyan-400" />
+                AI working
+              </span>
+            )}
           </button>
         </div>
       )}
 
       {isConversationOpen && (
-        <aside
-          role="complementary"
-          aria-label="Generate Design conversation"
-          className="pointer-events-auto absolute inset-x-3 bottom-3 top-16 z-20 flex min-h-0 flex-col rounded border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/60 backdrop-blur md:left-auto md:right-4 md:w-[28rem]"
-        >
-          <div className="border-b border-slate-800 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold text-slate-100">Generate Design</h2>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void loadActiveProject(undefined, { hydrateConversation: true })}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  aria-expanded="true"
-                  onClick={() => setIsConversationOpen(false)}
-                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-                >
-                  Close Generate Design conversation
-                </button>
-              </div>
-            </div>
-            <div className="mt-4">
-              <ProjectSelector />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-            <span className="min-w-0 text-sm text-slate-300">{statusText}</span>
-            <span className="shrink-0 rounded border border-slate-800 bg-slate-900 px-2 py-1 font-mono text-[10px] text-slate-500">
-              {COMPILE_FORMAT}/{COMPILE_QUALITY}
-            </span>
-          </div>
-
-          {selectedModel && (
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
-              <span className="font-semibold text-slate-200">{selectedModel.label}</span>
-              <span className="font-mono text-slate-500">{selectedModel.model}</span>
-            </div>
+        <ConversationPanel
+          statusText={statusText}
+          compileFormat={COMPILE_FORMAT}
+          compileQuality={COMPILE_QUALITY}
+          projectSelector={<ProjectSelector />}
+          messages={messages}
+          selectedMessageId={selectedMessageId}
+          llmModels={llmModels}
+          selectedModelId={selectedModel?.id || ''}
+          prompt={prompt}
+          error={error}
+          isSubmitting={isSubmitting}
+          canSubmit={Boolean(
+            !isSubmitting
+            && prompt.trim()
+            && activeProject
+            && fileMetadata.length > 0
+            && selectedModel?.enabled
           )}
-
-          <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 text-xs">
-            <label htmlFor="generate-design-context-tier" className="font-semibold text-slate-200">
-              AI context size
-            </label>
-            <select
-              id="generate-design-context-tier"
-              aria-label="AI context size"
-              value={contextTier}
-              onChange={event => setContextTier(event.currentTarget.value as LlmEditContextTier)}
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200 outline-none focus:border-cyan-500"
-            >
-              {LLM_EDIT_CONTEXT_TIERS.map(tier => (
-                <option key={tier.value} value={tier.value}>
-                  {tier.label} ({tier.chars})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-auto p-4">
-            {messages.length === 0 ? (
-              <div className="rounded border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-500">
-                Generated design messages will appear here.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {messages.map(message => (
-                  <button
-                    key={message.id}
-                    type="button"
-                    onClick={() => setSelectedMessageId(message.id)}
-                    className={`block w-full rounded border p-3 text-left transition-colors ${
-                      selectedMessageId === message.id
-                        ? 'border-cyan-700 bg-cyan-950/30'
-                        : 'border-slate-800 bg-slate-900/50 hover:bg-slate-900'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={message.role === 'assistant' ? 'text-xs font-semibold text-cyan-300' : 'text-xs font-semibold text-slate-300'}>
-                        {message.role === 'assistant' ? 'Assistant' : 'Prompt'}
-                      </span>
-                      {message.compileStatus && (
-                        <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">{message.compileStatus}</span>
-                      )}
-                    </div>
-                    <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-300">{message.content}</p>
-                    {(message.model || message.usage) && (
-                      <div className="mt-2 font-mono text-[10px] text-slate-500">
-                        {[message.model, message.usage ? `${message.usage.total_tokens} tokens` : ''].filter(Boolean).join(' / ')}
-                      </div>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <form onSubmit={submitPrompt} className="border-t border-slate-800 p-4">
-            <textarea
-              value={prompt}
-              onChange={event => setPrompt(event.currentTarget.value)}
-              placeholder="Describe the CAD design or modification..."
-              className="h-28 w-full resize-none rounded border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-cyan-500"
-            />
-            {error && <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
-            <button
-              type="submit"
-              disabled={isSubmitting || !prompt.trim() || !activeProject || fileMetadata.length === 0 || !selectedModel}
-              className="mt-3 w-full rounded bg-cyan-600 px-4 py-3 text-base font-semibold text-white transition-colors hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSubmitting ? 'Generating...' : 'Generate Design'}
-            </button>
-          </form>
-        </aside>
+          onClose={() => setIsConversationOpen(false)}
+          onRefresh={() => void loadActiveProject(undefined, { hydrateConversation: true })}
+          onSelectModel={setSelectedModelId}
+          onSelectMessage={setSelectedMessageId}
+          onPromptChange={setPrompt}
+          onSubmit={submitPrompt}
+          onMessageRef={scrollSubmittedMessageIntoView}
+        />
       )}
     </div>
   )

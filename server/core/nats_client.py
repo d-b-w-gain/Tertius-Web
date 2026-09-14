@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from time import perf_counter
 from typing import Any, Protocol
 
@@ -25,6 +26,7 @@ class Publisher(Protocol):
         timeout: float = 60.0,
         headers: dict[str, str] | None = None,
         telemetry_message_id: str | None = None,
+        compress: bool = False,
     ) -> None: ...
 
 
@@ -40,6 +42,7 @@ class NatsPublisher:
         timeout: float = 60.0,
         headers: dict[str, str] | None = None,
         telemetry_message_id: str | None = None,
+        compress: bool = False,
     ) -> None:
         span_name = f"NATS publish {subject}"
         attributes = {
@@ -52,6 +55,10 @@ class NatsPublisher:
             attributes["messaging.message.id"] = telemetry_message_id
 
         merged_headers = merge_nats_headers(headers, message_id=message_id)
+        payload = message.model_dump_json().encode("utf-8")
+        if compress:
+            payload = gzip.compress(payload, mtime=0)
+            merged_headers["Content-Encoding"] = "gzip"
         start = perf_counter()
         with get_tracer(__name__).start_as_current_span(
             span_name, kind=SpanKind.PRODUCER, attributes=attributes
@@ -60,7 +67,7 @@ class NatsPublisher:
             try:
                 await self.jetstream.publish(
                     subject,
-                    message.model_dump_json().encode("utf-8"),
+                    payload,
                     headers=merged_headers or None,
                     timeout=timeout,
                 )

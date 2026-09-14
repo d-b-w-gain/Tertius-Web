@@ -8,6 +8,17 @@ RELEASE_NAME="${RELEASE_NAME:-tertius}"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 local_tool_prefix='r''tk'
 
+extract_workflow_trigger() {
+  local workflow="$1"
+  local trigger="$2"
+
+  awk -v trigger="$trigger" '
+    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
+    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
+    in_trigger { print }
+  ' "$workflow"
+}
+
 if rg -q "(^|[[:space:]])${local_tool_prefix}[[:space:]]" "${ROOT_DIR}/scripts" --glob '*.sh'; then
   echo "Repository scripts must not depend on the local ${local_tool_prefix} command wrapper." >&2
   exit 1
@@ -22,6 +33,10 @@ render_local() {
 
 render_default() {
   helm template "$RELEASE_NAME" "$CHART_DIR"
+}
+
+render_cloudflared() {
+  helm template "$RELEASE_NAME" "$CHART_DIR" --set cloudflared.enabled=true
 }
 
 render_keda_disabled() {
@@ -160,6 +175,17 @@ if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID' "${ROOT_DIR}/Dockerfi
   echo "UI image build must not bake browser Keycloak/OIDC client settings; auth is handled by the API BFF." >&2
   exit 1
 fi
+
+chart_workflow="${ROOT_DIR}/.github/workflows/chart-tests.yml"
+chart_pull_request_trigger="$(extract_workflow_trigger "$chart_workflow" pull_request)"
+chart_push_trigger="$(extract_workflow_trigger "$chart_workflow" push)"
+for chart_trigger in "$chart_pull_request_trigger" "$chart_push_trigger"; do
+  if ! rg -F -q -- "- 'README.md'" <<<"$chart_trigger" ||
+     ! rg -F -q -- "- 'ui/.env.example'" <<<"$chart_trigger"; then
+    echo ".github/workflows/chart-tests.yml must watch frontend API documentation sources." >&2
+    exit 1
+  fi
+done
 
 if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
   echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
@@ -529,7 +555,10 @@ if ! rg -q 'endpoint: 0.0.0.0:4317' "${ROOT_DIR}/infra/otel/otel-collector-local
 fi
 
 rendered="$(render_local)"
+leased_secret_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR" --values "$LOCAL_VALUES" \
+  --set-string harnessLifecycle.leaseId=11111111-1111-4111-8111-111111111111)"
 default_rendered="$(render_default)"
+cloudflared_rendered="$(render_cloudflared)"
 keda_disabled_rendered="$(render_keda_disabled)"
 compile_strategy_accurate_rendered="$(render_compile_strategy_accurate)"
 app_secret_rendered="$(render_app_secret_created)"
@@ -541,6 +570,14 @@ external_observability_rendered="$(render_external_observability_collector)"
 pi_worker_rendered="$(render_pi_worker)"
 pi_disabled_rendered="$(render_pi_disabled)"
 pi_existing_claim_rendered="$(render_pi_existing_claim)"
+
+for leased_secret_name in tertius-app-db tertius-keycloak-db; do
+  leased_secret_doc="$(extract_render_doc "$leased_secret_rendered" 'kind: Secret' "name: ${leased_secret_name}")"
+  if ! rg -q 'tertius.io/lease-id: "11111111-1111-4111-8111-111111111111"' <<<"$leased_secret_doc"; then
+    echo "Local chart Secret ${leased_secret_name} must inherit the harness lifecycle lease." >&2
+    exit 1
+  fi
+done
 scaled_job="$(extract_render_doc "$rendered" 'kind: ScaledJob')"
 default_scaled_job="$(extract_render_doc "$default_rendered" 'kind: ScaledJob')"
 compile_strategy_accurate_scaled_job="$(extract_render_doc "$compile_strategy_accurate_rendered" 'kind: ScaledJob')"
@@ -550,6 +587,7 @@ api_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kuberne
 pi_enabled_api_deployment="$(extract_render_doc "$pi_worker_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 pi_disabled_api_deployment="$(extract_render_doc "$pi_disabled_rendered" 'kind: Deployment' 'app.kubernetes.io/component: api')"
 ui_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: ui')"
+cloudflared_deployment="$(extract_render_doc "$cloudflared_rendered" 'kind: Deployment' 'app.kubernetes.io/component: cloudflared')"
 otel_collector_configmap="$(extract_render_doc "$rendered" 'kind: ConfigMap' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_deployment="$(extract_render_doc "$rendered" 'kind: Deployment' 'app.kubernetes.io/component: otel-collector')"
 otel_collector_service="$(extract_render_doc "$rendered" 'kind: Service' 'app.kubernetes.io/component: otel-collector')"
@@ -577,6 +615,56 @@ pi_worker="$(extract_render_doc "$pi_worker_rendered" 'kind: ScaledJob' 'app.kub
 pi_existing_claim_worker="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: ScaledJob' 'app.kubernetes.io/component: pi-agent-worker')"
 pi_existing_claim_pvc="$(extract_render_doc "$pi_existing_claim_rendered" 'kind: PersistentVolumeClaim' 'app.kubernetes.io/component: pi-agent-auth')"
 pi_network_policy="$(extract_render_doc "$default_rendered" 'kind: NetworkPolicy' 'app.kubernetes.io/component: pi-agent-network')"
+
+if ! rg -q -- '--metrics' <<<"$cloudflared_deployment" || ! rg -q '0\.0\.0\.0:2000' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must expose its metrics and readiness endpoint on a fixed port." >&2
+  exit 1
+fi
+if ! rg -q 'path: /ready' <<<"$cloudflared_deployment" || ! rg -q 'readinessProbe:' <<<"$cloudflared_deployment" || ! rg -q 'livenessProbe:' <<<"$cloudflared_deployment"; then
+  echo "cloudflared must report disconnected tunnels through readiness and liveness probes." >&2
+  exit 1
+fi
+
+# I-001: the API ConfigMap owns one ordered model catalog and the Pi worker
+# references that exact key. Parse the rendered scalar so this remains valid
+# regardless of whether Helm/YAML represents it with single or double quotes.
+python3 - "$default_app_configmap" "$pi_worker" <<'PY'
+import json
+import re
+import sys
+
+configmap, worker = sys.argv[1:]
+expected = [
+    {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
+    {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
+    {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+]
+
+catalog_line = next(
+    (line for line in configmap.splitlines() if line.strip().startswith("PI_AGENT_MODELS_JSON:")),
+    None,
+)
+assert catalog_line is not None, "ConfigMap must render PI_AGENT_MODELS_JSON"
+raw_catalog = catalog_line.split(":", 1)[1].strip()
+if raw_catalog.startswith("'") and raw_catalog.endswith("'"):
+    decoded = raw_catalog[1:-1].replace("''", "'")
+else:
+    decoded = json.loads(raw_catalog)
+catalog = json.loads(decoded) if isinstance(decoded, str) else decoded
+assert catalog == expected, "ConfigMap model catalog must contain ordered Sol, Luna, Terra entries"
+
+assert re.search(
+    r"- name:\s*PI_AGENT_MODELS_JSON\s+valueFrom:\s+configMapKeyRef:\s+"
+    r"name:\s*[^\s]+\s+key:\s*PI_AGENT_MODELS_JSON(?:\s|$)",
+    worker,
+), "Pi worker must consume the ConfigMap PI_AGENT_MODELS_JSON key"
+assert re.search(
+    r"- name:\s*PI_AGENT_MODEL\s+value:\s*[\"']?gpt-5\.6-sol[\"']?(?:\s|$)",
+    worker,
+), "Pi worker default model must remain gpt-5.6-sol"
+assert "PI_AGENT_MODEL_LABEL" not in configmap
+assert "PI_AGENT_MODEL_LABEL" not in worker
+PY
 
 # ConfigMap-backed API settings must change the pod template so Helm rolls the
 # API together with workers that consume the same feature flag.
@@ -974,6 +1062,18 @@ if ! rg -q 'directAccessGrantsEnabled: true' <<<"$rendered" || ! rg -q 'username
   exit 1
 fi
 
+for role in workbench-site workbench-structural engineering-workbenches; do
+  if ! rg -q -- "- name: ${role}" <<<"$rendered"; then
+    echo "Local Helm render must define the ${role} Keycloak realm role." >&2
+    exit 1
+  fi
+done
+
+if ! rg -q -- '- engineering-workbenches' <<<"$rendered"; then
+  echo "Local Helm render must grant engineering-workbenches to the smoke user." >&2
+  exit 1
+fi
+
 if ! rg -q 'publicClient: true' <<<"$rendered"; then
   echo "Local Helm render must keep the UI OIDC client public for local PKCE auth." >&2
   exit 1
@@ -1084,8 +1184,18 @@ if ! rg -q 'COMPILE_REQUEST_MAX_BYTES: "8388608"' <<<"$rendered" || ! rg -q 'COM
   exit 1
 fi
 
+if ! rg -q 'COMPILE_SIDECAR_TTL_SECONDS: "86400"' <<<"$rendered" || ! rg -q 'COMPILE_SIDECAR_MAX_BYTES: "8589934592"' <<<"$rendered"; then
+  echo "ConfigMap compile sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
+  exit 1
+fi
+
 if ! rg -q 'name: COMPILE_REQUEST_MAX_BYTES' <<<"$scaled_job" || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_REQUEST_MAX_BYTES' | rg -q 'value: "8388608"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_RESULT_MAX_BYTES' | rg -q 'value: "33554432"'; then
   echo "Compile ScaledJob byte limits must render request as \"8388608\" and result as \"33554432\"." >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_TTL_SECONDS' | rg -q 'value: "86400"' || ! printf '%s\n' "$scaled_job" | rg -A 1 'name: COMPILE_SIDECAR_MAX_BYTES' | rg -q 'value: "8589934592"'; then
+  echo "Compile ScaledJob sidecar limits must render TTL as 86400 seconds and capacity as 8589934592 bytes." >&2
   exit 1
 fi
 
@@ -1223,8 +1333,8 @@ if ! rg -q 'branches:\s*$' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q
   exit 1
 fi
 
-if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.ui' "${ROOT_DIR}/.github/workflows/images.yml"; then
-  echo ".github/workflows/images.yml must build both Dockerfile.api and Dockerfile.ui." >&2
+if ! rg -q 'file: Dockerfile\.api' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.ui' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'file: Dockerfile\.gis' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml must build the API, UI, and GIS cache Dockerfiles." >&2
   exit 1
 fi
 
@@ -1240,6 +1350,11 @@ fi
 
 if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-ui:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
   echo ".github/workflows/images.yml does not push the expected UI image tags." >&2
+  exit 1
+fi
+
+if ! rg -q 'ghcr\.io/d-b-w-gain/tertius-gis-cache:\$\{\{ steps\.vars\.outputs\.image_tag \}\}' "${ROOT_DIR}/.github/workflows/images.yml" || ! rg -q 'ghcr\.io/d-b-w-gain/tertius-gis-cache:sha-\$\{\{ steps\.vars\.outputs\.short_sha \}\}' "${ROOT_DIR}/.github/workflows/images.yml"; then
+  echo ".github/workflows/images.yml does not push the expected GIS cache image tags." >&2
   exit 1
 fi
 
@@ -1277,17 +1392,6 @@ extract_workflow_job() {
     $0 ~ ("^  " job ":[[:space:]]*$") { in_job = 1 }
     in_job && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " job ":[[:space:]]*$") { exit }
     in_job { print }
-  ' "$workflow"
-}
-
-extract_workflow_trigger() {
-  local workflow="$1"
-  local trigger="$2"
-
-  awk -v trigger="$trigger" '
-    $0 ~ ("^  " trigger ":[[:space:]]*$") { in_trigger = 1 }
-    in_trigger && $0 ~ /^  [[:alnum:]_-]+:[[:space:]]*$/ && $0 !~ ("^  " trigger ":[[:space:]]*$") { exit }
-    in_trigger { print }
   ' "$workflow"
 }
 
@@ -1329,7 +1433,7 @@ cp -p "${CHART_DIR}/values.yaml" "$promotion_values"
 chmod 6755 "$promotion_values"
 promotion_mode_before="$(stat -c '%a' "$promotion_values")"
 sed -E \
-  '/"\$imagepromoter": "tertius-(api|pi-agent|ui)"/s/(tag:[[:space:]]*)[^[:space:]]+/\1master-999-1-abcdef0/' \
+  '/"\$imagepromoter": "tertius-(api|gis-cache|pi-agent|ui)"/s/(tag:[[:space:]]*)[^[:space:]]+/\1master-999-1-abcdef0/' \
   "${CHART_DIR}/values.yaml" >"$promotion_expected"
 if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
   --values "$promotion_values" \
@@ -1339,7 +1443,7 @@ if ! python3 "${ROOT_DIR}/scripts/promote_images.py" \
 fi
 
 if ! cmp -s "$promotion_expected" "$promotion_values"; then
-  echo "scripts/promote_images.py must preserve all bytes outside the three marked tag scalars." >&2
+  echo "scripts/promote_images.py must preserve all bytes outside the four marked tag scalars." >&2
   exit 1
 fi
 
@@ -1442,6 +1546,17 @@ app_token_count="$( (rg -c 'actions/create-github-app-token@v3' <<<"$promote_job
 client_id_count="$( (rg -F -c 'client-id: ${{ vars.IMAGE_PROMOTION_APP_CLIENT_ID }}' <<<"$promote_job" || true) | tr -d ' ' )"
 private_key_count="$( (rg -F -c 'private-key: ${{ secrets.IMAGE_PROMOTION_APP_PRIVATE_KEY }}' <<<"$promote_job" || true) | tr -d ' ' )"
 
+if ! rg -q '^[[:space:]]*gh pr edit([[:space:]]|$)' <<<"$promote_job"; then
+  echo "Build Images promotion must refresh reused PR metadata for the staged image tag." >&2
+  exit 1
+fi
+
+if ! rg -F -q 'while [ "$SECONDS" -lt "$head_deadline" ]' <<<"$promote_job" ||
+   ! rg -F -q '"${head_sha}" = "${local_head}"' <<<"$promote_job"; then
+  echo "Build Images promotion must wait for the reused PR to report its pushed head." >&2
+  exit 1
+fi
+
 if [ "$app_token_count" -lt 2 ] || [ "$client_id_count" -lt 2 ] || [ "$private_key_count" -lt 2 ] ||
    [ "$( (rg -c 'permission-checks:[[:space:]]*read' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
    [ "$( (rg -c 'permission-contents:[[:space:]]*write' <<<"$promote_job" || true) | tr -d ' ' )" -lt 2 ] ||
@@ -1539,3 +1654,45 @@ if ! rg -q 'reconcileStrategy: Revision' "${ROOT_DIR}/infra/clusters/production/
   echo "HelmRelease tertius must reconcile chart content by Git revision so CI image promotion commits are deployed." >&2
   exit 1
 fi
+
+if ! rg -U -q 'name: Cleanup k3s chart test\n[[:space:]]+if: \$\{\{ always\(\) \}\}' "$CHART_WORKFLOW"; then
+  echo ".github/workflows/chart-tests.yml must run k3s cleanup as a distinct always() step." >&2
+  exit 1
+fi
+cleanup_step="$(sed -n '/- name: Cleanup k3s chart test/,/- name: Report chart test duration/p' "$CHART_WORKFLOW")"
+if [ -z "$cleanup_step" ] || ! rg -q 'test-k3s-deployment\.sh --cleanup' <<<"$cleanup_step" || rg -q '\|\|[[:space:]]+true' <<<"$cleanup_step"; then
+  echo ".github/workflows/chart-tests.yml cleanup must run full teardown and propagate failure." >&2
+  exit 1
+fi
+for lifecycle_path in \
+  scripts/cleanup-expired-k3s-harness.sh \
+  scripts/install-k3s-harness-cleanup-timer.sh \
+  scripts/diagnose-k3s-networkpolicy.sh \
+  scripts/install-gvisor-k3s.sh \
+  scripts/test-k3s-harness-lifecycle.sh \
+  scripts/test-k3s-harness-janitor.sh \
+  scripts/test-k3s-harness-process-cleanup.sh; do
+  if [ "$(rg -F -c -- "- '${lifecycle_path}'" "$CHART_WORKFLOW")" -lt 2 ]; then
+    echo ".github/workflows/chart-tests.yml must include ${lifecycle_path} in pull and push path filters." >&2
+    exit 1
+  fi
+done
+
+if ! python3 - "${ROOT_DIR}/infra/clusters/production/tertius/helmrelease.yaml" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+helm_release = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+enabled = helm_release.get("spec", {}).get("values", {}).get("gisCache", {}).get("enabled")
+raise SystemExit(0 if enabled is True else 1)
+PY
+then
+  echo "Production HelmRelease must explicitly enable the GIS cache after image promotion." >&2
+  exit 1
+fi
+
+"${ROOT_DIR}/scripts/test-k3s-harness-lifecycle.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-janitor.sh"
+"${ROOT_DIR}/scripts/test-k3s-harness-process-cleanup.sh"

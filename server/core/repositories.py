@@ -4,18 +4,22 @@ import hashlib
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, now_utc
+from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, StructuralConfigurationRevision, now_utc
+from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
 
 
-FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
+PYTHON_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.py$")
+PROJECT_FILENAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.(?:py|json)$")
 PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 WORKER_LOST_ERROR = "Compile worker stopped before reporting a result"
 WORKER_LOST_ERROR_CODE = "worker_lost"
@@ -25,6 +29,18 @@ WORKER_LOST_USER_MESSAGE = (
 LLM_EDIT_WORKER_LOST_ERROR = "LLM edit worker stopped before reporting a result"
 LLM_EDIT_WORKER_LOST_ERROR_CODE = "worker_lost"
 LLM_EDIT_WORKER_LOST_USER_MESSAGE = "AI generation stopped unexpectedly. Try again."
+PI_AGENT_PROGRESS_MAX_EVENTS = 128
+PI_AGENT_PROGRESS_MAX_BYTES = 64 * 1024
+
+
+class ProgressBatchApplyOutcome(StrEnum):
+    APPLIED = "applied"
+    DUPLICATE = "duplicate"
+    IGNORED_TERMINAL = "ignored_terminal"
+    REJECTED_IDENTITY = "rejected_identity"
+    REJECTED_SEQUENCE = "rejected_sequence"
+    REJECTED_SNAPSHOT = "rejected_snapshot"
+    STALE_EXECUTION = "stale_execution"
 
 
 class FileVersionConflictError(RuntimeError):
@@ -40,7 +56,13 @@ def normalize_file_version(value: datetime) -> str:
 
 
 def require_valid_python_filename(filename: str) -> str:
-    if not FILENAME_RE.fullmatch(filename):
+    if not PYTHON_FILENAME_RE.fullmatch(filename):
+        raise ValueError("Invalid Python filename")
+    return filename
+
+
+def require_valid_project_filename(filename: str) -> str:
+    if not PROJECT_FILENAME_RE.fullmatch(filename):
         raise ValueError("Invalid filename")
     return filename
 
@@ -115,19 +137,52 @@ class ProjectRepository:
         self.db.flush()
         return True
 
-    def create_project(self, name: str, user_id: UUID, default_code: str) -> Project:
+    def create_project(
+        self,
+        name: str,
+        user_id: UUID,
+        source_files: dict[str, str],
+        structural_configuration: dict[str, object] | None = None,
+    ) -> Project:
         name = require_valid_project_name(name)
+        validated_files = {
+            require_valid_project_filename(filename): content
+            for filename, content in source_files.items()
+        }
+        if "design.py" not in validated_files:
+            raise ValueError("Project source bundle must include design.py")
         project = Project(tenant_id=self.tenant_id, name=name, created_by=user_id)
         self.db.add(project)
         self.db.flush()
-        self.db.add(
-            ProjectFile(
-                tenant_id=self.tenant_id,
-                project_id=project.id,
-                filename="design.py",
-                content=default_code,
-            )
+        self.db.add_all(
+            [
+                ProjectFile(
+                    tenant_id=self.tenant_id,
+                    project_id=project.id,
+                    filename=filename,
+                    content=content,
+                )
+                for filename, content in validated_files.items()
+            ]
         )
+        if structural_configuration is not None:
+            from core.structural.project_configuration import (
+                StructuralProjectConfiguration,
+            )
+
+            validated_configuration = StructuralProjectConfiguration.model_validate(
+                structural_configuration
+            )
+            self.db.add(
+                StructuralConfigurationRevision(
+                    tenant_id=self.tenant_id,
+                    project_id=project.id,
+                    revision=1,
+                    digest=validated_configuration.configuration_digest,
+                    content=validated_configuration.model_dump(mode="json"),
+                    created_by=user_id,
+                )
+            )
         self.db.commit()
         return project
 
@@ -164,7 +219,7 @@ class ProjectRepository:
         return rows
 
     def get_code(self, project_name: str, filename: str) -> str | None:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         project = self.get_project(project_name)
         if project is None:
             return None
@@ -179,7 +234,7 @@ class ProjectRepository:
         return None if file is None else file.content
 
     def stage_code_update(self, project_name: str, filename: str, content: str, user_id: UUID, message: str) -> bool:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         project = self.get_project(project_name)
         if project is None:
             return False
@@ -286,7 +341,7 @@ class ProjectRepository:
         return snapshot, changed
 
     def delete_file(self, project_name: str, filename: str) -> bool:
-        filename = require_valid_python_filename(filename)
+        filename = require_valid_project_filename(filename)
         if filename == "design.py":
             raise ValueError("Cannot delete design.py")
 
@@ -656,6 +711,10 @@ class CompileRepository:
         keep_latest = max(0, keep_latest)
         query = (
             select(Artifact)
+            # Artifact.content can be hundreds of megabytes. Pruning only
+            # needs primary keys; hydrating every old blob here can exhaust
+            # the API pod while it is ingesting a new compile result.
+            .options(load_only(Artifact.id))
             .where(
                 Artifact.tenant_id == self.tenant_id,
                 Artifact.project_id == project_id,
@@ -671,14 +730,53 @@ class CompileRepository:
             self.db.delete(artifact)
         self.db.flush()
 
-    def artifact_for_job(self, job_id: UUID) -> Artifact | None:
+    def prunable_artifact_bundles(
+        self,
+        project_id: UUID,
+        keep_latest: int,
+    ) -> list[Artifact]:
+        """Return every artifact belonging to an obsolete complete revision.
+
+        Artifact retention is revision based. Deleting kinds independently can
+        leave a model whose procurement, structural, or drawing projection has
+        already been removed.
+        """
+
+        keep_latest = max(0, keep_latest)
+        bundle_rows = list(
+            self.db.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.tenant_id == self.tenant_id,
+                    Artifact.project_id == project_id,
+                    Artifact.compile_job_id.is_not(None),
+                )
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            ).all()
+        )
+        retained_job_ids: set[UUID] = set()
+        for artifact in bundle_rows:
+            job_id = artifact.compile_job_id
+            if job_id is None or job_id in retained_job_ids:
+                continue
+            if len(retained_job_ids) >= keep_latest:
+                continue
+            retained_job_ids.add(job_id)
+        return [
+            artifact
+            for artifact in bundle_rows
+            if artifact.compile_job_id not in retained_job_ids
+        ]
+
+    def artifact_for_job(self, job_id: UUID, kind: str | None = None) -> Artifact | None:
+        query = select(Artifact).where(
+            Artifact.tenant_id == self.tenant_id,
+            Artifact.compile_job_id == job_id,
+        )
+        if kind is not None:
+            query = query.where(Artifact.kind == kind.lower())
         return self.db.scalar(
-            select(Artifact)
-            .where(
-                Artifact.tenant_id == self.tenant_id,
-                Artifact.compile_job_id == job_id,
-            )
-            .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            query.order_by(Artifact.created_at.desc(), Artifact.id.desc())
         )
 
     def record_usage(
@@ -747,6 +845,83 @@ class LlmEditRepository:
                 LlmEditJob.id == job_id,
             )
         )
+
+    def apply_progress_batch(
+        self,
+        batch: PiAgentProgressBatch,
+    ) -> ProgressBatchApplyOutcome:
+        if batch.tenant_id != self.tenant_id:
+            return ProgressBatchApplyOutcome.REJECTED_IDENTITY
+
+        job = self.db.scalar(
+            select(LlmEditJob)
+            .where(
+                LlmEditJob.tenant_id == self.tenant_id,
+                LlmEditJob.project_id == batch.project_id,
+                LlmEditJob.id == batch.job_id,
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return ProgressBatchApplyOutcome.REJECTED_IDENTITY
+        if job.status in {"succeeded", "failed"}:
+            return ProgressBatchApplyOutcome.IGNORED_TERMINAL
+
+        try:
+            persisted = (
+                PiAgentProgressSnapshot.model_validate(job.progress_payload)
+                if job.progress_payload
+                else None
+            )
+        except ValidationError:
+            return ProgressBatchApplyOutcome.REJECTED_SNAPSHOT
+        if persisted is not None and persisted.execution_id == batch.execution_id:
+            if batch.batch_sequence <= persisted.last_batch_sequence:
+                return ProgressBatchApplyOutcome.DUPLICATE
+            if batch.events[0].sequence <= persisted.last_sequence:
+                return ProgressBatchApplyOutcome.REJECTED_SEQUENCE
+            events = [*persisted.events, *batch.events]
+            truncated_before_sequence = persisted.truncated_before_sequence
+        else:
+            if (
+                persisted is not None
+                and batch.execution_started_at <= persisted.execution_started_at
+            ):
+                return ProgressBatchApplyOutcome.STALE_EXECUTION
+            events = list(batch.events)
+            truncated_before_sequence = None
+
+        if len(events) > PI_AGENT_PROGRESS_MAX_EVENTS:
+            discarded_events = events[:-PI_AGENT_PROGRESS_MAX_EVENTS]
+            events = events[-PI_AGENT_PROGRESS_MAX_EVENTS:]
+            truncated_before_sequence = discarded_events[-1].sequence
+
+        snapshot = PiAgentProgressSnapshot(
+            schema_version=1,
+            execution_id=batch.execution_id,
+            execution_started_at=batch.execution_started_at,
+            last_batch_sequence=batch.batch_sequence,
+            last_sequence=batch.events[-1].sequence,
+            truncated_before_sequence=truncated_before_sequence,
+            events=events,
+        )
+        while (
+            len(snapshot.model_dump_json().encode("utf-8"))
+            > PI_AGENT_PROGRESS_MAX_BYTES
+        ):
+            discarded_event = events[0]
+            events = events[1:]
+            snapshot = snapshot.model_copy(
+                update={
+                    "truncated_before_sequence": discarded_event.sequence,
+                    "events": events,
+                }
+            )
+
+        job.progress_payload = snapshot.model_dump(mode="json")
+        flag_modified(job, "progress_payload")
+        self.db.flush()
+        return ProgressBatchApplyOutcome.APPLIED
 
     def list_jobs_for_project(self, project_id: UUID, *, limit: int = 200) -> list[LlmEditJob]:
         normalized_limit = max(1, min(limit, 200))

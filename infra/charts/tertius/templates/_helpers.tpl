@@ -28,6 +28,12 @@ app.kubernetes.io/name: {{ include "tertius.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{- define "tertius.harnessLeaseAnnotation" -}}
+{{- with .Values.harnessLifecycle.leaseId }}
+tertius.io/lease-id: {{ . | quote }}
+{{- end }}
+{{- end -}}
+
 {{- define "tertius.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
 {{- default (include "tertius.fullname" .) .Values.serviceAccount.name -}}
@@ -42,6 +48,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "tertius.uiName" -}}
 {{- printf "%s-ui" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "tertius.gisCacheName" -}}
+{{- printf "%s-gis-cache" (include "tertius.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "tertius.gisCacheClaimName" -}}
+{{- if .Values.gisCache.storage.existingClaim -}}
+{{- .Values.gisCache.storage.existingClaim -}}
+{{- else -}}
+{{- include "tertius.gisCacheName" . -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "tertius.otelCollectorName" -}}

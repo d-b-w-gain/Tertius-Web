@@ -1,17 +1,19 @@
-from pathlib import Path
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.auth_types import AuthContext, Principal
-from core.models import AppUser, Project, ProjectFile, Tenant, TenantMembership, UserWorkspaceState, now_utc
-
-
-DEFAULT_SCRIPT_PATH = Path(__file__).parent.parent / "workflows" / "intus" / "templates" / "default_purlin.py"
-
-
-def _default_script() -> str:
-    return DEFAULT_SCRIPT_PATH.read_text(encoding="utf-8")
+from core.models import (
+    AppUser,
+    Project,
+    ProjectFile,
+    StructuralConfigurationRevision,
+    Tenant,
+    TenantMembership,
+    UserWorkspaceState,
+    now_utc,
+)
+from core.project_templates import default_project_files, default_structural_configuration
+from core.structural.project_configuration import StructuralProjectConfiguration
 
 
 def _tenant_name_for(principal: Principal) -> str:
@@ -39,14 +41,31 @@ def provision_user_context(db: Session, principal: Principal) -> AuthContext:
         db.add_all([membership, project])
         db.flush()
 
-        design_file = ProjectFile(
-            tenant_id=tenant.id,
-            project_id=project.id,
-            filename="design.py",
-            content=_default_script(),
-        )
-        db.add(design_file)
+        project_files = [
+            ProjectFile(
+                tenant_id=tenant.id,
+                project_id=project.id,
+                filename=filename,
+                content=content,
+            )
+            for filename, content in default_project_files().items()
+        ]
+        db.add_all(project_files)
         db.flush()
+        structural_configuration = StructuralProjectConfiguration.model_validate(
+            default_structural_configuration()
+        )
+        db.add(
+            StructuralConfigurationRevision(
+                tenant_id=tenant.id,
+                project_id=project.id,
+                revision=1,
+                digest=structural_configuration.configuration_digest,
+                content=structural_configuration.model_dump(mode="json"),
+                created_by=user.id,
+            )
+        )
+        design_file = next(file for file in project_files if file.filename == "design.py")
 
         db.add(
             UserWorkspaceState(
@@ -62,6 +81,7 @@ def provision_user_context(db: Session, principal: Principal) -> AuthContext:
             tenant_id=tenant.id,
             keycloak_subject=user.keycloak_subject,
             email=user.email,
+            roles=principal.roles,
         )
 
     user.email = principal.email
@@ -69,9 +89,7 @@ def provision_user_context(db: Session, principal: Principal) -> AuthContext:
     user.display_name = principal.display_name
     user.last_seen_at = now_utc()
 
-    existing_membership = db.scalar(
-        select(TenantMembership).where(TenantMembership.user_id == user.id)
-    )
+    existing_membership = db.scalar(select(TenantMembership).where(TenantMembership.user_id == user.id))
     if existing_membership is None:
         raise RuntimeError(f"User {user.id} has no tenant membership")
     db.commit()
@@ -80,4 +98,5 @@ def provision_user_context(db: Session, principal: Principal) -> AuthContext:
         tenant_id=existing_membership.tenant_id,
         keycloak_subject=user.keycloak_subject,
         email=user.email,
+        roles=principal.roles,
     )

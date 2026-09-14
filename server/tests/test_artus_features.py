@@ -68,6 +68,19 @@ def connector():
 # parse_tree unit tests
 # ---------------------------------------------------------------------------
 
+def test_scalar_assignment_literal_accepts_signed_site_coordinates():
+    """Signed coordinates remain ordinary editable design.py parameters."""
+    tree = ast.parse("site_latitude = -34.4125046\nsite_longitude = +150.8885637\n")
+
+    latitude = tree.body[0]
+    longitude = tree.body[1]
+
+    assert isinstance(latitude, ast.Assign)
+    assert isinstance(longitude, ast.Assign)
+    assert artus_server.scalar_assignment_literal(latitude.value) == -34.4125046
+    assert artus_server.scalar_assignment_literal(longitude.value) == 150.8885637
+
+
 def test_parse_tree_extracts_buildpart_context():
     """parse_tree should recognize with bd.BuildPart() blocks as Context nodes."""
     tree = ast.parse("with bd.BuildPart() as p:\n    pass")
@@ -339,6 +352,45 @@ def test_update_features_preserves_float_type(authenticated_artus_client, db_ses
     )
     assert "height = 99.9" in updated.content
     assert "width = 10" in updated.content  # unchanged
+
+
+def test_update_features_replaces_signed_float_literal(
+    authenticated_artus_client, db_session, seeded_tenant
+):
+    """A negative site coordinate is exposed and replaced as one scalar value."""
+    design = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    design.content = "site_latitude = -34.4125046  # decimal degrees\n"
+    db_session.commit()
+
+    features_response = authenticated_artus_client.get("/features")
+    assert features_response.status_code == 200
+    latitude = next(
+        feature
+        for feature in features_response.json()["features"]
+        if feature["name"] == "site_latitude"
+    )
+    assert latitude["value"] == -34.4125046
+
+    update_response = authenticated_artus_client.post(
+        "/update_features", json={"updates": {"site_latitude": -33.8688}}
+    )
+    assert update_response.status_code == 200
+
+    db_session.expire_all()
+    updated = db_session.scalar(
+        select(ProjectFile).where(
+            ProjectFile.tenant_id == seeded_tenant.tenant_id,
+            ProjectFile.project_id == seeded_tenant.project_id,
+            ProjectFile.filename == "design.py",
+        )
+    )
+    assert updated.content == "site_latitude = -33.8688  # decimal degrees\n"
 
 
 def test_update_features_preserves_string_quoting(authenticated_artus_client, db_session, seeded_tenant):

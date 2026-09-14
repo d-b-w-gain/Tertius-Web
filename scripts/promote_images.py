@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Promote the API, Pi agent, and UI chart images to one immutable build tag."""
+"""Promote all Tertius chart images to one immutable build tag."""
 
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ import tempfile
 
 
 TAG_PATTERN = re.compile(r"master-[0-9]+-[0-9]+-[a-f0-9]{7}")
-IMAGE_NAMES = ("tertius-api", "tertius-pi-agent", "tertius-ui")
+IMAGE_NAMES = (
+    "tertius-api",
+    "tertius-gis-cache",
+    "tertius-pi-agent",
+    "tertius-ui",
+)
 
 
 class PromotionError(Exception):
@@ -39,7 +44,9 @@ def _promoted_values(contents: bytes, tag: str) -> bytes:
     replacements: list[tuple[re.Match[bytes], bytes]] = []
 
     if contents.count(b"$imagepromoter") != len(IMAGE_NAMES):
-        raise PromotionError("expected exactly three image promoter markers")
+        raise PromotionError(
+            f"expected exactly {len(IMAGE_NAMES)} image promoter markers"
+        )
 
     for image_name in IMAGE_NAMES:
         marker = _marker(image_name)
@@ -98,7 +105,10 @@ def promote_images(values_path: Path, tag: str) -> None:
         with os.fdopen(fd, "wb") as temp_file:
             temp_file.write(promoted)
             temp_file.flush()
-            os.fchmod(temp_file.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(temp_file.fileno(), mode)
+            else:
+                os.chmod(temp_path, mode)
             os.fsync(temp_file.fileno())
         os.replace(temp_path, values_path)
         temp_path = None

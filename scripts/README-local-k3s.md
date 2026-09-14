@@ -29,6 +29,14 @@ prints the release-specific OAuth login and verification commands. Provision
 the retained auth claim with those commands before running AI edits; see
 `docs/operations/pi-agent-auth.md`.
 
+For a dev stack exposed through a public HTTPS hostname, run the Linux helper
+with that origin so both the API issuer and Keycloak's public/admin hostname are
+repaired together:
+
+```bash
+PUBLIC_BASE_URL=https://tertius.example.com bash scripts/local-k3s-start-wsl.sh
+```
+
 ## Patch Frontend Changes
 
 ```powershell

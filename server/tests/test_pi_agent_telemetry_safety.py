@@ -9,6 +9,7 @@ FILES = (
     Path("server/core/pi_agent_telemetry.py"),
     Path("server/core/pi_agent_prompt.py"),
     Path("server/core/pi_agent_conversation.py"),
+    Path("server/core/pi_agent_rpc.py"),
     Path("server/workflows/intus/intus_server.py"),
     Path("server/workflows/intus/pi_agent_job.py"),
     Path("server/workflows/intus/pi_agent_result_consumer.py"),
@@ -22,6 +23,9 @@ APPROVED_LABELS = {
     "status",
     "failure_category",
     "retryable",
+    "event_kind",
+    "tool_name",
+    "tool_status",
 }
 FORBIDDEN_KEYS = {
     "conversation",
@@ -43,6 +47,19 @@ FORBIDDEN_KEYS = {
     "user_id",
     "project_id",
     "job_id",
+    "event_text",
+    "progress_text",
+    "target",
+    "tool_args",
+    "tool_arguments",
+    "tool_result",
+    "text",
+    "progress",
+    "progress_batch",
+    "batch",
+    "events",
+    "args",
+    "arguments",
 }
 
 
@@ -52,6 +69,18 @@ def is_sensitive_name(value: str) -> bool:
     if normalized in FORBIDDEN_KEYS:
         return True
     parts = set(normalized.split("_"))
+    if "tool" in parts and parts & {"arg", "args", "argument", "arguments"}:
+        return True
+    if {"tool", "result"} <= parts and not parts & {
+        "error",
+        "failed",
+        "state",
+        "status",
+        "success",
+    }:
+        return True
+    if {"progress", "event", "text"} <= parts:
+        return True
     if "prompt" in parts and parts & {"hash", "sha", "sha256", "digest"}:
         return True
     if parts & {"conversation", "history"}:
@@ -241,6 +270,18 @@ def test_safety_scan_rejects_sensitive_and_dynamic_mutations():
         'span.set_attribute(key="status", value=payload["conversation_history"])',
         'labels = make_runtime_labels()\ncounter_add("x", 1, labels)',
         'counter_add("tertius.pi_agent.x", 1, {"region": "unbounded"})',
+        'logger.info("progress %s", progress_text)',
+        'logger.info("progress %s", progress_batch)',
+        'logger.info("progress %s", batch)',
+        'logger.info("progress %s", event.text)',
+        'logger.info("tool target %s", event.target)',
+        'logger.info("tool args %s", tool_arguments)',
+        'logger.info("tool result %s", tool_result)',
+        'logger.info("tool args %s", raw_tool_arguments)',
+        'logger.info("tool result %s", tool_call_result)',
+        'span.set_attribute("status", progress_event_text)',
+        'counter_add("tertius.pi_agent.x", 1, attributes={"target": target})',
+        'span.set_attribute("event_text", event.text)',
     )
     for mutation in mutations:
         assert telemetry_safety_violations(
@@ -250,6 +291,23 @@ def test_safety_scan_rejects_sensitive_and_dynamic_mutations():
 
 def test_safety_scan_allows_generic_trace_context_names():
     source = 'logger.info("trace context %s", trace_context)'
+    assert telemetry_safety_violations(
+        source, filename="server/workflows/intus/pi_agent_job.py"
+    ) == []
+
+
+def test_safety_scan_allows_only_bounded_progress_dimensions():
+    source = """
+counter_add(
+    "tertius.pi_agent.progress",
+    1,
+    attributes={
+        "event_kind": "tool_finished",
+        "tool_name": "read",
+        "tool_status": "succeeded",
+    },
+)
+"""
     assert telemetry_safety_violations(
         source, filename="server/workflows/intus/pi_agent_job.py"
     ) == []

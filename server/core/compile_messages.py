@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime
+import gzip
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from core.object_store import ObjectRef
 
 
 class CompileSourceFile(BaseModel):
     filename: str
     content: str
+
+
+class CompileBinaryAsset(BaseModel):
+    logical_filename: Literal["source.3mf"]
+    object_ref: ObjectRef
 
 
 class CompileCommand(BaseModel):
@@ -20,9 +28,19 @@ class CompileCommand(BaseModel):
     export_format: str
     quality: str | None = None
     created_at: datetime
-    files: list[CompileSourceFile] = []
+    files: list[CompileSourceFile] = Field(default_factory=list)
+    assets: list[CompileBinaryAsset] = Field(default_factory=list, max_length=1)
     request_id: str | None = None
     originating_llm_edit_job_id: UUID | None = None
+
+
+class CompileArtifactPayload(BaseModel):
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    content_type: str = Field(min_length=1, max_length=100)
+    content_base64: str = Field(min_length=1)
+    byte_size: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    is_compressed: bool = False
 
 
 class CompileResultPayload(BaseModel):
@@ -31,26 +49,41 @@ class CompileResultPayload(BaseModel):
     project_id: UUID
     export_format: str
     status: Literal["succeeded", "failed"]
-    artifact_content_base64: str | None = None
-    artifact_byte_size: int | None = None
-    artifact_content_type: str | None = None
+    artifacts: list[CompileArtifactPayload] = Field(default_factory=list, max_length=8)
+    bundle_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     error_code: str | None = None
     user_message: str | None = None
     error: str | None = None
     retryable: bool = False
-    is_compressed: bool = False
     worker_started_at: datetime
     worker_finished_at: datetime
 
 
-def serialized_message_size(message: BaseModel) -> int:
-    return len(message.model_dump_json().encode("utf-8"))
+def serialized_message_bytes(
+    message: BaseModel,
+    *,
+    compress: bool = False,
+) -> bytes:
+    encoded = message.model_dump_json().encode("utf-8")
+    return gzip.compress(encoded, mtime=0) if compress else encoded
 
 
-def assert_message_size(message: BaseModel, max_bytes: int, label: str) -> None:
-    size = serialized_message_size(message)
+def serialized_message_size(message: BaseModel, *, compress: bool = False) -> int:
+    return len(serialized_message_bytes(message, compress=compress))
+
+
+def assert_message_size(
+    message: BaseModel,
+    max_bytes: int,
+    label: str,
+    *,
+    compress: bool = False,
+) -> None:
+    size = serialized_message_size(message, compress=compress)
     if size > max_bytes:
-        raise ValueError(f"{label} message is {size} bytes, above {max_bytes} byte limit")
+        raise ValueError(
+            f"{label} message is {size} bytes, above {max_bytes} byte limit"
+        )
 
 
 def compile_result_message_id(result: CompileResultPayload) -> str:

@@ -7,3 +7,4 @@ valkey/valkey:9.0.0
 natsio/nats-box:0.19.7
 otel/opentelemetry-collector-contrib:0.133.0
 tertius-pi-agent:local
+tertius-gis-cache:local

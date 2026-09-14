@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GUEST_WORKSPACE_KEY } from './guestWorkspace'
-import { createProjectStorage } from './projectStorage'
+import {
+  createProjectStorage,
+  type LlmEditProgressSnapshot,
+} from './projectStorage'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -296,5 +299,42 @@ describe('projectStorage', () => {
 
     await expect(storage.listLlmModels()).resolves.toEqual(responseBody)
     expect(mocks.apiFetch).toHaveBeenCalledWith('/api/intus/llm-usage/models', getAccessToken)
+  })
+
+  it('passes typed Pi progress snapshots through status and conversation responses', async () => {
+    const progress = {
+      schema_version: 1,
+      execution_id: '7d364c43-45d4-4c66-9565-7885f65e6730',
+      execution_started_at: '2026-07-27T11:00:00Z',
+      last_batch_sequence: 2,
+      last_sequence: 3,
+      truncated_before_sequence: null,
+      events: [
+        {
+          sequence: 3,
+          kind: 'tool_finished',
+          text: null,
+          tool_name: 'edit',
+          target: 'design.py',
+          is_error: false,
+          occurred_at: '2026-07-27T11:00:01Z',
+        },
+      ],
+    } satisfies LlmEditProgressSnapshot
+    const statusResponse = { job_id: 'llm-job-1', status: 'running', progress }
+    const historyResponse = {
+      messages: [{ job_id: 'llm-job-1', status: 'succeeded', progress }],
+    }
+    mocks.apiFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify(statusResponse)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(historyResponse)))
+    const storage = createProjectStorage({
+      authMode: 'authenticated',
+      serverUrl: '/api/intus',
+      getAccessToken: vi.fn(),
+    })
+
+    await expect(storage.getLlmFileEditJob('demo', 'llm-job-1')).resolves.toEqual(statusResponse)
+    await expect(storage.listLlmEditConversation('demo')).resolves.toEqual(historyResponse.messages)
   })
 })

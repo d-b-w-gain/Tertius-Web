@@ -143,6 +143,10 @@ stringData:
 
 Cloudflare tunnel tokens, database passwords, image pull credentials, and Keycloak admin credentials should be managed outside Git, then referenced by chart values.
 
+Kubernetes `Running` status alone is not sufficient for the tunnel connector:
+the chart's `/ready` probes mark `cloudflared` unready when it has no active
+Cloudflare edge connection.
+
 ## Cluster Prerequisites
 
 The production cluster must already have:
@@ -174,7 +178,10 @@ scripts/harness-k3s.sh smoke
 It delegates deploy and cleanup to `scripts/test-k3s-deployment.sh`, which
 remains the CI-compatible implementation used by the GitHub k3s smoke workflow.
 See `docs/harness/local-harness.md` for runtime choices and
-`docs/harness/runtime-parity.md` for Compose/Helm drift policy.
+`docs/harness/runtime-parity.md` for Compose/Helm drift policy. Non-Flux harness
+releases carry a lifecycle marker with a six-hour default expiry; configure
+`HARNESS_TTL_SECONDS` from 900 through 86400 seconds. Kubernetes does not act on
+the annotation itself—the host janitor performs the audited cleanup.
 
 ```bash
 scripts/test-k3s-deployment.sh
@@ -231,7 +238,7 @@ Reset the local k3s container when you want a clean cluster:
 powershell -ExecutionPolicy Bypass -File scripts/start-k3s-docker.ps1 -Reset -InstallOperators
 ```
 
-Clean up the Tertius release but keep persistent data:
+Clean up the Tertius release and its persistent data:
 
 ```bash
 export KUBECONFIG="$PWD/.kube/tertius-k3s.yaml"
@@ -239,7 +246,7 @@ export K3S_CONTAINER=tertius-k3s
 scripts/test-k3s-deployment.sh --cleanup
 ```
 
-Delete the local release, database clusters, and PVC data:
+The legacy `--delete-data` spelling is an alias for the same full cleanup:
 
 ```bash
 scripts/test-k3s-deployment.sh --cleanup --delete-data
@@ -266,13 +273,27 @@ Useful overrides include:
 - `TUNNEL_HOSTNAME`
 - `KEYCLOAK_REALM`
 
-Cleanup keeps persistent data by default:
+Cleanup deletes persistent data by default and verifies release-scoped objects
+are absent:
 
 ```bash
 scripts/test-k3s-deployment.sh --cleanup
 ```
 
-Use `--delete-data` only when PVCs and CloudNativePG database clusters should also be removed.
+Use `--retain-data` to keep CNPG clusters and all release PVCs, or
+`--retain-auth` to keep only the Pi-agent auth PVC. Both choices preserve a
+lifecycle tombstone containing the retained object identities. Production and
+Flux-managed releases are always refused by destructive paths.
+
+The wrapper resolves cleanup from explicit `NAMESPACE`/`RELEASE_NAME`, or from
+its saved status file when neither is supplied. Preview or execute expired
+leases with `scripts/cleanup-expired-k3s-harness.sh --dry-run` or the same
+command without the flag. Install the 15-minute user timer explicitly with
+`scripts/install-k3s-harness-cleanup-timer.sh install`; use `uninstall` to
+remove it. Legacy development releases require
+`scripts/harness-k3s.sh adopt <namespace>/<release>` before cleanup. The exact
+ownership contract is in
+`docs/superpowers/specs/2026-08-14-k3s-harness-lifecycle-cleanup-design.md`.
 
 ## Manual Chart Checks
 
@@ -351,6 +372,30 @@ flux -n tertius get helmreleases tertius
 kubectl -n tertius get pods
 kubectl -n tertius get clusters.postgresql.cnpg.io
 kubectl -n tertius describe helmrelease tertius
+```
+
+### Cloudflare Error 1033 recovery
+
+Error 1033 means the tunnel selected by the public hostname has no connected
+connector. Confirm the production host and Kubernetes node are online before
+inspecting the connector:
+
+```bash
+kubectl get nodes
+flux -n flux-system get sources git tertius-web
+flux -n tertius get helmreleases tertius
+kubectl -n tertius get deployment,pods -l app.kubernetes.io/component=cloudflared
+kubectl -n tertius logs deploy/tertius-cloudflared --tail=200 \
+  | grep -E 'Starting tunnel|Registered tunnel connection|ERR|WRN'
+```
+
+After recovering the host, restart a connector that did not re-establish its
+edge connections and run the public smoke check:
+
+```bash
+kubectl -n tertius rollout restart deployment/tertius-cloudflared
+kubectl -n tertius rollout status deployment/tertius-cloudflared --timeout=2m
+bash scripts/smoke-production.sh https://tertius.johnsonyuen.com
 ```
 
 ## Troubleshooting

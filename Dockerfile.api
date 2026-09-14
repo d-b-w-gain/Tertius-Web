@@ -24,6 +24,12 @@ WORKDIR /app
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid app --home-dir /app --shell /usr/sbin/nologin app
 
+# Make application-source layers commit-specific. The shared BuildKit cache is
+# intentionally reused across branch smoke builds, so the source revision must
+# be part of the parent layer before any repository files are copied.
+ARG SOURCE_COMMIT=unknown
+RUN printf '%s\n' "$SOURCE_COMMIT" > /app/.source-commit
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -43,9 +49,11 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 COPY server/alembic.ini server/main.py server/start-api.sh server/start-compile-job.sh server/start-pi-agent-job.sh ./server/
 COPY server/core/ ./server/core/
+COPY server/gis_cache/__init__.py server/gis_cache/directional_geometry.py ./server/gis_cache/
 RUN chmod 0444 /app/server/core/pi_agent_system_prompt.md
 COPY server/migrations/ ./server/migrations/
 COPY server/workflows/ ./server/workflows/
+COPY tertius/ ./tertius/
 
 RUN uv sync --no-dev --locked \
     && chmod +x /app/server/start-api.sh /app/server/start-compile-job.sh /app/server/start-pi-agent-job.sh

@@ -40,18 +40,19 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.compileWorkerQueue` | `COMPILE_WORKER_QUEUE` | API, compile worker | Compile worker queue. |
 | `app.config.compileResultConsumer` | `COMPILE_RESULT_CONSUMER` | API | Result consumer durable. |
 | `app.config.compileAckWaitSeconds` | `COMPILE_ACK_WAIT_SECONDS` | API, compile worker | NATS ack window. |
-| `app.config.compileMaxDeliver` | `COMPILE_MAX_DELIVER` | API, compile worker | NATS redelivery limit. |
+| `app.config.compileMaxDeliver` | `COMPILE_MAX_DELIVER` | API, compile worker | NATS redelivery limit; the default uses result-driven retry semantics. |
 | `app.config.compileTimeoutSeconds` | `COMPILE_TIMEOUT_SECONDS` | API, compile worker | Compile timeout. |
 | `app.config.compileRequestMaxBytes` | `COMPILE_REQUEST_MAX_BYTES` | API, compile worker | Max compile command size. |
 | `app.config.compileResultMaxBytes` | `COMPILE_RESULT_MAX_BYTES` | API, compile worker | Max compile result size. |
 | `app.config.llmFileEditMaxContextFiles` | `LLM_FILE_EDIT_MAX_CONTEXT_FILES` | API | File-edit context file cap. |
-| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | Maximum file-edit context character ceiling; Generate Design selects a per-request tier up to this value. Very High is 2,000,000 characters (roughly 500,000 tokens using the service's 4-bytes-per-token estimate). |
+| `app.config.llmFileEditMaxContextChars` | `LLM_FILE_EDIT_MAX_CONTEXT_CHARS` | API | Operational file-edit context safety ceiling. Generate Design applies a fixed 300,000-character source budget beneath this ceiling; end users cannot configure it. |
 | `app.config.llmUserRateLimitPerMinute` | `LLM_USER_RATE_LIMIT_PER_MINUTE` | API | Per-user LLM request rate. |
 | `app.config.llmTenantRateLimitPerMinute` | `LLM_TENANT_RATE_LIMIT_PER_MINUTE` | API | Per-tenant LLM request rate. |
 | `app.config.llmTenantDailyTokenQuota` | `LLM_TENANT_DAILY_TOKEN_QUOTA` | API | Tenant daily token fallback quota. |
 | `app.config.llmUserDailyTokenQuota` | `LLM_USER_DAILY_TOKEN_QUOTA` | API | User daily token fallback quota. |
 | `app.config.piAgentProvider` | `PI_AGENT_PROVIDER` | API, Pi worker | Pi provider; fixed to `openai-codex`. |
-| `app.config.piAgentModel` | `PI_AGENT_MODEL` | API, Pi worker | Subscription model id. |
+| `app.config.piAgentModel` | `PI_AGENT_MODEL` | API, Pi worker | Default subscription model id; `gpt-5.6-sol` by default. |
+| `app.config.piAgentModels` | `PI_AGENT_MODELS_JSON` | API, Pi worker | Ordered non-secret Generate Design model catalog. The API persists the selected catalog id with each job, and the worker validates that selection against the same ConfigMap value. |
 | `app.config.piAgentThinking` | `PI_AGENT_THINKING` | Pi worker | Pi reasoning level. |
 | `app.config.billingStreamName` | `BILLING_STREAM_NAME` | API | Billing stream. |
 | `app.config.billingLlmUsageSubject` | `BILLING_LLM_USAGE_SUBJECT` | API | LLM billing subject. |
@@ -61,6 +62,14 @@ UI pods and compile jobs must not receive Pi provider settings or OAuth state.
 | `app.config.billingFormatMultiplierStep` | `BILLING_FORMAT_MULTIPLIER_STEP` | API | STEP compile cost multiplier. |
 | `app.config.billingFormatMultiplierGltf` | `BILLING_FORMAT_MULTIPLIER_GLTF` | API | glTF compile cost multiplier. |
 | `app.config.billingFormatMultiplierGlb` | `BILLING_FORMAT_MULTIPLIER_GLB` | API | GLB compile cost multiplier. |
+
+`compileMaxDeliver: 1` is intentional. Compile workers publish a terminal
+result and ACK each valid command rather than depending on command redelivery.
+A temporary sidecar transport outage produces the retryable
+`binary_asset_unavailable` result; corrupt or missing immutable sidecars produce
+the non-retryable `invalid_binary_asset` result. If publishing the result fails,
+the worker NAKs because no outcome reached the API. Increasing
+`compileMaxDeliver` requires a separate, explicit redelivery and backoff policy.
 
 ## Secrets
 

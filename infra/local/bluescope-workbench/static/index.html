@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlueScope Procurement Bridge</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">SHED PROCUREMENT · BLUESCOPE INTEGRATION</p>
+      <h1>BlueScope procurement bridge</h1>
+      <p class="lede">Your shed BoM, the real API surface, and the steps between a product list and an electronic purchase order.</p>
+    </div>
+    <div id="overall-badge" class="badge waiting">Checking configuration…</div>
+  </header>
+
+  <main>
+    <section id="truth-card" class="truth-card">
+      <div class="truth-icon">!</div>
+      <div>
+        <p class="eyebrow dark">PORTAL FINDING</p>
+        <h2>This API cannot produce a quote</h2>
+        <p>The developer portal exposes <strong>BBC Purchase Orders</strong>. It accepts real EDI purchase orders; it does not expose catalogue search, prices, stock, lead times, freight quotes, or quote requests.</p>
+      </div>
+    </section>
+
+    <section class="summary-grid">
+      <article>
+        <p class="label">Product</p>
+        <h3 id="api-product">—</h3>
+        <p id="api-business" class="muted">Loading…</p>
+      </article>
+      <article>
+        <p class="label">API</p>
+        <h3 id="api-name">—</h3>
+        <p class="muted">New BBC onboardings use the v2 GS1 XML assets</p>
+      </article>
+      <article>
+        <p class="label">BoM source</p>
+        <h3 id="bom-count">—</h3>
+        <p id="bom-source" class="muted">Checking the procurement database…</p>
+      </article>
+    </section>
+
+    <section class="two-column">
+      <article class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow dark">ONBOARDING</p>
+            <h2>Integration readiness</h2>
+          </div>
+          <button id="probe" disabled>Test API health</button>
+        </div>
+        <ol id="readiness" class="checklist"></ol>
+        <div id="probe-result" class="result hidden"></div>
+      </article>
+
+      <article class="panel">
+        <p class="eyebrow dark">AVAILABLE SURFACE</p>
+        <h2>What the portal actually provides</h2>
+        <table class="api-table">
+          <tbody>
+            <tr><th>GET</th><td><code>/isAlive</code></td><td>Gateway health check</td></tr>
+            <tr><th>GET</th><td><code>/isAliveAndWell</code></td><td>Deeper health check</td></tr>
+            <tr><th class="put">PUT</th><td><code>/orders</code></td><td>Submit an actual GS1 purchase order</td></tr>
+          </tbody>
+        </table>
+        <p class="notice">Order submission is intentionally not exposed in this UI. It should only be enabled after BlueScope onboarding, schema validation, test approval, and an explicit confirmation for the final order.</p>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow dark">SHED REQUIREMENTS</p>
+          <h2>Likely Lysaght product families</h2>
+        </div>
+        <span id="mapping-count" class="counter">—</span>
+      </div>
+      <p class="intro">These are candidates detected from the latest shed BoM. They still need official Lysaght catalogue codes before they can become a valid BBC electronic order.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Family</th><th>Part / profile</th><th>Qty</th><th>Requested length</th><th>Finish / colour</th><th>Mapping</th></tr></thead>
+          <tbody id="bom-items"><tr><td colspan="6">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow dark">FULL-LENGTH OPTION</p>
+          <h2>9 m Cee stock plan</h2>
+        </div>
+        <span class="counter">3 mm kerf</span>
+      </div>
+      <p class="intro">A best-fit check using the Cee member cuts in the current BoM. This is a planning aid, not a cutting instruction.</p>
+      <div id="stock-plans" class="stock-plans"><p class="muted">Calculating…</p></div>
+    </section>
+
+    <section class="next-step">
+      <p class="eyebrow">PRACTICAL NEXT STEP</p>
+      <h2>Use the product list to request a conventional quote first.</h2>
+      <p>Once you have a Lysaght customer/account code and confirmed catalogue item identifiers, the EDI API can automate repeat orders. The developer account alone does not provide trade pricing.</p>
+      <div class="links">
+        <a href="https://developer.apiaut.bluescope.com/product#product=bbc-purchase-orders" target="_blank" rel="noreferrer">BBC Purchase Orders</a>
+        <a href="https://developer.apiaut.bluescope.com/GettingStartedPage_Authentication" target="_blank" rel="noreferrer">OAuth onboarding</a>
+        <a href="https://lysaght.com/contact/lysaght-locations/emu-plains" target="_blank" rel="noreferrer">Lysaght Emu Plains</a>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,372 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asterisk-config
+  namespace: telephony
+  labels:
+    app.kubernetes.io/name: asterisk
+data:
+  asterisk.conf: |
+    [directories](!)
+    astetcdir => /etc/asterisk
+    astmoddir => /usr/lib/asterisk/modules
+    astvarlibdir => /var/lib/asterisk
+    astdbdir => /var/lib/asterisk
+    astkeydir => /var/lib/asterisk
+    astdatadir => /var/lib/asterisk
+    astagidir => /var/lib/asterisk/agi-bin
+    astspooldir => /var/spool/asterisk
+    astrundir => /var/run/asterisk
+    astlogdir => /var/log/asterisk
+    astsbindir => /usr/sbin
+
+    [options]
+    runuser = asterisk
+    rungroup = asterisk
+    defaultlanguage = en
+    documentation_language = en_AU
+    live_dangerously = no
+
+  modules.conf: |
+    [modules]
+    autoload=yes
+    noload => chan_sip.so
+
+  logger.conf: |
+    [general]
+    dateformat=%F %T
+
+    [logfiles]
+    console => notice,warning,error,verbose
+
+  rtp.conf: |
+    [general]
+    rtpstart=10000
+    rtpend=10199
+    strictrtp=yes
+
+  musiconhold.conf: |
+    [gain-promo]
+    mode=files
+    directory=/var/lib/asterisk/moh/spruik
+    sort=alpha
+
+  pjsip.conf: |
+    [global]
+    type=global
+    user_agent=Spruik
+    endpoint_identifier_order=ip,username,anonymous
+
+    [transport-udp]
+    type=transport
+    protocol=udp
+    bind=0.0.0.0:5060
+    local_net=192.168.88.0/24
+
+    ; Authentication objects are supplied by the asterisk-secrets Secret.
+    #include pjsip-secrets.conf
+
+    [aussie-registration]
+    type=registration
+    transport=transport-udp
+    outbound_auth=aussie-auth
+    server_uri=sip:AussieBB.nms1.voice.wide.net.au
+    client_uri=sip:09696682@AussieBB.nms1.voice.wide.net.au
+    contact_user=09696682
+    endpoint=aussie-endpoint
+    line=yes
+    expiration=300
+    retry_interval=30
+    forbidden_retry_interval=300
+    fatal_retry_interval=300
+    max_retries=20
+
+    [aussie-aor]
+    type=aor
+    contact=sip:AussieBB.nms1.voice.wide.net.au
+    qualify_frequency=60
+
+    [aussie-endpoint]
+    type=endpoint
+    transport=transport-udp
+    context=from-aussie
+    disallow=all
+    allow=alaw
+    allow=ulaw
+    aors=aussie-aor
+    outbound_auth=aussie-auth
+    from_user=09696682
+    from_domain=AussieBB.nms1.voice.wide.net.au
+    direct_media=no
+    force_rport=yes
+    rewrite_contact=yes
+    rtp_symmetric=yes
+    timers=yes
+
+    [aussie-identify]
+    type=identify
+    endpoint=aussie-endpoint
+    match=180.150.1.212
+
+    [101]
+    type=endpoint
+    transport=transport-udp
+    context=from-internal
+    disallow=all
+    allow=alaw
+    allow=ulaw
+    auth=pc-auth
+    aors=101
+    callerid=Office PC <101>
+    direct_media=no
+    force_rport=yes
+    rewrite_contact=yes
+    rtp_symmetric=yes
+
+    [101]
+    type=aor
+    max_contacts=1
+    remove_existing=yes
+    qualify_frequency=30
+
+    [102]
+    type=endpoint
+    transport=transport-udp
+    context=from-internal
+    disallow=all
+    allow=alaw
+    allow=ulaw
+    auth=iphone-auth
+    aors=102
+    callerid=Daniel iPhone <102>
+    direct_media=no
+    force_rport=yes
+    rewrite_contact=yes
+    rtp_symmetric=yes
+
+    [102]
+    type=aor
+    max_contacts=1
+    remove_existing=yes
+    qualify_frequency=30
+
+  extensions.conf: |
+    [general]
+    static=yes
+    writeprotect=yes
+    autofallthrough=yes
+
+    [globals]
+    RING_SECONDS=35
+
+    [from-aussie]
+    exten => s,1,Goto(incoming,1)
+    exten => _X!,1,Goto(incoming,1)
+    exten => _+X!,1,Goto(incoming,1)
+    exten => incoming,1,NoOp(Incoming Aussie Broadband call from ${CALLERID(all)})
+      same => n,Set(NORMALIZED_CALLER=${FILTER(0-9,${CALLERID(num)})})
+      same => n,Set(PC_CONTACTS=${PJSIP_DIAL_CONTACTS(101)})
+      same => n,Set(PHONE_CONTACTS=${PJSIP_DIAL_CONTACTS(102)})
+      same => n,GotoIf($[${LEN(${PC_CONTACTS})} = 0 & ${LEN(${PHONE_CONTACTS})} = 0]?voicemail,s,1)
+      same => n,GotoIf($["${NORMALIZED_CALLER}" = "0408196458" | "${NORMALIZED_CALLER}" = "61408196458"]?dan,1)
+      same => n,GotoIf($["${NORMALIZED_CALLER}" = "0403801695" | "${NORMALIZED_CALLER}" = "61403801695"]?mike,1)
+      same => n,GotoIf($["${NORMALIZED_CALLER}" = "0406426654" | "${NORMALIZED_CALLER}" = "61406426654"]?johnson,1)
+      same => n,GotoIf($["${NORMALIZED_CALLER}" = "0424447336" | "${NORMALIZED_CALLER}" = "61424447336"]?hayley,1)
+      same => n,Goto(standard,1)
+
+    exten => dan,1,NoOp(Personalized call from Dan)
+      same => n,Gosub(personalized-greeting,s,1(dan))
+      same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(gain-promo))
+      same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
+      same => n,Goto(voicemail,s,1)
+      same => n(done),Hangup()
+
+    exten => mike,1,NoOp(Personalized call from Mike)
+      same => n,Gosub(personalized-greeting,s,1(mike))
+      same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(gain-promo))
+      same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
+      same => n,Goto(voicemail,s,1)
+      same => n(done),Hangup()
+
+    exten => johnson,1,NoOp(Personalized call from Johnson Yuen)
+      same => n,Gosub(personalized-greeting,s,1(johnson))
+      same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(gain-promo))
+      same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
+      same => n,Goto(voicemail,s,1)
+      same => n(done),Hangup()
+
+    exten => hayley,1,NoOp(Personalized call from Hayley Scrivenor)
+      same => n,Gosub(personalized-greeting,s,1(hayley))
+      same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(gain-promo))
+      same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
+      same => n,Goto(voicemail,s,1)
+      same => n(done),Hangup()
+
+    exten => standard,1,NoOp(Standard incoming greeting)
+      same => n,Answer()
+      same => n,Playback(custom/standard-greeting)
+      same => n,Dial(PJSIP/101&PJSIP/102,${RING_SECONDS},tm(gain-promo))
+      same => n,GotoIf($["${DIALSTATUS}" = "ANSWER"]?done)
+      same => n,Goto(voicemail,s,1)
+      same => n(done),Hangup()
+
+    [voicemail]
+    exten => s,1,NoOp(Recording voicemail for Signal delivery from ${CALLERID(all)})
+      same => n,Answer()
+      same => n,Wait(0.5)
+      same => n,Playback(custom/voicemail-greeting)
+      same => n,Set(VOICEMAIL_FILE=/var/spool/asterisk/voicemail/${STRFTIME(${EPOCH},Australia/Sydney,%Y%m%d-%H%M%S)}-${UNIQUEID}.wav)
+      same => n,PlayTones(1000/500)
+      same => n,Wait(0.5)
+      same => n,StopPlayTones()
+      same => n,Record(${VOICEMAIL_FILE},5,120,kq)
+      same => n,AGI(send-voicemail-signal.sh,${VOICEMAIL_FILE},${NORMALIZED_CALLER})
+      same => n,ExecIf($["${SIGNAL_SENT}" = "1"]?Playback(custom/thank-you))
+      same => n,Hangup()
+
+    exten => h,1,NoOp(Voicemail hangup delivery check)
+      same => n,GotoIf($["${VOICEMAIL_FILE}" = "" | "${SIGNAL_SENT}" = "1"]?done)
+      same => n,AGI(send-voicemail-signal.sh,${VOICEMAIL_FILE},${NORMALIZED_CALLER})
+      same => n(done),NoOp(Voicemail delivery complete)
+
+    [personalized-greeting]
+    exten => s,1,NoOp(Generating personalized greeting profile ${ARG1})
+      same => n,Ringing()
+      same => n,Set(DAYPART=evening)
+      same => n,Set(LOCAL_HOUR=${STRFTIME(${EPOCH},Australia/Sydney,%H)})
+      same => n,ExecIf($[${LOCAL_HOUR} < 18]?Set(DAYPART=afternoon))
+      same => n,ExecIf($[${LOCAL_HOUR} < 12]?Set(DAYPART=morning))
+      same => n,AGI(generate-personal-greeting.sh,${ARG1},${DAYPART},${UNIQUEID})
+      same => n,ExecIf($["${TTS_FILE}" = ""]?Set(TTS_FILE=custom/standard-greeting))
+      same => n,Answer()
+      same => n,Wait(0.5)
+      same => n,Playback(${TTS_FILE})
+      same => n,Return()
+
+    [from-internal]
+    exten => 101,1,Dial(PJSIP/101,30)
+      same => n,Hangup()
+    exten => 102,1,Dial(PJSIP/102,30)
+      same => n,Hangup()
+    exten => 600,1,Answer()
+      same => n,Playback(custom/standard-greeting)
+      same => n,Hangup()
+    exten => 601,1,Answer()
+      same => n,MusicOnHold(gain-promo,35)
+      same => n,Hangup()
+    exten => 602,1,Goto(voicemail,s,1)
+    exten => _X!,1,NoOp(Outbound call from ${CALLERID(all)} to ${EXTEN})
+      same => n,Dial(PJSIP/${EXTEN}@aussie-endpoint,60)
+      same => n,Hangup()
+    exten => _+X!,1,NoOp(Outbound call from ${CALLERID(all)} to ${EXTEN})
+      same => n,Dial(PJSIP/${EXTEN}@aussie-endpoint,60)
+      same => n,Hangup()
+
+  generate-personal-greeting.sh: |
+    #!/bin/sh
+    set -eu
+
+    profile="${1:-unknown}"
+    daypart="${2:-evening}"
+    call_id="$(printf '%s' "${3:-call}" | tr -cd '0-9A-Za-z._-')"
+    output_dir=/var/lib/asterisk/sounds/custom
+
+    while IFS= read -r agi_line && [ -n "$agi_line" ]; do
+      :
+    done
+
+    case "$profile" in
+      dan)
+        voice=am_puck
+        message="Good $daypart, Dan. Welcome back to Gain Engineering. The machines are standing by, the steel is still expensive, and at least one computer is pretending everything is under control. Please hold while we connect you to yourself."
+        ;;
+      mike)
+        voice=am_santa
+        message="Hi, this is Darren from Premium Air. Am I speaking with the person responsible for breathing in your household?"
+        ;;
+      johnson)
+        voice=bf_emma
+        message="Good $daypart, Johnson Yuen. Welcome to Gain Engineering. I hope Santago is well. Please hold while we connect you to the Flatline."
+        ;;
+      hayley)
+        voice=bf_lily
+        # "Mouse-gord" makes Kokoro pronounce Mausguard like Knausgård with an M.
+        message="Good $daypart, Hayley Scrivenor. A brief dispatch from home. [Mausguard](/mˈæʉsɡoːɹ/) misses you terribly, but remains stoic, literary, and committed to turning your absence into a six-volume autobiographical epic called My Snuggle. Please hold while we connect your call."
+        ;;
+      *)
+        printf 'SET VARIABLE TTS_FILE ""\n'
+        IFS= read -r agi_response || true
+        exit 0
+        ;;
+    esac
+
+    output_file="$output_dir/personal-$profile.sln24"
+    temporary_file="$output_dir/personal-$profile-$call_id.tmp"
+
+    if printf '{"model":"kokoro","input":"%s","voice":"%s","response_format":"pcm","speed":1.0}' "$message" "$voice" |
+      curl --fail --silent --show-error --connect-timeout 3 --max-time 20 \
+        -H 'Content-Type: application/json' \
+        --data-binary @- \
+        http://kokoro-tts.tts.svc.cluster.local:8880/v1/audio/speech \
+        -o "$temporary_file" &&
+      test -s "$temporary_file"; then
+      mv "$temporary_file" "$output_file"
+      printf 'SET VARIABLE TTS_FILE "custom/personal-%s"\n' "$profile"
+      IFS= read -r agi_response || true
+    else
+      rm -f "$temporary_file"
+      printf 'SET VARIABLE TTS_FILE ""\n'
+      IFS= read -r agi_response || true
+    fi
+
+  send-voicemail-signal.sh: |
+    #!/bin/sh
+    set -u
+
+    recording="${1:-}"
+    caller="$(printf '%s' "${2:-unknown}" | tr -cd '0-9')"
+    signal_api_url="${SIGNAL_API_URL:-}"
+    signal_number="${SIGNAL_NUMBER:-}"
+
+    while IFS= read -r agi_line && [ -n "$agi_line" ]; do
+      :
+    done
+
+    set_agi_variable() {
+      printf 'SET VARIABLE SIGNAL_SENT "%s"\n' "$1"
+      IFS= read -r agi_response || true
+    }
+
+    if [ -z "$recording" ] || [ ! -s "$recording" ] || [ -z "$signal_api_url" ] || [ -z "$signal_number" ]; then
+      set_agi_variable 0
+      exit 0
+    fi
+
+    filename="$(basename "$recording" | tr -cd '0-9A-Za-z._-')"
+    message="New Gain Engineering voicemail from ${caller:-unknown caller}."
+    response_file="${recording}.signal-response"
+
+    http_code="$({
+      printf '{"number":"%s","recipients":["%s"],"message":"%s","base64_attachments":["data:audio/wav;filename=%s;base64,' \
+        "$signal_number" "$signal_number" "$message" "$filename"
+      base64 -w 0 "$recording"
+      printf '"],"notify_self":true}'
+    } | curl --silent --show-error --connect-timeout 5 --max-time 90 \
+      -H 'Content-Type: application/json' \
+      --data-binary @- \
+      --output "$response_file" \
+      --write-out '%{http_code}' \
+      "$signal_api_url" 2>/dev/null || printf '000')"
+
+    rm -f "$response_file"
+    case "$http_code" in
+      2??)
+        rm -f "$recording"
+        set_agi_variable 1
+        ;;
+      *)
+        printf 'VERBOSE "Signal voicemail delivery failed with HTTP status %s; recording retained" 1\n' "$http_code"
+        IFS= read -r agi_response || true
+        set_agi_variable 0
+        ;;
+    esac
