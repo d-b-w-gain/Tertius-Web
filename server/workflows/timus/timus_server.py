@@ -764,7 +764,8 @@ def health_check():
 @app.get("/projects/{name}/model")
 def get_gltf_model(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     project = ProjectRepository(db, ctx.tenant_id).get_project(name)
-    if not project: return Response("Not found", 404)
+    if not project:
+        return Response("Not found", 404)
     
     latest_artifact = db.scalar(
         select(Artifact).where(
@@ -780,7 +781,8 @@ def get_gltf_model(name: str, ctx: AuthContext = Depends(get_auth_context), db: 
 @app.get("/projects/{name}/model_status")
 def get_model_status(name: str, ctx: AuthContext = Depends(get_auth_context), db: Session = Depends(get_db)):
     project = ProjectRepository(db, ctx.tenant_id).get_project(name)
-    if not project: return Response("Not found", 404)
+    if not project:
+        return Response("Not found", 404)
     latest_artifact = db.scalar(
         select(Artifact).where(
             Artifact.tenant_id == ctx.tenant_id,
@@ -788,7 +790,8 @@ def get_model_status(name: str, ctx: AuthContext = Depends(get_auth_context), db
             Artifact.kind.in_(["gltf", "glb"])
         ).order_by(desc(Artifact.created_at))
     )
-    if not latest_artifact: return {"mtime": 0}
+    if not latest_artifact:
+        return {"mtime": 0}
     return {"mtime": latest_artifact.created_at.timestamp()}
 
 @app.post("/projects/{name}/activate")

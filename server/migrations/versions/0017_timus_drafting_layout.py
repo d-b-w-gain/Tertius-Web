@@ -1,15 +1,15 @@
 """add persisted Timus drafting layout
 
-Revision ID: 0011_timus_layout
-Revises: 0010_llm_edit_progress
+Revision ID: 0017_timus_layout
+Revises: 0016_structural_reports
 Create Date: 2026-08-18
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0011_timus_layout"
-down_revision = "0010_llm_edit_progress"
+revision = "0017_timus_layout"
+down_revision = "0016_structural_reports"
 branch_labels = None
 depends_on = None
 
