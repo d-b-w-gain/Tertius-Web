@@ -1,7 +1,7 @@
 import json
 import struct
 import time
-from core.compile_sandbox import run_compile_sandbox
+from core.compile_sandbox import SANDBOX_SCRIPT, run_compile_sandbox
 
 
 def _srgb_to_gltf_linear_float32(component):
@@ -10,6 +10,15 @@ def _srgb_to_gltf_linear_float32(component):
     else:
         linear = ((component + 0.055) / 1.055) ** 2.4
     return struct.unpack("<f", struct.pack("<f", linear))[0]
+
+
+def test_compile_sandbox_defaults_glb_to_normal_preview_quality():
+    glb_defaults = SANDBOX_SCRIPT.split(
+        'elif export_format in ("gltf", "glb")', maxsplit=1
+    )[1].split('if quality_arg == "sketch"', maxsplit=1)[0]
+
+    assert "deflection = 10.0" in glb_defaults
+    assert "angular_deflection = 0.3" in glb_defaults
 
 
 def test_compile_sandbox_rejects_unsupported_export_format_before_spawn(tmp_path):
