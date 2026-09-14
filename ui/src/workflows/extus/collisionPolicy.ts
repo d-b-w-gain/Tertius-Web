@@ -3,11 +3,13 @@ import * as THREE from 'three'
 export type CollisionPolicy = {
   check: boolean
   group?: string
+  groups?: string[]
   ignoreReason?: string
 }
 
 export type CollisionPolicySubject = {
   collisionGroup?: string
+  collisionGroups?: readonly string[]
 }
 
 const COLLISION_IGNORE_LABEL_PREFIX = '__TERTIUS_COLLISION_IGNORE__ '
@@ -55,53 +57,70 @@ export const collisionPolicyForNode = (
   root: THREE.Object3D,
 ): CollisionPolicy => {
   let current: THREE.Object3D | null = node
-  let group: string | undefined
+  const groups = new Set<string>()
+
+  const addGroup = (value: unknown) => {
+    if (typeof value === 'string' && value.trim()) groups.add(value.trim())
+  }
+
+  const result = (check: boolean, ignoreReason?: string): CollisionPolicy => {
+    const values = [...groups]
+    return {
+      check,
+      group: values[0],
+      ...(values.length > 0 ? { groups: values } : {}),
+      ...(ignoreReason ? { ignoreReason } : {}),
+    }
+  }
 
   while (current) {
     const directGroup = current.userData?.tertiusCollisionGroup
-    if (!group && typeof directGroup === 'string' && directGroup.trim()) {
-      group = directGroup.trim()
-    }
+    addGroup(directGroup)
 
     const metadata = current.userData?.tertiusBom
     if (metadata && typeof metadata === 'object') {
       const collisionMetadata = metadata as {
         collision_check?: unknown
         collision_group?: unknown
+        collision_groups?: unknown
         collision_ignore_reason?: unknown
       }
-      if (!group && typeof collisionMetadata.collision_group === 'string' && collisionMetadata.collision_group.trim()) {
-        group = collisionMetadata.collision_group.trim()
+      addGroup(collisionMetadata.collision_group)
+      if (Array.isArray(collisionMetadata.collision_groups)) {
+        collisionMetadata.collision_groups.forEach(addGroup)
       }
       if (collisionMetadata.collision_check === false) {
-        return {
-          check: false,
-          group,
-          ignoreReason: typeof collisionMetadata.collision_ignore_reason === 'string'
+        return result(
+          false,
+          typeof collisionMetadata.collision_ignore_reason === 'string'
             ? collisionMetadata.collision_ignore_reason
             : 'excluded by design metadata',
-        }
+        )
       }
     }
 
     if (current.userData?.tertiusCollisionCheckDisabled === true) {
-      return { check: false, group, ignoreReason: 'excluded by exported collision marker' }
+      return result(false, 'excluded by exported collision marker')
     }
     if (
       current.name.startsWith(COLLISION_IGNORE_LABEL_PREFIX)
       || current.name.startsWith(NORMALIZED_COLLISION_IGNORE_LABEL_PREFIX)
     ) {
-      return { check: false, group, ignoreReason: 'excluded by design label marker' }
+      return result(false, 'excluded by design label marker')
     }
-    if (!group) group = collisionGroupFromLabel(current.name)
+    addGroup(collisionGroupFromLabel(current.name))
     if (current === root) break
     current = current.parent
   }
 
-  return { check: true, group }
+  return result(true)
 }
 
 export const shouldAnalyzeCollisionPair = (
   a: CollisionPolicySubject,
   b: CollisionPolicySubject,
-): boolean => !(a.collisionGroup && a.collisionGroup === b.collisionGroup)
+): boolean => {
+  const aGroups = new Set(a.collisionGroups ?? (a.collisionGroup ? [a.collisionGroup] : []))
+  const bGroups = b.collisionGroups ?? (b.collisionGroup ? [b.collisionGroup] : [])
+  return !bGroups.some(group => aGroups.has(group))
+}
