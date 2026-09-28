@@ -91,6 +91,34 @@ def test_declared_physical_joint_resolves_offset_ports_to_one_analysis_workpoint
         )
 
 
+def test_chained_physical_joints_resolve_to_their_shared_analysis_workpoint() -> None:
+    connections = [
+        DesignConnection(
+            id=connection_id,
+            label=connection_id,
+            from_component_id="purlin",
+            to_component_id=bridge_id,
+            transfers=["force", "shear", "moment"],
+            analysis_point=Vector3(x=0.0, y=1.25, z=2.4),
+            maximum_port_offset_mm=50.0,
+        )
+        for connection_id, bridge_id in (
+            ("bridge-left", "bridge-1"),
+            ("bridge-right", "bridge-2"),
+        )
+    ]
+    specs = _analytical_joint_node_specs(connections)
+
+    resolved = _resolved_analytical_node_position(
+        Vector3(x=0.04, y=1.25, z=2.4),
+        node_key="joint:bridge-left+bridge-right",
+        joint_node_specs=specs,
+        endpoint_label="bridge-1.end",
+    )
+
+    assert resolved == connections[0].analysis_point
+
+
 def _test_member(
     *,
     member_id: str,

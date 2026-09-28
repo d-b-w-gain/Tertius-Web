@@ -17,7 +17,6 @@ import {
 } from '../../shared/polling';
 import { runWithInteractionSpan } from '../../../telemetry';
 import {
-  SCENE_NODE_APPEARANCE_STORAGE_KEY,
   SCENE_NODE_SELECTION_STORAGE_KEY,
   SCENE_NODE_TARGET_EVENT,
   SCENE_NODE_TARGET_STORAGE_KEY,
@@ -26,6 +25,7 @@ import {
   getSceneNodePathKey,
   isSceneNodeSelectionMatch,
   readSceneNodeAppearanceMap,
+  sceneNodeAppearanceStorageKey,
   writeSceneNodeAppearanceMap,
 } from '../../shared/sceneNodeSelection';
 import {
@@ -214,9 +214,11 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const [bomMetadata, setBomMetadata] = useState<BomMetadata | null>(null);
   
   const [highlightedNode, setHighlightedNode] = useState<string | null>(null);
-  const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>(() => (
-    readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY))
-  ));
+  const [appearanceByPath, setAppearanceByPath] = useState<SceneNodeAppearanceMap>({});
+  const appearanceStorageKey = useMemo(
+    () => sceneNodeAppearanceStorageKey(extusUrl),
+    [extusUrl],
+  );
   const intusServerUrl = useMemo(() => deriveIntusServerUrl(serverUrl), [serverUrl]);
   const storage = useMemo(
     () => createProjectStorage({
@@ -282,11 +284,11 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
   const updateAppearance = useCallback((updater: (current: SceneNodeAppearanceMap) => SceneNodeAppearanceMap) => {
     setAppearanceByPath(current => {
       const next = updater(current);
-      writeSceneNodeAppearanceMap(next);
+      writeSceneNodeAppearanceMap(next, appearanceStorageKey);
       window.dispatchEvent(new Event('storage'));
-      return readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY));
+      return readSceneNodeAppearanceMap(localStorage.getItem(appearanceStorageKey));
     });
-  }, []);
+  }, [appearanceStorageKey]);
 
   const handleToggleVisibility = useCallback((node: THREE.Object3D) => {
     const nodePathKey = getSceneNodePathKey(sceneGraph, node);
@@ -315,7 +317,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     const handleStorage = () => {
       const selected = localStorage.getItem(SCENE_NODE_SELECTION_STORAGE_KEY);
       setHighlightedNode(selected || null);
-      setAppearanceByPath(readSceneNodeAppearanceMap(localStorage.getItem(SCENE_NODE_APPEARANCE_STORAGE_KEY)));
+      setAppearanceByPath(readSceneNodeAppearanceMap(localStorage.getItem(appearanceStorageKey)));
       if (selected) {
          setActivePanel('assembly');
       }
@@ -326,7 +328,7 @@ const AuthenticatedFeatureTreeTab: React.FC<{ serverUrl: string }> = ({ serverUr
     
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
-  }, []);
+  }, [appearanceStorageKey]);
 
   useEffect(() => {
     const extusServerUrl = serverUrl.replace('artus', 'extus');
