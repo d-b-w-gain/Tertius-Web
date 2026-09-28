@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BASE_URL="${1:-https://tertius.johnsonyuen.com}"
+BASE_URL="${1:-https://tertius.gainengineering.com.au}"
 BASE_URL="${BASE_URL%/}"
 ATTEMPTS="${SMOKE_ATTEMPTS:-1}"
 RETRY_DELAY="${SMOKE_RETRY_DELAY_SECONDS:-10}"
@@ -75,8 +75,10 @@ fetch() {
 check_once() {
   local root_body="$TEMP_DIR/root-body"
   local health_body="$TEMP_DIR/health-body"
+  local oidc_body="$TEMP_DIR/oidc-body"
   : >"$root_body"
   : >"$health_body"
+  : >"$oidc_body"
 
   fetch "UI root" "${BASE_URL}/" "$root_body" || return 1
   if ! grep -Eiq '<!doctype[[:space:]]+html|<html([[:space:]>])' "$root_body"; then
@@ -92,7 +94,17 @@ check_once() {
     return 1
   fi
 
-  echo "PASS ${BASE_URL}: UI and public API health checks succeeded."
+  fetch "OIDC discovery" "${BASE_URL}/realms/tertius/.well-known/openid-configuration" "$oidc_body" || return 1
+  local expected_issuer actual_issuer
+  expected_issuer="${BASE_URL}/realms/tertius"
+  actual_issuer="$(sed -nE 's/.*"issuer"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$oidc_body" | head -n 1)"
+  if [ "$actual_issuer" != "$expected_issuer" ]; then
+    echo "OIDC discovery: expected issuer ${expected_issuer}, got ${actual_issuer:-missing}." >&2
+    print_response_summary "OIDC discovery" "2xx" "$oidc_body" "" ""
+    return 1
+  fi
+
+  echo "PASS ${BASE_URL}: UI, public API, and OIDC discovery checks succeeded."
 }
 
 if [ "$INITIAL_DELAY" -gt 0 ]; then
