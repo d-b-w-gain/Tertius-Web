@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      PRODUCTION_URL: https://tertius.johnsonyuen.com
+      PRODUCTION_URL: https://tertius.gainengineering.com.au
     steps:
       - name: Checkout
         uses: actions/checkout@v4

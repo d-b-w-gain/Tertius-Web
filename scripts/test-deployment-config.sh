@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART_DIR="${ROOT_DIR}/infra/charts/tertius"
 LOCAL_VALUES="${CHART_DIR}/values-local.yaml"
 RELEASE_NAME="${RELEASE_NAME:-tertius}"
+PRODUCTION_ORIGIN="https://tertius.gainengineering.com.au"
 legacy_provider_key_pattern='LLM_API_'"KEY"'|OPENAI_API_'"KEY"
 local_tool_prefix='r''tk'
 
@@ -186,6 +187,12 @@ for chart_trigger in "$chart_pull_request_trigger" "$chart_push_trigger"; do
     exit 1
   fi
 done
+
+if ! rg -F -q "PRODUCTION_URL: ${PRODUCTION_ORIGIN}" "${ROOT_DIR}/.github/workflows/production-smoke.yml" ||
+   ! rg -F -q "BASE_URL=\"\${1:-${PRODUCTION_ORIGIN}}\"" "${ROOT_DIR}/scripts/smoke-production.sh"; then
+  echo "Production smoke workflow and script must target ${PRODUCTION_ORIGIN}." >&2
+  exit 1
+fi
 
 if rg -q 'VITE_KEYCLOAK_AUTHORITY|VITE_KEYCLOAK_CLIENT_ID|VITE_API_BASE_URL=http://localhost:8000|VITE_API_URL=http://localhost:8000' "${ROOT_DIR}/README.md" "${ROOT_DIR}/ui/.env.example"; then
   echo "Frontend docs and env examples must use same-origin /api and must not expose browser Keycloak/OIDC settings." >&2
@@ -1298,12 +1305,12 @@ fi
 
 production_rendered="$(helm template "$RELEASE_NAME" "$CHART_DIR")"
 
-if ! rg -q 'hostname: "https://tertius\.johnsonyuen\.com"' <<<"$production_rendered" || ! rg -q 'admin: "https://tertius\.johnsonyuen\.com"' <<<"$production_rendered"; then
+if ! rg -q 'hostname: "https://tertius\.gainengineering\.com\.au"' <<<"$production_rendered" || ! rg -q 'admin: "https://tertius\.gainengineering\.com\.au"' <<<"$production_rendered"; then
   echo "Production Keycloak hostname must use the public HTTPS Tertius origin." >&2
   exit 1
 fi
 
-if ! rg -q 'KEYCLOAK_ISSUER: "https://tertius\.johnsonyuen\.com/realms/tertius"' <<<"$production_rendered" || ! rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"' <<<"$production_rendered"; then
+if ! rg -q 'KEYCLOAK_ISSUER: "https://tertius\.gainengineering\.com\.au/realms/tertius"' <<<"$production_rendered" || ! rg -q 'KEYCLOAK_JWKS_URL_OVERRIDE: "http://tertius-keycloak-service:8080/realms/tertius/protocol/openid-connect/certs"' <<<"$production_rendered"; then
   echo "Production ConfigMap must validate the public Keycloak issuer while fetching JWKS through the in-cluster service URL." >&2
   exit 1
 fi

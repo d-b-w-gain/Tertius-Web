@@ -67,7 +67,7 @@ app:
     apiBasePath: /api
     keycloakAudience: tertius-api
     keycloakAuthorizedParty: tertius-ui
-    keycloakIssuerUrl: https://tertius.johnsonyuen.com/realms/tertius
+    keycloakIssuerUrl: https://tertius.gainengineering.com.au/realms/tertius
     keycloakJwksUrlOverride: auto
     authCookieSecure: true
     authSessionIdleSeconds: 604800
@@ -326,8 +326,8 @@ keycloak:
   startOptimized: false
   http:
     httpEnabled: true
-  hostname: https://tertius.johnsonyuen.com
-  adminHostname: https://tertius.johnsonyuen.com
+  hostname: https://tertius.gainengineering.com.au
+  adminHostname: https://tertius.gainengineering.com.au
   proxyHeaders: xforwarded
   tlsSecret: ""
   resources:

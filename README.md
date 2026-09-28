@@ -5,6 +5,8 @@
 
   **An open-source engineering workbench for turning design intent into editable CAD models, procurement data, and technical drawings.**
 
+  [Open production](https://tertius.gainengineering.com.au/)
+
   [Capabilities](#capabilities) · [Workflows](#workflows) · [Getting started](#getting-started) · [Architecture](#architecture) · [Development](#development)
 </div>
 
