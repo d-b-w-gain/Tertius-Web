@@ -21,6 +21,20 @@ The GitRepository intentionally includes only the GitOps and chart paths:
 
 That keeps Flux focused on deployable configuration instead of the whole application source tree.
 
+### Environment ownership
+
+- **Production** is the public `tertius` release at
+  `https://tertius.gainengineering.com.au`. A merge to `master` builds immutable
+  application images, creates and checks an image-promotion PR, merges the
+  promoted tags, and lets read-only Flux reconcile the production cluster.
+- **Development and review** use isolated non-Flux Helm releases with
+  `infra/charts/tertius/values-local.yaml`. They stay on localhost, a private
+  port-forward, or a private tailnet; `cloudflared` is disabled by default and
+  they must not claim the Gain Engineering production hostname or reuse its
+  tunnel token.
+- `tertius.johnsonyuen.com` is retired and is not a deployment target or health
+  signal for this repository.
+
 ## Runtime Components
 
 The `infra/charts/tertius` Helm chart renders the Tertius application and its supporting platform resources:
@@ -92,12 +106,12 @@ stringData:
       environment: production
       config:
         apiBasePath: /api
-        keycloakIssuerUrl: https://<public-origin>/realms/tertius
+        keycloakIssuerUrl: https://tertius.gainengineering.com.au/realms/tertius
         keycloakJwksUrlOverride: auto
         authCookieSecure: true
         authSessionIdleSeconds: 604800
         authSessionMaxSeconds: 2592000
-        oidcIssuerUrl: https://<keycloak-host>/realms/tertius
+        oidcIssuerUrl: https://tertius.gainengineering.com.au/realms/tertius
         oidcClientId: tertius-ui
         oidcAudience: tertius-api
       secretName: tertius-app-secret
@@ -112,8 +126,8 @@ stringData:
         tag: <version>
         pullPolicy: IfNotPresent
     keycloak:
-      hostname: https://<keycloak-host>
-      adminHostname: https://<keycloak-admin-host>
+      hostname: https://tertius.gainengineering.com.au
+      adminHostname: https://tertius.gainengineering.com.au
       realmImport:
         uiPublicClient: false
         uiClientSecret: <same-secret-as-OIDC_CLIENT_SECRET>
@@ -374,17 +388,19 @@ kubectl -n tertius get clusters.postgresql.cnpg.io
 kubectl -n tertius describe helmrelease tertius
 ```
 
-### Cloudflare Error 1033 recovery
+### Cloudflare tunnel recovery
 
 Error 1033 means the tunnel selected by the public hostname has no connected
-connector. Confirm the production host and Kubernetes node are online before
-inspecting the connector:
+connector. A Cloudflare 502 means a connected tunnel cannot reach the configured
+local origin. Confirm the production host and Kubernetes node are online before
+inspecting the connector, workload, Service, and endpoints:
 
 ```bash
 kubectl get nodes
 flux -n flux-system get sources git tertius-web
 flux -n tertius get helmreleases tertius
 kubectl -n tertius get deployment,pods -l app.kubernetes.io/component=cloudflared
+kubectl -n tertius get deployment,pods,service,endpoints -l app.kubernetes.io/component=ui
 kubectl -n tertius logs deploy/tertius-cloudflared --tail=200 \
   | grep -E 'Starting tunnel|Registered tunnel connection|ERR|WRN'
 ```
@@ -395,7 +411,7 @@ edge connections and run the public smoke check:
 ```bash
 kubectl -n tertius rollout restart deployment/tertius-cloudflared
 kubectl -n tertius rollout status deployment/tertius-cloudflared --timeout=2m
-bash scripts/smoke-production.sh https://tertius.johnsonyuen.com
+bash scripts/smoke-production.sh https://tertius.gainengineering.com.au
 ```
 
 ## Troubleshooting
