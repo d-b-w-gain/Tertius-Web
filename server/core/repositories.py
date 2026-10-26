@@ -746,6 +746,10 @@ class CompileRepository:
         bundle_rows = list(
             self.db.scalars(
                 select(Artifact)
+                # Retention needs only bundle identity and primary keys. Loading
+                # historical model blobs here can OOM the API while it already
+                # holds the newly decoded compile result in memory.
+                .options(load_only(Artifact.id, Artifact.compile_job_id))
                 .where(
                     Artifact.tenant_id == self.tenant_id,
                     Artifact.project_id == project_id,

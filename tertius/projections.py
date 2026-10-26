@@ -28,27 +28,34 @@ def _product_map(compiled_design: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _connected_port_names(
+def _connected_port_offsets(
     compiled_design: dict[str, Any],
-) -> dict[str, set[str]]:
-    result: dict[str, set[str]] = defaultdict(set)
+) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = defaultdict(dict)
     for connection in compiled_design.get("connections", []):
         if not isinstance(connection, dict):
             continue
+        definition = connection.get("definition") or {}
+        maximum_port_offset_mm = float(
+            definition.get("maximum_port_offset_mm") or 0.0
+        )
         for port in connection.get("ports", []):
             if not isinstance(port, dict):
                 continue
             component_id = str(port.get("component_id") or "")
             port_name = str(port.get("port") or "")
             if component_id and port_name:
-                result[component_id].add(port_name)
+                result[component_id][port_name] = max(
+                    maximum_port_offset_mm,
+                    result[component_id].get(port_name, 0.0),
+                )
     return result
 
 
 def _member_stations(
     *,
     ports: dict[str, dict[str, Any]],
-    connected_port_names: set[str],
+    connected_port_offsets: dict[str, float],
 ) -> list[dict[str, Any]]:
     """Return ordered analytical stations from the physical member's ports."""
 
@@ -65,7 +72,7 @@ def _member_stations(
         (0.0, "start", start),
         (length_mm, "end", end),
     ]
-    for name in sorted(connected_port_names - {"start", "end"}):
+    for name in sorted(connected_port_offsets.keys() - {"start", "end"}):
         port = ports.get(name)
         if port is None:
             continue
@@ -74,14 +81,22 @@ def _member_stations(
         parameter = (
             sum(offset[index] * axis[index] for index in range(3)) / length_squared
         )
+        station_mm = parameter * length_mm
         projected = tuple(
             start_point[index] + parameter * axis[index] for index in range(3)
         )
-        perpendicular_offset = sqrt(
+        perpendicular_offset_mm = sqrt(
             sum((point[index] - projected[index]) ** 2 for index in range(3))
         )
-        station_mm = parameter * length_mm
-        if perpendicular_offset <= 0.1 and -0.1 <= station_mm <= length_mm + 0.1:
+        # Connected fabricated ports may sit on a web, cleat or bracket rather
+        # than exactly on the analytical member axis. Project the port onto the
+        # axis only when the physical connection explicitly permits that
+        # eccentricity. The small tolerance preserves ordinary on-axis ports.
+        permitted_offset_mm = connected_port_offsets[name]
+        if (
+            -0.1 <= station_mm <= length_mm + 0.1
+            and perpendicular_offset_mm <= permitted_offset_mm + 0.1
+        ):
             candidates.append((min(length_mm, max(0.0, station_mm)), name, port))
 
     candidates.sort(key=lambda item: (item[0], item[1]))
@@ -211,7 +226,7 @@ def procurement_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
 
 def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
     products = _product_map(compiled_design)
-    connected_port_names = _connected_port_names(compiled_design)
+    connected_port_offsets = _connected_port_offsets(compiled_design)
     product_facets: list[dict[str, Any]] = []
     for product in products.values():
         structural = product.get("structural")
@@ -267,7 +282,9 @@ def structural_projection(compiled_design: dict[str, Any]) -> dict[str, Any]:
             continue
         stations = _member_stations(
             ports=ports,
-            connected_port_names=connected_port_names.get(str(component["id"]), set()),
+            connected_port_offsets=connected_port_offsets.get(
+                str(component["id"]), {}
+            ),
         )
         if len(stations) < 2:
             continue
