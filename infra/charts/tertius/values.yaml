@@ -375,9 +375,15 @@ cloudflared:
   enabled: false
   replicaCount: 1
   metricsPort: 2000
+  # Edge transport. cloudflared 2026.10 defaults to QUIC and does not reach
+  # the edge from hosts that block outbound UDP before its liveness probe
+  # restarts it; http2 is what earlier releases fell back to. Empty uses
+  # cloudflared's default.
+  protocol: http2
   image:
     repository: cloudflare/cloudflared
-    tag: "2026.5.0"
+    # 2026.10.2+ drops trust in the compromised eMudhra (emSign) intermediates.
+    tag: "2026.10.3"
     pullPolicy: IfNotPresent
   tunnelTokenSecretName: cloudflared-token
   tunnelTokenSecretKey: TUNNEL_TOKEN
