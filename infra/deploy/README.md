@@ -416,6 +416,7 @@ bash scripts/smoke-production.sh https://tertius.gainengineering.com.au
 
 ## Troubleshooting
 
+- If the production smoke reports `UI version: expected the promoted commit ...`, the site is up but is not running the UI image tag promoted in `infra/charts/tertius/values.yaml`, so deploys have stopped reaching production. Check the Flux GitRepository and HelmRelease status below. Scheduled runs only warn for 30 minutes after a promotion; set `SMOKE_EXPECTED_COMMIT=skip` to run the other checks alone.
 - If Flux does not see a commit, check the `tertius-web` GitRepository status and confirm it is watching the expected branch.
 - If the HelmRelease fails before rendering, confirm the chart dependency lock and values Secret are present.
 - If pods cannot pull images, check registry credentials, image names, tags, and `imagePullSecrets`.
