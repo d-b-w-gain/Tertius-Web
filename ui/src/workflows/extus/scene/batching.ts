@@ -288,6 +288,51 @@ export function updateViewerInstanceAppearance(
   mesh.computeBoundingSphere();
 }
 
+function toFloat32Attribute(
+  attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+  itemSize: number,
+): THREE.BufferAttribute {
+  const values = new Float32Array(attribute.count * itemSize);
+  for (let i = 0; i < attribute.count; i += 1) {
+    for (let component = 0; component < itemSize; component += 1) {
+      values[i * itemSize + component] = component < attribute.itemSize ? attribute.getComponent(i, component) : 1;
+    }
+  }
+  return new THREE.BufferAttribute(values, itemSize);
+}
+
+/**
+ * mergeGeometries returns null when its inputs differ in attribute names,
+ * item sizes, array types or indexing, and a null merge drops every mesh in
+ * the batch. GLTF primitives legitimately differ (mesh-only parts often ship
+ * without NORMAL, some carry UVs or a vec4 COLOR_0), so reduce each geometry
+ * to what the batch material uses: float position, normal and optionally RGB
+ * colour, always indexed.
+ */
+export function prepareGeometryForBatchMerge(
+  geometry: THREE.BufferGeometry,
+  withColor: boolean,
+): THREE.BufferGeometry {
+  const position = geometry.getAttribute('position');
+  if (!position) return geometry;
+  if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
+  const normal = geometry.getAttribute('normal');
+  const color = withColor ? geometry.getAttribute('color') : undefined;
+
+  for (const name of Object.keys(geometry.attributes)) geometry.deleteAttribute(name);
+  geometry.morphAttributes = {};
+  geometry.clearGroups();
+  geometry.setAttribute('position', toFloat32Attribute(position, 3));
+  geometry.setAttribute('normal', toFloat32Attribute(normal, 3));
+  if (color) geometry.setAttribute('color', toFloat32Attribute(color, 3));
+  if (!geometry.getIndex()) {
+    const index = new Uint32Array(position.count);
+    for (let i = 0; i < index.length; i += 1) index[i] = i;
+    geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  return geometry;
+}
+
 export function buildViewerBatch(
   meshes: THREE.Mesh[],
   options: ViewerBatchOptions = {},
@@ -301,7 +346,7 @@ export function buildViewerBatch(
     if (usesAuthoredColors) {
       geometryWithVertexColor(geometry, colorFromMaterial(mesh.material) ?? defaultColor);
     }
-    return geometry;
+    return prepareGeometryForBatchMerge(geometry, usesAuthoredColors);
   });
 
   const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries, false);
