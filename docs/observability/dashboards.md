@@ -24,6 +24,9 @@ dashboard panels so agent validation and dashboards stay aligned.
 - Result processing duration: `tertius.compile.result.processing.duration`
 - NATS publish rate, latency, and errors: `tertius.nats.publish.count`, `tertius.nats.publish.duration`, `tertius.nats.publish.error.count`
 - KEDA ScaledJob active jobs, failed jobs, and scale decisions from platform metrics
+- Sandbox phase duration by `phase` (`startup`, `design`, `metadata`, `export`, `patch`, `dedup`, `finish`) and `export_format`: `tertius.compile.phase.duration`
+- Incremental component compile outcomes by `cache_status` (`hit`, `built`, `uncacheable`, `uncached`) and `export_format`: `tertius.compile.component_cache.components`; total build and load time by `operation`: `tertius.compile.component_cache.component.duration`
+- Component store restore/publish by `operation` and `outcome` (`ok`, `miss`, `unavailable`, `integrity_failed`): `tertius.compile.component_cache.store.operations`, `tertius.compile.component_cache.store.duration`, `tertius.compile.component_cache.store.bytes`. Labels never carry tenant, project, job, component names, part numbers or cache keys.
 
 ## LLM
 

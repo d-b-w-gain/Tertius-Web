@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import dist
 from typing import Any
 
 import build123d as bd
 
-from ._canonical import FrozenJson, required_text
+from ._canonical import FrozenJson, freeze_json, required_text, thaw_json
+from .component_cache import record_registration
 from .components import (
     ComponentPort,
     ComponentRegistration,
@@ -149,12 +150,51 @@ class CompileSession:
         )
         self._components.append(registration)
         self._components_by_token[token] = registration
-        setattr(shape, "tertius_component_token", token)
-        setattr(shape, "tertius_component_id", instance_id)
-        setattr(shape, "tertius_product_key", product.key)
-        setattr(shape, "tertius_product_definition_digest", product.definition_digest)
-        setattr(shape, "ports", PortSet(component_ports))
+        self._tag_component(shape, registration)
+        # A cached part replays this on a hit (see replay_registrations).
+        record_registration(
+            {
+                "kind": "component",
+                "token": token,
+                "product": product.payload(),
+                "mark": normalized_mark,
+                "role": normalized_role,
+                "fabrication": thaw_json(fabrication),
+                "ports": {
+                    name: {
+                        "point_mm": list(placement.point_mm),
+                        "direction": list(placement.direction),
+                        "x_direction": list(placement.x_direction),
+                        "compatible_families": list(placement.compatible_families),
+                        "engagement_length_mm": placement.engagement_length_mm,
+                    }
+                    for name, placement in ports.items()
+                },
+            }
+        )
         return shape
+
+    @staticmethod
+    def _tag_component(shape: bd.Shape, registration: ComponentRegistration) -> None:
+        setattr(shape, "tertius_component_token", registration.token)
+        setattr(shape, "tertius_component_id", registration.instance_id)
+        setattr(shape, "tertius_product_key", registration.product.key)
+        setattr(
+            shape,
+            "tertius_product_definition_digest",
+            registration.product.definition_digest,
+        )
+        setattr(shape, "ports", PortSet(registration.ports))
+
+    @staticmethod
+    def _tag_connection(shape: bd.Shape, registration: ConnectionRegistration) -> None:
+        setattr(shape, "tertius_connection_token", registration.token)
+        setattr(shape, "tertius_connection_id", registration.connection_id)
+        setattr(
+            shape,
+            "tertius_connection_definition_digest",
+            registration.definition.definition_digest,
+        )
 
     def register_connection(
         self,
@@ -250,10 +290,123 @@ class CompileSession:
             (port.component_token, port.name) for port in normalized_ports
         )
         self._used_connector_tokens.update(connector_tokens)
-        setattr(shape, "tertius_connection_token", token)
-        setattr(shape, "tertius_connection_id", connection_id)
-        setattr(shape, "tertius_connection_definition_digest", definition.definition_digest)
+        self._tag_connection(shape, connection_registration)
+        record_registration(
+            {
+                "kind": "connection",
+                "token": token,
+                "definition": definition.payload(),
+                "ports": [[port.component_token, port.name] for port in normalized_ports],
+                "connector_tokens": connector_tokens,
+                "mark": normalized_mark,
+            }
+        )
         return shape
+
+    def replay_registrations(self, shape: bd.Shape, effects: Sequence[Mapping[str, Any]]) -> None:
+        """Redo the registrations a cached part made when it was built, onto
+        the shape loaded from its cache entry. Registered nodes are found by
+        the tokens stored with the entry and get this session's tokens, so
+        the session ends up exactly as if the part had been built."""
+        components, connections = _tokened_nodes(shape)
+        new_tokens: dict[str, str] = {}
+        products: dict[str, ProductDefinition] = {}
+        for effect in effects:
+            if effect["kind"] == "component":
+                node = components.get(effect["token"])
+                if node is None:
+                    raise TertiusRuntimeError(
+                        f"cached part is missing registered component {effect['mark'] or effect['token']!r}"
+                    )
+                digest = effect["product"]["definition_digest"]
+                product = products.get(digest)
+                if product is None:
+                    product = products[digest] = ProductDefinition.from_payload(effect["product"])
+                self.register_component(
+                    node,
+                    product=product,
+                    mark=effect["mark"],
+                    role=effect["role"],
+                    fabrication=freeze_json(effect["fabrication"], label="component fabrication"),
+                    ports={
+                        name: PortPlacement(
+                            placement["point_mm"],
+                            placement["direction"],
+                            placement["compatible_families"],
+                            x_direction=placement["x_direction"],
+                            engagement_length_mm=placement["engagement_length_mm"],
+                        )
+                        for name, placement in effect["ports"].items()
+                    },
+                )
+                new_tokens[effect["token"]] = node.tertius_component_token
+            elif effect["kind"] == "connection":
+                node = connections.get(effect["token"])
+                if node is None:
+                    raise TertiusRuntimeError(
+                        f"cached part is missing registered connection {effect['mark'] or effect['token']!r}"
+                    )
+                self.register_connection(
+                    node,
+                    definition=ConnectionDefinition.from_payload(effect["definition"]),
+                    ports=[
+                        self._components_by_token[new_tokens[token]].ports[name]
+                        for token, name in effect["ports"]
+                    ],
+                    connector_components=[
+                        self._components_by_token[new_tokens[token]].shape
+                        for token in effect["connector_tokens"]
+                    ],
+                    mark=effect["mark"],
+                )
+            else:
+                raise TertiusRuntimeError(f"unknown cached registration {effect['kind']!r}")
+
+    def rebind_registrations(self, loaded: bd.Shape) -> None:
+        """A newly built cached part hands its caller the copy read back from
+        its cache entry. Point this session's registrations at that copy's
+        nodes, so the final model contains the registered shapes."""
+        components, connections = _tokened_nodes(loaded)
+        positions = {registration.token: index for index, registration in enumerate(self._components)}
+        for token, node in components.items():
+            registration = self._components_by_token.get(token)
+            if registration is None:
+                continue
+            moved = replace(registration, shape=node)
+            self._components_by_token[token] = moved
+            self._components[positions[token]] = moved
+            self._tag_component(node, moved)
+        for index, connection in enumerate(self._connections):
+            connection_node = connections.get(connection.token)
+            if connection_node is not None:
+                moved_connection = replace(connection, shape=connection_node)
+                self._connections[index] = moved_connection
+                self._tag_connection(connection_node, moved_connection)
+
+    def validate_cached_registrations(
+        self,
+        shape: bd.Shape,
+        effects: Sequence[Mapping[str, Any]],
+    ) -> str | None:
+        """Why a newly built part can't be stored with its registrations, or
+        None. A hit replays only what the part itself registered, onto its
+        own result, so the result must hold exactly those registrations."""
+        try:
+            components, connections = _tokened_nodes(shape)
+        except TertiusRuntimeError:
+            return "component_replay_ineligible_repeated_registration"
+        registered_components = {e["token"] for e in effects if e["kind"] == "component"}
+        registered_connections = {e["token"] for e in effects if e["kind"] == "connection"}
+        if set(components) - registered_components or set(connections) - registered_connections:
+            return "component_replay_ineligible_foreign_registration"
+        if registered_components - set(components) or registered_connections - set(connections):
+            return "component_replay_ineligible_registration_outside_result"
+        for effect in effects:
+            if effect["kind"] == "connection" and (
+                {token for token, _ in effect["ports"]} | set(effect["connector_tokens"])
+            ) - registered_components:
+                return "component_replay_ineligible_external_connection"
+        return None
 
     def finalize(self, model: bd.Shape) -> dict[str, Any]:
         self._ensure_open()
@@ -263,6 +416,26 @@ class CompileSession:
         self._finalized = True
         setattr(model, "tertius_compiled_design", graph)
         return graph
+
+
+def _tokened_nodes(shape: bd.Shape) -> tuple[dict[str, bd.Shape], dict[str, bd.Shape]]:
+    """{token: node} for the registered components and connections in a
+    shape tree. A token on two nodes (a moved copy of a registered shape)
+    can't be replayed onto one node, so it raises."""
+    components: dict[str, bd.Shape] = {}
+    connections: dict[str, bd.Shape] = {}
+    for node in bd.PreOrderIter(shape):
+        for attribute, found in (
+            ("tertius_component_token", components),
+            ("tertius_connection_token", connections),
+        ):
+            token = getattr(node, attribute, None)
+            if token is None:
+                continue
+            if str(token) in found:
+                raise TertiusRuntimeError(f"registration {token!r} appears twice in one part")
+            found[str(token)] = node
+    return components, connections
 
 
 def current_session() -> CompileSession:

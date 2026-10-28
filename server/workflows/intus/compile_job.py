@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
 from uuid import UUID
 
@@ -28,6 +31,16 @@ from core.compile_artifacts import (
     validate_compile_bundle,
 )
 from core.compile_sandbox import run_compile_sandbox
+from core.component_cache import (
+    CacheScope,
+    ComponentCacheStore,
+    load_json_file,
+    open_component_cache_store,
+    prefetch_entries,
+    publish_entries,
+    record_compile_phases,
+    record_component_report,
+)
 from core.config import get_settings
 from core.nats_client import (
     NatsPublisher,
@@ -55,13 +68,66 @@ from core.telemetry import (
 
 logger = logging.getLogger(__name__)
 
+COMPONENT_RUN_REPORT = "run-report.json"
+
 
 def _hash_llm_edit_job_id(job_id: UUID) -> str:
     return hashlib.sha256(str(job_id).encode("ascii")).hexdigest()[:16]
 
 
+def _component_cache_enabled(settings, component_cache) -> bool:
+    return component_cache is not None and bool(
+        getattr(settings, "component_cache_enabled", False)
+    )
+
+
+async def _execute_with_component_cache(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache: ComponentCacheStore | None,
+    span,
+) -> CompileResultPayload:
+    """Run one compile, restoring the project's cached components before it
+    and publishing newly built ones after a success. Store trouble only
+    costs speed: the compile runs cold and still succeeds."""
+    args = (command, settings) if binary_files is None else (command, settings, binary_files)
+    if not _component_cache_enabled(settings, component_cache):
+        return await asyncio.to_thread(execute_compile_command, *args)
+    assert component_cache is not None
+    scope = CacheScope.for_project(command.tenant_id, command.project_id)
+    cache_dir = Path(tempfile.mkdtemp(prefix="tertius-component-cache-"))
+    try:
+        prefetch = await prefetch_entries(
+            component_cache,
+            scope,
+            cache_dir,
+            max_bytes=settings.component_cache_prefetch_max_bytes,
+        )
+        span.set_attribute("tertius.component_cache.prefetch_outcome", prefetch.outcome)
+        span.set_attribute("tertius.component_cache.prefetched_entries", prefetch.entries)
+        result = await asyncio.to_thread(
+            execute_compile_command,
+            command,
+            settings,
+            binary_files,
+            cache_dir,
+        )
+        report = load_json_file(cache_dir / COMPONENT_RUN_REPORT)
+        if result.status == "succeeded" and report is not None:
+            counts = report.get("counts") or {}
+            for status in ("hit", "built", "uncacheable"):
+                if isinstance(counts.get(status), int):
+                    span.set_attribute(f"tertius.component_cache.{status}", counts[status])
+            published = await publish_entries(component_cache, scope, cache_dir, report)
+            span.set_attribute("tertius.component_cache.publish_outcome", published.outcome)
+        return result
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+
 async def handle_compile_request_message(
-    msg, publisher: Publisher, settings, object_store=None
+    msg, publisher: Publisher, settings, object_store=None, component_cache=None
 ) -> None:
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.request")
@@ -145,18 +211,15 @@ async def handle_compile_request_message(
                             retryable=False,
                         )
                     else:
-                        result = await asyncio.to_thread(
-                            execute_compile_command,
-                            command,
-                            settings,
-                            binary_files,
+                        result = await _execute_with_component_cache(
+                            command, settings, binary_files, component_cache, span
                         )
             else:
                 # Keep the NATS event loop responsive while CAD runs in its bounded
                 # subprocess. Otherwise a long Build123D compile prevents client
                 # keepalives and the result publish loses its connection.
-                result = await asyncio.to_thread(
-                    execute_compile_command, command, settings
+                result = await _execute_with_component_cache(
+                    command, settings, None, component_cache, span
                 )
             assert_message_size(
                 result,
@@ -203,6 +266,7 @@ def execute_compile_command(
     command: CompileCommand,
     settings,
     binary_files: dict[str, bytes] | None = None,
+    component_cache_dir: Path | None = None,
 ) -> CompileResultPayload:
     started_at = now_utc()
     if not command.files:
@@ -217,11 +281,15 @@ def execute_compile_command(
 
     files = {file.filename: file.content for file in command.files}
     with hydrate_project_files(files, binary_files) as project_dir:
+        sandbox_options = {}
+        if component_cache_dir is not None:
+            sandbox_options["component_cache_dir"] = component_cache_dir
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
             quality=command.quality,
             timeout_seconds=settings.compile_timeout_seconds,
+            **sandbox_options,
         )
         if not result.success:
             error = result.error or result.stderr or "Compile failed"
@@ -266,6 +334,18 @@ def execute_compile_command(
                 if kind in WORKBENCH_ARTIFACT_KINDS
             },
         }
+        phases = load_json_file(getattr(result, "phases_path", None))
+        if phases is not None:
+            record_compile_phases(phases, command.export_format)
+        component_report_path = getattr(result, "component_report_path", None)
+        component_report = load_json_file(component_report_path)
+        if component_report_path is not None and component_report is not None:
+            record_component_report(component_report, command.export_format)
+            artifact_contents["components"] = component_report_path.read_bytes()
+            if component_cache_dir is not None:
+                shutil.copyfile(
+                    component_report_path, component_cache_dir / COMPONENT_RUN_REPORT
+                )
         try:
             compiled_design = json.loads(artifact_contents["compiled_design"])
             if not isinstance(compiled_design, dict):
@@ -364,6 +444,7 @@ async def run_once() -> int:
             return 0
 
         object_store = None
+        component_cache = None
         for msg in messages:
             try:
                 command = CompileCommand.model_validate_json(msg.data)
@@ -374,7 +455,27 @@ async def run_once() -> int:
                     object_store = await open_compile_sidecar_store(js, settings)
                 except ObjectStoreUnavailableError:
                     logger.exception("Compile sidecar Object Store is unavailable")
-            await handle_compile_request_message(msg, publisher, settings, object_store)
+            if (
+                command is not None
+                and getattr(settings, "component_cache_enabled", False)
+                and component_cache is None
+            ):
+                try:
+                    component_cache = await open_component_cache_store(js, settings)
+                except ObjectStoreUnavailableError:
+                    # A cold compile is slower, not wrong.
+                    logger.warning("Component cache Object Store is unavailable")
+                    counter_add(
+                        "tertius.compile.component_cache.store.operations",
+                        1,
+                        {"operation": "open", "outcome": "unavailable"},
+                    )
+            if component_cache is not None:
+                await handle_compile_request_message(
+                    msg, publisher, settings, object_store, component_cache
+                )
+            else:
+                await handle_compile_request_message(msg, publisher, settings, object_store)
         return 0
     finally:
         await nc.close()

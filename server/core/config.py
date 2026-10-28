@@ -65,6 +65,21 @@ class Settings(BaseSettings):
         ge=128 * 1024 * 1024,
         le=1024 * 1024 * 1024 * 1024,
     )
+    component_cache_enabled: bool = Field(default=False)
+    component_cache_ttl_seconds: int = Field(
+        default=14 * 24 * 60 * 60, gt=0, le=90 * 24 * 60 * 60
+    )
+    component_cache_max_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        ge=64 * 1024 * 1024,
+        le=1024 * 1024 * 1024 * 1024,
+    )
+    component_cache_prefetch_max_bytes: int = Field(
+        default=512 * 1024 * 1024, gt=0, le=16 * 1024 * 1024 * 1024
+    )
+    component_cache_max_entry_bytes: int = Field(
+        default=128 * 1024 * 1024, gt=0, le=1024 * 1024 * 1024
+    )
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")
     pi_agent_model: str = Field(default="gpt-5.6-sol", min_length=1, max_length=200)

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.14.*"
 
 [[package]]
@@ -139,6 +139,14 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/84/27/b7487242de480cd349baad8d1a3eca6a5eb65ebfb331cf0c5b408a832f96/build123d-0.11.1.tar.gz", hash = "sha256:9647c3fc7e1ef11d9c335787a54cf26e9bbc2191186342fe9755ec24a480033b", size = 20911070, upload-time = "2026-07-02T18:33:10.783Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/f2/c466dbd4cb3aa75a192ba39f1a49058f828fcc0eb6f9cf6936ed6078308b/build123d-0.11.1-py3-none-any.whl", hash = "sha256:4e95fa7ccbdc83e624313be492e7c4f5f0eb2ea1df36130eb718bb0c25a89e10", size = 368081, upload-time = "2026-07-02T18:33:08.787Z" },
+]
+
+[[package]]
+name = "cadcache"
+version = "0.3.0"
+source = { git = "https://github.com/d-b-w-gain/cadcache?tag=v0.3.0#9f33a3ec83457acfa0def314043c7cb0bf00415e" }
+dependencies = [
+    { name = "build123d" },
 ]
 
 [[package]]
@@ -1777,6 +1785,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "build123d" },
+    { name = "cadcache" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },
@@ -1813,6 +1822,7 @@ dev = [
 requires-dist = [
     { name = "alembic" },
     { name = "build123d", specifier = ">=0.11.1,<0.12" },
+    { name = "cadcache", git = "https://github.com/d-b-w-gain/cadcache?tag=v0.3.0" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },

@@ -817,3 +817,169 @@ def test_compile_job_span_records_originating_llm_edit_job_hash(monkeypatch, tmp
     assert attributes.get("tertius.originating_llm_edit_job_hash") == expected_hash
     assert "tertius.originating_llm_edit_job_id" not in attributes
     assert attributes.get("tertius.export_format") == "stl"
+
+
+def _component_cache_settings(**overrides):
+    return job_settings(
+        component_cache_enabled=True,
+        component_cache_prefetch_max_bytes=1024 * 1024,
+        **overrides,
+    )
+
+
+def _cached_component_fixture(tmp_path):
+    from core.component_cache import CacheScope, ComponentCacheStore
+    from test_component_cache import FakeObjectStore
+
+    tenant_id, project_id = uuid4(), uuid4()
+    store = FakeObjectStore()
+    cache = ComponentCacheStore(store, max_entry_bytes=1024 * 1024)
+    scope = CacheScope.for_project(tenant_id, project_id)
+    old = "wall/89abcdef0123456789abcdef"
+    store.objects[scope.entry_object(old, "brep")] = b"WALL-BREP"
+    store.objects[scope.entry_object(old, "json")] = b'{"key": "wall"}'
+    store.objects[scope.manifest_object()] = json.dumps(
+        {"schema_version": "tertius.component-cache-manifest.v1", "entries": [old]}
+    ).encode()
+    return tenant_id, project_id, store, scope
+
+
+def test_compile_job_restores_and_publishes_component_cache(monkeypatch, tmp_path):
+    from core.component_cache import ComponentCacheStore
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    tenant_id, project_id, store, scope = _cached_component_fixture(tmp_path)
+    output_path = tmp_path / "output.stl"
+    output_path.write_bytes(b"solid job")
+    artifact_paths = write_workbench_artifacts(tmp_path)
+    new = "roof/0123456789abcdef01234567"
+    report_path = tmp_path / "tertius-components.json"
+    seen = {}
+
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+    ):
+        seen["cache_dir"] = component_cache_dir
+        # The worker restored last compile's entry before the sandbox ran.
+        assert (component_cache_dir / "wall" / "89abcdef0123456789abcdef.brep").read_bytes() == b"WALL-BREP"
+        (component_cache_dir / "roof").mkdir()
+        (component_cache_dir / "roof" / "0123456789abcdef01234567.brep").write_bytes(b"ROOF")
+        (component_cache_dir / "roof" / "0123456789abcdef01234567.json").write_text("{}")
+        report_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "tertius.components.v1",
+                    "counts": {"hit": 1, "built": 1},
+                    "components": [
+                        {"component": "roof", "entry": new, "cache_status": "built", "part_number": "DFR-KH5J-B3R8Y"},
+                        {"component": "wall", "entry": "wall/89abcdef0123456789abcdef", "cache_status": "hit", "part_number": "BAM-YAGC-VA8P7"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            component_report_path=report_path,
+            phases_path=None,
+            stdout="",
+            stderr="",
+            error=None,
+        )
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    msg = FakeMsg(command_payload(tenant_id=tenant_id, project_id=project_id))
+    publisher = FakePublisher()
+
+    asyncio.run(
+        handle_compile_request_message(
+            msg,
+            publisher,
+            _component_cache_settings(),
+            None,
+            ComponentCacheStore(store, max_entry_bytes=1024 * 1024),
+        )
+    )
+
+    _, result, _ = publisher.published[0]
+    assert result.status == "succeeded"
+    components = json.loads(artifact_content(result, "components"))
+    assert {item["part_number"] for item in components["components"]} == {
+        "DFR-KH5J-B3R8Y",
+        "BAM-YAGC-VA8P7",
+    }
+    assert store.objects[scope.entry_object(new, "brep")] == b"ROOF"
+    manifest = json.loads(store.objects[scope.manifest_object()])
+    assert manifest["entries"] == [new, "wall/89abcdef0123456789abcdef"]
+    assert not seen["cache_dir"].exists()  # the local copy is per compile
+
+
+def test_compile_job_does_not_publish_components_from_failed_compile(monkeypatch, tmp_path):
+    from core.component_cache import ComponentCacheStore
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    tenant_id, project_id, store, scope = _cached_component_fixture(tmp_path)
+    manifest_before = store.objects[scope.manifest_object()]
+
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+    ):
+        (component_cache_dir / "roof").mkdir()
+        (component_cache_dir / "roof" / "0123456789abcdef01234567.brep").write_bytes(b"ROOF")
+        return SimpleNamespace(success=False, output_path=None, stdout="", stderr="boom", error="boom")
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    publisher = FakePublisher()
+    asyncio.run(
+        handle_compile_request_message(
+            FakeMsg(command_payload(tenant_id=tenant_id, project_id=project_id)),
+            publisher,
+            _component_cache_settings(),
+            None,
+            ComponentCacheStore(store, max_entry_bytes=1024 * 1024),
+        )
+    )
+
+    assert publisher.published[0][1].status == "failed"
+    assert store.puts == []
+    assert store.objects[scope.manifest_object()] == manifest_before
+
+
+def test_compile_job_runs_cold_when_component_cache_is_down(monkeypatch, tmp_path):
+    from core.component_cache import ComponentCacheStore
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    tenant_id, project_id, store, _ = _cached_component_fixture(tmp_path)
+    store.unavailable = True
+    output_path = tmp_path / "output.stl"
+    output_path.write_bytes(b"solid job")
+    artifact_paths = write_workbench_artifacts(tmp_path)
+
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+    ):
+        assert list(component_cache_dir.iterdir()) == []
+        return SimpleNamespace(
+            success=True,
+            output_path=output_path,
+            artifact_paths=artifact_paths,
+            stdout="",
+            stderr="",
+            error=None,
+        )
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    publisher = FakePublisher()
+    asyncio.run(
+        handle_compile_request_message(
+            FakeMsg(command_payload(tenant_id=tenant_id, project_id=project_id)),
+            publisher,
+            _component_cache_settings(),
+            None,
+            ComponentCacheStore(store, max_entry_bytes=1024 * 1024),
+        )
+    )
+
+    assert publisher.published[0][1].status == "succeeded"

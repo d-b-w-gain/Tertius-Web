@@ -85,6 +85,19 @@ app:
     compileResultMaxBytes: 33554432
     compileSidecarTtlSeconds: 86400
     compileSidecarMaxBytes: 8589934592
+    # Incremental component compile (#312/#313). The compile worker keeps
+    # cadcache component entries in the NATS Object Store bucket
+    # TERTIUS_COMPONENT_CACHE, scoped by hashed tenant ID, and copies only the
+    # current project's entries into the job's /tmp before design.py runs.
+    # Together with compileSidecarMaxBytes this must fit the NATS JetStream
+    # file store (nats.config.jetstream.fileStore.pvc.size).
+    componentCacheEnabled: true
+    componentCacheTtlSeconds: 1209600
+    componentCacheMaxBytes: 1073741824
+    # Bytes restored into each compile job's /tmp; keep it well inside
+    # compileJobs.tmpSizeLimit.
+    componentCachePrefetchMaxBytes: 536870912
+    componentCacheMaxEntryBytes: 134217728
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10
@@ -270,7 +283,9 @@ compileJobs:
   ttlSecondsAfterFinished: 300
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
-  tmpSizeLimit: 1Gi
+  # Project files, outputs and up to componentCachePrefetchMaxBytes of
+  # restored component cache entries.
+  tmpSizeLimit: 2Gi
   resources:
     requests:
       cpu: 500m

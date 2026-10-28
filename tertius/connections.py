@@ -102,6 +102,10 @@ class ConnectionResistanceDefinition:
             "assumptions": list(self.assumptions),
         }
 
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "ConnectionResistanceDefinition":
+        return cls(**payload)  # type: ignore[arg-type]
+
 
 @dataclass(frozen=True)
 class ConnectionDefinition:
@@ -192,6 +196,27 @@ class ConnectionDefinition:
         if include_digest:
             payload["definition_digest"] = self.definition_digest
         return payload
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "ConnectionDefinition":
+        """Rebuild a definition from payload(); a digest in the payload
+        must match the rebuilt definition's."""
+        fields = {key: value for key, value in payload.items() if key != "definition_digest"}
+        resistance = fields.pop("resistance", None)
+        definition = cls(
+            **fields,  # type: ignore[arg-type]
+            resistance=(
+                ConnectionResistanceDefinition.from_payload(resistance)  # type: ignore[arg-type]
+                if resistance
+                else None
+            ),
+        )
+        expected = payload.get("definition_digest")
+        if expected is not None and expected != definition.definition_digest:
+            raise ValueError(
+                f"connection definition {definition.key!r} payload does not match its digest"
+            )
+        return definition
 
 
 @dataclass(frozen=True)

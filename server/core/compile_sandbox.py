@@ -20,6 +20,9 @@ WORKBENCH_ARTIFACT_FILENAMES = {
     "drawing": "tertius-drawing.json",
     "bounds": "tertius-bounds.json",
 }
+COMPONENT_REPORT_FILENAME = "tertius-components.json"
+PHASES_FILENAME = "tertius-compile-phases.json"
+COMPONENT_CACHE_DIR_ENV = "TERTIUS_COMPONENT_CACHE_DIR"
 
 
 SANDBOX_SCRIPT = r"""
@@ -28,6 +31,17 @@ import sys
 import json
 import traceback
 from pathlib import Path
+from time import perf_counter
+
+phase_started = perf_counter()
+phases = {}
+
+
+def end_phase(name):
+    global phase_started
+    now = perf_counter()
+    phases[name] = round(now - phase_started, 4)
+    phase_started = now
 
 import build123d as bd
 project_dir = Path.cwd()
@@ -45,19 +59,35 @@ from tertius_provenance import source_map as tertius_source_map
 from tertius_provenance import uninstall as uninstall_tertius_provenance
 from tertius_model_geometry import model_geometry_metadata, visual_metadata_tree
 from tertius.runner import execute_design, write_design_bundle
+from tertius.component_cache import (
+    component_names_by_part_number,
+    configure_component_cache,
+    gltf_tessellation,
+    write_component_report,
+)
+end_phase("startup")
 
 try:
     design_file = project_dir / "design.py"
     if not design_file.exists():
         raise RuntimeError("design.py not found in project. Cannot compile.")
 
+    component_cache_enabled = configure_component_cache(
+        os.environ.get("TERTIUS_COMPONENT_CACHE_DIR"),
+        project_dir,
+        export_format,
+        quality_arg,
+    )
     install_tertius_provenance(project_dir)
     try:
         execution = execute_design(project_dir)
     finally:
         uninstall_tertius_provenance()
+    end_phase("design")
 
     write_design_bundle(project_dir, execution)
+    write_component_report(project_dir, component_cache_enabled)
+    part_component_names = component_names_by_part_number()
     compound = execution.model
     visual_tree = visual_metadata_tree(
         compound,
@@ -67,6 +97,7 @@ try:
     )
     model_geometry = model_geometry_metadata(visual_tree)
     visual_source_map = tertius_source_map()
+    end_phase("metadata")
     if export_format == "timus_bounds":
         bbox = compound.bounding_box()
         max_dim = max(bbox.max.X - bbox.min.X, bbox.max.Y - bbox.min.Y, bbox.max.Z - bbox.min.Z)
@@ -78,28 +109,11 @@ try:
     elif export_format == "step":
         bd.export_step(compound, str(output_path))
     elif export_format in ("gltf", "glb") and hasattr(bd, "export_gltf"):
-        # The UI omits quality for its ordinary GLB preview.  Treat that as the
+        # The UI omits quality for its ordinary GLB preview, which uses the
         # established "normal" preview quality rather than an ultra-fine mesh.
-        # Explicit quality values below continue to take precedence.
-        deflection = 10.0
-        angular_deflection = 0.3
-        if quality_arg == "sketch":
-            deflection = 200.0
-            angular_deflection = 0.8
-        elif quality_arg == "rough":
-            deflection = 100.0
-            angular_deflection = 0.6
-        elif quality_arg == "low":
-            deflection = 50.0
-            angular_deflection = 0.45
-        elif quality_arg == "medium":
-            deflection = 30.0
-            angular_deflection = 0.35
-        elif quality_arg == "normal":
-            deflection = 10.0
-            angular_deflection = 0.3
-        elif quality_arg == "high":
-            deflection = 1.0
+        # Cached components were meshed with these same values before they
+        # were stored, so the exporter skips re-meshing them.
+        deflection, angular_deflection = gltf_tessellation(quality_arg)
 
         bd.export_gltf(
             compound,
@@ -108,6 +122,7 @@ try:
             linear_deflection=deflection,
             angular_deflection=angular_deflection
         )
+        end_phase("export")
 
         if export_format in ("gltf", "glb"):
             try:
@@ -266,6 +281,7 @@ try:
                         product_digest = visual_node.get("product_definition_digest")
                         connection_id = visual_node.get("connection_id")
                         connection_digest = visual_node.get("connection_definition_digest")
+                        part_number = visual_node.get("part_number")
                         if label and is_generated_export_name(node.get("name")):
                             node["name"] = label
                             changed = True
@@ -286,6 +302,13 @@ try:
                             extras["tertiusConnection"] = {
                                 "id": str(connection_id),
                                 "connectionDefinitionDigest": str(connection_digest or ""),
+                            }
+                            changed = True
+                        if part_number:
+                            extras = node.setdefault("extras", {})
+                            extras["tertiusPart"] = {
+                                "partNumber": str(part_number),
+                                "component": str(part_component_names.get(part_number, "")),
                             }
                             changed = True
 
@@ -381,11 +404,14 @@ try:
 
                 if export_format == "glb":
                     patch_glb_metadata(str(output_path), tag_to_name, tag_to_color)
+                    end_phase("patch")
                     from tertius_glb_runtime import deduplicate_glb_file
 
                     deduplicate_glb_file(output_path)
+                    end_phase("dedup")
                 else:
                     patch_gltf_metadata(str(output_path), tag_to_name, tag_to_color)
+                    end_phase("patch")
             except Exception as patch_e:
                 print("Failed to patch GLTF metadata:", patch_e)
     elif export_format == "timus_views":
@@ -495,6 +521,8 @@ try:
             json.dump(views, f)
     else:
         raise RuntimeError(f"Unsupported export format: {export_format}")
+    end_phase("finish" if "export" in phases else "export")
+    (project_dir / "tertius-compile-phases.json").write_text(json.dumps(phases), encoding="utf-8")
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -509,6 +537,8 @@ class CompileSandboxResult:
     stderr: str
     error: str | None
     artifact_paths: dict[str, Path] = field(default_factory=dict)
+    component_report_path: Path | None = None
+    phases_path: Path | None = None
 
 
 def _subprocess_output_text(value: str | bytes | None) -> str:
@@ -519,7 +549,7 @@ def _subprocess_output_text(value: str | bytes | None) -> str:
     return value
 
 
-def _sandbox_env(project_dir: Path) -> dict[str, str]:
+def _sandbox_env(project_dir: Path, component_cache_dir: Path | None = None) -> dict[str, str]:
     sandbox_home = str(project_dir)
     env = {
         "HOME": sandbox_home,
@@ -529,6 +559,8 @@ def _sandbox_env(project_dir: Path) -> dict[str, str]:
         "TMP": sandbox_home,
         "TEMP": sandbox_home,
     }
+    if component_cache_dir is not None:
+        env[COMPONENT_CACHE_DIR_ENV] = str(component_cache_dir)
     if sys.platform == "win32":
         env["USERPROFILE"] = sandbox_home
         for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"):
@@ -555,6 +587,7 @@ def run_compile_sandbox(
     export_format: str,
     quality: str | None = None,
     timeout_seconds: int = 30,
+    component_cache_dir: Path | None = None,
 ) -> CompileSandboxResult:
     ext = export_format.lower()
     if ext not in SUPPORTED_EXPORT_FORMATS:
@@ -592,7 +625,7 @@ def run_compile_sandbox(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=_sandbox_env(project_dir),
+            env=_sandbox_env(project_dir, component_cache_dir),
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
@@ -602,7 +635,7 @@ def run_compile_sandbox(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=_sandbox_env(project_dir),
+            env=_sandbox_env(project_dir, component_cache_dir),
             start_new_session=True,
         )
     try:
@@ -649,4 +682,10 @@ def run_compile_sandbox(
             for kind, filename in WORKBENCH_ARTIFACT_FILENAMES.items()
             if (project_dir / filename).is_file()
         },
+        component_report_path=_existing_file(project_dir / COMPONENT_REPORT_FILENAME),
+        phases_path=_existing_file(project_dir / PHASES_FILENAME),
     )
+
+
+def _existing_file(path: Path) -> Path | None:
+    return path if path.is_file() else None

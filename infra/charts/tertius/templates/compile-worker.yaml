@@ -9,6 +9,10 @@
 {{- if not .Values.app.observability.enabled }}
 {{- $otelEndpoint = "" }}
 {{- end }}
+{{- $cache := .Values.app.config }}
+{{- if and $cache.componentCacheEnabled (or (gt (int64 $cache.componentCacheMaxEntryBytes) (int64 $cache.componentCachePrefetchMaxBytes)) (gt (int64 $cache.componentCachePrefetchMaxBytes) (int64 $cache.componentCacheMaxBytes))) }}
+{{- fail "app.config.componentCache sizes must satisfy maxEntryBytes <= prefetchMaxBytes <= maxBytes" }}
+{{- end }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
 metadata:
@@ -91,6 +95,16 @@ spec:
                 value: {{ printf "%d" (.Values.app.config.compileSidecarTtlSeconds | int64) | quote }}
               - name: COMPILE_SIDECAR_MAX_BYTES
                 value: {{ printf "%d" (.Values.app.config.compileSidecarMaxBytes | int64) | quote }}
+              - name: COMPONENT_CACHE_ENABLED
+                value: {{ .Values.app.config.componentCacheEnabled | quote }}
+              - name: COMPONENT_CACHE_TTL_SECONDS
+                value: {{ printf "%d" (.Values.app.config.componentCacheTtlSeconds | int64) | quote }}
+              - name: COMPONENT_CACHE_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.componentCacheMaxBytes | int64) | quote }}
+              - name: COMPONENT_CACHE_PREFETCH_MAX_BYTES
+                value: {{ printf "%d" (.Values.app.config.componentCachePrefetchMaxBytes | int64) | quote }}
+              - name: COMPONENT_CACHE_MAX_ENTRY_BYTES
+                value: {{ printf "%d" (.Values.app.config.componentCacheMaxEntryBytes | int64) | quote }}
               - name: OTEL_ENABLED
                 value: {{ .Values.app.observability.enabled | quote }}
               - name: OTEL_SERVICE_NAME

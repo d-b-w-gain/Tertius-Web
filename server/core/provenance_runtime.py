@@ -114,9 +114,12 @@ def _relative_file(filename: str | None) -> str | None:
 
 
 def _is_project_frame(frame) -> bool:
+    return _is_project_file(frame.f_code.co_filename)
+
+
+def _is_project_file(filename) -> bool:
     if _project_dir is None:
         return False
-    filename = frame.f_code.co_filename
     if not isinstance(filename, str) or not filename.endswith(".py"):
         return False
     normalized = filename.replace("\\", "/")
@@ -427,14 +430,41 @@ def _merge_return_locals(call_id: str, frame) -> None:
         )
 
 
+def _cadcache_part(frame):
+    """The cadcache part a frame is calling, when the frame is cadcache's
+    Part.__call__ for a builder defined in the project; else None."""
+    if frame is None or frame.f_code.co_name != "__call__":
+        return None
+    if frame.f_globals.get("__name__") != "cadcache.core":
+        return None
+    part = frame.f_locals.get("self")
+    code = getattr(getattr(part, "fn", None), "__code__", None)
+    if code is None or not _is_project_file(code.co_filename):
+        return None
+    return part
+
+
+def _part_arguments(part, frame) -> dict[str, Any]:
+    try:
+        bound = part._bind(frame.f_locals.get("args") or (), frame.f_locals.get("kwargs") or {})
+    except Exception:
+        return {}
+    return {name: value for name, value in bound.items() if name not in {"self", "cls"}}
+
+
 def _profile(frame, event: str, arg):
     global _inside_tracer, _next_call_index
     if _inside_tracer:
         return _profile
     if event not in {"call", "return", "exception"}:
         return _profile
+    # A cadcache part call is recorded as the call of its builder, so a
+    # cache hit (where the builder never runs) keeps its source link.
+    part = None
     if not _is_project_frame(frame):
-        return _profile
+        part = _cadcache_part(frame)
+        if part is None:
+            return _profile
 
     _inside_tracer = True
     try:
@@ -442,21 +472,27 @@ def _profile(frame, event: str, arg):
         if event == "call":
             if frame.f_code.co_name.startswith("<"):
                 return _profile
+            outer_part = _cadcache_part(frame.f_back) if part is None else None
+            if outer_part is not None and outer_part.fn.__code__ is frame.f_code:
+                # The builder running on a cache miss: already recorded as
+                # the part call around it.
+                return _profile
+            code = part.fn.__code__ if part is not None else frame.f_code
             call_id = f"call_{_next_call_index}"
             _next_call_index += 1
             caller = frame.f_back
             caller_file = _relative_file(caller.f_code.co_filename) if caller is not None else _relative_file(frame.f_code.co_filename)
             caller_line = caller.f_lineno if caller is not None else frame.f_lineno
-            definition_file = _relative_file(frame.f_code.co_filename)
-            arguments = _argument_values(frame)
+            definition_file = _relative_file(code.co_filename)
+            arguments = _part_arguments(part, frame) if part is not None else _argument_values(frame)
             record = {
                 "id": call_id,
-                "function": frame.f_code.co_name,
-                "qualified_function": f"{Path(frame.f_code.co_filename).stem}.{frame.f_code.co_name}",
+                "function": code.co_name,
+                "qualified_function": f"{Path(code.co_filename).stem}.{code.co_name}",
                 "source_file": caller_file,
                 "source_line": caller_line,
                 "definition_file": definition_file,
-                "definition_line": frame.f_code.co_firstlineno,
+                "definition_line": code.co_firstlineno,
                 "source_scope": "::".join(
                     _source_calls[stack_id]["function"]
                     for stack_id in _call_stack
@@ -478,7 +514,10 @@ def _profile(frame, event: str, arg):
             call_id = _active_calls.pop(frame_id, None)
             if call_id is not None:
                 if event == "return":
-                    _merge_return_locals(call_id, frame)
+                    if part is None:
+                        _merge_return_locals(call_id, frame)
+                    else:
+                        _source_calls[call_id]["component_part_number"] = getattr(arg, "_cadcache_pn", None)
                     targets = _shape_targets(arg)
                     if targets:
                         for target in targets:

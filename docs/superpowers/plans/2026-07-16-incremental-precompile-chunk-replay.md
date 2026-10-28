@@ -17,10 +17,13 @@ changes and changed for roof colour changes.
 - [x] #311: Define the deterministic chunk/component contract, including
   explicit registration where inference is unsafe, provenance source-map inputs,
   pre-export cache keys, and fallback rules.
-- [ ] #312: Productionize definition-only loading and selected chunk replay so a
-  changed chunk can be rebuilt without constructing the whole design.
-- [ ] #313: Persist immutable component artifacts and use pre-export cache hits
-  to skip replay/export for unchanged chunks.
+- [x] #312: Productionize selected chunk replay so a changed chunk can be
+  rebuilt without constructing the whole design. Delivered through explicit
+  registration (cadcache `@part`) rather than definition-only loading; see
+  `docs/superpowers/specs/2026-10-26-incremental-component-cache.md`.
+- [x] #313: Persist immutable component artifacts (exact BREP plus viewer
+  tessellation) in tenant-scoped NATS Object Store entries and use pre-export
+  cache hits to skip replay and meshing for unchanged chunks.
 - [ ] #314: Publish bounded scene manifests instead of sending large monolithic
   GLB payloads through the compile result stream.
 - [ ] #315: Teach Extus to load manifests, fetch changed component assets, and
@@ -67,12 +70,12 @@ The production path should decide cacheability before expensive geometry work:
 
 Before calling the feature production-ready:
 
-- [ ] Unit tests cover cache-key stability/invalidation for related and
+- [x] Unit tests cover cache-key stability/invalidation for related and
   unrelated edits.
-- [ ] Integration tests compare full compile vs selected replay on the reference
-  shed.
-- [ ] Runtime tests verify cache hits skip replay/export and cache misses rebuild
-  only selected chunks.
+- [x] Integration tests compare full compile vs selected replay on the reference
+  shed (`scripts/spikes/profile_incremental_component_compile.py`).
+- [x] Runtime tests verify cache hits skip replay/export and cache misses rebuild
+  only selected chunks (`server/tests/test_component_cache_sandbox.py`).
 - [ ] Authenticated live-flow covers manifest compile, artifact fetch, and Extus
   viewer behavior.
 - [ ] Telemetry uses bounded labels and never emits source, prompts, raw IDs, or

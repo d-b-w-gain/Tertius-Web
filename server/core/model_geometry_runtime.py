@@ -16,6 +16,9 @@ def visual_metadata_tree(value, *, bd, source_call_ids, root=False):
     product_digest = getattr(value, "tertius_product_definition_digest", None)
     connection_id = getattr(value, "tertius_connection_id", None)
     connection_digest = getattr(value, "tertius_connection_definition_digest", None)
+    # Set by cadcache on a component a @part built or loaded, and kept on
+    # moved instances of it.
+    part_number = getattr(value, "_cadcache_pn", None)
     source_ids = source_call_ids(value)
     label = str(getattr(value, "label", "") or "")
     children = []
@@ -31,6 +34,7 @@ def visual_metadata_tree(value, *, bd, source_call_ids, root=False):
         "product_definition_digest": str(product_digest) if product_digest else None,
         "connection_id": str(connection_id) if connection_id else None,
         "connection_definition_digest": str(connection_digest) if connection_digest else None,
+        "part_number": str(part_number) if part_number else None,
         "source_call_ids": source_ids,
         "children": children,
     }

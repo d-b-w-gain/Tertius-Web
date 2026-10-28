@@ -15,6 +15,7 @@ image behavior, and environment contracts.
 | NATS | chart dependency | `nats` container | `nats` container | subject/max-payload parity required |
 | Valkey | chart dependency | not required for all dev flows | inherited/optional | document differences |
 | Compile worker model | KEDA `ScaledJob` | looped `compile-job-runner` | looped `compile-job-runner` | intentional adapter |
+| Component cache (#313) | compile worker restores and publishes tenant-scoped entries in the NATS Object Store bucket `TERTIUS_COMPONENT_CACHE`; job `/tmp` holds the per-compile copy | same worker code against the `nats` container | same as Compose dev | `COMPONENT_CACHE_*` parity-required; never a shared volume mounted into `design.py` execution |
 | Pi agent worker model | serial KEDA `ScaledJob` | one looped `pi-agent-worker` | one looped `pi-agent-worker` | serial execution and transport parity required |
 | Generate Design models | ordered `PI_AGENT_MODELS_JSON` ConfigMap catalog shared by API and worker; Sol default | identical catalog in API and worker environments | identical catalog in API and worker environments | selection is persisted per job; catalog is non-secret deployment configuration |
 | Generate Design source context | fixed 300,000-character product budget below the operational safety ceiling | same fixed budget | same fixed budget | end users cannot configure context size |
