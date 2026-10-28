@@ -211,11 +211,11 @@ folder, as `hydrate_project_files` does. Raw results stay out of the repo.
 
 **Result:** with cadcache 0.2.0, caching made the reference shed about 7%
 slower. Removing cadcache's audit hook made it about 6% faster. With
-registration replay (cadcache 0.3.0), an unchanged or comment-only compile
-takes 35 s instead of 145 s, with identical workbench artifacts. A one-part
-edit still takes about as long as a full compile, because the shed's
-structural builders share live objects and can't be cached yet (see "With
-registration replay").
+registration replay, mark lookup and a shed restructured to hand out
+references instead of live shapes (cadcache 0.4.0), a one-part edit
+compiles in 60–74 s instead of about 146 s, and an unchanged compile in
+35–42 s, with byte-identical workbench artifacts (see "Fast one-part
+edits").
 
 ### Reference shed (3x5shed `2cbbcc7`)
 
@@ -296,10 +296,49 @@ refused, because of how the shed's builders share live objects:
 | `component_replay_ineligible_foreign_registration` | `long_wall_stud_frames`, `roof_ceiling_purlins` | their result contains components another builder registered |
 | `component_replay_ineligible_registration_outside_result` | `portal_frame` (x3) | registers components (base anchors, connectors) its caller places, and hands live shapes to other builders through attributes such as `tertius_members` and `tertius_base_anchors` |
 
-Making one-part edits fast needs either cache support for that coupling
-(resolve external components by mark, store registered shapes outside a
-result, rebuild handle attributes) or designs whose builders register only
-what they return and refer to other components by mark or port.
+### Fast one-part edits (cadcache 0.4.0, restructured shed)
+
+Two changes removed those refusals:
+
+- **Connections resolve outside components by mark.** A cached part may
+  connect to a component registered elsewhere if that component has a mark;
+  a hit finds it again in the session. If it is missing, `on_hit` returns
+  False and the part is built instead.
+- **Builders hand out references, not live shapes.** `tertius.refer(shape,
+  name, value)` stores components by mark (`tertius_refs`, kept with the
+  entry) and sets `shape.<name>` to a view that looks them up in the
+  session on read, so `portal.tertius_members["left_column"]` works the same
+  after a hit. A part whose result still carries attributes a hit can't give
+  back (`component_replay_ineligible_live_attribute`) is built, not stored.
+
+The shed then needed three changes on its `incremental-compile-structure`
+branch: its 20 handle assignments became `refer(...)` calls, each portal
+keeps the base hardware it registers in a "Portal base hardware"
+sub-compound, and `lysaght_zc_physical_connection` no longer moves a
+connector that already belongs to another assembly. All its components and
+connections, every projection, its volume and its bounds are unchanged.
+`unmanaged_geometry` differs only in labels and order, and the graph no
+longer lists empty compounds as unmanaged geometry.
+
+Every builder is then cacheable. Restructured shed, one run each; "first
+time" means the edited state was not in the cache yet:
+
+| Change | No cache | Cached | Rebuilt |
+| --- | --- | --- | --- |
+| Nothing, or a comment | 145 s | 35–42 s | nothing |
+| Roof colour (first time) | 146.5 s | 60.1 s | `roof_cladding`, `shed_building` |
+| Purlin ordered length (first time) | 144.3 s | 67.2 s | `roof_ceiling_purlins`, `roof_plane_cross_bracing`, `shed_building` |
+| Door jamb length (first time) | 146.0 s | 70.8 s | `door_frame_assembly`, `gable_cladding_base_girts`, `gable_end_cross_bracing`, `shed_building` |
+| Floor ledger length (first time) | 147.9 s | 73.9 s | `floor_assembly`, `shed_building` |
+| Back to a state compiled before | ~146 s | 36–38 s | nothing |
+
+Each cached result's workbench artifacts are byte-identical to a no-cache
+build of the same edited design.
+
+What remains of a one-part edit: about 17 s of export, the changed parts'
+own build time, and rebuilding `shed_building` around them (about 10 s
+plus loading every other part). Per-component GLB output (#314/#315) would
+remove the export cost from edits.
 
 ### dincase (`dincase/tertius-project`)
 
@@ -344,17 +383,17 @@ few seconds more. Item 1 is what makes caching worth it here.
 ## Validation
 
 Run on 2026-10-28 inside the production API image with this branch and
-cadcache `v0.3.0`:
+cadcache `v0.4.0`:
 
-- cadcache: 52 unit tests, including effects replay, nested parts, refused
+- cadcache: 53 unit tests, including effects replay, nested parts, refused
   builds and a re-parented child that used to fail to load.
-- Server and Tertius suites that do not need Postgres: 298 tests
+- Server and Tertius suites that do not need Postgres: 299 tests
   (`test_compile_*`, `test_component_cache*`, `test_component_replay.py`,
   `test_glb_dedup.py`, `test_tertius_*`, `tests/structural`), including an
   end-to-end sandbox test where cached components and a connection are
   replayed with an identical mechanical graph. Run without `conftest.py`, so
-  the Postgres-backed tests ran in CI only.
-- `mypy`: no issues in 157 files.
+  the Postgres-backed tests have not run yet; they run in CI on a PR.
+- `mypy`: no issues in 158 files.
 - Reference shed: workbench artifacts byte-identical to a no-cache compile in
   every cached scenario (Measurements).
 - Not yet run: `scripts/harness-k3s.sh live-flow` with

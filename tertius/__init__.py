@@ -11,11 +11,13 @@ from .products import (
     StructuralFacet,
 )
 from .projections import all_workbench_projections
+from .refs import ComponentRefs, refer
 from .session import CompileSession, TertiusRuntimeError, current_session
 
 __all__ = [
     "CompileSession",
     "ComponentPort",
+    "ComponentRefs",
     "ConnectionDefinition",
     "ConnectionResistanceDefinition",
     "DrawingFacet",
@@ -29,4 +31,5 @@ __all__ = [
     "current_session",
     "managed_component",
     "physical_connection",
+    "refer",
 ]

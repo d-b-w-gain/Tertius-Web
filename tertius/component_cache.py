@@ -46,6 +46,7 @@ CACHED_SHAPE_ATTRIBUTES = (
     "tertius_bom",
     "tertius_component_token",
     "tertius_connection_token",
+    "tertius_refs",
 )
 
 SESSION_SIDE_EFFECT = "component_replay_ineligible_session_side_effect"
@@ -174,20 +175,96 @@ def _registration_session():
     return _CURRENT_SESSION.get()
 
 
-def _replay_registrations(shape: Any, effects: list[dict[str, Any]]) -> None:
+def _replay_registrations(shape: Any, effects: list[dict[str, Any]]) -> bool:
+    from .refs import restore_refs
+
     session = _registration_session()
     if session is None:
-        raise RuntimeError("a cached part with registrations loaded outside a compile session")
-    session.replay_registrations(shape, effects)
+        return False
+    if not session.replay_registrations(shape, effects):
+        return False
+    restore_refs(shape)
+    return True
 
 
 def _rebind_registrations(built: Any, loaded: Any, effects: list[dict[str, Any]]) -> None:
+    from .refs import restore_refs
+
     session = _registration_session()
     if session is not None:
         session.rebind_registrations(loaded)
+        restore_refs(loaded)
+
+
+LOST_ATTRIBUTES = "component_replay_ineligible_live_attribute"
+
+# Attributes a replayed registration sets again, and provenance's own tags
+# (set on the result after the part returns).
+_RECREATED_ATTRIBUTES = frozenset(
+    {
+        "ports",
+        "tertius_component_id",
+        "tertius_product_key",
+        "tertius_product_definition_digest",
+        "tertius_connection_id",
+        "tertius_connection_definition_digest",
+        "tertius_source_call_ids",
+    }
+)
+
+
+# build123d's own bookkeeping; the entry's sidecar keeps what matters of it
+# (label, colour, material, joints) and topo_parent is rebuilt on load.
+_BUILD123D_ATTRIBUTES = frozenset({"topo_parent", "joints", "label", "material", "for_construction"})
+
+
+def _holds_shape(value: Any, depth: int = 0) -> bool:
+    import build123d as bd
+
+    if isinstance(value, bd.Shape):
+        return True
+    if depth >= 4:
+        return False
+    if isinstance(value, dict):
+        return any(_holds_shape(item, depth + 1) for item in value.values())
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(_holds_shape(item, depth + 1) for item in value)
+    return False
+
+
+def _lost_attribute(shape: Any) -> str | None:
+    """The name of an attribute on the result that a cache hit would not
+    give back, or None. The caller gets the copy read back from the entry,
+    which keeps only CACHED_SHAPE_ATTRIBUTES and what replay sets again, so
+    handles to other shapes (``portal.tertius_members``) would be lost."""
+    import build123d as bd
+
+    from .refs import reference_names
+
+    for node in bd.PreOrderIter(shape):
+        recreated = reference_names(node)
+        for name, value in vars(node).items():
+            if (
+                name.startswith("_")
+                or name in CACHED_SHAPE_ATTRIBUTES
+                or name in _BUILD123D_ATTRIBUTES
+                or name in recreated
+            ):
+                continue
+            if name in _RECREATED_ATTRIBUTES and (
+                name == "tertius_source_call_ids"
+                or getattr(node, "tertius_component_token", None)
+                or getattr(node, "tertius_connection_token", None)
+            ):
+                continue
+            if name == "ports" or name.startswith("tertius_") or _holds_shape(value):
+                return name
+    return None
 
 
 def _validate_registrations(shape: Any, effects: list[dict[str, Any]]) -> str | None:
+    if _lost_attribute(shape) is not None:
+        return LOST_ATTRIBUTES
     session = _registration_session()
     if session is None:
         return SESSION_SIDE_EFFECT if effects else None

@@ -31,6 +31,45 @@ def test_product_payload_with_a_wrong_digest_is_rejected() -> None:
         ProductDefinition.from_payload(payload)
 
 
+def test_replay_refuses_without_changes_when_an_external_mark_is_missing() -> None:
+    import build123d as bd
+
+    from tertius.session import compile_session
+
+    with compile_session() as session:
+        effects = [
+            {
+                "kind": "component",
+                "token": "component-token-000001",
+                "product": connector_product().payload(),
+                "mark": "CLEAT",
+                "role": None,
+                "fabrication": {},
+                "ports": {},
+            },
+            {
+                "kind": "connection",
+                "token": "connection-token-000001",
+                "definition": {"key": "unused"},
+                "ports": [
+                    ["component-token-000009", "top", "POST"],
+                    ["component-token-000001", "end", "CLEAT"],
+                ],
+                "connectors": [["component-token-000001", "CLEAT"]],
+                "mark": "J1",
+            },
+        ]
+        cleat = bd.Box(1, 1, 1)
+        cleat.tertius_component_token = "component-token-000001"
+        joint = bd.Compound(children=[cleat])
+        joint.tertius_connection_token = "connection-token-000001"
+
+        # POST was registered outside the cached part and isn't here now.
+        assert session.replay_registrations(joint, effects) is False
+        assert session.counts.components == 0
+        assert session.counts.connections == 0
+
+
 def test_connection_definition_round_trips_with_resistance() -> None:
     definition = ConnectionDefinition(
         key="test-knee",

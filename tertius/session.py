@@ -45,6 +45,7 @@ class CompileSession:
         self._components_by_token: dict[str, ComponentRegistration] = {}
         self._connections: list[ConnectionRegistration] = []
         self._marks: set[str] = set()
+        self._tokens_by_mark: dict[str, str] = {}
         self._connected_ports: set[tuple[str, str]] = set()
         self._used_connector_tokens: set[str] = set()
         self._finalized = False
@@ -68,6 +69,13 @@ class CompileSession:
     @property
     def connections(self) -> tuple[ConnectionRegistration, ...]:
         return tuple(self._connections)
+
+    def component(self, mark: str) -> bd.Shape:
+        """The shape of the component registered with this mark."""
+        token = self._tokens_by_mark.get(mark)
+        if token is None:
+            raise TertiusRuntimeError(f"no component with mark {mark!r} is registered")
+        return self._components_by_token[token].shape
 
     def _ensure_open(self) -> None:
         if self._finalized:
@@ -150,6 +158,8 @@ class CompileSession:
         )
         self._components.append(registration)
         self._components_by_token[token] = registration
+        if normalized_mark is not None:
+            self._tokens_by_mark[normalized_mark] = token
         self._tag_component(shape, registration)
         # A cached part replays this on a hit (see replay_registrations).
         record_registration(
@@ -296,20 +306,54 @@ class CompileSession:
                 "kind": "connection",
                 "token": token,
                 "definition": definition.payload(),
-                "ports": [[port.component_token, port.name] for port in normalized_ports],
-                "connector_tokens": connector_tokens,
+                # Token for components the same cached part registers, mark
+                # (instance id) for components registered elsewhere.
+                "ports": [
+                    [
+                        port.component_token,
+                        port.name,
+                        self._components_by_token[port.component_token].instance_id,
+                    ]
+                    for port in normalized_ports
+                ],
+                "connectors": [
+                    [token, self._components_by_token[token].instance_id]
+                    for token in connector_tokens
+                ],
                 "mark": normalized_mark,
             }
         )
         return shape
 
-    def replay_registrations(self, shape: bd.Shape, effects: Sequence[Mapping[str, Any]]) -> None:
+    def replay_registrations(self, shape: bd.Shape, effects: Sequence[Mapping[str, Any]]) -> bool:
         """Redo the registrations a cached part made when it was built, onto
         the shape loaded from its cache entry. Registered nodes are found by
         the tokens stored with the entry and get this session's tokens, so
-        the session ends up exactly as if the part had been built."""
+        the session ends up exactly as if the part had been built.
+
+        Connections to components registered outside the part resolve by
+        mark. If one of those isn't registered in this session (yet), nothing
+        is changed and False is returned, so the part is built instead."""
         components, connections = _tokened_nodes(shape)
+        own_tokens = {effect["token"] for effect in effects if effect["kind"] == "component"}
+        by_instance_id = {registration.instance_id: registration for registration in self._components}
+        for effect in effects:
+            if effect["kind"] != "connection":
+                continue
+            for token, name, instance_id in effect["ports"]:
+                if token not in own_tokens and name not in getattr(
+                    by_instance_id.get(instance_id), "ports", {}
+                ):
+                    return False
+            for token, instance_id in effect["connectors"]:
+                if token not in own_tokens and instance_id not in by_instance_id:
+                    return False
         new_tokens: dict[str, str] = {}
+
+        def resolve(token: str, instance_id: str) -> ComponentRegistration:
+            if token in new_tokens:
+                return self._components_by_token[new_tokens[token]]
+            return by_instance_id[instance_id]
         products: dict[str, ProductDefinition] = {}
         for effect in effects:
             if effect["kind"] == "component":
@@ -350,17 +394,18 @@ class CompileSession:
                     node,
                     definition=ConnectionDefinition.from_payload(effect["definition"]),
                     ports=[
-                        self._components_by_token[new_tokens[token]].ports[name]
-                        for token, name in effect["ports"]
+                        resolve(token, instance_id).ports[name]
+                        for token, name, instance_id in effect["ports"]
                     ],
                     connector_components=[
-                        self._components_by_token[new_tokens[token]].shape
-                        for token in effect["connector_tokens"]
+                        resolve(token, instance_id).shape
+                        for token, instance_id in effect["connectors"]
                     ],
                     mark=effect["mark"],
                 )
-            else:
+            elif effect["kind"] != "refs":      # refs: restore_refs handles them
                 raise TertiusRuntimeError(f"unknown cached registration {effect['kind']!r}")
+        return True
 
     def rebind_registrations(self, loaded: bd.Shape) -> None:
         """A newly built cached part hands its caller the copy read back from
@@ -402,9 +447,15 @@ class CompileSession:
         if registered_components - set(components) or registered_connections - set(connections):
             return "component_replay_ineligible_registration_outside_result"
         for effect in effects:
-            if effect["kind"] == "connection" and (
-                {token for token, _ in effect["ports"]} | set(effect["connector_tokens"])
-            ) - registered_components:
+            if effect["kind"] != "connection":
+                continue
+            external = (
+                {token for token, _, _ in effect["ports"]}
+                | {token for token, _ in effect["connectors"]}
+            ) - registered_components
+            # A component registered elsewhere is found again by its mark on
+            # a hit; without one, its id depends on registration order.
+            if any(self._components_by_token[token].mark is None for token in external):
                 return "component_replay_ineligible_external_connection"
         return None
 

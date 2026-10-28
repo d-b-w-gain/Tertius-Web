@@ -9,7 +9,7 @@ dependencies = [
     "pydantic",
     "build123d>=0.11.1,<0.12",
     # Per-part compile cache (#312/#313): designs opt in with @part.
-    "cadcache>=0.3.0,<0.4",
+    "cadcache>=0.4.0,<0.5",
     "PyNiteFEA==2.4.1",
     "fpdf2",
     "fonttools",
@@ -41,7 +41,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-cadcache = { git = "https://github.com/d-b-w-gain/cadcache", tag = "v0.3.0" }
+cadcache = { git = "https://github.com/d-b-w-gain/cadcache", tag = "v0.4.0" }
 
 [build-system]
 requires = ["hatchling"]

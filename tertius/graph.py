@@ -24,6 +24,11 @@ def _shape_kind(shape: bd.Shape) -> str:
         return type(shape).__name__
 
 
+def _is_empty(shape: bd.Shape) -> bool:
+    wrapped = shape.wrapped
+    return wrapped is None or (isinstance(shape, bd.Compound) and wrapped.NbChildren() == 0)
+
+
 def _unmanaged_leaves(model: bd.Shape) -> list[dict[str, str]]:
     unmanaged: list[dict[str, str]] = []
 
@@ -31,7 +36,9 @@ def _unmanaged_leaves(model: bd.Shape) -> list[dict[str, str]]:
         managed = managed_ancestor or bool(getattr(shape, "tertius_component_token", None))
         children = [child for child in (getattr(shape, "children", ()) or ()) if isinstance(child, bd.Shape)]
         if not children:
-            if not managed:
+            # An empty compound (a connection whose connectors all live in
+            # other assemblies) has no geometry to report.
+            if not managed and not _is_empty(shape):
                 unmanaged.append({"label": _shape_label(shape), "geometry_kind": _shape_kind(shape)})
             return
         for child in children:

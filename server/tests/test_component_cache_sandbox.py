@@ -161,6 +161,7 @@ from tertius import (
     StructuralFacet,
     managed_component,
     physical_connection,
+    refer,
 )
 
 PANEL = ProductDefinition(
@@ -223,9 +224,68 @@ def stud_pair(height):
     return bd.Compound(children=[*studs, joint])
 
 
+def post(x, mark=None):
+    return managed_component(
+        bd.Box(10, 10, 50).moved(bd.Location((x, 0, 25))),
+        product=STUD,
+        mark=mark,
+        ports={"top": PortPlacement((x, 0, 50), (0, 0, 1))},
+    )
+
+
+@part
+def brace(post_shape, suffix):
+    # Connects its own stud to a post registered outside the part.
+    x = post_shape.ports.top.point_mm[0] + 3
+    stud = managed_component(
+        bd.Box(10, 10, 50).moved(bd.Location((x, 0, 25))),
+        product=STUD,
+        mark="BRACE" + suffix,
+        ports={"top": PortPlacement((x, 0, 50), (0, 0, 1))},
+    )
+    cleat = managed_component(
+        bd.Box(4, 4, 1).moved(bd.Location((x - 1.5, 0, 50))), product=CLEAT, mark="BC" + suffix
+    )
+    joint = physical_connection(
+        bd.Compound(children=[cleat]),
+        definition=SCREWED,
+        ports=[post_shape.ports.top, stud.ports.top],
+        connector_components=[cleat],
+        mark="BJ" + suffix,
+    )
+    return bd.Compound(children=[stud, joint])
+
+
 @part
 def plain_panel(width):
     return bd.Box(width, 10, 1)
+
+
+@part
+def frame_with_refs(x):
+    # Hands its studs to the caller with refer, which survives a cache hit.
+    studs = {
+        side: managed_component(
+            bd.Box(10, 10, 50).moved(bd.Location((x + dx, 300, 25))),
+            product=STUD,
+            mark="F" + side,
+            ports={"top": PortPlacement((x + dx, 300, 50), (0, 0, 1))},
+        )
+        for side, dx in (("L", 0), ("R", 3))
+    }
+    frame = bd.Compound(children=list(studs.values()))
+    refer(frame, "tertius_members", {"left": studs["L"], "right": studs["R"]})
+    return frame
+
+
+@part
+def with_handle(width):
+    # Hands a live shape to its caller through an attribute: a cache hit
+    # can't give that back, so this part must not be stored.
+    panel = bd.Box(width, 10, 1)
+    frame = bd.Compound(children=[panel])
+    frame.tertius_members = {"panel": panel}
+    return frame
 
 
 @part
@@ -235,11 +295,34 @@ def framed(panel):
     return bd.Compound(children=[panel])
 
 
+marked_post = post(300, mark="POST")
+unmarked_post = post(500)
 model = bd.Compound(children=[
     registered_panel(100),
     stud_pair(200),
     framed(managed_component(plain_panel(50).moved(bd.Location((0, 50, 0))), product=PANEL, mark="P2")),
+    marked_post,
+    brace(marked_post, "M"),
+    unmarked_post,
+    brace(unmarked_post, "U"),
+    with_handle(30).moved(bd.Location((0, -100, 0))),
 ])
+assert with_handle(30).tertius_members["panel"] is not None
+
+# Joined outside the part, through the references it handed out.
+frame = frame_with_refs(700)
+members = frame.tertius_members
+frame_cleat = managed_component(
+    bd.Box(4, 4, 1).moved(bd.Location((701.5, 300, 50))), product=CLEAT, mark="FC"
+)
+frame_joint = physical_connection(
+    bd.Compound(children=[frame_cleat]),
+    definition=SCREWED,
+    ports=[members["left"].ports.top, members["right"].ports.top],
+    connector_components=[frame_cleat],
+    mark="FJ",
+)
+model = bd.Compound(children=[*model.children, frame, frame_joint])
 '''
 
 
@@ -253,20 +336,38 @@ def test_registrations_replay_on_a_hit(tmp_path):
             json.loads(result.artifact_paths["compiled_design"].read_text(encoding="utf-8"))
         )
     first, second = compiled_runs
-    assert sorted(component["id"] for component in first["components"]) == [
-        "C1", "P1", "P2", "S0", "S1",
+    ids = sorted(component["id"] for component in first["components"])
+    unmarked = [component_id for component_id in ids if component_id.startswith("component-")]
+    assert len(unmarked) == 1                         # the unmarked post
+    assert [component_id for component_id in ids if component_id not in unmarked] == [
+        "BCM", "BCU", "BRACEM", "BRACEU", "C1", "FC", "FL", "FR", "P1", "P2", "POST", "S0", "S1",
     ]
-    assert [connection["id"] for connection in first["connections"]] == ["J1"]
+    assert sorted(connection["id"] for connection in first["connections"]) == [
+        "BJM", "BJU", "FJ", "J1",
+    ]
     # Replayed registrations give exactly the graph a full build gives.
     assert second == first
-    components = {item["component"]: item for item in report["components"]}
-    assert components["registered_panel"]["cache_status"] == "hit"
-    assert components["stud_pair"]["cache_status"] == "hit"
-    assert components["plain_panel"]["cache_status"] == "hit"
-    assert components["framed"]["cache_status"] == "uncacheable"
-    assert components["framed"]["diagnostic"] == (
-        "component_replay_ineligible_foreign_registration"
-    )
+    statuses = {}
+    for item in report["components"]:
+        statuses.setdefault(item["component"], []).append(
+            (item["cache_status"], item["diagnostic"])
+        )
+    assert statuses["registered_panel"] == [("hit", None)]
+    assert statuses["stud_pair"] == [("hit", None)]
+    assert statuses["plain_panel"] == [("hit", None)]
+    assert statuses["framed"] == [
+        ("uncacheable", "component_replay_ineligible_foreign_registration")
+    ]
+    # A connection to a marked component registered elsewhere replays by
+    # mark; an unmarked one has no stable identity, so that brace is built.
+    assert sorted(statuses["brace"]) == [
+        ("hit", None),
+        ("uncacheable", "component_replay_ineligible_external_connection"),
+    ]
+    assert statuses["with_handle"] == [
+        ("uncacheable", "component_replay_ineligible_live_attribute")
+    ]
+    assert statuses["frame_with_refs"] == [("hit", None)]
 
 
 def test_without_a_cache_folder_parts_run_uncached(tmp_path):
