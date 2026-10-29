@@ -118,9 +118,25 @@ arrives.
 
 **Phases:**
 
-- [ ] Phase 1: per-component GLB export and the `tertius.scene.v1` manifest in
-  the sandbox, checked against the monolithic GLB (same nodes, names, extras,
-  world transforms and triangle counts).
+- [x] Phase 1: per-component GLB export and the `tertius.scene.v1` manifest in
+  the sandbox (`server/core/scene_export.py`, behind `run_compile_sandbox(...,
+  scene_export=True)`), checked against the monolithic GLB by
+  `server/core/scene_check.py`: same nodes, names, extras, world-space
+  geometry and triangle counts. Reference shed: 3,710 nodes in 30 assets; an
+  unchanged compile exports 1 asset and reuses 29 (scene step 3.0 s), a
+  roof colour edit exports 2 and reuses 28 (3.5 s), against about 21 s for
+  the monolithic export, patch and dedup. The manifest is 1.9 MB unchanged,
+  3.7 MB after the edit and 15 MB on a first compile (the full source map);
+  moving the source map out of the manifest is phase 2 work. Known items:
+  - on a first compile the *monolithic* GLB diverges from the model tree
+    where freshly built parts share OCCT shapes (the exporter merges them,
+    for example 48 children where the model has 2); the assets follow the
+    model tree;
+  - after a BREP round trip four mirrored long-wall sheets swap
+    tessellations (10,668 against 10,696 triangles); the assets keep the
+    built shapes' meshes;
+  - the viewer instances meshes by GLB mesh index; assets need a per-mesh
+    content digest so instancing works across assets (phase 3).
 - [ ] Phase 2: asset upload, consumer storage (migration), atomic manifest
   activation and the two API routes, with tenant-isolation tests.
 - [ ] Phase 3: Extus manifest loading and incremental replacement, with browser

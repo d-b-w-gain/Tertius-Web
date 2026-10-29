@@ -362,11 +362,24 @@ def write_component_report(output_dir: Path, cache_enabled: bool) -> Path:
     return path
 
 
-def component_names_by_part_number() -> dict[str, str]:
+def component_names_by_part_number(model: Any = None) -> dict[str, str]:
+    """Part number -> builder name, from this run's part calls and, in the
+    model, from parts that came back inside a cached outer part (which
+    weren't called this run but keep their marks)."""
     cadcache = _cadcache()
+    names: dict[str, str] = {}
+    if model is not None:
+        import build123d as bd
 
-    return {
-        event.part_number: event.name
-        for event in (cadcache.events() if cadcache else ())
-        if event.part_number and event.kind != "assembly"
-    }
+        for node in bd.PreOrderIter(model):
+            number, name = getattr(node, "_cadcache_pn", None), getattr(node, "_cadcache_name", None)
+            if number and name:
+                names[str(number)] = str(name)
+    names.update(
+        {
+            event.part_number: event.name
+            for event in (cadcache.events() if cadcache else ())
+            if event.part_number and event.kind != "assembly"
+        }
+    )
+    return names

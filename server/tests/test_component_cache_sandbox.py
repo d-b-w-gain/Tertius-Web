@@ -380,3 +380,62 @@ def test_without_a_cache_folder_parts_run_uncached(tmp_path):
     assert report["cache_enabled"] is False
     assert statuses(report) == {"roof": "uncached", "wall": "uncached"}
     assert not (project / ".cadcache").exists()
+
+
+SCENE = '''
+import build123d as bd
+from cadcache import part
+
+
+@part
+def post(height):
+    p = bd.Box(10, 10, height)
+    p.label = "post"
+    p.color = bd.Color("red")
+    return p
+
+
+@part
+def frame(width):
+    # A part with parts in it: their assets stay separate.
+    left = post(100).moved(bd.Location((0, 0, 50)))
+    right = post(100).moved(bd.Location((width, 0, 50), (0, 0, 1), 90))
+    beam = bd.Box(width, 10, 10).moved(bd.Location((width / 2, 0, 105)))
+    beam.label = "beam"
+    return bd.Compound(children=[left, right, beam], label="frame")
+
+
+model = bd.Compound(
+    children=[
+        frame(300),
+        frame(300).moved(bd.Location((0, 500, 0))),
+        post(40).moved(bd.Location((-200, 0, 20))),
+    ],
+    label="yard",
+)
+'''
+
+
+def test_scene_export_matches_the_monolithic_glb_and_reuses_assets(tmp_path):
+    from core.scene_check import check_project
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    counts = []
+    for run in ("first", "second"):
+        project = tmp_path / run
+        project.mkdir()
+        (project / "design.py").write_text(SCENE, encoding="utf-8")
+        result = run_compile_sandbox(
+            project, "glb", timeout_seconds=300, component_cache_dir=cache_dir, scene_export=True
+        )
+        assert result.success is True, result.error
+        # Assembled from its manifest and assets, the scene is the monolithic
+        # GLB: names, extras, world-space geometry, triangles.
+        nodes, problems, _ = check_project(project)
+        assert nodes > 5 and problems == []
+        counts.append(json.loads((project / "tertius-scene" / "counts.json").read_text()))
+    # First compile: one asset per distinct unit (frame, post at two heights,
+    # the root); repeats reuse. Second: every cached part's asset is reused.
+    assert counts[0]["exported"] == 4
+    assert counts[1] == {"exported": 1, "reused": counts[0]["exported"] + counts[0]["reused"] - 1}

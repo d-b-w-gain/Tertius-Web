@@ -97,6 +97,15 @@ def apply_edit(project: Path, edit: str) -> None:
     path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
 
+_OBJECT_ADDRESS = re.compile(rb" at 0x[0-9a-f]+")
+
+
+def output_fingerprint(path: Path) -> str:
+    """Digest of an export with the Python object addresses that the source
+    map's parameter reprs carry removed: those differ on every run."""
+    return hashlib.sha256(_OBJECT_ADDRESS.sub(b"", path.read_bytes())).hexdigest()
+
+
 def run_scenario(
     name: str,
     staged: Path,
@@ -119,6 +128,7 @@ def run_scenario(
         timeout_seconds=timeout_seconds,
         component_cache_dir=cache_dir,
         early_result=True,
+        scene_export=cache_dir is not None,
     )
     # What the user waits for: the result, before new cache entries are written.
     wall = perf_counter() - started
@@ -153,6 +163,8 @@ def run_scenario(
             kind: hashlib.sha256(path.read_bytes()).hexdigest()
             for kind, path in sorted(result.artifact_paths.items())
         },
+        "output_sha256": hashlib.sha256(result.output_path.read_bytes()).hexdigest() if result.output_path else None,
+        "output_fingerprint": output_fingerprint(result.output_path) if result.output_path else None,
         "output_bytes": result.output_path.stat().st_size if result.output_path else 0,
         "cache_bytes": sum(path.stat().st_size for path in cache_dir.rglob("*") if path.is_file()) if cache_dir else 0,
     }
@@ -193,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                     key: outcome[key]
                     for key in (
                         "scenario", "wall_seconds", "cache_write_seconds", "phases", "counts",
-                        "rebuilt", "uncacheable", "artifact_sha256",
+                        "rebuilt", "uncacheable", "artifact_sha256", "output_fingerprint",
                     )
                 }
             ),
