@@ -1,7 +1,7 @@
 import json
 import struct
 
-from core.glb_dedup import deduplicate_glb_bytes
+from core.glb_dedup import annotate_mesh_digests, deduplicate_glb_bytes
 
 
 def _glb(gltf: dict, binary: bytes) -> bytes:
@@ -79,3 +79,38 @@ def test_deduplicate_glb_bytes_shares_geometry_and_preserves_instances():
     assert result["nodes"][0]["extras"] == {"mark": "B1"}
     assert result["nodes"][1]["extras"] == {"mark": "B2"}
     assert result["buffers"][0]["byteLength"] <= len(result_binary)
+
+
+def _triangle_glb(offset: float, extra_meshes: int = 0) -> bytes:
+    """A GLB holding one triangle mesh (after `extra_meshes` other ones)."""
+    meshes, accessors, views, binary = [], [], [], b""
+    for index in range(extra_meshes + 1):
+        x = offset + index if index < extra_meshes else 1
+        positions = struct.pack("<9f", 0, 0, 0, x, 0, 0, 0, 1, 0)
+        views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(positions)})
+        binary += positions
+        accessors.append({"bufferView": index, "componentType": 5126, "count": 3, "type": "VEC3"})
+        meshes.append({"primitives": [{"attributes": {"POSITION": index}}]})
+    gltf = {
+        "asset": {"version": "2.0"},
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": views,
+        "accessors": accessors,
+        "meshes": meshes,
+        "nodes": [{"mesh": index} for index in range(len(meshes))],
+        "scenes": [{"nodes": list(range(len(meshes)))}],
+    }
+    return _glb(gltf, binary)
+
+
+def test_mesh_digests_match_equal_geometry_across_glbs():
+    alone, _ = _parse(annotate_mesh_digests(_triangle_glb(0)))
+    later, _ = _parse(annotate_mesh_digests(_triangle_glb(5, extra_meshes=2)))
+
+    digests = [mesh["extras"]["tertiusMeshDigest"] for mesh in later["meshes"]]
+    assert alone["meshes"][0]["extras"]["tertiusMeshDigest"] == digests[2]
+    assert len(set(digests)) == 3
+
+
+def test_mesh_digests_leave_non_glb_content_alone():
+    assert annotate_mesh_digests(b"not a glb") == b"not a glb"

@@ -27,7 +27,7 @@ from pathlib import Path
 
 SCENE_SCHEMA_VERSION = "tertius.scene.v1"
 # Bump to retire every stored asset (export or patch changes).
-ASSET_FORMAT = 1
+ASSET_FORMAT = 2
 _GLTF_Y_UP = (-90.0, (1, 0, 0))
 
 
@@ -50,6 +50,16 @@ def _matrix(bd, location):
     ]
     rows.append([0.0, 0.0, 0.0, 1.0])
     return [rows[row][col] for col in range(4) for row in range(4)]
+
+
+def _annotate_mesh_digests(content):
+    """Mesh content digests, so the viewer can instance equal geometry across
+    assets (see glb_dedup.annotate_mesh_digests)."""
+    try:
+        from tertius_glb_runtime import annotate_mesh_digests  # copied in by the sandbox
+    except ImportError:
+        from core.glb_dedup import annotate_mesh_digests
+    return annotate_mesh_digests(content)
 
 
 def _color(node):
@@ -206,7 +216,7 @@ def export_scene(
             visual_source_map={},
             part_component_names=part_component_names,
         )
-        content = scratch.read_bytes()
+        content = _annotate_mesh_digests(scratch.read_bytes())
         if asset_id is None:
             # Not a cached part (the model root): named by its content.
             asset_id = "c" + hashlib.sha256(content).hexdigest()
@@ -220,9 +230,9 @@ def export_scene(
         "schema_version": SCENE_SCHEMA_VERSION,
         "root": _manifest_node(bd, compound, visual_tree, unit_assets, True),
         "model_geometry": model_geometry,
-        # The source map stays in the monolithic GLB for now: it can be far
-        # larger than the manifest (about 13 MB on a first compile of the
-        # reference shed) and doesn't need to travel twice.
+        # The viewer's source navigation reads it. It compresses well (JSON),
+        # and leaves the monolithic GLB once the viewer loads manifests.
+        "source_map": visual_source_map if visual_source_map.get("source_calls") else None,
         "assets": sorted(set(unit_assets.values())),
     }
     (out_dir / "scene.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
