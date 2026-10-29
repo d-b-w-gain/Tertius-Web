@@ -996,3 +996,75 @@ def test_compile_job_runs_cold_when_component_cache_is_down(monkeypatch, tmp_pat
     )
 
     assert publisher.published[0][1].status == "succeeded"
+
+
+def test_compile_job_publishes_a_scene_with_uploaded_assets(monkeypatch, tmp_path):
+    import hashlib
+
+    from core.component_cache import ComponentCacheStore
+    from core.object_store import ObjectRef
+    from core.scene_manifest import scene_assets
+    from workflows.intus.compile_job import handle_compile_request_message
+
+    tenant_id, project_id, store, _ = _cached_component_fixture(tmp_path)
+    output_path = tmp_path / "output.glb"
+    output_path.write_bytes(b"glTF monolithic")
+    artifact_paths = write_workbench_artifacts(tmp_path)
+    root_asset, post_asset = "c" + "1" * 64, "2" * 64
+    contents = {root_asset: b"glTF root", post_asset: b"glTF post"}
+    seen = {}
+
+    def fake_run_compile_sandbox(
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None,
+        early_result=False, scene_export=False,
+    ):
+        seen["scene_export"] = scene_export
+        scene_dir = project_dir / "tertius-scene"
+        (scene_dir / "assets").mkdir(parents=True)
+        for asset, content in contents.items():
+            (scene_dir / "assets" / f"{asset}.glb").write_bytes(content)
+        identity = [1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0]
+        (scene_dir / "scene.json").write_text(json.dumps({
+            "schema_version": "tertius.scene.v1",
+            "root": {"name": "yard", "matrix": identity, "asset": root_asset, "children": [
+                {"name": "post", "matrix": identity, "asset": post_asset, "children": []},
+            ]},
+            "model_geometry": None,
+            "assets": sorted(contents),
+        }))
+        return SimpleNamespace(
+            success=True, output_path=output_path, artifact_paths=artifact_paths,
+            component_report_path=None, phases_path=None, stdout="", stderr="", error=None,
+        )
+
+    class FakeSidecars:
+        def __init__(self):
+            self.put_contents = []
+
+        async def put_if_absent(self, content):
+            self.put_contents.append(content)
+            digest = hashlib.sha256(content).hexdigest()
+            return ObjectRef(bucket="TERTIUS_COMPILE_SIDECARS", key=f"sha256/{digest}", sha256=digest, byte_size=len(content))
+
+    monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
+    sidecars = FakeSidecars()
+    publisher = FakePublisher()
+    command = command_payload(tenant_id=tenant_id, project_id=project_id, export_format="glb")
+    asyncio.run(
+        handle_compile_request_message(
+            FakeMsg(command),
+            publisher,
+            _component_cache_settings(scene_export_enabled=True),
+            sidecars,
+            ComponentCacheStore(store, max_entry_bytes=1024 * 1024),
+        )
+    )
+
+    _, result, _ = publisher.published[0]
+    assert result.status == "succeeded", result.error
+    assert seen["scene_export"] is True
+    scene = json.loads(artifact_content(result, "scene"))
+    refs = scene_assets(scene)
+    assert set(refs) == set(contents)
+    assert sorted(sidecars.put_contents) == sorted(contents.values())
+    assert refs[post_asset].sha256 == hashlib.sha256(b"glTF post").hexdigest()

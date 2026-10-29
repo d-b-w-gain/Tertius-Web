@@ -97,6 +97,8 @@ spec:
                 value: {{ printf "%d" (.Values.app.config.compileSidecarMaxBytes | int64) | quote }}
               - name: COMPONENT_CACHE_ENABLED
                 value: {{ .Values.app.config.componentCacheEnabled | quote }}
+              - name: SCENE_EXPORT_ENABLED
+                value: {{ .Values.app.config.sceneExportEnabled | quote }}
               - name: COMPONENT_CACHE_TTL_SECONDS
                 value: {{ printf "%d" (.Values.app.config.componentCacheTtlSeconds | int64) | quote }}
               - name: COMPONENT_CACHE_MAX_BYTES

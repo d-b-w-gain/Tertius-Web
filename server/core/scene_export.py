@@ -220,7 +220,9 @@ def export_scene(
         "schema_version": SCENE_SCHEMA_VERSION,
         "root": _manifest_node(bd, compound, visual_tree, unit_assets, True),
         "model_geometry": model_geometry,
-        "source_map": visual_source_map if visual_source_map.get("source_calls") else None,
+        # The source map stays in the monolithic GLB for now: it can be far
+        # larger than the manifest (about 13 MB on a first compile of the
+        # reference shed) and doesn't need to travel twice.
         "assets": sorted(set(unit_assets.values())),
     }
     (out_dir / "scene.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")

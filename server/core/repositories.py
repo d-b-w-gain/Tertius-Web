@@ -14,7 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from core.artifacts import artifact_storage_key, content_type_for_kind
 from core.compile_messages import CompileCommand, CompileResultPayload
-from core.models import Artifact, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, StructuralConfigurationRevision, now_utc
+from core.models import Artifact, SceneAsset, CompileJob, CompileJobFile, CompileUsageRecord, LlmEditJob, Project, ProjectFile, SourceSnapshot, SourceSnapshotFile, StructuralConfigurationRevision, now_utc
 from core.pi_agent_messages import PiAgentProgressBatch, PiAgentProgressSnapshot
 
 
@@ -729,6 +729,42 @@ class CompileRepository:
         for artifact in artifacts:
             self.db.delete(artifact)
         self.db.flush()
+
+    def held_scene_assets(self, asset_ids) -> set[str]:
+        """Which of these scene assets the tenant already holds."""
+        ids = list(asset_ids)
+        if not ids:
+            return set()
+        return set(
+            self.db.scalars(
+                select(SceneAsset.asset_id).where(
+                    SceneAsset.tenant_id == self.tenant_id,
+                    SceneAsset.asset_id.in_(ids),
+                )
+            ).all()
+        )
+
+    def add_scene_assets(self, assets: dict[str, tuple[str, bytes]]) -> None:
+        """Store new scene assets: {asset id: (sha256, content)}."""
+        for asset_id, (digest, content) in assets.items():
+            self.db.add(
+                SceneAsset(
+                    tenant_id=self.tenant_id,
+                    asset_id=asset_id,
+                    sha256=digest,
+                    byte_size=len(content),
+                    content=content,
+                )
+            )
+        self.db.flush()
+
+    def get_scene_asset(self, asset_id: str) -> SceneAsset | None:
+        return self.db.scalars(
+            select(SceneAsset).where(
+                SceneAsset.tenant_id == self.tenant_id,
+                SceneAsset.asset_id == asset_id,
+            )
+        ).first()
 
     def prunable_artifact_bundles(
         self,

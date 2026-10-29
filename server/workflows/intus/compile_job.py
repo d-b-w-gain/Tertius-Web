@@ -34,6 +34,7 @@ from core.compile_artifacts import (
     validate_compile_bundle,
 )
 from core.compile_sandbox import run_compile_sandbox
+from core.scene_manifest import ASSET_ID, scene_assets
 from core.component_cache import (
     CacheScope,
     ComponentCacheStore,
@@ -72,6 +73,47 @@ from core.telemetry import (
 logger = logging.getLogger(__name__)
 
 COMPONENT_RUN_REPORT = "run-report.json"
+SCENE_DIRNAME = "tertius-scene"
+# {asset id: GLB path} -> {asset id: ObjectRef as a dict}, run on the
+# worker's event loop from the compile thread.
+SceneUpload = Callable[[dict[str, Path]], dict[str, dict]]
+
+
+def _scene_artifact(scene_dir: Path, upload: SceneUpload) -> bytes | None:
+    """The scene manifest with its assets uploaded, or None: without it the
+    result still carries the monolithic GLB, which the viewer falls back to."""
+    try:
+        manifest = json.loads((scene_dir / "scene.json").read_text(encoding="utf-8"))
+        assets = {
+            asset_id: scene_dir / "assets" / f"{asset_id}.glb"
+            for asset_id in manifest.get("assets") or []
+            if isinstance(asset_id, str) and ASSET_ID.match(asset_id)
+        }
+        manifest["asset_refs"] = upload(assets)
+        scene_assets(manifest)
+    except Exception:
+        logger.warning("Scene manifest could not be published; using the monolithic GLB", exc_info=True)
+        counter_add("tertius.compile.scene.publish", 1, {"outcome": "failed"})
+        return None
+    counter_add("tertius.compile.scene.publish", 1, {"outcome": "ok"})
+    return json.dumps(manifest, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _scene_uploader(object_store) -> SceneUpload:
+    """Upload scene assets through the sidecar store from a compile thread."""
+    loop = asyncio.get_running_loop()
+
+    def upload(assets: dict[str, Path]) -> dict[str, dict]:
+        async def put_all() -> dict[str, dict]:
+            refs = {}
+            for asset_id, path in assets.items():
+                ref = await object_store.put_if_absent(path.read_bytes())
+                refs[asset_id] = ref.model_dump()
+            return refs
+
+        return asyncio.run_coroutine_threadsafe(put_all(), loop).result(timeout=600)
+
+    return upload
 
 
 def _hash_llm_edit_job_id(job_id: UUID) -> str:
@@ -90,6 +132,7 @@ async def _execute_with_component_cache(
     binary_files: dict[str, bytes] | None,
     component_cache: ComponentCacheStore | None,
     span,
+    object_store=None,
 ) -> tuple[CompileResultPayload, Callable[[], Awaitable[None]] | None]:
     """Run one compile, restoring the project's cached components before it.
     Returns the result as soon as the sandbox's outputs are written, with a
@@ -112,6 +155,11 @@ async def _execute_with_component_cache(
         )
         span.set_attribute("tertius.component_cache.prefetch_outcome", prefetch.outcome)
         span.set_attribute("tertius.component_cache.prefetched_entries", prefetch.entries)
+        scene_upload = (
+            _scene_uploader(object_store)
+            if object_store is not None and getattr(settings, "scene_export_enabled", False)
+            else None
+        )
         result, finish = await asyncio.to_thread(
             _execute_compile_command,
             command,
@@ -119,6 +167,7 @@ async def _execute_with_component_cache(
             binary_files,
             cache_dir,
             finish_later=True,
+            scene_upload=scene_upload,
         )
     except BaseException:
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -230,14 +279,14 @@ async def handle_compile_request_message(
                         )
                     else:
                         result, after_publish = await _execute_with_component_cache(
-                            command, settings, binary_files, component_cache, span
+                            command, settings, binary_files, component_cache, span, object_store
                         )
             else:
                 # Keep the NATS event loop responsive while CAD runs in its bounded
                 # subprocess. Otherwise a long Build123D compile prevents client
                 # keepalives and the result publish loses its connection.
                 result, after_publish = await _execute_with_component_cache(
-                    command, settings, None, component_cache, span
+                    command, settings, None, component_cache, span, object_store
                 )
             assert_message_size(
                 result,
@@ -313,6 +362,7 @@ def _execute_compile_command(
     component_cache_dir: Path | None,
     *,
     finish_later: bool,
+    scene_upload: SceneUpload | None = None,
 ) -> tuple[CompileResultPayload, Callable[[], bool] | None]:
     """Run one compile. With finish_later, return as soon as the sandbox's
     outputs are written, with a callable that waits for it to finish
@@ -322,7 +372,8 @@ def _execute_compile_command(
     sandbox_finish: list[Callable[[], bool]] = []
     try:
         result = _run_compile(
-            command, settings, binary_files, component_cache_dir, stack, finish_later, sandbox_finish
+            command, settings, binary_files, component_cache_dir, stack, finish_later, sandbox_finish,
+            scene_upload,
         )
     except BaseException:
         for finish in sandbox_finish:
@@ -356,6 +407,7 @@ def _run_compile(
     stack: ExitStack,
     finish_later: bool,
     sandbox_finish: list[Callable[[], bool]],
+    scene_upload: SceneUpload | None = None,
 ) -> CompileResultPayload:
     started_at = now_utc()
     if not command.files:
@@ -375,6 +427,13 @@ def _run_compile(
             sandbox_options["component_cache_dir"] = component_cache_dir
         if finish_later:
             sandbox_options["early_result"] = True
+        export_scene = (
+            scene_upload is not None
+            and component_cache_dir is not None
+            and command.export_format == "glb"
+        )
+        if export_scene:
+            sandbox_options["scene_export"] = True
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
@@ -440,6 +499,11 @@ def _run_compile(
                 shutil.copyfile(
                     component_report_path, component_cache_dir / COMPONENT_RUN_REPORT
                 )
+        if export_scene:
+            assert scene_upload is not None
+            scene = _scene_artifact(project_dir / SCENE_DIRNAME, scene_upload)
+            if scene is not None:
+                artifact_contents["scene"] = scene
         try:
             compiled_design = json.loads(artifact_contents["compiled_design"])
             if not isinstance(compiled_design, dict):
@@ -544,7 +608,10 @@ async def run_once() -> int:
                 command = CompileCommand.model_validate_json(msg.data)
             except Exception:
                 command = None
-            if command is not None and command.assets and object_store is None:
+            wants_sidecars = command is not None and (
+                command.assets or getattr(settings, "scene_export_enabled", False)
+            )
+            if wants_sidecars and object_store is None:
                 try:
                     object_store = await open_compile_sidecar_store(js, settings)
                 except ObjectStoreUnavailableError:

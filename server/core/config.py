@@ -66,6 +66,9 @@ class Settings(BaseSettings):
         le=1024 * 1024 * 1024 * 1024,
     )
     component_cache_enabled: bool = Field(default=False)
+    # Per-component viewer scene (#314): needs the component cache and the
+    # compile sidecar Object Store, and stays beside the monolithic GLB.
+    scene_export_enabled: bool = Field(default=False)
     component_cache_ttl_seconds: int = Field(
         default=14 * 24 * 60 * 60, gt=0, le=90 * 24 * 60 * 60
     )

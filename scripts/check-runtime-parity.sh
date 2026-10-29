@@ -326,6 +326,7 @@ for file in "$TMP_DIR/helm.yaml" "$TMP_DIR/compose-dev.yaml" "$TMP_DIR/compose-p
   contains "$file" 'COMPILE_SIDECAR_MAX_BYTES' "${file} must include compile sidecar capacity"
   contains "$file" '8589934592' "${file} must include the 8 GiB compile sidecar capacity"
   contains "$file" 'COMPONENT_CACHE_ENABLED' "${file} must include the component cache switch"
+  contains "$file" 'SCENE_EXPORT_ENABLED' "${file} must include the scene export switch"
   contains "$file" 'COMPONENT_CACHE_TTL_SECONDS' "${file} must include the component cache TTL"
   contains "$file" 'COMPONENT_CACHE_MAX_BYTES' "${file} must include the component cache capacity"
   contains "$file" 'COMPONENT_CACHE_PREFETCH_MAX_BYTES' "${file} must include the component cache prefetch budget"

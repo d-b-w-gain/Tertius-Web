@@ -98,6 +98,11 @@ app:
     # compileJobs.tmpSizeLimit.
     componentCachePrefetchMaxBytes: 536870912
     componentCacheMaxEntryBytes: 134217728
+    # Per-component viewer scene (#314): the compile worker uploads a GLB per
+    # cached part beside the monolithic GLB and the API stores them for the
+    # viewer. Off until Extus loads scene manifests (#315); needs
+    # componentCacheEnabled.
+    sceneExportEnabled: false
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10

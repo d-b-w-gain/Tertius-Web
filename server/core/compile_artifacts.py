@@ -26,6 +26,8 @@ JSON_SCHEMAS = {
 # geometry's part number and cache status.
 OPTIONAL_JSON_SCHEMAS = {
     "components": "tertius.components.v1",
+    # Per-component viewer scene (#314); see core.scene_manifest.
+    "scene": "tertius.scene.v1",
 }
 
 

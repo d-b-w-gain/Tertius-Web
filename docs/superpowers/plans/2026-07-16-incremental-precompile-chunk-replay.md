@@ -137,8 +137,18 @@ arrives.
     built shapes' meshes;
   - the viewer instances meshes by GLB mesh index; assets need a per-mesh
     content digest so instancing works across assets (phase 3).
-- [ ] Phase 2: asset upload, consumer storage (migration), atomic manifest
-  activation and the two API routes, with tenant-isolation tests.
+- [x] Phase 2: asset upload, consumer storage (migration), atomic manifest
+  activation and the two API routes. Behind `SCENE_EXPORT_ENABLED` (off in
+  Helm and Compose): the worker uploads every asset of the scene to
+  `TERTIUS_COMPILE_SIDECARS` (`put_if_absent`, so a stored asset is checked by
+  metadata, not copied) and adds the manifest as a `scene` artifact with
+  `asset_refs`; the result consumer fetches only assets the tenant lacks,
+  stores them in `scene_assets` (migration `0018_scene_assets`) and keeps the
+  manifest only when every asset is held; `GET /api/extus/scene` serves the
+  manifest of the latest model's compile and `GET
+  /api/extus/scene-assets/{id}` serves immutable assets. Still open: pruning
+  `scene_assets` no retained manifest references (#316), and a live run
+  against JetStream (Compose or k3s).
 - [ ] Phase 3: Extus manifest loading and incremental replacement, with browser
   validation of selection, isolation, colours and BoM/Artus links.
 - [ ] Phase 4: full `live-flow` on an isolated k3s smoke release, then remove

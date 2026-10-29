@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import json
 import logging
 from datetime import timedelta
+from hashlib import sha256
 from time import perf_counter
 
 from opentelemetry.trace import SpanKind
@@ -15,7 +17,7 @@ from core.compile_messages import (
     CompileSourceFile,
     assert_message_size,
 )
-from core.compile_artifacts import validate_compile_bundle
+from core.compile_artifacts import decode_compile_artifact, validate_compile_bundle
 from core.config import get_settings
 from core.db import SessionLocal
 from core.models import CompileJob, CompileJobFile, now_utc
@@ -28,7 +30,9 @@ from core.nats_client import (
     pull_compile_result_subscription,
 )
 from core.telemetry import counter_add, elapsed_seconds, get_tracer, histogram_record, record_exception
+from core.object_store import ObjectStoreError, ObjectStoreUnavailableError, open_compile_sidecar_store
 from core.repositories import CompileRepository
+from core.scene_manifest import scene_assets
 from core.billing import compute_cost_cents, get_format_multiplier
 
 
@@ -61,7 +65,43 @@ def _record_usage_if_applicable(db, result: CompileResultPayload, job: CompileJo
     )
 
 
-def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
+async def fetch_scene_assets(db, result: CompileResultPayload, object_store) -> dict[str, bytes] | None:
+    """The scene assets a succeeded result needs that its tenant doesn't hold
+    yet, fetched from the compile sidecar store, or None when the result has
+    no usable scene. Anything missing or unverifiable means no scene: the
+    result is stored with its monolithic GLB only."""
+    artifact = next((item for item in result.artifacts if item.kind == "scene"), None)
+    if result.status != "succeeded" or artifact is None:
+        return None
+    try:
+        refs = scene_assets(json.loads(decode_compile_artifact(artifact)))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning("Compile result has an invalid scene manifest")
+        counter_add("tertius.compile.scene.store", 1, {"outcome": "invalid"})
+        return None
+    held = CompileRepository(db, result.tenant_id).held_scene_assets(refs)
+    if object_store is None and set(refs) - held:
+        counter_add("tertius.compile.scene.store", 1, {"outcome": "unavailable"})
+        return None
+    fetched: dict[str, bytes] = {}
+    for asset_id, ref in refs.items():
+        if asset_id in held:
+            continue
+        try:
+            fetched[asset_id] = await object_store.get(ref)
+        except ObjectStoreError:
+            logger.warning("Scene asset could not be fetched; storing the result without its scene")
+            counter_add("tertius.compile.scene.store", 1, {"outcome": "missing_asset"})
+            return None
+    return fetched
+
+
+def apply_compile_result(
+    db,
+    result: CompileResultPayload,
+    settings,
+    scene_asset_contents: dict[str, bytes] | None = None,
+) -> bool:
     repo = CompileRepository(db, result.tenant_id)
     job = repo.get_job_for_result(result)
     if job is None:
@@ -105,6 +145,12 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
         return True
 
     artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}
+    if "scene" in artifact_contents and not _store_scene_assets(
+        repo, artifact_contents["scene"], scene_asset_contents
+    ):
+        # Never activate a manifest whose assets aren't all here: the viewer
+        # falls back to the monolithic GLB in the same bundle.
+        del artifact_contents["scene"]
     recorded = []
     for kind, content in artifact_contents.items():
         recorded.append(
@@ -134,7 +180,29 @@ def apply_compile_result(db, result: CompileResultPayload, settings) -> bool:
     return all(artifact.id is not None for artifact in recorded)
 
 
-async def handle_compile_result_message(msg, db, settings) -> None:
+def _store_scene_assets(repo, manifest_bytes: bytes, fetched: dict[str, bytes] | None) -> bool:
+    """Store the fetched assets of a scene; True when every asset the
+    manifest names is then held by the tenant."""
+    try:
+        refs = scene_assets(json.loads(manifest_bytes))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    held = repo.held_scene_assets(refs)
+    new = {}
+    for asset_id, ref in refs.items():
+        if asset_id in held:
+            continue
+        content = (fetched or {}).get(asset_id)
+        if content is None or len(content) != ref.byte_size or sha256(content).hexdigest() != ref.sha256:
+            counter_add("tertius.compile.scene.store", 1, {"outcome": "missing_asset"})
+            return False
+        new[asset_id] = (ref.sha256, content)
+    repo.add_scene_assets(new)
+    counter_add("tertius.compile.scene.store", 1, {"outcome": "stored"})
+    return True
+
+
+async def handle_compile_result_message(msg, db, settings, object_store=None) -> None:
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.result")
     attributes = {
@@ -167,7 +235,8 @@ async def handle_compile_result_message(msg, db, settings) -> None:
         labels = {"export_format": result.export_format, "job_status": result.status}
         start = perf_counter()
         try:
-            apply_compile_result(db, result, settings)
+            scene_asset_contents = await fetch_scene_assets(db, result, object_store)
+            apply_compile_result(db, result, settings, scene_asset_contents)
             await msg.ack()
             span.set_attribute("messaging.nats.ack_action", "ack")
             counter_add("tertius.compile.result.processed.count", 1, labels)
@@ -293,6 +362,7 @@ async def run_result_consumer(stop_event: asyncio.Event | None = None) -> None:
             js = await ensure_compile_stream(nc, settings)
             publisher = NatsPublisher(js)
             subscription = await pull_compile_result_subscription(js, settings)
+            object_store = None
             last_recovery = asyncio.get_running_loop().time()
             logger.info(
                 "Compile result consumer subscribed to %s via durable consumer %s",
@@ -324,9 +394,14 @@ async def run_result_consumer(stop_event: asyncio.Event | None = None) -> None:
                     await asyncio.sleep(2)
                     break
 
+                if object_store is None and settings.scene_export_enabled:
+                    try:
+                        object_store = await open_compile_sidecar_store(js, settings)
+                    except ObjectStoreUnavailableError:
+                        logger.warning("Compile sidecar Object Store is unavailable; scenes are skipped")
                 for msg in messages:
                     with SessionLocal() as db:
-                        await handle_compile_result_message(msg, db, settings)
+                        await handle_compile_result_message(msg, db, settings, object_store)
         except asyncio.CancelledError:
             raise
         except Exception:
