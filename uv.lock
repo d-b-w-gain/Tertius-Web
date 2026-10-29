@@ -143,8 +143,8 @@ wheels = [
 
 [[package]]
 name = "cadcache"
-version = "0.4.0"
-source = { git = "https://github.com/d-b-w-gain/cadcache?tag=v0.4.0#98554981396bcb829b4ece38c26e2d22c9201ecc" }
+version = "0.5.0"
+source = { git = "https://github.com/d-b-w-gain/cadcache?tag=v0.5.0#6a971631cc2032d354270d95793616c3d86083f0" }
 dependencies = [
     { name = "build123d" },
 ]
@@ -1822,7 +1822,7 @@ dev = [
 requires-dist = [
     { name = "alembic" },
     { name = "build123d", specifier = ">=0.11.1,<0.12" },
-    { name = "cadcache", git = "https://github.com/d-b-w-gain/cadcache?tag=v0.4.0" },
+    { name = "cadcache", git = "https://github.com/d-b-w-gain/cadcache?tag=v0.5.0" },
     { name = "fastapi" },
     { name = "fonttools" },
     { name = "fpdf2" },

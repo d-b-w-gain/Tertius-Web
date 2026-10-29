@@ -80,3 +80,50 @@ Before calling the feature production-ready:
   viewer behavior.
 - [ ] Telemetry uses bounded labels and never emits source, prompts, raw IDs, or
   component hashes.
+
+## Scene Manifests And Component Assets (#314/#315)
+
+**Why now:** with component caching, a one-part edit on the reference shed
+spends about 21 s exporting, patching and deduplicating a GLB of the whole
+model, although only the changed component's geometry is new. The viewer then
+downloads and rebuilds the whole scene.
+
+**Approach:** keep the scene the viewer builds identical; change only how it
+arrives.
+
+1. **Component assets (worker).** For each cached `@part` that is a leaf of the
+   cache tree, export its own GLB (same tessellation, names, colours and
+   `tertiusComponent`/`tertiusPart` extras as the monolithic export) when the
+   part is built, and keep it with its cache entry. Geometry built directly by
+   an outer part goes into that part's "remainder" asset. Unchanged parts reuse
+   their stored asset, so an edit exports only changed parts.
+2. **Transport.** The worker uploads new assets to a tenant-scoped JetStream
+   Object Store bucket, named by content digest (the path compile sidecars and
+   the component cache already use). The compile result carries a bounded,
+   versioned `scene` manifest artifact: per node, asset digest, transform,
+   hierarchy position, and the metadata the viewer reads today.
+3. **Storage and API.** The result consumer copies any assets it doesn't hold
+   yet into a tenant-scoped, content-addressed table and stores the manifest
+   only after all its assets are present, so no viewer sees a manifest with
+   missing parts. `GET /api/extus/scene` returns the active manifest;
+   `GET /api/extus/scene-assets/{digest}` returns an immutable asset with
+   long-lived cache headers.
+4. **Viewer.** Extus loads the manifest, fetches assets it doesn't have (one
+   request per unique digest), and assembles the same Object3D tree the
+   monolithic GLB produced, so selection, isolation, visibility, colours,
+   batching, BoM and Artus links keep working. On the next compile it fetches
+   only new digests and swaps the nodes whose digest changed.
+5. **Fallback.** The monolithic GLB stays in the bundle until the manifest path
+   is validated; the viewer uses it when no manifest is present.
+
+**Phases:**
+
+- [ ] Phase 1: per-component GLB export and the `tertius.scene.v1` manifest in
+  the sandbox, checked against the monolithic GLB (same nodes, names, extras,
+  world transforms and triangle counts).
+- [ ] Phase 2: asset upload, consumer storage (migration), atomic manifest
+  activation and the two API routes, with tenant-isolation tests.
+- [ ] Phase 3: Extus manifest loading and incremental replacement, with browser
+  validation of selection, isolation, colours and BoM/Artus links.
+- [ ] Phase 4: full `live-flow` on an isolated k3s smoke release, then remove
+  the monolithic GLB from the default bundle.

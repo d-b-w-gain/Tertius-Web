@@ -857,14 +857,23 @@ def test_compile_job_restores_and_publishes_component_cache(monkeypatch, tmp_pat
     seen = {}
 
     def fake_run_compile_sandbox(
-        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None,
+        early_result=False,
     ):
         seen["cache_dir"] = component_cache_dir
+        assert early_result is True
         # The worker restored last compile's entry before the sandbox ran.
         assert (component_cache_dir / "wall" / "89abcdef0123456789abcdef.brep").read_bytes() == b"WALL-BREP"
-        (component_cache_dir / "roof").mkdir()
-        (component_cache_dir / "roof" / "0123456789abcdef01234567.brep").write_bytes(b"ROOF")
-        (component_cache_dir / "roof" / "0123456789abcdef01234567.json").write_text("{}")
+
+        def finish():
+            # The sandbox writes the entries it built after its outputs; the
+            # worker has already published the result by then.
+            seen["published_before_entries"] = len(publisher.published) == 1
+            (component_cache_dir / "roof").mkdir()
+            (component_cache_dir / "roof" / "0123456789abcdef01234567.brep").write_bytes(b"ROOF")
+            (component_cache_dir / "roof" / "0123456789abcdef01234567.json").write_text("{}")
+            return True
+
         report_path.write_text(
             json.dumps(
                 {
@@ -887,6 +896,7 @@ def test_compile_job_restores_and_publishes_component_cache(monkeypatch, tmp_pat
             stdout="",
             stderr="",
             error=None,
+            finish=finish,
         )
 
     monkeypatch.setattr("workflows.intus.compile_job.run_compile_sandbox", fake_run_compile_sandbox)
@@ -910,6 +920,7 @@ def test_compile_job_restores_and_publishes_component_cache(monkeypatch, tmp_pat
         "DFR-KH5J-B3R8Y",
         "BAM-YAGC-VA8P7",
     }
+    assert seen["published_before_entries"] is True
     assert store.objects[scope.entry_object(new, "brep")] == b"ROOF"
     manifest = json.loads(store.objects[scope.manifest_object()])
     assert manifest["entries"] == [new, "wall/89abcdef0123456789abcdef"]
@@ -924,7 +935,8 @@ def test_compile_job_does_not_publish_components_from_failed_compile(monkeypatch
     manifest_before = store.objects[scope.manifest_object()]
 
     def fake_run_compile_sandbox(
-        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None,
+        early_result=False,
     ):
         (component_cache_dir / "roof").mkdir()
         (component_cache_dir / "roof" / "0123456789abcdef01234567.brep").write_bytes(b"ROOF")
@@ -958,7 +970,8 @@ def test_compile_job_runs_cold_when_component_cache_is_down(monkeypatch, tmp_pat
     artifact_paths = write_workbench_artifacts(tmp_path)
 
     def fake_run_compile_sandbox(
-        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None
+        project_dir, export_format, quality=None, timeout_seconds=30, component_cache_dir=None,
+        early_result=False,
     ):
         assert list(component_cache_dir.iterdir()) == []
         return SimpleNamespace(

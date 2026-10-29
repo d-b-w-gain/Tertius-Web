@@ -6,6 +6,9 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack, contextmanager
+from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -87,13 +90,16 @@ async def _execute_with_component_cache(
     binary_files: dict[str, bytes] | None,
     component_cache: ComponentCacheStore | None,
     span,
-) -> CompileResultPayload:
-    """Run one compile, restoring the project's cached components before it
-    and publishing newly built ones after a success. Store trouble only
-    costs speed: the compile runs cold and still succeeds."""
+) -> tuple[CompileResultPayload, Callable[[], Awaitable[None]] | None]:
+    """Run one compile, restoring the project's cached components before it.
+    Returns the result as soon as the sandbox's outputs are written, with a
+    step to run after the result is published: it waits for the sandbox to
+    write the components it built and stores them for the next compile.
+    Store trouble only costs speed: the compile runs cold and still
+    succeeds."""
     args = (command, settings) if binary_files is None else (command, settings, binary_files)
     if not _component_cache_enabled(settings, component_cache):
-        return await asyncio.to_thread(execute_compile_command, *args)
+        return await asyncio.to_thread(execute_compile_command, *args), None
     assert component_cache is not None
     scope = CacheScope.for_project(command.tenant_id, command.project_id)
     cache_dir = Path(tempfile.mkdtemp(prefix="tertius-component-cache-"))
@@ -106,24 +112,35 @@ async def _execute_with_component_cache(
         )
         span.set_attribute("tertius.component_cache.prefetch_outcome", prefetch.outcome)
         span.set_attribute("tertius.component_cache.prefetched_entries", prefetch.entries)
-        result = await asyncio.to_thread(
-            execute_compile_command,
+        result, finish = await asyncio.to_thread(
+            _execute_compile_command,
             command,
             settings,
             binary_files,
             cache_dir,
+            finish_later=True,
         )
-        report = load_json_file(cache_dir / COMPONENT_RUN_REPORT)
-        if result.status == "succeeded" and report is not None:
-            counts = report.get("counts") or {}
-            for status in ("hit", "built", "uncacheable"):
-                if isinstance(counts.get(status), int):
-                    span.set_attribute(f"tertius.component_cache.{status}", counts[status])
-            published = await publish_entries(component_cache, scope, cache_dir, report)
-            span.set_attribute("tertius.component_cache.publish_outcome", published.outcome)
-        return result
-    finally:
+    except BaseException:
         shutil.rmtree(cache_dir, ignore_errors=True)
+        raise
+
+    async def store_new_entries() -> None:
+        try:
+            if finish is not None:
+                stored = await asyncio.to_thread(finish)
+                span.set_attribute("tertius.component_cache.entries_written", stored)
+            report = load_json_file(cache_dir / COMPONENT_RUN_REPORT)
+            if result.status == "succeeded" and report is not None:
+                counts = report.get("counts") or {}
+                for status in ("hit", "built", "uncacheable"):
+                    if isinstance(counts.get(status), int):
+                        span.set_attribute(f"tertius.component_cache.{status}", counts[status])
+                published = await publish_entries(component_cache, scope, cache_dir, report)
+                span.set_attribute("tertius.component_cache.publish_outcome", published.outcome)
+        finally:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    return result, store_new_entries
 
 
 async def handle_compile_request_message(
@@ -172,6 +189,7 @@ async def handle_compile_request_message(
             {"export_format": command.export_format},
         )
         start = perf_counter()
+        after_publish: Callable[[], Awaitable[None]] | None = None
         try:
             binary_files: dict[str, bytes] = {}
             if command.assets:
@@ -211,14 +229,14 @@ async def handle_compile_request_message(
                             retryable=False,
                         )
                     else:
-                        result = await _execute_with_component_cache(
+                        result, after_publish = await _execute_with_component_cache(
                             command, settings, binary_files, component_cache, span
                         )
             else:
                 # Keep the NATS event loop responsive while CAD runs in its bounded
                 # subprocess. Otherwise a long Build123D compile prevents client
                 # keepalives and the result publish loses its connection.
-                result = await _execute_with_component_cache(
+                result, after_publish = await _execute_with_component_cache(
                     command, settings, None, component_cache, span
                 )
             assert_message_size(
@@ -245,7 +263,21 @@ async def handle_compile_request_message(
             histogram_record(
                 "tertius.compile.job.duration", elapsed_seconds(start), labels
             )
+            if after_publish is not None:
+                # The user has the result; storing new cached components only
+                # speeds up the next compile, so it can't fail this one.
+                store_entries, after_publish = after_publish, None
+                try:
+                    await store_entries()
+                except Exception:
+                    logger.warning("Storing new component cache entries failed", exc_info=True)
         except Exception as exc:
+            if after_publish is not None:
+                # Still wait for the sandbox and remove its folders.
+                try:
+                    await after_publish()
+                except Exception:
+                    logger.warning("Component cache clean-up failed", exc_info=True)
             logger.exception("Compile job failed before request ack")
             record_exception(span, exc)
             span.set_attribute("messaging.nats.ack_action", "nak")
@@ -268,6 +300,63 @@ def execute_compile_command(
     binary_files: dict[str, bytes] | None = None,
     component_cache_dir: Path | None = None,
 ) -> CompileResultPayload:
+    result, finish = _execute_compile_command(
+        command, settings, binary_files, component_cache_dir, finish_later=False
+    )
+    return result
+
+
+def _execute_compile_command(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache_dir: Path | None,
+    *,
+    finish_later: bool,
+) -> tuple[CompileResultPayload, Callable[[], bool] | None]:
+    """Run one compile. With finish_later, return as soon as the sandbox's
+    outputs are written, with a callable that waits for it to finish
+    storing new component cache entries (and then removes the project
+    folder); otherwise wait for everything."""
+    stack = ExitStack()
+    sandbox_finish: list[Callable[[], bool]] = []
+    try:
+        result = _run_compile(
+            command, settings, binary_files, component_cache_dir, stack, finish_later, sandbox_finish
+        )
+    except BaseException:
+        for finish in sandbox_finish:
+            finish()
+        stack.close()
+        raise
+    if not sandbox_finish:
+        stack.close()
+        return result, None
+
+    def finish_and_clean_up() -> bool:
+        try:
+            return sandbox_finish[0]()
+        finally:
+            stack.close()
+
+    return result, finish_and_clean_up
+
+
+@contextmanager
+def _kept(stack: ExitStack, context):
+    """Enter a context into stack, so it outlives the with block using it."""
+    yield stack.enter_context(context)
+
+
+def _run_compile(
+    command: CompileCommand,
+    settings,
+    binary_files: dict[str, bytes] | None,
+    component_cache_dir: Path | None,
+    stack: ExitStack,
+    finish_later: bool,
+    sandbox_finish: list[Callable[[], bool]],
+) -> CompileResultPayload:
     started_at = now_utc()
     if not command.files:
         return _failed_result(
@@ -280,10 +369,12 @@ def execute_compile_command(
         )
 
     files = {file.filename: file.content for file in command.files}
-    with hydrate_project_files(files, binary_files) as project_dir:
-        sandbox_options = {}
+    with _kept(stack, hydrate_project_files(files, binary_files)) as project_dir:
+        sandbox_options: dict[str, Any] = {}
         if component_cache_dir is not None:
             sandbox_options["component_cache_dir"] = component_cache_dir
+        if finish_later:
+            sandbox_options["early_result"] = True
         result = run_compile_sandbox(
             project_dir,
             command.export_format,
@@ -291,6 +382,9 @@ def execute_compile_command(
             timeout_seconds=settings.compile_timeout_seconds,
             **sandbox_options,
         )
+        finish = getattr(result, "finish", None)
+        if finish is not None:
+            sandbox_finish.append(finish)
         if not result.success:
             error = result.error or result.stderr or "Compile failed"
             return _failed_result(

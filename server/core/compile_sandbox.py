@@ -4,8 +4,12 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic, sleep
+from typing import Any
 
 from . import glb_dedup
 from .model_geometry_runtime import TERTIUS_MODEL_GEOMETRY_HELPER_SOURCE
@@ -22,6 +26,10 @@ WORKBENCH_ARTIFACT_FILENAMES = {
 }
 COMPONENT_REPORT_FILENAME = "tertius-components.json"
 PHASES_FILENAME = "tertius-compile-phases.json"
+# Written once every output is in place; the sandbox then writes the
+# compile's new component cache entries before it exits.
+RESULT_READY_FILENAME = "tertius-result-ready"
+CACHE_FLUSH_FILENAME = "tertius-cache-flush.json"
 COMPONENT_CACHE_DIR_ENV = "TERTIUS_COMPONENT_CACHE_DIR"
 
 
@@ -62,6 +70,7 @@ from tertius.runner import execute_design, write_design_bundle
 from tertius.component_cache import (
     component_names_by_part_number,
     configure_component_cache,
+    flush_component_cache,
     gltf_tessellation,
     write_component_report,
 )
@@ -523,6 +532,13 @@ try:
         raise RuntimeError(f"Unsupported export format: {export_format}")
     end_phase("finish" if "export" in phases else "export")
     (project_dir / "tertius-compile-phases.json").write_text(json.dumps(phases), encoding="utf-8")
+    ready = project_dir / "tertius-result-ready.tmp"
+    ready.write_text("ready", encoding="utf-8")
+    ready.replace(project_dir / "tertius-result-ready")
+    if component_cache_enabled:
+        (project_dir / "tertius-cache-flush.json").write_text(
+            json.dumps(flush_component_cache()), encoding="utf-8"
+        )
 except Exception:
     traceback.print_exc()
     sys.exit(1)
@@ -539,14 +555,9 @@ class CompileSandboxResult:
     artifact_paths: dict[str, Path] = field(default_factory=dict)
     component_report_path: Path | None = None
     phases_path: Path | None = None
-
-
-def _subprocess_output_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
+    # With early_result: call to wait for the sandbox to finish storing new
+    # component cache entries (True if it stored them cleanly).
+    finish: Callable[[], bool] | None = None
 
 
 def _sandbox_env(project_dir: Path, component_cache_dir: Path | None = None) -> dict[str, str]:
@@ -588,6 +599,7 @@ def run_compile_sandbox(
     quality: str | None = None,
     timeout_seconds: int = 30,
     component_cache_dir: Path | None = None,
+    early_result: bool = False,
 ) -> CompileSandboxResult:
     ext = export_format.lower()
     if ext not in SUPPORTED_EXPORT_FORMATS:
@@ -638,22 +650,34 @@ def run_compile_sandbox(
             env=_sandbox_env(project_dir, component_cache_dir),
             start_new_session=True,
         )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        _kill_process_tree(process)
-        stdout, stderr = process.communicate()
-        return CompileSandboxResult(
-            success=False,
-            output_path=None,
-            stdout=_subprocess_output_text(exc.stdout)
-            or _subprocess_output_text(stdout),
-            stderr=_subprocess_output_text(exc.stderr)
-            or _subprocess_output_text(stderr),
-            error=f"Compile timed out after {timeout_seconds} seconds",
-        )
+    output = _DrainedOutput(process)
+    deadline = monotonic() + timeout_seconds
+    ready_path = project_dir / RESULT_READY_FILENAME
+    finish: Callable[[], bool] | None = None
+    while process.poll() is None:
+        if early_result and ready_path.exists():
+            # Every output is written; the sandbox is now only storing new
+            # component cache entries, which the caller can wait for later.
+            finish = _sandbox_finisher(process, output, deadline)
+            break
+        if monotonic() >= deadline:
+            _kill_process_tree(process)
+            output.join()
+            return CompileSandboxResult(
+                success=False,
+                output_path=None,
+                stdout=output.stdout(),
+                stderr=output.stderr(),
+                error=f"Compile timed out after {timeout_seconds} seconds",
+            )
+        sleep(_POLL_SECONDS)
+    if finish is None:
+        output.join()
+    stdout, stderr = output.stdout(), output.stderr()
 
-    if process.returncode != 0:
+    # A failure after the ready marker only lost new cache entries: the
+    # outputs were complete.
+    if finish is None and process.returncode != 0 and not ready_path.exists():
         return CompileSandboxResult(
             success=False,
             output_path=None,
@@ -684,7 +708,67 @@ def run_compile_sandbox(
         },
         component_report_path=_existing_file(project_dir / COMPONENT_REPORT_FILENAME),
         phases_path=_existing_file(project_dir / PHASES_FILENAME),
+        finish=finish,
     )
+
+
+_POLL_SECONDS = 0.05
+# Time the sandbox always gets to store its cache entries after its outputs,
+# even when the compile used most of its budget.
+_FLUSH_GRACE_SECONDS = 120
+
+
+class _DrainedOutput:
+    """Reads a process's stdout and stderr on threads, so neither pipe can
+    fill and stall the process while the caller isn't waiting on it."""
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        self._chunks: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        self._threads = [
+            threading.Thread(target=self._read, args=(stream, name), daemon=True)
+            for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))
+            if stream is not None
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def _read(self, stream: Any, name: str) -> None:
+        for chunk in iter(lambda: stream.read(65536), ""):
+            self._chunks[name].append(chunk)
+        stream.close()
+
+    def join(self) -> None:
+        for thread in self._threads:
+            thread.join()
+
+    def stdout(self) -> str:
+        return "".join(self._chunks["stdout"])
+
+    def stderr(self) -> str:
+        return "".join(self._chunks["stderr"])
+
+
+def _sandbox_finisher(
+    process: subprocess.Popen[str], output: _DrainedOutput, deadline: float
+) -> Callable[[], bool]:
+    """Wait for a sandbox that has written its outputs to finish storing
+    cache entries. Returns whether it stored them cleanly."""
+    done: list[bool] = []
+
+    def finish() -> bool:
+        if done:
+            return done[0]
+        timeout = max(deadline - monotonic(), _FLUSH_GRACE_SECONDS)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process)
+            process.wait()
+        output.join()
+        done.append(process.returncode == 0)
+        return done[0]
+
+    return finish
 
 
 def _existing_file(path: Path) -> Path | None:

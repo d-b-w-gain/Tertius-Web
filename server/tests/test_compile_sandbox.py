@@ -47,11 +47,12 @@ def test_compile_sandbox_allows_timus_views_export(tmp_path, monkeypatch):
 
     class FakeProcess:
         returncode = 0
+        stdout = stderr = None
 
-        def communicate(self, timeout):
+        def poll(self):
             spawned["command"] = True
             (tmp_path / "output.timus_views").write_text("{}", encoding="utf-8")
-            return "", ""
+            return 0
 
     monkeypatch.setattr(
         "core.compile_sandbox.subprocess.Popen", lambda *args, **kwargs: FakeProcess()

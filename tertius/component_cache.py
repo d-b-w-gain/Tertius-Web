@@ -153,8 +153,23 @@ def configure_component_cache(
         on_hit=_replay_registrations,
         rebind=_rebind_registrations,
         validate=_validate_registrations,
+        # New entries are written by flush_component_cache() after the
+        # compile's outputs, so the result doesn't wait for them.
+        defer_saves=True,
     )
     return True
+
+
+def flush_component_cache() -> dict[str, Any]:
+    """Write the entries this compile built; returns how many and how long."""
+    from time import perf_counter
+
+    cadcache = _cadcache()
+    if cadcache is None or not hasattr(cadcache, "flush"):
+        return {"written": 0, "seconds": 0.0}
+    started = perf_counter()
+    written = cadcache.flush()
+    return {"written": written, "seconds": round(perf_counter() - started, 3)}
 
 
 def record_registration(effect: dict[str, Any]) -> None:

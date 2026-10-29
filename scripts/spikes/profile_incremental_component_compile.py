@@ -118,8 +118,13 @@ def run_scenario(
         quality=quality,
         timeout_seconds=timeout_seconds,
         component_cache_dir=cache_dir,
+        early_result=True,
     )
+    # What the user waits for: the result, before new cache entries are written.
     wall = perf_counter() - started
+    if result.finish is not None:
+        result.finish()
+    cache_write = perf_counter() - started - wall
     if not result.success:
         raise SystemExit(f"{name} compile failed:\n{(result.error or result.stderr)[-4000:]}")
     report = (
@@ -134,6 +139,7 @@ def run_scenario(
     return {
         "scenario": name,
         "wall_seconds": round(wall, 2),
+        "cache_write_seconds": round(cache_write, 2),
         "phases": phases,
         "counts": report["counts"],
         "rebuilt": sorted(name for name, status in components.items() if status == "built"),
@@ -185,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     key: outcome[key]
-                    for key in ("scenario", "wall_seconds", "phases", "counts", "rebuilt", "uncacheable", "artifact_sha256")
+                    for key in (
+                        "scenario", "wall_seconds", "cache_write_seconds", "phases", "counts",
+                        "rebuilt", "uncacheable", "artifact_sha256",
+                    )
                 }
             ),
             file=sys.stderr,

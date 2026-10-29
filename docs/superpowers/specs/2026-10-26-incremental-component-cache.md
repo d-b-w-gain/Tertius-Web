@@ -335,10 +335,27 @@ time" means the edited state was not in the cache yet:
 Each cached result's workbench artifacts are byte-identical to a no-cache
 build of the same edited design.
 
-What remains of a one-part edit: about 17 s of export, the changed parts'
-own build time, and rebuilding `shed_building` around them (about 10 s
-plus loading every other part). Per-component GLB output (#314/#315) would
-remove the export cost from edits.
+### Deferred saves (cadcache 0.5.0)
+
+Writing a new entry is not needed for the compile's result, only for the
+next compile. With `defer_saves`, a new build returns the shape it built
+(no write and read-back of its entry), the entry is snapshotted when the part
+returns, and the sandbox writes entries after its outputs: it writes a
+`tertius-result-ready` marker, then flushes. The worker publishes the result
+at the marker, then waits for the flush and uploads the new entries.
+
+| Restructured shed, own `@part` marks | Before | Result ready | Cache write after |
+| --- | --- | --- | --- |
+| Empty cache | 181.6 s | 144.7 s | 37.2 s |
+| Nothing changed | 35.6 s | 43.2 s (busy host; export 19.8 s) | 1.3 s |
+| Roof colour (first time) | 59.6 s | 45.7 s | 21.4 s |
+
+Artifacts are identical to a no-cache build in every scenario.
+
+What remains of a one-part edit: about 18 s of whole-model GLB export, patch
+and dedup, `shed_building`'s own code, and loading the other parts.
+Per-component GLB output (#314/#315) would remove most of the export cost
+from edits.
 
 ### dincase (`dincase/tertius-project`)
 
@@ -383,9 +400,9 @@ few seconds more. Item 1 is what makes caching worth it here.
 ## Validation
 
 Run on 2026-10-28 inside the production API image with this branch and
-cadcache `v0.4.0`:
+cadcache `v0.5.0`:
 
-- cadcache: 53 unit tests, including effects replay, nested parts, refused
+- cadcache: 56 unit tests, including effects replay, nested parts, refused
   builds and a re-parented child that used to fail to load.
 - Server and Tertius suites that do not need Postgres: 299 tests
   (`test_compile_*`, `test_component_cache*`, `test_component_replay.py`,
