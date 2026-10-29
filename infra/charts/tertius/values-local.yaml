@@ -41,6 +41,8 @@ app:
     authSessionIdleSeconds: 604800
     authSessionMaxSeconds: 2592000
     natsUrl: ""
+    # Local smoke releases validate the per-component viewer scene (#314/#315).
+    sceneExportEnabled: true
     llmFileEditMaxContextFiles: 20
     llmFileEditMaxContextChars: 2000000
     llmUserRateLimitPerMinute: 10

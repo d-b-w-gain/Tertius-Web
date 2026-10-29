@@ -150,6 +150,12 @@ arrives.
   `scene_assets` no retained manifest references (#316), and a live run
   against JetStream (Compose or k3s).
 - [ ] Phase 3: Extus manifest loading and incremental replacement, with browser
-  validation of selection, isolation, colours and BoM/Artus links.
+  validation of selection, isolation, colours and BoM/Artus links. Code
+  landed: `ui/src/workflows/extus/scene/sceneManifest.ts` assembles the
+  manifest tree from per-viewer cached assets (only uncached assets are
+  fetched), meshes instance across assets by `tertiusMeshDigest`, and the
+  viewer falls back to the monolithic GLB. `values-local.yaml` turns scene
+  export on for smoke releases. Still open: browser validation on a smoke
+  release.
 - [ ] Phase 4: full `live-flow` on an isolated k3s smoke release, then remove
   the monolithic GLB from the default bundle.
