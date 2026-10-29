@@ -425,6 +425,121 @@ def test_run_once_preserves_python_only_path_without_opening_object_store(monkey
     assert asyncio.run(compile_job.run_once()) == 0
 
 
+def test_run_once_takes_the_next_request_while_storing_cache_entries(monkeypatch):
+    """KEDA starts no new pod while this one is still storing a finished
+    compile's cache entries, so the pod runs the next queued request itself
+    and exits once the queue is empty and every save has finished."""
+    import workflows.intus.compile_job as compile_job
+
+    first, second = FakeMsg(command_payload()), FakeMsg(command_payload())
+    queue = [[first], [second]]
+    events = []
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+
+    class FakeSubscription:
+        async def fetch(self, batch, timeout):
+            await asyncio.sleep(0)    # a real fetch waits on the network
+            if queue:
+                return queue.pop(0)
+            raise TimeoutError
+
+    class FakeConnection:
+        async def close(self):
+            pass
+
+    async def fake_connect(_url):
+        return FakeConnection()
+
+    async def fake_ensure(nc, settings):
+        return SimpleNamespace()
+
+    async def fake_pull(js, settings):
+        return FakeSubscription()
+
+    async def fake_cache_store(js, settings):
+        return object()
+
+    async def fake_handle(message, publisher, settings, object_store, component_cache, deferred):
+        events.append("compile first" if message is first else "compile second")
+        if message is first:
+            async def store():
+                save_started.set()
+                await release_save.wait()
+                events.append("saved first")
+
+            deferred.append(store)
+        else:
+            # The first compile's save is still running.
+            assert save_started.is_set() and not release_save.is_set()
+            release_save.set()
+
+    monkeypatch.setattr(
+        compile_job,
+        "get_settings",
+        lambda: SimpleNamespace(
+            nats_url="nats://test", component_cache_enabled=True, compile_timeout_seconds=300
+        ),
+    )
+    monkeypatch.setattr(compile_job, "configure_telemetry", lambda *args: None)
+    monkeypatch.setattr(compile_job, "connect_nats", fake_connect)
+    monkeypatch.setattr(compile_job, "ensure_compile_stream", fake_ensure)
+    monkeypatch.setattr(compile_job, "pull_compile_subscription", fake_pull)
+    monkeypatch.setattr(compile_job, "NatsPublisher", lambda js: FakePublisher())
+    monkeypatch.setattr(compile_job, "open_component_cache_store", fake_cache_store)
+    monkeypatch.setattr(compile_job, "handle_compile_request_message", fake_handle)
+
+    assert asyncio.run(compile_job.run_once()) == 0
+    assert events == ["compile first", "compile second", "saved first"]
+
+
+def test_run_once_takes_no_new_request_without_a_pending_save(monkeypatch):
+    import workflows.intus.compile_job as compile_job
+
+    msg = FakeMsg(command_payload())
+    fetches = []
+
+    class FakeSubscription:
+        async def fetch(self, batch, timeout):
+            fetches.append(timeout)
+            return [msg]
+
+    class FakeConnection:
+        async def close(self):
+            pass
+
+    async def fake_connect(_url):
+        return FakeConnection()
+
+    async def fake_ensure(nc, settings):
+        return SimpleNamespace()
+
+    async def fake_pull(js, settings):
+        return FakeSubscription()
+
+    async def fake_cache_store(js, settings):
+        return object()
+
+    async def fake_handle(message, publisher, settings, object_store, component_cache, deferred):
+        pass    # nothing to store, e.g. a failed compile
+
+    monkeypatch.setattr(
+        compile_job,
+        "get_settings",
+        lambda: SimpleNamespace(nats_url="nats://test", component_cache_enabled=True),
+    )
+    monkeypatch.setattr(compile_job, "configure_telemetry", lambda *args: None)
+    monkeypatch.setattr(compile_job, "connect_nats", fake_connect)
+    monkeypatch.setattr(compile_job, "ensure_compile_stream", fake_ensure)
+    monkeypatch.setattr(compile_job, "pull_compile_subscription", fake_pull)
+    monkeypatch.setattr(compile_job, "NatsPublisher", lambda js: FakePublisher())
+    monkeypatch.setattr(compile_job, "open_component_cache_store", fake_cache_store)
+    monkeypatch.setattr(compile_job, "handle_compile_request_message", fake_handle)
+
+    assert asyncio.run(compile_job.run_once()) == 0
+    assert fetches == [5]
+
+
 def test_run_once_publishes_retryable_result_when_object_store_open_fails(monkeypatch):
     import workflows.intus.compile_job as compile_job
 

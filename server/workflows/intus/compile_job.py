@@ -193,8 +193,16 @@ async def _execute_with_component_cache(
 
 
 async def handle_compile_request_message(
-    msg, publisher: Publisher, settings, object_store=None, component_cache=None
+    msg,
+    publisher: Publisher,
+    settings,
+    object_store=None,
+    component_cache=None,
+    deferred: list[Callable[[], Awaitable[None]]] | None = None,
 ) -> None:
+    """Handle one compile request. With `deferred`, storing the compile's new
+    component cache entries (after the result is published) is appended to
+    it for the caller to run, instead of being awaited here."""
     context = extract_nats_context(getattr(msg, "headers", None))
     subject = getattr(msg, "subject", "tertius.compile.request")
     attributes = {
@@ -316,10 +324,10 @@ async def handle_compile_request_message(
                 # The user has the result; storing new cached components only
                 # speeds up the next compile, so it can't fail this one.
                 store_entries, after_publish = after_publish, None
-                try:
-                    await store_entries()
-                except Exception:
-                    logger.warning("Storing new component cache entries failed", exc_info=True)
+                if deferred is not None:
+                    deferred.append(_logged_store(store_entries))
+                else:
+                    await _logged_store(store_entries)()
         except Exception as exc:
             if after_publish is not None:
                 # Still wait for the sandbox and remove its folders.
@@ -341,6 +349,16 @@ async def handle_compile_request_message(
                 {"export_format": command.export_format, "job_status": "worker_error"},
             )
             await msg.nak()
+
+
+def _logged_store(store_entries: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
+    async def store() -> None:
+        try:
+            await store_entries()
+        except Exception:
+            logger.warning("Storing new component cache entries failed", exc_info=True)
+
+    return store
 
 
 def execute_compile_command(
@@ -596,6 +614,7 @@ async def run_once() -> int:
         js = await ensure_compile_stream(nc, settings)
         publisher = NatsPublisher(js)
         subscription = await pull_compile_subscription(js, settings)
+        started = perf_counter()
         try:
             messages = await subscription.fetch(batch=1, timeout=5)
         except TimeoutError:
@@ -603,7 +622,10 @@ async def run_once() -> int:
 
         object_store = None
         component_cache = None
-        for msg in messages:
+        saves: set[asyncio.Task[None]] = set()
+
+        async def handle(msg) -> None:
+            nonlocal object_store, component_cache
             try:
                 command = CompileCommand.model_validate_json(msg.data)
             except Exception:
@@ -632,14 +654,42 @@ async def run_once() -> int:
                         {"operation": "open", "outcome": "unavailable"},
                     )
             if component_cache is not None:
+                deferred: list[Callable[[], Awaitable[None]]] = []
                 await handle_compile_request_message(
-                    msg, publisher, settings, object_store, component_cache
+                    msg, publisher, settings, object_store, component_cache, deferred
                 )
+                saves.update(asyncio.ensure_future(store()) for store in deferred)
             else:
                 await handle_compile_request_message(msg, publisher, settings, object_store)
+
+        while messages:
+            for msg in messages:
+                await handle(msg)
+            messages = await _next_while_saving(subscription, saves, settings, started)
+        await asyncio.gather(*saves)
         return 0
     finally:
         await nc.close()
+
+
+async def _next_while_saving(
+    subscription, saves: set[asyncio.Task[None]], settings, started: float
+) -> list:
+    """The next request, taken while this pod is still storing a finished
+    compile's cache entries. KEDA counts the pod as a running job until it
+    exits, so it starts no new one for a request queued behind the save;
+    this pod runs it instead. Only taken while a whole compile still fits in
+    the job's deadline (activeDeadlineSeconds allows two compile timeouts)."""
+    budget = getattr(settings, "compile_timeout_seconds", 300)
+    while saves and perf_counter() - started < budget:
+        try:
+            messages = await subscription.fetch(batch=1, timeout=1)
+        except TimeoutError:
+            messages = []
+        saves.difference_update({task for task in saves if task.done()})
+        if messages:
+            return messages
+    return []
 
 
 def main() -> None:

@@ -286,6 +286,9 @@ compileJobs:
   maxReplicaCount: 4
   pollingInterval: 5
   scalingStrategy: ""
+  # A pod storing a finished compile's cache entries takes the next queued
+  # request itself (KEDA counts it as running), within its first
+  # compileTimeoutSeconds, so keep this above twice compileTimeoutSeconds.
   activeDeadlineSeconds: 720
   ttlSecondsAfterFinished: 300
   successfulJobsHistoryLimit: 3
