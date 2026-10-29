@@ -126,6 +126,7 @@ describe('scene manifests', () => {
     const { fetched } = await assembleScene(manifest('postCopy'), edit)
     expect(fetched).toBe(1)
     expect(edit.fetched).toEqual(['postCopy'])
+    expect([...cache.keys()].sort()).toEqual(['postCopy', 'root'])
   })
 
   it('forgets an asset whose download failed', async () => {

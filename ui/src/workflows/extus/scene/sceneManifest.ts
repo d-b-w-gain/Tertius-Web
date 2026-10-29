@@ -46,6 +46,7 @@ export interface SceneAssetCache {
   get(assetId: string): Promise<ParsedAsset> | undefined;
   set(assetId: string, asset: Promise<ParsedAsset>): void;
   delete(assetId: string): void;
+  keys(): IterableIterator<string>;
 }
 
 export function createSceneAssetCache(): SceneAssetCache {
@@ -162,6 +163,12 @@ export async function assembleScene(manifest: SceneManifest, options: AssembleOp
     }
     return pending;
   };
+  // Keep only this scene's assets: the cache must not grow with every edit
+  // of a long session. Earlier scenes' objects are disposed by the viewer.
+  const wanted = new Set(manifest.assets);
+  for (const assetId of [...options.cache.keys()]) {
+    if (!wanted.has(assetId)) options.cache.delete(assetId);
+  }
   const parsed = new Map<string, ParsedAsset>();
   await Promise.all(
     manifest.assets.map(async (assetId) => {
