@@ -81,7 +81,7 @@ class Settings(BaseSettings):
         default=512 * 1024 * 1024, gt=0, le=16 * 1024 * 1024 * 1024
     )
     component_cache_max_entry_bytes: int = Field(
-        default=128 * 1024 * 1024, gt=0, le=1024 * 1024 * 1024
+        default=256 * 1024 * 1024, gt=0, le=1024 * 1024 * 1024
     )
     pi_agent_enabled: bool = Field(default=False)
     pi_agent_provider: Literal["openai-codex"] = Field(default="openai-codex")

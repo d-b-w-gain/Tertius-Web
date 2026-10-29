@@ -97,7 +97,9 @@ app:
     # Bytes restored into each compile job's /tmp; keep it well inside
     # compileJobs.tmpSizeLimit.
     componentCachePrefetchMaxBytes: 536870912
-    componentCacheMaxEntryBytes: 134217728
+    # The largest single entry: an outer part stores its whole subtree (the
+    # reference shed's building entry is about 167 MB).
+    componentCacheMaxEntryBytes: 268435456
     # Per-component viewer scene (#314): the compile worker uploads a GLB per
     # cached part beside the monolithic GLB and the API stores them for the
     # viewer. Off until Extus loads scene manifests (#315); needs

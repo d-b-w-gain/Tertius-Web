@@ -1214,7 +1214,7 @@ if ! printf '%s
 ' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_TTL_SECONDS' | rg -q 'value: "1209600"'   || ! printf '%s
 ' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_MAX_BYTES' | rg -q 'value: "1073741824"'   || ! printf '%s
 ' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_PREFETCH_MAX_BYTES' | rg -q 'value: "536870912"'   || ! printf '%s
-' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_MAX_ENTRY_BYTES' | rg -q 'value: "134217728"'; then
+' "$scaled_job" | rg -A 1 'name: COMPONENT_CACHE_MAX_ENTRY_BYTES' | rg -q 'value: "268435456"'; then
   echo "Compile ScaledJob must enable the component cache with a 14-day TTL, 1 GiB capacity, 512 MiB prefetch budget and 128 MiB entry limit." >&2
   exit 1
 fi
