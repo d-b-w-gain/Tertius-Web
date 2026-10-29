@@ -96,6 +96,7 @@ Environment:
   PORT_FORWARD_ADDRESS          Default: 127.0.0.1. Set to 0.0.0.0 only for explicit shared previews.
   METRICS_LOCAL_PORT            Default: 8428
   TIMEOUT                       Default: 10m
+  EXTRA_HELM_ARGS               Optional extra Helm flags appended to the install, e.g. LAN preview hostnames.
   DOCKER                        Default: docker when available, otherwise podman.
   K3S_CONTAINER                 Optional k3s Podman/Docker container name for image imports.
 
@@ -927,6 +928,11 @@ helm_set_args() {
 --set-string valkey.dataStorage.annotations.tertius\\.io/lease-id=${LIFECYCLE_LEASE_ID}
 --set-string nats.config.jetstream.fileStore.pvc.merge.metadata.annotations.tertius\\.io/lease-id=${LIFECYCLE_LEASE_ID}
 "
+  if [ -n "${EXTRA_HELM_ARGS:-}" ]; then
+    HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
+${EXTRA_HELM_ARGS}
+"
+  fi
   if truthy "$ENABLE_TUNNEL"; then
     HELM_EXTRA_ARGS="${HELM_EXTRA_ARGS}
 --set cloudflared.enabled=true
