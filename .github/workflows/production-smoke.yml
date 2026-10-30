@@ -30,6 +30,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The UI version grace period reads the promotion commit's age.
+          fetch-depth: 50
 
       - name: Wait for production and run smoke checks
         shell: bash
@@ -38,4 +41,8 @@ jobs:
           SMOKE_ATTEMPTS: ${{ github.event_name == 'push' && '60' || '3' }}
           SMOKE_RETRY_DELAY_SECONDS: ${{ github.event_name == 'push' && '15' || '10' }}
           SMOKE_INITIAL_DELAY_SECONDS: ${{ github.event_name == 'push' && '300' || '0' }}
+          # Pushes retry until the promoted UI is live. A scheduled run that
+          # lands mid-rollout only warns for the first 30 minutes after a
+          # promotion; after that a stale UI means deploys have stopped.
+          SMOKE_VERSION_GRACE_SECONDS: ${{ github.event_name == 'push' && '0' || '1800' }}
         run: bash ./scripts/smoke-production.sh "$PRODUCTION_URL"

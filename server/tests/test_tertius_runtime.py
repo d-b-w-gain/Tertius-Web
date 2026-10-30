@@ -390,6 +390,118 @@ def test_connected_fabricated_port_splits_the_analytical_member() -> None:
     assert branch_member["start_node_key"] == "joint:MID"
 
 
+def test_connected_off_axis_port_projects_to_the_analytical_member() -> None:
+    with compile_session() as session:
+        host = managed_member(
+            product=member_product(),
+            mark="HOST",
+            start=(0, 0, 0),
+            end=(0, 0, 1000),
+            extra_ports={
+                "fabricated:cleat": PortPlacement((0.6, 0, 500), (1, 0, 0)),
+            },
+        )
+        branch = managed_member(
+            product=member_product(),
+            mark="BRANCH",
+            start=(0.6, 0, 500),
+            end=(500.6, 0, 500),
+        )
+        bracket = managed_component(
+            bd.Box(20, 20, 20).moved(bd.Pos(Z=490)),
+            product=connector_product(),
+            mark="OFFSET-BRACKET",
+        )
+        connection = physical_connection(
+            bd.Compound(children=[bracket]),  # type: ignore[call-overload]
+            definition=ConnectionDefinition(
+                key="test-offset",
+                label="Test offset connection",
+                family="test-bolted",
+                transfers=("force", "shear"),
+                analysis_model="pinned",
+                stiffness_status="candidate",
+                stiffness_basis="Test offset connection.",
+                maximum_port_offset_mm=1.0,
+            ),
+            ports=(host.ports["fabricated:cleat"], branch.ports.start),
+            connector_components=(bracket,),
+            mark="OFFSET",
+        )
+        model = bd.Compound(children=[host, branch, connection])  # type: ignore[call-overload]
+        graph = session.finalize(model)
+        structural = all_workbench_projections(graph, model=model)["structural"]
+
+    host_segments = [
+        member
+        for member in structural["analytical_members"]
+        if member["component_id"] == "HOST"
+    ]
+    assert len(host_segments) == 2
+    assert host_segments[0]["end_m"] == [0.0, 0.0, 0.5]
+    assert host_segments[0]["end_node_key"] == "joint:OFFSET"
+    assert host_segments[1]["start_node_key"] == "joint:OFFSET"
+
+    branch_member = next(
+        member
+        for member in structural["analytical_members"]
+        if member["component_id"] == "BRANCH"
+    )
+    assert branch_member["start_node_key"] == "joint:OFFSET"
+
+
+def test_connected_port_beyond_declared_offset_is_not_projected() -> None:
+    with compile_session() as session:
+        host = managed_member(
+            product=member_product(),
+            mark="HOST",
+            start=(0, 0, 0),
+            end=(0, 0, 1000),
+            extra_ports={
+                "fabricated:remote": PortPlacement((42, 0, 500), (1, 0, 0)),
+            },
+        )
+        branch = managed_member(
+            product=member_product(),
+            mark="BRANCH",
+            start=(42, 0, 500),
+            end=(542, 0, 500),
+        )
+        bracket = managed_component(
+            bd.Box(20, 20, 20).moved(bd.Pos(X=32, Z=490)),
+            product=connector_product(),
+            mark="REMOTE-BRACKET",
+        )
+        connection = physical_connection(
+            bd.Compound(children=[bracket]),  # type: ignore[call-overload]
+            definition=ConnectionDefinition(
+                key="test-remote",
+                label="Test remote connection",
+                family="test-bolted",
+                transfers=("force", "shear"),
+                analysis_model="pinned",
+                stiffness_status="candidate",
+                stiffness_basis="Test remote connection.",
+                maximum_port_offset_mm=1.0,
+            ),
+            ports=(host.ports["fabricated:remote"], branch.ports.start),
+            connector_components=(bracket,),
+            mark="REMOTE",
+        )
+        model = bd.Compound(children=[host, branch, connection])  # type: ignore[call-overload]
+        graph = session.finalize(model)
+        structural = all_workbench_projections(graph, model=model)["structural"]
+
+    host_members = [
+        member
+        for member in structural["analytical_members"]
+        if member["component_id"] == "HOST"
+    ]
+    assert len(host_members) == 1
+    assert host_members[0]["start_port_names"] == ["start"]
+    assert host_members[0]["end_port_names"] == ["end"]
+
+
 def test_product_change_propagates_to_every_workbench_projection() -> None:
     projection_sets: list[dict[str, dict]] = []
     for part_number in ("TEST-C100", "TEST-C150"):

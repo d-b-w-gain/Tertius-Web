@@ -69,6 +69,27 @@ describe('ViewerTab material batching', () => {
     expect(batch.mesh.geometry.getAttribute('color')).toBeDefined()
   })
 
+  it('merges GLTF primitives whose attributes differ instead of dropping the batch', () => {
+    const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 })
+    material.userData.tertiusAuthoredColor = true
+    // B-rep part: indexed, with normals and UVs.
+    const brep = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material)
+    // Mesh-only part: positions alone, non-indexed, RGBA colour.
+    const meshOnly = meshWithPositions(material)
+    meshOnly.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(12).fill(0.5), 4))
+
+    const batch = buildViewerBatch([brep, meshOnly], { useAuthoredColors: true })
+
+    expect(batch).not.toBeNull()
+    if (!batch) throw new Error('expected viewer batch')
+    const merged = batch.mesh.geometry
+    expect(merged.getAttribute('position').count).toBe(brep.geometry.getAttribute('position').count + 3)
+    expect(merged.getAttribute('normal')).toBeDefined()
+    expect(merged.getAttribute('color').itemSize).toBe(3)
+    expect(merged.getAttribute('uv')).toBeUndefined()
+    expect(merged.getIndex()?.count).toBe(brep.geometry.getIndex()!.count + 3)
+  })
+
   it('preserves authored part colours in selection and transparency overlay materials', () => {
     const fallbackMaterial = new THREE.MeshStandardMaterial({ color: DEFAULT_MODEL_COLOR })
     const redMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 })
